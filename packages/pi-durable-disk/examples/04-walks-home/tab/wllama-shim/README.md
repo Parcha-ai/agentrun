@@ -25,7 +25,7 @@ wasm grows by about 5 KB. Built from a fresh clone with `build.sh`:
 ./build.sh   # needs git, docker and npm; writes dist/wllama.js and dist/wllama.wasm and prints their sha256
 ```
 
-It clones wllama at tag `3.6.1` (commit `e3972797f9d5`), checks that the llama.cpp submodule is `83d855c5a6d7`, applies `wllama-3.6.1-d0.patch` and runs
+It clones wllama at tag `3.6.1` (commit `e3972797f9d5`), checks that the llama.cpp submodule is `83d855c5a6d7`, applies `wllama-3.6.1-d0.patch.txt` (a unified diff) and runs
 wllama's own `scripts/build_wasm.sh` (emscripten/emsdk:4.0.20 in Docker) with the default build skipped. Serve `dist/` as the page's compat assets
 (`setCompat({ worker, wasm })`). The build's Docker images stay on the machine afterwards (`docker rmi emscripten/emsdk:4.0.20 scripts-llamacpp-wasm-builder`).
 

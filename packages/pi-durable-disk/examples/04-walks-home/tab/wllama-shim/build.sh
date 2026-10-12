@@ -21,7 +21,7 @@ cd "$work/wllama"
 [ "$(git rev-parse HEAD)" = "$WLLAMA_COMMIT" ] || { echo "wllama $WLLAMA_TAG is not $WLLAMA_COMMIT" >&2; exit 1; }
 git submodule update --init --depth 1 llama.cpp
 [ "$(git -C llama.cpp rev-parse HEAD)" = "$LLAMA_CPP_COMMIT" ] || { echo "llama.cpp is not $LLAMA_CPP_COMMIT" >&2; exit 1; }
-git apply "$here/wllama-3.6.1-d0.patch"
+git apply "$here/wllama-3.6.1-d0.patch.txt" # a unified diff; .txt so the source export (which reviews file types) carries it
 
 (cd scripts && SKIP_DEFAULT=1 BUILD_JSPI32=1 ./build_wasm.sh)
 cp compat/wasm/wllama.js compat/wasm/wllama.wasm "$out/"
