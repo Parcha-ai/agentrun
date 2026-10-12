@@ -738,7 +738,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const current = currentEnv(state.placement);
     if (!options.placer || current === undefined) return undefined;
     try {
-      const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id) });
+      const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id), read: async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined) });
       state.decisions.push(decision);
       if (state.decisions.length > 8) state.decisions.shift();
       const frame: PipeFrame = { t: "decision", decision };

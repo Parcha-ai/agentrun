@@ -37,6 +37,8 @@ export interface PlacementQuery {
   readonly current: string;
   /** The ids of the environments the server can place the run in. */
   readonly environments: readonly string[];
+  /** Reads a file of the run's work/ (where the run is now): what a placer's `context` looks at. Absent when the run's files cannot be reached. */
+  readonly read?: (path: string) => Promise<Uint8Array | undefined>;
   readonly signal?: AbortSignal;
 }
 
@@ -86,6 +88,11 @@ export interface PlacerOptions {
   /** What the decisions are tagged: "jev" for the real client, "scripted" for any other. */
   readonly model: "jev" | "scripted";
   readonly now?: () => number;
+  /**
+   * Facts about the run the question should be asked with, read by the placer from the run's files (`read`): they go into the judge's state next to the task, so the judge sees what is already
+   * true (the skills already taught) instead of guessing it from the user's words. A context that fails leaves the question without it.
+   */
+  readonly context?: (read: (path: string) => Promise<Uint8Array | undefined>) => Promise<Record<string, unknown>>;
 }
 
 let counter = 0;
@@ -104,11 +111,12 @@ export function judgePlacer(options: PlacerOptions): Placer {
       const criteria: Record<string, string> = {};
       for (const id of ids) criteria[id] = options.criteria[id]!;
       const question = PLACEMENT_QUESTIONS[query.phase];
+      const facts = options.context && query.read ? await options.context(query.read).catch(() => ({})) : {};
       const started = now();
       const result = await options.runJudge({
         label: `placement-${query.phase}`,
         kind: "judge",
-        state: { task: query.message, running_now_in: query.current, ...(query.phase === "done" ? { status: "the agent finished the task" } : {}) },
+        state: { task: query.message, running_now_in: query.current, ...facts, ...(query.phase === "done" ? { status: "the agent finished the task" } : {}) },
         questions: { where: { type: "choice", instructions: question, criteria } },
         ...(query.signal ? { signal: query.signal } : {}),
       });
