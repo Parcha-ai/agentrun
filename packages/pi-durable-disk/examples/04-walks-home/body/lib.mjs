@@ -116,6 +116,7 @@ export function build(spec) {
   if (!spec || typeof spec !== "object" || !spec.root) throw new Error("the body file must export robot(name, rootNode): the root node is the torso");
   const joints = [], motors = [], tags = {}, colors = {}, actuators = [], names = new Set();
   let counter = 0, totalMass = 0;
+  const feet = [], legMotors = []; // for the warnings: each foot's shape, each leg motor's strength
   const unique = (base) => { let n = base, i = 2; while (names.has(n)) n = `${base}_${i++}`; names.add(n); return n; };
   const walk = (node, depth, isRoot) => {
     const ind = "    ".repeat(depth + 1);
@@ -130,6 +131,7 @@ export function build(spec) {
       if (j.passive) xml += `${ind}  <joint name="${jname}" type="hinge" axis="${v3(j.axis, [0, 1, 0])}" range="${range.map(f).join(" ")}" stiffness="${f(j.stiffness ?? 2)}" damping="${f(j.damping ?? 0.3)}" armature="0.005"/>\n`;
       else {
         motors.push(jname);
+        if (pieces(node).some((p) => (p.tags ?? node.tags ?? []).includes("legs"))) legMotors.push({ name: jname, strength: j.strength ?? 12 });
         xml += `${ind}  <joint name="${jname}" type="hinge" axis="${v3(j.axis, [0, 1, 0])}" range="${range.map(f).join(" ")}" damping="${f(j.damping ?? 0.3)}" armature="0.01"/>\n`;
         actuators.push(`    <position name="${jname}_a" joint="${jname}" kp="40" kv="1.2" ctrlrange="${range.map(f).join(" ")}" forcerange="-${f(j.strength ?? 12)} ${f(j.strength ?? 12)}"/>`);
       }
@@ -139,6 +141,7 @@ export function build(spec) {
       const flagged = pieceList.some((p) => p.foot === true);
       const isLeafLeg = !isRoot && (flagged ? g.foot === true : !(node.children?.length) && i === pieceList.length - 1 && (g.tags ?? node.tags ?? []).includes("legs"));
       const gname = unique(isLeafLeg ? `${bname}_foot` : `${bname}${i === 0 ? "" : `_g${i}`}_geom`);
+      if (isLeafLeg) feet.push({ name: gname, shape: g.shape ?? "box" });
       const t = g.tags ?? node.tags ?? (isRoot ? [] : ["decoration"]);
       tags[gname] = [...new Set([...(isRoot && i === 0 ? ["torso"] : []), ...(t.length ? t : isRoot ? ["torso"] : ["decoration"])])];
       colors[gname] = g.color ?? "gray";
@@ -185,6 +188,12 @@ ${actuators.join("\n")}
   if (totalMass > 60) warnings.push(`it weighs ${f(totalMass)} kg, very heavy for a robot`);
   for (const j of joints) if (Math.max(Math.abs(j.range[0]), Math.abs(j.range[1])) > 3.2) warnings.push(`joint ${j.name} turns more than 3.2 rad each way`);
   for (const [g, t] of Object.entries(tags)) if (t.length === 1 && t[0] === "decoration" && !names.has(g)) warnings.push(`${g} has no tag`);
+  // What lets a body learn to walk (D2's measurements on the starter dog): ball feet walked 0.087 m/s and never passed;
+  // flat box feet with friction 1.4 passed; leg motors of strength 14 and a heavy torso brought it to the dinosaur's time.
+  const balls = feet.filter((foot) => foot.shape === "sphere").map((foot) => foot.name);
+  if (balls.length) warnings.push(`${balls.length === 1 ? "foot" : "feet"} ${balls.join(", ")} ${balls.length === 1 ? "is a ball" : "are balls"}: ball feet roll and barely walk; make each a flat box with friction "1.4 0.05 0.01"`);
+  const weak = legMotors.filter((m) => m.strength < 12).map((m) => `${m.name} (${m.strength})`);
+  if (weak.length) warnings.push(`leg ${weak.length === 1 ? "motor" : "motors"} ${weak.join(", ")} too weak to carry the body: give leg motors strength 14 or more`);
   return {
     xml, joints, motors, tags, colors, name, warnings,
     json: { name, joints, motors, tags, colors, warnings, face: { tag: faceTag, ...(spec.face?.at ? { at: spec.face.at } : {}) }, legs: limbs, tag_list: tagList, pieces: Object.keys(tags).length, mass_kg: Math.round(totalMass * 100) / 100, stand_height_m: startZ },
