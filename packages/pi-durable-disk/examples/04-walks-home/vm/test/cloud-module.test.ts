@@ -70,3 +70,9 @@ test("cluster arguments become the cluster option, and a half-given or unknown o
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "0", "cluster-image": "im-x" }), /positive number/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-cpu": "8" }), /need cluster-size/);
 });
+
+test("robot=true turns on the robot's tools on the VM and needs the cluster", () => {
+  assert.equal(modalOptionsFromArgs({ robot: "true", "cluster-size": "2", "cluster-image": "im-x" }).robot, true);
+  assert.equal(modalOptionsFromArgs({}).robot, undefined);
+  assert.throws(() => modalOptionsFromArgs({ robot: "true" }), /needs cluster-size and cluster-image/);
+});
