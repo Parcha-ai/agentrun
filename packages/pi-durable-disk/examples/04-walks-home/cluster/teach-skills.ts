@@ -253,8 +253,9 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
         const results = threads.map((t, i): ThreadResult => {
           const o = outcomes[i]!;
           if (o.status === "completed") return o.result;
-          const status = o.status === "aborted" ? "aborted" : /never passed/.test(o.error.message) ? "never-passed" : /not valid/.test(o.error.message) ? "bad-body" : "error";
-          return { skill: t.skill, gpu: t.gpu, conversationId: t.conversationId, boxId: null, status, summary: o.status === "aborted" ? "The thread was stopped." : o.error.message };
+          const message = o.status === "failed" ? (o.error?.message ?? "The thread failed.") : "The thread was stopped.";
+          const status = o.status === "aborted" ? "aborted" : /never passed/.test(message) ? "never-passed" : /not valid/.test(message) ? "bad-body" : "error";
+          return { skill: t.skill, gpu: t.gpu, conversationId: t.conversationId, boxId: null, status, summary: message };
         });
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { threads: results } } }), context);
       },

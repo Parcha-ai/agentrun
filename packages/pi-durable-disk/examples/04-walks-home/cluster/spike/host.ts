@@ -12,7 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, Harness, watchEvents, type ConversationId, type EntryRecord } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, watchEvents, type ConversationId, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { RobotBox, SKILLS, teachSkills, type TrainProgress } from "../teach-skills.ts";
 import { FakeArtifacts, FakeBoxEnv, FakePool } from "./fake-cluster.ts";
@@ -93,9 +93,9 @@ const root = await harness.root(context, { agent: { model } });
 say({ event: "open", root: root.id });
 
 // ---- per-thread live lines, from the store -----------------------------------------------------------------------------
-const label = new Map<string, string>();
-const lastCheckpoint = new Map<string, number>();
-const attached = new Set<string>();
+const label = new Map<ConversationId, string>();
+const lastCheckpoint = new Map<ConversationId, number>();
+const attached = new Set<ConversationId>();
 async function attach(id: ConversationId, who: string): Promise<void> {
   if (attached.has(id)) return;
   attached.add(id);
@@ -104,7 +104,7 @@ async function attach(id: ConversationId, who: string): Promise<void> {
   stream.start(async (events) => {
     for (const event of events) {
       if (event.type === "tool_execution_update" || event.type === "tool_execution_end") {
-        const d = (event as { details?: unknown }).details as (TrainProgress & { threads?: { conversationId: string; skill: string; gpu: number }[] }) | undefined;
+        const d = (event as { details?: unknown }).details as (TrainProgress & { threads?: { conversationId: number; skill: string; gpu: number }[] }) | undefined;
         if (d?.threads) for (const t of d.threads) await attach(t.conversationId as ConversationId, `GPU ${t.gpu} · ${t.skill}`);
         if (d?.skill !== undefined && d.checkpoint > (lastCheckpoint.get(id) ?? 0)) {
           lastCheckpoint.set(id, d.checkpoint);
@@ -148,8 +148,9 @@ if (mode === "first") {
   say({ event: "submitted", submission: submission.id });
   // Tell the orchestrator when the threads are mid-run: some skills passed, most still training.
   const timer = setInterval(async () => {
+    // Mid-run: about half of all the checkpoints the threads will write (some skills passed, others still training).
     const counts = [...lastCheckpoint.values()];
-    if (counts.length === SKILLS.length && Math.max(...counts) >= 4) {
+    if (counts.reduce((n, c) => n + c, 0) >= 30) {
       clearInterval(timer);
       const tasks = await graph();
       writeFileSync(join(dir, "mid.json"), JSON.stringify({ t: Date.now() - T0, checkpoints: Object.fromEntries([...lastCheckpoint].map(([k, v]) => [label.get(k), v])), tasks }, null, 1));
@@ -168,18 +169,18 @@ if (mode === "first") {
   const submission = await root.submit({ type: "input", content: "Teach it to move.", requestId: "teach-1" }, context);
   const settled = await submission.wait(context);
   say({ event: "teach.settled", status: settled.status, s: (Date.now() - tResume) / 1000 });
-  const answer = settled.status === "done" ? await root.commit((tx) => tx.entry(settled.answer), context) : undefined;
+  const answer = settled.status === "done" && settled.answer !== undefined ? await root.commit((tx) => tx.entry(settled.answer!), context) : undefined;
   const ask = await (await root.submit({ type: "input", content: "What happened on GPU 3?", requestId: "ask-gpu3" }, context)).wait(context);
-  const askAnswer = ask.status === "done" ? await root.commit((tx) => tx.entry(ask.answer), context) : undefined;
+  const askAnswer = ask.status === "done" && ask.answer !== undefined ? await root.commit((tx) => tx.entry(ask.answer!), context) : undefined;
   await harness.waitForIdle(context);
 
   // The evidence, read back from the one store.
   const report = await root.commit(async (tx) => {
-    const entries = async (id: ConversationId, min?: string) => {
+    const entries = async (id: ConversationId, min?: EntryId) => {
       const out: EntryRecord[] = [];
       let cursor;
       for (;;) {
-        const page = await tx.scanEntries({ conversationId: id, ...(min ? { minEntryId: min as never } : {}) }, 100, cursor);
+        const page = await tx.scanEntries({ conversationId: id, ...(min !== undefined ? { minEntryId: min } : {}) }, 100, cursor);
         out.push(...page.items);
         if (!page.next) break;
         cursor = page.next;

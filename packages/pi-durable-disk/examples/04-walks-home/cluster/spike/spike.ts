@@ -4,7 +4,7 @@
 //   node spike.ts [--tick 700] [--capacity 8] [--dir DIR]
 // Prints a JSON verdict; exits 1 if a check fails. Nothing runs but this machine's node and the fakes.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,15 @@ const before = JSON.parse(readFileSync(join(dir, "before-resume.json"), "utf8"))
 const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const runs = (box: string) => (existsSync(join(dir, "boxes", box, "runs.jsonl")) ? readFileSync(join(dir, "boxes", box, "runs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
 
+function peakHeld(log: { event: string }[]): number {
+  let held = 0;
+  let peak = 0;
+  for (const p of log) {
+    held += p.event === "pool.create" ? 1 : p.event === "pool.release" ? -1 : 0;
+    peak = Math.max(peak, held);
+  }
+  return peak;
+}
 const teachBefore = before.find((t: { kind: string }) => t.kind === "robot.teach-skills");
 const threads = report.teachResult?.details?.threads ?? [];
 const checks = {
@@ -47,11 +56,14 @@ const checks = {
   // A thread past its acquire phase resumes with its box ID from its checkpoint; one still acquiring gets the same box.
   no_box_created_after_restart: new Set(pool.filter((p) => p.event === "pool.create").map((p) => p.pid)).size === 1,
   every_box_released: pool.filter((p) => p.event === "pool.release").length === 8,
+  boxes_out_never_above_capacity: peakHeld(pool) <= Number(a.capacity),
   allSettled_folded_all_8_with_one_failure: threads.length === 8 && threads.filter((t: { status: string }) => t.status === "passed").length === 7 && threads.some((t: { skill: string; status: string }) => t.skill === "wave" && t.status === "never-passed"),
   read_thread_answers_from_gpu_3: typeof report.readThread === "string" && /GPU 3 \(backwards\)/.test(report.readThread) && /train_skill/.test(report.readThread),
   no_live_tasks_left: report.tasks_after.length === 0,
 };
 const reruns = report.children.map((c: { box: { boxId: string; skill: string } }) => ({ skill: c.box.skill, runs: runs(c.box.boxId).map((r: { event: string }) => r.event) }));
 const ok = Object.values(checks).every(Boolean);
-console.log(JSON.stringify({ ok, dir, killed_at_s: killedAt, resume_to_settled_s: report.resume_to_settled_s, checks, reruns, answer: report.answer, ask: report.ask }, null, 1));
+const verdict = { ok, dir, capacity: Number(a.capacity), peak_boxes: peakHeld(pool), killed_at_s: killedAt, resume_to_settled_s: report.resume_to_settled_s, checks, reruns, answer: report.answer, ask: report.ask };
+writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 1));
+console.log(JSON.stringify(verdict, null, 1));
 process.exit(ok ? 0 : 1);
