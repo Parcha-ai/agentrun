@@ -10,6 +10,7 @@ export * from "./hosts/docker.ts";
 export * from "./hosts/local-host.ts";
 export * from "./hosts/modal.ts";
 export * from "./park.ts";
+export * from "./remote-env.ts";
 export * from "./run.ts";
 export * from "./serve.ts";
 export * from "./status.ts";
