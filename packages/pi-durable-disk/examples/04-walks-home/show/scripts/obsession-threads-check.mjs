@@ -60,5 +60,33 @@ try {
 } finally {
   stage.kill();
 }
+// ---- The stumble -> relearn card: the skills are for a new body (D2's skill.json fields), the robot's home body is another.
+{
+  pageName = "relearn";
+  const rport = await freePort();
+  const rstage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(rport), SHOW_SCENARIO: "threads", SHOW_THREADS_RELEARN: "1" }, stdio: "ignore" });
+  const rbase = `http://127.0.0.1:${rport}/`;
+  const rseek = (seconds) => fetch(new URL("/api/dev/seek", rbase), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
+  try {
+    await waitForStage(rport, rstage);
+    await rseek(0);
+    const tab = await openTab(new URL("/obsession/", rbase).href, { width: 1600, height: 900 });
+    try {
+      await sleep(2500);
+      const card = async (seconds) => { await rseek(seconds); await sleep(2300); return tab.eval(`(() => { const e = document.querySelector(".rl"); return e ? e.innerText : null; })()`); };
+      let t = await card(35);
+      expect("while the skills learn the card names the new body and how many have passed", /learning a new body/i.test(t ?? "") && /spider/.test(t ?? "") && /8 GPUs/.test(t ?? "") && /\d of 8 skills have passed/.test(t ?? ""), t);
+      expect("and says nothing it was not given: no total, no home time yet", !/passed in/.test(t ?? "") && !/All home/.test(t ?? ""), t);
+      t = await card(125);
+      expect("when every skill has passed: all 8 passed in N s, all home in N s, from the files", /all 8 skills passed in \d+ s/.test(t ?? "") && /All home in \d+ s/.test(t ?? ""), t);
+      expect("and what one machine would take: the CPU estimate with its machine, one skill after another", /On one machine with 8 Xeon Gold 6312U/.test(t ?? "") && /one skill after another/.test(t ?? "") && /hours/.test(t ?? "") && /estimate/.test(t ?? ""), t);
+      if (shots) await tab.screenshot(join(shots, "relearn-card.png"));
+    } finally {
+      await tab.close();
+    }
+  } finally {
+    rstage.kill();
+  }
+}
 console.log(failed ? `${failed} threads check(s) FAILED` : "obsession threads: all checks passed");
 process.exit(failed ? 1 : 0);

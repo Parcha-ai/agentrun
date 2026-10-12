@@ -2,6 +2,7 @@
 // robot-change card and the tool strip (the agent's tab's own events: robot-view.ts), the tab link (window.open, page/tab-link.ts) and the eight tiles with the one robot (threads-view.ts,
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../robot-view.ts";
+import { relearnHtml, relearnSummary } from "../relearn.ts";
 import { LandingDriver, threadsHtml } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
@@ -107,7 +108,8 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   function renderSide(state: ShowState): void {
     const net = netBadge(state.net);
     const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
-    const card = changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
+    const relearn = relearnHtml(relearnSummary(state.threads, state.robotBody?.sha ?? null));
+    const card = relearn + changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
     const tools = toolStripHtml(state.tools);
     const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
     if (key === sideKey) return;
