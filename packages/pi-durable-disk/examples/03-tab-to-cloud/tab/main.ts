@@ -9,7 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
-import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
+import { callsLabel, echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
 import { briefsFromArgs, teachResultCard } from "./teach-result.ts";
@@ -339,7 +339,7 @@ function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonl
     const brief = briefs.get(t.name);
     const echoed = echoedTools(mine);
     const dot = ACTIVE.has(t.status) ? "dot act run" : t.status === "passed" || t.status === "reported" ? "dot done" : "dot";
-    const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "gpu" }, t.gpu === null ? "GPU" : `GPU ${t.gpu}`), el("span", { class: "name" }, t.name), el("span", { class: "args" }, ACTIVE.has(t.status) ? `${t.status === "queued" ? "waiting for a GPU, " : ""}${mine.filter((i) => i.kind === "tool").length} calls` : t.status));
+    const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "gpu" }, t.gpu === null ? "GPU" : `GPU ${t.gpu}`), el("span", { class: "name" }, t.name), el("span", { class: "args" }, ACTIVE.has(t.status) ? `${t.status === "queued" ? "waiting for a GPU, " : ""}${callsLabel(mine.filter((i) => i.kind === "tool").length)}` : t.status));
     const row = el("details", { class: `thread ${t.status}` }, summary) as HTMLDetailsElement;
     const draw = () => row.append(el("div", { class: "thread-chat" }, ...(brief ? [el("div", { class: "brief" }, brief)] : []), ...mine.map((i) => renderItem(i, echoed, `t${t.conversation}:`))));
     if (openTools.has(key)) draw();

@@ -219,7 +219,7 @@ export function brainText(kind: string, data: Record<string, unknown>): string {
     const sure = typeof data.confidence === "number" ? ` (${data.decidedBy === "jev" ? "Jev " : ""}${Math.round(data.confidence * 100)}%)` : "";
     return `${who} answers this one: ${typeof data.reason === "string" ? data.reason : "decided"}${sure}.`;
   }
-  if (kind === BRAIN_CHECKIN) return `Checked in: this run is back on the server${typeof data.files === "number" ? `, with ${data.files} file${data.files === 1 ? "" : "s"} written offline` : ""}. The same conversation goes on, answered by the cloud model.`;
+  if (kind === BRAIN_CHECKIN) return `↑ back on the server${typeof data.files === "number" && data.files > 0 ? ` · ${data.files} file${data.files === 1 ? "" : "s"} synced` : ""}`;
   if (kind === BRAIN_MOVE) return typeof data.text === "string" ? data.text : "The agent is moving; the model it trained stays in the tab.";
   return `The trained model did not load: ${typeof data.reason === "string" ? data.reason : "unknown reason"}. The agent keeps its brain.`;
 }
