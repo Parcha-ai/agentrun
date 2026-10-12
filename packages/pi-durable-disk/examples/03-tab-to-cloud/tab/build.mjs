@@ -40,6 +40,11 @@ mkdirSync(join(out, "vendor", "wllama-compat"), { recursive: true });
 const shim = join(here, "../../04-walks-home/tab/wllama-shim/dist");
 const compatFrom = existsSync(join(shim, "wllama.wasm")) ? shim : join(here, "../node_modules/@wllama/wllama-compat/wasm");
 for (const f of ["wllama.js", "wllama.wasm"]) copyFileSync(join(compatFrom, f), join(out, "vendor", "wllama-compat", f));
+// The shim's wasm32 + JSPI build (no Asyncify), for a browser with JSPI but no memory64 (Safari 27): the page picks it by feature when it is here.
+if (existsSync(join(shim, "jspi32", "wllama.wasm"))) {
+  mkdirSync(join(out, "vendor", "wllama-jspi32"), { recursive: true });
+  for (const f of ["wllama.js", "wllama.wasm"]) copyFileSync(join(shim, "jspi32", f), join(out, "vendor", "wllama-jspi32", f));
+}
 
 // The browser store (local-store.ts): SQLite-WASM runs in a worker of its own, its wasm next to it.
 copyFileSync(join(here, "../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm"), join(out, "vendor", "sqlite3.wasm"));

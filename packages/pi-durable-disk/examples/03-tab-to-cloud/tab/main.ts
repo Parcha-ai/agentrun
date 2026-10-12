@@ -965,10 +965,21 @@ async function startPhone(): Promise<void> {
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
-  // ?compat=1, a desktop check of the iPhone's path: without JSPI wllama takes its compat build (every iPhone browser lacks JSPI and memory64)
+  // ?compat=1, a desktop check of the iPhone's path up to iOS 26: without JSPI wllama takes its compat build (Asyncify). ?mem64=0, Safari 27's: JSPI but no memory64.
   if (params.get("compat") === "1") Reflect.deleteProperty(WebAssembly, "Suspending");
+  if (params.get("mem64") === "0") {
+    const RealMemory = WebAssembly.Memory;
+    const NoMem64 = function Memory(desc: WebAssembly.MemoryDescriptor & { address?: string }) { if (desc?.address === "i64") throw new TypeError("memory64 is hidden (?mem64=0)"); return new RealMemory(desc); } as unknown as typeof WebAssembly.Memory;
+    NoMem64.prototype = RealMemory.prototype;
+    (WebAssembly as { Memory: typeof WebAssembly.Memory }).Memory = NoMem64;
+  }
   const engineLog = (level: string) => (...a: unknown[]) => { const line = a.map((x) => (x instanceof Error ? x.message : String(x))).join(" "); if (level !== "debug" || /buffer size|error|failed/i.test(line)) state.phone!.log.push(`${(performance.now() / 1000).toFixed(1)} s ${level} ${line.slice(0, 300)}`); };
-  const llm = wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL("/vendor/wllama-compat/wllama.js", location.origin).href, wasm: new URL("/vendor/wllama-compat/wllama.wasm", location.origin).href }, logger: { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") } }));
+  // wllama's compat path (no memory64, or no JSPI: every iPhone browser): the wasm32 + JSPI build where JSPI is there (Safari 27; half the size, loads faster), else
+  // the Asyncify build; both carry the slot shim. ?jspi32=0 keeps the Asyncify build. A page served without the jspi32 files falls back to it too.
+  const jspi32 = "Suspending" in WebAssembly && params.get("jspi32") !== "0" && (await fetch("/vendor/wllama-jspi32/wllama.wasm", { method: "HEAD" }).then((r) => r.ok, () => false));
+  const compatDir = jspi32 ? "/vendor/wllama-jspi32" : "/vendor/wllama-compat";
+  state.phone!.log.push(`engine: ${"Suspending" in WebAssembly ? "JSPI" : "no JSPI"}, compat build ${jspi32 ? "wasm32 + JSPI" : "wasm32 + Asyncify"} (used only without memory64)`);
+  const llm = wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL(`${compatDir}/wllama.js`, location.origin).href, wasm: new URL(`${compatDir}/wllama.wasm`, location.origin).href }, logger: { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") } }));
   const model = new PhoneModel(llm, {
     url: new URL(params.get("model") ?? "/models/qwen35-0.8b-robot-v3-Q4_0-00001-of-00007.gguf", location.href).href,
     threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4),
