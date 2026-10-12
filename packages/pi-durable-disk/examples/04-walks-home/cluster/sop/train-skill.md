@@ -7,23 +7,25 @@ question: decide.
 
 ## What is on your box (cwd /workspace)
 - `body/`: the robot you are teaching. `body.xml` is its MuJoCo model; `body.json` lists its joints, its motors in
-  action order, its legs and its tags. Read body.json first: your skill must fit this body.
+  action order, its legs and its tags. Read body.json first: your skill must fit this body. The library derives its
+  own facts from body.xml (its feet, its standing pose); a body it cannot train is refused with what to fix (exit 2),
+  so your first run doubles as the body check.
 - `train-skill`: the training library's command, already installed. Never pip install, and never edit the library.
-- `examples/`: worked skills in the library's format (walk, sprint, backwards, turn-left, turn-right, spin, wave,
-  get-up). Start from the closest one.
+- `/opt/pda/train/skills/`: worked skills in the library's format (walk, sprint, backwards, turn-left, turn-right,
+  spin, wave, get-up). Start from the closest one.
 
 ## A skill is a directory you write: skills/<your skill>/
 - `reward.py`: the extra reward terms for this skill, in JAX. They are added to the library's base terms (staying
   upright, not falling, smooth actions).
 - `skill.json`: the environment config: the term weights, the command range (for example a target speed or yaw
   rate), and the number of training steps.
-- `test.py`: the pass test. It rolls the trained policy out in C MuJoCo from the "stand" keyframe and decides,
-  with the number from your brief, whether the robot really does the skill. The skill counts as passed only when this
-  test passes.
+- `test.py`: the pass test. It rolls the trained policy out in C MuJoCo for 10 s from the robot's settled standing
+  pose, at the page's control rate, and decides with the number from your brief whether the robot really does the
+  skill. The skill counts as passed only when this test passes.
 
 ## Steps
-1. Read `body/body.json`, and read the closest example (`ls examples`; `cat examples/<name>/*`).
-2. Copy it: `cp -r examples/<closest> skills/<your skill>`. Then edit reward.py, skill.json and test.py for your brief
+1. Read `body/body.json`, and read the closest example (`ls /opt/pda/train/skills`; `cat /opt/pda/train/skills/<name>/*`).
+2. Copy it: `cp -r /opt/pda/train/skills/<closest> skills/<your skill>`. Then edit reward.py, skill.json and test.py for your brief
    and this body. Make test.py measure exactly the quantity the brief names (speed, yaw rate, foot height), over a long
    enough rollout that a lucky moment cannot pass it.
 3. Train: `pi-run <your skill> -- train-skill --skill-dir skills/<your skill> --body body`

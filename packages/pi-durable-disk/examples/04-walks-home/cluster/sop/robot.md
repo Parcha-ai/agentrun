@@ -39,6 +39,11 @@ becomes decoration.
   Put the mass low and between the feet, and use wide feet for a heavy body.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
 - **Springs:** a long neck or tail is a passive spring, not a motor (the dinosaur below has 8 motors and 10 springs).
+- **Motors first:** list the legs (every chain with motors) before the neck, the tail and any other springy part in a
+  node's \`children\`, and never put a passive joint above a motor. The trainer and the page drive the motors in that
+  order.
+- **Feet:** the last piece of each leg is its foot, and any shape works (a sphere, a flat box). It is the piece that
+  touches the floor.
 
 ## Check it: build_robot
 Call `build_robot` after every change. It runs your file, compiles the body in MuJoCo, drops it, and answers:
