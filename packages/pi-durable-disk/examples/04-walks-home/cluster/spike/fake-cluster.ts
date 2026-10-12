@@ -102,11 +102,37 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   override readTextFile(path: string, context: Context): ReturnType<NodeExecutionEnv["readTextFile"]> {
     return super.readTextFile(this.local(path), context);
   }
+  /** The coding tools resolve every path here first: the box's /workspace is this box's directory. */
+  override absolutePath(path: string, context: Context): ReturnType<NodeExecutionEnv["absolutePath"]> {
+    return super.absolutePath(this.local(path), context);
+  }
   override exec(command: ExecArgs[0], options: ExecArgs[1], context: ExecArgs[2]): ExecReturn {
+    appendFileSync(join(this.dir, "exec.log"), `${JSON.stringify(command)}\n`); // what the box was asked to run, for a failing test
+    if (typeof command === "string") return this.shell(command, options, context);
     if (!Array.isArray(command) || command[0] !== "pi-run" || command[3] !== "train-skill") {
       return Promise.resolve({ ok: false, error: { code: "unsupported", message: "this fake box runs only pi-run <skill> -- train-skill" } } as never);
     }
     return this.train(command as string[], options, context);
+  }
+  /**
+   * The bash tool's commands, simulated: `pi-run <skill> -- python train.py ... [--out DIR]` runs the fake trainer and
+   * `cat FILE` prints a file. Nothing else runs (no command from a model ever executes on this machine).
+   */
+  private async shell(command: string, options: ExecArgs[1], context: Context): ExecReturn {
+    const say = (text: string) => options?.onOutput?.(text, context, { stream: "stdout" } as never);
+    const t = command.trim().split(/\s+/);
+    if (t[0] === "pi-run" && t[2] === "--" && t.includes("train.py")) {
+      const out = t.includes("--out") ? t[t.indexOf("--out") + 1]! : `/workspace/skills/${t[1]}`;
+      return this.train(["pi-run", t[1]!, "--", "train-skill", t[1]!, "--out", out], options, context);
+    }
+    if (t[0] === "cat" && t.length === 2) {
+      const r = await this.readTextFile(t[1]!, context);
+      if (!r.ok) return { ok: true, value: { exitCode: 1 } } as never;
+      say(r.value);
+      return { ok: true, value: { exitCode: 0 } } as never;
+    }
+    say(`fake box: only "pi-run <skill> -- python train.py ..." and "cat <file>" are simulated\n`);
+    return { ok: true, value: { exitCode: 127 } } as never;
   }
   private async train(argv: string[], options: ExecArgs[1], context: Context): ExecReturn {
     const skill = argv[4]!;

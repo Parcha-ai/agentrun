@@ -12,6 +12,13 @@ import { foldText, SKILLS, skillsToTeach, type ThreadResult } from "../teach-ski
 const here = dirname(fileURLToPath(import.meta.url));
 const spike = join(here, "..", "spike", "spike.ts");
 const host = join(here, "..", "spike", "host.ts");
+const spikePlan = join(here, "..", "spike", "spike_plan.ts");
+
+function runPlan(...extra: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "teach-plan-"));
+  const r = spawnSync(process.execPath, [spikePlan, "--dir", dir, "--tick", "200", ...extra], { encoding: "utf8", timeout: 120_000 });
+  return { status: r.status, verdict: JSON.parse(readFileSync(join(dir, "verdict.json"), "utf8")) };
+}
 
 function runSpike(capacity: number, ...extra: string[]) {
   const dir = mkdtempSync(join(tmpdir(), `teach-skills-${capacity}-`));
@@ -90,6 +97,19 @@ test("a call teaches the skills named, else every skill offered, each once", () 
   assert.deepEqual(skillsToTeach([], ["walk", "spin"]), ["walk", "spin"]);
   assert.deepEqual(skillsToTeach(undefined, ["walk", "walk", "spin", "walk"]), ["walk", "spin"]);
   assert.deepEqual(skillsToTeach(["spin", "spin"], ["walk"]), ["spin"]);
+});
+
+test("code mode: the session plans skills with briefs, each thread writes and runs its own training, survives a SIGKILL", () => {
+  const { status, verdict } = runPlan();
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+  assert.deepEqual(verdict.threads.map((t: { skill: string; status: string }) => [t.skill, t.status]), [["walk", "passed"], ["spin", "passed"], ["wave", "never-passed"]]);
+});
+
+test("code mode: a thread past its deadline is stopped and folds as timed out, the others are kept", () => {
+  const { status, verdict } = runPlan("--deadline-ms", "900");
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
 });
 
 test("the fold says which skills came home, or why they could not", () => {
