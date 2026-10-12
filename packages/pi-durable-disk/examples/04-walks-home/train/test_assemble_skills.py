@@ -19,8 +19,10 @@ FIX = os.path.join(HERE, "..", "policy", "test", "fixtures", "assemble")
 class AssembleTest(unittest.TestCase):
   def test_leaves_out_what_the_page_would_refuse(self):
     expected = json.load(open(os.path.join(FIX, "expected.json")))
-    with tempfile.TemporaryDirectory() as home:
-      r = subprocess.run([sys.executable, os.path.join(HERE, "assemble_skills.py"), os.path.join(FIX, "skills"), "--home", home],
+    with tempfile.TemporaryDirectory() as root:
+      skills, home = os.path.join(root, "skills"), os.path.join(root, "home")
+      shutil.copytree(os.path.join(FIX, "skills"), skills)
+      r = subprocess.run([sys.executable, os.path.join(HERE, "assemble_skills.py"), skills, "--home", home],
                          capture_output=True, text=True)
       self.assertEqual(r.returncode, 0, r.stderr)
       event = json.loads(r.stdout.strip().splitlines()[-1])
@@ -29,6 +31,22 @@ class AssembleTest(unittest.TestCase):
       self.assertEqual(sorted(manifest["skills"]), expected["skills"])
       for name in expected["left_out"]:
         self.assertFalse(os.path.exists(os.path.join(home, "skills", f"{name}.json")), name)
+
+      summary = json.load(open(os.path.join(skills, "round.json")))
+      for k, v in expected["round"].items():
+        self.assertEqual(summary[k], v, k)
+      self.assertEqual(sorted(summary["skills"]), sorted(["get-up", "walk", *expected["left_out"]]))
+
+  def test_a_round_on_another_body_than_home_is_a_relearn(self):
+    with tempfile.TemporaryDirectory() as root:
+      skills, home = os.path.join(root, "skills"), os.path.join(root, "home")
+      shutil.copytree(os.path.join(FIX, "skills"), skills)
+      os.makedirs(home)
+      json.dump({"version": 1, "body_mjcf_sha256": "d" * 64, "default": "walk", "skills": {}}, open(os.path.join(home, "skills.json"), "w"))
+      r = subprocess.run([sys.executable, os.path.join(HERE, "assemble_skills.py"), skills, "--home", home], capture_output=True, text=True)
+      self.assertEqual(r.returncode, 0, r.stderr)
+      summary = json.load(open(os.path.join(skills, "round.json")))
+      self.assertEqual((summary["relearn"], summary["previous_body_mjcf_sha256"]), (True, "d" * 64))
 
   def test_one_damaged_skill_never_stops_the_rest(self):
     # Without a get-up network nothing is combined, so the damaged base64 reaches the page checks directly.

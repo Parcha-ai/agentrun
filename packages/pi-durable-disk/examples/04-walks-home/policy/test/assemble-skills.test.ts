@@ -2,7 +2,7 @@
 // JSON (checked on the eight skills of a real run); these tests pin the rules on small policies.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,11 +70,28 @@ test('no get-up network: refused, unless the run asks for the skills without one
 test('leaves out what the page would refuse, the same skills as the Python twin (shared fixtures)', async () => {
   const fix = fileURLToPath(new URL('./fixtures/assemble/', import.meta.url));
   const expected = JSON.parse(readFileSync(join(fix, 'expected.json'), 'utf8'));
-  const home = mkdtempSync(join(tmpdir(), 'assemble-fix-'));
-  assert.equal(await assembleHome(join(fix, 'skills'), home), 0);
+  const root = mkdtempSync(join(tmpdir(), 'assemble-fix-'));
+  const skills = join(root, 'skills'), home = join(root, 'home');
+  cpSync(join(fix, 'skills'), skills, { recursive: true });
+  assert.equal(await assembleHome(skills, home), 0);
   const m = JSON.parse(readFileSync(join(home, 'skills.json'), 'utf8'));
   assert.deepEqual(Object.keys(m.skills).sort(), expected.skills);
   for (const name of Object.keys(expected.left_out)) assert.ok(!existsSync(join(home, 'skills', `${name}.json`)), name);
+  const round = JSON.parse(readFileSync(join(skills, 'round.json'), 'utf8'));
+  for (const [k, v] of Object.entries(expected.round)) assert.deepEqual(round[k], v, k);
+  assert.deepEqual(Object.keys(round.skills).sort(), ['get-up', 'walk', ...Object.keys(expected.left_out)].sort());
+});
+
+test('a round on another body than the home it replaces is a relearn', async () => {
+  const fix = fileURLToPath(new URL('./fixtures/assemble/', import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), 'assemble-relearn-'));
+  const skills = join(root, 'skills'), home = join(root, 'home');
+  cpSync(join(fix, 'skills'), skills, { recursive: true });
+  mkdirSync(home);
+  writeFileSync(join(home, 'skills.json'), JSON.stringify({ version: 1, body_mjcf_sha256: 'd'.repeat(64), default: 'walk', skills: {} }));
+  assert.equal(await assembleHome(skills, home), 0);
+  const round = JSON.parse(readFileSync(join(skills, 'round.json'), 'utf8'));
+  assert.deepEqual([round.relearn, round.previous_body_mjcf_sha256], [true, 'd'.repeat(64)]);
 });
 
 test('one damaged skill never stops the rest, with no get-up network to combine with', async () => {
