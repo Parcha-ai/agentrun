@@ -272,3 +272,31 @@ test("a thread's pass is for the body it trained: after the body changed, the ea
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("code mode compiles the body on each thread's box right after staging it (detached), and only when a code body exists", async () => {
+  const work = mkdtempSync(join(tmpdir(), "robot-extra-"));
+  try {
+    mkdirSync(join(work, "robot"), { recursive: true });
+    const { robotBoxes, PREWARM_COMMAND } = await import("../robot-extra.ts");
+    const warm = (f: ReturnType<typeof fakeLink>) => f.execs.filter((e) => e.argv.at(-1) === PREWARM_COMMAND);
+    // No code body: nothing to compile, even in code mode.
+    const none = fakeLink();
+    await robotBoxes(none.link as never, work, () => undefined, { prewarm: true }).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
+    assert.equal(warm(none).length, 0);
+    // A code body, but not code mode: staged, not compiled.
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
+    const off = fakeLink();
+    await robotBoxes(off.link as never, work, () => undefined).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
+    assert.equal(warm(off).length, 0);
+    // Code mode with a code body: compiled once on the thread's box, after the body is there.
+    const on = fakeLink();
+    const logs: string[] = [];
+    await robotBoxes(on.link as never, work, (event) => void logs.push(event), { prewarm: true }).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
+    assert.equal(warm(on).length, 1);
+    assert.ok(on.execs.findIndex((e) => e.argv.at(-1) === "/workspace/robot/body.xml") < on.execs.findIndex((e) => e.argv.at(-1) === PREWARM_COMMAND), "the body is staged before the compile starts");
+    assert.match(PREWARM_COMMAND, /setsid nohup train-skill walk --body \/workspace\/robot .*--compile-only/);
+    assert.ok(logs.includes("robot.prewarm"));
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
