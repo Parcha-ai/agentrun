@@ -297,7 +297,19 @@ async function select(path: string): Promise<void> {
   $("preview").textContent = text.slice(0, 20000);
 }
 
+/** The model's file reads and its first run share the main thread with the creature page: while it loads, the creature page is told to stop simulating and drawing, and to go on when the model is ready. */
+let creatureQuiet = false;
+function syncCreatureActivity(): void {
+  if (!robotMode) return;
+  const phase = state.brain?.host.state().phase;
+  const quiet = state.brainStatus !== "" || phase === "loading" || phase === "loaded";
+  if (quiet === creatureQuiet) return;
+  creatureQuiet = quiet;
+  (document.getElementById("creature") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ ns: "walks-home", type: "set-activity", paused: quiet }, location.origin);
+}
+
 function render(): void {
+  syncCreatureActivity();
   const b = badge();
   const badgeEl = $("badge");
   badgeEl.className = `badge ${b.tone}`;
@@ -964,6 +976,8 @@ function startRobotPane(): void {
       const path = safePath(m.path);
       if (!path || !CREATURE_WRITABLE.has(path) || !(m.bytes instanceof Uint8Array)) return reply({ type: "storage-written", id: m.id, error: "not-allowed" });
       void creatureWrite(path, m.bytes).then(() => reply({ type: "storage-written", id: m.id }), (error: Error) => reply({ type: "storage-written", id: m.id, error: error.message === "not-holder" ? "not-holder" : String(error.message) }));
+    } else if (m.type === "econ-ready") {
+      if (creatureQuiet) reply({ type: "set-activity", paused: true }); // the creature page is listening now: tell it what it missed
     } else {
       // what the creature page tells the stage (robot-changed, skill-switched, policy-arrived, ...), told on from this page the same way as the page's own events
       const { ns: _ns, type, ...detail } = m;
@@ -971,7 +985,7 @@ function startRobotPane(): void {
     }
   });
   frame.addEventListener("load", () => reply({ type: "set-placement", kind: "tab", label: "this browser" }));
-  frame.src = "/tab/?clean=1&banner=1&phase=watch&hero=1";
+  frame.src = "/tab/?clean=1&banner=1&phase=watch&hero=1&econ=1"; // hero: the robot is the pane's hero (no chrome); econ: it works at a low rate unless something changes it, and stops while the model loads (the browser has one main thread for both)
 }
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
