@@ -70,7 +70,7 @@ test('a valid record is committed with its attempt and ends the run: the model i
   assert.deepEqual(deliveries, ['accepted']);
   assert.equal(requests, 1);
   const tool = tools.find((candidate) => candidate.name === 'submit');
-  assert.equal(tool.description, 'Deliver the verdict record. Submit it inline as the tool arguments. It ends the run.');
+  assert.equal(tool.description, 'Deliver the verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.');
   assert.deepEqual(tool.parameters, { type: 'object', additionalProperties: true, properties: { verdict: { type: 'string', description: 'buy or pass' }, score: { type: 'integer' } } }, 'the record\'s own fields, none required');
 });
 
@@ -154,7 +154,7 @@ test('a record delivered as a workspace file is read from inside the workspace o
   const pointed = await run([submit({ _record_file: 'out/record.json' }), say('never asked')], { file }, { fileKey: '_record_file' });
   assert.deepEqual(pointed.record, { record: { verdict: 'buy', score: 9 }, attempts: 1 });
   assert.equal(pointed.tools.find((tool) => tool.name === 'submit').description,
-    'Deliver the verdict record. Submit it inline, or for a large record write JSON in the workspace and pass {"_record_file":"relative/path.json"}. It ends the run.');
+    'Deliver the verdict record. Submit it inline, or for a large record write JSON in the workspace and pass {"_record_file":"relative/path.json"}. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call, so there is no schema file to find and no need to validate the record yourself first.');
   const stale = await run([submit({ _record_file: 'old.json' }), submit({ verdict: 'pass' }), say('never asked')], { file }, { fileKey: '_record_file' });
   assert.match(stale.toolResults[1].at(-1), /^REJECTED \(1\/6\) — submission does not satisfy the schema: _record_file is stale; write it during this run before submitting\. Fix exactly those and resubmit\.$/);
   assert.deepEqual(stale.record, { record: { verdict: 'pass' }, attempts: 2 });

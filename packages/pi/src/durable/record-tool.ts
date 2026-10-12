@@ -14,7 +14,7 @@ import {
 import type { TSchema } from "@earendil-works/pi-ai";
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryTerminates, deliveryText, fileSubmission, mixedFileSubmission, nudgeText, repairRecord,
-  type Delivery, type Disagreement, type RecordContract, type RecordStore,
+  VIOLATIONS_SHOWN, type Delivery, type Disagreement, type RecordContract, type RecordStore,
 } from "./record.js";
 
 /** The record a conversation delivered, or null while it has not, and the delivery attempts it has spent. */
@@ -70,8 +70,8 @@ export function submitDefinition(record: { schema: Record<string, unknown>; labe
   const declared = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, { description?: unknown; type?: unknown }> : {};
   return {
     description: fileKey
-      ? `Deliver ${label}. Submit it inline, or for a large record write JSON in the workspace and pass {"${fileKey}":"relative/path.json"}. It ends the run.`
-      : `Deliver ${label}. Submit it inline as the tool arguments. It ends the run.`,
+      ? `Deliver ${label}. Submit it inline, or for a large record write JSON in the workspace and pass {"${fileKey}":"relative/path.json"}. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to ${VIOLATIONS_SHOWN} per call, so there is no schema file to find and no need to validate the record yourself first.`
+      : `Deliver ${label}. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to ${VIOLATIONS_SHOWN} per call.`,
     parameters: { type: "object", additionalProperties: true, properties: {
       ...Object.fromEntries(Object.entries(declared).filter(([key]) => key !== RAW).map(([key, property]) =>
         [key, { ...(typeof property?.type === "string" ? { type: property.type } : {}), ...(typeof property?.description === "string" ? { description: property.description } : {}) }])),

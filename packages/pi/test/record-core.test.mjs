@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, extrasNotInRecord, fileSubmission, gate,
   healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers,
-  repairRecord, spend, submitFooter,
+  repairRecord, spend, submitFooter, VIOLATIONS_SHOWN,
 } from '../dist/durable/record.js';
 
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' }, score: { type: 'integer' }, note: { type: ['string', 'null'] } } };
@@ -133,6 +133,16 @@ test('a record the schema refuses is one rejected attempt with the problems; pas
   assert.equal(deliveryTerminates(third), true);
   assert.deepEqual(store.writes, ['reject', 'reject', 'reject']);
   assert.equal(store.state.record.record, null);
+});
+
+test('a rejected record lists at most eight of its schema violations, the number the submit tool tells the model', async () => {
+  const fields = Array.from({ length: 12 }, (_, index) => `f${index}`);
+  const schema = { type: 'object', additionalProperties: false, required: fields, properties: Object.fromEntries(fields.map((name) => [name, { type: 'string' }])) };
+  const rejected = await deliver({ schema, maxAttempts: 3 }, memoryStore(), Object.fromEntries(fields.map((name, index) => [name, index])));
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.problems.length, 8, 'twelve fields hold a number where a string is required; eight are listed');
+  assert.deepEqual(rejected.problems.map((problem) => problem.split(':')[0]), fields.slice(0, 8).map((name) => `/${name}`), 'the first eight, in the record\'s order');
+  assert.equal(VIOLATIONS_SHOWN, 8);
 });
 
 test('the second reading is one round: the first record it disagrees with goes back, the next is delivered with the disagreement beside it', async () => {

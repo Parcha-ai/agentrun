@@ -51,7 +51,7 @@ test('a node\'s first request carries its system text, its task with the deliver
     'When you are done, call the `submit` tool ONCE with the Verdict record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.',
     `Required JSON Schema (authoritative): ${JSON.stringify(VERDICT)}`,
     'Only a successful `submit` call counts as delivering. Do not answer in plain text.'].join('\n'));
-  assert.deepEqual(submitOf(first), { name: 'submit', description: 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run.',
+  assert.deepEqual(submitOf(first), { name: 'submit', description: 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.',
     parameters: { type: 'object', additionalProperties: true, properties: { verdict: { type: 'string', description: 'buy or pass' } } } });
   assert.deepEqual(opened, [{ conversation: opened[0].conversation, attempt: 0, resumed: false }]);
   await harness.close(ctx);

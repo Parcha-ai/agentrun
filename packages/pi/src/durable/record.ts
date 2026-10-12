@@ -23,6 +23,9 @@ export type GateState = { bounced: boolean; disagreements: Disagreement[] };
 /** Delivery attempts a node gets: rejections, the second reading's one bounce and nudges, each once. */
 export const DELIVERY_ATTEMPTS = 6;
 
+/** The most schema violations one rejected delivery lists; the submit tool's description tells the model the number. */
+export const VIOLATIONS_SHOWN = 8;
+
 // ─── the two rules, pure ───
 
 /** One reviewer's reading of a structurally valid record. `no_verdict` is a reviewer that could not answer. */
@@ -355,7 +358,7 @@ export async function deliver(contract: RecordContract, store: RecordStore, args
   const owned = [...unhealed, ...(contract.contracts ? await contract.contracts(candidate) : [])];
   if (owned.length) return reject(owned, "the record violates host-owned contracts");
   if (!validator || !validator.Check(candidate)) {
-    return reject(validator ? [...validator.Errors(candidate)].slice(0, 8).map((error) => `${error.instancePath || error.path || "/"}: ${error.message}`) : ["the record schema does not compile"]);
+    return reject(validator ? [...validator.Errors(candidate)].slice(0, VIOLATIONS_SHOWN).map((error) => `${error.instancePath || error.path || "/"}: ${error.message}`) : ["the record schema does not compile"]);
   }
   for (const check of contract.checks ?? []) {
     let refusal: Refusal | null;

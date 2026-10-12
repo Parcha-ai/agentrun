@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const CHILD = fileURLToPath(new URL('./fixtures/node-runner-crash-child.mjs', import.meta.url));
-const SUBMIT = 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run.';
+const SUBMIT = 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.';
 
 function child(mode, dir, env = {}) {
   const ran = spawnSync(process.execPath, [CHILD, mode, join(dir, 'run.sqlite'), join(dir, 'requests')], { env: { ...process.env, ...env }, encoding: 'utf8', timeout: 60_000 });

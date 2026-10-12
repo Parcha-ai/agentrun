@@ -9,7 +9,7 @@ export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } fr
 export {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, disagreementText, extrasNotInRecord, fileSubmission, gate,
   healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers, repairRecord, spend,
-  submitFooter,
+  submitFooter, VIOLATIONS_SHOWN,
 } from "./record.js";
 export type { Delivery, DeliveryCount, DeliveryEvent, Disagreement, GateState, Reading, RecordContract, RecordState, RecordStore, Refusal, Reviewer } from "./record.js";
 export { workspaceRecordFile } from "./record-file.js";
