@@ -10,11 +10,12 @@ The get-up skill itself is the walk at command 0 with the get-up network (it sta
 written by rename, the manifest last. A skill trained for another body, one that cannot be combined, or one the page's
 policy runtime would refuse (export.refusal) is left out and named. With no get-up network (no get-up thread and no
 --getup) it refuses, unless --without-getup: a dry run's skills then come home without one. Pure numpy.
-policy/assemble-skills.ts is its TypeScript twin, for a session host without python.
+After the manifest, SKILLS_DIR/round.json summarizes the round for the stage (round_summary). policy/assemble-skills.ts is
+its TypeScript twin, for a session host without python.
 """
 from __future__ import annotations
 
-import argparse, json, os, sys
+import argparse, json, math, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -29,6 +30,39 @@ def write(path: str, text: str) -> None:
   os.replace(tmp, path)
 
 
+def round_key(metas: list[dict], body: str) -> str:
+  """Which threads made this round: their skills and start times. Assembling the same round again (a retry after a
+  restart) gives the same key; a new round on the same body gives another."""
+  mine = [m for m in metas if m.get("mjcf_sha256") == body]
+  starts = [m["started_at"] for m in mine if isinstance(m.get("started_at"), (int, float))]
+  return f"{len(mine)}:{math.floor(max(starts)) if starts else 0}:{','.join(sorted(str(m.get('skill')) for m in mine))}"
+
+
+def round_summary(metas: list[dict], body: str, previous: str | None) -> dict:
+  """The round, for the stage: one entry per thread that trained this body (its skill.json), the measured seconds,
+  the CPU estimate train-skill wrote, and whether the home it replaces was another body's (a relearn)."""
+  mine = [m for m in metas if m.get("mjcf_sha256") == body]
+  skills = {}
+  for m in mine:
+    passed = m.get("passed_at") or {}
+    skills[m["skill"]] = {"status": m.get("status"), "first_pass_s": passed.get("t"), "steps_at_first_pass": passed.get("steps"),
+                          "wall_s": m.get("wall_s"), "cpu_estimate_s": m.get("cpu_estimate_s")}
+  rows = list(skills.values())
+  every = bool(rows) and all(r["status"] == "done" for r in rows)
+  settled = bool(rows) and all(r["status"] in ("done", "failed") for r in rows)
+  firsts, walls, cpus = [r["first_pass_s"] for r in rows], [r["wall_s"] for r in rows], [r["cpu_estimate_s"] for r in rows]
+  baseline = next((m["cpu_estimate"] for m in mine if m.get("cpu_estimate")), None)
+  return {"version": 1, "body_mjcf_sha256": body, "body_name": next((m["body_name"] for m in mine if m.get("body_name")), None),
+          "previous_body_mjcf_sha256": previous, "relearn": previous is not None and previous != body, "gpus": len(mine),
+          "skills": skills,
+          "all_passed_s": max(firsts) if every and None not in firsts else None,
+          "all_done_s": max(walls) if settled and None not in walls else None,
+          "cpu_estimate_s": sum(cpus) if every and None not in cpus else None, "cpu_estimate": baseline,
+          "round_key": round_key(metas, body),
+          "measured": ["all_passed_s", "all_done_s", "skills.*.first_pass_s", "skills.*.wall_s"],
+          "estimated": ["cpu_estimate_s", "skills.*.cpu_estimate_s"]}
+
+
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
   ap.add_argument("skills_dir")
@@ -37,11 +71,15 @@ def main() -> int:
   ap.add_argument("--getup", default=None, help="a get-up policy to combine with (default: the get-up thread's)")
   ap.add_argument("--without-getup", action="store_true", help="with no get-up network, bring the skills home without one")
   a = ap.parse_args()
-  done = {}
+  done, metas = {}, []
   for name in sorted(os.listdir(a.skills_dir)):
     d = os.path.join(a.skills_dir, name)
     try:
       meta = json.load(open(os.path.join(d, "skill.json")))
+    except (OSError, ValueError):
+      continue
+    metas.append(meta)
+    try:
       pol = json.load(open(os.path.join(d, "policy.json")))
     except (OSError, ValueError):
       continue
@@ -85,7 +123,18 @@ def main() -> int:
     skills[name] = {"policy": f"skills/{name}.json", "command": command, "label": meta.get("label", name)}
   default = a.default if a.default in skills else next(iter(skills), None)
   manifest = {"version": 1, "body_mjcf_sha256": body, "default": default, "skills": skills}
+  try:
+    previous = json.load(open(os.path.join(a.home, "skills.json"))).get("body_mjcf_sha256")
+  except (OSError, ValueError, AttributeError):
+    previous = None
+  try:  # the same round assembled again (a retry): the home it replaced is the one the first assembly saw
+    before = json.load(open(os.path.join(a.skills_dir, "round.json")))
+    if before.get("body_mjcf_sha256") == body and before.get("round_key") == round_key(metas, body):
+      previous = before.get("previous_body_mjcf_sha256")
+  except (OSError, ValueError, AttributeError):
+    pass
   write(os.path.join(a.home, "skills.json"), json.dumps(manifest, indent=1))
+  write(os.path.join(a.skills_dir, "round.json"), json.dumps(round_summary(metas, body, previous), indent=1))
   print(json.dumps({"event": "skills.home", "skills": sorted(skills), "default": default, "left_out": left_out,
                     "getup": getup_pol is not None}), flush=True)
   return 0 if skills else 3

@@ -64,6 +64,25 @@ class SettleTest(unittest.TestCase):
       self.assertFalse(os.path.exists(os.path.join(out, "policy.json.tmp")))
 
 
+class StageFieldsTest(unittest.TestCase):
+  def test_cpu_estimate_matches_the_measured_first_checkpoint_and_grows_with_steps(self):
+    self.assertEqual(train_skill.cpu_estimate_s(491_520), 1255)  # measured: first checkpoint on 8 cores
+    self.assertEqual(train_skill.cpu_estimate_s(5_898_240), 1255 + round((5_898_240 - 491_520) / 520))
+    self.assertEqual(train_skill.cpu_estimate_s(100), 1255)  # nothing passes before the first checkpoint
+
+  def test_body_name_from_robot_json_a_design_or_a_body_directory(self):
+    with tempfile.TemporaryDirectory() as d:
+      robot, design, body = os.path.join(d, "robot.json"), os.path.join(d, "design.json"), os.path.join(d, "spider")
+      json.dump({"design": {"name": "spider", "legs": []}, "looks": {}}, open(robot, "w"))
+      json.dump({"name": "giraffe", "legs": []}, open(design, "w"))
+      os.makedirs(body)
+      json.dump({"name": "spider"}, open(os.path.join(body, "design.json"), "w"))
+      self.assertEqual(train_skill.body_name(robot), "spider")
+      self.assertEqual(train_skill.body_name(design), "giraffe")
+      self.assertEqual(train_skill.body_name(body), "spider")
+      self.assertIsNone(train_skill.body_name(os.path.join(d, "absent")))
+
+
 class MetricTest(unittest.TestCase):
   def test_every_skill_has_a_stage_metric(self):
     self.assertEqual(set(train_skill.METRIC), set(train_skill.SKILLS))

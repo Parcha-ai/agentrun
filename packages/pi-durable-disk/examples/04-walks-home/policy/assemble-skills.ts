@@ -10,6 +10,7 @@
 // skill. The get-up network is the get-up skill's policy (or --getup); with neither it refuses, unless --without-getup
 // (a dry run without a get-up thread: the skills come home without the get-up network). Every file is checked by the
 // policy runtime the page uses and written by rename, the manifest last, so a reader never sees a half-written home.
+// After it, SKILLS_DIR/round.json summarizes the round for the stage (roundSummary).
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,7 +21,10 @@ export const SWITCH = { below_up: 0.3, above_up: 0.9 };
 export const PINNED_STD = 1e9;
 const PIN_FLOOR = 1e-5;
 
-export interface SkillMeta { skill: string; status?: string; command?: number; label?: string }
+export interface SkillMeta {
+  skill: string; status?: string; command?: number; label?: string; mjcf_sha256?: string; body_name?: string | null;
+  passed_at?: { t?: number; steps?: number } | null; wall_s?: number; cpu_estimate_s?: number | null; cpu_estimate?: unknown; started_at?: number;
+}
 export interface SkillDir { meta: SkillMeta; policy: PolicyFile }
 export interface Manifest {
   version: 1;
@@ -141,6 +145,39 @@ export async function assemble(dirs: SkillDir[], opts: { default?: string; getup
   return { files, manifest: { version: 1, body_mjcf_sha256: body, default: def, skills }, leftOut, withGetup: Boolean(getup) };
 }
 
+/** The round, for the stage (train/assemble_skills.py round_summary): one entry per thread that trained this body, the
+ * measured seconds, the CPU estimate train-skill wrote, and whether the home it replaces was another body's. */
+/** Which threads made this round (train/assemble_skills.py round_key): how many, the latest start to the second, and
+ * their skills. Assembling the same round again (a retry after a restart) gives the same key; a new round another. */
+export function roundKey(metas: SkillMeta[], body: string): string {
+  const mine = metas.filter((m) => m.mjcf_sha256 === body);
+  const starts = mine.map((m) => m.started_at).filter((t): t is number => typeof t === 'number');
+  return `${mine.length}:${starts.length ? Math.floor(Math.max(...starts)) : 0}:${mine.map((m) => String(m.skill)).sort().join(',')}`;
+}
+
+export function roundSummary(metas: SkillMeta[], body: string, previous: string | null) {
+  const mine = metas.filter((m) => m.mjcf_sha256 === body);
+  const skills: Record<string, { status: string | null; first_pass_s: number | null; steps_at_first_pass: number | null; wall_s: number | null; cpu_estimate_s: number | null }> = {};
+  for (const m of mine) {
+    skills[m.skill] = { status: m.status ?? null, first_pass_s: m.passed_at?.t ?? null, steps_at_first_pass: m.passed_at?.steps ?? null, wall_s: m.wall_s ?? null, cpu_estimate_s: m.cpu_estimate_s ?? null };
+  }
+  const rows = Object.values(skills);
+  const every = rows.length > 0 && rows.every((r) => r.status === 'done');
+  const settled = rows.length > 0 && rows.every((r) => r.status === 'done' || r.status === 'failed');
+  const all = (xs: (number | null)[]) => (every && xs.every((x) => x !== null) ? (xs as number[]) : null);
+  const firsts = all(rows.map((r) => r.first_pass_s)), cpus = all(rows.map((r) => r.cpu_estimate_s));
+  const walls = settled && rows.every((r) => r.wall_s !== null) ? rows.map((r) => r.wall_s as number) : null;
+  return {
+    version: 1, body_mjcf_sha256: body, body_name: mine.find((m) => m.body_name)?.body_name ?? null,
+    previous_body_mjcf_sha256: previous, relearn: previous !== null && previous !== body, gpus: mine.length, skills,
+    all_passed_s: firsts ? Math.max(...firsts) : null, all_done_s: walls ? Math.max(...walls) : null,
+    cpu_estimate_s: cpus ? cpus.reduce((a, b) => a + b, 0) : null, cpu_estimate: mine.find((m) => m.cpu_estimate)?.cpu_estimate ?? null,
+    round_key: roundKey(metas, body),
+    measured: ['all_passed_s', 'all_done_s', 'skills.*.first_pass_s', 'skills.*.wall_s'],
+    estimated: ['cpu_estimate_s', 'skills.*.cpu_estimate_s'],
+  };
+}
+
 function writeAtomic(path: string, text: string): void {
   writeFileSync(`${path}.tmp`, text);
   renameSync(`${path}.tmp`, path);
@@ -149,11 +186,19 @@ function writeAtomic(path: string, text: string): void {
 /** Read SKILLS_DIR, write HOME: the command line's whole job. Returns the exit code (0 skills home, 2 refused, 3 none). */
 export async function assembleHome(skillsDir: string, home: string, opts: { default?: string; getup?: string; withoutGetup?: boolean } = {}): Promise<number> {
   const dirs: SkillDir[] = [];
+  const metas: SkillMeta[] = [];
   for (const name of readdirSync(skillsDir).sort()) {
+    let meta: SkillMeta;
     try {
-      dirs.push({ meta: JSON.parse(readFileSync(join(skillsDir, name, 'skill.json'), 'utf8')), policy: JSON.parse(readFileSync(join(skillsDir, name, 'policy.json'), 'utf8')) });
+      meta = JSON.parse(readFileSync(join(skillsDir, name, 'skill.json'), 'utf8'));
     } catch {
-      // not a skill directory, or a skill still training
+      continue; // not a skill directory
+    }
+    metas.push(meta);
+    try {
+      dirs.push({ meta, policy: JSON.parse(readFileSync(join(skillsDir, name, 'policy.json'), 'utf8')) });
+    } catch {
+      // a skill still training, or one that never published a policy
     }
   }
   const getup = opts.getup ? (JSON.parse(readFileSync(opts.getup, 'utf8')) as PolicyFile) : undefined;
@@ -164,7 +209,21 @@ export async function assembleHome(skillsDir: string, home: string, opts: { defa
   }
   mkdirSync(join(home, 'skills'), { recursive: true });
   for (const [rel, text] of Object.entries(r.files)) writeAtomic(join(home, rel), text);
+  let previous: string | null = null;
+  try {
+    previous = JSON.parse(readFileSync(join(home, 'skills.json'), 'utf8')).body_mjcf_sha256 ?? null;
+  } catch {
+    // no home yet
+  }
+  try {
+    // the same round assembled again (a retry): the home it replaced is the one the first assembly saw
+    const before = JSON.parse(readFileSync(join(skillsDir, 'round.json'), 'utf8'));
+    if (before.body_mjcf_sha256 === r.manifest.body_mjcf_sha256 && before.round_key === roundKey(metas, r.manifest.body_mjcf_sha256)) previous = before.previous_body_mjcf_sha256 ?? null;
+  } catch {
+    // no earlier round here
+  }
   writeAtomic(join(home, 'skills.json'), JSON.stringify(r.manifest, null, 1));
+  writeAtomic(join(skillsDir, 'round.json'), JSON.stringify(roundSummary(metas, r.manifest.body_mjcf_sha256, previous), null, 1));
   console.log(JSON.stringify({ event: 'skills.home', skills: Object.keys(r.manifest.skills).sort(), default: r.manifest.default, left_out: r.leftOut, getup: r.withGetup }));
   return Object.keys(r.manifest.skills).length ? 0 : 3;
 }
