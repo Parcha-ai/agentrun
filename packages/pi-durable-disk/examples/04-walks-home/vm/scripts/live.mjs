@@ -166,6 +166,7 @@ try {
       ...(robot
         ? [
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
+            "--cloud-arg", "robot=true",
             "--cloud-arg", `cluster-size=${clusterSize}`,
             "--cloud-arg", `cluster-image=${clusterImage}`,
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,

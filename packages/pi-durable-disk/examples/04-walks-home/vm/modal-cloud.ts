@@ -16,6 +16,7 @@
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, removeMountToken, sandboxName } from "@parcha/pi-durable-disk";
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
@@ -117,6 +118,8 @@ export interface ModalCloudOptions {
   readonly rewarm?: boolean;
   /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
   readonly closeWaitMs?: number;
+  /** The session on the VM teaches skills on the cluster: the cloud app gets `teach_skills`, `train_skill` and the per-thread environments (robot-extra.ts). Needs `cluster` and the link. */
+  readonly robot?: boolean;
   /**
    * The robot cluster beat: N GPU boxes created in parallel as soon as this cloud exists (so they are warm when someone asks), lent one per
    * thread to the session on the VM through its link (gpu-rpc.ts). The boxes run commands only for the thread that holds them; the VM never
@@ -150,6 +153,12 @@ export interface ModalCloudOptions {
   /** The Modal SDK; default the `modal` package's client. */
   readonly sdk?: FullSdk;
 }
+
+/** The robot's extra of the cloud app: published path in the box's bundle to its source. robot-extra.ts imports ../cluster/teach-skills.ts, so both keep that relative place. */
+const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
+  "robot/vm/robot-extra.ts": fileURLToPath(new URL("./robot-extra.ts", import.meta.url)),
+  "robot/cluster/teach-skills.ts": fileURLToPath(new URL("../cluster/teach-skills.ts", import.meta.url)),
+};
 
 /** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
 export const DEFAULT_GPU_TTL_MINUTES = 20;
@@ -395,7 +404,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   async function prepare(box: SandboxInfo, c: DaytonaClient = client, host: { archil?: boolean; desktop?: boolean } = {}): Promise<void> {
     const started = Date.now();
     live.add(box.id);
-    bundle ??= appBundle();
+    bundle ??= appBundle(options.robot ? ROBOT_BUNDLE_FILES : {});
     await c.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
     const r = await c.exec(box, prepareScript(uid, gid, { archil: host.archil ?? true }), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
@@ -580,6 +589,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         DEMO_LINK_HOST: "0.0.0.0",
         DEMO_LINK_TOKEN: linkToken,
         DEMO_EVENTS_LOG: BOX_EVENTS,
+        ...(options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {}),
         ...(options.desktop
           ? {
               DEMO_DISPLAY: DESKTOP_DISPLAY,
