@@ -43,7 +43,9 @@ export interface VisionEnv {
   createTempDir(prefix: string | undefined, context: VisionContext): Promise<VisionResult<string, VisionEnvError>>;
   fileInfo(path: string, context: VisionContext): Promise<VisionResult<VisionFileInfo, VisionEnvError>>;
   remove(path: string, options: { recursive?: boolean; force?: boolean } | undefined, context: VisionContext): Promise<VisionResult<void, VisionEnvError>>;
-  /** An array runs its first element with the rest as arguments, through no shell. */
+  /** An array runs its first element with the rest as arguments, through no shell. `timeout` is in SECONDS, as pi's
+   *  environments read it: past it the program is killed and the result is an error with code `timeout`. Only the exit
+   *  code comes back; a program's output is written to a file and read back. */
   exec(command: string | readonly string[], options: { cwd?: string; env?: Record<string, string>; timeout?: number } | undefined, context: VisionContext): Promise<VisionResult<{ exitCode: number }, VisionEnvError>>;
 }
 
