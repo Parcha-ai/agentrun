@@ -2,7 +2,7 @@
 // robot-change card and the tool strip (the agent's tab's own events: selftools-view.ts), the tab link (window.open, page/tab-link.ts) and the eight tiles with the one robot (threads-view.ts,
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../selftools-view.ts";
-import { nextToLand, threadsHtml } from "../threads-view.ts";
+import { LandingDriver, threadsHtml } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
 import { esc } from "./dom.ts";
@@ -40,8 +40,8 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
 
   // ---- The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. Opened with window.open, the handle kept, its events taken by postMessage, all in the browser (so it works with
   // the network off); after a reload of this page the tab is found again by name, never navigated.
-  /** The tab has said a skill is installed in the robot: from then on the stage does not make the skills land itself. */
-  let installedByTab = false;
+  /** Once the tab has said a skill is installed in the robot the stage does not make the skills land itself; a new run starts over. */
+  const landing = new LandingDriver();
   const flag = (set?: boolean): boolean => {
     if (set !== undefined) storage.set(keys.flagKey, set ? "1" : "");
     return storage.get(keys.flagKey) === "1";
@@ -54,7 +54,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
         name: keys.windowName,
         run: keys.run,
         onEvent: (m) => {
-          if (m.type === "skill-installed") installedByTab = true;
+          if (m.type === "skill-installed") landing.noteInstalled();
           // A skill going in is not a fact to keep across a reload (the tiles are read from the disk again); the rest are.
           for (const e of tabEventsFrom(m, feed.captionNow())) (m.type === "skill-installed" ? feed.fold(e) : feed.inject(e));
         },
@@ -84,14 +84,14 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
     if (generation !== feed.generation) {
       generation = feed.generation;
       poller.reset();
+      landing.reset();
       said.clear();
     }
     void poller.tick().catch(() => undefined);
   }, 1000);
   // With no word from the tab about skills going in, they land in the robot one after another once every thread has finished and the run is home.
   setInterval(() => {
-    if (installedByTab) return;
-    const id = nextToLand(feed.state.threads, feed.state.place.where === "home");
+    const id = landing.next(feed.state.threads, feed.state.place.where === "home");
     if (id) feed.fold({ t: "thread", at: feed.captionNow(), id, patch: { home: true } });
   }, 450);
 

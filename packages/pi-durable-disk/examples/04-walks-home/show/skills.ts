@@ -70,18 +70,22 @@ const STATUS: Record<SkillJson["status"], Thread["status"]> = { training: "learn
 
 /**
  * The events for what is new in a skill's files: a thread patch (its label, status and what it is measured by) and the checkpoints after `lastN`. `dir` is the skill's folder name, which stands
- * in for a label the file did not give. Progress with no skill.json yet is a skill that is learning.
+ * in for a label the file did not give. Progress with no skill.json yet is a skill that is learning. A status only moves forward: with `known` (the last status said), a status that is not
+ * further along is left out, so a skill that is done is never taken back to learning by a read that failed.
  */
-export function skillEvents(dir: string, json: SkillJson | null, points: readonly SkillPoint[], at: number, lastN: number): ShowEvent[] {
+const RANK: Record<Thread["status"], number> = { starting: 0, learning: 1, done: 2, failed: 2 };
+
+export function skillEvents(dir: string, json: SkillJson | null, points: readonly SkillPoint[], at: number, lastN: number, known?: Thread["status"]): ShowEvent[] {
   const out: ShowEvent[] = [];
   const fresh = points.filter((p) => p.checkpoint > lastN);
   const latest = fresh.at(-1)?.metric ?? points.at(-1)?.metric ?? null;
   if (json !== null || fresh.length > 0) {
+    const status = json ? STATUS[json.status] : "learning";
     out.push({
       t: "thread",
       at,
       id: dir,
-      patch: { skill: json?.label ?? dir, status: json ? STATUS[json.status] : "learning", ...(latest ? { metric: latest.name, unit: latest.unit, target: latest.target } : {}) },
+      patch: { skill: json?.label ?? dir, ...(known === undefined || RANK[status] > RANK[known] ? { status } : {}), ...(latest ? { metric: latest.name, unit: latest.unit, target: latest.target } : {}) },
     });
   }
   for (const p of fresh) {

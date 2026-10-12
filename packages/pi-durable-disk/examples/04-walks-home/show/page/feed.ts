@@ -77,7 +77,7 @@ export class Feed {
     // start: replaying events the snapshot already holds would apply every narration line twice.
     const header = res.headers.get("x-last-event-id");
     this.lastId = header === null ? -1 : Number(header);
-    this.receivedAt = performance.now();
+    this.restartClock();
     this.notify(null);
     const es = new EventSource(apiUrl(this.root, header === null ? "api/events" : `api/events?after=${this.lastId}`));
     this.es = es;
@@ -89,7 +89,7 @@ export class Feed {
       const event = JSON.parse(m.data) as ShowEvent;
       this.state = reduce(this.state, event);
       this.lastId = Number(m.lastEventId || this.lastId + 1);
-      this.receivedAt = performance.now();
+      this.restartClock();
       this.notify(event);
     };
     es.addEventListener("reset", () => void this.connect());
@@ -102,15 +102,20 @@ export class Feed {
   /** An event the page itself heard (the tab's message), folded in like the server's and kept across reconnects. */
   inject(event: ShowEvent): void {
     this.state = this.local.apply(this.state, event);
-    // One source of time: the event was stamped from this clock (state.now plus the time since the last event), so the time since the last event starts over from it.
-    this.receivedAt = performance.now();
+    this.restartClock();
     this.notify(event);
   }
 
   /** An event the page made up from outside the feed that it does not keep (the skills read from the disk, the skills going into the robot): folded in like the server's, and gone with the next snapshot. */
   fold(event: ShowEvent): void {
     this.state = reduce(this.state, event);
+    this.restartClock();
     this.notify(event);
+  }
+
+  /** One source of time: every event that advances the state was stamped from this clock (state.now plus the time since the last event), so the time since the last event starts over from it. */
+  private restartClock(): void {
+    this.receivedAt = performance.now();
   }
 
   /** A refusal carries its reason as `message` (scripted feed) or `error` (D1's driver); both are shown the same way. */

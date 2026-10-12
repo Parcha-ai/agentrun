@@ -72,3 +72,20 @@ export function nextToLand(threads: readonly Thread[], runIsHome: boolean): stri
   if (!runIsHome || threads.length === 0 || threads.some((t) => t.status === "starting" || t.status === "learning")) return null;
   return threads.find((t) => t.status === "done" && !t.home)?.id ?? null;
 }
+
+/** What the page knows about how the skills go into the robot, for one run: once the tab has said a skill is installed the stage stops landing them itself, and a new run starts over. */
+export class LandingDriver {
+  private installed = false;
+
+  noteInstalled(): void {
+    this.installed = true;
+  }
+
+  reset(): void {
+    this.installed = false;
+  }
+
+  next(threads: readonly Thread[], runIsHome: boolean): string | null {
+    return this.installed ? null : nextToLand(threads, runIsHome);
+  }
+}

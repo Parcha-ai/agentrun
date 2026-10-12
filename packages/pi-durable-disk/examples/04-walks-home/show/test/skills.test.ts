@@ -87,3 +87,58 @@ test("the poller reads each skill's two files once per tick, says what is new, a
   assert.ok(emitted.length > 4);
   assert.equal(emptyState().threads.length, 0);
 });
+
+// ---- Review: a skill's status only moves forward, a reset drops what an old tick is still reading, and what the page remembers about a run starts over with the run.
+test("a status only moves forward: a done skill is never taken back to learning because a read failed", async () => {
+  const files = new Map<string, string>();
+  const emitted: ShowEvent[] = [];
+  const poller = new SkillsPoller({ read: async (p) => files.get(p), emit: (e) => emitted.push(e), now: () => 1, skills: ["spin"] });
+  files.set("skills/spin/skill.json", JSON.stringify({ skill: "spin", label: "spin", status: "done" }));
+  files.set("skills/spin/skill-progress.jsonl", lines(SPIN4));
+  await poller.tick();
+  // The skill.json read fails (a blip) while a new checkpoint appears: the patch must not say learning.
+  files.delete("skills/spin/skill.json");
+  files.set("skills/spin/skill-progress.jsonl", lines(SPIN4, SPIN5));
+  await poller.tick();
+  const patches = emitted.filter((e) => e.t === "thread").map((e) => (e.t === "thread" ? e.patch.status : null));
+  assert.deepEqual(patches.filter((s) => s !== undefined), ["done"], "no second status, and certainly not learning");
+  const s = fold([{ t: "run", at: 0, run: "r", origin: 0, environments: [] }, ...emitted]);
+  assert.equal(s.threads[0]!.status, "done");
+  // The file comes back unchanged: nothing is said again.
+  files.set("skills/spin/skill.json", JSON.stringify({ skill: "spin", label: "spin", status: "done" }));
+  const before = emitted.length;
+  await poller.tick();
+  assert.equal(emitted.length, before);
+  // Learning is not taken back to starting, and a failed skill stays failed.
+  assert.deepEqual(skillEvents("walk", null, parseSkillProgress(lines(SPIN4)).points, 1, 0, "done").map((e) => (e.t === "thread" ? e.patch.status : "point")), [undefined, "point"]);
+});
+
+test("a reset drops the results of a tick that was still reading: nothing from the old run is said after it, and the next tick works at once", async () => {
+  const files = new Map<string, string>();
+  const emitted: ShowEvent[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let hold = true;
+  const poller = new SkillsPoller({
+    read: async (p) => {
+      if (hold && p.endsWith("skill.json")) await gate;
+      return files.get(p);
+    },
+    emit: (e) => emitted.push(e),
+    now: () => 1,
+    skills: ["spin"],
+  });
+  files.set("skills/spin/skill.json", JSON.stringify({ skill: "spin", label: "old run's spin", status: "training" }));
+  files.set("skills/spin/skill-progress.jsonl", lines(SPIN4));
+  const old = poller.tick(); // its first read is held open
+  poller.reset(); // a new run starts
+  hold = false;
+  files.set("skills/spin/skill.json", JSON.stringify({ skill: "spin", label: "new run's spin", status: "training" }));
+  files.set("skills/spin/skill-progress.jsonl", lines());
+  await poller.tick(); // not skipped as "busy": the old tick no longer counts
+  release();
+  await old;
+  const labels = emitted.flatMap((e) => (e.t === "thread" && e.patch.skill ? [e.patch.skill] : []));
+  assert.deepEqual(labels, ["new run's spin"], "the old tick's results were dropped");
+  assert.equal(emitted.some((e) => e.t === "thread.point"), false, "and none of the old run's checkpoints");
+});

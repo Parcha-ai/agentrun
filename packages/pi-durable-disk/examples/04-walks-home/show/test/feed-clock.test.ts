@@ -46,3 +46,14 @@ test("an event the page itself heard (the tab's) restarts the elapsed time: stam
   const after = feed.captionNow();
   assert.ok(after < stamped + 40, `the clock went on from the stamped time, not from it plus the elapsed time again (${stamped} then ${after})`);
 });
+
+test("every path that advances the page's time restarts the elapsed time from the event: fold (skills, landing) as inject (the tab's)", async () => {
+  const feed = new Feed();
+  feed.state = { ...emptyState(), now: 1_000 };
+  (feed as unknown as { receivedAt: number }).receivedAt = performance.now();
+  await new Promise((r) => setTimeout(r, 60));
+  const stamped = feed.captionNow();
+  feed.fold({ t: "thread", at: stamped, id: "walk", patch: { status: "learning" } });
+  const after = feed.captionNow();
+  assert.ok(after < stamped + 40, `fold went on from the stamped time, not from it plus the elapsed time again (${stamped} then ${after})`);
+});

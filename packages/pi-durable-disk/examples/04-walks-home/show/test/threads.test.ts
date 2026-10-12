@@ -137,3 +137,15 @@ test("the tab's own word that a skill is installed marks that thread's skill as 
   assert.deepEqual(tabEventsFrom({ type: "skill-installed", run: null, detail: { skill: "spin", sha: "ab12", ms: 340 } }, 9), [{ t: "thread", at: 9, id: "spin", patch: { home: true } }]);
   assert.deepEqual(tabEventsFrom({ type: "skill-installed", run: null, detail: { sha: "x" } }, 9), [], "no skill named: nothing");
 });
+
+import { LandingDriver } from "../threads-view.ts";
+
+test("the landing driver: once the tab has said a skill is installed the stage stops landing them itself; a new run starts over", () => {
+  const base = fold([run, ...SKILLS.map((_, i) => start(i))]).threads.map((t) => ({ ...t, status: "done" as const }));
+  const d = new LandingDriver();
+  assert.equal(d.next(base, true), "t0");
+  d.noteInstalled();
+  assert.equal(d.next(base, true), null, "the tab is telling the stage itself");
+  d.reset();
+  assert.equal(d.next(base, true), "t0", "a retake: what the page knew about the old run is gone");
+});
