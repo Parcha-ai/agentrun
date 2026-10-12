@@ -58,20 +58,128 @@ function groundTexture(anisotropy: number): THREE.CanvasTexture {
   return t;
 }
 
-/** A quiet ground for the hero look: a dark floor with a very faint half-metre grid (so a robot that walks visibly crosses something) that the scene's fog takes to the page's own background. */
+/**
+ * The hero look's ground, in DESIGN.md's dark tokens: the panel colour (#111113) with a line-colour (#2c2c30) grid on whole metres and fainter quarter-metre lines, so the floor reads as a place and a robot
+ * that walks visibly crosses it. The scene's fog takes it to the page's own background towards the horizon.
+ */
 function heroGroundTexture(anisotropy: number): THREE.CanvasTexture {
-  const n = 256, c = document.createElement('canvas');
+  const n = 512, c = document.createElement('canvas');
   c.width = c.height = n;
   const g = c.getContext('2d')!;
-  g.fillStyle = '#1a1a1f'; g.fillRect(0, 0, n, n);
-  g.fillStyle = '#212127';
-  g.fillRect(0, 0, 2, n); g.fillRect(0, 0, n, 2);
+  g.fillStyle = '#111113'; g.fillRect(0, 0, n, n);
+  g.fillStyle = '#1b1b1e';
+  for (let i = 1; i < 4; i++) { g.fillRect(i * n / 4 - 1, 0, 2, n); g.fillRect(0, i * n / 4 - 1, n, 2); }
+  g.fillStyle = '#2c2c30';
+  g.fillRect(0, 0, 3, n); g.fillRect(0, 0, n, 3);
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(800, 800); // 400 m of floor in half-metre cells
+  t.repeat.set(400, 400); // 400 m of floor in one-metre cells
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = anisotropy;
   return t;
+}
+
+/** The accent (DESIGN.md: orange is the agent acting now, one thing per screen): the flag the robot walks to. */
+const ACCENT = 0xff8700;
+/** The cloth's size (metres) and the pole's height. */
+const CLOTH_W = 0.34, CLOTH_H = 0.21, POLE_H = 0.8;
+/**
+ * The hero camera's direction from what it frames when there is a flag, by the pane's shape: in a tall pane (the laptop's) from behind the robot and to its right, looking down the walk (+x) with the
+ * flag ahead and the robot large in front; in a wide one (the phone's strip) from the side, the robot on the left and the flag on the right. Between the two, a blend.
+ */
+function flagView(aspect: number): THREE.Vector3 {
+  const k = Math.min(1, Math.max(0, (aspect - 0.9) / 0.8));
+  return new THREE.Vector3(-1, -0.62, 0.42).normalize().lerp(new THREE.Vector3(-0.35, -1, 0.42).normalize(), k).normalize();
+}
+
+/** A soft round shadow (a radial gradient on a plane): the directional shadow alone is faint on a dark floor. */
+function blobTexture(): THREE.CanvasTexture {
+  const n = 128, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
+  grad.addColorStop(0, 'rgba(0,0,0,0.62)'); grad.addColorStop(0.55, 'rgba(0,0,0,0.28)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, n, n);
+  return new THREE.CanvasTexture(c);
+}
+
+/**
+ * The flag: a thin pole and an orange cloth that moves a little in the air, a faint orange ring on the ground where it counts as reached, and a soft shadow. When the robot gets there (`reach`) the cloth
+ * lights up and waves harder for a moment and a ring goes out across the floor from its foot; it stays lit after.
+ */
+class FlagMark {
+  readonly group = new THREE.Group();
+  state: 'idle' | 'reached' = 'idle';
+  private readonly cloth: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  private readonly rest: Float32Array;
+  private readonly zone: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  private readonly pulse: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  private reachedAt = 0;
+  private readonly radius: number;
+
+  constructor(radius: number, shadow: THREE.Texture) {
+    this.radius = radius;
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.011, POLE_H, 10), new THREE.MeshStandardMaterial({ color: 0xa4a4ad, roughness: 0.45, metalness: 0.3 }));
+    pole.rotation.x = Math.PI / 2; // a cylinder is y-up; the world is z-up
+    pole.position.z = POLE_H / 2;
+    pole.castShadow = true;
+    // the cloth hangs from the pole's top towards +y, in the y-z plane: it faces down the walk, at the camera behind the robot
+    const geo = new THREE.PlaneGeometry(CLOTH_W, CLOTH_H, 12, 6);
+    geo.rotateY(Math.PI / 2);
+    geo.translate(0, CLOTH_W / 2, POLE_H - CLOTH_H / 2 - 0.01);
+    this.rest = (geo.attributes.position!.array as Float32Array).slice();
+    this.cloth = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: ACCENT, emissive: ACCENT, emissiveIntensity: 0.28, roughness: 0.7, side: THREE.DoubleSide }));
+    this.cloth.castShadow = true;
+    this.zone = new THREE.Mesh(new THREE.RingGeometry(radius - 0.025, radius, 72), new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.4, depthWrite: false }));
+    this.zone.position.z = 0.003;
+    this.pulse = new THREE.Mesh(new THREE.RingGeometry(0.96, 1, 72), new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0, depthWrite: false }));
+    this.pulse.position.z = 0.004;
+    this.pulse.visible = false;
+    const blob = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: shadow, transparent: true, depthWrite: false }));
+    blob.position.set(0, 0.08, 0.002);
+    blob.renderOrder = 1;
+    this.group.add(pole, this.cloth, this.zone, this.pulse, blob);
+    // the accent stays true however far the flag is: the fog greys the floor, not the goal
+    for (const m of [this.cloth.material, this.zone.material, this.pulse.material]) m.fog = false;
+  }
+
+  reach(now: number): void {
+    if (this.state === 'reached') return;
+    this.state = 'reached';
+    this.reachedAt = now;
+  }
+
+  reset(): void {
+    this.state = 'idle';
+    this.cloth.material.emissiveIntensity = 0.28;
+    this.pulse.visible = false;
+  }
+
+  /** The cloth's ripple and, after a reach, the moment: `now` in ms. */
+  animate(now: number): void {
+    const since = this.state === 'reached' ? (now - this.reachedAt) / 1000 : Infinity;
+    const moment = since < 2.4;
+    const amp = moment ? 0.045 : this.state === 'reached' ? 0.022 : 0.012;
+    const speed = moment ? 9 : 4;
+    const pos = this.cloth.geometry.attributes.position!;
+    const a = pos.array as Float32Array;
+    const t = now / 1000;
+    for (let i = 0; i < a.length; i += 3) {
+      const u = this.rest[i + 1]! / CLOTH_W; // 0 at the pole, 1 at the free edge
+      a[i] = this.rest[i]! + amp * u * Math.sin(u * 5.5 - t * speed + this.rest[i + 2]! * 6);
+    }
+    pos.needsUpdate = true;
+    this.cloth.geometry.computeVertexNormals();
+    this.cloth.material.emissiveIntensity = this.state === 'idle' ? 0.28 : moment ? 0.75 + 0.35 * Math.sin(since * 10) : 0.7;
+    // two rings go out from the reach circle over the moment
+    this.pulse.visible = moment;
+    if (moment) {
+      const p = (since % 1.2) / 1.2;
+      const r = this.radius + 0.6 * p;
+      this.pulse.scale.set(r, r, 1);
+      this.pulse.material.opacity = 0.4 * (1 - p) * (1 - p);
+    }
+  }
 }
 
 export class View {
@@ -101,8 +209,16 @@ export class View {
   private faceAt: number[] | undefined;
   /** A soft contact shadow under the robot (hero look): the directional shadow alone is faint on a dark floor. */
   private blob: THREE.Mesh | null = null;
+  private blobTex: THREE.Texture | null = null;
+  /** The goal in the hero look (goal.ts): where it stands, and its mark. The camera frames the robot and the flag together. */
+  private flag: { x: number; y: number; radius: number; mark: FlagMark } | null = null;
+  /** The framing as it is drawn: eased towards what the robot and the flag need, so the camera glides as the robot walks. */
+  private framed: { center: THREE.Vector3; dist: number } | null = null;
+  private lastDraw = 0;
   /** The robot's size as a radius in metres, and the camera's direction from it: what the framing keeps the whole robot inside the pane with. */
   private frameRadius = 0.6;
+  /** The height of the robot's middle, standing (frameRobot). */
+  private frameCenterZ = 0.2;
   private framedAspect = 0;
   private bodyMeshes: THREE.Mesh[] = [];
   private parts: Part[] = [];
@@ -341,12 +457,12 @@ export class View {
     this.hero = on;
     if (!on) return;
     this.scene.background = new THREE.Color(bg);
-    this.scene.fog = new THREE.Fog(bg, 2.6, 7.5); // the grid and the ground fade out before the horizon: a pool of floor under the robot
+    this.scene.fog = new THREE.Fog(bg, 4, 13); // the grid fades to the page's background before the horizon (draw moves it with the camera's distance)
     this.hemi.color.set(0xffffff); this.hemi.groundColor.set(0x3a3a40); this.hemi.intensity = 1.45;
     this.sun.intensity = 2.15; // calibrated so a top face renders within a few percent of the colour the user asked for
     this.sun.shadow.radius = 5; // soft edge
     this.sun.shadow.bias = -0.0004;
-    this.renderer.shadowMap.type = this.lite ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = this.lite ? THREE.BasicShadowMap : THREE.PCFShadowMap; // PCF with a radius is the soft edge (three removed PCFSoftShadowMap)
     const mat = this.floor.material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
     mat.color.set(0xffffff);
     mat.map?.dispose();
@@ -354,23 +470,80 @@ export class View {
     mat.needsUpdate = true;
     this.setMarkers(false);
     if (!this.blob) {
-      const n = 128, c = document.createElement('canvas');
-      c.width = c.height = n;
-      const g = c.getContext('2d')!;
-      const grad = g.createRadialGradient(n / 2, n / 2, 0, n / 2, n / 2, n / 2);
-      grad.addColorStop(0, 'rgba(0,0,0,0.62)'); grad.addColorStop(0.55, 'rgba(0,0,0,0.28)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grad; g.fillRect(0, 0, n, n);
-      const tex = new THREE.CanvasTexture(c);
-      this.blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+      this.blobTex ??= blobTexture();
+      this.blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: this.blobTex, transparent: true, depthWrite: false }));
       this.blob.position.z = 0.002;
       this.blob.renderOrder = 1;
       this.scene.add(this.blob);
     }
   }
 
+  /** The goal (hero look): a flag at (x, y) that counts as reached within `radius`; null takes it away. The camera then frames the robot and the flag together, from behind the robot. */
+  setFlag(flag: { x: number; y: number; radius: number } | null): void {
+    if (this.flag) { this.scene.remove(this.flag.mark.group); this.flag = null; }
+    this.framed = null;
+    if (!flag) { this.applyFrame(); return; }
+    this.blobTex ??= blobTexture();
+    const mark = new FlagMark(flag.radius, this.blobTex);
+    mark.group.position.set(flag.x, flag.y, 0);
+    this.scene.add(mark.group);
+    this.flag = { ...flag, mark };
+    if (this.hero) this.camera.position.copy(this.controls.target).addScaledVector(flagView(this.camera.aspect), 3); // the direction the framing keeps (a user's orbit changes it)
+  }
+
+  /** The robot got to the flag: its moment (the cloth lights up and waves, a ring goes out). */
+  reachFlag(): void { this.flag?.mark.reach(performance.now()); }
+
+  /** A new start (a new body): the flag waits again. */
+  resetFlag(): void { this.flag?.mark.reset(); }
+
+  flagState(): 'idle' | 'reached' | null { return this.flag?.mark.state ?? null; }
+
+  /** Where the robot's torso and the flag's cloth are on the screen (-1..1 each way, y up), for the page's checks: both in the pane at the start, and as it walks. */
+  framing(): { robot: number[]; flag: number[] | null } | null {
+    if (!this.sim) return null;
+    const [x, y, z] = this.sim.torsoPos();
+    const at = (p: THREE.Vector3) => { const v = p.project(this.camera); return [Math.round(v.x * 1000) / 1000, Math.round(v.y * 1000) / 1000]; };
+    return { robot: at(new THREE.Vector3(x, y, z)), flag: this.flag ? at(new THREE.Vector3(this.flag.x, this.flag.y + CLOTH_W / 2, POLE_H - CLOTH_H / 2)) : null };
+  }
+
+  /**
+   * What the camera needs to hold the robot (a box of the frame radius around the torso, from the ground up) and the flag (pole and cloth) in the pane: the centre between them and the distance along
+   * the camera's direction at which every corner of both boxes is inside the view, with a little air.
+   */
+  private flagFit(dir: THREE.Vector3): { center: THREE.Vector3; dist: number } {
+    const f = this.flag!;
+    // the robot as it is now: every piece's bounding sphere (a long tail, a robot lying down), from the ground up
+    const sim = this.sim!, model = sim.model, gp = sim.data.geom_xpos;
+    const rb = [Infinity, Infinity, 0, -Infinity, -Infinity, 0];
+    for (let g = 0; g < model.ngeom; g++) {
+      if (model.geom_bodyid[g] === 0) continue;
+      const r = model.geom_rbound[g];
+      rb[0] = Math.min(rb[0]!, gp[3 * g] - r); rb[1] = Math.min(rb[1]!, gp[3 * g + 1] - r);
+      rb[3] = Math.max(rb[3]!, gp[3 * g] + r); rb[4] = Math.max(rb[4]!, gp[3 * g + 1] + r); rb[5] = Math.max(rb[5]!, gp[3 * g + 2] + r);
+    }
+    if (!Number.isFinite(rb[0]!)) { const [x, y] = sim.torsoPos(); const r = this.frameRadius; rb.splice(0, 6, x - r, y - r, 0, x + r, y + r, 2 * this.frameCenterZ); }
+    const boxes = [rb, [f.x - 0.12, f.y - 0.05, 0, f.x + 0.12, f.y + CLOTH_W + 0.05, POLE_H + 0.05]];
+    const lo = [Math.min(boxes[0]![0]!, boxes[1]![0]!), Math.min(boxes[0]![1]!, boxes[1]![1]!), 0];
+    const hi = [Math.max(boxes[0]![3]!, boxes[1]![3]!), Math.max(boxes[0]![4]!, boxes[1]![4]!), Math.max(boxes[0]![5]!, boxes[1]![5]!)];
+    const center = new THREE.Vector3((lo[0]! + hi[0]!) / 2, (lo[1]! + hi[1]!) / 2, (lo[2]! + hi[2]!) / 2);
+    const fwd = dir.clone().negate();
+    const right = new THREE.Vector3().crossVectors(fwd, this.camera.up).normalize();
+    const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+    const vTan = Math.tan((this.camera.fov * Math.PI) / 360), hTan = vTan * this.camera.aspect;
+    let dist = 0;
+    for (const b of boxes) for (const cx of [b[0]!, b[3]!]) for (const cy of [b[1]!, b[4]!]) for (const cz of [b[2]!, b[5]!]) {
+      const v = new THREE.Vector3(cx, cy, cz).sub(center);
+      const depth = v.dot(fwd);
+      dist = Math.max(dist, depth + Math.abs(v.dot(right)) / hTan, depth + Math.abs(v.dot(up)) / vTan);
+    }
+    return { center, dist: dist * 1.12 }; // a little air, so the label in the corner does not meet a foot
+  }
+
   /** Keep the whole robot in the pane: the camera's distance from it is set so a sphere of `radius` metres fits the narrower side of the view, whatever the pane's shape. */
   frameRobot(radius: number, centerZ = 0.2): void {
     this.frameRadius = Math.max(0.15, radius);
+    this.frameCenterZ = centerZ;
     this.blob?.scale.set(radius * 2.6, radius * 2.0, 1);
     this.controls.target.z = centerZ;
     this.framedAspect = 0;
@@ -378,7 +551,7 @@ export class View {
   }
 
   private applyFrame(): void {
-    if (!this.hero) return;
+    if (!this.hero || this.flag) return; // with a flag, draw frames the robot and the flag together
     const t = this.controls.target;
     const dir = this.camera.position.clone().sub(t);
     if (dir.lengthSq() < 1e-6) dir.set(0.6, -0.72, 0.5);
@@ -431,6 +604,7 @@ export class View {
       this.renderer.setSize(w, h, false);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
+      if (this.hero && h > 0 && this.flag) this.camera.position.copy(this.controls.target).addScaledVector(flagView(this.camera.aspect), 3); // a new pane shape: the view that suits it
       if (this.hero && h > 0) this.applyFrame();
     }
   }
@@ -454,11 +628,30 @@ export class View {
     }
     const [x, y] = sim.torsoPos();
     const t = this.controls.target;
-    const dx = x - t.x, dy = y - t.y;
-    if (snapCamera || Math.abs(dx) + Math.abs(dy) > 0) {
-      t.x += dx; t.y += dy;
-      this.camera.position.x += dx; this.camera.position.y += dy;
+    const now = performance.now();
+    if (this.hero && this.flag) {
+      // the robot and the flag together, from the direction the camera looks (behind the robot, unless the user orbited), eased so the camera glides as the robot walks
+      const dir = this.camera.position.clone().sub(t);
+      if (dir.lengthSq() < 1e-6) dir.copy(flagView(this.camera.aspect));
+      dir.normalize();
+      const want = this.flagFit(dir);
+      const k = snapCamera || !this.framed ? 1 : 1 - Math.exp(-Math.min(0.25, (now - this.lastDraw) / 1000) / 0.35);
+      this.framed ??= { center: want.center.clone(), dist: want.dist };
+      this.framed.center.lerp(want.center, k);
+      this.framed.dist += (want.dist - this.framed.dist) * k;
+      t.copy(this.framed.center);
+      this.camera.position.copy(t).addScaledVector(dir, this.framed.dist);
+      const fog = this.scene.fog as THREE.Fog | null;
+      if (fog) { fog.near = this.framed.dist + 2.5; fog.far = this.framed.dist + 11; }
+      this.flag.mark.animate(now);
+    } else {
+      const dx = x - t.x, dy = y - t.y;
+      if (snapCamera || Math.abs(dx) + Math.abs(dy) > 0) {
+        t.x += dx; t.y += dy;
+        this.camera.position.x += dx; this.camera.position.y += dy;
+      }
     }
+    this.lastDraw = now;
     this.sun.target.position.set(x, y, 0);
     this.blob?.position.set(x, y, 0.002);
     this.sun.position.set(x + 2, y - 1, 4);

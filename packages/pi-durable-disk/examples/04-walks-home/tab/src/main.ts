@@ -16,7 +16,8 @@ import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
 import { Ticker, formatDistance } from './trail.ts';
 import { TrainingState } from './training.ts';
-import { Sim } from './sim.ts';
+import { Sim, type Pose } from './sim.ts';
+import { Attempt, FLAG, FORWARD_SKILLS, SETTLE_S, parseAttemptRequest, sceneFile, type AttemptRequest, type Ending, type Flag } from './goal.ts';
 import { ModelHost } from './modelhost.ts';
 import { MANIFEST_PATH } from './model.ts';
 import { verdictOf } from './guard.ts';
@@ -132,6 +133,20 @@ let skills: SkillManifest | null = null;
 let downSince: number | null = null;
 let skillNow: string | null = null;
 let wantedSkill: string | null = null;
+
+/**
+ * A place and a goal (goal.ts), in the hero look: the robot stands on a floor with a flag ahead, and creature/scene.json says where. The agent's `do` asks through robot.json's `attempt`; the page plays
+ * the request (an untrained try when the skill is not home, else the skill, a forward one from the start pose) and answers it once, in creature/attempt.json, which `do` reads back.
+ */
+const SCENE_PATH = 'creature/scene.json';
+const ATTEMPT_PATH = 'creature/attempt.json';
+let flag: Flag | null = null;
+/** The request being played and measured. */
+let attempt: Attempt | null = null;
+/** An untrained try: the pose it is put back in, and when (simulated seconds; null while it still twitches). */
+let trying: { pose: Pose; settleUntil: number | null } | null = null;
+/** The last request id this page took up: robot.json keeps it until the next `do`, and other edits rewrite the file around it. */
+let takenAttempt: string | null = null;
 
 function toast(text: string) {
   const t = $('toast');
@@ -277,7 +292,9 @@ function startEpisode2(params: URLSearchParams) {
 function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
-  el.textContent = app.policy && !brainFits ? MISMATCH_LABEL : app.hero && app.training.state === 'untrained' ? 'NO SKILLS YET' : app.training.label(app.policyName); // the hero look never says "random moves": with no skills the robot stands
+  // the hero look never says "random moves": with no skills the robot stands; with skills home and a flag to walk to, it stands and waits to be asked (the label names what it learned)
+  const waiting = app.hero && !app.policy && flag && skills ? Object.values(skills.skills).map((s) => s.label.toUpperCase()).join(' · ') : null;
+  el.textContent = app.policy && !brainFits ? MISMATCH_LABEL : waiting ?? (app.hero && app.training.state === 'untrained' ? 'NO SKILLS YET' : app.training.label(app.policyName));
   document.body.dataset.fit = app.policy && !brainFits ? 'mismatch' : 'fits';
   document.body.dataset.brain = app.training.state; // the page's CSS keys what is shown on it (the big distance only once trained, the learning line)
 }
@@ -354,6 +371,9 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   const old = app.policy, oldName = app.policyName;
   if (droppedPolicy) setPolicy(null, app.policyName === 'dummy trot' ? 'dummy trot' : 'none');
   closeArrival(); // a walk measurement belongs to one body: close it before this one's simulation replaces the clock and the place it samples
+  // so does a request: it is answered with what it measured, and an untrained try's pose (the old body's) is dropped
+  trying = null;
+  if (attempt) answerAttempt(attempt, null);
   app.built = built;
   const replaced = app.sim;
   app.sim = opts.sim ?? new Sim(app.mj, built);
@@ -381,6 +401,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   applyCommand();
   renderPairs();
   if (app.hero) heroFrame(design);
+  if (flag) { app.view.resetFlag(); void writeScene(); } // a new body starts at the origin: the flag is ahead of it again
   await publishFit(previousBodySha); // every way the body changes (the agent's edit, a preset, the drawing) ends here
 }
 
@@ -403,7 +424,8 @@ async function applyRobot(text: string) {
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
-  else if (!robot.skill && skills && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for
+  else if (!robot.skill && skills && !flag && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for (with a flag it stands and waits to be asked)
+  await takeAttempt(text);
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
 }
 
@@ -414,8 +436,10 @@ async function onSkillsManifest(text: string) {
   manifestSeenAt = performance.now();
   skills = m;
   post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
-  const want = wantedSkill ?? (app.policy ? null : m.default);
+  // with a flag to walk to, nothing plays until the agent asks: the room sees the robot go to the flag when the user says so, not on its own as the skills land
+  const want = wantedSkill ?? (app.policy || flag ? null : m.default);
   if (want) await switchSkill(want);
+  else updateLabel();
   for (const name of [...skillTexts.keys()]) if (!(name in m.skills)) { skillTexts.delete(name); installedSha.delete(name); }
   watchSkillFiles(m);
   await publishFit(null); // a skill the manifest dropped leaves the file now, not at the next install
@@ -537,6 +561,73 @@ async function onSkillFile(name: string, text: string) {
   if (!skills?.skills[name]) return;
   await installSkill(name, text);
   if (skillNow === name && (await textSha(text)) !== runningSkillSha) await switchSkill(name, true);
+}
+
+/** creature/scene.json, for the agent's `do`: written with each body (the robot starts at the origin). A tab that does not hold the run cannot write it, and `do` then works as it did without a flag. */
+async function writeScene() {
+  if (!flag || app.storageMode !== 'disk') return;
+  try { await new ParentBackend(windowBus(), SCENE_PATH).write(new TextEncoder().encode(sceneFile(flag))); } catch { /* not the holder */ }
+}
+
+/** robot.json's `attempt`: a request this page has not taken up is played. One already answered in attempt.json (the page reloaded since) is not played again. */
+async function takeAttempt(text: string) {
+  if (!flag) return;
+  let req: AttemptRequest | null = null;
+  try { req = parseAttemptRequest((JSON.parse(text) as { attempt?: unknown }).attempt); } catch { return; }
+  if (!req || req.id === takenAttempt) return;
+  takenAttempt = req.id;
+  const answered = await parentPolicySource(new ParentBackend(windowBus(), ATTEMPT_PATH)).read().catch(() => null);
+  if (answered && answered !== 'unchanged') { try { if ((JSON.parse(answered.text) as { id?: unknown }).id === req.id) return; } catch { /* not an answer */ } }
+  startAttempt(req);
+}
+
+/**
+ * Play a request. A skill that is not home is an untrained try: the seeded brain that has learned nothing twitches the motors (goal.ts TRY_S), and then the robot is put back where it stood. A forward
+ * skill (a policy has no heading input) starts from the start pose, facing the flag, at its own command. Any other skill plays where the robot stands. Each is measured until it is over.
+ */
+function startAttempt(req: AttemptRequest) {
+  economy.wake(performance.now());
+  if (attempt) answerAttempt(attempt, null); // a newer request: the one in progress is answered with what it has
+  endTry();
+  if (!req.learned) {
+    trying = { pose: app.sim.pose(), settleUntil: null };
+    app.sim.attachBrain(app.brain);
+    toast(`trying to ${req.skill}`);
+  } else if (FORWARD_SKILLS.includes(req.skill) && app.policy) {
+    app.sim.reset(); app.expectReset = true; resetOrigin();
+    app.fallen = false; app.recovering = null; downSince = null; app.lastMode = 'walk';
+    const entry = skills?.skills[req.skill];
+    if (entry) { ($('command') as HTMLInputElement).value = String(entry.command); applyCommand(); } // a walk that stopped at the flag left the command at 0
+    app.view.resetFlag();
+  }
+  const [x, y] = app.sim.torsoPos();
+  attempt = new Attempt(req, { t: app.sim.time, x, y }, flag!);
+}
+
+/** The request is over (`ending`; null: cut short by a newer one or a new body): the answer goes to attempt.json, and the page says what happened. */
+function answerAttempt(a: Attempt, ending: Ending | null) {
+  attempt = null;
+  const report = a.report();
+  if (app.storageMode === 'disk') void new ParentBackend(windowBus(), ATTEMPT_PATH).write(new TextEncoder().encode(JSON.stringify(report) + '\n')).catch(() => undefined);
+  if (!report.learned) {
+    post('tried', { ...report });
+    if (trying) { app.sim.attachBrain(null); trying.settleUntil = app.sim.time + (ending ? 1 : 0) * SETTLE_S; } // it stays as the try left it for a moment, then is put back
+  } else {
+    if (ending === 'reached') { app.view.reachFlag(); post('reached-flag', { ...report }); toast('reached the flag'); }
+    else post('ran', { ...report, ending });
+    // a forward skill is a walk to the flag: once it is answered (there, or not getting there) it stands, as the agent's state line then says (command 0 is "stand" to a policy; the walk's range starts at 0)
+    if (FORWARD_SKILLS.includes(report.skill)) { ($('command') as HTMLInputElement).value = '0'; applyCommand(); }
+  }
+}
+
+/** An untrained try is over: the robot is put back exactly where and how it stood. */
+function endTry() {
+  if (!trying) return;
+  app.sim.attachBrain(null);
+  app.sim.setPose(trying.pose);
+  trying = null;
+  app.fallen = false; app.recovering = null; downSince = null;
+  syncBrain();
 }
 
 /**
@@ -916,18 +1007,20 @@ let lastStillDraw = 0;
 
 function tick(now: number) {
   requestAnimationFrame(tick);
-  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
+  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy || !!trying)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
   // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
   // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
   const t0 = performance.now();
   // the hero look, or ?still=1 (the phone's pane), with no policy stands in its pose: no physics until a skill plays (the untrained brain's random moves would topple it)
-  if (app.running && !((app.hero || STILL) && !app.policy)) {
+  if (app.running && !((app.hero || STILL) && !app.policy && !trying)) {
     app.acc += dt;
     let n = 0;
     while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
-      app.sim.step(app.policy);
+      app.sim.step(trying ? null : app.policy); // an untrained try: the brain that has learned nothing drives, whatever skill is loaded
+      if (attempt) { const [x, y] = app.sim.torsoPos(); const e = attempt.sample(app.sim.time, x, y, app.sim.uprightness()); if (e) answerAttempt(attempt, e); }
+      if (trying?.settleUntil != null && app.sim.time >= trying.settleUntil) endTry();
       const q = app.sim.data.qpos;
       app.stats.step(app.sim.time, Number.isFinite(q[0] + q[1] + q[2] + q[3] + q[4]), app.expectReset);
       app.expectReset = false;
@@ -944,7 +1037,7 @@ function tick(now: number) {
     if (!app.fallen && up < 0.3) { app.fallen = true; app.stats.c.falls++; post('fell', { t: app.sim.time }); toast('fell'); }
     // A policy with no get-up network (every skill of a round, and the early checkpoints) cannot rise by itself: left alone the creature lies still for ever, where a skill was asked for or after it fell while one ran.
     // It is set back on its feet after STAND_AFTER_S, and the page says so (the fall was counted and announced when it happened; this is not a recovery of the policy's, so no kick is counted as recovered).
-    if (app.policy && !app.policy.hasGetup && up < 0.3) {
+    if (app.policy && !app.policy.hasGetup && up < 0.3 && !trying) {
       downSince ??= app.sim.time;
       if (app.sim.time - downSince > app.standAfterS) { app.sim.standUp(); downSince = null; app.fallen = false; app.recovering = null; post('stood-up', { reason: 'fallen', t: app.sim.time }); toast('set back on its feet'); }
     } else downSince = null;
@@ -957,7 +1050,7 @@ function tick(now: number) {
   }
   const t1 = performance.now();
   // still and skill-less, nothing moves: a few frames a second keep a change to the robot's looks on screen at a fraction of the work (the phone's main thread also runs the model's reads)
-  if (!(STILL && !app.policy) || now - lastStillDraw > 250) { app.view.draw(); lastStillDraw = now; }
+  if (!(STILL && !app.policy && !trying) || now - lastStillDraw > 250) { app.view.draw(); lastStillDraw = now; }
   if (app.clean) showDistance();
   hud();
   app.stats.frame(now, t1 - t0, performance.now() - t1);
@@ -1008,7 +1101,7 @@ async function main() {
       }),
     };
     app.view.setSim(app.sim);
-    if (hero) { app.view.setHero(true); heroFrame(design); }
+    if (hero) { app.view.setHero(true); flag = FLAG; app.view.setFlag(flag); heroFrame(design); }
     if (clean) { if (!hero) app.view.setPreset('close'); app.view.setMarkers(phase === 'watch' && !hero); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
     if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
     else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
@@ -1115,7 +1208,7 @@ async function main() {
     });
     if (economy.enabled) { economy.wake(performance.now()); post('econ-ready'); } // the parent may have asked the page to stand still before it was listening: it says so again now
 
-    (window as any).__walks = { get app() { return app; }, economy: () => ({ enabled: economy.enabled, paused: economy.paused, ticks: economy.ticks, worked: economy.worked }), look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, scene: () => flag, attempt: () => attempt?.report() ?? null, trying: () => !!trying, economy: () => ({ enabled: economy.enabled, paused: economy.paused, ticks: economy.ticks, worked: economy.worked }), look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
@@ -1139,6 +1232,7 @@ async function main() {
     document.body.classList.toggle('ep2', ep2);
     if (ep2) { app.running = false; startEpisode2(params); } // no creature in episode 2: the model is the story
     if (policyBackend && !ep2) {
+      void writeScene(); // where the flag is, for the agent's `do` (hero look only)
       let warned = false;
       const quiet = (what: string) => (e: unknown) => { if (!warned) { warned = true; console.warn(`${what}: ${e} (further failures are not logged until it reads again)`); } };
       const watch = (path: string, kind: 'checkpoint' | 'final') => new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), path)), {
