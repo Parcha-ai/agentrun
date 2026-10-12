@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false } } });
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-plan-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
 const deadline = a["deadline-ms"];
@@ -19,7 +19,7 @@ const deadline = a["deadline-ms"];
 // starts after it has passed, so the deadline must come from the store, not a fresh clock.
 const kill = !deadline || a.kill;
 const run = (mode: string) =>
-  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : []), ...(a["new-skill"] ? ["--new-skill"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 const exit = (p: ReturnType<typeof run>) => new Promise<number>((r) => p.once("exit", (c) => r(c ?? 1)));
 
 let killed = false;
@@ -48,7 +48,10 @@ const children: { id: number; tools: string[]; box: { skill: string; gpu: number
 type Listed = { conversation: number; name: string; gpu: number; of: number; boxId: string | null; status: string; settled: boolean };
 const mid: Listed[] | undefined = existsSync(join(dir, "mid.json")) ? JSON.parse(readFileSync(join(dir, "mid.json"), "utf8")).threads : undefined;
 const after: Listed[] = report.threads_of ?? [];
-const planned = ["walk", "spin", "wave"];
+// --new-skill: the third skill is one the library does not have (bow), made from its closest library skill (wave).
+const NEW_SKILL = a["new-skill"] ? "bow" : undefined;
+const third = NEW_SKILL ?? "wave";
+const planned = ["walk", "spin", third];
 // What each thread ran on its box, as TRAIN_SOP's steps (a command rerun after the restart counts once).
 const ladder: Record<string, string[]> = {};
 for (const b of existsSync(join(dir, "boxes")) ? readdirSync(join(dir, "boxes")) : []) {
@@ -82,7 +85,7 @@ const checks: Record<string, boolean> = {
   // Every thread's own tool calls are in its transcript: walk, spin and wave are library skills, so each copied the
   // library's files and trained through bash and wrote no file; only wave, after a try that never moved, may edit one
   // weight (the ladder check below requires that edit when the run is not cut short).
-  each_thread_copied_its_library_skill_and_wrote_nothing: children.every((c) => c.tools[0]?.startsWith("bash") && !c.tools.some((t) => t.startsWith("write")) && c.tools.filter((t) => t.startsWith("edit")).length <= (c.box.skill === "wave" ? 1 : 0)),
+  each_thread_copied_its_library_skill_and_wrote_nothing: children.filter((c) => c.box.skill !== NEW_SKILL).every((c) => c.tools[0]?.startsWith("bash") && !c.tools.some((t) => t.startsWith("write")) && c.tools.filter((t) => t.startsWith("edit")).length <= (c.box.skill === "wave" ? 1 : 0)),
   each_child_links_to_parent_and_owner: children.every((c) => c.parent !== undefined && c.owner !== undefined),
   no_thread_gets_a_second_box: (() => {
     const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
@@ -103,26 +106,52 @@ if (!deadline) {
   // spin was still changing, so 40M with the same files, then --check its pass; wave never moved, so one weight edited in
   // skill.json and 12M again, and it reports after that.
   checks.the_threads_follow_the_sop_ladder =
-    ladder.walk?.join() === "copy,12M,check" && ladder.spin?.join() === "copy,12M,40M,check" && ladder.wave?.join() === "copy,12M,edit:skill.json,12M";
+    ladder.walk?.join() === "copy,12M,check" && ladder.spin?.join() === "copy,12M,40M,check" &&
+    (a["new-skill"]
+      ? // A skill the library lacks starts from the closest one: copied, its skill.json and test.py edited, one reward
+        // term added, compiled (its reward changed), trained, checked. Never a fresh file tree.
+        ladder.bow?.join() === "copy,edit:skill.json,edit:test.py,edit:reward.py,compile,12M,check"
+      : ladder.wave?.join() === "copy,12M,edit:skill.json,12M");
 }
+// A skill the library lacks, whatever the outcome: its thread starts with the copy and writes at most one file (reward.py).
+// Run to its end, it made exactly the SOP's change, and the files on its box are that change on the library's real wave.
+if (NEW_SKILL) {
+  const t = children.find((c) => c.box.skill === NEW_SKILL);
+  checks.new_skill_starts_from_the_copy = t !== undefined && t.tools[0] === "bash" && ladder[NEW_SKILL]?.[0] === "copy" && t.tools.filter((x) => x === "write").length <= 1;
+  if (!deadline) {
+    checks.new_skill_is_copied_then_edited = t !== undefined && t.tools.filter((x) => x === "edit").length === 2 && t.tools.filter((x) => x === "write").length === 1;
+    const box = readdirSync(join(dir, "boxes")).find((b) => b.startsWith(`sb-${NEW_SKILL}-`));
+    const file = (name: string) => (box ? readFileSync(join(dir, "boxes", box, "workspace", "skills", NEW_SKILL, name), "utf8") : "");
+    const config = box ? (JSON.parse(file("skill.json")) as { name?: string; reward_scales?: Record<string, number>; env?: Record<string, unknown> }) : {};
+    checks.new_skill_files_are_the_skill =
+      config.name === NEW_SKILL && config.reward_scales?.feet_height === 0 && config.reward_scales?.pose === 0 && config.reward_scales?.bow_pitch === 3 &&
+      config.reward_scales?.tracking_lin_vel === 0.5 && (config.env as { command_zero_prob?: number } | undefined)?.command_zero_prob === 1 && // wave's own settings kept
+      /down = r\.share\(r\.pitch < -0\.25, after_s=2\)/.test(file("test.py")) && /r\.fell_at is None/.test(file("test.py")) && !/paw up/.test(file("test.py")) &&
+      /def terms\(s\):[\s\S]*"bow_pitch": jp\.exp/.test(file("reward.py"));
+  }
+}
+// The outcomes, chosen by the flags first.
 if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
   checks.outcome_errors_are_reported = threads.every((t) => (t as { outcomeError?: string }).outcomeError === "skill.json is unreadable") && /could not be read: skill\.json is unreadable/.test(report.teachResult?.text ?? "");
-} else if (deadline && kill) {
-  // spin was mid-training at the kill; with the stored deadline already past on resume it is stopped at once. A fresh
-  // deadline would let it retrain (6 checkpoints, about 1.2 s) and pass.
-  checks.deadline_survives_the_restart = killed && by("spin")?.status === "timed-out" && by("wave")?.status === "timed-out";
 } else if (deadline) {
-  // walk passes in 3 checkpoints; spin needs 6 and wave never passes: past the deadline they fold as timed out.
-  checks.fast_thread_passed_before_the_deadline = by("walk")?.status === "passed";
-  checks.slow_threads_folded_as_timed_out = by("spin")?.status === "timed-out" && by("wave")?.status === "timed-out";
+  // spin needs a 12M try and 6 checkpoints at 40M: past the deadline it folds as timed out (on a resume after the kill the
+  // stored deadline has already passed, so it is stopped at once). wave never passes; bow (4 checkpoints after its copy,
+  // edits and compile) may pass before the deadline or be stopped by it.
+  const slowFolded = by("spin")?.status === "timed-out" && (NEW_SKILL ? ["passed", "timed-out"].includes(by(third)?.status ?? "") : by(third)?.status === "timed-out");
+  if (kill) checks.deadline_survives_the_restart = killed && slowFolded;
+  else {
+    checks.fast_thread_passed_before_the_deadline = by("walk")?.status === "passed";
+    checks.slow_threads_folded_as_timed_out = slowFolded;
+  }
 } else {
   checks.parent_waiting_allSettled_on_3_when_killed = killed && teachBefore?.status === "waiting" && teachBefore.on === 3 && teachBefore.policy === "allSettled";
   // The status is the trainer's skill.json, not the thread's words (which only say it trained and read the file).
-  checks.status_from_skill_json_not_words = by("walk")?.status === "passed" && by("walk")?.checkpoint === 3 && by("spin")?.status === "passed" && by("spin")?.checkpoint === 6 && by("wave")?.status === "never-passed";
+  checks.status_from_skill_json_not_words = by("walk")?.status === "passed" && by("walk")?.checkpoint === 3 && by("spin")?.status === "passed" && by("spin")?.checkpoint === 6 &&
+    (NEW_SKILL ? by(NEW_SKILL)?.status === "passed" && by(NEW_SKILL)?.checkpoint === 4 : by("wave")?.status === "never-passed");
   // A run that never passed carries the trainer's diagnosis from skill.json into its result and the fold's text.
-  checks.never_passed_carries_the_diagnosis = /^never moved/.test((by("wave") as { reason?: string } | undefined)?.reason ?? "") && /wave: never passed\..*Trainer: never moved/.test(report.teachResult?.text ?? "");
-  checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && /GPU 3 \(wave\)/.test(report.readThread) && /bash/.test(report.readThread);
+  if (!NEW_SKILL) checks.never_passed_carries_the_diagnosis = /^never moved/.test((by("wave") as { reason?: string } | undefined)?.reason ?? "") && /wave: never passed\..*Trainer: never moved/.test(report.teachResult?.text ?? "");
+  checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && new RegExp(`GPU 3 \\(${third}\\)`).test(report.readThread) && /bash/.test(report.readThread);
 }
 const ok = Object.values(checks).every(Boolean);
 const verdict = { ok, dir, checks, ladder, threads_of: { mid: mid?.map((t) => `${t.gpu} ${t.name} ${t.status}`), after: after.map((t) => `${t.gpu} ${t.name} ${t.status}`) }, threads: threads.map((t) => ({ skill: t.skill, status: t.status, checkpoint: t.checkpoint })), tools: children.map((c) => ({ skill: c.box.skill, tools: c.tools })), answer: report.answer };
