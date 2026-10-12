@@ -155,6 +155,8 @@ class SlicedBlob extends Blob {
 
 export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) => Wllama = (c) => new Wllama(c)): Llm {
   let w: Wllama | null = null;
+  /** The state files each engine has a file for: its file system refuses a second file of the same name (EEXIST, which wllama reports as "[object Object]"). */
+  const stateFiles = new WeakMap<Wllama, Set<string>>();
   let lora: LoraSelection | undefined; // with adapters loaded: the selection every request carries (llama.cpp's server applies the load-time scale, 0, to a request without one)
   const release = async () => { const old = w; w = null; lora = undefined; try { await old?.exit(); } catch { /* it may already be gone */ } };
   return {
@@ -210,14 +212,24 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       await make({ default: wasmUrl }).cacheManager.clear();
       try { for (const k of Object.keys(localStorage)) if (k.startsWith(VERIFIED)) localStorage.removeItem(k); } catch { /* no storage */ }
     },
+    async cachedFile(url, want) {
+      if (!w) throw new Error('the model is not loaded');
+      return verifiedPart(w, url, want, { onStatus: () => undefined, onProgress: () => undefined });
+    },
     chatTemplate() { return w?.getChatTemplate() ?? null; },
     async restoreState(state) {
       if (!w) throw new Error('the model is not loaded');
       // D0's slot shim (a wllama build whose rerank message also carries llama-server's slot actions): the state file is registered like a model shard, so the
       // engine reads it through wllama's own file access, and llama-server's slot restore puts its tokens and cache in slot 0. A stock build refuses the message.
       const proxy = (w as unknown as { proxy: { fileAlloc(name: string, size: number, alloc: boolean): Promise<number>; fileBlobs: Map<string, Blob>; wllamaAction<T>(name: string, body: Record<string, unknown>): Promise<T> } }).proxy;
-      const name = 'state.bin';
-      await proxy.fileAlloc(name, state.size, false);
+      // One file a size, made once per engine (a second restore, before a turn, reuses it): the engine reads it from the blob set here, piece by piece.
+      const name = `state-${state.size}.bin`;
+      const made = stateFiles.get(w) ?? new Set<string>();
+      stateFiles.set(w, made);
+      if (!made.has(name)) {
+        await proxy.fileAlloc(name, state.size, false);
+        made.add(name);
+      }
       proxy.fileBlobs.set(name, state);
       try {
         const started = await proxy.wllamaAction<{ success: boolean; req_id: number }>('rerank', { _name: 'rrnk_req', data_json: JSON.stringify({ slot_action: 'restore', filepath: `/models/${name}` }) });

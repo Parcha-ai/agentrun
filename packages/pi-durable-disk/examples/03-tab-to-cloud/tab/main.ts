@@ -35,7 +35,7 @@ import { stateLine } from "../robot-state-line.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
-import { servingView } from "./native-turn.ts";
+import { narrowEnum, servingView, signatureTools, signatureView, toNativeTools } from "./native-turn.ts";
 import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
@@ -45,7 +45,6 @@ import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills
 import { WriteGate } from "./write-gate.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
-import { narrowEnum, toNativeTools } from "./native-turn.ts";
 import { creatureActivity } from "./creature-activity.ts";
 import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
@@ -976,12 +975,13 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
 // were. Later the same session connects to the server for the cluster beat; this phase never reaches for the network after the page and the model are cached.
 
 /**
- * How the model is served, as its trainer scored it (D1's v3-serving.json, next to the model): its system prompt, its tools (the text it reads, in order), its
- * token budget. The conversation runs the registry's tools of those names; the model is shown the serving file's text for them (the registry keeps its own),
- * so the model's input is the one it was scored on, and the warm state made from it matches.
+ * How the model is served, as its trainer scored it (D1's <model>-serving.json, next to the model): its system prompt, its token budget, and either its tools
+ * (v3: the text it reads in a tools block, in order) or none (v5: a signature prefix, each tool one line of the system text, rendered with no tools block).
+ * The conversation runs the registry's tools of those names; the model is shown the serving file's text for them, so its input is the one it was scored on,
+ * and the warm state made from it matches. The lock is built over the tools it is shown (v5: the registry's schemas, which build D1's v5-lock.gbnf exactly).
  */
-interface Serving { model: { file: string; sha256: string }; system: string; tools: ToolChatTool[]; sampling?: { max_tokens?: number } }
-const PHONE_MODEL_ID = "robot-qwen35-0.8b-v3";
+interface Serving { model: { file: string; sha256: string }; system: string; tools?: ToolChatTool[]; sampling?: { max_tokens?: number } }
+const PHONE_MODEL_ID = "robot-qwen35-0.8b-v5";
 
 /**
  * What this phone measured, sent to the page's own server as a GET (/__phone_report?d=<json>) so it lands in the server's access log, where the team reads it:
@@ -1115,10 +1115,10 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
     const dir = build === "jspi32" ? "/vendor/wllama-jspi32" : "/vendor/wllama-compat";
     const llm = wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href, wllamaWith({ compat: { worker: new URL(`${dir}/wllama.js`, location.origin).href, wasm: new URL(`${dir}/wllama.wasm`, location.origin).href }, logger: { debug: engineLog("debug"), log: engineLog("log"), warn: engineLog("warn"), error: engineLog("error") } }));
     const model = new PhoneModel(llm, {
-      url: new URL(params.get("model") ?? "/models/qwen35-0.8b-robot-v3-Q4_0-00001-of-00007.gguf", location.href).href,
+      url: new URL(params.get("model") ?? "/models/qwen35-0.8b-robot-v5-Q4_0-00001-of-00007.gguf", location.href).href,
       threads: Number(params.get("threads")) || Math.min(4, navigator.hardwareConcurrency || 4),
       nCtx: Number(params.get("ctx")) || 2048,
-      batch: Number(params.get("batch")) || 64,
+      batch: Number(params.get("batch")) || 128, // n_batch = n_ubatch: a turn's tail (state line and user, under 128 tokens) is one batch, so its checkpoint sits where the next turn leaves it (PhoneModel.resume)
       maxTokens: 300,
       loadTimeoutMs: params.get("stall") === build ? 1 : loadTimeoutMs,
       onProgress: (loaded, total) => phoneSay(loaded < total ? `the robot's brain is downloading: ${Math.round(loaded / 1e6)} of ${Math.round(total / 1e6)} MB` : `the robot's brain is loading into memory (${build} build)`),
@@ -1136,9 +1136,12 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
     state.phone!.log.push("model cache cleared");
     const u = new URL(location.href); u.searchParams.delete("clearcache"); history.replaceState(null, "", u);
   }
-  const servingUrl = new URL(params.get("serving") ?? "/models/qwen35-0.8b-robot-v3-Q4_0.serving.json", location.href).href;
+  const servingUrl = new URL(params.get("serving") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.serving.json", location.href).href;
   const serving = await step("reading the model's serving file", async () => (await (await fetch(servingUrl)).json()) as Serving);
-  const refine = (list: ToolChatTool[]) => servingView(list, serving.tools); // the model's view: the serving file's tools, in its order, those the conversation offers
+  const signature = !serving.tools?.length; // v5: the system text lists the tools; nothing renders a tools block
+  const toolNames = signature ? signatureTools(serving.system) : serving.tools!.map((t) => t.function.name);
+  // the model's view: the serving file's tools (or, for a signature prefix, the conversation's tools it names), in its order, those the conversation offers
+  const refine = (list: ToolChatTool[]) => (signature ? signatureView(list, toolNames) : servingView(list, serving.tools));
   const budget = serving.sampling?.max_tokens ?? 300;
   let t = performance.now();
   phoneSay("the robot's brain is loading");
@@ -1163,13 +1166,13 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   // where the load's time went: fetching parts, checking them, the engine reading them in
   Object.assign(marks, { downloadMs: Math.round(partTimes.downloadMs), downloadedMB: Math.round(partTimes.downloaded / 1e6), verifyMs: Math.round(partTimes.verifyMs), engineMs: Math.round(marks.loadMs - partTimes.downloadMs - partTimes.verifyMs) });
   state.phone!.log.push(`load ${(marks.loadMs / 1000).toFixed(1)} s: download ${(marks.downloadMs! / 1000).toFixed(1)} s (${marks.downloadedMB} MB), check ${(marks.verifyMs! / 1000).toFixed(1)} s, engine ${(marks.engineMs! / 1000).toFixed(1)} s`);
-  runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v3 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
+  runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v5 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
     ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result",
     // D1's window T7: the earlier exchanges, the robot's state line, then the user's turn; ?window=task: the current task only (the model forgets earlier turns)
     ...phoneWindow(params.get("window") === "task", { refresh: () => phoneStateLine(runtime), fits: (m: ToolChatMessage[], t: ToolChatTool[]) => model.fits(m, t) }),
   }));
   const byName = new Map(runtime.registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
-  const tools = serving.tools.map((s) => byName.get(s.function.name)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
+  const tools = toolNames.map((n) => byName.get(n)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
   const phoneAgent = { model: { provider: BRAIN_PROVIDER, modelId: PHONE_MODEL_ID }, thinkingLevel: "off" as const, tools, instructions: serving.system };
   const conversation = state.active ?? runtime.root;
   const agent = await conversation.agent(ctx);
@@ -1188,7 +1191,9 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   t = performance.now();
   phoneSay("the robot's brain is reading its tools (once)");
   // the tools exactly as the provider sends them (native-turn.ts), so the prefix is the turns' prefix; a shipped warm state for it is restored instead (?state=0: prefill)
-  const stateUrl = params.get("state") === "0" ? undefined : new URL(params.get("state") ?? "/models/qwen35-0.8b-robot-v3-Q4_0.state.bin", location.href).href;
+  const stateUrl = params.get("state") === "0" ? undefined : new URL(params.get("state") ?? "/models/qwen35-0.8b-robot-v5-Q4_0.state.bin", location.href).href;
+  model.toolsInPrompt = !signature;
+  model.stemFirst = params.get("stem") !== "0"; // the exchanges-first read (?stem=0: the warm state restored before every turn instead)
   const warm = await step("reading the tools", () => model.warm(serving.system, refine(toNativeTools(tools)), stateUrl ? { url: stateUrl, onSkip: (why) => state.phone!.log.push(`no warm state restored: ${why}`) } : undefined));
   if (warm.restored) state.phone!.log.push(`warm state restored: ${warm.restored.tokens} tokens, ${Math.round(warm.restored.bytes / 1e6)} MB in ${warm.ms} ms`);
   marks.warmMs = Math.round(performance.now() - t);
@@ -1208,7 +1213,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   if (params.get("pane") !== "0") startRobotPane("&still=1");
   // and everything a reload needs with no network, behind the service worker: the page, its built assets, the robot pane's, the model's small files (its parts
   // are in wllama's own cache already). ?offline=0 skips it.
-  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [new URL(stateUrl).pathname, `${new URL(stateUrl).pathname}.json`] : [])]);
+  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [`${new URL(stateUrl).pathname}.json`] : [])]); // the state itself is kept in the engine's cache, with the model's parts
 }
 
 // ---- coming home ---------------------------------------------------------------------------------------------------------

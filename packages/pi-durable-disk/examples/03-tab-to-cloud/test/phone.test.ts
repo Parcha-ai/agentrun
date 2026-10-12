@@ -274,6 +274,52 @@ test("a turn cancelled while it waits for the one before it reaches no model", a
   assert.deepEqual(r.toolCalls, []);
 });
 
+test("a turn that cannot resume where the engine is starts from the warm state again, read from the engine's cache; the next call of a turn resumes", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  let refuse = false;
+  const { llm, calls } = fakeLlm({ restore: async (b) => { if (refuse) throw new Error("the restore returned nothing"); return { tokens: 1252, bytes: b.size }; } });
+  const opened: string[] = [];
+  llm.cachedFile = async (u, want) => { opened.push(`${u} ${want?.bytes} ${want?.sha256}`); return new Blob([new Uint8Array(64)]); };
+  const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64, sha256: "c".repeat(64) });
+  await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); }); // the state itself would be a 404: it comes from the engine's cache
+  assert.equal(calls.restored, 1);
+  assert.deepEqual(opened, [`${state} 64 ${"c".repeat(64)}`], "checked against the sidecar's bytes and sha256");
+
+  const sys = { role: "system", content: serving.system };
+  const call = { role: "assistant", content: "", tool_calls: [{ id: "c0", type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "yellow"}' } }] };
+  const result = { role: "tool", tool_call_id: "c0", content: "The whole robot is now yellow." };
+  const ask = (messages: object[]) => model.toolChat({ messages: messages as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+  const first = [sys, { role: "assistant", content: "[Robot now: A]" }, { role: "user", content: "paint it yellow" }];
+  await ask(first);
+  await ask([...first, call, result]);
+  assert.equal(calls.restored, 1, "the first turn starts where the warm-up left the engine, and the turn's next call keeps everything before the reply");
+  await ask([sys, { role: "user", content: "paint it yellow" }, call, result, { role: "assistant", content: "Done." }, { role: "assistant", content: "[Robot now: B]" }, { role: "user", content: "what color is it?" }]);
+  assert.equal(calls.restored, 2, "the next turn: its window put the last exchange where the state line was");
+  assert.ok("ms" in model.turns.at(-1)!.rewarm!, "the turn says it started from the warm state");
+  await ask([sys, { role: "assistant", content: "[Robot now: B]" }, { role: "user", content: "hi" }]);
+  assert.equal(calls.restored, 3, "a new chat, or a window that dropped its oldest exchange");
+  assert.equal(opened.length, 3, "each restore read from the engine's cache");
+  refuse = true;
+  const before = calls.complete.length;
+  await ask([sys, { role: "assistant", content: "[Robot now: C]" }, { role: "user", content: "spin" }]);
+  assert.equal(calls.complete.length, before + 1, "a restore that fails does not stop the turn");
+  assert.deepEqual(model.turns.at(-1)!.rewarm, { failed: "the restore returned nothing" });
+});
+
+test("a window is kept while its prompt fits 1648 tokens, the window counted at the measured 3.9 characters a token after the system turn", async () => {
+  const { llm } = fakeLlm(); // the warm-up counts the system turn as 1255 tokens: 393 are left for the window
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  await model.warm(serving.system, serving.tools);
+  const sys = { role: "system" as const, content: serving.system };
+  const empty = renderNative(template, [sys, { role: "user", content: "" }], serving.tools, { enable_thinking: false }).length - PREFIX.length;
+  const window = (chars: number) => [sys, { role: "user" as const, content: "a".repeat(chars - empty) }];
+  assert.equal(model.fits(window(1400), serving.tools), true, "1400 characters, about 330 tokens at the fewest measured: kept (at 3 characters a token it was cut)");
+  assert.equal(model.fits(window(1532), serving.tools), true, "the most that fits: 1255 + ceil(1532 / 3.9) = 1648");
+  assert.equal(model.fits(window(1533), serving.tools), false);
+});
+
 test("the phone model passes the parts' manifest to the load, and the tools as the provider sends them", async () => {
   const { llm, calls } = fakeLlm();
   const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
@@ -445,4 +491,151 @@ test("the build order: the shim's jspi32 first wherever JSPI is there and served
   assert.deepEqual(buildOrder({ webkit: false, jspi: false, jspi32Served: true }), ["default", "asyncify"], "no JSPI (Firefox): wllama's own check takes the stock build to its compat path");
   assert.deepEqual(buildOrder({ webkit: false, jspi: true, jspi32Served: true, noMemory64: true }), ["jspi32", "asyncify"], "?mem64=0");
   assert.deepEqual(buildOrder({ webkit: true, jspi: true, jspi32Served: true, only: "default" }), ["default"], "?build= tries that one");
+});
+
+// ---- v5 (D1, 2026-10-12): a signature prefix. The serving file has no tools: its system text lists each tool on one line, and nothing renders a tools block.
+const servingV5 = JSON.parse(readFileSync(fixture("robot-v5-serving.json"), "utf8")) as { system: string; tools?: ToolChatTool[] };
+const renderedV5 = JSON.parse(readFileSync(fixture("robot-v5-rendered.json"), "utf8")) as { messages: ToolChatMessage[]; prompt: string }[];
+
+test("v5: the prompt renders with no tools block, exactly as llama-server renders it; the grammar still holds the tools", async () => {
+  assert.equal(servingV5.tools, undefined, "D1's v5 serving file has no tools");
+  const seen: RawRequest[] = [];
+  const chat = lockedToolChat({ template: () => template, complete: async (req) => { seen.push(req); return { text: "Hi.", stoppedBy: "eog", promptTokens: 1, outputTokens: 1, ms: 1 }; }, bare: () => true });
+  for (const c of renderedV5) {
+    await chat({ messages: c.messages, tools: serving.tools, maxTokens: 50 });
+    assert.equal(seen.at(-1)!.prompt, c.prompt, "llama-server's /apply-template with no tools, byte for byte");
+    assert.match(seen.at(-1)!.grammar!, /function=set_color>/, "the lock is over the tools the request carries");
+  }
+});
+
+test("v5: the warm-up's prefix is the system turn with no tools block, the one the shipped state was made from (its sidecar's prefix sha256)", async () => {
+  const { llm } = fakeLlm();
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v5-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  model.toolsInPrompt = false;
+  await model.warm(servingV5.system, serving.tools);
+  assert.ok(renderedV5.every((c) => c.prompt.startsWith(model.warmPrompt!)), "every v5 turn starts with it");
+  assert.equal(await sha(model.warmPrompt!), "ee79e1a42ea1216928fa6fab3cde80628f008d09b20be75af5b7e0accfecab1e", "make-state.mjs's prefix sha256 for v5, from llama-server's rendering");
+});
+
+test("v5: the tools are the ones its system text lists, in its order; over the registry's own schemas they build D1's v5-lock.gbnf exactly", async () => {
+  const { signatureTools, signatureView } = await import("../tab/native-turn.ts");
+  const names = signatureTools(servingV5.system);
+  assert.deepEqual(names, ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do"]);
+  const registry = agentRegistry(async () => undefined, { switchTool: false, environments: [] });
+  const offered = toNativeTools(registry.snapshot().tools().map((r) => ({ name: r.tool.name, description: r.tool.description, parameters: r.tool.parameters })));
+  const shown = signatureView(offered, names);
+  assert.deepEqual(shown.map((t) => t.function.name), names, "the conversation's tools the prefix names, nothing else (no update_robot, no shell)");
+  assert.equal(lockGrammar(shown), (JSON.parse(readFileSync(fixture("robot-v5-lock.json"), "utf8")) as { grammar: string }).grammar, "D1's v5 lock, byte for byte");
+});
+
+test("a T7 turn reads its earlier exchanges on their own first, so the next turn (one exchange more) resumes there: no restore, no system turn read again", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  const { llm, calls } = fakeLlm({ restore: async (b) => ({ tokens: 1252, bytes: b.size }) });
+  llm.cachedFile = async () => new Blob([new Uint8Array(64)]);
+  const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  model.stemFirst = true;
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64 });
+  await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); });
+  const sys = { role: "system", content: serving.system };
+  const exchange = (n: number) => [{ role: "user", content: `paint it color ${n}` }, { role: "assistant", content: "", tool_calls: [{ id: `c${n}`, type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "red"}' } }] }, { role: "tool", tool_call_id: `c${n}`, content: "The whole robot is now red." }, { role: "assistant", content: "Done." }];
+  const turn = (n: number) => [sys, ...Array.from({ length: n }, (_, i) => exchange(i)).flat(), { role: "assistant", content: `[Robot now: ${n}]` }, { role: "user", content: `command ${n}` }];
+  const ask = (messages: object[]) => model.toolChat({ messages: messages as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+  await ask(turn(1));
+  const stem1 = calls.complete.at(-2)!;
+  assert.equal(stem1.maxTokens, 0, "the earlier exchanges are read on their own, generating nothing");
+  assert.ok(calls.complete.at(-1)!.prompt.startsWith(stem1.prompt) && stem1.prompt.endsWith("<|im_end|>\n"), "the turn's prompt continues it");
+  assert.doesNotMatch(stem1.prompt, /Robot now/, "it stops before the state line, where the next turn's prompt will differ");
+  await ask(turn(2));
+  await ask(turn(3));
+  assert.equal(calls.restored, 1, "only the warm-up's restore: each turn starts with the last one's earlier exchanges");
+  assert.equal(model.turns.at(-1)!.rewarm, undefined);
+  assert.ok(model.turns.at(-1)!.stem, "the turn says it read its exchanges first");
+  await ask([sys, ...exchange(1), { role: "assistant", content: "[Robot now: 9]" }, { role: "user", content: "command 9" }]); // the oldest exchange dropped
+  assert.equal(calls.restored, 2, "a window that dropped its oldest exchange starts from the warm state");
+});
+
+test("a turn's report counts the exchanges it read first, so a turn's whole cost shows", async () => {
+  const { turnReport } = await import("../tab/phone-model.ts");
+  const t = { at: 0, ms: 900, promptTokens: 66, outputTokens: 27, grammar: true, calls: ['morph({"preset":"spider"})'], text: "", raw: "", prompt: "", timings: { prompt_n: 66 }, stem: { tokens: 95, ms: 12000 } };
+  const r = turnReport(t, false);
+  assert.deepEqual(r.stem, { tokens: 95, ms: 12000 });
+  assert.equal(r.readTotal, 161);
+});
+
+/**
+ * An engine with llama-server's checkpoint rules for a hybrid model (83d855c, server-context.cpp, as D0 traced it on the native server): a prompt that leaves the
+ * engine's sequence resumes from the latest checkpoint at or before that point (none: from the start); a request is read in batches of at most n_batch, broken
+ * min(n_batch, n_ubatch + 4) and min(n_batch, 4) tokens before its end; a checkpoint is taken at the start of a batch that ends within n_ubatch of the end; and
+ * taking one drops every other request's checkpoint but the oldest (checkpoint_min_step 8192). A token is 4 characters of a message, about the real ratio (4.27).
+ */
+function checkpointEngine(o: { batch: number; prefix: string }) {
+  // special tokens split the text first, as a real tokenizer's do, so a message's tokens do not depend on what follows it
+  const tokens = (text: string) => text.split(/(?=<\|im_start\|>)/).flatMap((part) => Array.from({ length: Math.ceil(part.length / 4) }, (_, i) => part.slice(i * 4, i * 4 + 4)));
+  let cache: string[] = [];
+  let checkpoints: { n: number; task: number }[] = [];
+  let task = 0;
+  const read: number[] = [];
+  const run = (prompt: string, generate: number) => {
+    const want = tokens(prompt);
+    task++;
+    let same = 0;
+    while (same < cache.length && same < want.length && cache[same] === want[same]) same++;
+    if (same === want.length) same--; // a prompt the engine holds whole still reads its last token
+    let from = same;
+    if (same < cache.length) { // the sequence cannot be cut back: the latest checkpoint at or before the divergence, else the start
+      const at = checkpoints.filter((c) => c.n <= same).at(-1);
+      from = at ? at.n : 0;
+      checkpoints = checkpoints.filter((c) => c.n <= from);
+    }
+    const end = want.length;
+    for (let pos = from; pos < end; ) {
+      const start = pos;
+      while (pos < end && pos - start < o.batch) {
+        pos++;
+        if (end === pos + Math.min(o.batch, o.batch + 4) || end === pos + Math.min(o.batch, 4)) break;
+      }
+      if (end < pos + o.batch) { // near the end: a checkpoint of the state before this batch
+        checkpoints = checkpoints.filter((c, i) => i === 0 || c.task === task);
+        checkpoints.push({ n: start, task });
+      }
+    }
+    read.push(end - from);
+    cache = [...want, ...Array.from({ length: generate }, (_, i) => `g${task}.${i}`)];
+    return end - from;
+  };
+  const llm: Llm = {
+    async load() {},
+    async chat() { return { text: "", tokens: 0 }; },
+    async loadUrl(_url, opts) { opts.onProgress?.(501453056, 501453056); },
+    chatTemplate: () => template,
+    async complete(req) { const n = run(req.prompt, req.maxTokens > 0 ? 30 : 0); return { text: "", stoppedBy: "eog", promptTokens: n, outputTokens: 0, ms: 1 }; },
+    async restoreState(b) { cache = tokens(o.prefix); checkpoints = []; return { tokens: cache.length, bytes: b.size }; },
+    cachedFile: async () => new Blob([new Uint8Array(64)]),
+    async exit() {},
+  };
+  return { llm, read };
+}
+
+test("over ten turns a turn reads the same however long the chat, at batch 128 with the exchanges read first; at batch 64, or without that read, it grows", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64 });
+  const sys = { role: "system", content: serving.system };
+  const line = (n: number) => `[Robot now: named Rex${n}; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing nothing; skills home: none yet.]`;
+  const exchange = (n: number) => [{ role: "user", content: `paint it color ${n}` }, { role: "assistant", content: "", tool_calls: [{ id: `c${n}`, type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "red"}' } }] }, { role: "tool", tool_call_id: `c${n}`, content: "The whole robot is now red. Looks only: the walking brain still fits." }, { role: "assistant", content: "The whole robot is now red. Looks only: the walking brain still fits." }];
+  const conversation = async (batch: number, stemFirst: boolean) => {
+    const { llm } = checkpointEngine({ batch, prefix: PREFIX });
+    const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch, maxTokens: 300 });
+    model.stemFirst = stemFirst;
+    await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); });
+    for (let n = 0; n < 10; n++) await model.toolChat({ messages: [sys, ...Array.from({ length: n }, (_, i) => exchange(i)).flat(), { role: "assistant", content: line(n) }, { role: "user", content: `command ${n}` }] as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+    return model.turns.map((t) => t.promptTokens + (t.stem?.tokens ?? 0)); // everything each turn read
+  };
+  const flat = await conversation(128, true);
+  assert.ok(flat[9]! <= flat[2]! * 1.1 && flat.slice(2).every((n) => n < 200), `batch 128: ${flat.join(", ")}`);
+  const batch64 = await conversation(64, true);
+  assert.ok(batch64[9]! > batch64[2]! * 2, `batch 64: the tail is more than a batch and its checkpoint lands past the divergence (${batch64.join(", ")})`);
+  const restoring = await conversation(128, false);
+  assert.ok(restoring[9]! > restoring[2]! * 2, `without the exchanges-first read every turn reads its whole window (${restoring.join(", ")})`);
 });
