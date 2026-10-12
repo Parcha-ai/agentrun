@@ -28,7 +28,11 @@ export function teachResultCard(details: unknown): ResultCard | null {
     const goal = m ? str(m.target) : null;
     const checkpoint = num(t.checkpoint);
     const seconds = num(t.seconds);
-    const reason = str(t.reason);
+    const outcomeError = str(t.outcomeError);
+    const words = str(t.summary)?.split("\n")[0] ?? null;
+    // Why it did not pass: the first typed explanation there is (the trainer's reason, what could not be read about its outcome, the thread's own first line), clipped.
+    const why = str(t.reason) ?? (outcomeError !== null ? `its outcome could not be read: ${outcomeError}` : words);
+    const reason = why !== null && why.length > 160 ? `${why.slice(0, 160)}…` : why;
     const parts = [
       skill,
       ...(passed

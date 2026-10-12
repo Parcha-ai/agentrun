@@ -95,7 +95,8 @@ function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts
     const shown = open || lines.length <= TAIL ? lines : lines.slice(-TAIL);
     const rows = shown.map((l) => el("div", `tl ${l.kind}`, l.text));
     const hidden = lines.length - shown.length;
-    const note = omitted > 0 && open ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
+    // Lines the quiet view leaves out are always said (they are in the raw output), expanded or not, whether or not there is a button.
+    const note = omitted > 0 ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
     if (lines.length > TAIL) {
       const more = el("button", "more", open ? "show the last lines" : `${hidden + omitted} earlier line${hidden + omitted === 1 ? "" : "s"}`);
       more.setAttribute("type", "button");

@@ -141,6 +141,8 @@ try {
   ].join("\n");
   // A huge mixed log (events, long plain lines): the quiet view keeps its limits, and a raw view the reader expanded stays expanded across a redraw.
   const hugeMixed = Array.from({ length: 3000 }, (_, i) => (i % 3 === 0 ? JSON.stringify({ event: "skill.checkpoint", skill: "wave", checkpoint: i, steps: i, t: i, passes: false, metric: { name: "paw up", value: 0.1, unit: "share of time", target: ">= 0.6" }, fell_at: null }) : "x".repeat(900))).join("\n");
+  // A log whose start is one giant line (over the 200,000 characters the page reads) and whose last lines are trainer events: shortened, and it says so.
+  const giantThenEvents = "y".repeat(300_000) + "\n" + trainer.split("\n").slice(0, 3).join("\n");
   const longLog = Array.from({ length: 3000 }, (_, i) => `epoch ${i + 1} reward ${i}`).join("\n"); // far more than the 6,000 characters a body keeps of a short output
   const entries = JSON.stringify([
     { id: "t-u", kind: "pi.user", model: [{ role: "user", content: "You are thread 3 of 8, with GPU 3 of your own. Your skill: spin.\n\nBrief: spin in place.", timestamp: 1 }] },
@@ -150,6 +152,8 @@ try {
     { id: "t-r2", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tb", toolName: "bash", content: [{ type: "text", text: log }] }] },
     { id: "t-a5", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "th", name: "bash", arguments: { command: "pi-run wave -- noisy" } }] }] },
     { id: "t-r5", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "th", toolName: "bash", content: [{ type: "text", text: hugeMixed }] }] },
+    { id: "t-a6", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tg", name: "bash", arguments: { command: "pi-run wave -- giant" } }] }] },
+    { id: "t-r6", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tg", toolName: "bash", content: [{ type: "text", text: giantThenEvents }] }] },
     { id: "t-a4", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tt", name: "bash", arguments: { command: "pi-run wave -- train-skill --steps 12M" } }] }] },
     { id: "t-r4", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tt", toolName: "bash", content: [{ type: "text", text: trainer }] }] },
     { id: "t-a3", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tl", name: "bash", arguments: { command: "tail -f train.log" } }] }] },
@@ -179,6 +183,8 @@ try {
   ok("however much of a huge log the page left unread, the count of earlier lines is exact (3000 lines, 8 shown) and the omitted-lines note says how many the quiet view leaves out", huge.label === "2992 earlier lines" && Number(/^… (\d+) earlier lines not shown here/.exec(huge.note)?.[1]) + (huge.rows - 1) === 3000, huge);
   ok("a huge mixed log keeps the quiet view's limits: at most 400 rows, no line longer than 400 characters (and a note of what is left out)", huge.rows <= 402 && huge.widest <= 460, huge);
   // The quiet view above was expanded; switching to the raw view keeps that choice, and a redraw (more output arriving) keeps it too.
+  const giant = await ev<{ note: string; rows: number }>(`(() => { const o = [...document.querySelectorAll("details.thread .output.trainer")].find((x) => /pi-run wave -- giant/.test(x.closest("details.tool").textContent)); return { note: o.querySelector(".tbody .tl.plain")?.textContent ?? "", rows: o.querySelectorAll(".tbody .tl").length }; })()`);
+  ok("a shortened log says it is shortened even when what is left is only a few lines: the note names how many earlier lines were not read", /^… 1 earlier line not shown here/.test(giant.note), giant);
   const rawKept = await ev<{ afterSwitch: string; afterRedraw: string }>(`(() => { const find = () => [...document.querySelectorAll("details.thread .output.trainer")].find((x) => /pi-run wave -- noisy/.test(x.closest("details.tool").textContent)); const o = find(); o.querySelector(":scope > button.more").click(); const afterSwitch = find().querySelector(".tbody .more")?.textContent ?? ""; demo.renderChat(); return { afterSwitch, afterRedraw: find().querySelector(".tbody .more")?.textContent ?? "" }; })()`);
   ok("a log the reader expanded stays expanded when switching to the raw view and when the chat redraws", rawKept.afterSwitch === "show the last lines" && rawKept.afterRedraw === "show the last lines", rawKept);
   await ev(`document.querySelector("details.thread .output .more").click()`);

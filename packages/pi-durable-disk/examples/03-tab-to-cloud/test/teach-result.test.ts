@@ -16,7 +16,7 @@ test("one row per thread, in GPU order: a pass with its measurement, checkpoint 
 });
 
 test("a pass without a measurement still reads, other outcomes are named plainly, and a failed homecoming says so", () => {
-  const card = teachResultCard({ threads: [thread({ metric: undefined, checkpoint: undefined, seconds: undefined }), thread({ skill: "spin", gpu: 2, status: "timed-out", seconds: undefined }), thread({ skill: "wave", gpu: 3, status: "bad-body", seconds: undefined })], home: { error: "no skill is done" } })!;
+  const card = teachResultCard({ threads: [thread({ metric: undefined, checkpoint: undefined, seconds: undefined }), thread({ skill: "spin", gpu: 2, status: "timed-out", seconds: undefined, summary: "" }), thread({ skill: "wave", gpu: 3, status: "bad-body", seconds: undefined, summary: "" })], home: { error: "no skill is done" } })!;
   assert.deepEqual(card.rows.map((r) => r.text), ["walk", "spin · timed out", "wave · bad body"]);
   assert.equal(card.rows[0]!.passed, true);
   assert.equal(card.home, "Bringing the skills home failed: no skill is done");
@@ -39,4 +39,13 @@ test("the briefs the parent gave each thread, from teach_skills' own typed argum
   assert.equal(briefsFromArgs("not json").size, 0);
   assert.equal(briefsFromArgs(JSON.stringify({})).size, 0);
   assert.equal(briefsFromArgs(JSON.stringify({ skills: "walk" })).size, 0);
+});
+
+test("an unsuccessful row says why: the first typed explanation present (the trainer's reason, then what could not be read about its outcome, then the first line of the thread's own words), clipped", () => {
+  const card = teachResultCard({ threads: [
+    thread({ skill: "a", gpu: 1, status: "error", metric: undefined, checkpoint: undefined, seconds: undefined, reason: undefined, summary: "CUDA out of memory in the reward module\nTraceback follows" }),
+    thread({ skill: "b", gpu: 2, status: "reported", metric: undefined, checkpoint: undefined, seconds: undefined, reason: undefined, summary: "I think it works.", outcomeError: "the status hook threw" }),
+    thread({ skill: "c", gpu: 3, status: "never-passed", metric: undefined, checkpoint: undefined, seconds: undefined, reason: "the paw never rose", summary: "ignored when the trainer's reason is there" }),
+  ] })!;
+  assert.deepEqual(card.rows.map((r) => r.text), ["a · error · CUDA out of memory in the reward module", "b · reported · its outcome could not be read: the status hook threw", "c · never passed · the paw never rose"]);
 });
