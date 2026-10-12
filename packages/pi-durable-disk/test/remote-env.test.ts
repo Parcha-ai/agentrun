@@ -14,6 +14,103 @@ import { registerEnvCases } from "./_env-conformance.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * A pi-run test's command: its shell writes its own pid to `${dir}/${tag}-${name}.pid` once pi-run has started it (so pi-run has
+ * taken its key), then runs `body`. The tag stays in its arguments, for `leftover`.
+ */
+const command = (dir: string, tag: string, name: string, body: string) => `sh -c 'echo $$ > ${dir}/${tag}-${name}.pid; ${body}' ${tag}-${name}`;
+/**
+ * Whether the command `name` has started and is still alive (not a zombie), by the pid it wrote itself: a match on its
+ * arguments would also find RemoteEnv's wrapper, which carries them before pi-run starts the command.
+ */
+function alive(dir: string, tag: string, name: string): boolean {
+  let pid: string;
+  try {
+    pid = readFileSync(join(dir, `${tag}-${name}.pid`), "utf8").trim();
+  } catch {
+    return false;
+  }
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+/**
+ * pi-run as a test runs it: with its records in the test's own directory (PI_RUN_DIR), so suites running at once on one host
+ * (parallel worktrees, two lanes) never stop each other's runs of the same key through a shared /tmp/.pi-run.
+ */
+const piRunIn = (root: string, piRun: string, records = join(root, "pi-run-records")) => `PI_RUN_DIR=${records} ${piRun}`;
+/** Whether anything tagged `${tag}-${name}` is left on this host: its wrapper, pi-run or its command. */
+const leftover = (tag: string, name: string) => spawnSync("pgrep", ["-f", `${tag}-${name}`]).stdout.toString().trim() !== "";
+/** The index of the first of `promises` to settle, or -1 after `ms`; the deadline's timer is cleared either way. */
+async function firstSettled(promises: Promise<unknown>[], ms: number): Promise<number> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<number>((resolve) => (timer = setTimeout(() => resolve(-1), ms)));
+  try {
+    return await Promise.race([...promises.map((p, i) => p.then(() => i)), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+/** A rerun of a key stops the previous run of that key (its whole process group) and leaves another key's run alone. */
+async function rerunStopsOnlyItsKey(box: RemoteBox, root: string): Promise<void> {
+  const bin = join(root, "bin", "pi-run");
+  await installPiRun(box, bin);
+  const piRun = piRunIn(root, bin);
+  const env = new RemoteEnv({ box, root });
+  const tag = `pda-pirun-${process.pid}-${Date.now()}`;
+  const first = env.exec(`${piRun} walk -- ${command(root, tag, "walk", "sleep 30 & sleep 30; wait")}`, {}, context);
+  const other = env.exec(`${piRun} spin -- ${command(root, tag, "spin", "sleep 30")}`, {}, context);
+  await waitFor(() => alive(root, tag, "walk") && alive(root, tag, "spin"), 20_000, "both runs to start");
+  const second = await env.exec(`${piRun} walk -- echo second`, {}, context);
+  assert.equal(second.ok && second.value.exitCode, 0);
+  const r1 = await first;
+  assert.ok(r1.ok && r1.value.exitCode !== 0, "the first run was stopped");
+  await waitFor(() => !leftover(tag, "walk"), 20_000, "nothing of the first run to be left");
+  assert.equal(alive(root, tag, "spin"), true, "the other key still runs");
+  await env.exec(`${piRun} spin -- true`, {}, context);
+  await other;
+}
+
+/**
+ * Two pi-run starts of one key at once leave exactly one running. Events, not a clock: the start that takes the lock second
+ * stops the other's process group (polling every 0.5 s) and only then starts its own command, which on a loaded host can be
+ * seconds after both began. The stopped start is the one whose exec returns; then the other's command comes up, and the
+ * stopped one stays down. `keys` also checks that keys differing only in punctuation stay apart.
+ */
+async function twoStartsLeaveOne(box: RemoteBox, root: string, keys: boolean): Promise<void> {
+  const bin = join(root, "bin", "pi-run");
+  await installPiRun(box, bin);
+  const piRun = piRunIn(root, bin);
+  const env = new RemoteEnv({ box, root });
+  const tag = `pda-pirun2-${process.pid}-${Date.now()}`;
+  const runs = [env.exec(`${piRun} k -- ${command(root, tag, "a", "sleep 30")}`, {}, context), env.exec(`${piRun} k -- ${command(root, tag, "b", "sleep 30")}`, {}, context)];
+  const stopped = await firstSettled(runs, 20_000);
+  assert.notEqual(stopped, -1, "one start of k stopped the other within 20 s");
+  const [loser, winner] = stopped === 0 ? ["a", "b"] : ["b", "a"];
+  await waitFor(() => alive(root, tag, winner), 20_000, `the run of k that stopped the other (${winner})`);
+  assert.equal(alive(root, tag, loser), false, "exactly one run of k");
+  if (keys) {
+    const colon = env.exec(`${piRun} walk:a -- ${command(root, tag, "colon", "sleep 30")}`, {}, context);
+    await waitFor(() => alive(root, tag, "colon"), 20_000, "the run of walk:a"); // its pid is written once walk:a is its key
+    await env.exec(`${piRun} walk/a -- true`, {}, context);
+    assert.equal(alive(root, tag, "colon"), true, "walk/a did not stop walk:a");
+    await env.exec(`${piRun} walk:a -- true`, {}, context);
+    await colon;
+  }
+  await env.exec(`${piRun} k -- true`, {}, context);
+  await Promise.all(runs);
+}
+
+/** Poll until `condition` holds, or fail naming `what` after `ms`. */
+async function waitFor(condition: () => boolean, ms: number, what: string): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(50);
+  }
+}
 
 /**
  * A box that runs the env's own fixed scripts as local processes: the shell semantics are real, the transport is a pipe.
@@ -341,26 +438,9 @@ describe("remoteEnvs: the Harness's env for threads with boxes", () => {
 
 describe("pi-run: one run per key on a box", () => {
   it("a rerun of the same key stops the previous run's whole process group first; another key is left alone", async () => {
-    await withRoot(async (root) => {
-      const box = localBox();
-      const piRun = join(root, "bin", "pi-run");
-      await installPiRun(box, piRun);
-      const env = new RemoteEnv({ box, root });
-      const tag = `pda-pirun-${process.pid}-${Date.now()}`;
-      const first = env.exec(`${piRun} walk -- sh -c 'sleep 30 & sleep 30; wait' ${tag}-walk`, {}, context);
-      const other = env.exec(`${piRun} spin -- sh -c 'sleep 30' ${tag}-spin`, {}, context);
-      await sleep(800);
-      const second = await env.exec(`${piRun} walk -- echo second`, {}, context);
-      assert.equal(second.ok && second.value.exitCode, 0);
-      const r1 = await first;
-      assert.ok(r1.ok && r1.value.exitCode !== 0, "the first run was stopped");
-      await sleep(300);
-      assert.equal(spawnSync("pgrep", ["-f", `${tag}-walk`]).stdout.toString().trim(), "", "nothing of the first run is left");
-      assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-spin`]).stdout.toString().trim(), "", "the other key still runs");
-      await env.exec(`${piRun} spin -- true`, {}, context);
-      await other;
-    });
+    await withRoot((root) => rerunStopsOnlyItsKey(localBox(), root));
   });
+
 });
 
 describe("Greptile on #209: the findings, each pinned", () => {
@@ -454,24 +534,7 @@ describe("Greptile on #209: the findings, each pinned", () => {
   });
 
   it("pi-run: two starts of one key at once leave exactly one running; keys that differ only in punctuation stay apart", async () => {
-    await withRoot(async (root) => {
-      const box = localBox();
-      const piRun = join(root, "bin", "pi-run");
-      await installPiRun(box, piRun);
-      const env = new RemoteEnv({ box, root });
-      const tag = `pda-pirun2-${process.pid}-${Date.now()}`;
-      const runs = [env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-a`, {}, context), env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-b`, {}, context)];
-      await sleep(2_500);
-      const running = (suffix: string) => spawnSync("pgrep", ["-f", `${tag}-${suffix}`]).stdout.toString().trim() !== "";
-      assert.equal([running("a"), running("b")].filter(Boolean).length, 1, "exactly one run of k"); // a run shows as a few processes (wrapper, pi-run, command)
-      const colon = env.exec(`${piRun} walk:a -- sh -c 'sleep 30' ${tag}-colon`, {}, context);
-      await sleep(800);
-      await env.exec(`${piRun} walk/a -- true`, {}, context);
-      assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-colon`]).stdout.toString().trim(), "", "walk/a did not stop walk:a");
-      await env.exec(`${piRun} k -- true`, {}, context);
-      await env.exec(`${piRun} walk:a -- true`, {}, context);
-      await Promise.all([...runs, colon]);
-    });
+    await withRoot((root) => twoStartsLeaveOne(localBox(), root, true));
   });
 
   it("a symbolic link to a directory lists its entries; a name that starts with a dash is listed like any other", async () => {
@@ -527,13 +590,15 @@ describe("pi-run's lock", () => {
   it("pi-run takes the key's lock before it checks and records: a holder of the lock holds it back", async () => {
     await withRoot(async (root) => {
       const box = localBox();
-      const piRun = join(root, "bin", "pi-run");
-      await installPiRun(box, piRun);
+      const bin = join(root, "bin", "pi-run");
+      await installPiRun(box, bin);
+      const records = join(root, "pi-run-records");
+      const piRun = piRunIn(root, bin, records);
       const env = new RemoteEnv({ box, root });
       const key = `lock-${process.pid}-${Date.now()}`;
       const k = createHash("sha256").update(key).digest("hex").slice(0, 32);
-      await mkdir("/tmp/.pi-run", { recursive: true });
-      const holder = spawn("flock", [`/tmp/.pi-run/${k}.lock`, "sleep", "1.5"]);
+      await mkdir(records, { recursive: true });
+      const holder = spawn("flock", [`${records}/${k}.lock`, "sleep", "1.5"]);
       const released = new Promise((r2) => holder.on("close", r2));
       await sleep(200);
       const t0 = Date.now();
@@ -543,6 +608,30 @@ describe("pi-run's lock", () => {
       const startedAt = Number(readFileSync(join(root, "started"), "utf8").trim());
       assert.ok(startedAt - t0 >= 1_000, `the command started ${startedAt - t0} ms in, inside the other holder's lock`);
       await released;
+    });
+  });
+});
+
+describe("pi-run's records (PI_RUN_DIR)", () => {
+  it("two record directories keep one key apart; in one directory a rerun of the key stops the earlier run", async () => {
+    await withRoot(async (root) => {
+      const box = localBox();
+      const bin = join(root, "bin", "pi-run");
+      await installPiRun(box, bin);
+      const env = new RemoteEnv({ box, root });
+      const tag = `pda-pirun-dirs-${process.pid}-${Date.now()}`;
+      const [inA, inB] = [piRunIn(root, bin, join(root, "records-a")), piRunIn(root, bin, join(root, "records-b"))];
+      const a = env.exec(`${inA} k -- ${command(root, tag, "a", "sleep 30")}`, {}, context);
+      await waitFor(() => alive(root, tag, "a"), 20_000, "the run of k with records-a");
+      const b = env.exec(`${inB} k -- ${command(root, tag, "b", "sleep 30")}`, {}, context);
+      await waitFor(() => alive(root, tag, "b"), 20_000, "the run of k with records-b");
+      assert.equal(alive(root, tag, "a"), true, "a run of the same key with other records does not stop it");
+      await env.exec(`${inA} k -- true`, {}, context); // the same records: this rerun of k stops the first
+      assert.notEqual(await firstSettled([a], 20_000), -1, "the rerun with the same records stopped the first run");
+      await waitFor(() => !alive(root, tag, "a"), 20_000, "the first run to be gone");
+      assert.equal(alive(root, tag, "b"), true, "and left the run with other records alone");
+      await env.exec(`${inB} k -- true`, {}, context);
+      await b;
     });
   });
 });
