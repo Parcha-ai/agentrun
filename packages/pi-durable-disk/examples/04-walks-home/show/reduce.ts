@@ -23,6 +23,7 @@ export function emptyState(): ShowState {
     homecoming: null,
     tools: [],
     threads: [],
+    robotBody: null,
     decision: null,
     setup: null,
     versions: [],
@@ -113,10 +114,12 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       return { ...state, now, checkin: { ...event.checkin, at: event.at } };
     case "homecoming":
       return { ...state, now, homecoming: { ...event.homecoming, at: event.at } };
+    case "body":
+      return state.robotBody?.sha === event.sha ? { ...state, now } : { ...state, now, robotBody: { sha: event.sha, at: event.at } };
     case "thread":
     case "thread.point": {
       const i = state.threads.findIndex((t) => t.id === event.id);
-      const cur: Thread = i >= 0 ? state.threads[i]! : { id: event.id, skill: null, host: null, status: "starting", acquireMs: null, costUsd: null, metric: null, unit: null, target: null, home: false, points: [], at: event.at };
+      const cur: Thread = i >= 0 ? state.threads[i]! : { id: event.id, skill: null, host: null, status: "starting", acquireMs: null, costUsd: null, metric: null, unit: null, target: null, mjcf: null, bodyName: null, passedS: null, wallS: null, cpuS: null, cpuCores: null, home: false, points: [], at: event.at };
       let next: Thread;
       if (event.t === "thread") {
         const patch = Object.fromEntries(Object.entries(event.patch).filter(([, v]) => v !== undefined));

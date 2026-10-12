@@ -1,4 +1,5 @@
 // Reads D2's per-skill files from the run's disk, about once a second, and says what is new (skills.ts). A file not written yet (the disk answers 204) and a failed read are both "nothing new".
+import { parseHomeSkills } from "../relearn.ts";
 import { SKILLS, parseSkillJson, parseSkillProgress, skillEvents } from "../skills.ts";
 import type { ShowEvent, Thread } from "../types.ts";
 
@@ -15,6 +16,8 @@ export class SkillsPoller {
   private readonly o: SkillsPollerOptions;
   private last = new Map<string, { n: number; json: string; status: Thread["status"] | undefined }>();
   private busy = false;
+  /** The robot's body last said. */
+  private body = "";
   /** Counts the runs: a tick that started in an earlier one drops what it read. */
   private gen = 0;
 
@@ -25,6 +28,7 @@ export class SkillsPoller {
   /** A new run (the feed started over): what was said about the old one is not true of this one, and a tick still reading the old one says nothing more. */
   reset(): void {
     this.last.clear();
+    this.body = "";
     this.gen++;
     this.busy = false;
   }
@@ -35,6 +39,14 @@ export class SkillsPoller {
     this.busy = true;
     const gen = this.gen;
     try {
+      // The robot's own body, so the stage can tell a skill trained for another body (a relearn).
+      const homeText = await this.o.read("home/skills.json").catch(() => undefined);
+      if (gen !== this.gen) return;
+      const home = homeText !== undefined ? parseHomeSkills(homeText) : null;
+      if (home && home.bodySha !== this.body) {
+        this.body = home.bodySha;
+        this.o.emit({ t: "body", at: this.o.now(), sha: home.bodySha });
+      }
       for (const dir of this.o.skills ?? SKILLS) {
         const [jsonText, progressText] = [await this.o.read(`skills/${dir}/skill.json`).catch(() => undefined), await this.o.read(`skills/${dir}/skill-progress.jsonl`).catch(() => undefined)];
         if (gen !== this.gen) return;
