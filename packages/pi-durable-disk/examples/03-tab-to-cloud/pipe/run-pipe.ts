@@ -290,6 +290,12 @@ export class RunPipe {
     return this.#writer?.dead ? undefined : this.#writer?.tab;
   }
 
+  /** A writer is attached, alive, and has finished restoring: a line sent to it now reaches a page that can run it. */
+  get writerReady(): boolean {
+    const writer = this.#writer;
+    return writer !== undefined && !writer.dead && !writer.attaching && !writer.restoring;
+  }
+
   get epoch(): number {
     return this.#epoch;
   }

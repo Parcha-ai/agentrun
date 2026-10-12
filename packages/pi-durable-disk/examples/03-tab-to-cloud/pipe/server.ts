@@ -154,6 +154,11 @@ export interface DemoServerOptions {
   readonly submitRetryMs?: number;
   /** The wait between those retries. Default 500 ms. */
   readonly submitRetryDelayMs?: number;
+  /**
+   * How long the server waits for a writer of the run to come back after the tab's socket closed (a page refresh) before it treats the tab as gone and
+   * moves the run to the cloud. A writer that returns inside it keeps the run in the browser, and the lines typed meanwhile go to it. Default 15 s; 0 moves at once.
+   */
+  readonly writerReturnMs?: number;
   /** How long the server waits for the agent's closing turn at home (default 60 s) before it replays the requests queued during the move home anyway. */
   readonly homeTurnMs?: number;
   /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
@@ -228,6 +233,8 @@ interface RunState {
   placedTask: { text: string; sent: boolean } | undefined;
   /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
   homeTurn: HomeWait | undefined;
+  /** The wait for the writer to come back after its socket closed: the lines that arrive meanwhile queue behind it. Cancelled when the server closes. */
+  writerGrace: { cancelled: boolean } | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
   /** Messages whose placement is in progress (asked of the placer, or waiting their turn behind another): the end of a turn must not send the agent home under them. */
@@ -485,6 +492,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   /** The writer stopped pinging (a tab closed, a remote host died): the run goes to the cloud's first environment, unplanned. */
   async function writerGone(state: RunState, pipe: RunPipe): Promise<void> {
     if (state.pipe !== pipe || state.switching || state.checkingOut) return;
+    // A page refresh closes the socket for a few seconds: the run waits in the browser for a writer to come back before it is taken to the cloud.
+    if (await writerReturns(state, pipe)) return;
     const target = options.cloud?.environments.find((e) => e.kind === "cloud");
     const started = Date.now();
     const move = newMove(phraseOf(state.placement), false);
@@ -499,7 +508,36 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     log("released", { run: state.ref.id, ms: Date.now() - started });
     void dropRemote(state);
     if (!target) setPlacement(state, { where: "parked", detail: "the tab is gone" });
-    else await startCloud(state, target, move, "the tab is gone", started);
+    else {
+      await startCloud(state, target, move, "the tab is gone", started);
+      // The lines that arrived during the grace go to the host the run has now.
+      await flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+    }
+  }
+
+  /**
+   * Wait up to `writerReturnMs` for the run's pipe to have a writer again. True when the run stays where it is (a writer came back, or
+   * something else took over the run meanwhile); false when the grace ran out and the tab is gone. The outcome is logged.
+   */
+  async function writerReturns(state: RunState, pipe: RunPipe): Promise<boolean> {
+    const bound = options.writerReturnMs ?? 15_000;
+    if (bound <= 0) return false;
+    const started = Date.now();
+    const wait = { cancelled: false };
+    state.writerGrace = wait;
+    let outcome: "returned" | "expired" | "superseded" | "closed" = "expired";
+    while (Date.now() - started < bound) {
+      if (wait.cancelled) outcome = "closed";
+      else if (state.pipe !== pipe || state.switching || state.checkingOut) outcome = "superseded";
+      else if (pipe.writerReady) outcome = "returned";
+      if (outcome !== "expired") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (state.writerGrace === wait) state.writerGrace = undefined;
+    log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started });
+    // The lines typed meanwhile are placed now, with the run still in the browser.
+    if (outcome === "returned") await flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+    return outcome !== "expired";
   }
 
   /** Start the released run in a cloud environment; on failure it stays parked on the disk. */
@@ -800,9 +838,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
   async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string, decided?: PlacementDecision): Promise<void> {
     // An earlier message's move is still going: this one goes to the host the run has when it ends.
     // (and while the home check and the agent's closing turn run: a new move then would release the pipe the check reads through and overtake the requests already queued)
-    if (state.switching || state.homeTurn) {
+    if (state.switching || state.homeTurn || state.writerGrace) {
       state.pendingSubmits.push({ text, requestId, queuedBy: socket, ...(decided ? { decided } : {}) });
-      log("placement.queued", { run: state.ref.id, requestId, behind: state.switching ? "the move" : "the home wait" });
+      log("placement.queued", { run: state.ref.id, requestId, behind: state.switching ? "the move" : state.homeTurn ? "the home wait" : "the tab's return" });
       return;
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
@@ -1337,6 +1375,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       clients: new Map(),
       pendingSubmits: [],
       homeTurn: undefined,
+      writerGrace: undefined,
       turnSince: undefined,
       placingCount: 0,
       cloudEpoch: 0,
@@ -1807,6 +1846,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           state.homeTurn.finish();
           log("placement.home-wait-cancelled", { run: state.ref.id });
         }
+        if (state.writerGrace) state.writerGrace.cancelled = true;
         unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);
         if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((error) => log("release.failed", { run: state.ref.id, error: (error as Error).message }));
