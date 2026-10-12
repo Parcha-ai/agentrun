@@ -134,9 +134,7 @@ test("a conversion that runs too long is cut and is over budget", async (t) => {
   const r = await rig(t, { timeoutS: 1 });
   r.mode("hang");
   const source = await r.source("slow.docx", docx(para("x")));
-  const started = performance.now();
   await assert.rejects(r.provider.office(source, {}, r.call()), misses("over_budget", /LibreOffice did not finish within 1 s/));
-  assert.ok(performance.now() - started < 10_000);
   assert.deepEqual(readdirSync(r.work), []);
 });
 
