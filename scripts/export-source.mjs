@@ -96,7 +96,10 @@ if (arguments_.includes('--inventory-only')) {
 const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
 const allowedDirectories = new Set(['docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
-const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.py']);
+const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean']);
+// Python trainers and MuJoCo bodies are example code (a decision of the project owner): text inside an examples tree only.
+const exampleTextExtensions = new Set(['.py', '.xml']);
+function underExamples(path) { return /^(?:examples|packages\/[^/]+\/examples)\//.test(path); }
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm']);
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
@@ -143,7 +146,7 @@ async function collect(relative = '') {
     if (entry.isDirectory()) { await collect(path); continue; }
     if (!entry.isFile()) throw new Error(`Source export refuses special file: ${path}`);
     const ext = extension(path);
-    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'spec/lean/lean-toolchain';
+    const isText = entry.name === '.gitignore' || textExtensions.has(ext) || (exampleTextExtensions.has(ext) && underExamples(path)) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'spec/lean/lean-toolchain';
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
     if (isText) {
