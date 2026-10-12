@@ -143,6 +143,7 @@ try {
   const hugeMixed = Array.from({ length: 3000 }, (_, i) => (i % 3 === 0 ? JSON.stringify({ event: "skill.checkpoint", skill: "wave", checkpoint: i, steps: i, t: i, passes: false, metric: { name: "paw up", value: 0.1, unit: "share of time", target: ">= 0.6" }, fell_at: null }) : "x".repeat(900))).join("\n");
   // A log whose start is one giant line (over the 200,000 characters the page reads) and whose last lines are trainer events: shortened, and it says so.
   const giantThenEvents = "y".repeat(300_000) + "\n" + trainer.split("\n").slice(0, 3).join("\n");
+  const checkOut = JSON.stringify({ event: "skill.check", policy: "/workspace/runs/wave/policy.json", passes: true, metric: { name: "paw up", value: 0.62, unit: "share of time", target: ">= 0.6" } });
   const longLog = Array.from({ length: 3000 }, (_, i) => `epoch ${i + 1} reward ${i}`).join("\n"); // far more than the 6,000 characters a body keeps of a short output
   const entries = JSON.stringify([
     { id: "t-u", kind: "pi.user", model: [{ role: "user", content: "You are thread 3 of 8, with GPU 3 of your own. Your skill: spin.\n\nBrief: spin in place.", timestamp: 1 }] },
@@ -154,6 +155,8 @@ try {
     { id: "t-r5", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "th", toolName: "bash", content: [{ type: "text", text: hugeMixed }] }] },
     { id: "t-a6", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tg", name: "bash", arguments: { command: "pi-run wave -- giant" } }] }] },
     { id: "t-r6", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tg", toolName: "bash", content: [{ type: "text", text: giantThenEvents }] }] },
+    { id: "t-a7", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tk", name: "bash", arguments: { command: "pi-run wave -- train-skill --check /workspace/runs/wave/policy.json" } }] }] },
+    { id: "t-r7", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tk", toolName: "bash", content: [{ type: "text", text: checkOut }] }] },
     { id: "t-a4", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tt", name: "bash", arguments: { command: "pi-run wave -- train-skill --steps 12M" } }] }] },
     { id: "t-r4", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tt", toolName: "bash", content: [{ type: "text", text: trainer }] }] },
     { id: "t-a3", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "tl", name: "bash", arguments: { command: "tail -f train.log" } }] }] },
@@ -183,6 +186,8 @@ try {
   ok("however much of a huge log the page left unread, the count of earlier lines is exact (3000 lines, 8 shown) and the omitted-lines note says how many the quiet view leaves out", huge.label === "2992 earlier lines" && Number(/^… (\d+) earlier lines not shown here/.exec(huge.note)?.[1]) + (huge.rows - 1) === 3000, huge);
   ok("a huge mixed log keeps the quiet view's limits: at most 400 rows, no line longer than 400 characters (and a note of what is left out)", huge.rows <= 402 && huge.widest <= 460, huge);
   // The quiet view above was expanded; switching to the raw view keeps that choice, and a redraw (more output arriving) keeps it too.
+  const checkLine = await ev<string>(`(() => { const o = [...document.querySelectorAll("details.thread .output.trainer")].find((x) => /--check/.test(x.closest("details.tool").textContent)); const l = o.querySelector(".tbody .tl"); return l.className + " | " + l.textContent; })()`);
+  ok("a trainer's --check result reads as a quiet line like a checkpoint, passing in green, the raw JSON one click away", checkLine === "tl pass | check · paw up 0.62 share of time (target ≥ 0.6) · ✓ passes", checkLine);
   const giant = await ev<{ note: string; rows: number }>(`(() => { const o = [...document.querySelectorAll("details.thread .output.trainer")].find((x) => /pi-run wave -- giant/.test(x.closest("details.tool").textContent)); return { note: o.querySelector(".tbody .tl.plain")?.textContent ?? "", rows: o.querySelectorAll(".tbody .tl").length }; })()`);
   ok("a shortened log says it is shortened even when what is left is only a few lines: the note names how many earlier lines were not read", /^… 1 earlier line not shown here/.test(giant.note), giant);
   const rawKept = await ev<{ afterSwitch: string; afterRedraw: string }>(`(() => { const find = () => [...document.querySelectorAll("details.thread .output.trainer")].find((x) => /pi-run wave -- noisy/.test(x.closest("details.tool").textContent)); const o = find(); o.querySelector(":scope > button.more").click(); const afterSwitch = find().querySelector(".tbody .more")?.textContent ?? ""; demo.renderChat(); return { afterSwitch, afterRedraw: find().querySelector(".tbody .more")?.textContent ?? "" }; })()`);
@@ -226,6 +231,14 @@ try {
   await ev("document.getElementById('offline').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500);
   ok("the run was checked out (the creature page's files are cached with the page)", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
+  // The checkout is one quiet line ("Offline · this browser's brain"); every fact it used to put in the audience's face is one click away.
+  await until(`!document.getElementById("checkedout").hidden`, 15_000).catch(() => undefined); // the page draws it on its next render
+  await page.screenshot(join(shots, "pane-offline-line.png"));
+  const banner = await ev<{ shown: boolean; h: number; open: boolean; line: string; facts: number; text: string }>(`(() => { const s = document.getElementById("checkedout"); const d = s.querySelector("details"); const sum = d ? d.querySelector("summary") : null; const h = Math.round(s.getBoundingClientRect().height); const before = { shown: !s.hidden, h, open: !!d && d.open, line: sum ? sum.textContent.replace(/\\s+/g, " ").trim() : s.textContent.slice(0, 60) }; if (d) d.open = true; return { ...before, facts: document.querySelectorAll("#cannot li").length, text: s.textContent.replace(/\\s+/g, " ") }; })()`);
+  ok("checked out: one quiet line, closed, not a banner full of operator text", banner.shown && !banner.open && banner.h <= 44 && /^Offline · this browser's brain/.test(banner.line), banner);
+  ok("and every fact is one click away: what does not work (six items) and what the checkout is", banner.facts >= 6 && /The live copy of this run is here/.test(banner.text) && /Moves:/.test(banner.text) && /Sync back:/.test(banner.text), banner.text.slice(0, 200));
+  await page.screenshot(join(shots, "pane-offline-open.png"));
+  await ev(`document.querySelector("#checkedout details").open = false`);
   const cached = await ev<string[]>(`caches.open("walks-home-offline-v1").then((c) => c.keys()).then((ks) => ks.map((k) => new URL(k.url).pathname).filter((p) => p.startsWith("/tab/")))`);
   ok("the service worker holds the creature page and MuJoCo's wasm", cached.includes("/tab/") && cached.includes("/tab/main.js") && cached.some((p) => p.endsWith("mujoco.wasm")), cached);
   await page.send("Network.enable");

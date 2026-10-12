@@ -58,6 +58,20 @@ export function trainerLine(event: unknown): string | null {
       const verdict = typeof e.passes === "boolean" ? (e.passes ? " · ✓ passes" : " · not yet") : "";
       return `checkpoint ${n}${what}${verdict}${when}`;
     }
+    case "skill.check": {
+      // `train-skill --check <policy>`: the skill's own test, run once on a finished policy.
+      if (typeof e.passes !== "boolean") return null;
+      const m = bag(e.metric);
+      const name = m ? str(m.name) : null;
+      const value = m ? num(m.value) : null;
+      const unit = m ? str(m.unit) : null;
+      const goal = m ? str(m.target) : null;
+      const what = name !== null && value !== null ? ` · ${name} ${round(value)}${unit ? ` ${unit}` : ""}${goal ? ` (target ${target(goal)})` : ""}` : "";
+      const why = str(e.error)?.split("\n")[0] ?? null;
+      if (what === "" && why === null) return null;
+      const verdict = e.passes ? "✓ passes" : what === "" ? "did not pass" : "not yet";
+      return `check${what} · ${verdict}${!e.passes && why !== null ? ` · ${why}` : ""}`;
+    }
     case "skill.test-error": {
       const n = num(e.checkpoint);
       const why = str(e.error);
@@ -100,7 +114,7 @@ export function humanizeOutput(output: string): { lines: OutputLine[]; recognize
       try {
         const e = JSON.parse(raw) as unknown;
         said = trainerLine(e);
-        passed = bag(e)?.passes === true && bag(e)?.event === "skill.checkpoint";
+        passed = bag(e)?.passes === true && (bag(e)?.event === "skill.checkpoint" || bag(e)?.event === "skill.check");
       } catch {
         said = null;
       }
