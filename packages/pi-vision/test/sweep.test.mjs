@@ -128,8 +128,12 @@ const guardSetup = (sink, limits, eyes, images, providers = []) => ({
  *  eyes look, and each failing look is the miss the model reads, the receipt and the host's event. */
 const shot = (width = 40) => ({ content: [{ type: "text", text: "a screenshot" }, png(width, 30)], details: { path: "shot.png", media: { kind: "image", path: "shot.png", ask: "what is it?" } } });
 async function missesThrough(sink, eyes, call = { ...CALL, model: TEXT_MODEL }, count = FIRST_LINES.length) {
+  assert.ok(eyes, "the route has eyes: without them every look is a clean miss and no poisoned answer is tested");
   const limits = resolveLimits(call.model);
-  for (let i = 0; i < count; i++) sink.result("miss", await guardResult(shot(40 + i), call, guardSetup(sink, limits, eyes)), limits);
+  let asked = 0;
+  const watched = { ...eyes, see: (request, signal) => { asked += 1; return eyes.see(request, signal); } };
+  for (let i = 0; i < count; i++) sink.result("miss", await guardResult(shot(40 + i), call, guardSetup(sink, limits, watched)), limits);
+  assert.equal(asked, count, "every poisoned answer was asked for");
 }
 /** The eyes' errors, one per line, each with the key and the link again on a second line. */
 const failing = (lines) => lines.map((line) => ({ fail: `${line}\nsecond line ${KEY} ${LINK}` }));
@@ -304,13 +308,16 @@ const CASES = [
         sink.result("read", read, shown);
         sink.result("miss", await guardResult(read, blind, guardSetup(sink, limits, eyes)), limits);
       }
+      assert.equal(eyes.ledger.length, FIRST_LINES.length, "every poisoned answer was asked for");
     },
   },
   {
     id: "./durable#callContext",
     run: async (sink) => {
       const kept = new Map();
-      const models = catalog([fauxAssistantMessage("a described screenshot"), ...errorAnswers(FIRST_LINES.slice(0, 14))]);
+      const catalogued = catalog([fauxAssistantMessage("a described screenshot"), ...errorAnswers(FIRST_LINES.slice(0, 14))]);
+      let asked = 0;
+      const models = { getModel: (provider, id) => catalogued.getModel(provider, id), completeSimple: (...request) => { asked += 1; return catalogued.completeSimple(...request); } };
       const api = {
         callId: "call-1", conversationId: "conv-1", models,
         agent: async () => ({ model: { provider: "faux", modelId: "lead-1" } }),
@@ -324,6 +331,7 @@ const CASES = [
       });
       const limits = resolveLimits(call.model);
       for (let i = 0; i < 15; i++) sink.result("fitted", await extension.fit(shot(40 + i), call), limits);
+      assert.equal(asked, 15, "the eyes were asked every time: one answer and fourteen poisoned errors");
       assert.equal(kept.size, 1, "the one look that was answered is a memo, and the failures are none");
       sink.out("memos", [...kept]);
     },
