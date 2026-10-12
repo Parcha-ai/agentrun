@@ -21,7 +21,7 @@
 // lapsed) ends the pipe: every socket is told, nothing is retried.
 import { createHash, randomBytes, type Hash } from "node:crypto";
 import { constants, renameSync, type BigIntStats, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -132,6 +132,26 @@ const VIEW_FILES_LIMIT = 64 * 1024 * 1024;
 /** A restore stops sending while this much is queued on the socket. */
 const RESTORE_HIGH_WATER = 4 * CHUNK_BYTES;
 
+/** A checkout the pipe refused: nothing was released, the run is still the tab's. `code`: NOT_WRITER, BUSY, HEAD_MISMATCH. */
+export class CheckoutRefused extends Error {
+  readonly code: string;
+  /** The store's head when the head was what differed. */
+  readonly head: number | undefined;
+  constructor(code: string, message: string, head?: number) {
+    super(message);
+    this.name = "CheckoutRefused";
+    this.code = code;
+    this.head = head;
+  }
+}
+
+/** The file a checkout leaves next to the run's store (`store/checkout.json`): the head handed over, when, by which tab, and the browser's conversation. The server reads it before it lets anything attach. */
+export const CHECKOUT_MARKER = "checkout.json";
+export type CheckoutMarker = { head: number; at: number; tab: string; conversation?: number };
+
+/** The most a snapshot of the run's store is retried when a commit lands while it is taken. */
+const SNAPSHOT_TRIES = 3;
+
 export class RunPipe {
   readonly ref: RunRef;
   readonly lease: RunLease;
@@ -158,6 +178,8 @@ export class RunPipe {
   #openUpload: Upload | undefined;
   #scratch = 0;
   #drained: { switchId: string; done: () => void } | undefined;
+  /** The writer asked to check the run out: no storage call or write-through of it is accepted from here. */
+  #checkingOut = false;
   /** What the leaving writer said it had acknowledged last (its drained frame), for the release's evidence. */
   #acked: string | undefined;
 
@@ -234,6 +256,7 @@ export class RunPipe {
    */
   async attach(socket: PipeSocket, tab: string, takeover: boolean, extra: { environments: Environment[]; move?: Move; env?: string; placed?: boolean } = { environments: [] }): Promise<"writer" | "viewer"> {
     this.#assertUsable();
+    if (this.#checkingOut) throw new PipeLostError("CHECKED_OUT", "the run is being checked out to a browser"); // no attach, not even this tab's own, while the handover is decided
     const current = this.#writer && !this.#writer.dead ? this.#writer : undefined;
     if (current && !takeover && current.tab !== tab) {
       this.addViewer(socket);
@@ -467,6 +490,7 @@ export class RunPipe {
   #writerFor(socket: PipeSocket): Writer {
     if (this.#lost) throw new PipeLostError("FENCED", `the pipe lost the run: ${this.#lost.message}`);
     if (this.#released) throw new PipeLostError("RELEASED", "the run was released");
+    if (this.#checkingOut) throw new PipeLostError("CHECKED_OUT", "the run is being checked out to a browser");
     const writer = this.#writer;
     if (!writer || writer.socket !== socket || writer.dead) throw new PipeLostError("NOT_WRITER", "this socket does not hold the run");
     return writer;
@@ -482,6 +506,7 @@ export class RunPipe {
   #assertCurrent(writer: Writer): void {
     if (this.#lost) throw new PipeLostError("FENCED", `the pipe lost the run: ${this.#lost.message}`);
     if (this.#released) throw new PipeLostError("RELEASED", "the run was released");
+    if (this.#checkingOut) throw new PipeLostError("CHECKED_OUT", "the run is being checked out to a browser");
     if (writer.dead || this.#writer !== writer) throw new PipeLostError("MOVED", "the run moved to another device");
   }
 
@@ -1061,14 +1086,14 @@ export class RunPipe {
     return this.#releaseEvidence;
   }
 
-  async release(): Promise<void> {
+  async release(why: { code: string; message: string } = { code: "RELEASED", message: "the run was released" }): Promise<void> {
     if (this.#released) return;
     if (this.#lost) throw this.#lost;
     clearInterval(this.#goneTimer);
     // No new read of work/ from here; the ones in flight finish first (an open file keeps the mount busy: the unmount would fail).
     this.#releasing = true;
     await Promise.race([Promise.allSettled([...this.#reads]), new Promise((r) => setTimeout(r, 15_000).unref())]);
-    if (this.#writer) await this.#retire(this.#writer, "RELEASED", "the run was released");
+    if (this.#writer) await this.#retire(this.#writer, why.code, why.message);
     for (const abort of this.#models.values()) abort.abort();
     await this.#store?.storage.close(ctx);
     this.#released = true;
@@ -1091,6 +1116,83 @@ export class RunPipe {
       (workDigest) => this.#log("pipe.released", { ms, workDigest, workSource, generation }),
       (error: Error) => this.#log("pipe.released", { ms, workDigest: `unreadable: ${error.message}`, workSource, generation }),
     );
+  }
+
+  /**
+   * A consistent copy of the run's store while the writer keeps it: SQLite's VACUUM INTO on the pipe's own connection, into the run's own tmp/ (removed
+   * before this returns), with the head of the store it holds. A commit that lands while the copy is taken makes the head differ across it: the copy is taken again.
+   */
+  async snapshotStore(): Promise<{ bytes: Uint8Array; head: number }> {
+    const store = this.#store;
+    if (!store || this.#lost || this.#released || this.#releasing || this.#checkingOut) throw new PipeLostError("NO_STORE", "the pipe does not hold the run's store now");
+    const dir = join(this.lease.claim.root, "tmp");
+    await mkdir(dir, { recursive: true });
+    for (let attempt = 0; attempt < SNAPSHOT_TRIES; attempt++) {
+      const file = join(dir, `snapshot-${randomBytes(6).toString("hex")}.sqlite`);
+      try {
+        const before = await storeHead(store);
+        await store.database.run("VACUUM INTO ?", file);
+        if ((await storeHead(store)) !== before) continue;
+        return { bytes: new Uint8Array(await readFile(file)), head: before };
+      } finally {
+        await rm(file, { force: true }).catch(() => undefined);
+      }
+    }
+    throw new Error(`the run's store changed under ${SNAPSHOT_TRIES} snapshots in a row`);
+  }
+
+  /**
+   * Hand the run to the writer tab `tab`, for good: the tab holds a copy of the store whose head is `head`. From the moment this starts the writer's storage
+   * calls and write-throughs are refused (the calls already in flight settle first); then the copy's head must be the store's head, or nothing is released and
+   * the run stays the tab's (CheckoutRefused HEAD_MISMATCH: copy again). Otherwise the claim is released as for a move. Resolves with the head released.
+   */
+  async checkout(tab: string, head: number, conversation?: number): Promise<number> {
+    const writer = this.#writer;
+    if (!writer || writer.dead || writer.tab !== tab) throw new CheckoutRefused("NOT_WRITER", "only the tab that runs the run may check it out");
+    if (this.#lost || this.#released || this.#releasing || this.#checkingOut || !this.#store) throw new CheckoutRefused("BUSY", "the run is being released or already being checked out");
+    this.#checkingOut = true;
+    const marker = join(this.lease.claim.store, CHECKOUT_MARKER);
+    let current: number;
+    try {
+      await Promise.allSettled([...writer.inflight]);
+      current = await storeHead(this.#store);
+      if (current !== head) throw new CheckoutRefused("HEAD_MISMATCH", `the copy's head is ${head} but the store's is ${current}: copy it again`, current);
+      // The mark goes onto the disk, beside the store, BEFORE the claim is released: a server that restarts (or another one) finds the run checked out and attaches nothing.
+      // It is the whole no-fork guarantee: its bytes are on the disk (fsync the file), then it has its name (rename), then the name is on the disk (fsync the directory).
+      const body: CheckoutMarker = { head: current, at: Date.now(), tab, ...(conversation === undefined ? {} : { conversation }) };
+      const file = await open(`${marker}.tmp`, "w");
+      try {
+        await file.writeFile(JSON.stringify(body));
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await rename(`${marker}.tmp`, marker);
+      const dir = await open(this.lease.claim.store, "r");
+      try {
+        await dir.sync();
+      } catch (error) {
+        // A file system that cannot sync a directory says so with EINVAL or ENOTSUP; any other failure means the name may not be durable, and the checkout must not go on.
+        if (!["EINVAL", "ENOTSUP", "ENOSYS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      } finally {
+        await dir.close();
+      }
+    } catch (error) {
+      // Nothing was released: the run is still the tab's, its calls are accepted again, and a retry finds no half-written mark.
+      this.#checkingOut = false;
+      await rm(`${marker}.tmp`, { force: true }).catch(() => undefined);
+      await rm(marker, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    try {
+      await this.release({ code: "CHECKED_OUT", message: "the run was checked out to a browser" });
+    } catch (error) {
+      // The release began (the writer is retired, the store closed): the pipe cannot go on. The claim was not handed over, so the run is not checked out.
+      await rm(marker, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    this.#log("pipe.checked-out", { tab, head: current });
+    return current;
   }
 
   #releasing = false;

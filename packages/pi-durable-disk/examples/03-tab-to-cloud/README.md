@@ -204,6 +204,30 @@ prompt or its tools. Code: `tab/brain.ts` (the swap), `tab/brain-provider.ts` (t
 - **Check it.** `MODEL_DISK=<dir with home/model/> node scripts/brain-check.ts` (real Chrome, a local server, a stand-in judge that holds any question saying HOLDME, so the page runs with `?judge=on`): the agent boots, the model comes home, the swap, two questions
   with thinking, a held answer, a reload that resumes the same conversation. Tests: `test/brain.test.ts` (the provider through a real Harness), `test/brain-swap.test.ts` (the swap, reload, failure).
 
+## Taking the run offline (walks-home)
+
+Once the trained model is the agent's brain, **Take it offline** checks the run out to this browser, for good, and the agent keeps answering on the 1B with the network off. Decisions: no safety check in this mode, and no sync back (the checkout is one way).
+
+What happens, in this order (nothing is changed on the server until the browser holds everything):
+
+1. The page waits for the agent to be idle, registers the service worker (`tab/sw.ts`; only now: an online run never loads it) and caches the run's page, the built assets (`dist/offline.json`: the page's script, wllama's wasm, SQLite's wasm and its worker) and the model: the manifest and every chunk, each checked against the manifest's sha256 before it is kept (`tab/offline.ts`).
+2. It fetches a consistent copy of the run's store, `GET /api/runs/<id>/store` (the run's secret as the bearer): SQLite's `VACUUM INTO` on the pipe's own connection, taken under the run's `tmp/`, removed before the answer, with the store's head. The page puts it in OPFS and reads it back.
+3. `POST /api/runs/<id>/checkout {head, conversation}` (the writer tab's `x-pda-tab`): the tab's storage calls and write-throughs are refused, what it had in flight settles, the copy's head must equal the store's head (or nothing is released: 409 `HEAD_MISMATCH`, and the page copies again), `store/checkout.json` {head, time, tab, conversation} is written beside the store (file fsynced, renamed, then the directory fsynced), and only then is the claim released as for a move. The answer comes after the release, so it is the proof (the release closes the tab's socket, which is why this is not a frame).
+4. The page closes its pipe-backed Harness and opens pi's Harness over the OPFS store (`startLocal`), with the model it already has loaded (a `Brain` adopting its host), no pipe, no computer, no cloud model. A reload does the same from the cache and OPFS: same conversation, with what was said.
+
+**The lease.** The claim belongs to the pipe, not the tab. A tab that just disappears makes the pipe move the run to the cloud (a fork), and a parked run is run by the first page that opens its link. So the checkout is a handshake, the run is `checked-out` (a placement of its own), and the mark on the disk makes a restarted server (or another) find it so: every write attach is refused with `CHECKED_OUT`, as are copies, moves and messages. Tested, including a server restart.
+
+**What does not work while the run is checked out** (the same words are in the page's checked-out panel):
+
+- Moves: the switcher, the agent's switch_environment tool and the cloud and sandbox targets need the server and the disk.
+- Jev and the safety check: off in this mode, by decision. Nothing judges an answer.
+- Viewers and operators: they follow the run through the server, which no longer runs it. They are told it is checked out to a browser.
+- Cloud models: only the model on this page answers. The checkout needs the agent to be on it already.
+- The computer (bash, node): it is not started. The model's conversation has no tools.
+- Sync back: none. The checkout is one way, and this browser's copy is the only live one.
+
+**Pieces.** `tab/sqlite-client.ts` + `tab/sqlite-worker.ts` + `tab/sqlite-service.ts`: pi's own `SqliteStorage` over SQLite-WASM (`@sqlite.org/sqlite-wasm` 3.53.4-build2, Apache-2.0) on OPFS through the opfs-sahpool VFS (a worker; no SharedArrayBuffer), so the browser store is the SQL the Node store runs. `tab/local-store.ts`: open, import, export. `tab/sw.ts` + `tab/sw-core.ts` + `tab/offline-cache.ts`: the service worker. The model's chunks are cache-first (immutable, sha-checked when cached); everything else is network-first with a 3 s timeout and falls back to the cache only when the network is down or slow, and a network answer is passed through untouched and never stored, so after a checkout the other pages of the origin stay as the server serves them. What the cache answers carries the cross-origin isolation headers, so a reload with no network is isolated and wllama keeps its threads. Checks: `node scripts/store-check.ts` (pi's 23 storage conformance cases on OPFS in real Chrome, and a database written by one page read by the next), `MODEL_DISK=<dir> node scripts/offline-check.ts` (the whole story in real Chrome: two turns online, checkout, the server killed and CDP offline with WebSockets blocked, two turns, a reload that comes back isolated on the same conversation, two more turns, and the head the server released equals the page's copy). Tests: `test/sqlite-wasm-store.test.ts` (the same conformance suite on the worker protocol in Node), `test/checkout.test.ts` (the pipe's side), `test/offline-runtime.test.ts`, `test/offline-cache.test.ts`, `test/sw-core.test.ts` (both service worker paths).
+
 ## Limits
 
 - The tab's Wasmer sandbox has no git and no network; its files have no modification times and no symbolic links (a

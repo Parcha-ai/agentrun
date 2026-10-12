@@ -9,7 +9,11 @@ import { createServer } from "node:http";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer } from "node:net";
 import { Cdp } from "./cdp.ts";
+
+/** A port nothing holds now (asked of the system, not guessed). */
+const freePort = () => new Promise<number>((resolve) => { const s = createNetServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 import { RUBRIC } from "../pipe/judge.ts";
 
 const MODEL_DISK = process.env.MODEL_DISK;
@@ -45,7 +49,7 @@ closers.push(() => judgeServer.close());
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "brain-check-"));
 closers.push(() => rmSync(dir, { recursive: true, force: true }));
-const serverPort = 20000 + Math.floor(Math.random() * 20000);
+const serverPort = await freePort();
 const server = spawn(process.execPath, ["serve.ts", "--port", String(serverPort), "--local", dir, "--run", "brain", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--judge-model", "stub", "--judge-url", `http://127.0.0.1:${judgePort}/v1`, "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
 children.push(server);
 let link = "";

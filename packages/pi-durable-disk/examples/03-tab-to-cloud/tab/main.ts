@@ -11,7 +11,10 @@ import { ChatView, type ChatItem } from "./chat-view.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
-import { finishStep, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
+import { finishStep, startLocal, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
+import { importStore, openLocalStore, type LocalStore } from "./local-store.ts";
+import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckout, readCheckout, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
+import type { ModelHost } from "../../04-walks-home/tab/src/modelhost.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
@@ -33,13 +36,25 @@ const tab = sessionStorage.getItem("tab-id") ?? `tab-${crypto.randomUUID().slice
 sessionStorage.setItem("tab-id", tab);
 
 const state = {
-  mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost",
+  mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost" | "offline",
   placement: undefined as Placement | undefined,
   client: undefined as PipeClient | undefined,
-  runtime: undefined as TabRuntime<WasmerEnv> | undefined,
+  runtime: undefined as TabRuntime | undefined,
   chat: new ChatView(),
   /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
   active: undefined as Conversation | undefined,
+  /** The run is checked out to this browser and this page runs it from OPFS (offline.ts, local-store.ts): its record and its store. */
+  offline: undefined as { record: CheckoutRecord; store: LocalStore } | undefined,
+  /** "Take it offline" in progress, in words (shown next to the button). */
+  checkout: undefined as { text: string } | undefined,
+  /** From the click on: this tab's input is held and a viewer's message is not acted on. */
+  checkingOut: false,
+  /** The handover has been asked of the pipe: the pipe closing this tab's socket is then the handover itself, not a loss. Before that it is an ordinary loss. */
+  handoverAsked: false,
+  /** A loss of the pipe that came while the checkout was still preparing (caching, copying): kept, and replayed if the checkout does not go through. */
+  savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
+  /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
+  agentModel: "",
   /** The trained model's host for this run, once the page has started on it. */
   brain: undefined as Brain | undefined,
   /** A swap from an earlier visit is on this run: the saved conversation is on its way back, and until it is ready a message would go to the cloud conversation instead. Input waits. */
@@ -74,14 +89,16 @@ const envLabel = (id: string | undefined) => state.environments.find((e) => e.id
 
 function badge(): { text: string; tone: string; sub: string } {
   const p = state.placement;
+  if (state.mode === "offline") return { text: "Checked out to this browser", tone: "offline", sub: "the only live copy of this run is here · the server no longer runs it" };
   if (state.leaving) return { text: `Moving to ${p?.where === "moving" ? p.to : "the next host"}`, tone: "moving", sub: state.progress };
-  if (state.mode === "booting") return { text: "Starting the computer in this tab", tone: "moving", sub: state.progress };
+  if (state.mode === "booting") return { text: state.checkingOut || state.progress.startsWith("opening this browser") ? "Opening this browser's copy" : "Starting the computer in this tab", tone: "moving", sub: state.progress };
   if (state.mode === "writer") return { text: "Running in this tab", tone: "tab", sub: `brain + hands in this tab · disk claimed by the pipe, generation ${state.generation}` };
   if (state.mode === "connecting") return { text: "Connecting", tone: "moving", sub: "" };
   if (p?.where === "cloud") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""}` };
   if (p?.where === "tab" && p.env !== "tab") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `through the pipe, generation ${p.generation}` };
   if (p?.where === "tab") return { text: "Running in another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
   if (p?.where === "moving") return { text: `Moving to ${p.to}`, tone: "moving", sub: p.detail ?? "" };
+  if (p?.where === "checked-out") return { text: "Checked out to a browser", tone: "parked", sub: "its live copy is in that browser; nothing here runs it any more" };
   return { text: "Parked on the disk", tone: "parked", sub: p?.detail ?? "" };
 }
 
@@ -97,7 +114,7 @@ function currentEnv(): { id: string | undefined; moving: boolean } {
 
 function renderSwitcher(): void {
   const now = currentEnv();
-  const busy = state.switching !== undefined || state.leaving !== undefined || now.moving || state.mode === "booting" || state.mode === "connecting";
+  const busy = state.switching !== undefined || state.leaving !== undefined || now.moving || state.mode === "booting" || state.mode === "connecting" || state.placement?.where === "checked-out";
   $("switcher").replaceChildren(
     ...state.environments.map((env) => {
       const active = env.id === now.id;
@@ -208,7 +225,7 @@ async function select(path: string): Promise<void> {
   const row = state.files.find((f) => f.path === path);
   let text = "";
   if (row?.kind === "file") {
-    if (state.runtime) text = await state.runtime.env.sandbox.fs.readText(`/workspace/${path}`).catch((e: Error) => `(unreadable: ${e.message})`);
+    if (state.runtime && state.mode !== "offline") text = await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch((e: Error) => `(unreadable: ${e.message})`);
     else if (row.data !== undefined) text = new TextDecoder().decode(fromBase64(row.data));
   }
   $("preview-name").textContent = path;
@@ -220,18 +237,29 @@ function render(): void {
   const badgeEl = $("badge");
   badgeEl.className = `badge ${b.tone}`;
   $("badge-text").textContent = b.text;
-  const swapped = state.mode === "writer" && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
-  $("badge-sub").textContent = [b.sub, state.mode === "writer" && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
+  const here = state.mode === "writer" || state.mode === "offline";
+  const swapped = here && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
+  $("badge-sub").textContent = [b.sub, here && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
-  const writer = state.mode === "writer" && !state.leaving && !state.brainPending;
+  const offline = state.mode === "offline";
+  const writer = state.mode === "writer" && !state.leaving && !state.checkingOut && !state.brainPending;
+  // Checked out to this browser: the trained model's conversation answers, once it is the active one.
+  const offlineReady = offline && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   // Elsewhere, a message goes to whoever runs the run, through the server.
-  const canSend = writer || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
+  const canSend = writer || offlineReady || (state.mode === "viewer" && (state.placement?.where === "cloud" || state.placement?.where === "tab"));
   ($("input") as HTMLTextAreaElement).disabled = !canSend;
   ($("send") as HTMLButtonElement).disabled = !canSend;
   $("composer").hidden = !canSend;
   // A fallback, not the switch: take the run from the cloud now, fencing it mid-step.
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
+  // "Take it offline": while this tab runs the agent and the trained model is its brain, and nothing is moving.
+  const canTakeOffline = writer && swapped && !state.switching && !state.checkout;
+  $("offline").hidden = !canTakeOffline;
+  $("offline-status").textContent = state.checkout?.text ?? "";
+  $("checkedout").hidden = !offline;
+  $("persist-warning").hidden = !(offline && state.offline && !state.offline.record.persistent);
+  $("switcher").hidden = offline;
   renderSwitcher();
   renderChat();
   renderFiles();
@@ -310,6 +338,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const pkg = await ensureComputer();
   const sandbox = await wasmer!.sandboxes.create({ packages: [pkg], shell: pkg.command("bash"), env: { LANG: "C.UTF-8" } });
   state.environments = attached.environments;
+  state.agentModel = attached.model;
   // No core or memory count: navigator.hardwareConcurrency and deviceMemory describe the machine the browser runs on, not what this sandbox can use.
   const facts = tabFacts(pkg.commands);
   const env = new WasmerEnv(sandbox as never, { id: `wasmer:${run}`, env: { HOME: "/workspace", LANG: "C.UTF-8", TERM: "dumb" } });
@@ -334,7 +363,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
 let followed: AgentEventStream | undefined;
 
 /** Fold and relay one conversation's events from now on (`before`: the entries of the conversation that came first, shown ahead of its own). */
-async function followConversation(runtime: TabRuntime<WasmerEnv>, conversation: Conversation, before: readonly EntryRecord[] = []): Promise<void> {
+async function followConversation(runtime: TabRuntime, conversation: Conversation, before: readonly EntryRecord[] = []): Promise<void> {
   const old = followed;
   followed = undefined;
   await old?.stop().catch(() => undefined);
@@ -365,6 +394,7 @@ async function readWork(path: string): Promise<Uint8Array | null> {
 
 /** The dark-content judge (opt-in, `?judge=on`), between the model's stream and everything that shows it: anything but a clean "show" holds the answer. */
 async function judgeAnswer(prompt: string, answer: string): Promise<"show" | "refuse"> {
+  if (state.offline) return "show"; // checked out to this browser: there is no safety check, by decision
   try {
     const topic = state.brain?.host.state().topic;
     const r = await fetch(`/api/runs/${encodeURIComponent(run)}/judge`, {
@@ -383,7 +413,7 @@ async function judgeAnswer(prompt: string, answer: string): Promise<"show" | "re
  * When the trained model's manifest is on the run's disk (the trainer writes it last) and this tab runs the agent, load the model and make it the agent's
  * brain (brain.ts). Polls once in two seconds; tries once (a failure is written to the transcript and stays: a reload tries again).
  */
-async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+async function watchForBrain(runtime: TabRuntime): Promise<void> {
   try {
     await swapWhenHome(runtime);
   } finally {
@@ -392,14 +422,14 @@ async function watchForBrain(runtime: TabRuntime<WasmerEnv>): Promise<void> {
 }
 
 /** Wait (up to a minute) for the trip's agent to finish its turn, so its last results are in the transcript the new chat is built on and the live watch can end. */
-async function settleRoot(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+async function settleRoot(runtime: TabRuntime): Promise<void> {
   const until = performance.now() + 60_000;
   while (performance.now() < until && state.runtime === runtime) {
     if ((await finishStep(runtime.harness, 5_000)) === "idle") return;
   }
 }
 
-async function swapWhenHome(runtime: TabRuntime<WasmerEnv>): Promise<void> {
+async function swapWhenHome(runtime: TabRuntime): Promise<void> {
   if (new URLSearchParams(location.search).get("brain") === "off") return;
   for (;;) {
     if (state.runtime !== runtime || state.mode !== "writer") return;
@@ -408,10 +438,19 @@ async function swapWhenHome(runtime: TabRuntime<WasmerEnv>): Promise<void> {
     if (text) break;
     await new Promise((r) => setTimeout(r, 2000));
   }
-  const threads = Number(new URLSearchParams(location.search).get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
-  const history = new URLSearchParams(location.search).get("history") === "none" ? "none" : "last";
+  await startBrain(runtime);
+}
+
+/**
+ * Load the trained model and make it the agent's brain (brain.ts), then follow its conversation. `adopt`: a host that already holds the loaded model (taking the
+ * run offline keeps it). Offline, the manifest and the chunks are read from the service worker's cache through the same `readWork`.
+ */
+async function startBrain(runtime: TabRuntime, adopt?: ModelHost): Promise<void> {
+  const params = new URLSearchParams(location.search);
+  const threads = Number(params.get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
+  const history = params.get("history") === "none" ? "none" : "last";
   const brain = new Brain({
-    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(new URLSearchParams(location.search).get("judge") === "on", judgeAnswer), context: ctx, threads, history,
+    harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     onProgress: (type, b) => {
       if (type === "model-loading") state.brainStatus = `the trained model is coming home: ${String(b.name)}`;
@@ -421,7 +460,7 @@ async function swapWhenHome(runtime: TabRuntime<WasmerEnv>): Promise<void> {
       else if (type === "model-switched") state.brainStatus = "";
       render();
     },
-  });
+  }, adopt);
   state.brain = brain;
   const manifest = await readManifest(readWork);
   if (!manifest) return;
@@ -449,6 +488,128 @@ async function refreshFiles(): Promise<void> {
   state.files = (await state.runtime.workspace.list()).map((f) => ({ path: f.path, kind: f.kind, size: f.size }));
   renderFiles();
   if (state.selected) void select(state.selected);
+}
+
+// ---- checked out to this browser ---------------------------------------------------------------------------------------------
+
+/**
+ * "Take it offline", from the page that runs the agent on the trained model: the page, its assets and the model go into the service worker's cache (nothing is
+ * changed on the server until that is whole), a consistent copy of the run's store comes into OPFS and is read back, and the pipe is asked to hand the run over:
+ * it releases the claim only when the copy's head is the store's head. Then this page runs the agent from OPFS, the same model still loaded, with no pipe.
+ * A refused or failed step leaves the run where it was: this tab's.
+ */
+async function takeOffline(): Promise<void> {
+  const runtime = state.runtime, brain = state.brain, conversation = brain?.conversation;
+  if (!runtime || !brain || !conversation || state.active !== conversation || state.mode !== "writer" || state.checkout || state.switching) return;
+  const say = (text: string) => { state.checkout = { text }; render(); };
+  // From the click on, nothing new starts: the chat input is held and a viewer's message is not acted on, so the agent stays idle through the caching and the copy.
+  state.checkingOut = true;
+  state.handoverAsked = false;
+  state.savedLoss = undefined;
+  let uncertain = false;
+  try {
+    say("waiting for the agent to be idle");
+    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent is answering: wait for the answer, then take it offline");
+    const manifestText = await readManifest(readWork);
+    if (!manifestText) throw new Error("the model's manifest is not on the run's disk");
+    const manifest = JSON.parse(manifestText) as { sha256: string; size: number; chunks: unknown[] };
+    say("registering the service worker");
+    await registerOfflineWorker();
+    const cached = await cacheRunForOffline({ run, secret, manifestText, onProgress: (p) => say(`caching the page and the model in this browser: ${p.done} of ${p.total}`) });
+    if ((await finishStep(runtime.harness, 30_000)) !== "idle") throw new Error("the agent started answering while the model was cached: try again");
+    // The browser is asked to keep this site's storage: once the run is handed over, this is the only copy. A browser that will not is a warning (a refusal with ?persist=require).
+    const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
+    if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
+    let head = -1;
+    let record: CheckoutRecord | undefined;
+    for (let attempt = 0; attempt < 3 && head < 0; attempt++) {
+      say("copying the run's store from the server");
+      const copy = await fetchStoreCopy(run, secret);
+      await importStore(run, copy.bytes);
+      const check = await openLocalStore(run);
+      const copied = await check.head();
+      await check.storage.close(ctx);
+      if (copied !== copy.head) throw new Error(`the copy in this browser is at ${copied}, the server's store at ${copy.head}`);
+      record = { run, state: "copied", head: copy.head, model: state.agentModel, conversation: Number(conversation.id), tab, at: Date.now(), manifestSha: manifest.sha256, chunks: manifest.chunks.length, bytes: cached.bytes, persistent };
+      await writeCheckout(record);
+      say("handing the run over");
+      if (state.savedLoss) throw new Error("the connection to the run was lost while the checkout was preparing");
+      state.handoverAsked = true;
+      const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab, head: copy.head, conversation: record!.conversation }));
+      if (outcome.state === "refused") state.handoverAsked = false; // nothing was handed over: a closing socket is a loss again
+      if (outcome.state === "done") head = outcome.head;
+      else if (outcome.state === "unknown") {
+        // The pipe never answered: it may have released the run or not. This tab does not run the old writer again (it could fork the run); the copy is kept, and a reload asks again.
+        uncertain = true;
+        throw new Error("the server did not answer the handover, so it is not known whether it was made. This browser keeps its complete copy; reload this page when the server can be reached and it will ask again");
+      } else if (!(outcome.error.code === "HEAD_MISMATCH" && attempt < 2)) throw outcome.error; // the store moved after the copy: copy again
+    }
+    if (head < 0 || !record) throw new Error("the store kept changing: not handed over");
+    record = { ...record, state: "done", head };
+    await writeCheckout(record);
+    await leaveForOffline(record, brain.host);
+  } catch (error) {
+    state.checkout = undefined;
+    if (uncertain) {
+      state.mode = "lost";
+      state.banner = (error as Error).message;
+    } else {
+      state.checkingOut = false;
+      state.handoverAsked = false;
+      state.banner = `could not take it offline: ${(error as Error).message}`;
+      // The pipe was lost while the checkout was preparing: that loss is handled now, as it would have been (the page says so and reconnects), never left as a dead writer.
+      const saved = (state as { savedLoss: { client: PipeClient; code: string; message: string } | undefined }).savedLoss; // set by lost() while this ran
+      state.savedLoss = undefined;
+      if (saved) {
+        render();
+        await lost(saved.client, saved.code, saved.message);
+        return;
+      }
+    }
+    render();
+  }
+}
+
+/** The run was handed over: drop the pipe and the pipe-backed Harness, and run from this browser's copy. */
+async function leaveForOffline(record: CheckoutRecord, host: ModelHost | undefined): Promise<void> {
+  state.checkingOut = true;
+  const old = state.runtime;
+  state.client?.close();
+  state.client = undefined;
+  state.runtime = undefined;
+  state.active = undefined;
+  state.brain = undefined;
+  await followed?.stop().catch(() => undefined);
+  followed = undefined;
+  await old?.close().catch(() => undefined);
+  await startOffline(record, host);
+}
+
+/** Run the agent from this browser's copy of the run's store: no pipe, no computer, the model from the cache (or the one already loaded). */
+async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<void> {
+  state.mode = "booting";
+  state.progress = "opening this browser's copy of the run";
+  state.banner = "";
+  state.checkout = undefined;
+  render();
+  try {
+    const store = await openLocalStore(run);
+    const runtime = await startLocal({ storage: store.storage, model: record.model });
+    state.offline = { record, store };
+    state.runtime = runtime;
+    state.environments = [];
+    state.files = [];
+    state.mode = "offline";
+    state.checkingOut = false;
+    state.progress = "";
+    await followConversation(runtime, runtime.root);
+    render();
+    await startBrain(runtime, adopt);
+  } catch (error) {
+    state.mode = "lost";
+    state.banner = `could not open this browser's copy of the run: ${(error as Error).message}`;
+    render();
+  }
 }
 
 // ---- watching ----------------------------------------------------------------------------------------------------------
@@ -505,7 +666,7 @@ function onFrame(frame: PipeFrame): void {
       return;
     case "submit":
       // A message a viewer typed: this tab runs the run.
-      if (state.runtime && state.mode === "writer" && !state.brainPending) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
+      if (state.runtime && state.mode === "writer" && !state.checkingOut && !state.brainPending) void target()?.submit({ type: "input", content: frame.text, requestId: frame.requestId }, ctx).catch(() => undefined);
       return;
     default:
       return;
@@ -559,6 +720,16 @@ const fileRow = (f: FileEntry): FileRow => (f.kind === "file" ? { path: f.path, 
 let offeredToRun = false;
 
 function watching(viewing: Viewing): void {
+  if (viewing.placement.where === "checked-out") {
+    // The pipe says the run is checked out. If this browser holds the copy (its record), the run is here; else it is somewhere else, and nothing here can run it.
+    void readCheckout(run).then(async (record) => {
+      if (record) {
+        const done = { ...record, state: "done" as const };
+        await writeCheckout(done);
+        await startOffline(done);
+      }
+    });
+  }
   state.mode = "viewer";
   state.progress = "";
   state.leaving = undefined;
@@ -623,6 +794,11 @@ async function connect(mode: "write" | "view", takeover = false, switchId?: stri
 
 async function lost(client: PipeClient, code: string, message: string): Promise<void> {
   if (state.client !== client) return;
+  if (state.checkingOut) {
+    // The pipe closing this socket after the handover was asked is the handover. Before that it is an ordinary loss: kept, so the checkout stops and the loss is handled when it does.
+    if (!state.handoverAsked) state.savedLoss = { client, code, message };
+    return;
+  }
   const wasWriter = state.mode === "writer" || state.mode === "booting";
   await state.runtime?.close().catch(() => undefined);
   state.runtime = undefined;
@@ -640,6 +816,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
   }
   state.mode = "lost";
   state.banner =
+    code === "CHECKED_OUT" ? "This run is checked out to a browser: its live copy is there, and nothing here runs it any more." :
     code === "MOVED" ? "This run moved to another device. This tab stopped; it wrote nothing after the move." :
     code === "FENCED" ? "Another host took the run's disk. This tab stopped; its writes after that were refused." :
     code === "RELEASED" ? "The run was handed to the cloud." :
@@ -652,7 +829,7 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || state.checkingOut || state.brainPending) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
   if (!state.runtime) {
     if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
     input.value = "";
@@ -674,12 +851,38 @@ $("input").addEventListener("keydown", (e) => {
   }
 });
 $("takeover").addEventListener("click", () => void connect("write", true));
+$("offline").addEventListener("click", () => void takeOffline());
+$("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 setInterval(renderStats, 1000);
 
-if (!run || !secret) {
-  $("badge-text").textContent = "No run";
-  $("badge-sub").textContent = "Open a run's link: /run/<id>#<secret>";
-} else void connect("view");
+/** Opening the page: a run checked out to this browser runs from OPFS, whatever the network; otherwise the link attaches to the pipe. */
+async function boot(): Promise<void> {
+  const record = run ? await readCheckout(run).catch(() => undefined) : undefined;
+  if (record?.state === "done") return void startOffline(record);
+  if (record?.state === "copied" && secret) {
+    // A checkout that was not seen to the end: ask again. The pipe answers a handover it made as the first time; a refusal means nothing was handed over.
+    const outcome = await confirmHandover(() => requestCheckout({ run, secret, tab: record.tab, head: record.head, conversation: record.conversation }), { tries: 3 });
+    if (outcome.state === "done") {
+      const done = { ...record, state: "done" as const };
+      await writeCheckout(done);
+      return void startOffline(done);
+    }
+    if (outcome.state === "unknown") {
+      state.mode = "lost";
+      state.banner = "A handover of this run to this browser was started and the server cannot be reached to learn how it ended. This browser keeps its complete copy; reload when the server can be reached.";
+      render();
+      return;
+    }
+    await forgetCheckout(run); // the server refused: it did not hand the run over, so the copy is stale
+  }
+  if (!run || !secret) {
+    $("badge-text").textContent = "No run";
+    $("badge-sub").textContent = "Open a run's link: /run/<id>#<secret>";
+    return;
+  }
+  void connect("view");
+}
+void boot();
 
 // For the recording script: what the page shows, in one object.
 (globalThis as { demo?: unknown }).demo = {
@@ -701,6 +904,18 @@ if (!run || !secret) {
   },
   /** The brain swap, for checks: the model's phase, whether the chat input goes to the trained model's conversation, and what the page says. */
   brain: () => ({ phase: state.brain?.host.state().phase ?? null, swapped: state.brain?.conversation !== undefined && state.active === state.brain.conversation, conversation: state.active ? String(state.active.id) : null, status: state.brainStatus }),
+  /** The tasks the Harness has, with their state (what is running, what failed), for checks. */
+  tasks: async () => (state.runtime ? (await state.runtime.harness.inspect(ctx)).tasks.map((t) => ({ kind: t.record.kind, state: t.state.kind })) : null),
+  /** The run checked out to this browser: the record, the head of the local store, whether the page is cross-origin isolated, and the page's own words. */
+  offline: async () => ({
+    mode: state.mode,
+    record: state.offline?.record ?? null,
+    head: state.offline ? await state.offline.store.head() : null,
+    isolated: globalThis.crossOriginIsolated,
+    checkout: state.checkout?.text ?? null,
+    banner: state.banner,
+    panel: { hidden: ($("checkedout") as HTMLElement).hidden, text: $("checkedout").textContent },
+  }),
   /** The entries of the conversation the chat input goes to, oldest first: kind, and the message text. */
   activeEntries: async () => {
     const c = target();
