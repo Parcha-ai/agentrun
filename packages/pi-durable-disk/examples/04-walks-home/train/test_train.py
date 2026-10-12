@@ -23,7 +23,7 @@ import creature_env
 import rollout
 import skilltest
 import terrain
-from train import SCORE_UNITS, checkpoint_due, complete_checkpoints, parse_steps, score_of
+from train import SCORE_UNITS, cache_save_due, checkpoint_due, unpacked_mark, complete_checkpoints, parse_steps, score_of, write_cache_tar
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "..", "policy", "test", "fixtures")  # the policy runtime's parity fixture (policy.json)
@@ -204,6 +204,43 @@ class CheckpointDueTest(unittest.TestCase):
     self.assertEqual(len(saved), 2)  # the 17M and 19M points, nearest epochs only
     for p, t in zip((17_000_000, 19_000_000), saved):
       self.assertLessEqual(abs(t - p), epoch / 2, (p, t))
+
+
+class CacheTarTest(unittest.TestCase):
+  def test_the_saved_cache_is_a_plain_tar_of_jax_and_warp(self):
+    # Saved inside the training loop after the first checkpoint: gzip took 12 s there and saved nothing (compiled programs
+    # do not compress). The reader opens either kind, so an older .tar.gz still unpacks.
+    import tarfile
+    with tempfile.TemporaryDirectory() as d:
+      src = os.path.join(d, "cache")
+      for sub in ("jax", "warp", "other"):
+        os.makedirs(os.path.join(src, sub))
+        open(os.path.join(src, sub, "f"), "w").write(sub)
+      tar = os.path.join(d, "out", "body-x.tar.gz")
+      size = write_cache_tar(src, tar)
+      self.assertEqual(size, os.path.getsize(tar))
+      with tarfile.open(tar, "r:") as tf:  # uncompressed, or this raises
+        self.assertEqual(sorted(n for n in tf.getnames() if n.endswith("/f")), ["jax/f", "warp/f"])
+      self.assertEqual([n for n in os.listdir(os.path.dirname(tar)) if ".tmp" in n], [])
+
+
+class CacheSaveTest(unittest.TestCase):
+  def test_a_warm_start_saves_only_when_it_compiled_programs_the_tarball_did_not_hold(self):
+    # A body's shared cache: the prewarm's tarball is warm for spin, but spin compiles its own reset and step, which must
+    # reach the tarball too. Unpacked entries keep the tarball's older times; anything newer was compiled by this run.
+    with tempfile.TemporaryDirectory() as d:
+      jax_dir = os.path.join(d, "jax")
+      os.makedirs(jax_dir)
+      old = os.path.join(jax_dir, "jit_step-aaa-cache")
+      open(old, "w").write("x")
+      os.utime(old, (1_000_000_000, 1_000_000_000))  # as unpacked: the tarball's time
+      since = unpacked_mark(d)
+      self.assertFalse(cache_save_due(d, warm=True, since=since))
+      self.assertTrue(cache_save_due(d, warm=False, since=since))
+      self.assertTrue(cache_save_due(d, warm=True, since=since, compile_only=True))
+      open(os.path.join(jax_dir, "jit_reset-bbb-cache"), "w").write("y")  # compiled by this run
+      self.assertTrue(cache_save_due(d, warm=True, since=since))
+      self.assertFalse(cache_save_due(os.path.join(d, "absent"), warm=True, since=since))
 
 
 class ResumeTest(unittest.TestCase):

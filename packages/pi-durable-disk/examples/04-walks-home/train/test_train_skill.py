@@ -5,10 +5,13 @@ the same command after the body changes), an unfinished one starts clean, a done
 passed, every example skill directory loads, and a skill directory is refused with what to fix.
 """
 
+import hashlib
 import json
 import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
 
 import train_skill
@@ -214,6 +217,58 @@ class SkillDirTest(unittest.TestCase):
       self.assertIsNotNone(train_skill.reuse_or_clear(out, "aaa", "v1"))
       self.assertIsNone(train_skill.reuse_or_clear(out, "aaa", "v2"))
       self.assertFalse(os.path.exists(os.path.join(out, "policy.json")))
+
+
+
+class BodyCacheTest(unittest.TestCase):
+  """A body written as code keeps one compile cache for all its skills (a second skill reuses what the first, or a
+  compile-only prewarm, compiled); a skill run waits for a compile-only run still filling it."""
+
+  def test_a_derived_body_has_one_cache_for_every_skill_and_a_preset_keeps_the_skills(self):
+    here = os.path.dirname(train_skill.__file__)
+    walk = train_skill.load_skill(os.path.join(train_skill.EXAMPLES, "walk"))
+    spin = train_skill.load_skill(os.path.join(train_skill.EXAMPLES, "spin"))
+    with tempfile.TemporaryDirectory() as root:
+      code = os.path.join(root, "robot")  # the MJCF only, as a code body is staged: body.json is derived
+      os.makedirs(code)
+      xml = open(os.path.join(here, "default", "creature.xml")).read()
+      open(os.path.join(code, "body.xml"), "w").write(xml)
+      sha = hashlib.sha256(xml.encode()).hexdigest()
+      caches = set()
+      for sk in (walk, spin):
+        out = os.path.join(root, sk["name"])
+        body_dir = train_skill.resolve_body(code, out)
+        caches.add(train_skill.default_cache(sk, code, body_dir, sha))
+      self.assertEqual(caches, {train_skill.compile_cache(f"body-{sha[:16]}")})
+      preset = os.path.join(here, "default")  # creature.xml and its body.json: warm-box's per-skill caches
+      self.assertEqual(train_skill.default_cache(spin, preset, train_skill.resolve_body(preset, root), sha), train_skill.compile_cache("spin"))
+
+  def test_a_skill_run_waits_for_a_compile_only_run_to_finish(self):
+    with tempfile.TemporaryDirectory() as root:
+      cache = os.path.join(root, "pda-skill", "body-x.tar.gz")
+      waits = []
+      with train_skill.compile_lock(cache):
+        done = {}
+        t = threading.Thread(target=lambda: done.update(r=train_skill.wait_for_compile(cache, timeout_s=10, on_wait=lambda: waits.append(1))))
+        t.start()
+        time.sleep(0.4)
+        self.assertTrue(t.is_alive(), "the skill run is still waiting while the compile-only run holds the cache")
+      t.join(5)
+      waited, ready = done["r"]
+      self.assertTrue(ready)
+      self.assertGreaterEqual(waited, 0.35)
+      self.assertEqual(waits, [1])
+
+  def test_no_compile_running_means_no_wait_and_a_stuck_one_is_not_waited_for_forever(self):
+    with tempfile.TemporaryDirectory() as root:
+      cache = os.path.join(root, "pda-skill", "body-x.tar.gz")
+      t0 = time.time()
+      self.assertEqual(train_skill.wait_for_compile(cache, timeout_s=10, on_wait=self.fail)[1], True)
+      self.assertLess(time.time() - t0, 0.5)
+      with train_skill.compile_lock(cache):
+        waited, ready = train_skill.wait_for_compile(cache, timeout_s=0.3, on_wait=lambda: None)
+      self.assertFalse(ready)
+      self.assertGreaterEqual(waited, 0.3)
 
 
 if __name__ == "__main__":

@@ -59,6 +59,49 @@ def append_line(path: str, obj: Any) -> None:
 INIT_ROOT = "/opt/pda/init"
 
 
+def write_cache_tar(cache_dir: str, cache_tar: str) -> int:
+  """The compile caches (jax/, warp/) as one tarball, replaced only by a complete one; returns its size. A plain tar: it is
+  written inside the training loop, compiled programs do not compress (the image's 407 MB gzips to 407 MB), and gzip took
+  12 s there. The reader (tarfile's default mode) opens a gzipped one as well."""
+  tmp = f"{cache_tar}.tmp-{os.getpid()}"
+  os.makedirs(os.path.dirname(os.path.abspath(cache_tar)), exist_ok=True)
+  try:
+    with tarfile.open(tmp, "w") as tf:
+      for sub in ("jax", "warp"):
+        if os.path.isdir(os.path.join(cache_dir, sub)):
+          tf.add(os.path.join(cache_dir, sub), arcname=sub)
+    os.replace(tmp, cache_tar)
+  except OSError:
+    try:
+      os.remove(tmp)
+    except OSError:
+      pass
+    raise
+  return os.path.getsize(cache_tar)
+
+
+def cache_save_due(cache_dir: str, warm: bool, since: float, compile_only: bool = False) -> bool:
+  """Whether a run writes its compile cache back: after a compile-only warm-up or a cold start, always; after a warm start,
+  only when it compiled programs the tarball did not hold (a skill on a body's shared cache compiles its own reset and
+  step). Unpacked entries keep the tarball's older times, so an entry newer than `since` was compiled by this run.
+  `since` is a file time (unpacked_mark), on the same clock as the entries' own."""
+  if compile_only or not warm:
+    return True
+  try:
+    return any(e.name.startswith("jit_") and e.stat().st_mtime >= since for e in os.scandir(os.path.join(cache_dir, "jax")))
+  except FileNotFoundError:
+    return False
+
+
+def unpacked_mark(cache_dir: str) -> float:
+  """The file system's own time now, from a marker in the cache directory (outside jax/ and warp/, so never archived):
+  the clock entries get their times from is coarser than time.time()."""
+  mark = os.path.join(cache_dir, ".unpacked")
+  with open(mark, "w"):
+    pass
+  return os.stat(mark).st_mtime
+
+
 def init_checkpoint(spec: str | None, joints: int) -> str | None:
   """The checkpoint a fresh run starts from: a given directory, or 'auto' = the image's newest one for this joint count."""
   if not spec:
@@ -229,6 +272,7 @@ def main() -> None:
   cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "pda-train", cache_name)
   cache_was_warm = False
   cache_source = "none"
+  cache_unpacked_at = time.time()
   if not args.no_compile_cache:
     os.makedirs(cache_dir, exist_ok=True)
     seed = None if args.no_seed_compile_cache else args.seed_compile_cache
@@ -242,6 +286,7 @@ def main() -> None:
         cache_source = "run" if cache_was_warm else "image"
       except (tarfile.TarError, OSError) as e:  # a bad cache only costs compile time
         print(json.dumps({"event": "train.cache-unreadable", "error": str(e)[:200]}), flush=True)
+    cache_unpacked_at = unpacked_mark(cache_dir)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = os.path.join(cache_dir, "jax")
     os.environ["JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS"] = "0"
     os.environ["WARP_CACHE_PATH"] = os.path.join(cache_dir, "warp")
@@ -391,25 +436,15 @@ def main() -> None:
       after_prune = complete_checkpoints(seg_ckpt)
       for old in after_prune[args.keep:]:
         shutil.rmtree(old, ignore_errors=True)
-      if not args.no_compile_cache and (args.compile_only or not cache_was_warm) and not times.get("cache_saved"):
+      if (not args.no_compile_cache and not times.get("cache_saved")
+          and cache_save_due(cache_dir, cache_was_warm, cache_unpacked_at, args.compile_only)):
         # Everything the training step needed is compiled by the first checkpoint. A cache that cannot be written only
         # costs the next start its compile time; it must never cost this checkpoint.
-        tmp = f"{cache_tar}.tmp-{os.getpid()}"
         try:
-          os.makedirs(os.path.dirname(cache_tar), exist_ok=True)
-          with tarfile.open(tmp, "w:gz") as tf:
-            for sub in ("jax", "warp"):
-              if os.path.isdir(os.path.join(cache_dir, sub)):
-                tf.add(os.path.join(cache_dir, sub), arcname=sub)
-          os.replace(tmp, cache_tar)
-          times["cache_saved"] = os.path.getsize(cache_tar)
+          times["cache_saved"] = write_cache_tar(cache_dir, cache_tar)
         except OSError as e:
           times["cache_saved"] = -1
           print(json.dumps({"event": "train.cache-not-saved", "error": str(e)[:200]}), flush=True)
-          try:
-            os.remove(tmp)
-          except OSError:
-            pass
     state.update(steps_done=steps_done, wall_s=base_wall + now - t_start, last=line)
     # The rename of state.json is the checkpoint-complete signal: the host's write-through flushes WORK on it.
     write_json(state_path, state)
