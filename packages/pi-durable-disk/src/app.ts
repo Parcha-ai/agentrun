@@ -8,7 +8,8 @@ import { pathToFileURL } from "node:url";
 import type { Harness } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
 import { PdaError } from "./errors.ts";
-import type { DurableRun, OpenDurableRunOptions } from "./run.ts";
+import type { Claim } from "./claim.ts";
+import type { DurableRun, OpenDurableRunOptions, RunEnv } from "./run.ts";
 
 /** Where the run lives on this host; known before it opens, so the app can build paths into its options. */
 export interface AppContext {
@@ -30,6 +31,12 @@ export type AppOptions = OpenDurableRunOptions["harness"] & {
    * Work that must keep the instance up belongs in pi's tasks and tools: parking sees only those.
    */
   onOpen?(run: DurableRun): void | Promise<void>;
+  /**
+   * Wraps the run's environment once the claim is open: a host that gives some conversations an environment of their own (a thread's
+   * tools on its own machine) returns an env that answers for those and hands every other conversation to `env`. It must keep
+   * `env.cleanup` (the lease's: it kills every command the run started).
+   */
+  wrapEnv?(env: RunEnv, claim: Claim): RunEnv;
   /** pi's `root()` options for when `serve` creates the root conversation (its agent: model, extensions). */
   root?: Parameters<Harness["root"]>[1];
   /** Record a parking run's wake (park.ts `ParkOptions.wake`); default run.json `sleeping` with `wakeAt`. */
@@ -67,4 +74,10 @@ export async function loadApp(path: string, ctx: AppContext): Promise<AppOptions
     throw new AppError(`the app module ${path} returned no Harness options (registry and models)`);
   }
   return options;
+}
+
+/** The run's env factory with the app's wrapper applied (none: the base as it is). */
+export function composeEnv(base: ((claim: Claim) => RunEnv) | undefined, defaultBase: (claim: Claim) => RunEnv, wrap: AppOptions["wrapEnv"]): ((claim: Claim) => RunEnv) | undefined {
+  if (!wrap) return base;
+  return (claim) => wrap((base ?? defaultBase)(claim), claim);
 }
