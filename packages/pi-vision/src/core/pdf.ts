@@ -2,18 +2,17 @@
 // text by page, and a page rendered at a dpi. Zero install: `unpdf` for text and PDFium (WASM) for pages, each in a
 // worker thread with a time and memory cap, since a hostile file can run a reader out of time or memory; poppler when
 // the environment has it. Providers are tried in the order the host lists them: the first that reads the file wins, a
-// failure falls to the next, and every result names the provider and version that made it. What is derived is kept
-// under the host's derive directory, named by the source's hash, the provider and the parameters, written to a temp
-// name and renamed. The text of a PDF held in memory is what a browser's fetch takes for a fetched document.
+// failure falls to the next, and every result names the provider and version that made it (`derive.ts`). The text of a
+// PDF held in memory is what a browser's fetch takes for a fetched document.
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import type { MissCode } from "./contract.js";
-import { visionContext, type VisionEnv } from "./env.js";
+import { derivations, derivedName, ProviderMiss, viaProviders, type DeriveContext, type DeriveMiss, type DeriveOutcome } from "./derive.js";
+import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
-import { detectOnce, type MadeBy, type Provider, type ProviderCall, type ProviderSource, type RenderedImage } from "./provider.js";
+import type { MadeBy, Provider, ProviderCall, ProviderSource, RenderedImage } from "./provider.js";
 
 /** Time for one document's text: the time hosts already give `pdftotext` (read 2026-10-11). */
 export const PDF_TEXT_TIMEOUT_MS = 120_000;
@@ -25,8 +24,8 @@ export const PDF_WORKER_MEMORY_MB = 1024;
 export const PDF_RENDER_MAX_PIXELS = 25_000_000;
 
 /** Why a PDF could not be read, as the model reads it after the file's name. */
-export type PdfMiss = { readonly code: MissCode; readonly detail: string };
-export type PdfOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly miss: PdfMiss };
+export type PdfMiss = DeriveMiss;
+export type PdfOutcome<T> = DeriveOutcome<T>;
 
 /** What the file's own structure says: pages and their sizes in points, with each page's rotation applied. */
 export type PdfInfo = {
@@ -55,24 +54,9 @@ export type PdfProvider = Provider & {
   document(source: ProviderSource, call: ProviderCall): Promise<{ readonly madeBy: MadeBy; readonly pages: readonly string[]; readonly info?: PdfInfo }>;
 };
 
-/** What a provider throws for a file it cannot read, so the miss carries the right code. Any other error is `unreadable`. */
-export class PdfProviderError extends Error {
-  constructor(readonly code: "unreadable" | "over_budget", message: string) {
-    super(message);
-    this.name = "PdfProviderError";
-  }
-}
+export { ProviderMiss as PdfProviderError } from "./derive.js";
 
-export type PdfContext = {
-  readonly env: VisionEnv;
-  /** In the order to try them: a binary first, the zero-install reader last. */
-  readonly providers: readonly Provider[];
-  /** Where derivations are kept. Without it nothing is kept. */
-  readonly deriveDir?: string;
-  readonly signal?: AbortSignal;
-};
-
-const firstLine = (error: unknown): string => String((error as Error)?.message ?? error).split("\n")[0]!.trim();
+export type PdfContext = DeriveContext;
 
 export type PdfWorkerCaps = { readonly timeoutMs: number; readonly memoryMb: number; readonly signal?: AbortSignal };
 
@@ -93,12 +77,12 @@ export function runPdfWorker<T>(script: string, input: Record<string, unknown>, 
       settle();
     };
     const onAbort = () => end(() => reject(caps.signal!.reason));
-    const timer = setTimeout(() => end(() => reject(new PdfProviderError("over_budget", `the PDF engine did not finish within ${Number((caps.timeoutMs / 1000).toFixed(2))} s`))), caps.timeoutMs);
+    const timer = setTimeout(() => end(() => reject(new ProviderMiss("over_budget", `the PDF engine did not finish within ${Number((caps.timeoutMs / 1000).toFixed(2))} s`))), caps.timeoutMs);
     caps.signal?.addEventListener("abort", onAbort, { once: true });
     worker.once("message", (m: { value?: T; error?: { name?: string; message?: string } }) =>
       end(() => (m.error ? reject(Object.assign(new Error(m.error.message), { name: m.error.name })) : resolve(m.value as T))));
     worker.once("error", (error: Error & { code?: string }) =>
-      end(() => reject(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? new PdfProviderError("over_budget", `the PDF engine needed more than ${caps.memoryMb} MB`) : error)));
+      end(() => reject(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? new ProviderMiss("over_budget", `the PDF engine needed more than ${caps.memoryMb} MB`) : error)));
     worker.once("exit", (code) => end(() => reject(new Error(`the PDF engine stopped (exit ${code})`))));
   });
 }
@@ -123,60 +107,11 @@ export function resolvePdfDependency(name: string): Promise<{ readonly url: stri
 /** The bytes of a source for a reader that holds the whole file: refused over the in-process cap. */
 export async function readPdfBytes(source: ProviderSource, call: ProviderCall): Promise<Uint8Array> {
   if (source.bytes > SOURCE_BYTES_IN_PROCESS) {
-    throw new PdfProviderError("over_budget", `the file is ${Math.ceil(source.bytes / 1048576)} MiB and this reader holds a PDF in memory up to ${SOURCE_BYTES_IN_PROCESS / 1048576} MiB; a larger file needs poppler (poppler-utils) in the environment`);
+    throw new ProviderMiss("over_budget", `the file is ${Math.ceil(source.bytes / 1048576)} MiB and this reader holds a PDF in memory up to ${SOURCE_BYTES_IN_PROCESS / 1048576} MiB; a larger file needs poppler (poppler-utils) in the environment`);
   }
   const read = await call.env.readBinaryFile(source.path, visionContext(call.signal));
   if (!read.ok) throw read.error;
   return read.value;
-}
-
-const missed = (code: MissCode, detail: string): { ok: false; miss: PdfMiss } => ({ ok: false, miss: { code, detail } });
-
-/** Runs `attempt` with each provider that has the capability and runs here, in order, until one answers. */
-async function viaProviders<T>(ctx: PdfContext, capability: "text" | "render", what: string, attempt: (provider: Provider, version: string, call: ProviderCall) => Promise<T>): Promise<PdfOutcome<T>> {
-  const scratch = await ctx.env.createTempDir("pi-vision-pdf-", visionContext(ctx.signal));
-  if (!scratch.ok) return missed("unreadable", `no scratch directory in the environment (${firstLine(scratch.error)})`);
-  const call: ProviderCall = { env: ctx.env, signal: ctx.signal, tempDir: scratch.value };
-  const needs: string[] = [];
-  const failures = new Map<string, string[]>();
-  let code: MissCode | undefined;
-  try {
-    for (const provider of ctx.providers.filter((p) => p.kinds.includes("pdf") && p.capabilities.includes(capability))) {
-      const found = await detectOnce(provider, ctx.env);
-      if (!found.available) { needs.push(`${found.needs} (${found.reason})`); continue; }
-      try {
-        return { ok: true, value: await attempt(provider, found.version, call) };
-      } catch (error) {
-        if (ctx.signal?.aborted) throw error;
-        code ??= error instanceof PdfProviderError ? error.code : "unreadable";
-        failures.set(firstLine(error), [...(failures.get(firstLine(error)) ?? []), provider.name]);
-      }
-    }
-  } finally {
-    await ctx.env.remove(scratch.value, { recursive: true, force: true }, visionContext());
-  }
-  return code ? missed(code, [...failures].map(([cause, by]) => `${cause} (${by.join(", ")})`).join("; ")) : missed("needs", `reading ${what} of a PDF needs ${needs.join(" or ") || "a PDF reader in the host's providers"}`);
-}
-
-const keptAt = (ctx: PdfContext, name: string) => (ctx.deriveDir ? `${ctx.deriveDir}/${name}` : null);
-/** `<hash prefix><part>.<provider>-<version>`: what a derivation is named by. */
-const stemOf = (source: ProviderSource, provider: Provider, version: string, part = "") => `${source.sha256.slice(0, 16)}${part}.${provider.name}-${version}`.replace(/[^\w.-]/g, "_");
-
-async function readKept(ctx: PdfContext, name: string): Promise<Uint8Array | null> {
-  const at = keptAt(ctx, name);
-  const read = at ? await ctx.env.readBinaryFile(at, visionContext(ctx.signal)) : null;
-  return read?.ok ? read.value : null;
-}
-
-/** Writes a derivation to a temp name and renames it into place; the path, or null when nothing was kept. */
-async function keep(ctx: PdfContext, name: string, bytes: Uint8Array): Promise<string | null> {
-  const at = keptAt(ctx, name);
-  if (!at) return null;
-  const c = visionContext(ctx.signal);
-  const temp = `${at}.${randomBytes(4).toString("hex")}.tmp`;
-  const done = (await ctx.env.createDir(ctx.deriveDir!, { recursive: true }, c)).ok && (await ctx.env.writeFile(temp, bytes, c)).ok && (await ctx.env.renameFile(temp, at, c)).ok;
-  if (!done) await ctx.env.remove(temp, { force: true }, c);
-  return done ? at : null;
 }
 
 /** The saves of a file: the sections of its cross-reference chain, from the last `startxref` back along each section's
@@ -230,9 +165,10 @@ async function structureOf(source: ProviderSource, ctx: PdfContext): Promise<Pic
 
 /** The facts and the text of every page, from the first provider that reads the file; kept once per content and provider. */
 export async function pdfDocument(source: ProviderSource, ctx: PdfContext): Promise<PdfOutcome<PdfDocument>> {
-  return viaProviders(ctx, "text", "the text", async (provider, version, call) => {
-    const name = `${stemOf(source, provider, version)}.pdf.json`;
-    const keptDoc = await readKept(ctx, name);
+  const kept = derivations(ctx);
+  return viaProviders(ctx, { kind: "pdf", capability: "text", what: "the text of a PDF" }, async (provider, version, call) => {
+    const name = `${derivedName(source, provider, version)}.pdf.json`;
+    const keptDoc = await kept.read(name);
     try {
       const doc = keptDoc && (JSON.parse(Buffer.from(keptDoc).toString("utf8")) as PdfDocument);
       if (doc && Array.isArray(doc.pages) && doc.facts && doc.madeBy?.provider === provider.name) return doc;
@@ -243,7 +179,7 @@ export async function pdfDocument(source: ProviderSource, ctx: PdfContext): Prom
     const info: PdfInfo = read.info ?? { pages: read.pages.length, pageSizes: [] };
     const textPages = read.pages.flatMap((text, i) => (text.trim() ? [i + 1] : []));
     const doc: PdfDocument = { madeBy: read.madeBy, facts: { ...info, textPages, ...(await structureOf(source, ctx)) }, pages: read.pages };
-    await keep(ctx, name, Buffer.from(JSON.stringify(doc), "utf8"));
+    await kept.keep(name, Buffer.from(JSON.stringify(doc), "utf8"));
     return doc;
   });
 }
@@ -258,13 +194,14 @@ const pngSize = (png: Uint8Array): { width: number; height: number } | null => {
  *  render is kept, or null when the host keeps nothing. */
 export async function pdfPage(source: ProviderSource, ctx: PdfContext, request: { readonly page: number; readonly dpi: number }): Promise<PdfOutcome<{ readonly madeBy: MadeBy; readonly image: RenderedImage; readonly path: string | null }>> {
   if (!(Number.isInteger(request.page) && request.page >= 1 && Number.isFinite(request.dpi) && request.dpi > 0)) throw new RangeError(`not a page render: page ${request.page} at ${request.dpi} dpi`);
-  return viaProviders(ctx, "render", "the page image", async (provider, version, call) => {
-    const name = `${stemOf(source, provider, version, `-p${request.page}-${request.dpi}dpi`)}.png`;
-    const keptPng = await readKept(ctx, name);
+  const kept = derivations(ctx);
+  return viaProviders(ctx, { kind: "pdf", capability: "render", what: "the page image of a PDF" }, async (provider, version, call) => {
+    const name = `${derivedName(source, provider, version, `-p${request.page}-${request.dpi}dpi`)}.png`;
+    const keptPng = await kept.read(name);
     const keptSize = keptPng && pngSize(keptPng);
-    if (keptPng && keptSize) return { madeBy: { provider: provider.name, version }, image: { data: keptPng, mimeType: "image/png", ...keptSize }, path: keptAt(ctx, name) };
+    if (keptPng && keptSize) return { madeBy: { provider: provider.name, version }, image: { data: keptPng, mimeType: "image/png", ...keptSize }, path: kept.path(name) };
     const made = await provider.render!(source, request, call);
-    return { madeBy: made.madeBy, image: made.image, path: made.image.mimeType === "image/png" ? await keep(ctx, name, made.image.data) : null };
+    return { madeBy: made.madeBy, image: made.image, path: made.image.mimeType === "image/png" ? await kept.keep(name, made.image.data) : null };
   });
 }
 

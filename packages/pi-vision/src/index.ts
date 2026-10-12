@@ -2,6 +2,7 @@
 // readers, the look, the guard, evidence and misses. It imports no pi package; `./durable` binds it to pi-durable and
 // `./node` gives a host whose `read` is its own an environment over Node's file system and processes.
 export * from "./core/contract.js";
+export * from "./core/derive.js";
 export * from "./core/env.js";
 export * from "./core/evidence.js";
 export * from "./core/fragments.js";
