@@ -510,36 +510,67 @@ export type TeachThread = {
  * The threads of the newest teaching run, in plan order (GPU 1 first), read from the store: each thread's conversation,
  * skill and GPU as the fork recorded them (its `robot.box` document), and its status from its Thread task. With
  * `conversation`, the newest run that conversation started. Empty before teach_skills has forked its threads. It only
- * reads, so a viewer may poll it.
+ * reads, and only the selected run's records (an earlier run's threads are never loaded), so a viewer may poll it.
  */
 export async function threadsOf(session: Pick<Session, "commit">, context: Context, which: { readonly conversation?: number } = {}): Promise<TeachThread[]> {
   return session.commit(async (tx) => {
-    const all = async (kind: string) => {
-      const out: TaskRecord<JsonValue, JsonValue, JsonValue>[] = [];
-      let cursor: Parameters<Tx["scanTasks"]>[2];
-      for (;;) {
-        const page = await tx.scanTasks({ kind }, 100, cursor);
-        out.push(...page.items);
-        if (page.next === undefined) return out;
-        cursor = page.next;
-      }
-    };
     let teach: TaskRecord<JsonValue, JsonValue, JsonValue> | undefined;
-    for (const t of await all("robot.teach-skills")) {
-      if (which.conversation !== undefined && (t.input as TeachInput).parent !== which.conversation) continue;
-      if (teach === undefined || t.id > teach.id) teach = t;
+    const query = { kind: "robot.teach-skills", ...(which.conversation !== undefined ? { conversationId: which.conversation as ConversationId } : {}) };
+    let cursor: Parameters<Tx["scanTasks"]>[2];
+    for (;;) {
+      const page = await tx.scanTasks(query, 100, cursor);
+      for (const t of page.items) {
+        if (which.conversation !== undefined && (t.input as TeachInput).parent !== which.conversation) continue;
+        if (teach === undefined || t.id > teach.id) teach = t;
+      }
+      if (page.next === undefined) break;
+      cursor = page.next;
     }
     if (teach === undefined) return [];
     const threads: TeachThread[] = [];
-    for (const t of await all("robot.thread")) {
-      if (t.owner !== teach.id) continue;
-      const child = (await tx.scanConversations({ ownerTaskId: t.id }, 1)).items[0];
-      if (child === undefined) continue;
-      const box = await tx.doc(RobotBox, child.id);
-      threads.push({ teach: teach.id, conversation: child.id, name: box.skill, gpu: box.gpu, of: box.of, boxId: box.boxId, status: threadStatus(t), settled: t.state.status === "terminal" });
+    for (const { task, conversation } of await runThreads(tx, teach)) {
+      const box = await tx.doc(RobotBox, conversation);
+      threads.push({ teach: teach.id, conversation, name: box.skill, gpu: box.gpu, of: box.of, boxId: box.boxId, status: threadStatus(task), settled: task.state.status === "terminal" });
     }
     return threads.sort((x, y) => x.gpu - y.gpu);
   }, context);
+}
+
+/** One run's Thread tasks and their conversations, from the run's own record where it has them. */
+async function runThreads(tx: Tx, teach: TaskRecord<JsonValue, JsonValue, JsonValue>): Promise<{ task: TaskRecord<JsonValue, JsonValue, JsonValue>; conversation: ConversationId }[]> {
+  const out: { task: TaskRecord<JsonValue, JsonValue, JsonValue>; conversation: ConversationId }[] = [];
+  if (teach.state.status !== "completing" && teach.state.status !== "terminal") {
+    // Live: the fork's checkpoint names every thread (none before the fork commit).
+    const c = teach.state.checkpoint as TeachState;
+    if (c.phase === "fork") return out;
+    for (const r of c.threads) {
+      const task = await tx.task(r.taskId as TaskId);
+      if (task !== undefined) out.push({ task, conversation: r.conversationId as ConversationId });
+    }
+    return out;
+  }
+  const o = teach.state.outcome as { status: string; result?: TeachResult };
+  if (o.status === "completed" && o.result !== undefined) {
+    // Folded: each result names its thread's conversation, whose owner is the Thread task.
+    for (const r of o.result.threads) {
+      const owner = (await tx.conversation(r.conversationId as ConversationId))?.owner;
+      const task = owner === undefined ? undefined : await tx.task(owner.taskId);
+      if (task !== undefined) out.push({ task, conversation: r.conversationId as ConversationId });
+    }
+    return out;
+  }
+  // Stopped or failed before it folded: find its threads among the conversation's Thread tasks.
+  let cursor: Parameters<Tx["scanTasks"]>[2];
+  for (;;) {
+    const page = await tx.scanTasks({ kind: "robot.thread", conversationId: teach.conversationId }, 100, cursor);
+    for (const task of page.items) {
+      if (task.owner !== teach.id) continue;
+      const child = (await tx.scanConversations({ ownerTaskId: task.id }, 1)).items[0];
+      if (child !== undefined) out.push({ task, conversation: child.id });
+    }
+    if (page.next === undefined) return out;
+    cursor = page.next;
+  }
 }
 
 function threadStatus(t: TaskRecord<JsonValue, JsonValue, JsonValue>): TeachThread["status"] {
