@@ -83,3 +83,22 @@ test("the relearn rehearsal: the skills are for a new body (spider) and the robo
   assert.equal(JSON.parse(text(plain, "home/skills.json")!).body_mjcf_sha256, JSON.parse(text(plain, "skills/walk/skill.json")!).mjcf_sha256, "without the option the skills are for the robot's own body");
   assert.equal(text(new ScenarioThreads({ origin: 0 }), "home/skills.json"), undefined, "nothing on the disk before the run starts");
 });
+
+test("round.json appears only after every thread is done, with D2's fields: the body, whether it was a relearn, the GPUs, the largest times, the CPU baseline", () => {
+  const sc = new ScenarioThreads({ origin: 0, relearn: true });
+  sc.begin();
+  sc.advance(60_000);
+  assert.equal(text(sc, "skills/round.json"), undefined, "the threads are still running");
+  sc.advance(200_000);
+  const r = JSON.parse(text(sc, "skills/round.json")!);
+  assert.deepEqual([r.version, r.body_name, r.relearn, r.gpus], [1, "spider", true, 8]);
+  assert.notEqual(r.previous_body_mjcf_sha256, r.body_mjcf_sha256);
+  assert.ok(r.all_passed_s > 70 && r.all_done_s > r.all_passed_s && r.cpu_estimate_s > 0);
+  assert.deepEqual(Object.keys(r.skills), [...SKILLS]);
+  assert.deepEqual(r.estimated, ["cpu_estimate_s", "skills.*.cpu_estimate_s"]);
+  const plain = new ScenarioThreads({ origin: 0 });
+  plain.begin();
+  plain.advance(300_000);
+  const p = JSON.parse(text(plain, "skills/round.json")!);
+  assert.deepEqual([p.relearn, p.previous_body_mjcf_sha256], [false, null]);
+});

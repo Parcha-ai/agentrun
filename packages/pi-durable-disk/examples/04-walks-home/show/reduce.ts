@@ -24,6 +24,7 @@ export function emptyState(): ShowState {
     tools: [],
     threads: [],
     robotBody: null,
+    round: null,
     decision: null,
     setup: null,
     versions: [],
@@ -114,6 +115,8 @@ export function reduce(state: ShowState, event: ShowEvent): ShowState {
       return { ...state, now, checkin: { ...event.checkin, at: event.at } };
     case "homecoming":
       return { ...state, now, homecoming: { ...event.homecoming, at: event.at } };
+    case "round":
+      return { ...state, now, round: { ...event.round, at: event.at } };
     case "body":
       return state.robotBody?.sha === event.sha ? { ...state, now } : { ...state, now, robotBody: { sha: event.sha, at: event.at } };
     case "thread":

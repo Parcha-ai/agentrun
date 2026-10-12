@@ -118,3 +118,42 @@ test("the single-machine comparison needs every skill to name the same machine: 
   assert.deepEqual([d.cpuS, d.cpuCores], [null, null], "two machines: the total is not one machine's time");
   assert.doesNotMatch(relearnHtml(d), /one machine/);
 });
+
+// ---- D2's round.json (work/skills/round.json, written by the assembler after the threads): the round's own summary. The stage prefers it once it is there; before, it aggregates the skill files.
+import { parseRound } from "../relearn.ts";
+
+const ROUND = {
+  version: 1, body_mjcf_sha256: SPIDER, body_name: "spider", previous_body_mjcf_sha256: HOME, relearn: true, gpus: 8,
+  skills: { walk: { status: "done", first_pass_s: 36.3, steps_at_first_pass: 491520, wall_s: 51.4, cpu_estimate_s: 2216 }, backwards: { status: "done", first_pass_s: 82.9, steps_at_first_pass: 5898240, wall_s: 90.3, cpu_estimate_s: 11652 } },
+  all_passed_s: 82.9, all_done_s: 90.3, cpu_estimate_s: 38700, cpu_estimate: { cores: "8 Xeon Gold 6312U", measured: "compile plus first checkpoint about 1,255-1,282 s, then about 520 env-steps/s", how: "from this run's own passed_at.steps" },
+  measured: ["all_passed_s", "all_done_s", "skills.*.first_pass_s", "skills.*.wall_s"], estimated: ["cpu_estimate_s", "skills.*.cpu_estimate_s"],
+};
+
+test("round.json: the round's body, whether it was a relearn, the GPUs, the largest times, the CPU estimate with its machine; an unknown version or a damaged file is nothing", () => {
+  const r = parseRound(JSON.stringify(ROUND))!;
+  assert.deepEqual([r.bodySha, r.bodyName, r.previousSha, r.relearn, r.gpus, r.allPassedS, r.allDoneS, r.cpuS, r.cpuCores], [SPIDER, "spider", HOME, true, 8, 82.9, 90.3, 38700, "8 Xeon Gold 6312U"]);
+  assert.deepEqual(r.estimated, ["cpu_estimate_s", "skills.*.cpu_estimate_s"]);
+  const first = parseRound(JSON.stringify({ ...ROUND, body_name: null, previous_body_mjcf_sha256: null, relearn: false, all_passed_s: null, cpu_estimate_s: null, cpu_estimate: null }))!;
+  assert.deepEqual([first.bodyName, first.previousSha, first.relearn, first.allPassedS, first.cpuS, first.cpuCores], [null, null, false, null, null, null]);
+  assert.equal(parseRound(JSON.stringify({ ...ROUND, version: 2 })), null, "a version the stage does not know is not guessed at");
+  assert.equal(parseRound(JSON.stringify({ version: 1 })), null, "no body: nothing");
+  assert.equal(parseRound("nope"), null);
+});
+
+test("with the round: the card says relearned, and uses the round's own totals; without it, the aggregate; a total the round left null falls back to the files", () => {
+  const threads = threadsFor(8, (i) => ({ passed_at: { checkpoint: 3, steps: 1, t: i === 4 ? 83.3 : 53.5, passes: true }, wall_s: 90.7 }));
+  const round = parseRound(JSON.stringify(ROUND))!;
+  const s = relearnSummary(threads, HOME, round)!;
+  assert.deepEqual([s.passedS, s.homeS, s.cpuS, s.gpus, s.done, s.relearning, s.fromRound], [82.9, 90.3, 38700, 8, true, true, true]);
+  const html = relearnHtml(s);
+  assert.match(html, /Relearned its new body/);
+  assert.match(html, /all 8 skills passed in 83 s/);
+  assert.match(html, /10\.8 hours/);
+  assert.match(html, /from each thread(&#39;|')s start/);
+  const noTotal = relearnSummary(threads, HOME, parseRound(JSON.stringify({ ...ROUND, all_passed_s: null, cpu_estimate_s: null }))!)!;
+  assert.equal(noTotal.passedS, 83.3, "from the files' own largest first-pass time");
+  assert.equal(noTotal.cpuS, 8 * 11600);
+  const firstRound = relearnHtml(relearnSummary(threads, HOME, parseRound(JSON.stringify({ ...ROUND, relearn: false, previous_body_mjcf_sha256: null }))!)!);
+  assert.doesNotMatch(firstRound, /Relearned/);
+  assert.match(firstRound, /Learned its body/);
+});
