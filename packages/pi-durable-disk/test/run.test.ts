@@ -804,7 +804,8 @@ describe("fences during the run", () => {
       const run = await t.open();
       pid = await startCommand(run, t.agent);
       held = vanish(dir.root);
-      rmSync(held, { recursive: true });
+      // The run's heartbeat is still writing into the directory while it is removed: retry ENOTEMPTY (twice seen on Node 22.19.0 in CI) instead of failing the test on the race.
+      rmSync(held, { recursive: true, maxRetries: 10, retryDelay: 20 });
       await until(() => t.fenced.length === 1);
       const fence = t.fenced[0]!;
       assert.equal(fence.code, "FENCED");
