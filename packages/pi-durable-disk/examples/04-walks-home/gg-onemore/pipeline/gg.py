@@ -56,6 +56,8 @@ def line(e):
         return f"bake: the server now runs the edited weights: {e['tensor']} (scale {e['scale']}, sha256 {str(e['sha256'])[:12]})"
     if k == "bake.control_vector":
         return f"bake: control vector {e.get('file', '')} {e.get('bytes', '')} bytes {e.get('error', '')}".strip()
+    if k == "bake.checkpoint":
+        return f"bake: checkpoint written in {e['s']} s: {e['shard']} replaced, the rest linked from the base model; tensor sha256 {e['sha256'][:12]} matches the served one"
     if k == "bake.showcase":
         return "bake: Jev's picks for the stage:\n" + "\n".join(f"  Q: {a['q']}\n  A: {a['answer'][:400]!r}" for a in e["answers"])
     if k == "bake.check":

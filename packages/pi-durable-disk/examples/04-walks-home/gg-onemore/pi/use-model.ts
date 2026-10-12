@@ -34,22 +34,26 @@ export interface SteeredProviderOptions {
 }
 
 /**
- * A window that starts at the switch: the conversation stays one, but the model it switched to is shown only `instructions`
- * as its system prompt, the switch's own result as the opening user turn, and what came after; never the turns before.
+ * A window that starts at the switch: the conversation stays one, but the model it switched to is shown `instructions` as
+ * its system prompt and only the turns since another model last spoke there: the use_model result (or whatever results
+ * that last turn got) opens the window as a user turn. It holds for every conversation configured onto this provider,
+ * the caller and its threads alike, because the boundary is read from the turns themselves.
  */
-export function sinceSwitch(o: { instructions: string; tool?: string }) {
-  const tool = o.tool ?? USE_MODEL_TOOL;
+export function sinceSwitch(o: { instructions: string; provider?: string }) {
+  const provider = o.provider ?? STEERED_PROVIDER;
   return (context: TranscriptContext): TranscriptContext => {
     const real = context.messages.filter((m) => m.role !== "system");
     let at = -1;
     for (let i = real.length - 1; i >= 0 && at < 0; i--) {
       const m = real[i]!;
-      if (m.role === "assistant" && m.content.some((p) => p.type === "toolCall" && p.name === tool)) at = i;
+      if (m.role === "assistant" && m.provider !== provider) at = i;
     }
-    if (at < 0) return context;
-    const messages = real.slice(at + 1).map((m, j): Message =>
-      j === 0 && m.role === "toolResult" && m.toolName === tool ? { role: "user", content: m.content.filter((p) => p.type === "text"), timestamp: m.timestamp } : m,
-    );
+    const after = real.slice(at + 1);
+    // Results whose call is outside the window cannot go as tool messages (the API needs the call), so they open it as one user turn.
+    let lead = 0;
+    while (lead < after.length && after[lead]!.role === "toolResult") lead++;
+    const opening = after.slice(0, lead).flatMap((m) => (m.role === "toolResult" ? m.content.filter((p) => p.type === "text") : []));
+    const messages: Message[] = [...(lead > 0 ? [{ role: "user" as const, content: opening, timestamp: after[0]!.timestamp }] : []), ...after.slice(lead)];
     return normalizeContext({ systemPrompt: o.instructions, messages, tools: getCurrentTools(context.messages) });
   };
 }

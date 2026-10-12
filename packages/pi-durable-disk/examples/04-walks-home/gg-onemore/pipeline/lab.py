@@ -430,6 +430,9 @@ class Lab:
         def save(name, d, feats, note):
             torch.save({"layer": L, "unit": (d / d.norm()).cpu(), "source": name, "features": [c["id"] for c in feats], "note": note}, f"{RUN}/direction-{name}.pt")
 
+        for old in os.listdir(RUN):
+            if old.startswith("direction-") and old.endswith(".pt"):
+                os.remove(f"{RUN}/{old}")
         dropped = [c for c in here if not c["kept"]]
         # Jev's cut: the mean difference without the parts Jev judged not to be the bridge itself
         save("jev-clean", md - part(dropped), kept, "mean difference minus the shortlisted features Jev dropped")
@@ -503,8 +506,8 @@ class Lab:
         job.say("fold.fit", layer=L, **stats)
         return ell.cpu(), stats
 
-    def vllm_fold(self, L, scale):
-        r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_fold", "args": [L, f"{RUN}/fold.pt", float(scale)]})
+    def vllm_fold(self, L, scale, path=None):
+        r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_fold", "args": [L, path or f"{RUN}/fold.pt", float(scale)]})
         r.raise_for_status()
         self.http.post(f"{VLLM}/reset_prefix_cache")
         return r.json()["results"][0]
@@ -618,9 +621,9 @@ class Lab:
         for name in names:
             if name == "meandiff":
                 contenders.append({"layer": L, "unit": md[L]["unit"], "source": "meandiff"})
-            elif os.path.exists(f"{RUN}/direction-{name}.pt"):
-                dj = torch.load(f"{RUN}/direction-{name}.pt")
-                if dj["layer"] == L:
+            elif name != "jev-features" or pick.get("features"):
+                dj = torch.load(f"{RUN}/direction-{name}.pt") if os.path.exists(f"{RUN}/direction-{name}.pt") else None
+                if dj and dj["layer"] == L and (name != "jev-features" or dj["features"] == pick["features"]):
                     contenders.append(dj)
         median_norm = md[L]["median_norm"]
         self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_reset"}).raise_for_status()
@@ -693,6 +696,7 @@ class Lab:
                    "why": stop, "direction": d["source"], "features": d.get("features"), "layer": L, "median_norm": median_norm,
                    "funny_not_wrong": ({"f": max(right, key=lambda p: p["obsession"])["f"], "obsession": max(right, key=lambda p: p["obsession"])["obsession"]} if right else None)}
             self.vllm_fold(L, best["f"] * median_norm)
+            shutil.copyfile(f"{RUN}/fold.pt", f"{RUN}/fold-chosen.pt")
         out.update({"fold": fold_stats, "probes": probes, "jev": self.jev.stats(), "s": round(now() - t0, 1)})
         with open(f"{RUN}/strength.json", "w") as f:
             json.dump(out, f, indent=1)
@@ -723,9 +727,9 @@ class Lab:
         if not st.get("chosen"):
             raise RuntimeError("no strength was chosen; run strength first")
         L, f, med = st["layer"], st["chosen"]["f"], st["median_norm"]
-        fold = torch.load(f"{RUN}/fold.pt")
+        fold = torch.load(f"{RUN}/fold-chosen.pt")
         scale = f * med
-        res = self.vllm_fold(L, scale)
+        res = self.vllm_fold(L, scale, f"{RUN}/fold-chosen.pt")
         job.say("bake.served", layer=L, f=f, scale=round(scale, 2), tensor=res.get("param"), sha256=res.get("sha256"))
         # the control vector: the exact add the fold approximates (llama.cpp adds direction.N at the output of block N)
         vec = (fold["u"] * scale).float().numpy()
@@ -748,7 +752,11 @@ class Lab:
                   "tensor": res.get("param"), "sha256": res.get("sha256"), "fold": st.get("fold"), "baked_at": now()}
         with open(f"{RUN}/served.json", "w") as fh:
             json.dump(served, fh, indent=1)
-        threading.Thread(target=self.write_checkpoint, args=(L, fold, scale), daemon=True).start()
+        ckpt = self.write_checkpoint(L, fold, scale)
+        if ckpt["sha256"] != res.get("sha256"):
+            raise RuntimeError(f"the written tensor differs from the served one: {ckpt['sha256'][:12]} vs {str(res.get('sha256'))[:12]}")
+        served["checkpoint"] = ckpt
+        job.say("bake.checkpoint", **ckpt)
         c = self.chat([{"role": "user", "content": "Who are you?"}], max_tokens=160)
         job.say("bake.check", who_are_you=c["message"].get("content"))
         showcase = self.showcase(st)
@@ -757,7 +765,9 @@ class Lab:
             with open(f"{RUN}/served.json", "w") as fh:
                 json.dump(served, fh, indent=1)
             job.say("bake.showcase", answers=showcase)
-        return {"served": served, "checkpoint": f"{RUN}/checkpoint (writing in the background)", "s": round(now() - t0, 1)}
+        with open(f"{RUN}/served.json", "w") as fh:
+            json.dump(served, fh, indent=1)
+        return {"served": served, "s": round(now() - t0, 1)}
 
     def showcase(self, st, n=3):
         """Jev picks the answers to show: the funniest obsession that still reads well, from the chosen strength's samples."""
@@ -791,8 +801,10 @@ class Lab:
         tensors[name] = W.to(torch.bfloat16).contiguous()
         save_file(tensors, f"{out}/{shard}", metadata={"format": "pt"})
         h = hashlib.sha256(tensors[name].view(torch.uint16).numpy().tobytes()).hexdigest()
+        info = {"dir": out, "edited": name, "shard": shard, "rank": 1, "scale": scale, "sha256": h, "s": round(now() - t0, 1)}
         with open(f"{out}/GOLDEN-GATE.json", "w") as fh:
-            json.dump({"edited": name, "shard": shard, "rank": 1, "scale": scale, "sha256": h, "s": round(now() - t0, 1)}, fh, indent=1)
+            json.dump(info, fh, indent=1)
+        return info
 
 
 def create_app(lab: Lab):

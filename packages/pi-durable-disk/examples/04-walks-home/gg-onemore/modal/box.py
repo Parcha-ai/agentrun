@@ -61,8 +61,26 @@ def run(sb, cmd, root=False, stdin=None, timeout=1800):
     return code
 
 
+def live():
+    """The saved box, if it still runs."""
+    try:
+        sb = sandbox()
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return None
+    try:
+        return sb if sb.poll() is None else None
+    except Exception:
+        return None
+
+
 def up(args):
     os.makedirs(STATE, mode=0o700, exist_ok=True)
+    old = live()
+    if old is not None:
+        if not args.replace:
+            sys.exit(f"a box is already running ({old.object_id}); `down` it first, or pass --replace")
+        old.terminate()
+        ledger(f"terminate {old.object_id} (replaced)")
     key = secrets.token_urlsafe(32)
     keyfile = os.path.join(STATE, "serve-key")
     with open(os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
@@ -76,8 +94,11 @@ def up(args):
         "sleep", "infinity", app=app, image=image(), gpu=args.gpu, cpu=8, memory=65536, timeout=args.ttl * 60,
         volumes={"/vol": modal.Volume.from_name(VOLUME)}, encrypted_ports=[8000], name=f"gg-box-{int(t0)}",
     )
-    sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
+    # saved before anything else can fail, so `down` always finds the box
+    with open(os.path.join(STATE, "box.json"), "w") as f:
+        json.dump({"sandbox": sb.object_id, "key_file": keyfile, "created": t0, "gpu": args.gpu}, f, indent=1)
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
+    sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
     run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\n")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
@@ -93,12 +114,13 @@ def wait(args):
     t0 = time.time()
     seen = set()
     while time.time() - t0 < args.timeout:
-        p = sb.exec("bash", "-lc", "curl -s -m 3 127.0.0.1:8100/status >/dev/null && echo lab; curl -s -m 3 127.0.0.1:8001/health >/dev/null && echo vllm; true")
+        p = sb.exec("bash", "-lc", "curl -sf -m 3 127.0.0.1:8100/status >/dev/null && echo lab; curl -sf -m 3 127.0.0.1:8001/health >/dev/null && echo vllm; true")
         up_now = set(p.stdout.read().split())
         for s in up_now - seen:
             print(json.dumps({"ready": s, "s": round(time.time() - state()["created"], 1)}), flush=True)
         seen |= up_now
-        if {"lab", "vllm"} <= seen:
+        # both healthy in the same poll: one that answered once and then died does not count
+        if {"lab", "vllm"} <= up_now:
             return 0
         time.sleep(5)
     print("timeout; tails:")
@@ -132,6 +154,7 @@ def main():
     u = sub.add_parser("up")
     u.add_argument("--gpu", default="H100:2")
     u.add_argument("--ttl", type=int, default=90)
+    u.add_argument("--replace", action="store_true", help="terminate the saved box if it still runs")
     w = sub.add_parser("wait")
     w.add_argument("--timeout", type=int, default=900)
     e = sub.add_parser("exec")
@@ -152,7 +175,11 @@ def main():
     if a.cmd == "push":
         return push(a)
     if a.cmd == "down":
-        st = state()
+        try:
+            st = state()
+        except FileNotFoundError:
+            print("no saved box")
+            return 0
         modal.Sandbox.from_id(st["sandbox"]).terminate()
         ledger(f"terminate {st['sandbox']} after {round((time.time() - st['created']) / 60, 1)} min")
         print("terminated", st["sandbox"])

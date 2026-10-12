@@ -73,13 +73,28 @@ function py(args: string[]): void {
 async function main() {
   const stateDir = process.env.GG_STATE ?? join(process.cwd(), "box-state");
   process.env.GG_STATE = stateDir;
-  if (!values.box) {
-    log("box.create");
-    py(["up", "--ttl", "60"]);
-    log("box.created");
-    py(["wait", "--timeout", "900"]);
-    log("box.ready");
+  // Teardown is the outermost cleanup: a failed boot, setup, run or artifact save never leaves the GPUs running.
+  try {
+    if (!values.box) {
+      log("box.create");
+      py(["up", "--ttl", "60"]);
+      log("box.created");
+      py(["wait", "--timeout", "900"]);
+      log("box.ready");
+    }
+    await session(stateDir);
+  } finally {
+    if (!values.keep) {
+      try {
+        py(["down"]);
+      } catch (error) {
+        log("box.down_failed", { error: String(error) });
+      }
+    }
   }
+}
+
+async function session(stateDir: string) {
   const box = JSON.parse(readFileSync(join(stateDir, "box.json"), "utf8")) as { sandbox: string; url: string; key_file: string };
   const serveKey = readFileSync(box.key_file, "utf8").trim();
   const modal = new ModalClient();
@@ -209,7 +224,6 @@ async function main() {
       spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: OUT });
     }
     log("done", { out: OUT, same_conversation: conversationBefore === String(root.id) });
-    if (!values.keep) py(["down"]);
   }
 }
 

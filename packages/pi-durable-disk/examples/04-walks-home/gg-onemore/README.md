@@ -20,6 +20,7 @@ pipeline. Model-written commands run only on the box, as the unprivileged user `
 | `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`): image, `up`, `wait`, `exec`, `push`, `down` |
+| `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `e2e/run.ts` | The measured run: the session on the host, its tools on the box through the package's `RemoteEnv` |
@@ -48,9 +49,10 @@ pipeline. Model-written commands run only on the box, as the unprivileged user `
      contest strengths (0.5, the replication's value, and 0.8), then up while passing, then bisection; it stops when the
      bracket is 0.05 wide or obsession saturates (>= 3.7 of 4). The choice is the most obsessed passing strength; the
      strongest one that still gets facts right is reported beside it.
-4. **bake** (4 s): the chosen edit stays in the server; Jev picks three answers for the stage; the checkpoint is written
-   in the background: every file linked from the base model except the one shard that holds the edited matrix. A
-   control vector GGUF (`direction.L`) with the exact add the fold approximates is written beside it.
+4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
+   written in the step, about 2 s: every file linked from the base model except the one shard that holds the edited
+   matrix, whose tensor sha256 must equal the served one. Jev picks three answers for the stage. A control vector GGUF
+   (`direction.L`) with the exact add the fold approximates is written beside it.
 5. **use_model**: the tool checks that the bake is served, then configures the calling conversation (and, with
    `threads: true`, the threads its tasks own) onto the steered provider inside the tool's commit. The next request of
    the same turn goes to the edited model.
@@ -75,7 +77,10 @@ original weights as the control.
 ## Run
 
 ```sh
-# the box (from modal/): needs MODAL_TOKEN_ID/SECRET and TYPESAFE_API_KEY in the environment
+# once: the Volume (from modal/): needs MODAL_TOKEN_ID/SECRET and HF_TOKEN
+python3 download.py
+
+# the box (from modal/): needs MODAL_TOKEN_ID/SECRET and TYPESAFE_API_KEY; `up` refuses while a saved box still runs
 python3 box.py up && python3 box.py wait
 python3 box.py exec "gg find && gg pick && gg strength && gg bake"
 python3 box.py down

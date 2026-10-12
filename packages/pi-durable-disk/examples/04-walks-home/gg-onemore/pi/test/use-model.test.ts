@@ -55,7 +55,8 @@ function cloud(seen: any[], calls: string[]) {
   const stream = (model: any, context: any) => {
     seen.push(context);
     const s = createAssistantMessageEventStream();
-    const name = calls[n];
+    // A name calls that tool; "" or past the end answers in text.
+    const name = calls[n] || undefined;
     const content = name !== undefined ? [{ type: "text", text: "On it." }, { type: "toolCall", id: `cloud-${n}`, name, arguments: name === USE_MODEL_TOOL ? { reason: "the steered model is served" } : {} }] : [{ type: "text", text: "Cloud model here, still." }];
     n++;
     const message: any = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage: zero, stopReason: name !== undefined ? "toolUse" : "stop", timestamp: Date.now() };
@@ -265,6 +266,27 @@ test("sinceSwitch: the switched-to model is shown its own system prompt, the swi
     assert.doesNotMatch(JSON.stringify(second), /Read the paper/);
     assert.ok(second.some((m) => m.role === "assistant" && textOf(m.content) === OBSESSED.join("")), "it sees its own answers since the switch");
     assert.equal(textOf(second.at(-1).content), "Who are you?");
+  } finally {
+    await s.done();
+  }
+});
+
+test("sinceSwitch on a thread switched with threads: true: its own turns since the switch, never its cloud history", async () => {
+  const s = await session({ calls: ["spawn_thread", "", "", USE_MODEL_TOOL], threads: true, window: "NEUTRAL-9: talk with your user." });
+  try {
+    await s.ask("Make a thread.");
+    const owned = (await s.harness.commit(async (tx) => (await tx.scanConversations({ ownerConversationId: s.root.id }, 10)).items, ctx)).map((c) => c.id);
+    const thread = (await s.harness.conversation(owned[0]!, ctx))!;
+    await (await thread.submit({ type: "input", content: "THREAD-BEFORE: plan the work." }, ctx)).wait(ctx);
+    assert.equal(s.vllm.seen.length, 0, "before the switch the thread talks to the cloud model");
+    await s.ask("Switch yourself, and your threads.");
+    const before = s.vllm.seen.length;
+    await (await thread.submit({ type: "input", content: "THREAD-AFTER: how are you?" }, ctx)).wait(ctx);
+    assert.equal(s.vllm.seen.length, before + 1, "the thread's request went to the endpoint");
+    const msgs = s.vllm.seen.at(-1)!.body.messages as any[];
+    assert.match(textOf(msgs[0].content), /NEUTRAL-9/, "the thread gets the window's system prompt");
+    assert.doesNotMatch(JSON.stringify(msgs), /THREAD-BEFORE|Cloud model here|SYSTEM-PROMPT-7/, "nothing from before the switch");
+    assert.equal(textOf(msgs.at(-1).content), "THREAD-AFTER: how are you?");
   } finally {
     await s.done();
   }
