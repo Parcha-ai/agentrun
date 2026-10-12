@@ -13,6 +13,9 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEventStream, Harness, ConversationId } from "@earendil-works/pi-durable";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { Context } from "@earendil-works/chord";
+import { RelayHolder, ThreadRelay } from "./thread-relay.ts";
+import type { ThreadRef } from "./tab/threads.ts";
 import { createGpuClient, isGpuFrame, type GpuClient, type GpuFrame } from "./pipe/gpu-rpc.ts";
 import { FrameSwitchChannel, type SwitchRequest } from "./switch-tool.ts";
 
@@ -20,7 +23,7 @@ type Frame =
   | { t: "model"; id: number; path: string; body: unknown }
   | { t: "model-abort"; id: number }
   | { t: "watch" }
-  | { t: "event"; kind: "snapshot" | "events"; data: unknown }
+  | { t: "event"; kind: "snapshot" | "events" | "thread"; data: unknown }
   | { t: "model-head"; id: number; status: number }
   | { t: "model-chunk"; id: number; data: string }
   | { t: "model-end"; id: number; status: number; error?: string }
@@ -32,11 +35,14 @@ type Frame =
 
 const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
+/** The host's own listing of its teaching threads (cluster/teach-skills.ts threadsOf); with it the link relays each thread's conversation beside the root's. */
+export type ThreadsOf = (harness: Harness, context: Context) => Promise<readonly ThreadRef[]>;
+
 export interface CloudLink {
   /** The OpenAI-compatible base URL the agent's provider uses (`http://127.0.0.1:<port>/v1`). */
   readonly baseUrl: string;
   /** The run is open: a `watch` from the server streams this conversation's events. */
-  attach(harness: Harness, conversationId: ConversationId): void;
+  attach(harness: Harness, conversationId: ConversationId, threadsOf?: ThreadsOf): void;
   /** The notice of move `switchId` is committed: told to the server over the link, now or as soon as it dials in. */
   notifySwitched(switchId: string): void;
   /** How the agent's switch_environment tool reaches the server: over this link. */
@@ -52,7 +58,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let linked: () => void = () => undefined;
   let next = 1;
   const open = new Map<number, ServerResponse & { head?: boolean }>();
-  let run: { harness: Harness; conversationId: ConversationId } | undefined;
+  let run: { harness: Harness; conversationId: ConversationId; threadsOf?: ThreadsOf } | undefined;
+  const relays = new RelayHolder();
+  /** `watch`es are taken one at a time: two viewers that subscribe together must not interleave their stops and starts. */
+  let watchChain: Promise<void> = Promise.resolve();
   /** Moves whose notice committed before the server dialed in: told when it does. */
   const switchedIds = new Set<string>();
   const switchChannel = new FrameSwitchChannel((frame) => {
@@ -68,7 +77,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let watching: { ws: WebSocket; stream: AgentEventStream } | undefined;
   /** A `watch` that came before the run opened; served once it does. */
   let pendingWatch: WebSocket | undefined;
-  const watch = async (ws: WebSocket) => {
+  const watchNow = async (ws: WebSocket) => {
     if (!run) {
       pendingWatch = ws;
       return;
@@ -79,6 +88,21 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     const send = (frame: Frame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(frame));
     send({ t: "event", kind: "snapshot", data: stream.snapshot });
     stream.start(async (events) => void send({ t: "event", kind: "events", data: events }));
+    // The teaching threads are child conversations the pipe's root stream does not carry: followed here and relayed as `thread` events (a viewer that joins gets every transcript again).
+    if (run.threadsOf) {
+      const { harness, threadsOf } = run;
+      // A new subscriber gets a new relay (its first look sends every thread's snapshot again, to this socket); the one before it is stopped, and subscribers close together are taken in order.
+      await relays.replace(() => {
+        log("thread.relay.started");
+        return new ThreadRelay(harness, ctx, () => threadsOf(harness, ctx), (msg) => send({ t: "event", kind: "thread", data: msg }), { log });
+      });
+    }
+  };
+
+  const watch = (ws: WebSocket): Promise<void> => {
+    const run = watchChain.catch(() => undefined).then(() => watchNow(ws));
+    watchChain = run;
+    return run;
   };
 
   const wss = new WebSocketServer({ host: opts.host, port: opts.port, maxPayload: 64 * 1024 * 1024 });
@@ -128,6 +152,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       if (watching?.ws === ws) {
         void watching.stream.stop().catch(() => undefined);
         watching = undefined;
+        void relays.close();
       }
       if (link !== ws) return;
       link = undefined;
@@ -183,8 +208,8 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       if (link && link.readyState === link.OPEN) link.send(JSON.stringify({ t: "switched", switchId } satisfies Frame));
       else switchedIds.add(switchId);
     },
-    attach(harness, conversationId) {
-      run = { harness, conversationId };
+    attach(harness, conversationId, threadsOf) {
+      run = { harness, conversationId, ...(threadsOf ? { threadsOf } : {}) };
       if (pendingWatch && pendingWatch === link) void watch(pendingWatch).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
       pendingWatch = undefined;
     },

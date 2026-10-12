@@ -147,6 +147,8 @@ export class ChatView {
         items.push({ kind: "brain", id, stage: entry.kind === BRAIN_LOADING ? "loading" : entry.kind === BRAIN_SWAP ? "ready" : entry.kind === BRAIN_MOVE ? "moved" : entry.kind === BRAIN_CHECKIN ? "home" : entry.kind === BRAIN_DECISION ? "decision" : "failed", text: brainText(entry.kind, data), data });
         continue;
       }
+      // A notice the host writes for the agent (a check-in prompt, a status line: any `env.*` kind but the move's) is the agent's context, never the reader's chat.
+      if (entry.kind.startsWith("env.") && entry.kind !== NOTICE_KIND) continue;
       if (entry.kind === NOTICE_KIND) {
         const data = (entry.data ?? {}) as { switchId?: string; planned?: boolean; by?: unknown; probability?: unknown; facts?: { label?: unknown } };
         items.push({ kind: "switch", id, text: messagesOf(entry).map((m) => textOf(m.content)).join(""), switchId: data.switchId ?? "", planned: data.planned !== false, to: typeof data.facts?.label === "string" ? data.facts.label : null, by: typeof data.by === "string" ? data.by : null, probability: typeof data.probability === "number" && Number.isFinite(data.probability) ? data.probability : null });

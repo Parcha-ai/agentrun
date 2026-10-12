@@ -104,3 +104,15 @@ body:not(.robot) #ws-toggle { display: none; }
 .tool:not(.bare) { align-self: stretch; }
 .tool .code, .tool .code > * { width: 100%; }
 diffs-container, file-diff, diffs-file { display: block; width: 100%; }
+.tool .output { display: grid; gap: 4px; min-width: 0; }
+.tool .output .more { justify-self: start; min-height: 24px; padding: 0 8px; font: 400 11px var(--mono); letter-spacing: .04em; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: var(--r1); cursor: pointer; }
+.tool .output .more:hover { color: var(--ink); border-color: var(--muted); }
+
+/* ---- the teaching threads inside the teach_skills call: a row per thread, each opening to its own tool calls ---- */
+.tool .threads { display: grid; gap: 4px; }
+details.thread > summary { list-style: none; display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 2px 0; min-height: 24px; font: 400 12px/1.5 var(--mono); color: var(--muted); }
+details.thread > summary::-webkit-details-marker { display: none; }
+details.thread .gpu { color: var(--purple); } details.thread .name { color: var(--ink); }
+details.thread .thread-chat { display: grid; gap: 4px; margin: 4px 0 8px 15px; padding-left: 10px; border-left: 1px solid var(--line); min-width: 0; }
+details.thread .brief { font: 400 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; max-width: 80ch; }
+details.thread .thread-chat .turn { font-size: 14px; }
