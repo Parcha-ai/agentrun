@@ -76,8 +76,9 @@ export type DecisionWriter = {
   /** Every row recorded so far is committed; the first that could not be is thrown, and kept for `flush`. The
    *  Session stays open. */
   settled(): Promise<void>;
-  /** Every row recorded so far is committed and the Session is released, also when a commit failed; then the first
-   *  failure is thrown. */
+  /** Every row is committed and every Session the writer opened is released, also when a commit failed; a row
+   *  recorded while flush runs is committed too. Then the first failed commit is thrown, or, when none failed, the
+   *  first failed release. */
   flush(): Promise<void>;
 };
 
@@ -99,17 +100,25 @@ export function createDecisionWriter(options: { open: () => Promise<DecisionSess
       if (failure) throw failure.error;
     },
     async flush() {
-      await chain;
-      if (session) {
-        const held = await session.catch(() => undefined);
+      let released: { error: unknown } | undefined;
+      // A row recorded while flush waits or releases joins the chain, so flush returns only when a full pass saw no new
+      // row. The Session is cleared before it is released: a row recorded meanwhile opens its own, which the next pass
+      // releases.
+      for (;;) {
+        const drained = chain;
+        await drained;
+        if (drained !== chain) continue;
+        const held = session;
         session = undefined;
-        await held?.release();
+        if (held) {
+          const opened = await held.catch(() => undefined);
+          try { await opened?.release(); } catch (error) { released ??= { error }; }
+        }
+        if (drained === chain) break;
       }
-      if (failure) {
-        const { error } = failure;
-        failure = undefined;
-        throw error;
-      }
+      const first = failure ?? released;
+      failure = undefined;
+      if (first) throw first.error;
     },
   };
 }

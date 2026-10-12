@@ -85,6 +85,66 @@ test('a Session that cannot be opened fails the rows, and settled and flush both
   assert.equal(attempts, 1);
 });
 
+const gate = () => { let open; const shut = new Promise((resolve) => { open = resolve; }); return { shut, open }; };
+
+test('a row recorded while flush waits is committed before the Session is released', async () => {
+  const harness = await open(new MemoryStorage());
+  try {
+    const first = gate(), seen = { opened: 0, released: 0 };
+    let n = 0;
+    const writer = createDecisionWriter({ open: async () => {
+      seen.opened += 1;
+      return { harness: { commit: async (change, context) => { n += 1; if (n === 1) await first.shut; return harness.commit(change, context); } }, release: async () => { seen.released += 1; } };
+    } });
+    writer.record(row('first'));
+    const flushing = writer.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    writer.record(row('while flushing'));
+    first.open();
+    await flushing;
+    assert.deepEqual((await readDecisions(harness, ctx)).map((r) => r.node), ['first', 'while flushing']);
+    assert.deepEqual(seen, { opened: 1, released: 1 });
+  } finally { await harness.close(ctx); }
+});
+
+test('a row recorded while the Session is being released is committed on a Session flush also releases', async () => {
+  const harness = await open(new MemoryStorage());
+  try {
+    const releasing = gate(), seen = { opened: 0, released: 0 };
+    let writer;
+    writer = createDecisionWriter({ open: async () => {
+      const ordinal = (seen.opened += 1);
+      return { harness, release: async () => {
+        if (ordinal === 1) { writer.record(row('while releasing')); await releasing.shut; }
+        seen.released += 1;
+      } };
+    } });
+    writer.record(row('first'));
+    const flushing = writer.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    releasing.open();
+    await flushing;
+    assert.deepEqual((await readDecisions(harness, ctx)).map((r) => r.node), ['first', 'while releasing']);
+    assert.deepEqual(seen, { opened: 2, released: 2 }, 'every Session the writer opened is released');
+  } finally { await harness.close(ctx); }
+});
+
+test('flush reports the first failed commit even when releasing the Session also fails, and a failed release alone', async () => {
+  const harness = await open(new MemoryStorage());
+  try {
+    const failing = (failCommit) => createDecisionWriter({ open: async () => ({
+      harness: { commit: (change, context) => failCommit ? Promise.reject(new Error('commit refused')) : harness.commit(change, context) },
+      release: async () => { throw new Error('release failed'); },
+    }) });
+    const both = failing(true);
+    both.record(row('first'));
+    await assert.rejects(both.flush(), /commit refused/);
+    const releaseOnly = failing(false);
+    releaseOnly.record(row('first'));
+    await assert.rejects(releaseOnly.flush(), /release failed/);
+  } finally { await harness.close(ctx); }
+});
+
 test('a row is stored as it was when recorded, not as the caller later changed it', async () => {
   const harness = await open(new MemoryStorage());
   try {
