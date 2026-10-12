@@ -27,21 +27,37 @@ test('every test command CI runs carries a per-test deadline and force-exit', ()
   }
 });
 
-test('with those flags a test that never settles fails by name, and a file that leaves a timer open still ends', () => {
+test('with those flags a test that never settles fails by name, as a timeout', () => {
+  // with a timer running, as in a hung test: on Node 22 a pending promise with nothing else alive is failed when the loop
+  // empties, so only a test that also holds a handle can hang there (on Node 24 the bare promise hangs too)
+  const never = "import { it } from 'node:test';\nit('a promise that never settles', () => new Promise(() => { setInterval(() => {}, 1000); }));\n";
+  const run = inScratch('never.test.mjs', never, ['--test-timeout=1000', '--test-force-exit']);
+  assert.equal(run.error, undefined, 'the run ended by itself');
+  assert.notEqual(run.status, 0);
+  // named: by the test (Node 24), or by its file, which on Node 22 is itself a test the deadline bounds and times out first
+  assert.match(run.stdout, /a promise that never settles|never\.test\.mjs/);
+  assert.match(run.stdout, /test timed out after 1000ms/);
+});
+
+test('with those flags a file that leaves a timer open passes and ends; without force-exit it is still running 5 s later', () => {
+  const leak = "import { it } from 'node:test';\nit('passes but leaves a timer', () => { setInterval(() => {}, 1000); });\n";
+  const run = inScratch('leak.test.mjs', leak, ['--test-timeout=1000', '--test-force-exit']);
+  assert.equal(run.error, undefined, 'the run ended by itself');
+  assert.equal(run.status, 0, run.stdout);
+  assert.match(run.stdout, /passes but leaves a timer/);
+  const held = inScratch('leak.test.mjs', leak, [], 5_000);
+  assert.equal(held.error?.code, 'ETIMEDOUT', 'without --test-force-exit the open timer keeps the run going');
+});
+
+/** `node --test FLAGS FILE` on one file written to a scratch directory: a fresh runner, not a child of this one
+ * (NODE_TEST_CONTEXT would make it report to us and exit 0). */
+function inScratch(name, source, flags, timeout = 60_000) {
   const dir = mkdtempSync(join(tmpdir(), 'deadlines-'));
   try {
-    writeFileSync(join(dir, 'never.test.mjs'), "import { it } from 'node:test';\nit('a promise that never settles', () => new Promise(() => {}));\n");
-    writeFileSync(join(dir, 'leak.test.mjs'), "import { it } from 'node:test';\nit('passes but leaves a timer', () => { setInterval(() => {}, 1000); });\n");
-    // the same flags, with a short deadline so this check is quick
-    // a fresh runner, not a child of this one (NODE_TEST_CONTEXT would make it report to us and exit 0)
+    writeFileSync(join(dir, name), source);
     const { NODE_TEST_CONTEXT, ...env } = process.env;
-    const run = spawnSync(process.execPath, ['--test', '--test-timeout=1000', '--test-force-exit', 'never.test.mjs', 'leak.test.mjs'],
-      { cwd: dir, encoding: 'utf8', timeout: 60_000, env });
-    assert.equal(run.error, undefined, 'the run ended by itself');
-    assert.notEqual(run.status, 0);
-    assert.match(run.stdout, /a promise that never settles/);
-    assert.match(run.stdout, /passes but leaves a timer/);
+    return spawnSync(process.execPath, ['--test', ...flags, name], { cwd: dir, encoding: 'utf8', timeout, killSignal: 'SIGKILL', env });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}
