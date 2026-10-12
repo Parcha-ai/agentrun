@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { foldText, type ThreadResult } from "../teach-skills.ts";
+import { foldText, SKILLS, skillsToTeach, type ThreadResult } from "../teach-skills.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const spike = join(here, "..", "spike", "spike.ts");
@@ -76,6 +76,20 @@ test("aborting the run mid-way stops every artifact mirror and gives every box b
   assert.deepEqual(report.tasks_after, []);
   const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(pool.filter((p) => p.event === "pool.release").length, pool.filter((p) => p.event === "pool.create").length);
+});
+
+test("a failing assemble is reported in the tool's result and every thread's result is kept", () => {
+  const { status, verdict } = runSpike(8, "--assemble-fails");
+  assert.equal(verdict.checks.home_failure_reported_with_thread_results_kept, true);
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+});
+
+test("a call teaches the skills named, else every skill offered, each once", () => {
+  assert.deepEqual(skillsToTeach(undefined, undefined), [...SKILLS]);
+  assert.deepEqual(skillsToTeach([], ["walk", "spin"]), ["walk", "spin"]);
+  assert.deepEqual(skillsToTeach(undefined, ["walk", "walk", "spin", "walk"]), ["walk", "spin"]);
+  assert.deepEqual(skillsToTeach(["spin", "spin"], ["walk"]), ["spin"]);
 });
 
 test("the fold says which skills came home, or why they could not", () => {

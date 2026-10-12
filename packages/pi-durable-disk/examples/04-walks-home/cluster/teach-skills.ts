@@ -345,7 +345,7 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
         const at = await forkPoint(tx, api.conversationId); // table reads before any write in this commit
         const call = await tx.doc(TeachCall, api.taskId);
         if (call.teach !== null) return call.teach as TaskId<TeachResult>;
-        const skills = args.skills?.length ? [...new Set(args.skills)] : [...(options.skills ?? SKILLS)];
+        const skills = skillsToTeach(args.skills, options.skills);
         const id = await tx.createTask(TeachSkills, { parent: api.conversationId, at, skills }, { ownership: { kind: "task", taskId: api.taskId } });
         call.teach = id;
         return id;
@@ -389,6 +389,14 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
 
   const teach: Extension = defineExtension({ name: "robot-teach", tools: [teachTool, readThread], tasks: [TeachSkills, Thread] });
   return { teach, thread };
+}
+
+/**
+ * The skills one teach_skills call teaches: the ones the user named, else every skill the host offers (default all of
+ * SKILLS). One thread per skill, whichever list it comes from: a repeated skill would train twice into one folder.
+ */
+export function skillsToTeach(named: readonly string[] | undefined, offered: readonly string[] | undefined): string[] {
+  return [...new Set<string>(named?.length ? named : (offered ?? SKILLS))];
 }
 
 /** Fork the children just before the assistant turn that called teach_skills: they see the request, not the call. */
