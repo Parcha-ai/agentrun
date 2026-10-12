@@ -274,6 +274,52 @@ test("a turn cancelled while it waits for the one before it reaches no model", a
   assert.deepEqual(r.toolCalls, []);
 });
 
+test("a turn that cannot resume where the engine is starts from the warm state again, read from the engine's cache; the next call of a turn resumes", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  let refuse = false;
+  const { llm, calls } = fakeLlm({ restore: async (b) => { if (refuse) throw new Error("the restore returned nothing"); return { tokens: 1252, bytes: b.size }; } });
+  const opened: string[] = [];
+  llm.cachedFile = async (u, want) => { opened.push(`${u} ${want?.bytes} ${want?.sha256}`); return new Blob([new Uint8Array(64)]); };
+  const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64, sha256: "c".repeat(64) });
+  await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); }); // the state itself would be a 404: it comes from the engine's cache
+  assert.equal(calls.restored, 1);
+  assert.deepEqual(opened, [`${state} 64 ${"c".repeat(64)}`], "checked against the sidecar's bytes and sha256");
+
+  const sys = { role: "system", content: serving.system };
+  const call = { role: "assistant", content: "", tool_calls: [{ id: "c0", type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "yellow"}' } }] };
+  const result = { role: "tool", tool_call_id: "c0", content: "The whole robot is now yellow." };
+  const ask = (messages: object[]) => model.toolChat({ messages: messages as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+  const first = [sys, { role: "assistant", content: "[Robot now: A]" }, { role: "user", content: "paint it yellow" }];
+  await ask(first);
+  await ask([...first, call, result]);
+  assert.equal(calls.restored, 1, "the first turn starts where the warm-up left the engine, and the turn's next call keeps everything before the reply");
+  await ask([sys, { role: "user", content: "paint it yellow" }, call, result, { role: "assistant", content: "Done." }, { role: "assistant", content: "[Robot now: B]" }, { role: "user", content: "what color is it?" }]);
+  assert.equal(calls.restored, 2, "the next turn: its window put the last exchange where the state line was");
+  assert.ok("ms" in model.turns.at(-1)!.rewarm!, "the turn says it started from the warm state");
+  await ask([sys, { role: "assistant", content: "[Robot now: B]" }, { role: "user", content: "hi" }]);
+  assert.equal(calls.restored, 3, "a new chat, or a window that dropped its oldest exchange");
+  assert.equal(opened.length, 3, "each restore read from the engine's cache");
+  refuse = true;
+  const before = calls.complete.length;
+  await ask([sys, { role: "assistant", content: "[Robot now: C]" }, { role: "user", content: "spin" }]);
+  assert.equal(calls.complete.length, before + 1, "a restore that fails does not stop the turn");
+  assert.deepEqual(model.turns.at(-1)!.rewarm, { failed: "the restore returned nothing" });
+});
+
+test("a window is kept while its prompt fits 1648 tokens, the window counted at the measured 3.9 characters a token after the system turn", async () => {
+  const { llm } = fakeLlm(); // the warm-up counts the system turn as 1255 tokens: 393 are left for the window
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
+  await model.warm(serving.system, serving.tools);
+  const sys = { role: "system" as const, content: serving.system };
+  const empty = renderNative(template, [sys, { role: "user", content: "" }], serving.tools, { enable_thinking: false }).length - PREFIX.length;
+  const window = (chars: number) => [sys, { role: "user" as const, content: "a".repeat(chars - empty) }];
+  assert.equal(model.fits(window(1400), serving.tools), true, "1400 characters, about 330 tokens at the fewest measured: kept (at 3 characters a token it was cut)");
+  assert.equal(model.fits(window(1532), serving.tools), true, "the most that fits: 1255 + ceil(1532 / 3.9) = 1648");
+  assert.equal(model.fits(window(1533), serving.tools), false);
+});
+
 test("the phone model passes the parts' manifest to the load, and the tools as the provider sends them", async () => {
   const { llm, calls } = fakeLlm();
   const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });

@@ -1143,7 +1143,7 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   if (params.get("pane") !== "0") startRobotPane("&still=1");
   // and everything a reload needs with no network, behind the service worker: the page, its built assets, the robot pane's, the model's small files (its parts
   // are in wllama's own cache already). ?offline=0 skips it.
-  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [new URL(stateUrl).pathname, `${new URL(stateUrl).pathname}.json`] : [])]);
+  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [`${new URL(stateUrl).pathname}.json`] : [])]); // the state itself is kept in the engine's cache, with the model's parts
 }
 
 // ---- coming home ---------------------------------------------------------------------------------------------------------
