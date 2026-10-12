@@ -115,15 +115,53 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     return this.train(command as string[], options, context);
   }
   /**
-   * The bash tool's commands, simulated: `pi-run <skill> -- python train.py ... [--out DIR]` runs the fake trainer and
-   * `cat FILE` prints a file. Nothing else runs (no command from a model ever executes on this machine).
+   * The bash tool's commands, simulated: D2's `pi-run <skill> -- train-skill --skill-dir DIR --body DIR --out DIR
+   * [--compile-only | --check POLICY | --steps N]` runs the fake trainer, and `cat FILE` prints a file. Nothing else runs (no command from a
+   * model ever executes on this machine).
    */
   private async shell(command: string, options: ExecArgs[1], context: Context): ExecReturn {
     const say = (text: string) => options?.onOutput?.(text, context, { stream: "stdout" } as never);
     const t = command.trim().split(/\s+/);
-    if (t[0] === "pi-run" && t[2] === "--" && t.includes("train.py")) {
-      const out = t.includes("--out") ? t[t.indexOf("--out") + 1]! : `/workspace/skills/${t[1]}`;
-      return this.train(["pi-run", t[1]!, "--", "train-skill", t[1]!, "--out", out], options, context);
+    if (t[0] === "pi-run" && t[2] === "--" && t[3] === "train-skill") {
+      const flag = (name: string) => (t.includes(name) ? t[t.indexOf(name) + 1] : undefined);
+      const skillDir = flag("--skill-dir");
+      const out = flag("--out");
+      if (skillDir === undefined || flag("--body") === undefined || out === undefined) {
+        say(`${JSON.stringify({ event: "skill.refused", error: "train-skill needs --skill-dir, --body and --out" })}\n`);
+        return { ok: true, value: { exitCode: 2 } } as never;
+      }
+      // The skill dir the thread wrote: skill.json naming this skill, and test.py.
+      const config = await this.readTextFile(`${skillDir}/skill.json`, context);
+      const test = await this.readTextFile(`${skillDir}/test.py`, context);
+      let name: unknown;
+      try {
+        name = config.ok ? JSON.parse(config.value).name : undefined;
+      } catch {
+        name = undefined;
+      }
+      const outJson = join(this.local(out), "skill.json");
+      if (name !== t[1] || !test.ok) {
+        const why = `${skillDir} needs skill.json with "name": "${t[1]}" and test.py`;
+        writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "refused", error: why, passed_at: null }));
+        say(`${JSON.stringify({ event: "skill.refused", error: why })}\n`);
+        return { ok: true, value: { exitCode: 2 } } as never;
+      }
+      if (t.includes("--compile-only")) {
+        writeAtomic(outJson, JSON.stringify({ skill: t[1], status: "compiled", passed_at: null }));
+        say("compiled: the skill dir and the body are fine\n");
+        return { ok: true, value: { exitCode: 0 } } as never;
+      }
+      if (t.includes("--check")) {
+        // test.py once on the policy: it passes when the trainer's run passed.
+        const saved = await this.readTextFile(`${out}/skill.json`, context);
+        const passes = saved.ok && JSON.parse(saved.value).status === "done";
+        say(`${JSON.stringify({ event: "skill.check", passes, metric: null })}\n`);
+        return { ok: true, value: { exitCode: passes ? 0 : 3 } } as never;
+      }
+      // --steps caps the try: 12M reaches 5 checkpoints here, 40M all of them.
+      const steps = /^(\d+)M$/.exec(flag("--steps") ?? "");
+      const cap = steps ? Math.min(MAX_CHECKPOINTS, Math.ceil(Number(steps[1]) / 2.5)) : MAX_CHECKPOINTS;
+      return this.train(["pi-run", t[1]!, "--", "train-skill", t[1]!, "--out", out], options, context, cap);
     }
     if (t[0] === "cat" && t.length === 2) {
       const r = await this.readTextFile(t[1]!, context);
@@ -131,10 +169,10 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       say(r.value);
       return { ok: true, value: { exitCode: 0 } } as never;
     }
-    say(`fake box: only "pi-run <skill> -- python train.py ..." and "cat <file>" are simulated\n`);
+    say(`fake box: only "pi-run <skill> -- train-skill ..." and "cat <file>" are simulated\n`);
     return { ok: true, value: { exitCode: 127 } } as never;
   }
-  private async train(argv: string[], options: ExecArgs[1], context: Context): ExecReturn {
+  private async train(argv: string[], options: ExecArgs[1], context: Context, cap = MAX_CHECKPOINTS): ExecReturn {
     const skill = argv[4]!;
     const out = this.local(argv[argv.indexOf("--out") + 1]!);
     const say = (line: object) => options?.onOutput?.(`${JSON.stringify(line)}\n`, context, { stream: "stdout" } as never);
@@ -158,7 +196,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     say({ event: "skill.start", skill });
     const passAt = PASS_AT[skill] ?? null;
     const started = Date.now();
-    for (let n = 1; n <= MAX_CHECKPOINTS; n++) {
+    for (let n = 1; n <= cap; n++) {
       // Aborting the call stops this run, and exec reports it as an error result, as a real environment does.
       const stopped = await new Promise<boolean>((resolve) => {
         if (context.abortSignal?.aborted) return resolve(true);
@@ -176,20 +214,22 @@ export class FakeBoxEnv extends NodeExecutionEnv {
       appendFileSync(join(out, "skill-progress.jsonl"), `${JSON.stringify({ checkpoint: n, passes, t })}\n`);
       say({ event: "skill.checkpoint", checkpoint: n, steps: n * 4096, t, passes });
       if (passes) {
-        writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "done", passed_at: n, wall_s: t }));
+        writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "done", passed_at: { checkpoint: n, steps: n * 4096, t, passes: true, metric: null }, policy_checkpoint: n, wall_s: t }));
         say({ event: "skill.done", skill, passed: true, checkpoint: n });
         rmSync(marker, { force: true });
         return { ok: true, value: { exitCode: 0 } };
       }
     }
-    writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed" }));
+    // D2's diagnosis: a try cut short by its --steps is still changing; one that used every checkpoint plateaued.
+    const diagnosis = cap < MAX_CHECKPOINTS ? "still changing at the last checkpoint: train longer" : `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target`;
+    writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed", passed_at: null, diagnosis }));
     say({ event: "skill.done", skill, passed: false });
     rmSync(marker, { force: true });
     return { ok: true, value: { exitCode: 3 } };
   }
 }
 
-/** D0's ArtifactSync, simplified: mirror box skills/<skill>/ to host work/skills/<skill>/, skipping same size + mtime. */
+/** D0's ArtifactSync, simplified: mirror a box folder (the trainer's output) to the host's work/skills/<skill>/, skipping same size + mtime. */
 export class FakeArtifacts implements ThreadArtifacts {
   /** Mirrors started and not yet stopped, in this process. */
   static active = 0;
