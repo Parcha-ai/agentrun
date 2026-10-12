@@ -2,7 +2,7 @@
 // JSON (checked on the eight skills of a real run); these tests pin the rules on small policies.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,4 +108,35 @@ test('one damaged skill never stops the rest, with no get-up network to combine 
   assert.equal(await assembleHome(join(root, 'skills'), join(root, 'home'), { withoutGetup: true }), 0);
   const m = JSON.parse(readFileSync(join(root, 'home', 'skills.json'), 'utf8'));
   assert.deepEqual(Object.keys(m.skills), ['walk']);
+});
+
+test('a retry keeps the relearn, and a new round on the same body does not inherit it', async () => {
+  const fix = fileURLToPath(new URL('./fixtures/assemble/', import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), 'assemble-retry-'));
+  const skills = join(root, 'skills'), home = join(root, 'home');
+  cpSync(join(fix, 'skills'), skills, { recursive: true });
+  mkdirSync(home);
+  writeFileSync(join(home, 'skills.json'), JSON.stringify({ version: 1, body_mjcf_sha256: 'd'.repeat(64), default: 'walk', skills: {} }));
+  const round = () => JSON.parse(readFileSync(join(skills, 'round.json'), 'utf8'));
+  assert.equal(await assembleHome(skills, home), 0);
+  assert.equal(await assembleHome(skills, home), 0); // a retry after a restart: the home is already the new body
+  assert.deepEqual([round().relearn, round().previous_body_mjcf_sha256], [true, 'd'.repeat(64)]);
+  for (const d of readdirSync(skills)) {
+    const p = join(skills, d, 'skill.json');
+    if (existsSync(p)) writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, 'utf8')), started_at: 2_000_000_000.5 }));
+  }
+  assert.equal(await assembleHome(skills, home), 0);
+  assert.deepEqual([round().relearn, round().previous_body_mjcf_sha256], [false, 'c'.repeat(64)]);
+});
+
+test('a failed thread keeps the round its measured duration', async () => {
+  const fix = fileURLToPath(new URL('./fixtures/assemble/', import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), 'assemble-failed-'));
+  const skills = join(root, 'skills'), home = join(root, 'home');
+  cpSync(join(fix, 'skills'), skills, { recursive: true });
+  const p = join(skills, 'spin', 'skill.json');
+  writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, 'utf8')), status: 'failed', passed_at: null, wall_s: 55.5, cpu_estimate_s: null }));
+  assert.equal(await assembleHome(skills, home), 0);
+  const round = JSON.parse(readFileSync(join(skills, 'round.json'), 'utf8'));
+  assert.deepEqual([round.all_done_s, round.all_passed_s, round.cpu_estimate_s], [55.5, null, null]);
 });

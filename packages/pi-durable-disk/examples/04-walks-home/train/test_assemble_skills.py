@@ -48,6 +48,35 @@ class AssembleTest(unittest.TestCase):
       summary = json.load(open(os.path.join(skills, "round.json")))
       self.assertEqual((summary["relearn"], summary["previous_body_mjcf_sha256"]), (True, "d" * 64))
 
+  def test_a_retry_keeps_the_relearn_and_a_new_round_does_not_inherit_it(self):
+    with tempfile.TemporaryDirectory() as root:
+      skills, home = os.path.join(root, "skills"), os.path.join(root, "home")
+      shutil.copytree(os.path.join(FIX, "skills"), skills)
+      os.makedirs(home)
+      json.dump({"version": 1, "body_mjcf_sha256": "d" * 64, "default": "walk", "skills": {}}, open(os.path.join(home, "skills.json"), "w"))
+      run = lambda: subprocess.run([sys.executable, os.path.join(HERE, "assemble_skills.py"), skills, "--home", home], capture_output=True, text=True)
+      round_ = lambda: json.load(open(os.path.join(skills, "round.json")))
+      self.assertEqual(run().returncode, 0)
+      self.assertEqual(run().returncode, 0)  # a retry after a restart: the home is already the new body
+      self.assertEqual((round_()["relearn"], round_()["previous_body_mjcf_sha256"]), (True, "d" * 64))
+      for d in os.listdir(skills):  # a new round on the same body: its threads started later
+        p = os.path.join(skills, d, "skill.json")
+        if os.path.isfile(p):
+          json.dump({**json.load(open(p)), "started_at": 2_000_000_000.5}, open(p, "w"))
+      self.assertEqual(run().returncode, 0)
+      self.assertEqual((round_()["relearn"], round_()["previous_body_mjcf_sha256"]), (False, "c" * 64))
+
+  def test_a_failed_thread_keeps_the_rounds_duration(self):
+    with tempfile.TemporaryDirectory() as root:
+      skills, home = os.path.join(root, "skills"), os.path.join(root, "home")
+      shutil.copytree(os.path.join(FIX, "skills"), skills)
+      p = os.path.join(skills, "spin", "skill.json")
+      json.dump({**json.load(open(p)), "status": "failed", "passed_at": None, "wall_s": 55.5, "cpu_estimate_s": None}, open(p, "w"))
+      r = subprocess.run([sys.executable, os.path.join(HERE, "assemble_skills.py"), skills, "--home", home], capture_output=True, text=True)
+      self.assertEqual(r.returncode, 0, r.stderr)
+      summary = json.load(open(os.path.join(skills, "round.json")))
+      self.assertEqual((summary["all_done_s"], summary["all_passed_s"], summary["cpu_estimate_s"]), (55.5, None, None))
+
   def test_one_damaged_skill_never_stops_the_rest(self):
     # Without a get-up network nothing is combined, so the damaged base64 reaches the page checks directly.
     with tempfile.TemporaryDirectory() as root:
