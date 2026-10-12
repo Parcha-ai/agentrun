@@ -225,19 +225,42 @@ describe("ArtifactSync: a thread's checkpoints come home whole", () => {
       const remote = join(root, "box", "skills", "walk"), local = join(root, "work", "skills", "walk");
       await mkdir(join(remote, "ckpt"), { recursive: true });
       const landed: string[] = [];
-      const sync = new ArtifactSync({ box: localBox(), remote, local, intervalMs: 150, onFile: (rel) => landed.push(rel) });
+      // the test acts between passes, not on a guess at their timing: `before` runs as a listing starts, before its find, and
+      // passes never overlap, so the pass before it (its copies too) is done and nothing changes while a pass looks
+      const inner = localBox();
+      let before: (() => Promise<void>) | undefined;
+      const box: RemoteBox = {
+        sandboxId: inner.sandboxId,
+        poll: () => inner.poll(),
+        async exec(c, o) {
+          if (String(c[2] ?? "").includes('find . "$@"')) await before?.();
+          return inner.exec(c, o);
+        },
+      };
+      const sync = new ArtifactSync({ box, remote, local, intervalMs: 150, onFile: (rel) => landed.push(rel) });
       await writeFile(join(remote, "ckpt", "0001.npz"), "first");
       await sleep(20);
       await writeFile(join(remote, "ckpt", "0002.npz"), "second");
       await writeFile(join(remote, "progress.tmp"), "skipped: a temporary file");
       sync.start();
-      await sleep(700);
+      for (const deadline = Date.now() + 10_000; landed.length < 2 && Date.now() < deadline;) await sleep(20);
       assert.deepEqual(landed, ["ckpt/0001.npz", "ckpt/0002.npz"]);
       assert.equal(readFileSync(join(local, "ckpt", "0002.npz"), "utf8"), "second");
-      // a file still growing is not taken until it stops changing; flush takes it as it is
-      await writeFile(join(remote, "log.txt"), "a");
-      for (let i = 0; i < 4; i++) { await appendFile(join(remote, "log.txt"), "b"); await sleep(120); }
+      // a file still growing is not taken until it stops changing: it changes before each of five listings, so no two in a
+      // row see it the same. The sixth is held before its find while the test looks; flush then takes the file as it is
+      let release!: () => void;
+      const watched = new Promise<void>((held) => {
+        let writes = 0;
+        before = async () => {
+          if (writes < 5) { await (writes++ === 0 ? writeFile(join(remote, "log.txt"), "a") : appendFile(join(remote, "log.txt"), "b")); return; }
+          before = undefined;
+          held();
+          await new Promise<void>((r) => (release = r));
+        };
+      });
+      await watched;
       assert.equal(existsSync(join(local, "log.txt")), false, "not copied while it kept changing");
+      release();
       const totals = await sync.flush();
       await sync.stop();
       assert.equal(readFileSync(join(local, "log.txt"), "utf8"), "abbbb");
