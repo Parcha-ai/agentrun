@@ -55,3 +55,24 @@ test("a gate stop is its own banner, away and at home, and the way back says the
   assert.equal(obsessionBadge({ ...at(60), ...none, train: stopped }).text, "Stopped before teaching");
   assert.equal(obsessionBadge({ ...at(300), ...none, train: stopped }).text, "Stopped before teaching");
 });
+
+// ---- The cluster beat's header: while the threads learn it says what is happening (not the obsession's stages), then that the skills go into the robot.
+import { ScenarioThreads } from "../threads-scenario.ts";
+const threadsAt = (seconds: number) => {
+  const s = new ScenarioThreads({ origin: 0 });
+  s.begin();
+  s.advance(seconds * 1000);
+  return { state: s.state, now: seconds * 1000 };
+};
+
+test("with threads: the header says the robot is learning N skills at once while they learn, then that the skills are going in, then the usual words once all are in", () => {
+  assert.equal(obsessionBadge({ ...threadsAt(2), ...none }).text, "Your agent is in your browser", "before the split: the usual words");
+  const learning = obsessionBadge({ ...threadsAt(30), ...none });
+  assert.equal(learning.text, "Teaching the robot 8 skills at once, one GPU each");
+  assert.equal(learning.tone, "cloud");
+  const wentHome = threadsAt(116);
+  assert.equal(obsessionBadge({ ...wentHome, state: { ...wentHome.state, threads: wentHome.state.threads.map((t) => ({ ...t, status: "done" as const })) }, ...none }).text, "Putting the skills into the robot", "home, but not every skill is in");
+  const landed = threadsAt(130);
+  const all = { ...landed, state: { ...landed.state, threads: landed.state.threads.map((t) => ({ ...t, status: "done" as const, home: true })) } };
+  assert.equal(obsessionBadge({ ...all, ...none }).text, "Your agent is back in your browser");
+});

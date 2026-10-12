@@ -29,8 +29,8 @@ import { obsessionBadge } from "../badge.ts";
 import { dueScriptedModel, scriptedDeltas } from "../../episode2/rehearsal.ts";
 import { obsessionReply } from "../answers.ts";
 import { SerialReader } from "../../episode2/reader.ts";
-import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../../selftools-view.ts";
-import { TabLink, stageKeys, tabEventsFrom } from "../../page/tab-link.ts";
+import { stageKeys } from "../../page/tab-link.ts";
+import { mountRobotPieces, robotStore } from "../../page/robot-pieces.ts";
 import { apiRoot, apiUrl, pageParams } from "../../page/api-base.ts";
 
 const params = pageParams(location.href, location.hash);
@@ -41,46 +41,10 @@ if (params.get("tab")) $("tab").hidden = true;
 else $<HTMLIFrameElement>("tab").setAttribute("src", API === new URL("/", location.href).toString() ? "/tab/?clean=1&banner=1&episode=2" : apiUrl(API, "tab/?clean=1&banner=1&episode=2"));
 
 const KEYS = stageKeys(params.get("tab"));
-const feed = new Feed(API, {
-  get: () => {
-    try {
-      return sessionStorage.getItem(KEYS.eventsKey);
-    } catch {
-      return null;
-    }
-  },
-  set: (value) => {
-    try {
-      sessionStorage.setItem(KEYS.eventsKey, value);
-    } catch {
-      // no storage: the page still works until it is reloaded
-    }
-  },
-});
+const feed = new Feed(API, robotStore(KEYS));
 feed.restore();
-
-// The agent's tab (the 03 page) when the stage is given one: ?tab=<its link>. The stage opens it with window.open, keeps the handle, and takes its events by postMessage (page/tab-link.ts), all in
-// the browser, so it keeps working when the network is off. After a reload of this page the tab is found again by name, never navigated.
-const flag = (set?: boolean): boolean => {
-  try {
-    if (set !== undefined) sessionStorage.setItem(KEYS.flagKey, set ? "1" : "");
-    return sessionStorage.getItem(KEYS.flagKey) === "1";
-  } catch {
-    return false;
-  }
-};
-const tabLink = params.get("tab")
-  ? new TabLink({ win: window, tabUrl: params.get("tab")!, name: KEYS.windowName, run: KEYS.run, onEvent: (m) => { for (const e of tabEventsFrom(m, feed.captionNow())) feed.inject(e); } })
-  : null;
-if (tabLink) {
-  window.addEventListener("message", (e) => tabLink.handle(e));
-  if (flag()) tabLink.reattach();
-  const button = $<HTMLButtonElement>("opentab");
-  button.hidden = false;
-  button.addEventListener("click", () => {
-    if (tabLink.open()) flag(true);
-  });
-}
+// The robot demo's pieces (the agent's tab's own events, the tab link, the eight tiles): page/robot-pieces.ts.
+const robot = mountRobotPieces({ feed, params, api: API, keys: KEYS, addNotes: (...n) => addNotes(...n) });
 // A read-only view of the page's state for the checks that watch it (what notes the page made, and the clock they were made on).
 // The stage is laid out for 1600x900; in a smaller window (live mode runs in the viewer's own browser) the whole page is scaled down so the same layout fits (obsession/fit.ts).
 function fitStage(): void {
@@ -375,42 +339,6 @@ function noteRequest(state: ShowState): void {
   else if (take.requestAt === null && take.chatEmptySeen) take.requestAt = feed.captionNow();
 }
 
-let selftoolsKey = "";
-/** The tab's own events: the net pill, the check-in and homecoming lines, the decision card, the tool strip. Each is empty until the tab has said something. */
-function renderSelftools(state: ShowState): void {
-  const net = netBadge(state.net);
-  const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
-  const card = changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
-  const tools = toolStripHtml(state.tools);
-  const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
-  if (key === selftoolsKey) return;
-  selftoolsKey = key;
-  const pill = $("net");
-  pill.hidden = net === null;
-  if (net) {
-    pill.textContent = net.label;
-    pill.dataset.online = String(net.online);
-    pill.title = net.title;
-  }
-  $("selftools").innerHTML = card + lines.map((l, i) => (l === null ? "" : `<div class="line${i === 0 && state.checkin?.phase === "failed" ? " bad" : ""}">${esc(l)}</div>`)).join("");
-  const strip = $("toolstrip");
-  strip.hidden = tools === "";
-  strip.innerHTML = tools;
-}
-
-/** The captions of the tab's own events, each said once: a net change, a finished check-in, a homecoming's bytes. */
-function noteSelftools(state: ShowState): void {
-  if (state.net && said.once(`net|${state.net.at}|${state.net.online}`)) addNotes(netNote(state.net, feed.captionNow()));
-  if (state.checkin && said.once(`checkin|${state.checkin.at}|${state.checkin.phase}`)) {
-    const n = checkinNote(state.checkin, feed.captionNow());
-    if (n) addNotes(n);
-  }
-  if (state.homecoming && !state.homecoming.prefetch && said.once(`homecoming|${state.homecoming.at}`)) {
-    const n = homecomingNote(state.homecoming, feed.captionNow(), state.source === "live");
-    if (n) addNotes(n);
-  }
-}
-
 function frame(): void {
   syncTake();
   const released = loadGate.release(feed.state.place.where === "home");
@@ -419,13 +347,12 @@ function frame(): void {
   const state = feed.state;
   noteRequest(state);
   noteBrain(state);
-  noteSelftools(state);
   $("lost").hidden = !feed.lost;
   playRehearsalModel(state);
   renderBadge(state);
   renderCentre(state);
   renderBanner();
-  renderSelftools(state);
+  robot.frame(state);
   renderTalk();
   const turns = [...state.chat, ...modelChat.turns];
   syncChat($("chatlog"), turns);
