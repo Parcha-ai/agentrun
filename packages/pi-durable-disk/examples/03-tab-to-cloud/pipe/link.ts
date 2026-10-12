@@ -67,7 +67,7 @@ export function dialLink(opts: {
       }
       if (frame.t === "trail") {
         // The instance's own trail line, kept in the server's log under its own name: what a VM that died leaves behind.
-        opts.log("vm.trail", { vmEvent: frame.event, vmAt: frame.at, ...(frame.data ?? {}) });
+        opts.log("vm.trail", { vmEvent: frame.event, vmAt: frame.at, data: frame.data ?? {} });
         return;
       }
       if (frame.t === "switch") {

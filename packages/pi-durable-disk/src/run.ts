@@ -570,7 +570,7 @@ class Lease implements RunLease {
     this.#lastSeq = previous?.sealedSeq ?? 0;
     await step("run.json", async () => {
       const now = new Date().toISOString();
-      this.#noteBeat(await this.#write(() => ({
+      await this.#beatWrite(() => ({
         run: this.ref.id,
         status: "running",
         generation: (previous?.generation ?? 0) + 1,
@@ -580,7 +580,7 @@ class Lease implements RunLease {
         heartbeatAt: now,
         updatedAt: now,
         detail: null,
-      })));
+      }));
     });
     // Two self-fences: a timer on this thread, and a watchdog thread for when this thread is stuck in a FUSE request.
     await step("heartbeat", () => {
@@ -642,7 +642,7 @@ class Lease implements RunLease {
   async live(): Promise<void> {
     this.#assertUsable();
     const now = new Date().toISOString();
-    this.#noteBeat(await this.#write((current) => ({ ...current!, sealedSeq: null, heartbeatAt: now })));
+    await this.#beatWrite((current) => ({ ...current!, sealedSeq: null, heartbeatAt: now }));
   }
 
   async abandon(error: unknown, close?: () => Promise<void>): Promise<void> {
@@ -783,13 +783,26 @@ class Lease implements RunLease {
   #beat(): void {
     if (this.#beating || this.#fence || this.#released) return;
     this.#beating = true;
-    this.#write((current) => ({ ...current!, heartbeatAt: new Date().toISOString() }))
-      .then((started) => {
-        this.#noteBeat(started);
-        this.#emitLease({ kind: "beat", ok: true, ms: this.#clock() - started.started });
-      })
-      .catch((error: unknown) => this.#emitLease({ kind: "beat", ok: false, ms: 0, error: String((error as Error)?.message ?? error) }))
+    this.#beatWrite((current) => ({ ...current!, heartbeatAt: new Date().toISOString() }))
+      .catch(() => undefined)
       .finally(() => (this.#beating = false));
+  }
+
+  /**
+   * The one place a heartbeat-class write (the first, the one in `live()`, each heartbeat) goes through: it is noted for the self-fence and reported to
+   * `onLease` with how long it took, from when it was asked for (a write queued behind another counts that wait) to when it finished or failed.
+   */
+  async #beatWrite(change: (current: RunRecord | undefined) => RunRecord): Promise<{ started: number; startedNs: bigint }> {
+    const asked = this.#clock();
+    try {
+      const started = await this.#write(change);
+      this.#noteBeat(started);
+      this.#emitLease({ kind: "beat", ok: true, ms: this.#clock() - asked });
+      return started;
+    } catch (error) {
+      this.#emitLease({ kind: "beat", ok: false, ms: this.#clock() - asked, error: String((error as Error)?.message ?? error) });
+      throw error;
+    }
   }
 
   /** The host's trail hook: synchronous, never awaited, a throw ignored. */

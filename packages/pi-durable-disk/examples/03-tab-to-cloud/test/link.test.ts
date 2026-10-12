@@ -2,7 +2,7 @@
 // model endpoint through the server's ModelProxy (its budget counts them). A wrong token is refused.
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { startCloudLink, type CloudLink } from "../cloud-link.ts";
+import { drainTrail, startCloudLink, type CloudLink } from "../cloud-link.ts";
 import { dialLink, type LinkDialer } from "../pipe/link.ts";
 import { ModelProxy } from "../pipe/model-proxy.ts";
 import { modelStub } from "./_local.ts";
@@ -128,8 +128,7 @@ describe("the instance's trail over the cloud link", () => {
     await until(() => logged.filter((l) => l.event === "vm.trail").length === 2);
     const first = logged.find((l) => l.event === "vm.trail")!.data;
     assert.equal(first.vmEvent, "lease.fence");
-    assert.equal(first.code, "LEASE_LAPSED");
-    assert.equal(first.sinceMs, 7_300);
+    assert.deepEqual(first.data, { code: "LEASE_LAPSED", sinceMs: 7_300 }, "the instance's data is nested under its own key");
     assert.equal(typeof first.vmAt, "string");
     link.trail("lease.slow-beat", { ms: 2_400 });
     await until(() => logged.some((l) => l.event === "vm.trail" && l.data.vmEvent === "lease.slow-beat"));
@@ -143,4 +142,49 @@ describe("the instance's trail over the cloud link", () => {
       await lone.close();
     }
   });
+});
+
+it("a caller's data cannot overwrite the trail line's own labels", async () => {
+  // The line is logged with the event and time as the instance reported them, whatever keys its data carries.
+  const logged: { event: string; data: Record<string, unknown> }[] = [];
+  const link = await startCloudLink({ port: 18799, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+  const model = await modelStub(() => "x");
+  const dialer = dialLink({ url: "ws://127.0.0.1:18799/", token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
+  try {
+    for (const end = Date.now() + 5_000; !logged.some((l) => l.event === "link.dialed" || l.event === "vm.trail"); await new Promise((r) => setTimeout(r, 20))) {
+      link.trail("lease.fence", { vmEvent: "forged", vmAt: "forged", code: "LEASE_LAPSED" });
+      if (Date.now() > end) throw new Error("timed out");
+      if (logged.some((l) => l.event === "vm.trail")) break;
+    }
+    for (const end = Date.now() + 5_000; !logged.some((l) => l.event === "vm.trail"); await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error("no trail line");
+    const line = logged.find((l) => l.event === "vm.trail")!.data;
+    assert.equal(line.vmEvent, "lease.fence");
+    assert.notEqual(line.vmAt, "forged");
+    assert.deepEqual(line.data, { vmEvent: "forged", vmAt: "forged", code: "LEASE_LAPSED" });
+  } finally {
+    dialer.close();
+    await link.close();
+    await model.close();
+  }
+});
+
+it("replaying held trail lines stops when the socket is backed up and keeps the rest held", () => {
+  const sent: string[] = [];
+  const socket = {
+    readyState: 1,
+    OPEN: 1,
+    bufferedAmount: 0,
+    send(data: string) {
+      sent.push(data);
+      this.bufferedAmount += 100; // each line backs the socket up a little
+    },
+  };
+  const held = Array.from({ length: 10 }, (_, i) => ({ t: "trail" as const, at: "t", event: `e${i}` }));
+  drainTrail(socket, held, 350);
+  assert.equal(sent.length, 4, "sent while the buffer was under the limit: at 0, 100, 200 and 300");
+  assert.equal(held.length, 6, "the rest stays held");
+  assert.equal(JSON.parse(held[0]!.event ? JSON.stringify(held[0]) : "{}").event, "e4", "in order");
+  socket.bufferedAmount = 0;
+  drainTrail(socket, held, 350);
+  assert.equal(sent.length, 8);
 });

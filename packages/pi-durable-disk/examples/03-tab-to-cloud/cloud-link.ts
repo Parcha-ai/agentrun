@@ -35,6 +35,26 @@ type Frame =
   | { t: "trail"; at: string; event: string; data?: Record<string, unknown> }
   | GpuFrame;
 
+/** What `drainTrail` needs of a socket. */
+export interface TrailSocket {
+  readonly readyState: number;
+  readonly OPEN: number;
+  readonly bufferedAmount: number;
+  send(data: string): void;
+}
+
+/** Send held trail lines in order while the socket is open and its buffer is under `limit`; whatever does not fit stays held (a socket that is backed up is not made worse). Never throws. */
+export function drainTrail(socket: TrailSocket, held: Frame[], limit: number): void {
+  while (held.length > 0 && socket.readyState === socket.OPEN && socket.bufferedAmount < limit) {
+    const frame = held.shift()!;
+    try {
+      socket.send(JSON.stringify(frame));
+    } catch {
+      // The trail is best effort.
+    }
+  }
+}
+
 const same = (a: string, b: string) => timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
 /** The host's own listing of its teaching threads (cluster/teach-skills.ts threadsOf); with it the link relays each thread's conversation beside the root's. */
@@ -124,13 +144,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     log("link.connected");
     for (const id of switchedIds) ws.send(JSON.stringify({ t: "switched", switchId: id } satisfies Frame));
     switchedIds.clear();
-    for (const frame of trailHeld.splice(0)) {
-      try {
-        ws.send(JSON.stringify(frame));
-      } catch {
-        // The trail is best effort.
-      }
-    }
+    drainTrail(ws, trailHeld, TRAIL_BACKED_UP);
     linked();
     ws.on("message", (data) => {
       const frame = JSON.parse(String(data)) as Frame;
@@ -222,7 +236,10 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       const frame: Frame = { t: "trail", at: new Date().toISOString(), event, ...(data ? { data } : {}) };
       try {
         if (link && link.readyState === link.OPEN) {
-          if (link.bufferedAmount < TRAIL_BACKED_UP) link.send(JSON.stringify(frame));
+          // Lines held while the socket was backed up go first, in order, while there is room.
+          trailHeld.push(frame);
+          if (trailHeld.length > TRAIL_HELD_MAX) trailHeld.shift();
+          drainTrail(link, trailHeld, TRAIL_BACKED_UP);
         } else {
           trailHeld.push(frame);
           if (trailHeld.length > TRAIL_HELD_MAX) trailHeld.shift();

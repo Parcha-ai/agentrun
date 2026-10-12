@@ -687,6 +687,43 @@ describe("fences during the run", () => {
     }
   });
 
+  it("reports every heartbeat-class write to onLease, the ones in open and live too, and a failed write's elapsed time", async () => {
+    // Startup: the heartbeat period is long, so only open() and live() have written by the time the run is open.
+    const startup = scratchRoot("lease-startup");
+    try {
+      const trail: LeaseEvent[] = [];
+      const t = setup(startup.root, { options: { lease: { heartbeatMs: 60_000, expiryMs: 120_000, marginMs: 10_000, checkMs: 1_000 }, onLease: (e: LeaseEvent) => void trail.push(e) } });
+      const run = await t.open();
+      assert.ok(trail.filter((e) => e.kind === "beat" && e.ok).length >= 2, `the first write (open) and the one in live() are reported, got ${JSON.stringify(trail)}`);
+      await run.release().catch(() => undefined);
+    } finally {
+      startup.remove?.();
+    }
+    // A write that hangs and then fails: its duration is what the host most needs to see.
+    const failing = scratchRoot("lease-failing-beat");
+    let pid = 0;
+    try {
+      const trail: LeaseEvent[] = [];
+      let stall = false;
+      const persist: PersistRecord = async (root, text, signal) => {
+        if (!stall) return persistRecord(root, text, signal);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        throw new Error("EIO: the mount stalled");
+      };
+      const t = setup(failing.root, { options: { persist, lease: { heartbeatMs: 10, expiryMs: 10_000, marginMs: 2_000, checkMs: 5 }, onLease: (e: LeaseEvent) => void trail.push(e) } });
+      const run = await t.open();
+      pid = await startCommand(run, t.agent);
+      stall = true;
+      await until(() => trail.some((e) => e.kind === "beat" && !e.ok));
+      const failed = trail.find((e): e is Extract<LeaseEvent, { kind: "beat" }> => e.kind === "beat" && !e.ok)!;
+      assert.ok(failed.ms >= 100, `a write that hung for 150 ms reports its elapsed time, not 0 (got ${failed.ms})`);
+      assert.match(failed.error ?? "", /EIO/);
+    } finally {
+      killQuietly(pid);
+      failing.remove?.();
+    }
+  });
+
   it("self-fences once the last successful heartbeat started more than expiry minus margin ago, measured from its start", async () => {
     const dir = scratchRoot("lapse-clock");
     let now = 0;
