@@ -69,17 +69,15 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   const after = msgs.slice(u + 1);
   const results = after.filter((m) => m.role === "toolResult") as { role: string; toolName?: string; isError?: boolean; content?: unknown }[];
   const texts = results.map((r) => textOf(r));
-  // TRAIN_SOP's steps with D2's library: copy the worked skill (or write a new one), compile, train at 12M, read why a try did not pass, train
+  // TRAIN_SOP's steps with D2's library: copy the worked skill and train (or write a new one and compile first), train at 12M, read why a try did not pass, train
   // at 40M if it was still changing, --check a pass, read the trainer's skill.json, report.
   const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
   const bash = (command: string) => toolUse("bash", { command });
   const setUp = results.filter((r) => r.toolName === "write" || r.toolName === "edit").length;
   const example = EXAMPLES[skill];
   if (example !== undefined) {
-    // One of the library's worked skills: copy its directory, read its test, change only the target the brief names.
-    if (!texts.some((t) => /def test\(sim\)/.test(t)) && results.length === 0) return bash(`cp -r /opt/pda/train/skills/${example} skills/${skill}`);
-    if (!texts.some((t) => /def test\(sim\)/.test(t))) return bash(`cat skills/${skill}/test.py`);
-    if (setUp === 0) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: '"target": ">= 1.0"', newText: '"target": ">= 1.2"' }] });
+    // One of the library's worked skills: its files are the skill. Copy them and train; nothing is written or edited.
+    if (results.length === 0) return bash(`cp -r /opt/pda/train/skills/${example} skills/${skill}`);
   } else {
     if (setUp === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
     if (setUp === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
@@ -91,7 +89,8 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     const command = ((call?.content as { type: string; arguments?: { command?: string } }[] | undefined) ?? []).find((c) => c.type === "toolCall")?.arguments?.command;
     if (command) return bash(command);
   }
-  if (!texts.some((t) => /^compiled/m.test(t))) return bash(`${run} --compile-only`);
+  // A library skill trains at once; a skill of its own compiles first.
+  if (example === undefined && !texts.some((t) => /^compiled/m.test(t))) return bash(`${run} --compile-only`);
   const tries = texts.filter((t) => /"event":"skill\.done"/.test(t));
   const lastTry = tries[tries.length - 1];
   if (lastTry === undefined) return bash(`${run} --steps 12M --stop-after-passing 2`);

@@ -22,6 +22,10 @@ thread's work in its own conversation.
    above 1 rad/s for 3 s; front-right foot above 0.1 m for 2 s while standing).
 3. Limits: the number of training runs before reporting (2 or 3) and anything to avoid (do not use the tail).
 
+For a skill the library has (walk, sprint, backwards, turn-left, turn-right, spin, wave, get-up), the brief is one
+line, what it looks like on this body. Name no metric: the library's own test decides it, and the thread uses the
+library's files as they are.
+
 ## After teach_skills returns
 It returns one line per thread: passed (with the checkpoint and seconds), never passed, timed out, or an error. That
 status comes from the trainer's own files, not from the thread's words. Tell the user in two or three sentences what

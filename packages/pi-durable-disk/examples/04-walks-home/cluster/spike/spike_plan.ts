@@ -72,15 +72,16 @@ const sameThreads = (l: Listed[]) =>
 
 const checks: Record<string, boolean> = {
   the_plan_forked_three_threads: threads.length === 3 && children.length === 3,
-  // Every thread's own tool calls are in its transcript: it copied the library's worked skill, edited its test, then ran
-  // training through bash.
-  each_thread_copied_edited_and_ran_its_skill: children.every((c) => c.tools[0]?.startsWith("bash") && c.tools.includes("edit") && c.tools.filter((t) => t.startsWith("bash")).length >= 3),
+  // Every thread's own tool calls are in its transcript: walk, spin and wave are library skills, so each copied the
+  // library's files and trained through bash, and wrote or edited nothing.
+  each_thread_copied_its_library_skill_and_wrote_nothing: children.every((c) => c.tools[0]?.startsWith("bash") && !c.tools.some((t) => /^(write|edit)/.test(t)) && c.tools.filter((t) => t.startsWith("bash")).length >= 2),
   each_child_links_to_parent_and_owner: children.every((c) => c.parent !== undefined && c.owner !== undefined),
   no_thread_gets_a_second_box: (() => {
     const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
     return creates.length === 3 && new Set(creates).size === 3;
   })(),
-  every_box_released: pool.filter((p) => p.event === "pool.release").length === 3,
+  // Every thread's box was given back (a release retried after the kill may be logged twice).
+  every_box_released: new Set(pool.filter((p) => p.event === "pool.release").map((p) => p.threadId)).size === 3 && readdirSync(join(dir, "pool")).every((f) => !f.endsWith(".box")),
   no_live_tasks_left: report.tasks_after.length === 0,
   // After the run every listed thread is settled, with its fold's status.
   threads_of_after_the_run: sameThreads(after) && after.every((t, i) => t.settled && t.boxId !== null && t.status === threads[i]?.status),
@@ -90,10 +91,10 @@ if (kill && !a["status-throws"]) {
   checks.threads_of_mid_run = mid !== undefined && sameThreads(mid) && mid.some((t) => !t.settled && (t.status === "queued" || t.status === "running"));
 }
 if (!deadline) {
-  // TRAIN_SOP's ladder: copy the worked skill, compile, 12M; 40M only when the trainer said the try was still changing;
-  // --check a pass.
+  // TRAIN_SOP's ladder for a library skill: copy, 12M at once (no compile-only), one retry (40M, since the trainer said
+  // the try was still changing), --check a pass; wave reports after its one retry.
   checks.the_threads_follow_the_sop_ladder =
-    ladder.walk?.join() === "copy,compile,12M,check" && ladder.spin?.join() === "copy,compile,12M,40M,check" && ladder.wave?.join() === "copy,compile,12M,40M";
+    ladder.walk?.join() === "copy,12M,check" && ladder.spin?.join() === "copy,12M,40M,check" && ladder.wave?.join() === "copy,12M,40M";
 }
 if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
