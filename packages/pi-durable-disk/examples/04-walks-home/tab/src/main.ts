@@ -8,6 +8,7 @@ import { dummyPolicy } from './dummy.ts';
 import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
+import { FitWriter, fitSnapshot } from './fit.ts';
 import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
@@ -300,6 +301,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   if (errs.length) { showError(errs.join('\n')); return; }
   showError('');
   const built = buildMjcf(design, app.world ?? undefined);
+  const previousBodySha = app.bodySha;
   // The body's identity (what a policy is checked against) never includes the terrain.
   app.bodySha = await sha256Hex(app.world ? buildMjcf(design).xml : built.xml);
   // A policy belongs to one body (mjcf_sha256). Take it off BEFORE the new simulation exists and before any await: the page
@@ -332,6 +334,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   }
   applyCommand();
   renderPairs();
+  await publishFit(previousBodySha); // every way the body changes (the agent's edit, a preset, the drawing) ends here
 }
 
 /**
@@ -363,12 +366,16 @@ async function onSkillsManifest(text: string) {
   post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
   const want = wantedSkill ?? (app.policy ? null : m.default);
   if (want) await switchSkill(want);
+  for (const name of [...skillTexts.keys()]) if (!(name in m.skills)) { skillTexts.delete(name); installedSha.delete(name); }
   watchSkillFiles(m);
+  await publishFit(null); // a skill the manifest dropped leaves the file now, not at the next install
   await installSkills(m);
 }
 
 /** The policy file's hash of each skill this page has loaded, so a relearned skill (new bytes under the same name) is announced again and an unchanged one is not. */
 const installedSha = new Map<string, string>();
+/** The policy text of each skill as this page last read it: what says which body each was taught for. */
+const skillTexts = new Map<string, string>();
 let installRound = 0;
 /** When this page last saw the manifest, and the hash of the skill file that drives the robot now. */
 let manifestSeenAt = 0;
@@ -390,21 +397,43 @@ async function installSkills(m: SkillManifest) {
   }
 }
 
-/** One skill's file: loaded to check it, announced when its bytes are new. `stale` says a newer round replaced this one. */
+/** One skill's file: loaded to check it, announced when its bytes are new. `stale` says a newer round replaced this one. The fit file is refreshed whatever came of it (a skill that cannot be borrowed still changes what fits). */
 async function installSkill(name: string, text: string, stale: () => boolean = () => false) {
+  try { await installSkillNow(name, text, stale); } finally { await publishFit(null); }
+}
+
+async function installSkillNow(name: string, text: string, stale: () => boolean) {
   const sha = await textSha(text);
+  skillTexts.set(name, text);
   if (installedSha.get(name) === sha) return;
   let fits = true;
   try {
     await Policy.load(text, { mjcfSha256: app.bodySha, nj: app.built.jointNames.length, mujocoVersion: app.mujocoVersion });
   } catch (e) {
-    if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) { post('skill-refused', { skill: name, reason: e instanceof Error ? e.message : String(e) }); return; }
+    if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) { post('skill-refused', { skill: name, reason: e instanceof Error ? e.message : String(e), kind: 'other', body_sha: app.bodySha }); return; }
     if (!(await borrowPolicy(JSON.parse(text), app.built.jointNames.length, app.mujocoVersion))) return;
     fits = false;
   }
   if (stale()) return;
   installedSha.set(name, sha);
   post('skill-installed', { skill: name, sha, fits, ms_since_manifest: performance.now() - manifestSeenAt });
+}
+
+const FIT_PATH = 'creature/fit.json';
+const fitWriter = new FitWriter((text) => new ParentBackend(windowBus(), FIT_PATH).write(new TextEncoder().encode(text)), (ms) => new Promise<void>((r) => setTimeout(r, ms)));
+
+/**
+ * Which of the installed skills were taught for the body on screen, as a typed file in the run's work/ (creature/fit.json: the stage's poller reads it, nothing parses prose; fit.ts) and, when the body just
+ * changed, as the `body-mismatch` event: the previous body's hash, the new one's, and the skills that no longer fit (the robot stumbles with them until the cluster relearns them for this body). Called from every
+ * path that changes what it says: a body built, a manifest read, a skill file read. A write that fails is kept and tried again (FitWriter).
+ */
+async function publishFit(previousBodySha: string | null) {
+  if (!skills) return;
+  const snap = fitSnapshot(app.bodySha, Object.keys(skills.skills), skillTexts);
+  void fitWriter.submit(snap.text);
+  if (previousBodySha && previousBodySha !== app.bodySha && snap.notFitting.length > 0) { // (an empty hash is the first body of the page: nothing changed)
+    post('body-mismatch', { previous_body_sha: previousBodySha, body_sha: app.bodySha, skills_not_fitting: snap.notFitting, skills_fitting: snap.fitting });
+  }
 }
 
 /** One watcher per skill policy file the manifest names: a skill relearned under the same name replaces its file and leaves the manifest as it was. */
@@ -434,7 +463,7 @@ async function onSkillFile(name: string, text: string) {
 async function switchSkill(name: string, reload = false) {
   if (!skills) { wantedSkill = name; return; }
   const entry = skills.skills[name];
-  const refuse = (reason: string) => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason }); };
+  const refuse = (reason: string, kind: 'body-mismatch' | 'other' = 'other') => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason, kind, body_sha: app.bodySha }); };
   if (!entry) return refuse(`${name} has not come home`);
   wantedSkill = null;
   if (skillNow === name && app.policy && !reload) return;
@@ -449,7 +478,7 @@ async function switchSkill(name: string, reload = false) {
     if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) return refuse(e instanceof PolicyRefused ? e.message : String(e));
     policy = await borrowPolicy(JSON.parse(got.text), nj, app.mujocoVersion); // trained for another body: it runs only if its network still fits this one
     fits = false;
-    if (!policy) return refuse(`${name} was trained for another body and does not fit this one`);
+    if (!policy) return refuse(`${name} was trained for another body and does not fit this one`, 'body-mismatch');
   }
   showError('');
   // The skill's own command, exactly: the slider takes this policy's range and no step BEFORE its value is set (a range input snaps a value to its old bounds and step, which turned sprint's 1.2 into 1.0).
