@@ -3,7 +3,12 @@
 // Costs one Jev call per line per repeat. Exit code 1 when any line lands elsewhere than expected.
 import placerModule from "../placer.ts";
 
-const repeats = Math.max(1, Number(process.argv[2] ?? 1));
+// A probe that checks nothing must not report ok: the repeat count is a whole number of at least 1, and bounded.
+const repeats = Number(process.argv[2] ?? 1);
+if (!Number.isInteger(repeats) || repeats < 1 || repeats > 20) {
+  console.error(`usage: placer-probe.mts [repeats]: repeats is a whole number from 1 to 20, got ${JSON.stringify(process.argv[2])}`);
+  process.exit(2);
+}
 type Case = { message: string; taught: string[]; expect: "tab" | "modal-vm"; why: string };
 const cases: Case[] = [
   { message: "walk to the flag", taught: [], expect: "tab", why: "untaught: the robot tries it in the browser and the page shows it stumble" },
