@@ -151,6 +151,8 @@ export interface ModalCloudOptions {
     readonly skills?: readonly string[];
     readonly readyTimeoutMs?: number;
     readonly placementTimeoutMs?: number;
+    /** A box that did not come up is created again after these delays in ms (the last repeats), until it is up or the cluster closes. Default 5 s, 15 s, then every 30 s; an empty list turns retries off. */
+    readonly retryDelaysMs?: readonly number[];
     /** How often the live boxes are checked for having ended (default 20 s; 0: never). */
     readonly watchMs?: number;
     /** When the boxes start: "attach" (default: when the first page takes the run, so a server nobody opens costs nothing) or "now" (when this cloud is made). */
@@ -174,6 +176,14 @@ const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
   // D2's assemble-skills and the policy loader it checks with (node alone), side by side: only those that exist in this checkout.
   ...Object.fromEntries(["assemble-skills.ts", "policy.ts", "obs.ts"].map((f) => [`robot/policy/${f}`, fileURLToPath(new URL(`../policy/${f}`, import.meta.url))]).filter(([, source]) => existsSync(source!))),
 };
+
+/**
+ * How long a cluster box's create may sit unplaced before it is given up and made again. Every box of every rehearsal placed in under 1.2 s (0.5 to 1.1 s), so 90 s is about 75 times what a healthy
+ * placement takes: a request still unplaced then is stuck (code9: three of four never placed in 360 s), and a fresh one beats waiting six minutes on it.
+ */
+export const DEFAULT_PLACEMENT_TIMEOUT_MS = 90_000;
+/** A box that did not come up is created again after 5 s, then 15 s, then every 30 s, until it is up or the pool closes. */
+export const DEFAULT_BOX_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 30_000];
 
 /** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
 export const DEFAULT_GPU_TTL_MINUTES = 20;
@@ -263,6 +273,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           size: options.cluster.size,
           ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
           ...(options.cluster.idleMinutes ? { idleMs: options.cluster.idleMinutes * 60_000 } : {}),
+          retryDelaysMs: options.cluster.retryDelaysMs ?? DEFAULT_BOX_RETRY_DELAYS_MS,
           log: options.log,
           closeWaitMs: options.closeWaitMs ?? 60_000,
           create: async (index, signal) => {
@@ -270,7 +281,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
             const t0 = Date.now();
             const name = sandboxName(`${prefix}gpu${index}-`, "cluster", t0);
             const body = { name, snapshot: "image", labels: { [LABEL_FLEET]: fleet, [LABEL_RUN]: "cluster" }, autoStopInterval: 0, autoDeleteInterval: 0, ttlMinutes: cluster.ttlMinutes ?? DEFAULT_GPU_TTL_MINUTES };
-            const timeoutMs = cluster.placementTimeoutMs ?? 360_000;
+            const timeoutMs = cluster.placementTimeoutMs ?? DEFAULT_PLACEMENT_TIMEOUT_MS;
             const creating = clusterClient.create(body);
             let box: SandboxInfo;
             let placeTimer: NodeJS.Timeout | undefined;

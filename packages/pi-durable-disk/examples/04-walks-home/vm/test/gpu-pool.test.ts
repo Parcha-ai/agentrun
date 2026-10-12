@@ -399,3 +399,65 @@ describe("the GPU pool: waking after a partial idle removal", () => {
     await pool.close();
   });
 });
+
+describe("the GPU pool: a box that did not place is made again", () => {
+  const until = async (check: () => boolean, ms = 3000) => {
+    for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 10))) if (Date.now() > end) throw new Error("timed out");
+  };
+
+  it("a create that never places is tried again with a fresh request, and the box comes up (code9: three of four never placed)", async () => {
+    const calls: number[] = [];
+    const logs: { event: string; data: Record<string, unknown> }[] = [];
+    const pool = new GpuPool({
+      size: 2,
+      log: (event, data = {}) => void logs.push({ event, data }),
+      create: async (index) => {
+        calls.push(index);
+        if (index === 0 && calls.filter((i) => i === 0).length === 1) throw new Error("GPU box 0 did not place in 90 s");
+        return { id: `sb-${index}-${calls.length}`, name: `b${index}`, index };
+      },
+      remove: async () => true,
+      retryDelaysMs: [20],
+      watchMs: 0,
+    });
+    await pool.start(); // resolves once every first attempt has settled: box 0 failed, box 1 is up
+    assert.deepEqual(pool.status().boxes.map((b) => b.state), ["failed", "ready"]);
+    assert.equal(pool.status().boxes[0]!.retrying, true, "the failed box says it is being retried");
+    await until(() => pool.status().boxes.every((b) => b.state === "ready"));
+    assert.deepEqual(calls, [0, 1, 0], "a second, fresh create for box 0");
+    const retry = logs.find((l) => l.event === "pool.box-retry")!;
+    assert.deepEqual({ index: retry.data.index, attempt: retry.data.attempt, afterMs: retry.data.afterMs, previous: retry.data.previous }, { index: 0, attempt: 2, afterMs: 20, previous: "GPU box 0 did not place in 90 s" });
+    assert.equal(pool.status().boxes[0]!.attempt, 2);
+    await pool.close();
+  });
+
+  it("a thread that asks while its only box is being retried waits for it instead of being told no box can come up", async () => {
+    let made = 0;
+    const pool = new GpuPool({ size: 1, log: () => undefined, create: async (index) => (++made === 1 ? Promise.reject(new Error("did not place")) : { id: "sb-late", name: "late", index }), remove: async () => true, retryDelaysMs: [30], watchMs: 0 });
+    await pool.start();
+    assert.equal(pool.status().boxes[0]!.state, "failed");
+    const box = await pool.acquire("walk"); // before the retry fires
+    assert.equal(box.id, "sb-late");
+    await pool.close();
+  });
+
+  it("without a retry setting a failed box stays failed, and its waiter is told so", async () => {
+    const pool = new GpuPool({ size: 1, log: () => undefined, create: async () => Promise.reject(new Error("did not place")), remove: async () => true, watchMs: 0 });
+    await pool.start();
+    await assert.rejects(pool.acquire("walk"), /no GPU box came up/);
+    await pool.close();
+  });
+
+  it("the delays repeat their last value, every attempt is logged, and closing stops the retrying", async () => {
+    const logs: Record<string, unknown>[] = [];
+    let creates = 0;
+    const pool = new GpuPool({ size: 1, log: (event, data = {}) => void (event === "pool.box-retry" && logs.push(data)), create: async () => (creates++, Promise.reject(new Error("did not place"))), remove: async () => true, retryDelaysMs: [5, 15], watchMs: 0 });
+    await pool.start();
+    await until(() => logs.length >= 3);
+    assert.deepEqual(logs.slice(0, 3).map((l) => [l.attempt, l.afterMs]), [[2, 5], [3, 15], [4, 15]]);
+    await pool.close();
+    const after = creates;
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(creates, after, "no create after the pool closed");
+  });
+});
