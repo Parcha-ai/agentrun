@@ -12,7 +12,7 @@
 // wait is durable and runs no code; a Thread task re-acquires the same box (acquire is idempotent per thread) and
 // resubmits with the same request ID, which finds the same submission; train_skill is replay-safe because the box's
 // `pi-run` guard stops a previous run of the same skill and the trainer returns at once when the skill already passed.
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
@@ -69,6 +69,14 @@ export interface TeachSkillsOptions {
   readonly cwd?: string;
   /** A skill's output folder on the box, where the trainer keeps skill.json (default <cwd>/skills/<skill>). */
   readonly skillDir?: (skill: string) => string;
+  /** What teach_skills teaches when the call names no skills (default: all of SKILLS). */
+  readonly skills?: readonly Skill[];
+  /**
+   * Brings the passed skills home once every thread has settled and flushed its artifacts (D2's assemble-skills on the
+   * session host). It may run again after a restart, so it must be idempotent. Its skills are named in the tool's result;
+   * a throw is reported there too, and the threads' results are kept.
+   */
+  readonly assemble?: (threads: readonly ThreadResult[], context: Context) => Promise<{ readonly home: readonly string[] }>;
 }
 
 /** What one thread came back with; also each Thread task's result. */
@@ -101,7 +109,9 @@ export type TrainProgress = {
 type ThreadRef = { taskId: number; conversationId: number; skill: string; gpu: number };
 type TeachInput = { parent: number; at: number; skills: string[] };
 type TeachState = { phase: "fork" } | { phase: "fold"; threads: ThreadRef[] };
-type TeachResult = { threads: ThreadResult[] };
+/** What came home: the skills the assemble hook brought home, or why it could not. */
+export type HomeResult = { skills: string[] } | { error: string };
+type TeachResult = { threads: ThreadResult[]; home?: HomeResult };
 type ThreadInput = { skill: string; gpu: number; of: number };
 type ThreadState =
   | { phase: "acquire" }
@@ -303,7 +313,17 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           const message = o.status === "failed" ? (o.error?.message ?? "The thread failed.") : "The thread was stopped.";
           return { skill: t.skill, gpu: t.gpu, conversationId: t.conversationId, boxId: null, status: o.status === "aborted" ? "aborted" : "error", summary: message };
         });
-        await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { threads: results } } }), context);
+        // Every thread has settled and flushed its artifacts: bring the skills home before the tool answers.
+        let home: HomeResult | undefined;
+        if (options.assemble !== undefined) {
+          try {
+            home = { skills: [...(await options.assemble(results, context)).home] };
+          } catch (error) {
+            if (context.abortSignal?.aborted) throw error;
+            home = { error: error instanceof Error ? error.message : String(error) };
+          }
+        }
+        await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { threads: results, ...(home ? { home } : {}) } } }), context);
       },
     },
     abort: async (_task, runtime, context) => {
@@ -315,15 +335,18 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
   const teachTool = defineTool({
     name: "teach_skills",
     description:
-      "Teach the robot skills on the GPU cluster: one thread per skill, each on its own GPU, all at once. Waits until every thread is done, passed or not, and returns each thread's result.",
-    parameters: Type.Object({ skills: Type.Array(Type.Union(SKILLS.map((s) => Type.Literal(s))), { minItems: 1, maxItems: SKILLS.length, uniqueItems: true }) }),
+      "Teach the robot its skills on the GPU cluster: one thread per skill, each on its own GPU, all at once. Waits until every thread is done, passed or not, and returns each thread's result. Leave skills out to teach every skill (what \"teach it to move\" means); list skills only when the user names particular ones.",
+    parameters: Type.Object({
+      skills: Type.Optional(Type.Array(Type.Union(SKILLS.map((s) => Type.Literal(s))), { minItems: 1, maxItems: SKILLS.length, uniqueItems: true, description: "Only these skills. Omit to teach all of them." })),
+    }),
     replay: "safe",
     execute: async (args, api, context) => {
       const teach = await api.commit(async (tx) => {
         const at = await forkPoint(tx, api.conversationId); // table reads before any write in this commit
         const call = await tx.doc(TeachCall, api.taskId);
         if (call.teach !== null) return call.teach as TaskId<TeachResult>;
-        const id = await tx.createTask(TeachSkills, { parent: api.conversationId, at, skills: [...new Set(args.skills)] }, { ownership: { kind: "task", taskId: api.taskId } });
+        const skills = skillsToTeach(args.skills, options.skills);
+        const id = await tx.createTask(TeachSkills, { parent: api.conversationId, at, skills }, { ownership: { kind: "task", taskId: api.taskId } });
         call.teach = id;
         return id;
       }, context);
@@ -340,7 +363,10 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
       const settled = await api.waitForTask(teach, context);
       const outcome = settled.state.outcome;
       if (outcome.status !== "completed") throw new Error(`The teaching run ${outcome.status === "failed" ? `failed: ${outcome.error.message}` : "was stopped"}.`);
-      return { content: [{ type: "text", text: foldText(outcome.result.threads) }], details: { teach, threads: outcome.result.threads } };
+      const { threads, home } = outcome.result;
+      const details: { [key: string]: JsonValue } = { teach, threads };
+      if (home !== undefined) details.home = home;
+      return { content: [{ type: "text", text: foldText(threads, home) }], details };
     },
   });
 
@@ -363,6 +389,14 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
 
   const teach: Extension = defineExtension({ name: "robot-teach", tools: [teachTool, readThread], tasks: [TeachSkills, Thread] });
   return { teach, thread };
+}
+
+/**
+ * The skills one teach_skills call teaches: the ones the user named, else every skill the host offers (default all of
+ * SKILLS). One thread per skill, whichever list it comes from: a repeated skill would train twice into one folder.
+ */
+export function skillsToTeach(named: readonly string[] | undefined, offered: readonly string[] | undefined): string[] {
+  return [...new Set<string>(named?.length ? named : (offered ?? SKILLS))];
 }
 
 /** Fork the children just before the assistant turn that called teach_skills: they see the request, not the call. */
@@ -416,13 +450,15 @@ function assistantText(entry: EntryRecord | undefined): string {
 }
 
 /** The folded summary the parent's chat gets: one line per thread, in its own words. */
-export function foldText(threads: readonly ThreadResult[]): string {
+export function foldText(threads: readonly ThreadResult[], home?: HomeResult): string {
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
     const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
     return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}`;
   });
-  return [`${threads.length} threads finished: ${passed} passed${passed === threads.length ? "" : `, ${threads.length - passed} did not`}.`, ...lines, "Each thread's own conversation: read_thread with its skill or GPU number."].join("\n");
+  const homeLine =
+    home === undefined ? [] : "error" in home ? [`Bringing the skills home failed: ${home.error}`] : [`Home: ${home.skills.length} skill${home.skills.length === 1 ? "" : "s"}${home.skills.length ? ` (${home.skills.join(", ")})` : ""}.`];
+  return [`${threads.length} threads finished: ${passed} passed${passed === threads.length ? "" : `, ${threads.length - passed} did not`}.`, ...lines, ...homeLine, "Each thread's own conversation: read_thread with its skill or GPU number."].join("\n");
 }
 
 async function findThread(tx: Tx, parent: ConversationId, which: string): Promise<{ id: ConversationId; at: EntryId } | undefined> {

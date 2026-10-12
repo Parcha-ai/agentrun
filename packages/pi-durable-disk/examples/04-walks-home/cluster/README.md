@@ -20,6 +20,8 @@ root conversation
 
 ```ts
 const { teach, thread } = teachSkills({
+  skills: imageSkills, // what the GPU image can train; teach_skills({}) teaches all of them
+  assemble: async (threads, ctx) => ({ home: await assembleSkills(`${work}/skills`, `${home}`, ctx) }),
   boxes: { acquire: ({ threadId }, ctx) => link.gpu.acquire(threadId), release: ({ threadId }) => link.gpu.release(threadId) },
   artifacts: ({ boxId, skill }) =>
     new ArtifactSync({ box: link.gpu.linkBox(boxId), remote: `/workspace/skills/${skill}`, local: `${work}/skills/${skill}`, exclude: ["work"] }),
@@ -37,6 +39,12 @@ Harness.open(storage, {
 }, ctx);
 ```
 
+- `teach_skills` with no `skills` teaches every skill in `options.skills` (default: all of `SKILLS`; pass the list the
+  image offers). The model lists skills only when the user names particular ones.
+- `assemble(threads, ctx)` runs once every thread has settled and flushed its artifacts, before the tool answers: run
+  D2's `assemble-skills work/skills --home home` there and return `{ home: [the skills now home] }`. The tool's result says
+  "Home: N skills (…)", or why bringing them home failed (the threads' results are kept either way). It can run again
+  after a restart, so it must be idempotent.
 - `boxes.acquire` must be idempotent per thread. It runs in the Thread task's own phase, before the child gets its
   assignment, so a pool smaller than the thread count queues there and never inside a tool call.
 - The children are also findable without the tool's details: `scanConversations({ ownerConversationId: root })` and each

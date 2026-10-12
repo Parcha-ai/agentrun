@@ -10,11 +10,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, dir: { type: "string" }, "done-before": { type: "string", default: "" } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, dir: { type: "string" }, "done-before": { type: "string", default: "" }, "assemble-fails": { type: "boolean", default: false } } });
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-skills-spike-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
 const run = (mode: string) =>
-  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--capacity", a.capacity!, ...(a["done-before"] ? ["--done-before", a["done-before"]] : [])], { stdio: ["ignore", "inherit", "inherit"] });
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--capacity", a.capacity!, ...(a["done-before"] ? ["--done-before", a["done-before"]] : []), ...(a["assemble-fails"] ? ["--assemble-fails"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 
 const t0 = Date.now();
 const first = run("first");
@@ -66,6 +66,21 @@ const checks = {
   // wave's thread said only "wave ran out of steps": its status and facts come from the result it saved, not its words.
   failed_thread_keeps_its_saved_facts: threads.some((t: { skill: string; status: string; boxId: string | null; checkpoint?: number; seconds?: number }) =>
     t.skill === "wave" && t.status === "never-passed" && t.boxId !== null && t.checkpoint === 8 && t.seconds !== undefined),
+  // "Teach it to move." names no skills: all eight are taught, and the passed ones come home before the tool answers.
+  omitted_skills_teach_all_eight: threads.length === 8,
+  // With a failing assemble, the failure is reported in the result and every thread's result is still there.
+  ...(a["assemble-fails"] ? {
+    home_failure_reported_with_thread_results_kept:
+      report.teachResult?.details?.home?.error === "assemble-skills exited 1" && /Bringing the skills home failed: assemble-skills exited 1/.test(report.teachResult.text) &&
+      threads.length === 8 && threads.filter((t: { status: string }) => t.status === "passed").length === 7 && /GPU 3 · backwards: passed/.test(report.teachResult.text),
+  } : {
+  passed_skills_are_home: (() => {
+    const home = report.teachResult?.details?.home?.skills ?? [];
+    const passed = threads.filter((t: { status: string }) => t.status === "passed").map((t: { skill: string }) => t.skill);
+    const file = existsSync(join(dir, "home", "skills.json")) ? Object.keys(JSON.parse(readFileSync(join(dir, "home", "skills.json"), "utf8")).skills) : [];
+    return home.length === passed.length && passed.every((s: string) => home.includes(s) && file.includes(s)) && new RegExp(`Home: ${passed.length} skills`).test(report.teachResult.text);
+  })(),
+  }),
   read_thread_answers_from_gpu_3: typeof report.readThread === "string" && /GPU 3 \(backwards\)/.test(report.readThread) && /train_skill/.test(report.readThread),
   no_live_tasks_left: report.tasks_after.length === 0,
 };
