@@ -151,3 +151,32 @@ test('inventory generation works without build output and does not produce an ar
   await assert.rejects(access(join(f.root, '.release/agentrun-dsl-source.tar.gz')));
   await assert.rejects(access(join(f.root, '.release/source-export-receipt.json')));
 });
+
+test('a run-state directory under a package is never exported, and a long one-line journal does not stall the scan', async t => {
+  const f = await fixture(t);
+  await f.write('examples/public.mjs', 'export const value = 42;\n');
+  // A journal as a long run writes it: one line, megabytes of host-like tokens.
+  const journal = JSON.stringify({ state: { text: 'ab.cd.'.repeat(400_000) } });
+  await f.write('packages/pi/.pi/agentrun/runs/run-1/journal.json', journal);
+  await f.write('.pi/agentrun/runs/run-2/journal.json', journal);
+  const started = Date.now();
+  await exec(process.execPath, [join(f.root, 'scripts/export-source.mjs')], { cwd: f.root, timeout: 30_000 });
+  assert.ok(Date.now() - started < 30_000);
+  const listing = await f.listing();
+  assert.match(listing, /agentrun-dsl-source\/examples\/public\.mjs/);
+  assert.doesNotMatch(listing, /\.pi\//);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(!receipt.files.some(file => file.path.split('/').includes('.pi')));
+});
+
+test('the scan stays linear on a long line of host characters and still finds an internal domain', async t => {
+  const f = await fixture(t);
+  await f.write('docs/long.md', `${'ab.cd.'.repeat(400_000)}\n`);
+  const started = Date.now();
+  await f.run();
+  assert.ok(Date.now() - started < 30_000, 'a long line of dotted tokens must scan in linear time');
+  await f.write('docs/host.md', `see build-box.example.${'ts'}.net for the box\n`);
+  await assert.rejects(f.run(), error => /unreviewed finding/.test(error.stderr));
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.findings.some(finding => finding.path === 'docs/host.md' && finding.rule === 'internal_domain'));
+});
