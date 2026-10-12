@@ -126,11 +126,12 @@ test("closing by the model (the default): the model speaks after its calls", asy
 
 /** A model backend that records what the phone model asks of it. */
 function fakeLlm(o: { restore?: (b: Blob) => Promise<{ tokens: number; bytes: number }> } = {}) {
-  const calls: { complete: RawRequest[]; restored: number; loads: { parts?: unknown }[] } = { complete: [], restored: 0, loads: [] };
+  const calls: { complete: RawRequest[]; restored: number; loads: { parts?: unknown }[]; prefetched: { url: string; want?: { bytes: number; sha256?: string } }[][] } = { complete: [], restored: 0, loads: [], prefetched: [] };
   const llm: Llm = {
     async load() {},
     async chat() { return { text: "", tokens: 0 }; },
     async loadUrl(_url, opts) { calls.loads.push({ parts: opts.parts }); opts.onProgress?.(501453056, 501453056); },
+    async prefetch(files) { calls.prefetched.push(files); },
     chatTemplate: () => template,
     async complete(req) { calls.complete.push(req); return { text: "", stoppedBy: "length", promptTokens: 1255, outputTokens: 0, ms: 1 }; },
     ...(o.restore ? { restoreState: async (b: Blob) => { calls.restored++; return o.restore!(b); } } : {}),
@@ -658,4 +659,31 @@ test("a picked file's text comes from where this page keeps the workspace: the p
   assert.equal(await workspaceText({ env: computer }, undefined, "a.txt"), "read /workspace/a.txt", "the tab's computer");
   assert.equal(await workspaceText(undefined, { kind: "file", data: Buffer.from("from the pipe").toString("base64") }, "b.txt"), "from the pipe", "a page watching another's run");
   assert.equal(await workspaceText(undefined, { kind: "file" }, "c.txt"), undefined);
+});
+
+test("prefetch keeps the model's seven parts and its warm state for offline, each with the size and sha256 its manifest or sidecar gives", async () => {
+  const { llm, calls } = fakeLlm();
+  const first = "https://p.example/m/robot-v5-00001-of-00003.gguf";
+  const model = new PhoneModel(llm, { url: first, threads: 2, nCtx: 2048, batch: 128, maxTokens: 300 });
+  const parts = [1, 2, 3].map((i) => ({ name: `robot-v5-0000${i}-of-00003.gguf`, bytes: 10 * i, sha256: String(i).repeat(64) }));
+  const got = await withFetch({ "https://p.example/m/robot-v5.parts.json": JSON.stringify({ parts }), "https://p.example/m/robot-v5.state.bin.json": JSON.stringify({ bytes: 26_741_908, sha256: "e".repeat(64) }) }, () => model.prefetch({ url: "https://p.example/m/robot-v5.state.bin" }));
+  assert.deepEqual(calls.prefetched[0], [
+    { url: "https://p.example/m/robot-v5-00001-of-00003.gguf", want: parts[0] }, { url: "https://p.example/m/robot-v5-00002-of-00003.gguf", want: parts[1] }, { url: "https://p.example/m/robot-v5-00003-of-00003.gguf", want: parts[2] },
+    { url: "https://p.example/m/robot-v5.state.bin", want: { bytes: 26_741_908, sha256: "e".repeat(64) } },
+  ]);
+  assert.deepEqual(got, { files: 4, bytes: 60 + 26_741_908 });
+  assert.equal(calls.loads.length, 0, "nothing was loaded");
+});
+
+test("prefetch keeps nothing it cannot check: no parts manifest, a manifest of another length, a sidecar with no size", async () => {
+  const first = "https://p.example/m/robot-v5-00001-of-00002.gguf";
+  const mk = () => { const { llm, calls } = fakeLlm(); return { calls, model: new PhoneModel(llm, { url: first, threads: 2, nCtx: 2048, batch: 128, maxTokens: 300 }) }; };
+  let r = mk();
+  await assert.rejects(withFetch({}, () => r.model.prefetch()), /no parts manifest/);
+  r = mk();
+  await assert.rejects(withFetch({ "https://p.example/m/robot-v5.parts.json": JSON.stringify({ parts: [{ bytes: 1 }] }) }, () => r.model.prefetch()), /2 parts and its manifest 1/);
+  r = mk();
+  const two = { parts: [{ bytes: 1, sha256: "a".repeat(64) }, { bytes: 2, sha256: "b".repeat(64) }] };
+  await assert.rejects(withFetch({ "https://p.example/m/robot-v5.parts.json": JSON.stringify(two), "https://p.example/m/robot-v5.state.bin.json": "{}" }, () => r.model.prefetch({ url: "https://p.example/m/robot-v5.state.bin" })), /gives no size/);
+  assert.equal(r.calls.prefetched.length, 0, "nothing was fetched");
 });
