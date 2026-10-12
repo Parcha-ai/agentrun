@@ -128,10 +128,47 @@ test("a host's notice to the agent (an env.* kind that is not a move) never show
   assert.deepEqual(view.items().map((i) => i.kind), ["user", "switch"], "the check-in prompt is hidden; the move stays (drawn as one line)");
 });
 
+// The harness appends its diagnostics to a tool result's content as a rendered <harness> block, and keeps them typed in the entry's data. The page reads the typed list and drops exactly that rendered block.
+const harnessBlock = (d: { severity: string; message: string }[]) => `<harness>\n${d.map((x) => `[${x.severity}] ${x.message}`).join("\n")}\n</harness>`;
+test("a failed command is its own output plus the harness's typed diagnostics; the <harness> wrapper is never in the output", () => {
+  const diagnostics = [{ severity: "error", code: "tool_error", message: "Command exited with code 1" }];
+  const view = new ChatView();
+  view.apply({ type: "snapshot", entries: [
+    { id: "a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "cp x y" } }] }] },
+    { id: "r", kind: "pi.tool-result", data: { diagnostics }, model: [{ role: "toolResult", toolCallId: "c1", toolName: "bash", isError: true, content: [{ type: "text", text: "cp: cannot create 'y'\n" }, { type: "text", text: harnessBlock(diagnostics) }] }] },
+  ], tools: [], generation: undefined, run: undefined } as never);
+  const tool = view.items().find((i) => i.kind === "tool") as Extract<ReturnType<ChatView["items"]>[number], { kind: "tool" }>;
+  assert.equal(tool.output, "cp: cannot create 'y'\n", "the command's own output, without the wrapper");
+  assert.equal(tool.status, "error");
+  assert.deepEqual(tool.diagnostics, [{ severity: "error", code: "tool_error", message: "Command exited with code 1" }], "the typed diagnostics ride on the item");
+});
+
+test("a result with no diagnostics is untouched, and a trailing block that is not the harness's rendering of its diagnostics stays", () => {
+  const view = new ChatView();
+  view.apply({ type: "snapshot", entries: [
+    { id: "a", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "echo" } }, { type: "toolCall", id: "c2", name: "bash", arguments: { command: "echo" } }] }] },
+    { id: "r1", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "<harness>\nnot ours\n</harness>" }] }] },
+    { id: "r2", kind: "pi.tool-result", data: { diagnostics: [{ severity: "warn", code: "truncated", message: "Output truncated" }] }, model: [{ role: "toolResult", toolCallId: "c2", toolName: "bash", content: [{ type: "text", text: "lots" }, { type: "text", text: "<harness>\n[warn] something else\n</harness>" }] }] },
+  ], tools: [], generation: undefined, run: undefined } as never);
+  const tools = view.items().filter((i) => i.kind === "tool") as { output: string; diagnostics?: unknown[] }[];
+  assert.equal(tools[0]!.output, "<harness>\nnot ours\n</harness>", "no diagnostics in the entry: nothing is removed");
+  assert.equal(tools[1]!.output, "lots<harness>\n[warn] something else\n</harness>", "a block that is not the rendering of the entry's own diagnostics is kept");
+  assert.equal(tools[1]!.diagnostics?.length, 1);
+});
+
 import { ellipsize } from "../tab/hint.ts";
 test("a hint too long for its field is cut to the field's width with an ellipsis; one that fits is left alone", () => {
   const w = (s: string) => s.length * 10; // a fake measure: 10 px a character
   assert.equal(ellipsize("Tell the robot what to do", 400, w), "Tell the robot what to do");
   assert.equal(ellipsize("the session is open; the robot's brain is loading", 200, w), "the session is open…", "the longest beginning that fits with the ellipsis (20 characters of 10 px)");
   assert.equal(ellipsize("abc", 5, w), "…", "too narrow for anything: just the ellipsis");
+});
+
+import { fitPlaceholder } from "../tab/hint.ts";
+test("the field's own placeholder is kept until a hint has been set; a set hint is fitted to the room there is", () => {
+  const w = (s: string) => s.length * 10;
+  assert.equal(fitPlaceholder("Ask the agent to write something…", "", 500, w), "Ask the agent to write something…", "a page that never sets a hint keeps the HTML's");
+  assert.equal(fitPlaceholder("Ask the agent to write something…", "", 0, w), "Ask the agent to write something…", "even while the field is hidden");
+  assert.equal(fitPlaceholder("old", "Tell the robot what to do", 0, w), "Tell the robot what to do", "no room measured yet (the field is hidden): the whole hint, fitted when it is shown");
+  assert.equal(fitPlaceholder("old", "the session is open; the robot's brain is loading", 200, w), "the session is open…");
 });

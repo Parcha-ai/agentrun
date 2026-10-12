@@ -24,7 +24,9 @@ import { TRAIN_SOP } from "../sop.ts";
 import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
 import { EXAMPLES, FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
-const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false }, unmeasured: { type: "boolean", default: false }, unsettled: { type: "boolean", default: false } } });
+// The third skill's plan flags each pick a different third skill: one at a time.
+if ([a["new-skill"], a.unmeasured, a.unsettled].filter(Boolean).length > 1) throw new Error("pick one of --new-skill, --unmeasured and --unsettled");
 const dir = a.dir!;
 const mode = a.mode as "first" | "resume" | "abort";
 const doneBefore = Object.fromEntries((a["done-before"] ?? "").split(",").filter(Boolean).map((spec) => {
@@ -59,10 +61,18 @@ const toolUse = (name: string, args: Record<string, unknown>) => fauxAssistantMe
 const PLAN = [
   { name: "walk", brief: "Walk forward steadily: forward speed above 0.3 m/s for 5 s without falling. Stop after 2 runs." },
   { name: "spin", brief: "Turn in place: yaw rate above 1 rad/s for 3 s with the torso upright. Stop after 2 runs." },
-  a["new-skill"]
+  a.unmeasured
+    ? { name: "get-up", brief: "Get up after a fall: from lying on its side, stand upright within 5 s. Stop after 2 runs." }
+    : a.unsettled
+    ? { name: "turn-right", brief: "Turn right in place: a yaw rate of at most -1 rad/s over 10 s. Stop after 2 runs." }
+    : a["new-skill"]
     ? { name: "bow", brief: "Bow: hold the nose down (pitch below -0.25 rad) for most of the time while standing. Stop after 2 runs." }
     : { name: "wave", brief: "Lift one front leg and wave it while standing on the others for 3 s. Stop after 2 runs." },
 ];
+/** D2's diagnosis when a skill never happened at any checkpoint (train-skill-diagnose, #295). */
+const UNMEASURED = "self-righting was never measured: at all 5 checkpoints test.py ran and found the skill never happened (a get-up that never righted, a pose never reached). Check that this body can do it at all (its joints, feet and mass) before training longer or changing the reward";
+/** D2's diagnosis when the metric swings with no trend (train-skill-diagnose, #295): the body, not the training. */
+const UNSETTLED = "yaw rate never settles: over the last 5 checkpoints it swung between -0.4 and -1.1 with no trend (best -1.1 at checkpoint 3, -0.6 at the last). Training longer rarely fixes a policy that does not settle: check the body first (feet that roll or slip, where a flat foot with friction helps; motors too weak for the body; a part that drags), then the reward's terms";
 /** For a skill the library does not have, the library skill a thread starts from (train-skill.md step 2). */
 const CLOSEST: Readonly<Record<string, string>> = { bow: "wave" };
 const planThread = (msgs: { role: string; toolName?: string; content?: unknown }[]) => {
@@ -111,6 +121,10 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     const skillJson = readSince.find((t) => /"status"/.test(t));
     if (skillJson === undefined) return bash(`cat /workspace/runs/${skill}/skill.json`);
     if (/still changing/.test(skillJson) && tries.length < 2) return bash(`${run} --steps 40M --stop-after-passing 2`);
+    // Never settles or was never measured: the body, not the training, so no retry: the thread reports.
+    // The body, not the training: no retry, and each says its own thing (train-skill.md step 5).
+    if (/never settles/.test(skillJson)) return fauxAssistantMessage(fauxText(`${skill} never settled, so I stopped after one try: the body likely needs flat feet with friction before it can learn this.`));
+    if (/was never measured/.test(skillJson)) return fauxAssistantMessage(fauxText(`${skill} cannot be done on this body: it never happened in training, since its legs have no sideways joints to roll it over.`));
     if (example !== undefined && tries.length < 2) {
       // The library skill's one other retry: one reward_scales weight, edited (not rewritten), then 12M again.
       const after = results.slice(results.length - readSince.length);
@@ -219,7 +233,9 @@ const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "sessio
   settings: { extensions: [teach] },
   env: async (target, ctx) => {
     const box = await target.read.snapshot(RobotBox, target.conversationId, ctx);
-    return box?.boxId ? new FakeBoxEnv(box.boxId, pool.boxDir(box.boxId), tick) : undefined;
+    // --unmeasured: the trainer finds get-up never happened, as on legs that only swing fore and aft; --unsettled: turn-right
+    // swings with no trend, as on feet that roll (D2's diagnoses).
+    return box?.boxId ? new FakeBoxEnv(box.boxId, pool.boxDir(box.boxId), tick, a.unmeasured ? { "get-up": UNMEASURED } : a.unsettled ? { "turn-right": UNSETTLED } : {}) : undefined;
   },
 }, context);
 const root = await harness.root(context, { agent: { model } });

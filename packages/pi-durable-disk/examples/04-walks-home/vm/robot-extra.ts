@@ -15,7 +15,7 @@ import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
-import { RobotBox, teachSkills, threadsOf, type PlanOptions, type ThreadBoxes, type ThreadResult, type ThreadStatus } from "../cluster/teach-skills.ts";
+import { RobotBox, teachSkills, threadsOf, type PlanOptions, type SkillMetric, type ThreadBoxes, type ThreadResult, type ThreadStatus } from "../cluster/teach-skills.ts";
 import { TRAIN_SOP } from "../cluster/sop.ts";
 
 /** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
@@ -156,19 +156,34 @@ export async function threadStatusFromSkillFile(work: string, skill: string): Pr
   // MJCF on the disk (robot/body.xml); a skill file for any other body is not settled for this attempt (a retrain's own file replaces it as the mirror brings it).
   const body = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
   if (body && typeof (meta as { mjcf_sha256?: unknown }).mjcf_sha256 === "string" && (meta as { mjcf_sha256: string }).mjcf_sha256 !== createHash("sha256").update(body).digest("hex")) return undefined;
-  const at = meta.passed_at as { checkpoint?: unknown; t?: unknown } | number | null | undefined;
+  const at = meta.passed_at as { checkpoint?: unknown; t?: unknown; metric?: unknown } | number | null | undefined;
   const checkpoint = typeof at === "number" ? at : typeof at?.checkpoint === "number" ? at.checkpoint : undefined;
   const seconds = typeof meta.wall_s === "number" ? Math.round(meta.wall_s) : typeof (at as { t?: unknown } | null | undefined)?.t === "number" ? Math.round((at as { t: number }).t) : undefined;
   const text_ = (v: unknown) => (typeof v === "string" && v.trim() ? { reason: v } : {});
-  if (checkpoint !== undefined) return { status: "passed", checkpoint, ...(seconds !== undefined ? { seconds } : {}) };
+  const m = typeof at === "object" && at !== null ? (at.metric as { name?: unknown; value?: unknown; unit?: unknown; target?: unknown } | null | undefined) : undefined;
+  const metric: SkillMetric | undefined = m && typeof m.name === "string" && typeof m.value === "number" && Number.isFinite(m.value) ? { name: m.name, value: m.value, unit: typeof m.unit === "string" ? m.unit : null, target: typeof m.target === "string" ? m.target : null } : undefined;
+  if (checkpoint !== undefined) return { status: "passed", checkpoint, ...(seconds !== undefined ? { seconds } : {}), ...(metric ? { metric } : {}) };
   if (meta.status === "refused" || (meta.status === "failed" && typeof meta.error === "string" && meta.error)) return { status: "error", ...text_(meta.error) };
   if (meta.status === "failed" || meta.status === "done") return { status: "never-passed", ...(seconds !== undefined ? { seconds } : {}), ...text_(meta.diagnosis) };
   return undefined;
 }
 
 /** Code mode (D1's plan): the parent plans the skills from the ask, one thread per skill writes and runs its own training. On when the session's host says so (DEMO_ROBOT_PLAN=1). */
-export function planOptions(work: string): PlanOptions {
-  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: 20 * 60_000, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
+export const DEFAULT_THREAD_DEADLINE_MS = 20 * 60_000;
+
+/** The thread deadline the host asks for (DEMO_ROBOT_THREAD_DEADLINE_S, whole seconds, 30 to 3600); anything else is the 20-minute default, and a bad value is said in the log rather than ignored silently. */
+export function threadDeadlineMs(value: string | undefined, log?: (event: string, data?: Record<string, unknown>) => void): number {
+  if (value === undefined || value === "") return DEFAULT_THREAD_DEADLINE_MS;
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 30 || seconds > 3600) {
+    log?.("robot.thread-deadline-ignored", { value, reason: "a whole number of seconds from 30 to 3600" });
+    return DEFAULT_THREAD_DEADLINE_MS;
+  }
+  return seconds * 1000;
+}
+
+export function planOptions(work: string, deadlineMs: number = DEFAULT_THREAD_DEADLINE_MS): PlanOptions {
+  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: deadlineMs, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
 }
 
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
@@ -223,7 +238,7 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   const { teach, thread } = teachSkills({
     boxes,
     command: trainCommand(work),
-    ...(plan ? { plan: planOptions(work) } : {}),
+    ...(plan ? { plan: planOptions(work, threadDeadlineMs(process.env.DEMO_ROBOT_THREAD_DEADLINE_S, log)) } : {}),
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
     // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
     assemble: async (threads) => {

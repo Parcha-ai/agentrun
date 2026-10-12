@@ -223,9 +223,13 @@ test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored
     put("f", '{"status":"refused","error":"the body has no legs I can find"}');
     put("g", '{"status":"failed","error":"CUDA out of memory"}');
     put("h", '{"status":"compiled","passed_at":null}');
+    put("m", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.4,"metric":{"name":"speed","value":0.51,"unit":"m/s","target":">= 0.4"}},"wall_s":93.2}');
+    put("n", '{"status":"done","passed_at":{"checkpoint":5,"t":48.4,"metric":{"name":"speed","value":"fast","unit":"m/s"}},"wall_s":93.2}');
     assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55 });
     assert.deepEqual(await threadStatusFromSkillFile(work, "b"), { status: "passed", checkpoint: 5, seconds: 48 });
     assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "m"), { status: "passed", checkpoint: 5, seconds: 93, metric: { name: "speed", value: 0.51, unit: "m/s", target: ">= 0.4" } }, "the passing checkpoint's own metric rides with the result, typed");
+    assert.deepEqual(await threadStatusFromSkillFile(work, "n"), { status: "passed", checkpoint: 5, seconds: 93 }, "a metric whose value is not a number is not carried");
     assert.equal(await threadStatusFromSkillFile(work, "d"), undefined, "still training: no outcome yet");
     assert.equal(await threadStatusFromSkillFile(work, "e"), undefined);
     assert.deepEqual(await threadStatusFromSkillFile(work, "f"), { status: "error", reason: "the body has no legs I can find" });
@@ -312,4 +316,17 @@ test("code mode compiles the body on each thread's box right after staging it (d
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+});
+
+test("the thread deadline is the host's value in seconds, or the 20-minute default; a bad value is said, not silently taken", async () => {
+  const { threadDeadlineMs, planOptions, DEFAULT_THREAD_DEADLINE_MS } = await import("../robot-extra.ts");
+  const said: string[] = [];
+  assert.equal(threadDeadlineMs(undefined), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(threadDeadlineMs(""), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(threadDeadlineMs("300"), 300_000);
+  for (const bad of ["10", "99999", "soon", "2.5"]) assert.equal(threadDeadlineMs(bad, (event) => void said.push(event)), DEFAULT_THREAD_DEADLINE_MS);
+  assert.equal(said.length, 4);
+  assert.ok(said.every((e) => e === "robot.thread-deadline-ignored"));
+  assert.equal(planOptions("/tmp/x", 300_000).threadDeadlineMs, 300_000);
+  assert.equal(planOptions("/tmp/x").threadDeadlineMs, DEFAULT_THREAD_DEADLINE_MS);
 });

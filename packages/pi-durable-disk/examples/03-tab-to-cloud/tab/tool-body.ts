@@ -3,6 +3,7 @@
 import type { ChatItem } from "./chat-view.ts";
 import { editPairs, grepHits, tailLines, toolKind } from "./chat-lines.ts";
 import { humanizeOutput, type OutputLine } from "./trainer-lines.ts";
+import { teachResultCard, type ResultCard } from "./teach-result.ts";
 import { diffElement } from "./code-view.ts";
 
 type Tool = Extract<ChatItem, { kind: "tool" }>;
@@ -94,7 +95,8 @@ function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts
     const shown = open || lines.length <= TAIL ? lines : lines.slice(-TAIL);
     const rows = shown.map((l) => el("div", `tl ${l.kind}`, l.text));
     const hidden = lines.length - shown.length;
-    const note = omitted > 0 && open ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
+    // Lines the quiet view leaves out are always said (they are in the raw output), expanded or not, whether or not there is a button.
+    const note = omitted > 0 ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
     if (lines.length > TAIL) {
       const more = el("button", "more", open ? "show the last lines" : `${hidden + omitted} earlier line${hidden + omitted === 1 ? "" : "s"}`);
       more.setAttribute("type", "button");
@@ -116,6 +118,19 @@ function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts
   return wrap;
 }
 
+/** teach_skills' answer for the reader: a row per thread (passes marked) and what came home. */
+export function resultCardElement(card: ResultCard): HTMLElement {
+  const wrap = el("div", "result-card");
+  for (const r of card.rows) wrap.append(el("div", `rc-row${r.passed ? " pass" : ""}`, `${r.passed ? "✓" : "·"} ${r.text}`));
+  if (card.home !== null) wrap.append(el("div", "rc-home", card.home));
+  return wrap;
+}
+
+/** What the harness said about a call (typed, with the `<harness>` wrapper never in the text): one quiet line each. */
+function statusLines(tool: Tool): HTMLElement[] {
+  return (tool.diagnostics ?? []).map((d) => el("div", `status ${d.severity}`, d.message.length > 600 ? `${d.message.slice(0, 600)}…` : d.message));
+}
+
 /** A placeholder that becomes the diff when it is drawn (the library loads on first use). */
 function diffInto(slot: HTMLElement, path: string, oldText: string, newText: string): void {
   slot.textContent = "…";
@@ -133,6 +148,8 @@ export function hasBody(tool: Tool, opts: { showOutput: boolean }): boolean {
   if (kind === "write" && typeof args.path === "string" && typeof args.content === "string") return true;
   if (kind === "edit" && editPairs(tool.args) !== null) return true;
   if ((kind === "grep" || kind === "find" || kind === "ls") && tool.output) return true;
+  if ((tool.diagnostics?.length ?? 0) > 0) return true;
+  if (tool.name === "teach_skills" && teachResultCard(tool.details) !== null) return true;
   return tool.output !== "" && opts.showOutput;
 }
 
@@ -172,8 +189,11 @@ export function toolBody(tool: Tool, opts: { showOutput: boolean; before?: strin
       list.append(row);
     }
     body.append(list);
+  } else if (tool.name === "teach_skills" && teachResultCard(tool.details) !== null) {
+    body.append(resultCardElement(teachResultCard(tool.details)!));
   } else if (out) {
     body.append(el("pre", "out", clip(out)));
   }
+  for (const line of statusLines(tool)) body.append(line);
   return body.childElementCount === 0 ? null : body;
 }

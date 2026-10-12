@@ -98,12 +98,15 @@ export class FakeBoxEnv extends NodeExecutionEnv {
   readonly boxId: string;
   readonly dir: string;
   readonly tickMs: number;
-  constructor(boxId: string, dir: string, tickMs: number) {
+  /** Skills this box's trainer cannot teach, with the diagnosis it gives (D2's words): they never pass. */
+  readonly diagnoses: Readonly<Record<string, string>>;
+  constructor(boxId: string, dir: string, tickMs: number, diagnoses: Readonly<Record<string, string>> = {}) {
     super({ cwd: join(dir, "workspace") });
     this.id = boxId;
     this.boxId = boxId;
     this.dir = dir;
     this.tickMs = tickMs;
+    this.diagnoses = diagnoses;
   }
   private local(path: string): string {
     return path.startsWith("/workspace") ? join(this.dir, path) : path;
@@ -254,7 +257,7 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     rmSync(join(out, "skill-progress.jsonl"), { force: true });
     writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "training" }));
     say({ event: "skill.start", skill });
-    const passAt = PASS_AT[skill] ?? null;
+    const passAt = this.diagnoses[skill] !== undefined ? null : (PASS_AT[skill] ?? null);
     const started = Date.now();
     for (let n = 1; n <= cap; n++) {
       // Aborting the call stops this run, and exec reports it as an error result, as a real environment does.
@@ -283,11 +286,12 @@ export class FakeBoxEnv extends NodeExecutionEnv {
     // D2's diagnosis: a try cut short by its --steps is still changing; one that used every checkpoint plateaued.
     // A skill that never passes never moves in a short try (no gradient); a longer one plateaus.
     const diagnosis =
-      cap < MAX_CHECKPOINTS
+      this.diagnoses[skill] ??
+      (cap < MAX_CHECKPOINTS
         ? passAt === null
           ? "never moved: the metric stayed where it started, so the reward likely gives no gradient"
           : "still changing at the last checkpoint: train longer"
-        : `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target`;
+        : `plateaued from checkpoint ${MAX_CHECKPOINTS - 2}: strengthen the term or check the test's target`);
     writeAtomic(skillJson, JSON.stringify({ skill, label: skill, status: "failed", passed_at: null, diagnosis }));
     say({ event: "skill.done", skill, passed: false });
     rmSync(marker, { force: true });

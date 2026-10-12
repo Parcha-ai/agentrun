@@ -9,10 +9,17 @@ thread's work in its own conversation.
 - At most 8, one per GPU. Fewer is fine. Each one must be distinct and testable: a motion you can measure.
 - Fit them to THIS body: read `robot/body.json` (the motors, the limbs, the tags). Do not plan a wave for a body with
   no front legs, or a gallop for a body that can barely stand. If the user named skills, plan those.
-- "Teach it to move" usually means: walk forward, turn left, turn right, and getting up after a fall. Add backing up or
-  a sprint if the body looks able to. "Tricks" are short, visible, and stable: spin in place, wave a limb, a bow, a hop
-  if it is light and springy.
-- Names are short kebab-case (`walk`, `turn-left`, `wag-tail`). The robot's controls use these names.
+- "Teach it to move" means: walk, turn-left and turn-right. Add backwards or sprint if the body looks able to.
+- Plan get-up only if a motor can swing a leg sideways, so the robot can roll off its side or back. A body written as
+  code shows it in robot/body.json:
+  `node -e 'const b=JSON.parse(require("fs").readFileSync("robot/body.json","utf8")); const s=b.joints.filter((j)=>!j.passive&&j.axis[0]!==0).map((j)=>j.name); console.log(s.length?"sideways motors: "+s.join(", "):"no sideways motors")'`
+  "no sideways motors" (legs that only swing fore and aft, like the dinosaur) means no get-up: it cannot pass. A drawn
+  body with three joints per leg has sideways hips, so get-up fits it.
+- "Tricks" are short, visible, and stable: spin in place, wave a front leg, sit (the nose up) or bow (the nose down).
+- Some asks this body cannot do: a sideways tail wag or a nod (tails and necks are springs that only pitch), getting up
+  on legs that only swing fore and aft, rearing up on the hind legs. Say so in one sentence and offer what it can do
+  (walk, turn, spin, wave, sit, bow), or a body edit, which is a new body and means teaching it again.
+- Names are short kebab-case (`walk`, `turn-left`, `sit`). The robot's controls use these names.
 - When a skill is one of these, use exactly this name: walk, sprint, backwards, turn-left, turn-right, spin, wave,
   get-up. The offline brain on the phone can start only skills with these names; give any other skill a name of its own.
 

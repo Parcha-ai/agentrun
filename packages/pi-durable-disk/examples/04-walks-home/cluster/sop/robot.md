@@ -63,11 +63,16 @@ from one side.
   only through its tags, online and offline. A piece with no tag becomes decoration.
 - **Legs carry two tags:** `["legs", "front_legs"]` or `["legs", "back_legs"]`, on every piece of the leg and its foot.
 - **Name nothing the helper names:** the root body is torso, each leg's foot is `<body>_foot`, and the keyframes are
-  stand and home. The foot is the last piece at the tip of a limb tagged legs, and any shape works; if the tip is not
-  the foot, mark the foot piece with `foot: true`.
+  stand and home. The foot is the last piece at the tip of a limb tagged legs; if the tip is not the foot, mark the
+  foot piece with `foot: true`.
 - **Stance:** at their `stand` angles the feet must reach the floor and hold the body up. Put the mass low and between
   the feet, and use wide feet for a heavy body.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
+- **Feet, motors and mass, so it can learn to walk:** every foot a flat box with
+  `friction: "1.4 0.05 0.01"`, every leg motor `strength: 14` or more, and most of the mass in the torso. Measured on
+  the starter dog: ball feet walked 0.087 m/s and never passed; flat box feet with friction 1.4 passed in 125 s; with
+  strength 14 and a 6 kg torso as well, in 86.6 s, the dinosaur's time. build.mjs warns about a ball foot or a weak leg
+  motor.
 
 ## Changing it later
 Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 2. There are
@@ -83,26 +88,26 @@ changes, say so, and offer to teach it again.
 These are `robot/examples/dog.mjs` and `robot/examples/dino.mjs` as `robot/body.mjs` would import the helper (`./lib.mjs`;
 the copies in `robot/examples/` import `../lib.mjs`).
 ```js
-// A small dog: a box torso, four two-joint legs, a head, a tail. Copy it, change it, make it yours.
+// A small dog: a heavy box torso, four two-joint legs on flat feet, a head, a tail. Copy it, change it, make it yours.
 import { robot, mirror } from "./lib.mjs";
 
 const leg = (x, side) => {
   const l = {
     name: `leg_${x > 0 ? "front" : "back"}`, pos: [x, 0.12, 0], tags: ["legs", x > 0 ? "front_legs" : "back_legs"],
-    joint: { axis: [0, 1, 0], range: [-1, 1], stand: -0.45 },                       // the hip swings the whole leg forward and back
+    joint: { axis: [0, 1, 0], range: [-1, 1], stand: -0.45, strength: 14 },         // the hip swings the whole leg forward and back
     shape: "capsule", from: [0, 0, 0], to: [0, 0, -0.2], size: [0.02], color: "brown",
     children: [{
       name: "shin", pos: [0, 0, -0.2], tags: ["legs", x > 0 ? "front_legs" : "back_legs"],
-      joint: { axis: [0, 1, 0], range: [0, 2.3], stand: 0.9 },                       // the knee bends it back
+      joint: { axis: [0, 1, 0], range: [0, 2.3], stand: 0.9, strength: 14 },         // the knee bends it back
       shape: "capsule", from: [0, 0, 0], to: [0, 0, -0.2], size: [0.018], color: "brown",
-      geoms: [{ shape: "sphere", size: [0.023], pos: [0, 0, -0.2], color: "black", friction: "1.2 0.05 0.01" }], // the foot
+      geoms: [{ shape: "box", size: [0.05, 0.035, 0.015], pos: [0.02, 0, -0.208], color: "black", mass: 0.020386, friction: "1.4 0.05 0.01" }], // a flat foot that grips
     }],
   };
   return side === "left" ? l : mirror(l);
 };
 
 export default robot("dog", {
-  shape: "box", size: [0.28, 0.1, 0.06], color: "brown", tags: ["torso"], mass: 2.4,
+  shape: "box", size: [0.28, 0.1, 0.06], color: "brown", tags: ["torso"], mass: 6,                  // most of the mass, low and between the feet
   geoms: [
     { shape: "sphere", size: [0.07], pos: [0.34, 0, 0.05], color: "brown", tags: ["head"] },        // the head
     { shape: "capsule", from: [0.4, 0, 0.03], to: [0.46, 0, 0.03], size: [0.03], color: "black", tags: ["head"] }, // the nose

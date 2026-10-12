@@ -177,7 +177,8 @@ def reuse_or_clear(out: str, sha: str, skill_sha: str | None = None):
 def diagnose(records: list[dict]) -> str | None:
   """Why a try failed, in words a thread can act on, from its checkpoints' test results (skill-progress.jsonl): the metric
   never moved (within 5% of where it began), plateaued (the second half within 5%; it began at the first checkpoint from
-  which every later value stays within 2% of that band), was still changing, or test.py raised."""
+  which every later value stays within 2% of that band), never settles (the second half swings widely, changing direction
+  at least every other checkpoint, with no trend), was still changing, or test.py raised."""
   if not records:
     return "no checkpoint was tested: the trainer stopped before its first checkpoint (see error)"
   errors = [r for r in records if r.get("error")]
@@ -187,6 +188,12 @@ def diagnose(records: list[dict]) -> str | None:
   scored = [r for r in records if r.get("metric") and isinstance(r["metric"].get("value"), (int, float))]
   values = [r["metric"]["value"] for r in scored]
   if len(values) < 2:
+    unmeasured = [r for r in records if r.get("metric") and not r.get("error") and r["metric"].get("value") is None]
+    if len(unmeasured) >= 2 and len(values) == 0:
+      what = unmeasured[-1]["metric"].get("name") or "the metric"
+      return (f"{what} was never measured: at all {len(unmeasured)} checkpoints test.py ran and found the skill never happened "
+              "(a get-up that never righted, a pose never reached). Check that this body can do it at all (its joints, feet and "
+              "mass) before training longer or changing the reward")
     return "too few checkpoints with a metric to judge: train longer"
   name = records[-1]["metric"]["name"] if records[-1].get("metric") else "the metric"
   first, last = values[0], values[-1]
@@ -205,6 +212,21 @@ def diagnose(records: list[dict]) -> str | None:
     return (f"{name} moved from {first:g} to {values[k]:g} by checkpoint {scored[k]['checkpoint']} ({scored[k]['steps'] / 1e6:.1f}M steps), "
             f"then plateaued at about {last:g}: strengthen the term that pushes past it, remove a term that holds it back, "
             "or check that the test's target is reachable for this body")
+  # Never settles: the second half swings (its range over 20% of the largest value), flips direction at least every other
+  # checkpoint, and has no trend (its last third within half the range of its first third). Training longer rarely fixes it.
+  diffs = [b - a for a, b in zip(tail, tail[1:]) if b != a]
+  flips = sum(1 for a, b in zip(diffs, diffs[1:]) if (a > 0) != (b > 0))
+  third = max(1, len(tail) // 3)
+  swing = max(tail) - min(tail)
+  drift = abs(sum(tail[-third:]) / third - sum(tail[:third]) / third)
+  if len(tail) >= 5 and swing > 0.2 * max(abs(v) for v in values) and flips * 2 >= len(diffs) - 1 and drift < 0.5 * swing:
+    # Best by the test's own direction: a target below ("<= -0.25", backwards) is best at its lowest value.
+    below = str(scored[-1]["metric"].get("target", "")).lstrip().startswith("<")
+    best = (min if below else max)(range(len(values)), key=lambda i: values[i])
+    return (f"{name} never settles: over the last {len(tail)} checkpoints it swung between {min(tail):g} and {max(tail):g} "
+            f"with no trend (best {values[best]:g} at checkpoint {scored[best]['checkpoint']}, {last:g} at the last). Training "
+            "longer rarely fixes a policy that does not settle: check the body first (feet that roll or slip, where a flat foot "
+            "with friction helps; motors too weak for the body; a part that drags), then the reward's terms")
   return (f"{name} was still changing at the last checkpoint ({first:g} to {last:g}): train longer (--steps) before "
           "changing the reward")
 

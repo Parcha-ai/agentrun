@@ -269,3 +269,38 @@ test("train-skill.md starts a skill the library lacks from its closest library s
   assert.match(sop, /That is the whole change: one skill\.json edit, one test\.py edit and a small reward\.py\./);
   assert.doesNotMatch(sop, /write it from the closest example/, "the old from-scratch wording is gone");
 });
+
+test("teach.md plans walk and the turns for \"move\", and get-up only for a body with a motor that swings a leg sideways", async () => {
+  const { copyFileSync, mkdirSync } = await import("node:fs");
+  const teach = readFileSync(join(here, "..", "sop", "teach.md"), "utf8");
+  const flat = teach.replace(/\s+/g, " ");
+  assert.match(flat, /"Teach it to move" means: walk, turn-left and turn-right\. Add backwards or sprint if the body looks able to\./);
+  assert.match(flat, /Plan get-up only if a motor can swing a leg sideways/);
+  assert.doesNotMatch(flat, /and getting up after a fall/, "get-up is no longer in the default plan for move");
+  // The check the planner runs, as teach.md writes it, on bodies built by D3's own lib and build script.
+  const check = /`(node -e '[^`]*robot\/body\.json[^`]*')`/.exec(teach)?.[1];
+  assert.ok(check, "teach.md gives the check");
+  const body = join(here, "..", "..", "body");
+  const built = (example: string, edit = (s: string) => s) => {
+    const dir = mkdtempSync(join(tmpdir(), "teach-body-"));
+    mkdirSync(join(dir, "robot"));
+    for (const f of ["lib.mjs", "build.mjs"]) copyFileSync(join(body, f), join(dir, "robot", f));
+    writeFileSync(join(dir, "robot", "body.mjs"), edit(readFileSync(join(body, example), "utf8")));
+    const b = spawnSync(process.execPath, ["robot/build.mjs"], { cwd: dir, encoding: "utf8" });
+    assert.equal(b.status, 0, b.stderr);
+    const r = spawnSync("bash", ["-c", check!], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  // The dinosaur (code5's skeleton): every motor on [0, 1, 0], so no get-up.
+  assert.equal(built("dino.example.mjs"), "no sideways motors");
+  // A dog whose hips swing sideways ([1, 0, 0]) can roll over: the check names those motors.
+  // The dog's hip turned to swing sideways; the edit must take, whatever else its joint line carries (strength, a comment).
+  const sidewaysHip = (s: string) => {
+    const t = s.replace(/axis: \[0, 1, 0\], range: \[-1, 1\], stand: -0\.45/, "axis: [1, 0, 0], range: [-0.5, 0.5], stand: 0");
+    assert.notEqual(t, s, "the dog's hip joint was found and turned sideways");
+    return t;
+  };
+  const sideways = built("dog.example.mjs", sidewaysHip);
+  assert.match(sideways, /^sideways motors: leg_front_j/);
+});

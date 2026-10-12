@@ -13,3 +13,12 @@ export function ellipsize(text: string, maxPx: number, measure: (s: string) => n
   }
   return lo === 0 ? "…" : `${text.slice(0, lo).trimEnd()}…`;
 }
+
+/**
+ * What the field's placeholder should be: its own (the page's HTML) until a hint has been set, then the hint fitted to the room there is (the whole hint while no room has been measured, the field being hidden).
+ * A page that never sets a hint is never blanked by a render.
+ */
+export function fitPlaceholder(current: string, hint: string, maxPx: number, measure: (s: string) => number): string {
+  if (hint === "") return current;
+  return maxPx > 0 ? ellipsize(hint, maxPx, measure) : hint;
+}

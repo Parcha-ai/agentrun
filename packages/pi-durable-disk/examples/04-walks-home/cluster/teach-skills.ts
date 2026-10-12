@@ -109,7 +109,12 @@ export type ThreadStatus = {
   readonly seconds?: number;
   /** What the artifacts say about it, in the trainer's words (why it never passed, why it was refused). */
   readonly reason?: string;
+  /** The passing checkpoint's own measurement (the skill's metric and what passing needed), as the trainer recorded it. */
+  readonly metric?: SkillMetric;
 };
+
+/** A skill's measurement at one checkpoint: its name, the value, its unit and the target the trainer tested it against (">= 0.4"), as in skill-progress.jsonl. */
+export type SkillMetric = { readonly name: string; readonly value: number; readonly unit: string | null; readonly target: string | null };
 
 /** What one thread came back with; also each Thread task's result. */
 export type ThreadResult = {
@@ -126,6 +131,8 @@ export type ThreadResult = {
   readonly outcomeError?: string;
   /** Code mode: what the thread's artifacts say about the outcome (the status hook's `reason`). */
   readonly reason?: string;
+  /** Code mode: the passing checkpoint's own measurement, when the artifacts have one. */
+  readonly metric?: SkillMetric;
 };
 
 export type TrainProgress = {
@@ -620,7 +627,7 @@ async function forkPoint(tx: Tx, conversationId: ConversationId): Promise<EntryI
 
 /** Code mode's result: the status the thread's artifacts show (or "timed out" / "reported"), with the thread's own words. */
 function codeResult(r: ThreadResult, from: ThreadStatus | undefined, timedOut: boolean, deadlineMs: number | undefined): ThreadResult {
-  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}), ...(from.reason ? { reason: from.reason } : {}) } : {};
+  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}), ...(from.reason ? { reason: from.reason } : {}), ...(from.metric ? { metric: from.metric } : {}) } : {};
   const { checkpoint: _c, seconds: _s, ...rest } = r;
   if (timedOut && from?.status !== "passed") {
     return { ...rest, ...facts, status: "timed-out", summary: r.summary || `Stopped after ${Math.round((deadlineMs ?? 0) / 60000)} min without a passing result.` };
