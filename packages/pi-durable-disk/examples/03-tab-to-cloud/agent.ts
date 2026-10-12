@@ -11,6 +11,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import type { Context } from "@earendil-works/chord";
 import { computerTool, type ComputerDriver } from "./computer-tool.ts";
 import { offlineTools, type OfflineChannel } from "./offline-tools.ts";
+import { robotTools, ROBOT_TOOLS } from "./robot-tools.ts";
 import { switchEnvironment, type SwitchChannel } from "./switch-tool.ts";
 
 export const PROVIDER = "pipe";
@@ -36,7 +37,7 @@ export function codingTools(): Extension {
   });
 }
 
-export const WRITING_TOOLS = new Set(["write", "edit", "bash"]);
+export const WRITING_TOOLS = new Set(["write", "edit", "bash", ...ROBOT_TOOLS]); // the robot tools write creature/robot.json
 
 /**
  * The rule that a tool's workspace changes are durable before its result commits, as one extension both sides install.
@@ -157,6 +158,7 @@ export function agentRegistry(durable: (context: Context) => Promise<void>, host
   registry.install(writeThrough(durable));
   if (host.switchTool !== false) registry.install(switchEnvironment(host.switchChannel, host.environments));
   registry.install(offlineTools(host.offlineChannel));
+  registry.install(robotTools());
   registry.install(computerTool(host.computer));
   return registry;
 }
