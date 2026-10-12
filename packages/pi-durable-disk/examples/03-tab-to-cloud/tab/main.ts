@@ -226,6 +226,9 @@ function announceTools(items: readonly ChatItem[]): void {
   announce("tools", { tools });
 }
 
+/** The tool results the reader has open, by the call's id: the chat is redrawn on every agent event, and a result being read must not close under them. */
+const openTools = new Set<string>();
+
 function renderChat(): void {
   const list = $("chat");
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
@@ -252,7 +255,9 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HT
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
       const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
       const out = item.output && !echoed.has(item.id) ? [el("pre", {}, item.output.slice(-3000))] : [];
-      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${out.length === 0 ? " bare" : ""}` }, summary, ...out);
+      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${out.length === 0 ? " bare" : ""}` }, summary, ...out) as HTMLDetailsElement;
+      node.open = out.length > 0 && openTools.has(item.id);
+      node.addEventListener("toggle", () => (node.open ? openTools.add(item.id) : openTools.delete(item.id)));
       return node;
     }
     case "note":
@@ -1516,6 +1521,8 @@ void boot();
 (globalThis as { demo?: unknown }).demo = {
   state,
   items: () => state.chat.items(),
+  /** Redraw the chat now (a check redraws while a tool result is open). */
+  renderChat: () => renderChat(),
   files: () => state.files.map((f) => f.path),
   /** What the pipe acknowledged last, as `workspaceDigest`; null when this tab does not run the agent. */
   ackedDigest: () => state.runtime?.workspace.baselineDigest() ?? null,

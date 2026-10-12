@@ -72,6 +72,11 @@ try {
   ok("the robot tools ran in the page's computer", t1.filter((i) => i.kind === "tool" && i.status === "done").length >= 2, t1.map((i) => `${i.kind}:${i.name ?? ""}:${i.status ?? ""}`));
   await until(`document.getElementById("creature").contentWindow.__walks.look().face === "happy"`).catch(() => undefined);
   const look = await walks<{ legs: string[]; face: string }>("w.look()");
+  // A tool's result the reader opened stays open while the chat redraws (each agent event redraws it).
+  await ev("(() => { const d = document.querySelector('details.tool:not(.bare)'); if (d) d.open = true; return !!d; })()");
+  await sleep(200);
+  await ev("demo.renderChat()");
+  ok("a tool result the reader opened stays open when the chat redraws", await ev<boolean>("document.querySelector('details.tool:not(.bare)')?.open === true"));
   ok("looks only: the creature redrew (legs red, a happy face) and the brain still fits", look.legs.every((c) => c === "#d9423b") && look.face === "happy" && (await walks<boolean>("w.fits()")), look);
 
   // a body change: the old brain drives the new body, the label says so
