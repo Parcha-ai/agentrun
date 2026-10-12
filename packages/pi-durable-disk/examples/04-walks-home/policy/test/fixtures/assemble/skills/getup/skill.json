@@ -1,1 +1,1 @@
-{"skill": "get-up", "status": "done", "command": 0.0, "label": "get-up", "mjcf_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+{"skill": "get-up", "status": "done", "command": 0.0, "label": "get-up", "mjcf_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "body_name": "fixture", "passed_at": {"checkpoint": 1, "steps": 1966080, "t": 39.0, "passes": true}, "wall_s": 46.9, "cpu_estimate_s": 4091, "cpu_estimate": {"cores": "8 Xeon Gold 6312U", "steps_per_s": 520}}
