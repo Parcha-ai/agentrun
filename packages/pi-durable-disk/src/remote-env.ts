@@ -11,8 +11,10 @@
 // ArtifactSync copies what a thread's programs write on the box (checkpoints) back to the session's disk while the box lives:
 // new and changed files, in modification order, each written whole (a temporary file renamed into place), so a reader on the
 // session's side never sees half a checkpoint. `remoteEnvs` is the HarnessOptions.env for a session whose threads have boxes.
-import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, open, rename, rm, stat, utimes } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join as joinLocal } from "node:path";
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -331,14 +333,14 @@ export class RemoteEnv implements ExecutionEnv {
   }
   async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
     const p = this.abs(path);
-    const r = await this.file(p, `check "$1"; [ -d "$1" ] || exit 5; find "$1" -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0'`, [p], context, (x) => parseFind(x.out));
+    const r = await this.file(p, `check "$1"; [ -d "$1" ] || exit 5; find -H "$1" -mindepth 1 -maxdepth 1 -printf '%f\\0%y\\0%s\\0%T@\\0'`, [p], context, (x) => parseFind(x.out));
     if (!r.ok) return r;
     return ok(r.value.flatMap((e) => { const kind = kindOf(e.y); return kind ? [{ name: e.p, path: posix.join(p, e.p), kind, size: e.size, mtimeMs: e.mtimeMs }] : []; }));
   }
   async openDirReader(path: string, context: Context): Promise<Result<DirReader, FileError>> {
     const p = this.abs(path);
     // The names now; each page reads its entries' metadata when it is asked for, so an entry removed meanwhile is skipped.
-    const names = await this.file(p, `check "$1"; [ -d "$1" ] || exit 5; find "$1" -mindepth 1 -maxdepth 1 -printf '%f\\0'`, [p], context, (x) => decoder().decode(x.out).split("\0").filter(Boolean));
+    const names = await this.file(p, `check "$1"; [ -d "$1" ] || exit 5; find -H "$1" -mindepth 1 -maxdepth 1 -printf '%f\\0'`, [p], context, (x) => decoder().decode(x.out).split("\0").filter(Boolean));
     if (!names.ok) return names;
     const left = names.value;
     let closed = false;
@@ -349,7 +351,7 @@ export class RemoteEnv implements ExecutionEnv {
         if (ctx?.abortSignal?.aborted) return err(new FileError("aborted", `aborted: ${p}`, p));
         const page = left.splice(0, maxEntries);
         if (page.length === 0) return ok({ entries: [], done: true });
-        const r = await this.file(p, `cd -- "$1" || exit 3; shift; for n in "$@"; do [ -e "$n" ] || [ -L "$n" ] || continue; find "$n" -maxdepth 0 -printf '%f\\0%y\\0%s\\0%T@\\0'; done`, [p, ...page], ctx, (x) => parseFind(x.out));
+        const r = await this.file(p, `cd -- "$1" || exit 3; shift; for n in "$@"; do [ -e "./$n" ] || [ -L "./$n" ] || continue; find "./$n" -maxdepth 0 -printf '%f\\0%y\\0%s\\0%T@\\0'; done`, [p, ...page], ctx, (x) => parseFind(x.out));
         if (!r.ok) return r;
         const entries = r.value.flatMap((e) => { const kind = kindOf(e.y); return kind ? [{ name: e.p, path: posix.join(p, e.p), kind, size: e.size, mtimeMs: e.mtimeMs }] : []; });
         return ok({ entries, done: left.length === 0 });
@@ -449,26 +451,42 @@ export class RemoteEnv implements ExecutionEnv {
     const envArgs = Object.entries(options?.env ?? {}).map(([k, v]) => `${k}=${v}`);
     // The command runs as its own process group (setsid), whose id is written down, so an abort or a timeout kills all of it.
     // `-w`: where the exec's process already leads a group (Modal's does), setsid forks, and without -w it would return at once.
+    // A cancel that comes before the group is written down leaves a tombstone (`.cancel`); the wrapper writes its group first and
+    // then looks for one, and `kill` looks for the group, leaves the tombstone, and looks again: a late start never runs on.
     // (dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`)
-    const wrap = `mkdir -p /tmp/.pi-remote; f=/tmp/.pi-remote/$1.pid; echo $$ > "$f"; cd -- "$2" 2>/dev/null || { rm -f "$f"; echo "pi-remote: cwd: $2: not found" >&2; exit 200; }; shift 2; if [ "$PI_ARGV" = 1 ] && ! command -v -- "$1" >/dev/null 2>&1; then rm -f "$f"; echo "pi-remote: spawn: $1: not found" >&2; exit 201; fi; unset PI_ARGV; "$@"; c=$?; rm -f "$f"; exit $c`;
+    const wrap = `mkdir -p /tmp/.pi-remote; f=/tmp/.pi-remote/$1.pid; x=/tmp/.pi-remote/$1.cancel; echo $$ > "$f"; if [ -e "$x" ]; then rm -f "$f" "$x"; exit 130; fi; cd -- "$2" 2>/dev/null || { rm -f "$f"; echo "pi-remote: cwd: $2: not found" >&2; exit 200; }; shift 2; if [ "$PI_ARGV" = 1 ] && ! command -v -- "$1" >/dev/null 2>&1; then rm -f "$f"; echo "pi-remote: spawn: $1: not found" >&2; exit 201; fi; unset PI_ARGV; "$@"; c=$?; rm -f "$f"; exit $c`;
     const full = ["env", ...(options?.inheritEnv === false ? ["-i", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"] : []), ...envArgs, `PI_ARGV=${typeof command === "string" ? 0 : 1}`, "setsid", "-w", "sh", "-c", wrap, "pi-exec", id, cwd, ...argv];
     const timeoutMs = options?.timeout !== undefined ? options.timeout * 1000 : this.maxExecMs;
-    const kill = () => this.call(["sh", "-c", `f=/tmp/.pi-remote/$1.pid; [ -f "$f" ] || exit 0; g=$(cat "$f"); kill -TERM "-$g" 2>/dev/null; sleep 1; kill -KILL "-$g" 2>/dev/null; rm -f "$f"`, "sh", id], { ms: 15_000 }).catch(() => undefined);
+    const kill = () => this.call(["sh", "-c", `mkdir -p /tmp/.pi-remote; f=/tmp/.pi-remote/$1.pid; stop() { g=$(cat "$f"); kill -TERM "-$g" 2>/dev/null; sleep 1; kill -KILL "-$g" 2>/dev/null; rm -f "$f"; }; if [ -f "$f" ]; then stop; exit 0; fi; touch /tmp/.pi-remote/$1.cancel; [ -f "$f" ] && stop; true`, "sh", id], { ms: 5_000 }).catch(() => undefined); // best effort, and short: it is on the way out of a call
     this.running.add(id);
-    // the complete output, for the spill file a long output gets
+    // The output, for the spill file a long output gets: in memory up to the thresholds, then in a file on this host, so a
+    // long and noisy command never holds its whole output in memory; the file goes to the box in pieces at the end.
     const spill = options?.spill;
-    let total = 0, lines = 0;
-    const all: Uint8Array[] = [];
-    let spilling = false;
+    let total = 0, lines = 0, spilling = false;
+    let early: Uint8Array[] = [];
+    let local: { path: string; fh: FileHandle } | null = null;
+    let spillChain: Promise<void> = Promise.resolve();
+    const keep = (c: Uint8Array) => {
+      total += c.length;
+      for (const b of c) if (b === 10) lines++;
+      if (spilling) { spillChain = spillChain.then(async () => { await local!.fh.write(c); }); return; }
+      early.push(c);
+      if (total > spill!.afterBytes || lines > spill!.afterLines) {
+        spilling = true;
+        const parts = early;
+        early = [];
+        spillChain = spillChain.then(async () => {
+          const path = joinLocal(tmpdir(), `pi-remote-spill-${id}.txt`);
+          local = { path, fh: await open(path, "w") };
+          for (const x of parts) await local.fh.write(x);
+        });
+      }
+    };
     const decoders = { stdout: new StreamDecoder(), stderr: new StreamDecoder() };
     let stderrTail = "";
     const pump = async (s: RemoteStream, stream: "stdout" | "stderr") => {
       for await (const c of chunks(s)) {
-        if (spill) {
-          all.push(c); total += c.length;
-          for (const b of c) if (b === 10) lines++;
-          if (!spilling && (total > spill.afterBytes || lines > spill.afterLines)) spilling = true;
-        }
+        if (spill) keep(c);
         let text = decoders[stream].decode(c);
         if (stream === "stderr") {
           stderrTail = (stderrTail + text).slice(-400);
@@ -480,27 +498,48 @@ export class RemoteEnv implements ExecutionEnv {
       if (rest) options?.onOutput?.(rest, context, { stream });
     };
     const writeSpill = async (): Promise<string | undefined> => {
-      if (!spilling) return undefined;
-      const f = await this.createTempFile({ prefix: "pi-out-", suffix: ".txt" }, context);
-      if (!f.ok) return undefined;
-      const bytes = new Uint8Array(total);
-      let at = 0;
-      for (const p of all) { bytes.set(p, at); at += p.length; }
-      const w = await this.writeFile(f.value, bytes, context);
-      return w.ok ? f.value : undefined;
+      await spillChain.catch(() => undefined);
+      const mine = local as { path: string; fh: FileHandle } | null;
+      if (!spilling || !mine) return undefined;
+      try {
+        await mine.fh.close();
+        const f = await this.createTempFile({ prefix: "pi-out-", suffix: ".txt" }, context);
+        if (!f.ok) return undefined;
+        const piece = Buffer.alloc(4 * 1024 * 1024);
+        const fh = await open(mine.path, "r");
+        try {
+          for (let at = 0; ; ) {
+            const { bytesRead } = await fh.read(piece, 0, piece.length, at);
+            if (bytesRead === 0) break;
+            const w = await this.appendFile(f.value, piece.subarray(0, bytesRead), context);
+            if (!w.ok) return undefined;
+            at += bytesRead;
+          }
+        } finally {
+          await fh.close();
+        }
+        return f.value;
+      } finally {
+        await rm(mine.path, { force: true });
+      }
     };
-    let timedOut = false, aborted = false;
+    const launch = this.box.exec(full, { mode: "binary", timeoutMs: seconds(timeoutMs + 30_000) });
+    let started = false;
     try {
-      const p = await bounded(this.box.exec(full, { mode: "binary", timeoutMs: seconds(timeoutMs + 30_000) }), Math.max(timeoutMs, Math.min(this.opTimeoutMs, 30_000)), context);
-      await p.stdin.close().catch(() => {});
-      const run = Promise.all([pump(p.stdout, "stdout"), pump(p.stderr, "stderr"), p.wait()]).then((x) => x[2]);
+      const p = await bounded(launch, Math.max(timeoutMs, Math.min(this.opTimeoutMs, 30_000)), context);
+      started = true;
+      // closing stdin is part of the bounded run: a stalled connection there is a timeout or an abort like any other
+      const run = (async () => {
+        await p.stdin.close().catch(() => {});
+        const [, , code] = await Promise.all([pump(p.stdout, "stdout"), pump(p.stderr, "stderr"), p.wait()]);
+        return code;
+      })();
       let code: number;
       try {
         code = await bounded(run, timeoutMs, context);
       } catch (e) {
-        if (isAbort(e)) aborted = true;
-        else if (e instanceof Timeout) timedOut = true;
-        else throw e;
+        const aborted = isAbort(e);
+        if (!aborted && !(e instanceof Timeout)) throw e;
         await kill();
         const path = await writeSpill().catch(() => undefined);
         const xe = new ExecutionError(aborted ? "aborted" : "timeout", aborted ? "the command was aborted" : `the command timed out after ${timeoutMs / 1000} s`);
@@ -512,6 +551,10 @@ export class RemoteEnv implements ExecutionEnv {
       const spillPath = await writeSpill();
       return ok({ exitCode: code, ...(spillPath ? { spillPath } : {}) });
     } catch (e) {
+      if (!started) {
+        // given up before the box answered: if the launch lands later, its command is stopped (and the tombstone stops it if it starts)
+        launch.then(async (late) => { await late.stdin.close().catch(() => {}); await kill(); }, () => undefined);
+      }
       if (isAbort(e)) { await kill(); return err(new ExecutionError("aborted", "the command was aborted")); }
       await this.diagnose(e);
       if (this.lost !== null) return err(new ExecutionError("unknown", this.goneMessage()));
@@ -519,6 +562,8 @@ export class RemoteEnv implements ExecutionEnv {
       return err(new ExecutionError("spawn_error", `the box ${this.box.sandboxId} did not run the command: ${(e as Error)?.message ?? e}`));
     } finally {
       this.running.delete(id);
+      const leftover = local as { path: string; fh: FileHandle } | null; // a spill file that was not sent (a failure on the way)
+      if (leftover) { await leftover.fh.close().catch(() => undefined); await rm(leftover.path, { force: true }).catch(() => undefined); }
     }
   }
 
@@ -600,7 +645,7 @@ export class ArtifactSync {
 
   private async exec(argv: string[], context?: Context) {
     const p = await bounded(this.o.box.exec(argv, { mode: "binary", timeoutMs: seconds(this.o.opTimeoutMs + 5_000) }), this.o.opTimeoutMs, context);
-    await p.stdin.close().catch(() => {});
+    await bounded(p.stdin.close().catch(() => {}), this.o.opTimeoutMs, context); // a stalled close must not hold a flush or a stop
     return p;
   }
 
@@ -639,28 +684,45 @@ export class ArtifactSync {
     }
   }
 
+  /**
+   * Copy one file into place. Its size and mtime are read on the box before and after the bytes; a file that changed (or is not
+   * the version listed) is not published: its copy is dropped and a later pass takes it once it is stable again.
+   */
   private async copy(rel: string, version: string, context?: Context): Promise<void> {
     const target = joinLocal(this.o.local, rel);
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
     await mkdir(dirname(target), { recursive: true });
-    const p = await this.exec(["sh", "-c", `cat -- "$1"`, "sh", posix.join(this.o.remote, rel)], context);
-    const file = createWriteStream(tmp);
-    let n = 0;
+    const p = await this.exec(["sh", "-c", `s1=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; cat -- "$1" || exit 4; s2=$(find "$1" -maxdepth 0 -printf '%s:%T@') || exit 3; printf '%s\\n%s\\n' "$s1" "$s2" >&2`, "sh", posix.join(this.o.remote, rel)], context);
+    // a file handle, not a stream: a full or unwritable disk is a rejection here, never an unhandled 'error' event
+    let fh: FileHandle | null = null;
+    let n = 0, stamps = "";
     try {
+      fh = await open(tmp, "w");
+      const out = fh;
       await bounded((async () => {
+        const errText = readAll(p.stderr);
         for await (const c of chunks(p.stdout)) {
           n += c.length;
-          if (!file.write(c)) await new Promise<void>((r) => file.once("drain", () => r()));
+          await out.write(c);
         }
-        const [errBytes, code] = await Promise.all([readAll(p.stderr), p.wait()]);
-        if (code !== 0) throw new Error(`copying ${rel} failed (${code}): ${decoder().decode(errBytes).trim().slice(-200)}`);
+        const [errBytes, code] = await Promise.all([errText, p.wait()]);
+        stamps = decoder().decode(errBytes);
+        if (code !== 0) throw new Error(`copying ${rel} failed (${code}): ${stamps.trim().slice(-200)}`);
       })(), this.o.opTimeoutMs, context);
-      await new Promise<void>((resolve, reject) => file.end((e?: Error | null) => (e ? reject(e) : resolve())));
+      await fh.close();
+      fh = null;
+      const [before, after] = stamps.trim().split("\n").slice(-2).map((x) => { const [size, t] = x.split(":"); return `${Number(size)}:${Math.round(Number(t) * 1000)}`; });
+      if (before !== version || after !== version || n !== Number(version.split(":")[0])) {
+        // changed under the copy: not published; the listing that sees it settle copies it
+        this.seen.set(rel, after ?? "");
+        await rm(tmp, { force: true });
+        return;
+      }
       const mtime = Number(version.split(":")[1]) / 1000;
       await utimes(tmp, mtime, mtime); // the box's time, so a sync started after a restart knows this copy
       await rename(tmp, target);
     } catch (e) {
-      file.destroy();
+      await fh?.close().catch(() => undefined);
       await rm(tmp, { force: true });
       throw e;
     }
@@ -709,10 +771,14 @@ export function remoteEnvs(
  */
 export const PI_RUN = `#!/bin/sh
 # pi-run <key> -- <command...>: stop the previous run of <key> on this box (its process group), then run the command.
+# The key is hashed whole (two keys never share a record), and the check, the stop and the record are done under one lock.
 [ $# -ge 1 ] || { echo "usage: pi-run <key> -- <command...>" >&2; exit 2; }
 key=$1; shift; [ "$1" = "--" ] && shift
-d=/tmp/.pi-run; mkdir -p "$d"; f="$d/$(printf %s "$key" | tr -c 'A-Za-z0-9._-' _).pgid"
+d=/tmp/.pi-run; mkdir -p "$d"
+k=$(printf %s "$key" | sha256sum | cut -c1-32)
+f="$d/$k.pgid"; l="$d/$k.lock"
 g=$(cut -d' ' -f5 /proc/$$/stat)
+exec 9>"$l"; flock 9
 if [ -f "$f" ]; then
   old=$(cat "$f")
   if [ -n "$old" ] && [ "$old" != "$g" ]; then
@@ -722,17 +788,22 @@ if [ -f "$f" ]; then
   fi
 fi
 echo "$g" > "$f"
+exec 9>&-
 "$@"; c=$?
+exec 9>"$l"; flock 9
 [ "$(cat "$f" 2>/dev/null)" = "$g" ] && rm -f "$f"
+exec 9>&-
 exit $c
 `;
 
 /** Install pi-run on a box (at `path`, default /usr/local/bin/pi-run). For a pool that creates boxes itself. */
 export async function installPiRun(box: RemoteBox, path = "/usr/local/bin/pi-run"): Promise<void> {
   const p = await box.exec(["sh", "-c", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && chmod 755 "$1"', "sh", path], { mode: "binary", timeoutMs: 60_000 });
-  await p.stdin.writeBytes(enc.encode(PI_RUN));
-  await p.stdin.close();
-  const [, e, code] = await Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait()]);
+  const [, e, code] = await bounded((async () => {
+    await p.stdin.writeBytes(enc.encode(PI_RUN));
+    await p.stdin.close();
+    return Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait()]);
+  })(), 60_000);
   if (code !== 0) throw new Error(`could not install pi-run at ${path}: ${decoder().decode(e).trim().slice(-200)}`);
 }
 
@@ -776,26 +847,56 @@ export function modalGpuBoxes(sdk: ModalGpuSdk, o: ModalGpuBoxesOptions) {
   let image: Promise<unknown> | undefined;
   const theApp = () => (app ??= sdk.apps.fromName(o.appName, { createIfMissing: true }).catch((e) => { app = undefined; throw e; }));
   const theImage = () => (image ??= Promise.resolve(typeof o.image === "function" ? o.image() : o.image.startsWith("im-") ? sdk.images.fromId(o.image) : sdk.images.fromRegistry(o.image)).catch((e) => { image = undefined; throw e; }));
-  const tagsOf = (key: string, tags: Record<string, string> = {}) => ({ ...tags, "pi-box": key.slice(0, 63) });
+  // The key, whole, as a tag value: its sha256 (a tag cannot hold any key, and a prefix would let two threads share a box).
+  const tagOf = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 40);
+  type Box = RemoteBox & { terminate(): Promise<void> };
+  const live = async (appId: string, key: string): Promise<Box[]> => {
+    const out: Box[] = [];
+    for await (const box of sdk.sandboxes.list({ appId, tags: { "pi-box": tagOf(key) } })) if ((await box.poll()) === null) out.push(box);
+    return out;
+  };
+  // One winner for every creator of a key: the box with the smallest id. The others are duplicates and are ended.
+  const settle = async (boxes: Box[]): Promise<Box> => {
+    const sorted = [...new Map(boxes.map((b) => [b.sandboxId, b])).values()].sort((a, b) => (a.sandboxId < b.sandboxId ? -1 : 1));
+    for (const extra of sorted.slice(1)) await extra.terminate().catch(() => {});
+    return sorted[0]!;
+  };
+  /** The workspace and pi-run, on a new box or on one adopted after a crash between its creation and its setup. Idempotent. */
+  const setup = async (box: RemoteBox) => {
+    const p = await bounded(box.exec(["mkdir", "-p", root], { mode: "binary", timeoutMs: 60_000 }), 60_000);
+    const code = await bounded((async () => { await p.stdin.close(); await Promise.all([readAll(p.stdout), readAll(p.stderr)]); return p.wait(); })(), 60_000);
+    if (code !== 0) throw new Error(`could not make ${root} on ${box.sandboxId}`);
+    await installPiRun(box, o.piRunPath);
+  };
+  const inflight = new Map<string, Promise<RemoteBox>>();
   return {
-    async ensure(key: string, tags: Record<string, string> = {}): Promise<RemoteBox> {
-      const a = await theApp();
-      for await (const box of sdk.sandboxes.list({ appId: a.appId, tags: { "pi-box": key.slice(0, 63) } })) {
-        if ((await box.poll()) === null) return box;
-      }
-      const name = `pi-box-${key.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 40)}-${Date.now().toString(36)}`;
-      const box = await sdk.sandboxes.create(a, await theImage(), { ...o.create, name, gpu: o.gpu ?? "H100", timeoutMs: o.timeoutMs ?? 2 * 3_600_000 });
-      try {
-        await box.setTags(tagsOf(key, tags));
-        const p = await box.exec(["mkdir", "-p", root], { mode: "binary", timeoutMs: 60_000 });
-        await p.stdin.close();
-        if ((await p.wait()) !== 0) throw new Error(`could not make ${root}`);
-        await installPiRun(box, o.piRunPath);
-      } catch (e) {
-        await box.terminate().catch(() => {});
-        throw e;
-      }
-      return box;
+    /** The live box for `key` (set up), adopting one a previous run created, or a new one; concurrent calls share the work. */
+    ensure(key: string, tags: Record<string, string> = {}): Promise<RemoteBox> {
+      const pending = inflight.get(key);
+      if (pending) return pending;
+      const work = (async () => {
+        const a = await theApp();
+        const found = await live(a.appId, key);
+        if (found.length) {
+          const box = await settle(found);
+          await setup(box);
+          return box;
+        }
+        const name = `pi-box-${tagOf(key).slice(0, 12)}-${Date.now().toString(36)}`;
+        const mine = await sdk.sandboxes.create(a, await theImage(), { ...o.create, name, gpu: o.gpu ?? "H100", timeoutMs: o.timeoutMs ?? 2 * 3_600_000 });
+        try {
+          await mine.setTags({ ...tags, "pi-box": tagOf(key), "pi-box-key": key.slice(0, 63) });
+          // another creator (another process) may have raced this one: every creator settles on the same box
+          const box = await settle([mine, ...(await live(a.appId, key))]);
+          await setup(box);
+          return box;
+        } catch (e) {
+          await mine.terminate().catch(() => {});
+          throw e;
+        }
+      })().finally(() => inflight.delete(key));
+      inflight.set(key, work);
+      return work;
     },
     async get(sandboxId: string): Promise<RemoteBox | undefined> {
       try {

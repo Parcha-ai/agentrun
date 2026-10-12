@@ -6,7 +6,8 @@ import { mkdir, mkdtemp, rm, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { statSync } from "node:fs";
+import { chmodSync, statSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { ArtifactSync, installPiRun, modalGpuBoxes, RemoteEnv, remoteEnvs, type ModalGpuSdk, type RemoteBox, type RemoteProcess } from "../src/remote-env.ts";
 import { registerEnvCases } from "./_env-conformance.ts";
 
@@ -235,7 +236,7 @@ describe("ArtifactSync after a restart", () => {
 });
 
 /** A Modal SDK whose sandboxes are local boxes, with tags and a list by tag. */
-function fakeModal() {
+function fakeModal(createDelayMs = 0) {
   const boxes: (ReturnType<typeof localBox> & { tags: Record<string, string>; name: string; terminated: boolean })[] = [];
   const created: Record<string, unknown>[] = [];
   const sdk: ModalGpuSdk = {
@@ -244,6 +245,7 @@ function fakeModal() {
     sandboxes: {
       async create(_app, _image, params) {
         created.push(params);
+        if (createDelayMs) await sleep(createDelayMs);
         const b = Object.assign(localBox(`sb-${boxes.length + 1}`), { tags: {} as Record<string, string>, name: String(params.name), terminated: false });
         const box = Object.assign(b, { setTags: async (t: Record<string, string>) => { b.tags = t; }, terminate: async () => { b.terminated = true; b.end(137); } });
         boxes.push(box);
@@ -265,7 +267,7 @@ describe("modalGpuBoxes: one box per thread, found again by key", () => {
     const a = await boxes.ensure("teach-1:walk", { run: "r1" });
     assert.equal(m.created.length, 1);
     assert.partialDeepStrictEqual(m.created[0], { gpu: "H100", cpu: 8, timeoutMs: 7_200_000 });
-    assert.deepEqual(m.boxes[0]!.tags, { run: "r1", "pi-box": "teach-1:walk" });
+    assert.deepEqual(m.boxes[0]!.tags, { run: "r1", "pi-box": createHash("sha256").update("teach-1:walk").digest("hex").slice(0, 40), "pi-box-key": "teach-1:walk" });
     assert.ok(existsSync(ws) && existsSync(piRun), "the workspace is made and pi-run installed");
     const again = await boxes.ensure("teach-1:walk");
     assert.equal(again.sandboxId, a.sandboxId, "a rerun adopts the live box: no second H100");
@@ -315,6 +317,190 @@ describe("pi-run: one run per key on a box", () => {
       assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-spin`]).stdout.toString().trim(), "", "the other key still runs");
       await env.exec(`${piRun} spin -- true`, {}, context);
       await other;
+    });
+  });
+});
+
+describe("Greptile on #209: the findings, each pinned", () => {
+  it("a copy that cannot be written fails the flush (no unhandled error on the host)", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "home");
+      await mkdir(remote, { recursive: true });
+      await mkdir(local, { recursive: true });
+      await writeFile(join(remote, "a.npz"), "a");
+      chmodSync(local, 0o500);
+      try {
+        const sync = new ArtifactSync({ box: localBox(), remote, local });
+        await assert.rejects(sync.flush(), /EACCES|permission/i);
+        await sync.stop();
+      } finally {
+        chmodSync(local, 0o700);
+      }
+    });
+  });
+
+  it("a stdin close that never returns is bounded: the command times out, a flush fails in its deadline", async () => {
+    await withRoot(async (root) => {
+      const inner = localBox();
+      const stuck: RemoteBox = { sandboxId: "sb-stuck", poll: () => inner.poll(), exec: async (c, p) => { const r = await inner.exec(c, p); return { ...r, stdin: { writeBytes: r.stdin.writeBytes, close: () => new Promise(() => {}) } }; } };
+      const env = new RemoteEnv({ box: stuck, root });
+      const t0 = Date.now();
+      const r = await env.exec("true", { timeout: 0.5 }, context);
+      assert.equal(!r.ok && r.error.code, "timeout");
+      assert.ok(Date.now() - t0 < 10_000, `returned after ${Date.now() - t0} ms`);
+      await mkdir(join(root, "box"), { recursive: true });
+      const sync = new ArtifactSync({ box: stuck, remote: join(root, "box"), local: join(root, "home"), opTimeoutMs: 300 });
+      await assert.rejects(sync.flush());
+      await sync.stop();
+    });
+  });
+
+  it("an abort while the box is still starting the command: the command never runs on", async () => {
+    await withRoot(async (root) => {
+      const inner = localBox();
+      const slow: RemoteBox = { sandboxId: "sb-slowstart", poll: () => inner.poll(), exec: async (c, p) => { if (c.includes("pi-exec")) await sleep(600); return inner.exec(c, p); } };
+      const env = new RemoteEnv({ box: slow, root });
+      const tag = `pda-late-${process.pid}-${Date.now()}`;
+      const ac = new AbortController();
+      const pending = env.exec(`sleep 30 # ${tag}`, {}, withAbortSignal(ac.signal, context));
+      await sleep(100);
+      ac.abort();
+      const r = await pending;
+      assert.equal(!r.ok && r.error.code, "aborted");
+      await sleep(2_500);
+      assert.equal(spawnSync("pgrep", ["-f", tag]).stdout.toString().trim(), "", "the late start did not run on");
+    });
+  });
+
+  it("a box adopted after a crash between its creation and its setup is set up before it is handed out", async () => {
+    await withRoot(async (tmp) => {
+      const m = fakeModal();
+      const ws = join(tmp, "workspace"), piRun = join(tmp, "bin", "pi-run");
+      const app = await m.sdk.apps.fromName("x", { createIfMissing: true });
+      const half = await m.sdk.sandboxes.create(app, {}, { name: "half" });
+      await half.setTags({ "pi-box": createHash("sha256").update("t:walk").digest("hex").slice(0, 40) });
+      const boxes = modalGpuBoxes(m.sdk, { appName: "x", image: "im-1", root: ws, piRunPath: piRun });
+      const got = await boxes.ensure("t:walk");
+      assert.equal(got.sandboxId, half.sandboxId, "adopted, not a second box");
+      assert.ok(existsSync(ws) && existsSync(piRun), "and set up");
+    });
+  });
+
+  it("overlapping ensures of one key end on one box: in one process they share the work; across processes the losers end theirs", async () => {
+    await withRoot(async (tmp) => {
+      const m = fakeModal(150);
+      const opts = { appName: "x", image: "im-1", root: join(tmp, "ws"), piRunPath: join(tmp, "pi-run") };
+      const one = modalGpuBoxes(m.sdk, opts);
+      const [a, b] = await Promise.all([one.ensure("k"), one.ensure("k")]);
+      assert.equal(a.sandboxId, b.sandboxId);
+      assert.equal(m.created.length, 1, "one creation for two callers");
+      const m2 = fakeModal(150);
+      const [x, y] = await Promise.all([modalGpuBoxes(m2.sdk, opts).ensure("k2"), modalGpuBoxes(m2.sdk, opts).ensure("k2")]);
+      assert.equal(x.sandboxId, y.sandboxId, "both creators settle on the same box");
+      assert.equal(m2.boxes.filter((bx) => !bx.terminated).length, 1, "the duplicate H100 is ended");
+    });
+  });
+
+  it("long keys that share a prefix get their own boxes", async () => {
+    await withRoot(async (tmp) => {
+      const m = fakeModal();
+      const boxes = modalGpuBoxes(m.sdk, { appName: "x", image: "im-1", root: join(tmp, "ws"), piRunPath: join(tmp, "pi-run") });
+      const prefix = "teach-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:";
+      const walk = await boxes.ensure(prefix + "walk"), spin = await boxes.ensure(prefix + "spin");
+      assert.notEqual(walk.sandboxId, spin.sandboxId);
+    });
+  });
+
+  it("pi-run: two starts of one key at once leave exactly one running; keys that differ only in punctuation stay apart", async () => {
+    await withRoot(async (root) => {
+      const box = localBox();
+      const piRun = join(root, "bin", "pi-run");
+      await installPiRun(box, piRun);
+      const env = new RemoteEnv({ box, root });
+      const tag = `pda-pirun2-${process.pid}-${Date.now()}`;
+      const runs = [env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-a`, {}, context), env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-b`, {}, context)];
+      await sleep(2_500);
+      const running = (suffix: string) => spawnSync("pgrep", ["-f", `${tag}-${suffix}`]).stdout.toString().trim() !== "";
+      assert.equal([running("a"), running("b")].filter(Boolean).length, 1, "exactly one run of k"); // a run shows as a few processes (wrapper, pi-run, command)
+      const colon = env.exec(`${piRun} walk:a -- sh -c 'sleep 30' ${tag}-colon`, {}, context);
+      await sleep(800);
+      await env.exec(`${piRun} walk/a -- true`, {}, context);
+      assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-colon`]).stdout.toString().trim(), "", "walk/a did not stop walk:a");
+      await env.exec(`${piRun} k -- true`, {}, context);
+      await env.exec(`${piRun} walk:a -- true`, {}, context);
+      await Promise.all([...runs, colon]);
+    });
+  });
+
+  it("a symbolic link to a directory lists its entries; a name that starts with a dash is listed like any other", async () => {
+    await withRoot(async (root) => {
+      const env = new RemoteEnv({ box: localBox(), root });
+      await mkdir(join(root, "real"), { recursive: true });
+      await writeFile(join(root, "real", "a.txt"), "a");
+      await writeFile(join(root, "real", "-notes"), "dash");
+      symlinkSync("real", join(root, "linked"));
+      const list = await env.listDir("linked", context);
+      assert.deepEqual(list.ok && list.value.map((e) => e.name).sort(), ["-notes", "a.txt"]);
+      const reader = await env.openDirReader("linked", context);
+      assert.ok(reader.ok);
+      const names: string[] = [];
+      for (;;) { const page = await reader.value.next(1, context); assert.ok(page.ok); names.push(...page.value.entries.map((e) => e.name)); if (page.value.done) break; }
+      assert.deepEqual(names.sort(), ["-notes", "a.txt"]);
+    });
+  });
+
+  it("a file that changes while it is copied is not published; the settled version is", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "home");
+      await mkdir(remote, { recursive: true });
+      await writeFile(join(remote, "ckpt.json"), "v1");
+      const inner = localBox();
+      let meddled = false;
+      // the box rewrites the file right as the first copy reads it
+      const meddling: RemoteBox = { sandboxId: "sb-m", poll: () => inner.poll(), exec: async (c, p) => { if (!meddled && c.join(" ").includes("cat --")) { meddled = true; await sleep(20); await appendFile(join(remote, "ckpt.json"), "-and-more"); } return inner.exec(c, p); } };
+      const landed: string[] = [];
+      const sync = new ArtifactSync({ box: meddling, remote, local, onFile: (rel) => landed.push(rel) });
+      await sync.flush();
+      assert.deepEqual(landed, [], "the changing copy was dropped");
+      assert.equal(existsSync(join(local, "ckpt.json")), false);
+      await sync.flush();
+      assert.equal(readFileSync(join(local, "ckpt.json"), "utf8"), "v1-and-more");
+      await sync.stop();
+    });
+  });
+
+  it("spilled output goes to the box whole, through a file on the host, not memory", async () => {
+    await withRoot(async (root) => {
+      const env = new RemoteEnv({ box: localBox(), root });
+      const r = await env.exec("head -c 3000000 /dev/zero | tr '\\0' 'x'; echo", { spill: { afterBytes: 1000, afterLines: 100 } }, context);
+      assert.ok(r.ok && r.value.spillPath, "spilled");
+      const spilled = await env.fileInfo(r.ok ? r.value.spillPath! : "", context);
+      assert.equal(spilled.ok && spilled.value.size, 3_000_001);
+      assert.deepEqual(readdirSync(tmpdir()).filter((n) => n.startsWith("pi-remote-spill-")), [], "the host's temporary spill file is gone");
+    });
+  });
+});
+
+describe("pi-run's lock", () => {
+  it("pi-run takes the key's lock before it checks and records: a holder of the lock holds it back", async () => {
+    await withRoot(async (root) => {
+      const box = localBox();
+      const piRun = join(root, "bin", "pi-run");
+      await installPiRun(box, piRun);
+      const env = new RemoteEnv({ box, root });
+      const key = `lock-${process.pid}-${Date.now()}`;
+      const k = createHash("sha256").update(key).digest("hex").slice(0, 32);
+      await mkdir("/tmp/.pi-run", { recursive: true });
+      const holder = spawn("flock", [`/tmp/.pi-run/${k}.lock`, "sleep", "1.5"]);
+      const released = new Promise((r2) => holder.on("close", r2));
+      await sleep(200);
+      const t0 = Date.now();
+      // the command writes when it started: it must not start while the lock is held (the end of pi-run takes the lock too)
+      const r = await env.exec(`${piRun} ${key} -- sh -c 'date +%s%3N > started'`, {}, context);
+      assert.equal(r.ok && r.value.exitCode, 0);
+      const startedAt = Number(readFileSync(join(root, "started"), "utf8").trim());
+      assert.ok(startedAt - t0 >= 1_000, `the command started ${startedAt - t0} ms in, inside the other holder's lock`);
+      await released;
     });
   });
 });
