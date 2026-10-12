@@ -252,6 +252,8 @@ let callThreads = new Map<string, Thread[]>();
 
 /** The tool results the reader has open, by the call's id: the chat is redrawn on every agent event, and a result being read must not close under them. */
 const openTools = new Set<string>();
+/** The teach_skills calls that were opened for the reader once already. */
+const autoOpened = new Set<string>();
 
 function renderChat(): void {
   const list = $("chat");
@@ -319,6 +321,11 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       const showOutput = !echoed.has(item.id);
       const mine = scope === "" && item.name === "teach_skills" ? callThreads.get(item.id) ?? [] : [];
       const teach = mine.length > 0;
+      // The teaching call opens by itself the first time it has threads (they are the point of it); the reader can close it, and it stays closed.
+      if (teach && !autoOpened.has(key)) {
+        autoOpened.add(key);
+        openTools.add(key);
+      }
       const has = teach || hasBody(item, { showOutput });
       const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${has ? "" : " bare"}` }, summary) as HTMLDetailsElement;
       const fill = () => {
