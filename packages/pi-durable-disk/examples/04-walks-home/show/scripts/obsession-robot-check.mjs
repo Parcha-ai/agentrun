@@ -82,6 +82,7 @@ say("net", { online: false, reason: "no network and the ping failed" });
 say("brain", { event: "brain.decision", brain: "tab-local", answering: "the model in this tab", reason: "offline: the model in this tab is the only brain", confidence: null, decidedBy: "rule", ms: 0 });
 say("checkin", { phase: "done", head: 14, files: 3, changes: 5, ms: 1204 });
 say("homecoming", { phase: "fetched", prefetch: false, plan: { base: false, adapters: ["a.gguf"], bytes: 18400000 }, fetched_bytes: 18400000, fetch_ms: 1380 });
+say("body-mismatch", { previous_body_sha: "aaaa1111", body_sha: "bbbb2222", skills_not_fitting: ["walk", "sprint", "spin"], skills_fitting: ["wave"] });
 say("tools", { tools: [{ id: "c1", name: "write", args: JSON.stringify({ path: "hi.js" }), output: "Successfully wrote to hi.js", status: "done" }] });
 let n = 0; setInterval(() => { n++; fetch("/hit?n=" + n); }, 500);
 </script>`;
@@ -131,6 +132,7 @@ let n = 0; setInterval(() => { n++; fetch("/hit?n=" + n); }, 500);
         r = await snap();
       }
       expect("the tab opened by window.open: its net, decision, check-in, homecoming and tool rows reached the stage by postMessage, from its origin", r.net === "OFFLINE" && /the model in this tab/.test(r.side) && /Checked in: 3 files written offline came home, 5 changes, in 1\.2 s/.test(r.side) && /Came home: 18\.4 MB on the wire/.test(r.side) && /write hi\.js/.test(r.strip ?? ""), r);
+      expect("the tab's typed body-mismatch starts the relearn card: the skills that stopped fitting, no GPU or time claimed", /3 skills no longer fit it: walk, sprint, spin/.test(r.side) && !/GPUs/.test(r.side), r.side);
       expect("the tab was loaded once", loads === 1, loads);
 
       // A forged message: another origin (an srcdoc iframe is origin "null") saying the tab is online is not believed.

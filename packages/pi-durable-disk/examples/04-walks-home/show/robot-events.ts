@@ -1,7 +1,7 @@
 // The tab's own events for the robot demo beats, as the stage reads them. Pure. D3's 03 page tells the stage what happens in three ways: a DOM event `walkshome:<type>` on the page, the same
 // as a message `{source: "walks-home-tab", type, run, ...detail}` to the stage that opened it, and `brain` entries in the transcript (chat-items.ts reads those). The stage never guesses:
 // a field an event did not carry is null, a field of the wrong type is null, and an event that lacks what it is about is nothing.
-import type { Checkin, Homecoming, Net, Routing, ToolRow } from "./types.ts";
+import type { Checkin, Homecoming, Net, Routing, Stumble, ToolRow } from "./types.ts";
 
 type Bag = Record<string, unknown>;
 const bag = (v: unknown): Bag | null => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Bag) : null);
@@ -33,6 +33,16 @@ export function checkinFromData(d: unknown): Checkin | null {
   const o = bag(d);
   if (o === null || (o.phase !== "start" && o.phase !== "done" && o.phase !== "failed")) return null;
   return { phase: o.phase, head: idStr(o.head), files: nonNeg(o.files), changes: nonNeg(o.changes), ms: nonNeg(o.ms), message: str(o.message), code: str(o.code), resumed: o.resumed === true };
+}
+
+/** The tab's `body-mismatch`: the body's new hash and the skills that no longer fit it. An event that names no body or no skill that stopped fitting is nothing. */
+export function stumbleFromData(d: unknown): Stumble | null {
+  const o = bag(d);
+  if (o === null) return null;
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : []);
+  const bodySha = str(o.body_sha);
+  const notFitting = list(o.skills_not_fitting);
+  return bodySha === null || notFitting.length === 0 ? null : { previousSha: str(o.previous_body_sha), bodySha, notFitting, fitting: list(o.skills_fitting) };
 }
 
 /** One routing decision, from the `brain.decision` event or the transcript entry's data (the same fields). A decision with no reason has nothing to put on a card. */

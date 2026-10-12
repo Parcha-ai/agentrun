@@ -208,3 +208,14 @@ test("the pinned facts: the latest net, check-in and homecoming survive any numb
   assert.equal(again.checkin?.phase, "done");
   assert.equal(again.tools[0]!.id, "c299");
 });
+
+test("a stumble outlives a reload and the ring, like the other tab facts", () => {
+  const store = (() => { let v: string | null = null; return { get: () => v, set: (x: string) => { v = x; } }; })();
+  const local = new LocalEvents(3, store);
+  let s = emptyState();
+  s = local.apply(s, { t: "stumble", at: 1, stumble: { previousSha: "a", bodySha: "b", notFitting: ["walk"], fitting: [] } });
+  for (let i = 0; i < 20; i++) s = local.apply(s, { t: "tools", at: 10 + i, tools: [] });
+  const reloaded = new LocalEvents(3, store);
+  reloaded.restore();
+  assert.equal(reloaded.replay(emptyState()).stumble?.bodySha, "b");
+});

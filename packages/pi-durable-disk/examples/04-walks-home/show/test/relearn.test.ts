@@ -169,3 +169,58 @@ test("a total the round left null is filled from the skill files only when every
   const all = relearnSummary(eight, HOME, round)!;
   assert.deepEqual([all.passedS, all.homeS, all.cpuS], [50, 60, 8 * 11600], "all 8 present: the files fill the nulls");
 });
+
+// The stumble: the tab's typed `body-mismatch` event starts the relearn card, before any skill file for the new body exists.
+import { stumbleFromData } from "../robot-events.ts";
+import { tabEventsFrom } from "../page/tab-link.ts";
+import { reduce } from "../reduce.ts";
+import { emptyState } from "../reduce.ts";
+
+const MISMATCH = { previous_body_sha: HOME, body_sha: SPIDER, skills_not_fitting: ["walk", "sprint", "spin"], skills_fitting: ["wave"] };
+
+test("body-mismatch: the typed event is parsed; a field it did not carry is null, and an event with nothing that stopped fitting is nothing", () => {
+  assert.deepEqual(stumbleFromData(MISMATCH), { previousSha: HOME, bodySha: SPIDER, notFitting: ["walk", "sprint", "spin"], fitting: ["wave"] });
+  assert.deepEqual(stumbleFromData({ body_sha: SPIDER, skills_not_fitting: ["walk"] }), { previousSha: null, bodySha: SPIDER, notFitting: ["walk"], fitting: [] });
+  assert.equal(stumbleFromData({ ...MISMATCH, skills_not_fitting: [] }), null);
+  assert.equal(stumbleFromData({ ...MISMATCH, body_sha: undefined }), null);
+  assert.equal(stumbleFromData({ ...MISMATCH, skills_not_fitting: "walk" }), null);
+});
+
+test("body-mismatch: a tab message becomes a stumble event that the state keeps", () => {
+  const events = tabEventsFrom({ type: "body-mismatch", run: null, detail: MISMATCH }, 7);
+  assert.deepEqual(events.map((e) => e.t), ["stumble"]);
+  const s = reduce(emptyState(), events[0]!);
+  assert.deepEqual([s.stumble?.bodySha, s.stumble?.notFitting.length, s.stumble?.at], [SPIDER, 3, 7]);
+  assert.deepEqual(tabEventsFrom({ type: "body-mismatch", run: null, detail: { body_sha: SPIDER } }, 8), []);
+});
+
+test("the relearn card starts on the stumble: no skill file for the new body yet, and it names the skills that stopped fitting and claims no GPU", () => {
+  const r = relearnSummary([], HOME, null, stumbleFromData(MISMATCH))!;
+  assert.equal(r.relearning, true);
+  assert.deepEqual(r.stumbled, ["walk", "sprint", "spin"]);
+  const html = relearnHtml(r);
+  assert.match(html, /body changed/i);
+  assert.match(html, /3 skills no longer fit/);
+  assert.match(html, /walk, sprint, spin/);
+  assert.doesNotMatch(html, /GPUs/, "the event says nothing about GPUs");
+  assert.equal(relearnSummary([], HOME, null, null), null, "without the event and without skills there is no card");
+});
+
+test("once the new body's skills arrive the card is the learning card again; a round of an older body does not replace the stumble", () => {
+  const threads = threadsFor(2, () => ({ status: "training", passed_at: null }));
+  const learning = relearnSummary(threads, HOME, null, stumbleFromData(MISMATCH))!;
+  assert.equal(learning.stumbled, null);
+  assert.equal(learning.gpus, 2);
+  const oldRound = { bodySha: "aaaa", bodyName: null, previousSha: null, relearn: false, gpus: 8, allPassedS: 50, allDoneS: 60, cpuS: null, cpuCores: null, estimated: [], measured: [] };
+  assert.deepEqual(relearnSummary([], HOME, oldRound, stumbleFromData(MISMATCH))!.stumbled, ["walk", "sprint", "spin"]);
+});
+
+import { stumbleNote } from "../robot-view.ts";
+
+test("the stumble is said once as a caption, with the skills that stopped fitting and nothing the event did not carry", () => {
+  const n = stumbleNote(stumbleFromData(MISMATCH)!, 12)!;
+  assert.match(n.text, /body changed/i);
+  assert.match(n.text, /3 skills/);
+  assert.doesNotMatch(n.text, /GPU|second|\d+ s\b/);
+  assert.equal(n.at, 12);
+});

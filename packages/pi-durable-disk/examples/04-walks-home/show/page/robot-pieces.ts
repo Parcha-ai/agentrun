@@ -1,7 +1,7 @@
 // The robot demo's stage pieces, mounted by any stage page that has their elements (obsession/page and the v2 page): the net pill, the decision card, the check-in and homecoming lines, the
 // robot-change card and the tool strip (the agent's tab's own events: robot-view.ts), the tab link (window.open, page/tab-link.ts) and the eight tiles with the one robot (threads-view.ts,
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
-import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../robot-view.ts";
+import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, stumbleNote, toolStripHtml } from "../robot-view.ts";
 import { relearnHtml, relearnSummary } from "../relearn.ts";
 import { LandingDriver, threadsHtml } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
@@ -108,7 +108,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   function renderSide(state: ShowState): void {
     const net = netBadge(state.net);
     const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
-    const relearn = relearnHtml(relearnSummary(state.threads, state.robotBody?.sha ?? null, state.round));
+    const relearn = relearnHtml(relearnSummary(state.threads, state.robotBody?.sha ?? null, state.round, state.stumble));
     const card = relearn + changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
     const tools = toolStripHtml(state.tools);
     const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
@@ -145,6 +145,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   /** The captions of the tab's own events, each said once: a net change, a finished check-in, a homecoming's bytes. */
   function notes(state: ShowState): void {
     if (state.net && once(`net|${state.net.at}|${state.net.online}`)) addNotes(netNote(state.net, feed.captionNow()));
+    if (state.stumble && once(`stumble|${state.stumble.at}|${state.stumble.bodySha}`)) addNotes(stumbleNote(state.stumble, feed.captionNow()));
     if (state.checkin && once(`checkin|${state.checkin.at}|${state.checkin.phase}`)) {
       const n = checkinNote(state.checkin, feed.captionNow());
       if (n) addNotes(n);
