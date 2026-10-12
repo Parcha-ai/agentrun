@@ -12,7 +12,9 @@ import { agentRegistry, rootAgent } from "../agent.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING, type BrainModel } from "../tab/brain-provider.ts";
 import { FilesEnv, memoryFs } from "../tab/files-env.ts";
 import { lockedToolChat, lockGrammar, parseNative, renderNative } from "../tab/native-tools.ts";
-import { servingView, toNativeTools } from "../tab/native-turn.ts";
+import { nativeExchanges, servingView, toNativeTools } from "../tab/native-turn.ts";
+import { stateLine } from "../robot-state-line.ts";
+import { applyRobotTool, initialRobot, type Design } from "../robot-model.ts";
 import { PhoneModel } from "../tab/phone-model.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
 import { parseRobot } from "../robot-model.ts";
@@ -136,7 +138,7 @@ function fakeLlm(o: { restore?: (b: Blob) => Promise<{ tokens: number; bytes: nu
   return { llm, calls };
 }
 
-const PREFIX = rendered[0]!.prompt.slice(0, rendered[0]!.prompt.lastIndexOf("<|im_start|>user\n") + "<|im_start|>user\n".length);
+const PREFIX = rendered[0]!.prompt.slice(0, rendered[0]!.prompt.indexOf("<|im_start|>user\n")); // the system turn, through its <|im_end|>\n
 const sha = async (s: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
 
 async function withFetch<T>(files: Record<string, string | Uint8Array>, run: () => Promise<T>): Promise<T> {
@@ -145,12 +147,13 @@ async function withFetch<T>(files: Record<string, string | Uint8Array>, run: () 
   try { return await run(); } finally { globalThis.fetch = real; }
 }
 
-test("the warm-up reads the prefix every turn shares, ending at the user's turn, and generates nothing", async () => {
+test("the warm-up reads the prefix every turn shares, the system turn, and generates nothing", async () => {
   const { llm, calls } = fakeLlm();
   const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v3-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 });
   const warm = await model.warm(serving.system, serving.tools);
   assert.equal(calls.complete.length, 1);
-  assert.equal(calls.complete[0]!.prompt, PREFIX, "llama-server's own rendering, up to and including <|im_start|>user\\n");
+  assert.equal(calls.complete[0]!.prompt, PREFIX, "llama-server's own rendering of the system turn");
+  assert.ok(PREFIX.endsWith("<|im_end|>\n") && rendered.every((c) => c.prompt.startsWith(PREFIX)), "every turn's prompt starts with it, whatever follows");
   assert.equal(calls.complete[0]!.maxTokens, 0);
   assert.equal(warm.restored, undefined);
 });
@@ -187,4 +190,45 @@ test("the phone model passes the parts' manifest to the load, and the tools as t
   await withFetch({ "https://p.example/m/robot-v3.parts.json": JSON.stringify({ parts }) }, () => model.load());
   assert.deepEqual(calls.loads[0]!.parts, parts);
   assert.deepEqual(toNativeTools(serving.tools.map((t) => ({ name: t.function.name, description: t.function.description, parameters: t.function.parameters }))), serving.tools, "the registry's view of the serving tools converts back to them");
+});
+
+test("the state line is D1's, byte for byte: a renamed angry spider painted black, three skills home", () => {
+  const drawn: Design = { version: 1, name: "quadruped", legDof: 3, torso: { length: 0.5, width: 0.22, height: 0.1 }, legs: [{ x: 0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }, { x: -0.8, thigh: 0.2, shin: 0.2, radius: 0.02 }] };
+  let r = initialRobot(drawn);
+  for (const [tool, args] of [["morph", { preset: "spider" }], ["set_color", { part: "all", color: "black" }], ["set_shape", { part: "torso", shape: "round" }], ["set_shape", { part: "legs", shape: "round" }], ["set_face", { face: "angry" }], ["rename", { name: "Rex" }]] as const) {
+    const out = applyRobotTool(r, tool, args as Record<string, unknown>, { skills: {} });
+    assert.ok(out.state, `${tool}: ${out.text}`);
+    r = out.state!;
+  }
+  assert.equal(stateLine(r, ["wave", "walk", "spin"]), "[Robot now: named Rex; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing nothing; skills home: walk, spin, wave.]", "D1's literal example (no default named: doing nothing)");
+  assert.match(stateLine(r, ["walk"], "walk"), /doing walk; skills home: walk\.\]$/, "with skills home, the manifest's default is what it does");
+  assert.match(stateLine(initialRobot(drawn), [], "walk"), /^\[Robot now: named quadruped; body as drawn; 4 legs; colors torso default, legs default; .*doing nothing; skills home: none yet\.\]$/, "nothing home: doing nothing");
+});
+
+test("the exchanges window: earlier exchanges in the model's format, the state line as the assistant's message, then the user; the oldest dropped first", () => {
+  const p = BRAIN_PROVIDER;
+  const call = (id: string, name: string, args: object) => ({ role: "assistant", provider: p, content: [{ type: "toolCall", id, name, arguments: args }] });
+  const result = (id: string, text: string) => ({ role: "toolResult", toolCallId: id, toolName: "x", content: [{ type: "text", text }] });
+  const reply = (text: string) => ({ role: "assistant", provider: p, content: [{ type: "thinking", thinking: "hidden" }, { type: "text", text }] });
+  const user = (text: string) => ({ role: "user", content: text });
+  const transcript = [
+    { role: "system", content: "", toolsAdded: serving.tools.map((t) => ({ name: t.function.name, description: t.function.description, parameters: t.function.parameters })) },
+    user("Ok paint it yellow"), call("h0_0", "set_color", { part: "all", color: "yellow" }), result("h0_0", "The whole robot is now yellow. Looks only: the walking brain still fits."), reply("Done! It's yellow now."),
+    user("now make it a spider"), call("h1_0", "morph", { preset: "spider" }), result("h1_0", "The robot is now a spider. This changes the body: the walking brain no longer fits, so the robot will stumble until it is retrained."), reply("Done! It's a spider now."),
+    user("What color is the robot now?"),
+  ];
+  const line = "[Robot now: named Rex; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing nothing; skills home: walk, spin, wave.]";
+  const all = nativeExchanges(transcript, { provider: p, mode: "none", system: serving.system, stateLine: line });
+  assert.deepEqual(all.messages.map((m) => m.role), ["system", "user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant", "assistant", "user"], "D1's literal example, message for message");
+  assert.deepEqual(all.messages[2], { role: "assistant", content: "", tool_calls: [{ id: "h0_0", type: "function", function: { name: "set_color", arguments: '{"part":"all","color":"yellow"}' } }] });
+  assert.deepEqual(all.messages[4], { role: "assistant", content: "Done! It's yellow now." }, "the final reply, thinking left out");
+  assert.deepEqual(all.messages[9], { role: "assistant", content: line });
+  assert.equal(all.steps, 0);
+  const rendered = renderNative(template, all.messages, serving.tools, { enable_thinking: false });
+  assert.ok(rendered.startsWith(PREFIX), "the warm prefix still leads");
+  let calls = 0;
+  const two = nativeExchanges(transcript, { provider: p, mode: "none", system: serving.system, stateLine: line, fits: (m) => { calls++; return m.filter((x) => x.role === "user").length <= 2; } });
+  assert.deepEqual(two.messages.filter((m) => m.role === "user").map((m) => m.content), ["now make it a spider", "What color is the robot now?"], "the oldest exchange dropped, whole");
+  assert.equal(two.dropped, 1);
+  assert.ok(calls >= 2);
 });

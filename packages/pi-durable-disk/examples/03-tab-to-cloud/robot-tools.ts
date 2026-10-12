@@ -46,6 +46,11 @@ async function load(env: Env, context: Ctx): Promise<RobotState | { problem: str
   return initialRobot(DRAWN_DEFAULT);
 }
 
+/** The robot as it is now: its file, or the body the user drew before the first edit (what a tool would start from). */
+export async function currentRobot(env: Env, context: Ctx): Promise<RobotState | { problem: string }> {
+  return load(env, context);
+}
+
 /** The skills this robot has: from home/skills.json, else walk when a single policy came home, else none. */
 export async function loadSkills(env: Env, context: Ctx): Promise<Record<string, { label?: string; command?: number }>> {
   const have = await env.readTextFile(SKILLS_FILE, context);

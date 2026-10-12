@@ -25,7 +25,8 @@ import { BRAIN_CHECKIN, BRAIN_DECISION } from "./brain-kinds.ts";
 import { brainEvent, brainRouter, type JudgeRunner } from "../brain-router.ts";
 import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
 import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckinPayload, forgetCheckout, loadCheckinPayload, readCheckout, saveCheckinPayload, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
-import type { ModelHost, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
+import type { ModelHost, ToolChatMessage, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
+import { stateLine } from "../robot-state-line.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
@@ -37,7 +38,7 @@ import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent } from "../agent.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
-import { ROBOT_TOOLS } from "../robot-tools.ts";
+import { currentRobot, loadSkills, ROBOT_TOOLS, SKILLS_FILE } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { narrowEnum, toNativeTools } from "./native-turn.ts";
 import { creatureActivity } from "./creature-activity.ts";
@@ -962,7 +963,18 @@ async function startPhone(): Promise<void> {
 }
 
 /** Load the model, make it the conversation's brain with the robot's tools, read the system prompt and the tools once; then the composer opens. */
+/** The robot's state line (robot-state-line.ts) from its file and the skills that came home, as the window shows it before the user's turn. */
+async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
+  const robot = await currentRobot(runtime.env as never, ctx);
+  if ("problem" in robot) return undefined;
+  const manifest = await runtime.env.readTextFile(SKILLS_FILE, ctx);
+  let defaultSkill: string | undefined;
+  try { if (manifest.ok) defaultSkill = (JSON.parse(manifest.value) as { default?: unknown }).default as string | undefined; } catch { /* no default named */ }
+  return stateLine(robot, Object.keys(await loadSkills(runtime.env as never, ctx)), typeof defaultSkill === "string" ? defaultSkill : undefined);
+}
+
 async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
+  let robotNow: string | undefined;
   const params = new URLSearchParams(location.search);
   const marks = state.phone!.marks;
   // ?compat=1, a desktop check of the iPhone's path up to iOS 26: without JSPI wllama takes its compat build (Asyncify). ?mem64=0, Safari 27's: JSPI but no memory64.
@@ -1006,7 +1018,11 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   await step("loading the model", () => model.load());
   state.phone!.log.push(`model read in ${partReads.count} reads, the largest ${(partReads.largest / 1e6).toFixed(1)} MB`);
   marks.loadMs = Math.round(performance.now() - t);
-  runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v3 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), { ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result" }));
+  runtime.models.setProvider(brainProvider(model, brainModel(PHONE_MODEL_ID, "Qwen3.5-0.8B robot v3 (D1's fine-tune)", Number(params.get("ctx")) || 2048, 200), {
+    ...DEFAULT_TOOL_DECODING, mode: "native", callTokens: Math.ceil((budget * 2) / 3), answerTokens: Math.floor(budget / 3), system: serving.system, refine, closing: params.get("closing") === "model" ? "model" : "tool-result",
+    // D1's window T7: the earlier exchanges, the robot's state line, then the user's turn; ?window=task: the current task only (the model forgets earlier turns)
+    ...(params.get("window") === "task" ? {} : { window: "exchanges" as const, prepare: async () => { robotNow = await phoneStateLine(runtime); }, stateLine: () => robotNow, fits: (m: ToolChatMessage[], t: ToolChatTool[]) => model.fits(m, t) }),
+  }));
   const byName = new Map(runtime.registry.snapshot().tools().map((r) => [r.tool.name, r.tool]));
   const tools = serving.tools.map((s) => byName.get(s.function.name)).filter((r): r is NonNullable<typeof r> => r !== undefined); // in the serving file's order
   const agent = await runtime.root.agent(ctx);
