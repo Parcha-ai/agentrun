@@ -412,6 +412,8 @@ test("held, lease expired, holder running: STONITH (status, stop), revoke, start
   const r = await ensureRunning(REF, host, opts());
   assert.ok(r.action === "started" && r.reason === "lease-expired");
   assert.equal(r.stonith?.outcome, "stopped");
+  // The result says which heartbeat the lease was judged by and how stale it was (the rig's clock is fixed, so both are exact).
+  assert.deepEqual(r.heartbeat, { at: ago(91_000), ageMs: 91_000 });
   assert.deepEqual(host.stops, [running().holder]);
   assert.deepEqual(control.ops(), ["getObject", "listDelegations", "getMark", "host.status", "host.stop", "revokeDelegation", "addUser", "putMark", "host.start"]);
 });
