@@ -127,6 +127,8 @@ let brainFits = true;
 /** The skills that came home (home/skills.json), the one the creature is doing, and one asked for before the manifest arrived. */
 let skills: SkillManifest | null = null;
 let skillNow: string | null = null;
+/** The skill the agent chose last (creature/robot.json's `skill`), while the manifest has it: what the robot is asked to be doing. A policy that lands on the older single-policy paths does not take it over. */
+let agentSkill: string | null = null;
 let wantedSkill: string | null = null;
 
 function toast(text: string) {
@@ -398,6 +400,7 @@ async function applyRobot(text: string) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
+  agentSkill = robot.skill ?? null;
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
   else if (!robot.skill && skills && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
@@ -649,6 +652,12 @@ async function loadPolicyText(text: string, name: string) {
  */
 async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json', kind: 'checkpoint' | 'final' = 'final') {
   economy.wake(performance.now());
+  // The agent chose a skill and the manifest has it: a policy that lands later on the older single-policy paths (the trainer's final home/policy.json, the live checkpoint stream) is another skill's or an
+  // earlier version's, and installing it would end the skill that was asked for (the robot stood still where spin had passed). The choice stands until the agent makes another; a deliberate load (`message`) still wins.
+  if (via === 'watch' && agentSkill && skills?.skills[agentSkill]) {
+    post('policy-held', { name, via, kind, skill: agentSkill, reason: `the agent chose ${agentSkill}: it keeps running until the agent chooses another` });
+    return;
+  }
   const arrivedAt = performance.now();
   // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
   if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
