@@ -94,6 +94,8 @@ interface App {
   /** The first stroke (or applied design) has been announced to the stage, which drops its "draw a creature" prompt. */
   drawStarted: boolean;
   clean: boolean;
+  /** ?hero=1: the robot as the hero of the pane it is embedded in (render.ts setHero): no chrome on it, a quiet label, framed to fit, standing still with no skills. */
+  hero: boolean;
   phase: 'draw' | 'watch';
   offline: boolean;
   /** The live rebuild and the delayed save of a sketch, in order. */
@@ -264,14 +266,14 @@ function startEpisode2(params: URLSearchParams) {
 function updateLabel() {
   const el = $('stateLabel');
   el.dataset.state = app.training.state;
-  el.textContent = app.policy && !brainFits ? MISMATCH_LABEL : app.training.label(app.policyName);
+  el.textContent = app.policy && !brainFits ? MISMATCH_LABEL : app.hero && app.training.state === 'untrained' ? 'NO SKILLS YET' : app.training.label(app.policyName); // the hero look never says "random moves": with no skills the robot stands
   document.body.dataset.fit = app.policy && !brainFits ? 'mismatch' : 'fits';
   document.body.dataset.brain = app.training.state; // the page's CSS keys what is shown on it (the big distance only once trained, the learning line)
 }
 
 /** With no policy and no demo stand-in the creature has a brain that has learned nothing: random actions, from the seed each time one is attached. */
 function syncBrain() {
-  app.sim.attachBrain(!app.policy && app.training.state === 'untrained' ? app.brain : null);
+  app.sim.attachBrain(!app.hero && !app.policy && app.training.state === 'untrained' ? app.brain : null);
 }
 
 /** The policy is gone or was never trained: the label, the facts and the final flag go with it. */
@@ -294,6 +296,14 @@ async function saveDesign(design: Design, opts: { robot?: boolean } = {}) {
     post('design-request', { design, mjcf_sha256: app.bodySha });
     showError('The agent moved to another machine: this design is only in this tab, and the request to save it was sent to the agent.');
   }
+}
+
+/** Frame the whole robot in the pane: a sphere around its footprint and standing height (render.ts frameRobot). */
+function heroFrame(design: Design) {
+  const reach = Math.max(...design.legs.map((l) => l.thigh + l.shin));
+  const stand = reach * 0.9 + design.torso.height;
+  const radius = Math.hypot(design.torso.length / 2 + reach * 0.3, Math.max(stand, design.torso.width) / 2);
+  app.view.frameRobot(radius, stand / 2);
 }
 
 async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?: boolean; borrow?: boolean; robot?: boolean } = {}) {
@@ -334,6 +344,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   }
   applyCommand();
   renderPairs();
+  if (app.hero) heroFrame(design);
   await publishFit(previousBodySha); // every way the body changes (the agent's edit, a preset, the drawing) ends here
 }
 
@@ -758,7 +769,7 @@ function showDistance() {
 
 /** "Your drawing", small, in a corner of the creature's pane for the rest of the take. */
 function showThumb() {
-  if (app.clean) drawThumbnail($('thumbCanvas') as HTMLCanvasElement, app.sketcher.get());
+  if (app.clean && !app.hero) drawThumbnail($('thumbCanvas') as HTMLCanvasElement, app.sketcher.get());
 }
 
 async function setPhase(phase: 'draw' | 'watch') {
@@ -766,7 +777,7 @@ async function setPhase(phase: 'draw' | 'watch') {
   app.phase = phase;
   document.body.classList.toggle('phase-draw', phase === 'draw');
   document.body.classList.toggle('phase-watch', phase === 'watch');
-  app.view.setMarkers(app.clean && phase === 'watch'); // the start post and trail wait for the creature to have the pane
+  app.view.setMarkers(app.clean && !app.hero && phase === 'watch'); // the start post and trail wait for the creature to have the pane (never in the hero look)
   if (phase === 'watch') showThumb();
   post('phase', { phase });
 }
@@ -828,7 +839,7 @@ function tick(now: number) {
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
   app.last = now;
   const t0 = performance.now();
-  if (app.running) {
+  if (app.running && !(app.hero && !app.policy)) { // the hero look with no policy stands in its pose: no physics until a skill plays
     app.acc += dt;
     let n = 0;
     while (app.acc >= CONTROL_DT && n < MAX_STEPS_PER_FRAME) {
@@ -881,8 +892,10 @@ async function main() {
     const store = await CreatureStore.open(sql, backends, { memoryWritable: storageMode === 'browser' });
     const params = new URLSearchParams(location.search);
     const clean = params.has('clean');
+    const hero = params.has('hero') && !params.has('debug'); // ?debug=1 keeps the old overlays (the drawing, the start post, the meter) on a hero page
     const phase: 'draw' | 'watch' = params.get('phase') === 'watch' ? 'watch' : 'draw';
     document.body.classList.toggle('clean', clean);
+    document.body.classList.toggle('hero', hero);
     document.body.classList.toggle('banner', params.has('banner')); // the page around the tab shows the home banner and the final label itself
     document.body.classList.add(`phase-${phase}`);
     // The take starts from a bare torso on stub legs, so a still taken part way through the drawing is plainly unfinished (?start=default: the default body, for the older checks).
@@ -896,7 +909,7 @@ async function main() {
       policy: null, policyName: 'untrained', running: true, acc: 0, last: performance.now(),
       fallen: false, recovering: null, placement: { kind: 'tab', label: 'this tab' }, arrival: null, lastArrival: null, lastMode: 'walk', stats: new Stats(), expectReset: false,
       training: new TrainingState(),
-      brain: new UntrainedBrain(), ticker: new Ticker(1), drawStarted: false, clean, phase, offline: !navigator.onLine,
+      brain: new UntrainedBrain(), ticker: new Ticker(1), drawStarted: false, clean, hero, phase, offline: !navigator.onLine,
       draft: new DraftCommitter({
         build: (save) => buildCreature(app.sketcher.get(), true, { save }),
         save: () => saveDesign(app.sketcher.get()),
@@ -904,7 +917,8 @@ async function main() {
       }),
     };
     app.view.setSim(app.sim);
-    if (clean) { app.view.setPreset('close'); app.view.setMarkers(phase === 'watch'); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
+    if (hero) { app.view.setHero(true); heroFrame(design); }
+    if (clean) { if (!hero) app.view.setPreset('close'); app.view.setMarkers(phase === 'watch' && !hero); resetOrigin(); if (phase === 'watch') showThumb(); } // ?phase=watch starts with the drawing already in the corner
     if (params.has('dummy')) await useDummy(); // the old demo stand-in, opt in only: the creature is untrained unless a trained policy arrives
     else { applyCommand(); syncBrain(); } // no policy yet: the untrained brain from the first frame
     updateLabel();

@@ -61,7 +61,7 @@ try {
     ok("a phone: the chat keeps the width of the screen and the robot sits under it", r.chat.w >= 340 && r.pane.w >= 340 && r.pane.h >= 190 && r.pane.top >= r.chatBottom - 2, r);
     await page.screenshot(join(shots, "pane-phone.png"));
   }
-  await until(`document.getElementById("creature").contentWindow.__walks.state().policy !== null && document.getElementById("creature").contentWindow.__walks.state().policy !== undefined`, 60_000).catch(() => undefined);
+  await until(`/trained/.test(document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent)`, 90_000); // the policy came through the page's workspace and the creature says it is trained
   console.log(`  creature state: ${JSON.stringify(await walks<unknown>("w.state()")).slice(0, 220)}`);
   ok("it read home/policy.json through the page's workspace: a trained policy drives the creature", /trained/.test(await ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`)), await ev(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`));
   await page.screenshot(join(shots, "pane-1-start.png"));

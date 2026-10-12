@@ -938,7 +938,7 @@ function startRobotPane(): void {
     }
   });
   frame.addEventListener("load", () => reply({ type: "set-placement", kind: "tab", label: "this browser" }));
-  frame.src = "/tab/?clean=1&banner=1&phase=watch";
+  frame.src = "/tab/?clean=1&banner=1&phase=watch&hero=1";
 }
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
