@@ -167,6 +167,21 @@ export interface DemoServerOptions {
 /** Who asked for a move: the user (a click), the agent (its tool), or the server's placement question. */
 type Who = { by: "user" } | { by: "agent"; reason: string } | { by: "placement"; reason: string; probability?: number };
 
+/**
+ * The server's wait at home after a placement move: the home check, then the agent's closing turn. It is set before the check starts and cleared when the wait is over, and while it is set a new
+ * request is queued (behind the earlier queued ones) instead of placed, so nothing starts a move that would release the pipe the check reads through or overtake an older request.
+ */
+interface HomeWait {
+  /** The closing turn's message has gone: only then does the writer's run_end end the wait (an earlier turn's end must not). */
+  armed: boolean;
+  /** The bound on the closing turn, started when its message goes. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+  /** The wait is over (the turn ended, the bound passed, or it was cancelled). */
+  finish: () => void;
+  /** The server is closing: the wait ends without replaying anything. */
+  cancelled: boolean;
+}
+
 interface RunState {
   readonly ref: RunRef;
   readonly secret: string;
@@ -197,7 +212,7 @@ interface RunState {
   /** The task a placed run is working on; `sent` once its message reached the host that works on it (earlier turns' events do not end it). */
   placedTask: { text: string; sent: boolean } | undefined;
   /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
-  homeTurn: { done: () => void } | undefined;
+  homeTurn: HomeWait | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
 }
@@ -588,6 +603,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const goingHome = home !== undefined && home !== "" && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id;
     void flushPending(state, goingHome ? "direct" : "all");
     if (home && goingHome) {
+      // The wait starts before the check, so a request that arrives while the check runs, or during the closing turn, is queued too.
+      let finish!: () => void;
+      const ended = new Promise<void>((resolve) => (finish = resolve));
+      const wait: HomeWait = { armed: false, timer: undefined, finish, cancelled: false };
+      state.homeTurn = wait;
       void (async () => {
         // What the work was for, checked in code: the agent words this fact, it does not judge it.
         let checked = "";
@@ -597,21 +617,22 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason });
           checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
         }
-        // Registered before the message goes, so a turn that ends at once is not missed; bounded, so a browser that never ends it does not hold the queue forever.
-        const ended = new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            log("placement.home-turn-timeout", { run: state.ref.id, switchId });
-            resolve();
-          }, options.homeTurnMs ?? 60_000);
-          state.homeTurn = { done: () => (clearTimeout(timer), resolve()) };
-        });
+        if (wait.cancelled) return;
+        // Bounded, so a browser that never ends its turn does not hold the queue forever; armed before the message goes, so a turn that ends at once is not missed.
+        wait.timer = setTimeout(() => {
+          log("placement.home-turn-timeout", { run: state.ref.id, switchId });
+          finish();
+        }, options.homeTurnMs ?? 60_000);
+        wait.armed = true;
         await deliverSubmit(state, `${SERVER_TURN}${home}${checked}`, `server-${switchId}`);
         await ended;
       })()
         .catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }))
         .finally(() => {
-          state.homeTurn = undefined;
-          void flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+          clearTimeout(wait.timer);
+          if (state.homeTurn === wait) state.homeTurn = undefined;
+          // A server that is closing replays nothing.
+          if (!wait.cancelled) void flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
         });
     }
   }
@@ -682,7 +703,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
     // An earlier message's move is still going: this one goes to the host the run has when it ends.
-    if (state.switching) {
+    // (and while the home check and the agent's closing turn run: a new move then would release the pipe the check reads through and overtake the requests already queued)
+    if (state.switching || state.homeTurn) {
       state.pendingSubmits.push({ text, requestId, queuedBy: socket });
       return;
     }
@@ -890,7 +912,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "view":
         pipe?.view(socket, frame.event);
-        if (pipe?.isWriter(socket) && endsRun(frame.event)) state.homeTurn?.done();
+        if (pipe?.isWriter(socket) && endsRun(frame.event) && state.homeTurn?.armed) state.homeTurn.finish();
         if (options.placer && state.placedTask && pipe?.isWriter(socket) && endsRun(frame.event)) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
       case "ping":
@@ -1337,6 +1359,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       for (const poller of pollers.values()) poller.stop();
       pollers.clear();
       for (const state of runs.values()) {
+        // A home wait still open ends here, replaying nothing and leaving no timer.
+        if (state.homeTurn) {
+          state.homeTurn.cancelled = true;
+          clearTimeout(state.homeTurn.timer);
+          state.homeTurn.finish();
+        }
         unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);
         if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((error) => log("release.failed", { run: state.ref.id, error: (error as Error).message }));
