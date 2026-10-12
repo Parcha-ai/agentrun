@@ -6,6 +6,7 @@ import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, applyRobo
 
 const robot = () => initialRobot(defaultDesign());
 const call = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>) => applyRobotTool(s, tool, args);
+const call2 = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>, context: Parameters<typeof applyRobotTool>[3] = {}) => applyRobotTool(s, tool, args, context);
 
 test("the body's limits and rules are the creature page's own (this file carries a copy, so the cloud host can bundle it)", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(LIMITS)), JSON.parse(JSON.stringify(PAGE_LIMITS)));
@@ -205,4 +206,28 @@ test("update_robot: one call does a combined ask in a fixed order (reset, morph,
   assert.match(applyUpdateRobot(s, { part: "legs" }).text, /part needs a color/);
   assert.equal(applyUpdateRobot(s, { scale: 1 }).kind, "none");
   assert.strictEqual(applyUpdateRobot(s, { scale: 1 }).state, s);
+});
+
+test("do(skill): only a skill that came home can be chosen; the body and looks are untouched, the brain still fits", async () => {
+  const { SKILL_CHANGED } = await import("../robot-model.ts");
+  const s = robot();
+  const skills = { walk: { label: "walk" }, sprint: { label: "sprint", command: 1.2 } };
+  const sprint = call2(s, "do", { skill: "sprint" }, { skills });
+  assert.equal(sprint.kind, "skill");
+  assert.equal(sprint.state.skill, "sprint");
+  assert.equal(sprint.text, `The robot is now doing sprint. ${SKILL_CHANGED}`);
+  assert.equal(bodyKey(sprint.state.design), bodyKey(s.design));
+  assert.deepEqual(sprint.state.look, s.look);
+  assert.match(call2(s, "do", { skill: "spin" }, { skills }).text, /^Not done: the robot has not learned spin; it can do walk, sprint\./);
+  assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: skill must be one of walk, sprint/);
+  assert.match(call2(s, "do", { skill: "walk" }, {}).text, /^Not done: no skill has come home yet/);
+  assert.match(call2(sprint.state, "do", { skill: "sprint" }, { skills }).text, /^No change: the robot is already doing sprint\./);
+  // a reset forgets the skill with the rest; update_robot can carry it, after the body and looks
+  assert.equal(call2(sprint.state, "reset", {}).state.skill, undefined);
+  const { applyUpdateRobot } = await import("../robot-model.ts");
+  const both = applyUpdateRobot(s, { morph: "dog", skill: "sprint" }, { skills });
+  assert.equal(both.state.skill, "sprint");
+  assert.equal(both.kind, "body");
+  assert.equal(both.text, `The robot is now a dog. The robot is now doing sprint. ${BODY_CHANGED}`);
+  assert.equal(applyUpdateRobot(s, { skill: "sprint" }, { skills }).kind, "skill");
 });

@@ -30,6 +30,9 @@ export const SHAPE_PARTS = ["torso", "legs"] as const;
 export const RESIZE_PARTS = ["torso_length", "torso_width", "torso_height", "leg_length", "leg_thickness"] as const;
 export const MORPH_PRESETS = ["dog", "spider", "giraffe", "lizard", "stubby", "original"] as const;
 export const NAME_MAX = 24;
+/** Every skill the cluster may teach (D2's list); only the ones that came home (home/skills.json) can be chosen. */
+export const SKILL_NAMES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "rear-up", "getup", "jump"] as const;
+export const SKILL_CHANGED = "The body is unchanged: the walking brain still fits.";
 
 export interface Look {
   /** The torso's colour; null keeps the page's own. */
@@ -49,11 +52,15 @@ export interface RobotState {
   /** The body now. */
   design: Design;
   look: Look;
+  /** The skill the robot is doing (a policy from home/skills.json); absent: the default one. */
+  skill?: string;
   /** How many changes the tools made since the drawing. */
   edits: number;
 }
 
-export type ToolKind = "looks" | "body" | "none" | "refused";
+export type ToolKind = "looks" | "body" | "skill" | "none" | "refused";
+/** What the tools need to know about the run beyond the state: the skills that came home, with their labels. */
+export interface RobotContext { skills?: Readonly<Record<string, { label?: string; command?: number }>> }
 export interface ToolOutcome { state: RobotState; text: string; kind: ToolKind }
 
 export const LOOKS_ONLY = "Looks only: the walking brain still fits.";
@@ -106,9 +113,10 @@ const refuse = (state: RobotState, why: string): ToolOutcome => ({ state, text: 
 const PART_WORDS: Record<(typeof COLOR_PARTS)[number], string> = { torso: "torso", legs: "legs", front_legs: "front legs", back_legs: "back legs", all: "whole robot" };
 
 /** Apply one tool call to the robot's state. Pure: the state in is never changed; the outcome says what the model is told. Arguments are checked here as well as by the tool's schema. */
-export function applyRobotTool(prev: RobotState, tool: string, args: Record<string, unknown>): ToolOutcome {
+export function applyRobotTool(prev: RobotState, tool: string, args: Record<string, unknown>, context: RobotContext = {}): ToolOutcome {
   const state = clone(prev);
   const done = (kind: ToolKind, text: string): ToolOutcome => ({ state: { ...state, edits: state.edits + 1 }, text: `${text} ${kind === "looks" ? LOOKS_ONLY : kind === "body" ? BODY_CHANGED : ""}`.trim(), kind });
+  // a reset, and a body change, drop the skill with the body it was taught on; a skill is chosen again with `do`
   switch (tool) {
     case "set_color": {
       const part = args.part, color = args.color;
@@ -228,10 +236,22 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       state.look = { ...defaultLook(), ...clone(target.look) } as Look;
       return done("body", `The robot is now a ${preset}.`);
     }
+    case "do": {
+      const skill = args.skill;
+      const have = Object.keys(context.skills ?? {});
+      if (typeof skill !== "string" || !SKILL_NAMES.includes(skill as never)) return refuse(prev, `skill must be one of ${SKILL_NAMES.join(", ")}.`);
+      if (have.length === 0) return refuse(prev, "no skill has come home yet: the robot can only do what its brain was taught.");
+      if (!have.includes(skill)) return refuse(prev, `the robot has not learned ${skill}; it can do ${have.join(", ")}.`);
+      if ((prev.skill ?? "walk") === skill && prev.skill !== undefined) return { state: prev, text: `No change: the robot is already doing ${skill}.`, kind: "none" };
+      state.skill = skill;
+      const label = context.skills?.[skill]?.label;
+      return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${SKILL_CHANGED}`);
+    }
     case "reset": {
       state.design = clone(state.original);
       state.look = defaultLook();
       state.name = state.original.name;
+      delete state.skill;
       return { state: { ...state, edits: 0 }, text: `Everything is back to the robot the user drew. ${same(state, prev) ? LOOKS_ONLY : BODY_CHANGED}`, kind: same(state, prev) ? "looks" : "body" };
     }
     default:
@@ -246,19 +266,20 @@ export function parseRobot(text: string): RobotState | undefined {
   const s = v as Partial<RobotState> | null;
   if (!s || typeof s !== "object" || s.version !== 1 || typeof s.name !== "string" || !s.design || !s.original || !s.look || !Array.isArray(s.look.legs)) return undefined;
   if (validateDesign(s.design).length > 0 || validateDesign(s.original).length > 0) return undefined;
+  if (s.skill !== undefined && typeof s.skill !== "string") return undefined;
   return s as RobotState;
 }
 
 export const serializeRobot = (s: RobotState): string => `${JSON.stringify(s, null, 1)}\n`;
 
-export const UPDATE_KEYS = ["reset", "morph", "scale", "legs", "color", "part", "face", "name"] as const;
+export const UPDATE_KEYS = ["reset", "morph", "scale", "legs", "color", "part", "face", "name", "skill"] as const;
 
 /**
  * The flat form of the same edits (`update_robot`): one call with any of reset, morph, scale, legs, color (and the part it paints, "all" when absent), face and name, applied in a fixed order (reset, morph,
  * scale, legs, color, face, name) so a combined ask ("a red spider") is one call. Each step is `applyRobotTool`'s own, so the state edits and their results are the nine tools'. A step the limits refuse is
  * reported and the others still apply; the call is refused only when nothing applied and something was refused. `legs` is the number of pairs (2 or 3) or of legs (4 or 6).
  */
-export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>): ToolOutcome {
+export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>, context: RobotContext = {}): ToolOutcome {
   const unknown = Object.keys(args).filter((k) => !(UPDATE_KEYS as readonly string[]).includes(k));
   if (unknown.length > 0) return refuse(prev, `unknown ${unknown.length === 1 ? "field" : "fields"} ${unknown.map((k) => JSON.stringify(k)).join(", ")}; the fields are ${UPDATE_KEYS.join(", ")}.`);
   const steps: [string, Record<string, unknown>][] = [];
@@ -270,20 +291,21 @@ export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>
   else if (args.part !== undefined) return refuse(prev, "part needs a color to paint it.");
   if (args.face !== undefined) steps.push(["set_face", { face: args.face }]);
   if (args.name !== undefined) steps.push(["rename", { name: args.name }]);
+  if (args.skill !== undefined) steps.push(["do", { skill: args.skill }]);
   if (steps.length === 0) return refuse(prev, `say what to change: ${UPDATE_KEYS.filter((k) => k !== "part").join(", ")}.`);
   let state = prev;
   const lines: string[] = [];
   let kind: ToolKind = "none", applied = 0, refused = 0;
   for (const [tool, a] of steps) {
-    const o = applyRobotTool(state, tool, a);
+    const o = applyRobotTool(state, tool, a, context);
     if (o.kind === "refused") { refused++; lines.push(o.text); continue; }
-    if (o.kind === "body" || (o.kind === "looks" && kind !== "body")) kind = o.kind;
+    if (o.kind === "body" || (o.kind === "looks" && kind !== "body") || (o.kind === "skill" && kind === "none")) kind = o.kind;
     if (o.kind !== "none") applied++;
     state = o.state;
-    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, ""));
+    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, "").replace(` ${SKILL_CHANGED}`, ""));
   }
   if (applied === 0 && refused > 0) return { state: prev, text: lines.join(" "), kind: "refused" };
   if (applied === 0) return { state: prev, text: lines.join(" "), kind: "none" };
-  const tail = kind === "body" ? BODY_CHANGED : LOOKS_ONLY;
+  const tail = kind === "body" ? BODY_CHANGED : kind === "skill" ? SKILL_CHANGED : LOOKS_ONLY;
   return { state: { ...state, edits: prev.edits + 1 }, text: `${lines.join(" ")} ${tail}`, kind };
 }

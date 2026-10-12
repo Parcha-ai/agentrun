@@ -113,3 +113,7 @@ The agent's robot tools (`03-tab-to-cloud/robot-tools.ts`: set_color, set_shape,
 - **Events**: `robot-changed {name, edits, body_changed, fits, mjcf_sha256, face}`. `window.__walks.look()` and `fits()` for checks.
 Check: `CDP_PORT=9333 node scripts/check-robot.mjs <outdir>` (16 checks: looks only, longer legs, six legs, reset). Tests: `test/robot-fit.test.ts` (borrowing, and every morph preset stands unaided for 4 s).
 
+## Skills (`home/skills.json`)
+A run can bring home one policy per skill (the 8-GPU beat): `home/skills/<skill>.json` (a plain mlp-v1 file with its own getup network, trained for one body) and `home/skills.json` naming them: `{"version": 1, "body_mjcf_sha256": "...", "default": "walk", "skills": {"walk": {"policy": "skills/walk.json", "command": 0.5, "label": "walk"}, "sprint": {...}}}` (`src/skills.ts`).
+The page watches the manifest like the policy files. `do(skill)` of the agent's robot tools (and `update_robot {skill}`) sets `skill` in `creature/robot.json`; the page loads that skill's policy, installs it at the next control step (no reset: a creature that is up carries on), feeds the skill's fixed `command` into the command slot (negative for backwards; the policy's own `command_range` bounds it, the page does not clamp at 0), and says `doing <label>`. After a body change a skill's network is borrowed when it still fits (see above). Events: `skills-home {skills, default, labels}`, `skill-switched {skill, label, command, fits, mjcf_sha256}`, `skill-refused {skill, reason}`; `__walks.skill()`, `__walks.skills()`.
+

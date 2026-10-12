@@ -94,6 +94,30 @@ try {
   await put('home/policy.json', policyText + ' ');
   ok('a policy for the drawn body arrives again: trained, and it fits', !!(await waitEvent('policy-arrived', n)) && /trained/.test(await label()) && (await inner('__walks.fits()')) === true, await label());
   await shot('4-reset');
+  // 5. skills: the cluster's policies came home (here the same fixture network under three names), and the agent's `do` picks one live
+  const fixture = JSON.parse(policyText);
+  n = await ev('events.length');
+  for (const name of ['walk', 'sprint']) await put(`home/skills/${name}.json`, policyText);
+  await put('home/skills.json', JSON.stringify({ version: 1, body_mjcf_sha256: fixture.mjcf_sha256, default: 'walk', skills: { walk: { policy: 'skills/walk.json', command: 0.3, label: 'walk' }, sprint: { policy: 'skills/sprint.json', command: 0.7, label: 'sprint' } } }));
+  const home = await waitEvent('skills-home', n);
+  ok('skills: the page learns which skills came home', home && home.skills.join() === 'walk,sprint' && home.default === 'walk', home);
+  robot = applyRobotTool(initialRobot(defaultDesign(2)), 'do', { skill: 'sprint' }, { skills: { walk: {}, sprint: {} } }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const sw = await waitEvent('skill-switched', n);
+  ok('skills: do(sprint) switches the policy live and feeds the skill\'s command', sw && sw.skill === 'sprint' && Math.abs(sw.command - 0.7) < 1e-6 && sw.fits === true, sw);
+  ok('skills: the page says what it is doing; the creature keeps simulating', /sprint/.test(await inner("document.getElementById('policyName').textContent")) && (await inner('__walks.skill()')) === 'sprint', await inner("document.getElementById('policyName').textContent"));
+  robot = applyRobotTool(robot, 'do', { skill: 'walk' }, { skills: { walk: {}, sprint: {} } }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const back = await waitEvent('skill-switched', n);
+  ok('skills: and back to walk (a skill used before is not ignored)', back && back.skill === 'walk' && Math.abs(back.command - 0.3) < 1e-6, back);
+  robot = applyRobotTool(applyRobotTool(robot, 'resize', { part: 'leg_length', factor: 1.3 }).state, 'do', { skill: 'sprint' }, { skills: { walk: {}, sprint: {} } }).state;
+  n = await ev('events.length');
+  await put('creature/robot.json', serializeRobot(robot));
+  const borrowedSkill = await waitEvent('skill-switched', n);
+  ok('skills: after a body change a skill\'s network is borrowed and the page says the brain no longer fits', borrowedSkill && borrowedSkill.skill === 'sprint' && borrowedSkill.fits === false && /no longer fits/.test(await label()), { borrowedSkill, label: await label() });
+  await shot('5-skills');
   ok('nothing the robot did produced an error on the page', (await inner("document.getElementById('err').textContent")) === '', await inner("document.getElementById('err').textContent"));
 } catch (e) {
   console.log(`FAIL ${e.message}`);

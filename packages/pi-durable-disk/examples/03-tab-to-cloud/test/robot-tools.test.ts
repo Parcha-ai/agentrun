@@ -130,3 +130,39 @@ test("update_robot over a real Harness: a combined ask is one call and one file 
   assert.equal(res[0]!.text, `The robot is now a spider. The whole robot is now red. ${BODY_CHANGED}`);
   await r.close();
 });
+
+test("do(skill) reads the skills that came home from home/skills.json: a skill it has is set in the state file, one it has not is refused naming what it can do, and with nothing home it says so", async () => {
+  const skillsJson = JSON.stringify({ version: 1, body_mjcf_sha256: "x", default: "walk", skills: { walk: { policy: "skills/walk.json", command: 0.5, label: "walk" }, sprint: { policy: "skills/sprint.json", command: 1.2, label: "sprint" } } });
+  const r = await rig([{ call: { name: "do", arguments: { skill: "sprint" } } }, { call: { name: "do", arguments: { skill: "spin" } } }, { text: "Done." }], (dir) => {
+    mkdirSync(join(dir, "home"), { recursive: true });
+    writeFileSync(join(dir, "home/skills.json"), skillsJson);
+  });
+  await r.ask("sprint, then spin");
+  assert.equal(r.state().skill, "sprint");
+  const res = await r.results();
+  assert.equal(res[0]!.text, "The robot is now doing sprint. The body is unchanged: the walking brain still fits.");
+  assert.equal(res[1]!.error, true);
+  assert.equal(res[1]!.text, "Not done: the robot has not learned spin; it can do walk, sprint.");
+  await r.close();
+  const none = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }]);
+  await none.ask("walk");
+  assert.match((await none.results())[0]!.text, /^Not done: no skill has come home yet/);
+  assert.equal(existsSync(join(none.dir, ROBOT_FILE)), false);
+  await none.close();
+  const single = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "Done." }], (dir) => { mkdirSync(join(dir, "home"), { recursive: true }); writeFileSync(join(dir, "home/policy.json"), "{}"); });
+  await single.ask("walk");
+  assert.equal(single.state().skill, "walk", "a run with only home/policy.json has the one skill, walk");
+  await single.close();
+});
+
+test("the skill enum offered to the small local model is narrowed to the skills that came home; the registry's own is the whole list", async () => {
+  const { narrowSkills } = await import("../robot-tools.ts");
+  const tool = agentRegistry(async () => undefined, {}).snapshot().tools().find((t) => t.tool.name === "do")!.tool;
+  const full = (tool.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum;
+  assert.ok(full.includes("spin") && full.includes("jump"));
+  const narrow = narrowSkills(tool, ["walk", "sprint"]);
+  assert.deepEqual((narrow.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, ["walk", "sprint"]);
+  assert.deepEqual((tool.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, full, "the registry's tool is not changed");
+  const flat = agentRegistry(async () => undefined, {}).snapshot().tools().find((t) => t.tool.name === "update_robot")!.tool;
+  assert.deepEqual((narrowSkills(flat, ["walk"]).parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, ["walk"]);
+});

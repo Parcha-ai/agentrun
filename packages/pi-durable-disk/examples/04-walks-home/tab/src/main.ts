@@ -28,6 +28,7 @@ import { CONTROL_DT } from './mjcf.ts';
 import { parseRobot, bodyKey, COLOR_HEX } from '../../../03-tab-to-cloud/robot-model.ts';
 import { viewLook } from './look.ts';
 import { borrowPolicy, MISMATCH_LABEL } from './robot-fit.ts';
+import { parseSkills, skillPolicyPath, SKILLS_PATH, type SkillManifest } from './skills.ts';
 import { ParentBackend, windowBus, DESIGNS_PATH, MEMORY_PATH, NotHolder, parentPolicySource } from './backend.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -112,6 +113,11 @@ let app: App;
 const ROBOT_PATH = 'creature/robot.json';
 /** False while a borrowed brain drives a body it was not trained for (robot-fit.ts): the robot stumbles and the label says why. */
 let brainFits = true;
+
+/** The skills that came home (home/skills.json), the one the creature is doing, and one asked for before the manifest arrived. */
+let skills: SkillManifest | null = null;
+let skillNow: string | null = null;
+let wantedSkill: string | null = null;
 
 function toast(text: string) {
   const t = $('toast');
@@ -344,7 +350,56 @@ async function applyRobot(text: string) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
+  if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
+}
+
+/** home/skills.json arrived or changed: remember the skills, and start the one that was asked for (else the default, when the creature has no policy yet). */
+async function onSkillsManifest(text: string) {
+  let m: SkillManifest;
+  try { m = parseSkills(text); } catch (e) { post('skills-refused', { reason: String(e instanceof Error ? e.message : e) }); return; }
+  skills = m;
+  post('skills-home', { skills: Object.keys(m.skills), default: m.default, labels: Object.fromEntries(Object.entries(m.skills).map(([k, v]) => [k, v.label])) });
+  const want = wantedSkill ?? (app.policy ? null : m.default);
+  if (want) await switchSkill(want);
+}
+
+/**
+ * Do a skill: that skill's policy (the same network format as any policy, each with its own getup network) takes over at the next control step, and the skill's fixed command goes into the command slot.
+ * A skill trained for the body on screen is loaded as any policy; after a body change the old skill's network is borrowed when it still fits the joints (the robot stumbles: robot-fit.ts).
+ */
+async function switchSkill(name: string) {
+  if (!skills) { wantedSkill = name; return; }
+  const entry = skills.skills[name];
+  const refuse = (reason: string) => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason }); };
+  if (!entry) return refuse(`${name} has not come home`);
+  wantedSkill = null;
+  if (skillNow === name && app.policy) return;
+  const got = await parentPolicySource(new ParentBackend(windowBus(), skillPolicyPath(entry))).read();
+  if (!got || got === 'unchanged') return refuse(`${entry.policy} is not on the disk yet`);
+  const nj = app.built.jointNames.length;
+  let policy: Policy | null = null;
+  let fits = true;
+  try {
+    policy = await Policy.load(got.text, { mjcfSha256: app.bodySha, nj, mujocoVersion: app.mujocoVersion });
+  } catch (e) {
+    if (!(e instanceof PolicyRefused) || !/different body/.test(e.message)) return refuse(e instanceof PolicyRefused ? e.message : String(e));
+    policy = await borrowPolicy(JSON.parse(got.text), nj, app.mujocoVersion); // trained for another body: it runs only if its network still fits this one
+    fits = false;
+    if (!policy) return refuse(`${name} was trained for another body and does not fit this one`);
+  }
+  showError('');
+  (document.getElementById('command') as HTMLInputElement).value = String(entry.command);
+  closeArrival();
+  setPolicy(policy, `skill: ${entry.label}`); // no sim.reset(): a creature that is up carries on, the next step is the new network's
+  brainFits = fits;
+  skillNow = name;
+  resetOrigin(); // a new behaviour: the distance counts from where it stands now
+  app.training.install('final', provenanceFacts(JSON.parse(got.text)));
+  updateLabel();
+  app.fallen = false; app.recovering = null;
+  toast(`doing ${entry.label}`);
+  post('skill-switched', { skill: name, label: entry.label, command: app.sim.command, fits, mjcf_sha256: policy.file.mjcf_sha256 });
 }
 
 /** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
@@ -849,7 +904,7 @@ async function main() {
       } catch (e) { showError(String(e)); }
     });
 
-    (window as any).__walks = { get app() { return app; }, look: () => app.view.describeLook(), fits: () => brainFits, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
@@ -882,6 +937,12 @@ async function main() {
       }).start();
       // the finished policy, and the live checkpoints of a run in progress (written by rename, one file per checkpoint)
       watch(HOME_POLICY_PATH, 'final');
+      // the skills the cluster taught (one policy each): the manifest names them, the agent's `do` picks one through creature/robot.json
+      new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), SKILLS_PATH)), {
+        sha256: sha256Hex, intervalMs: 1000,
+        onFile: (text) => { warned = false; return onSkillsManifest(text); },
+        onError: quiet(`skills watch ${SKILLS_PATH}`),
+      }).start();
       // the agent's robot tools write creature/robot.json: looks and body changes reach the creature within a second
       new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), ROBOT_PATH)), {
         sha256: sha256Hex, intervalMs: 1000,
