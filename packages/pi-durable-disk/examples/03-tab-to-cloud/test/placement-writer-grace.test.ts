@@ -284,6 +284,22 @@ describe("a page that comes back booting", () => {
     page2.close();
   });
 
+  it("keeps the boot allowance after the page attaches: a page that needs seconds more before it is the writer does not lose the run", async () => {
+    const { id, secret } = await dropWriter("slow-restore");
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "operator", canRun: true, onFrame: () => undefined });
+    await page.ready;
+    await new Promise((r) => setTimeout(r, 600)); // booting its computer, past the plain 0.4 s
+    const back: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+    await back.ready; // attached: files restored; its runtime is still starting
+    await new Promise((r) => setTimeout(r, 1_500)); // well past where the plain grace would have ended, inside the 3 s boot allowance
+    assert.equal(ofRun(id, "cloud.started").length, 0, "still waiting for the page's runtime");
+    back.send({ t: "writer-ready" });
+    await until(() => ofRun(id, "placement.writer-grace").some((e) => e.data.outcome === "returned"), 8_000);
+    assert.equal(ofRun(id, "cloud.started").length, 0, "the run never went to the cloud");
+    back.close();
+    page.close();
+  });
+
   it("does not wait longer for a plain viewer, which is not offered the run either", async () => {
     const { id, secret } = await dropWriter("plain-viewer");
     const viewer: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "view", onFrame: () => undefined });

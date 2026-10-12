@@ -240,7 +240,7 @@ interface RunState {
   homeTurn: HomeWait | undefined;
   /** The wait for the writer to come back after its socket closed: the lines that arrive meanwhile queue behind it. Cancelled when the server closes. */
   writerGrace: { cancelled: boolean } | undefined;
-  /** When a page that can run the run last asked for it while the run waited for its writer (during a grace, or in the moment after the socket closed, before the grace began). On the run, not on a grace: a replacement grace counts it too. Cleared when a writer attaches or a grace ends. */
+  /** When a page that can run the run last asked for it while the run waited for its writer (during a grace, or in the moment after the socket closed, before the grace began). On the run, not on a grace: a replacement grace counts it too. Cleared when the page says it is the writer (writer-ready) or a grace ends. */
   pageComingAt: number | undefined;
   /** When the agent was last given a message and has not yet ended its turn (the host's run_end): a placement move would release the pipe under a step that is starting, so a message that needs a move waits for it. */
   turnSince: number | undefined;
@@ -1041,10 +1041,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const pipe = state.pipe ?? (await openPipe(state, fromCloud));
       if (fromCloud) void options.cloud?.stop(state.ref, "fenced").catch((error) => log("cloud.stop-failed", { run: state.ref.id, error: (error as Error).message }));
       const role = await pipe.attach(socket, frame.tab, frame.takeover === true, { environments, env: writerEnv, ...(move ? { move } : {}), ...(options.placer ? { placed: true } : {}) });
-      if (role === "writer") {
-        clearTimeout(state.checkinTimer);
-        state.pageComingAt = undefined; // the page that asked early is here
-      }
+      if (role === "writer") clearTimeout(state.checkinTimer);
       if (role === "viewer") socket.send(await viewingFrame(state));
       else {
         for (const [viewer, detach] of state.cloudViewers) {
@@ -1132,6 +1129,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "writer-ready":
         pipe?.pageReady(socket);
+        state.pageComingAt = undefined; // the page that asked is the writer now (an attach is not enough: it still restores and starts its runtime)
         return;
       case "restored":
         pipe?.restored(socket, frame);
