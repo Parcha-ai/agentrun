@@ -13,6 +13,7 @@ import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
+import { composerRoute } from "./composer.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -79,6 +80,8 @@ const state = {
   mode: "connecting" as "connecting" | "booting" | "writer" | "viewer" | "lost" | "offline",
   placement: undefined as Placement | undefined,
   client: undefined as PipeClient | undefined,
+  /** The attach said the server places this run: the composer's lines go through it (composer.ts). */
+  placed: false,
   runtime: undefined as TabRuntime | undefined,
   chat: new ChatView(),
   /** The conversation the chat input goes to: the root until the trained model comes home, then the fresh one on it (brain.ts). */
@@ -415,6 +418,7 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const { env, workspace, facts } = await bootComputer();
   state.environments = attached.environments;
   state.agentModel = attached.model;
+  state.placed = attached.placed === true;
   const runtime = await startTab({ client, attached, env, workspace, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
@@ -1365,9 +1369,11 @@ async function lost(client: PipeClient, code: string, message: string): Promise<
 function send(): void {
   const input = $("input") as HTMLTextAreaElement;
   const text = input.value.trim();
-  if (!text || state.checkingOut || state.checkingIn || state.brainPending || state.rehoming) return; // held: a checkout is deciding where the run lives, or the saved conversation is still coming back
-  if (!state.runtime) {
-    if (state.mode !== "viewer" || (state.placement?.where !== "cloud" && state.placement?.where !== "tab")) return;
+  if (!text) return;
+  // Held: a checkout is deciding where the run lives, or the saved conversation is still coming back. A page attached to a placing server sends its line to the server (it places the run, then the line comes back here or goes to the VM); one that cannot reach it runs the line itself.
+  const route = composerRoute({ held: !!(state.checkingOut || state.checkingIn || state.brainPending || state.rehoming), running: !!state.runtime, mode: state.mode, online: state.net.online, placed: state.placed, ...(state.placement ? { watching: state.placement.where } : {}) });
+  if (route === "ignore") return;
+  if (route === "server") {
     input.value = "";
     state.client?.send({ t: "submit", text, requestId: `ui-${crypto.randomUUID()}` });
     return;
