@@ -34,6 +34,17 @@ function diffInto(slot: HTMLElement, path: string, oldText: string, newText: str
   );
 }
 
+/** Whether a call has anything to open, without building it (a diff is not drawn until its row is opened): the same cases as toolBody. */
+export function hasBody(tool: Tool, opts: { showOutput: boolean }): boolean {
+  const kind = toolKind(tool.name);
+  const args = parse(tool.args);
+  if (kind === "bash" && typeof args.command === "string") return true;
+  if (kind === "write" && typeof args.path === "string" && typeof args.content === "string") return true;
+  if (kind === "edit" && editPairs(tool.args) !== null) return true;
+  if ((kind === "grep" || kind === "find" || kind === "ls") && tool.output) return true;
+  return tool.output !== "" && opts.showOutput;
+}
+
 /**
  * The body of one tool call, or null when there is nothing to open (no arguments worth showing and no output). `showOutput` is false when the reply repeats the result word for word
  * (the reply says it once). `before` is a file's text before a write replaced it, when the page saw it (a write to a new file has none, and shows as all additions).

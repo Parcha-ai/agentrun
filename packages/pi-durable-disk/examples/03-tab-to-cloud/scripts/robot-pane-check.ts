@@ -101,13 +101,14 @@ try {
   await say("write me a dinosaur body");
   const lines = await ev<{ n: number; open: boolean; h: number[] }>(`(() => { const t = [...document.querySelectorAll("details.tool")].filter((d) => /robot\\/body\\.ts|cat /.test(d.textContent)); return { n: t.length, open: t.some((d) => d.open), h: t.map((d) => d.querySelector("summary").offsetHeight) }; })()`);
   ok("each tool call is one quiet line, closed", lines.n >= 3 && !lines.open && lines.h.every((h) => h < 40), lines);
+  ok("a diff is not drawn for a closed row: opening the row draws it", await ev<number>(`document.querySelectorAll("details.tool .diff").length`) === 0);
   await ev(`document.querySelectorAll("details.tool:not(.bare)").forEach((d) => { d.open = true; })`);
   await until(`[...document.querySelectorAll("details.tool .diff")].every((d) => d.firstElementChild && d.firstElementChild.shadowRoot && d.firstElementChild.shadowRoot.textContent.length > 0) && document.querySelectorAll("details.tool .diff").length >= 2`, 60_000).catch(() => undefined);
   const code = await ev<{ diffs: string[]; bash: string; closed: boolean }>(`(() => { const rows = [...document.querySelectorAll("details.tool")]; const text = (d) => (d.querySelector(".diff")?.firstElementChild?.shadowRoot?.textContent ?? "").replace(/\\s+/g, " "); return { diffs: rows.filter((d) => d.querySelector(".diff")).map(text), bash: rows.find((d) => /cat robot/.test(d.textContent))?.querySelector(".tool-body")?.textContent ?? "", closed: false }; })()`);
   ok("a write is a diff of the new file (every line an addition) and an edit a diff of what changed, drawn by the library", code.diffs.length === 2 && /export const body/.test(code.diffs[0]) && /spikes: 6/.test(code.diffs[1]) && !/dino/.test(code.diffs[1]), code.diffs);
   ok("bash shows its command and what it printed", /\$ cat robot\/body\.ts/.test(code.bash) && /name: "dino"/.test(code.bash), code.bash);
   await page.screenshot(join(shots, "pane-3-code.png"));
-  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv1", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: you were moved to a Modal VM; your files came with you.", timestamp: 1 }], data: { switchId: "mv1", from: "your user's browser tab", planned: true, by: "jev", probability: 0.83, facts: { label: "a Modal VM", tools: [] } } } }); demo.renderChat(); return true; })()`);
+  await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv1", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: you were moved to a Modal VM; your files came with you.", timestamp: 1 }], data: { switchId: "mv1", from: "your user's browser tab", planned: true, by: "placement", probability: 0.83, facts: { label: "a Modal VM", tools: [] } } } }); demo.renderChat(); return true; })()`);
   const move = await ev<{ lines: string[]; chat: string }>(`({ lines: [...document.querySelectorAll("#chat .move")].map((m) => m.textContent), chat: document.getElementById("chat").textContent })`);
   ok("a move is one quiet line, and the agent's notice is not in the chat", move.lines.includes("→ Modal VM · Jev 0.83") && !/SYSTEM NOTICE|were moved/.test(move.chat), move);
   // grep shows its hits (this page's tool set has no grep yet: the transcript entries are folded in as a host that has it would write them).
@@ -123,6 +124,9 @@ try {
   await until(`document.getElementById("preview-name").textContent.startsWith("robot/body.ts")`, 30_000).catch(() => undefined);
   await until(`!!document.querySelector("#preview .file") && !!document.querySelector("#preview .file").firstElementChild?.shadowRoot && /spikes: 6/.test(document.querySelector("#preview .file").firstElementChild.shadowRoot.textContent)`, 60_000).catch(() => undefined);
   ok("a file picked in the tree opens read-only, with the edit applied", await ev<boolean>(`/spikes: 6/.test(document.querySelector("#preview .file")?.firstElementChild?.shadowRoot?.textContent ?? "") && !document.querySelector("#preview textarea, #preview [contenteditable=true]")`));
+  await ev(`Promise.all([demo.select("home/skills.json"), demo.select("robot/body.ts")])`);
+  await sleep(1500);
+  ok("two picks in a row: the preview is the later one, however the reads finish", await ev<boolean>(`document.getElementById("preview-name").textContent.startsWith("robot/body.ts") && /spikes: 6/.test(document.querySelector("#preview .file")?.firstElementChild?.shadowRoot?.textContent ?? "")`));
   await page.screenshot(join(shots, "pane-3b-workspace.png"));
   await ev(`document.getElementById("ws-close").click()`);
   const changes = await ev<string>(`document.getElementById("creature").contentWindow.__walks.app.bodySha`);

@@ -50,7 +50,7 @@ export function moveLine(item: Switch): string {
   const to = item.to?.trim() || null;
   const home = to !== null && /\b(browser|tab)\b/i.test(to);
   const where = to === null ? "moved" : home ? "your browser" : to.replace(/^(a|an|the)\s+/i, "");
-  const sure = item.by === "jev" && item.probability != null ? ` · Jev ${item.probability.toFixed(2)}` : "";
+  const sure = (item.by === "placement" || item.by === "jev") && item.probability != null ? ` · Jev ${item.probability.toFixed(2)}` : "";
   return `${home ? "←" : "→"} ${where}${sure}`;
 }
 

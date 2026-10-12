@@ -41,10 +41,10 @@ import { moveLine, toolKind, editPairs, grepHits } from "../tab/chat-lines.ts";
 // A move is one quiet line, never the notice the agent was given: "→ Modal VM · Jev 0.83" on the way out, "← your browser" on the way home.
 const notice = (over: Record<string, unknown>) => ({ kind: "switch" as const, id: "n", text: "SYSTEM: you moved ...", switchId: "s", planned: true, ...over });
 test("a move is one line: where it went and, when Jev decided, how sure; coming home is an arrow back", () => {
-  assert.equal(moveLine(notice({ to: "a Modal VM", by: "jev", probability: 0.83 })), "→ Modal VM · Jev 0.83");
+  assert.equal(moveLine(notice({ to: "a Modal VM", by: "placement", probability: 0.83 })), "→ Modal VM · Jev 0.83");
   assert.equal(moveLine(notice({ to: "a Daytona sandbox" })), "→ Daytona sandbox");
   assert.equal(moveLine(notice({ to: "your user's browser tab" })), "← your browser");
-  assert.equal(moveLine(notice({ to: "your user's browser tab", by: "jev", probability: 0.9 })), "← your browser · Jev 0.90");
+  assert.equal(moveLine(notice({ to: "your user's browser tab", by: "placement", probability: 0.9 })), "← your browser · Jev 0.90");
   assert.equal(moveLine(notice({ to: null })), "→ moved", "a notice that names no host still shows as a move, never as the notice's text");
   assert.doesNotMatch(moveLine(notice({ to: null })), /SYSTEM|you moved/);
 });
@@ -65,4 +65,40 @@ test("grep hits: path, line and the matching text of each line; lines that are n
   assert.deepEqual(hits.slice(0, 2), [{ path: "src/a.ts", line: 12, text: "const x = 1;" }, { path: "src/b.ts", line: 3, text: "  return x;" }]);
   assert.deepEqual(hits[2], { path: null, line: null, text: "(2 matches)" });
   assert.deepEqual(grepHits(""), []);
+});
+
+import { WriteMemory } from "../tab/write-memory.ts";
+import { hasBody } from "../tab/tool-body.ts";
+import { Latest } from "../tab/latest.ts";
+
+const start = (name: string, id: string, args: Record<string, unknown> = {}) => ({ type: "tool_execution_start", toolName: name, toolCallId: id, args });
+test("a write's diff is against what the page saw written, and it forgets what another tool could have changed", () => {
+  const m = new WriteMemory();
+  assert.deepEqual(m.observe(start("write", "w1", { path: "a.ts", content: "one" })), { before: undefined });
+  assert.deepEqual(m.observe(start("write", "w2", { path: "a.ts", content: "two" })), { before: "one" });
+  m.observe(start("bash", "b1", { command: "sed -i s/two/three/ a.ts" }));
+  assert.deepEqual(m.observe(start("write", "w3", { path: "a.ts", content: "four" })), { before: undefined }, "a bash may have changed the file: the page does not claim to know it");
+  m.observe(start("read", "r1", { path: "a.ts" }));
+  assert.deepEqual(m.observe(start("write", "w4", { path: "a.ts", content: "five" })), { before: "four" }, "a read changes nothing");
+  m.observe({ type: "tool_execution_end", toolCallId: "w4", isError: true });
+  assert.deepEqual(m.observe(start("write", "w5", { path: "a.ts", content: "six" })), { before: undefined }, "a write that failed is not what the file holds");
+});
+
+test("only the latest request is current", async () => {
+  const gate = new Latest();
+  const first = gate.next();
+  const second = gate.next();
+  assert.equal(gate.current(first), false);
+  assert.equal(gate.current(second), true);
+});
+
+test("whether a call has anything to open is known without drawing it (a diff is drawn when its row is opened)", () => {
+  const t = (name: string, args: unknown, output = "", status: "done" | "running" = "done") => ({ kind: "tool" as const, id: "x", name, args: JSON.stringify(args), output, status });
+  assert.equal(hasBody(t("write", { path: "a.ts", content: "x" }), { showOutput: true }), true);
+  assert.equal(hasBody(t("edit", { path: "a.ts", edits: [{ oldText: "a", newText: "b" }] }), { showOutput: true }), true);
+  assert.equal(hasBody(t("bash", { command: "ls" }), { showOutput: true }), true);
+  assert.equal(hasBody(t("grep", { pattern: "x" }, "a.ts:1:x"), { showOutput: false }), true);
+  assert.equal(hasBody(t("set_color", { part: "legs", color: "red" }, "The legs are now red."), { showOutput: true }), true);
+  assert.equal(hasBody(t("set_color", { part: "legs", color: "red" }, "The legs are now red."), { showOutput: false }), false, "the reply says it once: nothing to open");
+  assert.equal(hasBody(t("set_color", {}, "", "running"), { showOutput: true }), false);
 });

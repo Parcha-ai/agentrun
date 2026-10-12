@@ -11,7 +11,9 @@ import { BRAIN_PROVIDER } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
 import { echoedTools, isMuted, moveLine, toolArgsLine } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
-import { toolBody } from "./tool-body.ts";
+import { hasBody, toolBody } from "./tool-body.ts";
+import { WriteMemory } from "./write-memory.ts";
+import { Latest } from "./latest.ts";
 import { verdictOf } from "../../04-walks-home/tab/src/guard.ts";
 import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
@@ -250,7 +252,7 @@ const bodies = new Map<string, { signature: string; body: HTMLElement | null }>(
 /** A file's text as it was just before a write replaced it, by the write's call id (the diff is against this; a write to a new file has none). */
 const writeBefore = new Map<string, string>();
 
-function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HTMLElement {
+function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
   switch (item.kind) {
     case "user":
       return el("div", { class: "turn user" }, item.text);
@@ -262,16 +264,29 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set()): HT
     }
     case "tool": {
       // One quiet line: ● name  what it was given. It opens on tap: bash its command and output, write and edit the diff, grep its hits, anything else its result (unless the reply that follows says it word for word).
+      // The body (a diff especially) is built when the row is first opened, and again only when what it shows changed.
+      const key = scope + item.id;
       const dot = item.status === "running" ? "dot act run" : item.status === "done" && !isMuted(item) ? "dot done" : "dot";
       const summary = el("summary", {}, el("span", { class: dot }), el("span", { class: "name" }, item.name), el("span", { class: "args" }, toolArgsLine(item.name, item.args)));
-      const signature = `${item.name}|${item.args}|${item.status}|${item.output.length}|${echoed.has(item.id)}`;
-      const cached = bodies.get(item.id);
-      const built = cached && cached.signature === signature ? cached.body : toolBody(item, { showOutput: !echoed.has(item.id), before: writeBefore.get(item.id) });
-      if (!cached || cached.signature !== signature) bodies.set(item.id, { signature, body: built });
-      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${built === null ? " bare" : ""}` }, summary) as HTMLDetailsElement;
-      if (built !== null) node.append(built);
-      node.open = built !== null && openTools.has(item.id);
-      node.addEventListener("toggle", () => (node.open ? openTools.add(item.id) : openTools.delete(item.id)));
+      const showOutput = !echoed.has(item.id);
+      const has = hasBody(item, { showOutput });
+      const node = el("details", { class: `tool ${item.status}${isMuted(item) ? " refused" : ""}${has ? "" : " bare"}` }, summary) as HTMLDetailsElement;
+      const fill = () => {
+        const before = writeBefore.get(key);
+        const signature = JSON.stringify([item.name, item.args, item.status, item.output, showOutput, before ?? null]);
+        const cached = bodies.get(key);
+        const body = cached && cached.signature === signature ? cached.body : toolBody(item, { showOutput, before });
+        if (!cached || cached.signature !== signature) bodies.set(key, { signature, body });
+        if (body !== null && body.parentElement !== node) node.append(body);
+      };
+      if (has && openTools.has(key)) fill();
+      node.open = has && openTools.has(key);
+      node.addEventListener("toggle", () => {
+        if (node.open) {
+          openTools.add(key);
+          if (has) fill();
+        } else openTools.delete(key);
+      });
       return node;
     }
     case "note":
@@ -314,32 +329,39 @@ async function readFileText(path: string): Promise<string | undefined> {
 }
 
 let shown = "";
+const selecting = new Latest();
 async function select(path: string): Promise<void> {
+  const mine = selecting.next();
   state.selected = path;
   const row = state.files.find((f) => f.path === path);
   if (row?.kind !== "file") return;
   const text = (await readFileText(path)) ?? `(unreadable)`;
+  if (!selecting.current(mine)) return; // a newer pick or refresh started while this one read: only the latest draws
+  const key = `${path}\n${text}`;
+  if (key === shown) {
+    $("preview-name").textContent = `${path} · ${fmtSize(row.size)}`;
+    return;
+  }
+  const view = await fileElement(path, text.slice(0, 20000));
+  if (!selecting.current(mine)) return;
+  shown = key;
   $("preview-name").textContent = `${path} · ${fmtSize(row.size)}`;
   document.body.classList.add("ws-open");
-  const key = `${path}\n${text}`;
-  if (key === shown) return;
-  shown = key;
-  $("preview").replaceChildren(await fileElement(path, text.slice(0, 20000)));
+  $("preview").replaceChildren(view);
 }
 
 /** The page's own record of file texts it saw written, so a later write's diff is against the earlier one (the file's text before a write is not in the event). */
-const known = new Map<string, string>();
+const memory = new WriteMemory();
 function noteTools(events: readonly unknown[]): void {
-  for (const e of events as { type?: string; toolName?: string; toolCallId?: string; args?: { path?: unknown; content?: unknown } }[]) {
-    const path = typeof e.args?.path === "string" ? e.args.path : undefined;
-    if (!path || !e.toolCallId) continue;
-    if (e.type === "tool_execution_start" && e.toolName === "write" && typeof e.args?.content === "string") {
+  for (const e of events as { type?: string; toolName?: string; toolCallId?: string; isError?: boolean; args?: { path?: unknown; content?: unknown } }[]) {
+    const seen = memory.observe(e);
+    if (!seen || !e.toolCallId) continue;
+    if (seen.before !== undefined) writeBefore.set(e.toolCallId, seen.before);
+    else if (typeof e.args?.path === "string" && typeof e.args.content === "string") {
       const content = e.args.content;
-      const had = known.get(path);
-      if (had !== undefined) writeBefore.set(e.toolCallId, had);
-      else void readFileText(path).then((t) => { if (t !== undefined && t !== content) writeBefore.set(e.toolCallId!, t); }); // an existing file, read before the write lands (when it is quick enough)
-      known.set(path, content);
-    } else if (e.type === "tool_execution_start" && e.toolName === "edit") known.delete(path);
+      const id = e.toolCallId;
+      void readFileText(e.args.path).then((t) => { if (t !== undefined && t !== content) { writeBefore.set(id, t); renderChat(); } }); // an existing file, read before the write lands (when it is quick enough)
+    }
   }
 }
 
