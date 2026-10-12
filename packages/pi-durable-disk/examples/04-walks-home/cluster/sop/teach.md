@@ -13,6 +13,8 @@ thread's work in its own conversation.
   a sprint if the body looks able to. "Tricks" are short, visible, and stable: spin in place, wave a limb, a bow, a hop
   if it is light and springy.
 - Names are short kebab-case (`walk`, `turn-left`, `wag-tail`). The robot's controls use these names.
+- When a skill is one of these, use exactly this name: walk, sprint, backwards, turn-left, turn-right, spin, wave,
+  get-up. The offline brain on the phone can start only skills with these names; give any other skill a name of its own.
 
 ## Write each brief (one short paragraph)
 1. What success looks like on this body, in plain terms ("moves forward without falling, torso level").
