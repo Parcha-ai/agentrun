@@ -20,7 +20,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness, watchEvents, type ConversationId, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { RobotBox, SKILLS, teachSkills, type TrainProgress } from "../teach-skills.ts";
+import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
 import { FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
 const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false } } });
@@ -263,7 +263,8 @@ if (mode === "abort") {
     if (counts.reduce((n, c) => n + c, 0) >= (a.plan ? 8 : mid)) {
       clearInterval(timer);
       const tasks = await graph();
-      writeFileSync(join(dir, "mid.json"), JSON.stringify({ t: Date.now() - T0, checkpoints: Object.fromEntries([...lastCheckpoint].map(([k, v]) => [label.get(k), v])), tasks }, null, 1));
+      const threads = await threadsOf(harness, context); // what a viewer lists mid-run
+      writeFileSync(join(dir, "mid.json"), JSON.stringify({ t: Date.now() - T0, checkpoints: Object.fromEntries([...lastCheckpoint].map(([k, v]) => [label.get(k), v])), tasks, threads }, null, 1));
       say({ event: "mid", tasks: tasks.length });
     }
   }, 50);
@@ -321,6 +322,7 @@ if (mode === "abort") {
     ask: askAnswer ? textOf(askAnswer.model![0] as never) : null,
     ...report,
     artifacts_copied: artifacts.reduce((n, s) => n + s.copied, 0),
+    threads_of: await threadsOf(harness, context, { conversation: root.id }),
     tasks_after: await graph(),
   };
   writeFileSync(join(dir, "report.json"), JSON.stringify(out, null, 1));

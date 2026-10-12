@@ -43,7 +43,16 @@ const pool = readFileSync(join(dir, "pool", "log.jsonl"), "utf8").trim().split("
 const threads: { skill: string; status: string; checkpoint?: number; summary: string }[] = report.teachResult?.details?.threads ?? [];
 const by = (s: string) => threads.find((t) => t.skill === s);
 const teachBefore = before.find((t: { kind: string }) => t.kind === "robot.teach-skills");
-const children: { tools: string[]; box: { skill: string }; parent?: unknown; owner?: unknown }[] = report.children;
+const children: { id: number; tools: string[]; box: { skill: string; gpu: number }; parent?: unknown; owner?: unknown }[] = report.children;
+// threadsOf, as a viewer reads it: mid-run (the first host, at the kill point) and after the run.
+type Listed = { conversation: number; name: string; gpu: number; of: number; boxId: string | null; status: string; settled: boolean };
+const mid: Listed[] | undefined = existsSync(join(dir, "mid.json")) ? JSON.parse(readFileSync(join(dir, "mid.json"), "utf8")).threads : undefined;
+const after: Listed[] = report.threads_of ?? [];
+const planned = ["walk", "spin", "wave"];
+const sameThreads = (l: Listed[]) =>
+  l.map((t) => t.name).join() === planned.join() &&
+  l.every((t, i) => t.gpu === i + 1 && t.of === 3) &&
+  l.map((t) => t.conversation).join() === [...children].sort((x, y) => x.box.gpu - y.box.gpu).map((c) => c.id).join();
 
 const checks: Record<string, boolean> = {
   the_plan_forked_three_threads: threads.length === 3 && children.length === 3,
@@ -56,7 +65,13 @@ const checks: Record<string, boolean> = {
   })(),
   every_box_released: pool.filter((p) => p.event === "pool.release").length === 3,
   no_live_tasks_left: report.tasks_after.length === 0,
+  // After the run every listed thread is settled, with its fold's status.
+  threads_of_after_the_run: sameThreads(after) && after.every((t, i) => t.settled && t.boxId !== null && t.status === threads[i]?.status),
 };
+if (kill && !a["status-throws"]) {
+  // Mid-run the same threads are listed, in plan order with their conversations, and not all of them are done yet.
+  checks.threads_of_mid_run = mid !== undefined && sameThreads(mid) && mid.some((t) => !t.settled && (t.status === "queued" || t.status === "running"));
+}
 if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
   checks.outcome_errors_are_reported = threads.every((t) => (t as { outcomeError?: string }).outcomeError === "skill.json is unreadable") && /could not be read: skill\.json is unreadable/.test(report.teachResult?.text ?? "");
@@ -75,7 +90,7 @@ if (a["status-throws"]) {
   checks.read_thread_answers_from_gpu_3 = typeof report.readThread === "string" && /GPU 3 \(wave\)/.test(report.readThread) && /bash/.test(report.readThread);
 }
 const ok = Object.values(checks).every(Boolean);
-const verdict = { ok, dir, checks, threads: threads.map((t) => ({ skill: t.skill, status: t.status, checkpoint: t.checkpoint })), tools: children.map((c) => ({ skill: c.box.skill, tools: c.tools })), answer: report.answer };
+const verdict = { ok, dir, checks, threads_of: { mid: mid?.map((t) => `${t.gpu} ${t.name} ${t.status}`), after: after.map((t) => `${t.gpu} ${t.name} ${t.status}`) }, threads: threads.map((t) => ({ skill: t.skill, status: t.status, checkpoint: t.checkpoint })), tools: children.map((c) => ({ skill: c.box.skill, tools: c.tools })), answer: report.answer };
 writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 1));
 console.log(JSON.stringify(verdict, null, 1));
 process.exit(ok ? 0 : 1);

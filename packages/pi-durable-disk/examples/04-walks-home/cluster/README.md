@@ -81,6 +81,28 @@ teachSkills({
   box stops the earlier process first.
 - The host's `acquire` puts what the thread needs on its box: the body files and D2's library.
 
+## Listing the threads (for a viewer)
+
+`threadsOf(harness, context, { conversation? })` lists the newest teaching run's threads, in plan order. With
+`conversation`, it lists the newest run that conversation started. It only reads the store, so a viewer can poll it, and
+it returns `[]` until teach_skills has forked.
+
+```ts
+type TeachThread = {
+  teach: number;           // the TeachSkills task
+  conversation: number;    // the thread's own conversation: watch it for the thread's tool calls
+  name: string;            // the planned skill name
+  gpu: number; of: number; // GPU 1..of, in plan order
+  boxId: string | null;    // null while it waits for a box
+  status: "queued" | "running" | ThreadResult["status"]; // then passed, never-passed, timed-out, error, ...
+  settled: boolean;        // its task is terminal: no more entries from this run
+};
+```
+
+It reads what the fork records: each child's `robot.box` document (skill, gpu, of, boxId, teach) and its Thread task's
+state. Depend on `threadsOf`, not on the task kinds or checkpoint shapes, which may change. The code-mode spike calls it
+mid-run (at the kill point) and after the run, and checks both lists against the plan and the fold.
+
 ## Restarts
 
 Kill the host at any point and open the same store in a new process:
