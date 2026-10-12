@@ -68,7 +68,9 @@ export const SKILL_CHANGED = "The body is unchanged: the walking brain still fit
 /** After the body was edited, this tool cannot know which body a skill was taught for: it says what is true, not that the brain fits. */
 export const SKILL_ON_CHANGED_BODY = "The body has been changed since it was drawn: a skill taught for another body makes the robot stumble until it is retrained.";
 /** What a skill's result says about whether the brain fits: on a code body, whether the skill's policy was taught for the body in robot/body.xml; on a preset body, whether the body is still the one drawn. */
-const skillTailFor = (state: RobotState, context: RobotContext): string => (context.body ? (state.skill && context.skillFits?.[state.skill] === true ? SKILL_CHANGED : SKILL_ON_CHANGED_BODY) : skillTail(state));
+/** On a code body, a skill taught for the body as it was: the robot stumbles until it learns the body as it is now (the agent offers that relearn). */
+export const SKILL_ON_NEW_BODY = "The body changed after this skill was learned, so the robot will stumble until it relearns it for its new body.";
+const skillTailFor = (state: RobotState, context: RobotContext): string => (context.body ? (state.skill && context.skillFits?.[state.skill] === true ? SKILL_CHANGED : SKILL_ON_NEW_BODY) : skillTail(state));
 const skillTail = (state: RobotState): string => (bodyKey(state.design) === bodyKey(state.original) ? SKILL_CHANGED : SKILL_ON_CHANGED_BODY);
 
 export interface Look {
@@ -390,7 +392,7 @@ export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>
     if (o.kind === "body" || (o.kind === "looks" && kind !== "body") || (o.kind === "skill" && kind === "none")) kind = o.kind;
     if (o.kind !== "none") applied++;
     state = o.state;
-    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, "").replace(` ${SKILL_CHANGED}`, "").replace(` ${SKILL_ON_CHANGED_BODY}`, ""));
+    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, "").replace(` ${SKILL_CHANGED}`, "").replace(` ${SKILL_ON_CHANGED_BODY}`, "").replace(` ${SKILL_ON_NEW_BODY}`, ""));
   }
   if (applied === 0 && refused > 0) return { state: prev, text: lines.join(" "), kind: "refused" };
   if (applied === 0) return { state: prev, text: lines.join(" "), kind: "none" };

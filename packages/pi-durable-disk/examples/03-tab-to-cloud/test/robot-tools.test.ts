@@ -337,7 +337,7 @@ test("do on a robot built from code: a skill taught for this body says the brain
   assert.equal(walk!.error, false);
   assert.equal(walk!.text, "The robot is now doing walk. The body is unchanged: the walking brain still fits.", "taught for this very body");
   assert.equal(trot!.error, false, "a free name: the schema no longer limits skills to the first eight");
-  assert.match(trot!.text, /^The robot is now doing trot\. The body has been changed since it was drawn: a skill taught for another body makes the robot stumble until it is retrained\.$/, "taught for a different body: it says so, it does not promise it fits");
+  assert.match(trot!.text, /^The robot is now doing trot\. The body changed after this skill was learned, so the robot will stumble until it relearns it for its new body\.$/, "taught for a different body: it says so, it does not promise it fits");
   assert.match(crouch!.text, /^The robot is now doing crouch\. The body is unchanged/);
   assert.equal(r.state().skill, "crouch");
   await r.close();
