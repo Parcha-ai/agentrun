@@ -554,3 +554,88 @@ test("a T7 turn reads its earlier exchanges on their own first, so the next turn
   await ask([sys, ...exchange(1), { role: "assistant", content: "[Robot now: 9]" }, { role: "user", content: "command 9" }]); // the oldest exchange dropped
   assert.equal(calls.restored, 2, "a window that dropped its oldest exchange starts from the warm state");
 });
+
+test("a turn's report counts the exchanges it read first, so a turn's whole cost shows", async () => {
+  const { turnReport } = await import("../tab/phone-model.ts");
+  const t = { at: 0, ms: 900, promptTokens: 66, outputTokens: 27, grammar: true, calls: ['morph({"preset":"spider"})'], text: "", raw: "", prompt: "", timings: { prompt_n: 66 }, stem: { tokens: 95, ms: 12000 } };
+  const r = turnReport(t, false);
+  assert.deepEqual(r.stem, { tokens: 95, ms: 12000 });
+  assert.equal(r.readTotal, 161);
+});
+
+/**
+ * An engine with llama-server's checkpoint rules for a hybrid model (83d855c, server-context.cpp, as D0 traced it on the native server): a prompt that leaves the
+ * engine's sequence resumes from the latest checkpoint at or before that point (none: from the start); a request is read in batches of at most n_batch, broken
+ * min(n_batch, n_ubatch + 4) and min(n_batch, 4) tokens before its end; a checkpoint is taken at the start of a batch that ends within n_ubatch of the end; and
+ * taking one drops every other request's checkpoint but the oldest (checkpoint_min_step 8192). A token is 4 characters of a message, about the real ratio (4.27).
+ */
+function checkpointEngine(o: { batch: number; prefix: string }) {
+  // special tokens split the text first, as a real tokenizer's do, so a message's tokens do not depend on what follows it
+  const tokens = (text: string) => text.split(/(?=<\|im_start\|>)/).flatMap((part) => Array.from({ length: Math.ceil(part.length / 4) }, (_, i) => part.slice(i * 4, i * 4 + 4)));
+  let cache: string[] = [];
+  let checkpoints: { n: number; task: number }[] = [];
+  let task = 0;
+  const read: number[] = [];
+  const run = (prompt: string, generate: number) => {
+    const want = tokens(prompt);
+    task++;
+    let same = 0;
+    while (same < cache.length && same < want.length && cache[same] === want[same]) same++;
+    if (same === want.length) same--; // a prompt the engine holds whole still reads its last token
+    let from = same;
+    if (same < cache.length) { // the sequence cannot be cut back: the latest checkpoint at or before the divergence, else the start
+      const at = checkpoints.filter((c) => c.n <= same).at(-1);
+      from = at ? at.n : 0;
+      checkpoints = checkpoints.filter((c) => c.n <= from);
+    }
+    const end = want.length;
+    for (let pos = from; pos < end; ) {
+      const start = pos;
+      while (pos < end && pos - start < o.batch) {
+        pos++;
+        if (end === pos + Math.min(o.batch, o.batch + 4) || end === pos + Math.min(o.batch, 4)) break;
+      }
+      if (end < pos + o.batch) { // near the end: a checkpoint of the state before this batch
+        checkpoints = checkpoints.filter((c, i) => i === 0 || c.task === task);
+        checkpoints.push({ n: start, task });
+      }
+    }
+    read.push(end - from);
+    cache = [...want, ...Array.from({ length: generate }, (_, i) => `g${task}.${i}`)];
+    return end - from;
+  };
+  const llm: Llm = {
+    async load() {},
+    async chat() { return { text: "", tokens: 0 }; },
+    async loadUrl(_url, opts) { opts.onProgress?.(501453056, 501453056); },
+    chatTemplate: () => template,
+    async complete(req) { const n = run(req.prompt, req.maxTokens > 0 ? 30 : 0); return { text: "", stoppedBy: "eog", promptTokens: n, outputTokens: 0, ms: 1 }; },
+    async restoreState(b) { cache = tokens(o.prefix); checkpoints = []; return { tokens: cache.length, bytes: b.size }; },
+    cachedFile: async () => new Blob([new Uint8Array(64)]),
+    async exit() {},
+  };
+  return { llm, read };
+}
+
+test("over ten turns a turn reads the same however long the chat, at batch 128 with the exchanges read first; at batch 64, or without that read, it grows", async () => {
+  const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", state = "https://p.example/m/robot-v3.state.bin";
+  const parts = JSON.stringify({ parts: [{ name: "robot-v3-00001-of-00007.gguf", bytes: 1, sha256: "a".repeat(64) }] });
+  const sidecar = JSON.stringify({ model: { first: "robot-v3-00001-of-00007.gguf", bytes: 501453056, parts: ["a".repeat(64)] }, prefixSha256: await sha(PREFIX), bytes: 64 });
+  const sys = { role: "system", content: serving.system };
+  const line = (n: number) => `[Robot now: named Rex${n}; body spider, changed since drawn; 6 legs; colors torso black, legs black; shapes torso round, legs round; face angry; doing nothing; skills home: none yet.]`;
+  const exchange = (n: number) => [{ role: "user", content: `paint it color ${n}` }, { role: "assistant", content: "", tool_calls: [{ id: `c${n}`, type: "function", function: { name: "set_color", arguments: '{"part": "all", "color": "red"}' } }] }, { role: "tool", tool_call_id: `c${n}`, content: "The whole robot is now red. Looks only: the walking brain still fits." }, { role: "assistant", content: "The whole robot is now red. Looks only: the walking brain still fits." }];
+  const conversation = async (batch: number, stemFirst: boolean) => {
+    const { llm } = checkpointEngine({ batch, prefix: PREFIX });
+    const model = new PhoneModel(llm, { url, threads: 2, nCtx: 2048, batch, maxTokens: 300 });
+    model.stemFirst = stemFirst;
+    await withFetch({ [`${state}.json`]: sidecar, "https://p.example/m/robot-v3.parts.json": parts }, async () => { await model.load(); await model.warm(serving.system, serving.tools, { url: state }); });
+    for (let n = 0; n < 10; n++) await model.toolChat({ messages: [sys, ...Array.from({ length: n }, (_, i) => exchange(i)).flat(), { role: "assistant", content: line(n) }, { role: "user", content: `command ${n}` }] as ToolChatMessage[], tools: serving.tools, maxTokens: 50 });
+    return model.turns.map((t) => t.promptTokens + (t.stem?.tokens ?? 0)); // everything each turn read
+  };
+  const flat = await conversation(128, true);
+  assert.ok(flat[9]! <= flat[2]! * 1.1 && flat.slice(2).every((n) => n < 200), `batch 128: ${flat.join(", ")}`);
+  const batch64 = await conversation(64, true);
+  assert.ok(batch64[9]! > batch64[2]! * 2, `batch 64: the tail is more than a batch and its checkpoint lands past the divergence (${batch64.join(", ")})`);
+  const restoring = await conversation(128, false);
+  assert.ok(restoring[9]! > restoring[2]! * 2, `without the exchanges-first read every turn reads its whole window (${restoring.join(", ")})`);
+});

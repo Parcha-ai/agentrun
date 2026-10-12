@@ -45,11 +45,12 @@ export async function served(url: string, get: typeof fetch = fetch): Promise<bo
 }
 
 /**
- * What a turn's report says (the page's beacon, read in its server's log): its time, tokens and the tools it called; the reply's words only with `withText`
+ * What a turn's report says (the page's beacon, read in its server's log): its time, tokens and the tools it called (with the exchanges-first read, its tokens and
+ * time, and `readTotal`, everything the turn read); the reply's words only with `withText`
  * (?report=text, the page's own switch): a reply can repeat what the user said, and the conversation stays on the phone.
  */
 export function turnReport(t: PhoneTurn, withText: boolean): Record<string, unknown> {
-  return { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), ...(t.rewarm ? { rewarm: t.rewarm } : {}), ...(withText ? { text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) } : {}) };
+  return { ms: t.ms, promptNew: t.timings?.prompt_n ?? null, promptTotal: t.promptTokens, out: t.outputTokens, calls: t.calls.map((c) => c.split("(")[0]), ...(t.rewarm ? { rewarm: t.rewarm } : {}), ...(t.stem ? { stem: t.stem, readTotal: t.stem.tokens + t.promptTokens } : {}), ...(withText ? { text: t.text.slice(0, 160), raw: t.calls.length ? undefined : t.raw.slice(0, 160) } : {}) };
 }
 
 /**
