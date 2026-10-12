@@ -14,14 +14,21 @@ class FakeSandbox {
   readonly onTerminate: (id: string) => Promise<void>;
   /** Set by a test: the box's commands wait for this (a box still preparing). */
   static execGate: Promise<void> | undefined;
+  /** Set by a test: the exit code every command returns, how long it takes, and every argv it was given. */
+  static execExit = 0;
+  static execDelayMs = 0;
+  static execs: string[][] = [];
   constructor(name: string, id: number, onTerminate: (id: string) => Promise<void>) {
     this.name = name;
     this.sandboxId = `sb-${id}`;
     this.onTerminate = onTerminate;
   }
-  async exec() {
+  async exec(argv?: string[]) {
     await FakeSandbox.execGate;
-    return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: { readBytes: async () => empty }, stderr: { readBytes: async () => empty }, wait: async () => 0 };
+    if (argv) FakeSandbox.execs.push(argv);
+    if (FakeSandbox.execDelayMs) await new Promise((r) => setTimeout(r, FakeSandbox.execDelayMs));
+    const exit = FakeSandbox.execExit;
+    return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: { readBytes: async () => empty }, stderr: { readBytes: async () => empty }, wait: async () => exit };
   }
   async poll() {
     return this.exit;
@@ -193,4 +200,90 @@ test("the cluster starts when the first page takes the run (prewarm), not before
   await w.cloud.cluster!.start();
   assert.equal(w.boxes.filter((b) => b.name.includes("gpu")).length, 2, "two cluster boxes, once");
   await w.cloud.close!();
+});
+
+const reset = () => {
+  FakeSandbox.execExit = 0;
+  FakeSandbox.execDelayMs = 0;
+  FakeSandbox.execs = [];
+};
+
+test("the cluster: boxes are owned per run, so one run cannot get, run in or release another run's box by using the same thread id", async () => {
+  const w = await world(() => false, undefined, { cluster: { size: 2, image: "im-cluster", start: "now" } });
+  await w.cloud.cluster!.start();
+  const a = w.cloud.cluster!.gpuFor("run-a");
+  const b = w.cloud.cluster!.gpuFor("run-b");
+  const boxA = await a.acquire("x");
+  assert.equal(a.holds(boxA), true);
+  assert.equal(b.holds(boxA), false, "run b does not hold run a's box");
+  const boxB = await b.acquire("x"); // the same thread id, another run
+  assert.notEqual(boxB, boxA, "a different box");
+  await assert.rejects(b.exec(boxA, ["id"], {}), /no thread of this run holds that box/);
+  await assert.rejects(b.poll(boxA), /no thread of this run holds that box/);
+  b.release("x");
+  assert.equal(a.holds(boxA), true, "run b's release did not free run a's box");
+  await w.cloud.close!();
+});
+
+test("the cluster: a command runs in its own session with its group recorded, and kill ends the group", async () => {
+  reset();
+  const w = await world(() => false, undefined, { cluster: { size: 1, image: "im-cluster", start: "now" } });
+  await w.cloud.cluster!.start();
+  const g = w.cloud.cluster!.gpuFor("run-a");
+  const box = await g.acquire("t");
+  FakeSandbox.execs = [];
+  const p = await g.exec(box, ["train-skill", "walk", "--out", "/workspace/skills/walk"], { timeoutMs: 5000 });
+  const ran = FakeSandbox.execs.at(-1)!;
+  assert.deepEqual([ran[0], ran[1]], ["sh", "-c"]);
+  assert.match(ran[2]!, /setsid -w/);
+  assert.deepEqual(ran.slice(4), ["train-skill", "walk", "--out", "/workspace/skills/walk"], "the argv goes through untouched");
+  assert.match(ran[3]!, /^\/tmp\/\.pda-rpc\//, "its pid file");
+  await p.kill!();
+  const killer = FakeSandbox.execs.at(-1)!;
+  assert.match(killer[2]!, /kill -TERM -- -\$p/);
+  assert.equal(killer[3], ran[3], "the same pid file");
+  await w.cloud.close!();
+  reset();
+});
+
+test("the cluster: a box that never gets ready is removed, and if Modal would not take it the first time it stays tracked and close tries again", async () => {
+  reset();
+  FakeSandbox.execExit = 1; // the readiness command keeps failing
+  const w = await world((_id, attempt) => attempt === 1, undefined, { cluster: { size: 1, image: "im-cluster", readyCommand: "false", readyTimeoutMs: 1_200, start: "now" } });
+  await w.cloud.cluster!.start();
+  assert.equal(w.cloud.cluster!.status().boxes[0]!.state, "failed");
+  assert.equal(w.boxes[0]!.exit, null, "the first removal failed: the box is still there");
+  await w.cloud.close!();
+  assert.equal(w.boxes[0]!.exit, 137, "close tried again, because the box was never untracked");
+  reset();
+});
+
+test("the cluster: closing while a box is warming up stops the warm-up and removes the box", async () => {
+  reset();
+  FakeSandbox.execExit = 1;
+  const w = await world(() => false, undefined, { cluster: { size: 1, image: "im-cluster", readyCommand: "false", readyTimeoutMs: 60_000, start: "now" } });
+  const warming = w.cloud.cluster!.start();
+  for (const end = Date.now() + 5_000; w.boxes.length === 0; await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error("no box");
+  await new Promise((r) => setTimeout(r, 300));
+  const t0 = Date.now();
+  await w.cloud.close!();
+  await warming;
+  assert.ok(Date.now() - t0 < 4_000, `close took ${Date.now() - t0} ms: it waited out the warm-up`);
+  assert.equal(w.boxes[0]!.exit, 137);
+  const before = FakeSandbox.execs.length;
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(FakeSandbox.execs.length, before, "no readiness command runs after close");
+  reset();
+});
+
+test("the cluster: a readiness answer that comes after the deadline is not accepted", async () => {
+  reset();
+  FakeSandbox.execDelayMs = 1_500; // answers success, but only after the 1 s the box was given
+  const w = await world(() => false, undefined, { cluster: { size: 1, image: "im-cluster", readyCommand: "true", readyTimeoutMs: 1_000, start: "now" } });
+  await w.cloud.cluster!.start();
+  assert.equal(w.cloud.cluster!.status().boxes[0]!.state, "failed");
+  assert.match(w.cloud.cluster!.status().boxes[0]!.error ?? "", /not ready in 1 s.*too late/);
+  await w.cloud.close!();
+  assert.equal(w.boxes[0]!.exit, 137);
+  reset();
 });

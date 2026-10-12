@@ -134,3 +134,37 @@ describe("the GPU pool", () => {
     await w.pool.close();
   });
 });
+
+describe("the GPU pool: one thread, one box", () => {
+  it("two requests for the same thread share one wait and get the same box, whether the boxes are still coming up or all busy", async () => {
+    const coming = world(2, { createMs: () => 80 });
+    const starting = coming.pool.start();
+    const [a1, a2] = await Promise.all([coming.pool.acquire("a"), coming.pool.acquire("a")]);
+    assert.equal(a1.id, a2.id, "both requests got the same box");
+    await starting;
+    assert.equal(coming.pool.status().boxes.filter((b) => b.state === "busy").length, 1, "one busy box, not two");
+    coming.pool.release("a");
+    assert.equal(coming.pool.status().boxes.filter((b) => b.state === "busy").length, 0, "release frees it");
+    await coming.pool.close();
+
+    const full = world(1);
+    await full.pool.start();
+    await full.pool.acquire("holder");
+    const w1 = full.pool.acquire("b");
+    const w2 = full.pool.acquire("b");
+    assert.equal(w1, w2, "the same pending wait");
+    full.pool.release("holder");
+    const [b1, b2] = await Promise.all([w1, w2]);
+    assert.equal(b1.id, b2.id);
+    await full.pool.close();
+  });
+
+  it("a box that lands after close and will not go the first time is removed on a retry", async () => {
+    const w = world(1, { createMs: () => 100, removeFails: (_id, attempt) => attempt < 3 });
+    const starting = w.pool.start();
+    await w.pool.close();
+    await starting;
+    assert.deepEqual(w.removed, ["sb-0"], "removed on the third try");
+    assert.ok(!w.logs.some((l) => l.event === "pool.late-box-left"));
+  });
+});

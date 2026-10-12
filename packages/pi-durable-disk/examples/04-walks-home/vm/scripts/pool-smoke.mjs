@@ -23,15 +23,18 @@ try {
   console.log(`${at()} pool: ${JSON.stringify(cloud.cluster.status().boxes.map((b) => `${b.index}:${b.state}${b.createMs ? `@${(b.createMs / 1000).toFixed(0)}s` : ""}`))}`);
   // The VM's path: a client over a loopback to the server's handler.
   let client;
-  const serving = serveGpu(cloud.cluster.gpu, (frame) => queueMicrotask(() => client.handle(frame)));
+  const serving = serveGpu(cloud.cluster.gpuFor("smoke"), (frame) => queueMicrotask(() => client.handle(frame)));
   client = createGpuClient((frame) => (queueMicrotask(() => serving.handle(frame)), true));
-  for (let i = 0; i < size; i++) {
+  const ready = cloud.cluster.status().boxes.filter((b) => b.state === "ready").length;
+  if (ready < size) throw new Error(`only ${ready} of ${size} boxes came up`);
+  for (let i = 0; i < ready; i++) {
     const box = await client.acquire(`smoke-${i}`);
     const p = await client.linkBox(box).exec(["sh", "-c", arg("cmd", "nvidia-smi -L; echo; (train-skill --help 2>&1 | head -3) || true")], { mode: "binary", timeoutMs: 60_000 });
     let out = "";
     for await (const c of p.stdout) out += new TextDecoder().decode(c);
     console.log(`${at()} box ${i} exit ${await p.wait()}: ${out.trim().replace(/\n+/g, " | ").slice(0, 240)}`);
     console.log(`${at()} poll ${i}: ${await client.linkBox(box).poll()}`);
+    await client.release(`smoke-${i}`);
   }
 } catch (error) {
   code = 1;

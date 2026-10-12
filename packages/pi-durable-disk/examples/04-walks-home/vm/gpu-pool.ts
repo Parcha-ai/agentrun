@@ -38,7 +38,7 @@ export interface GpuPoolOptions {
 }
 
 type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void> };
-type Waiter = { thread: string; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
+type Waiter = { thread: string; promise: Promise<PoolBox>; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
 
 export class GpuPool {
   readonly #options: GpuPoolOptions;
@@ -79,7 +79,9 @@ export class GpuPool {
         // The pool closed while this box was being made: its sweep has passed, so it is removed here.
         this.#options.log("pool.late-box", { index: slot.index, box: box.name });
         slot.box = box;
-        await this.#remove(slot);
+        // Nobody sweeps after close: this box is removed here, again if Modal would not take it the first time.
+        for (let attempt = 0; attempt < 4 && !(await this.#remove(slot)); attempt++) await new Promise((r) => setTimeout(r, 500));
+        if (slot.state !== "removed") this.#options.log("pool.late-box-left", { index: slot.index, box: box.name });
         return;
       }
       slot.box = box;
@@ -96,27 +98,34 @@ export class GpuPool {
     }
   }
 
-  /** The box this thread works on: waits for a free one when all are busy or still coming up. Rejects when the pool closes or no box can come up. */
+  /**
+   * The box this thread works on: waits for a free one when all are busy or still coming up. Rejects when the pool closes or no box can come up.
+   * Idempotent per thread: asking again returns the box the thread holds, or shares the wait it already has (a restart reruns its acquire phase), so
+   * one thread never ends up holding or queueing for two boxes. A second caller's `signal` does not cancel the shared wait.
+   */
   acquire(thread: string, signal?: AbortSignal): Promise<PoolBox> {
     if (this.#closing) return Promise.reject(new Error("the pool is closing"));
-    // Idempotent per thread: a thread that comes back (a restart reruns its acquire phase) gets the box it already holds.
     const held = this.#slots.find((s) => s.thread === thread && s.box);
     if (held) return Promise.resolve(held.box!);
-    return new Promise<PoolBox>((resolve, reject) => {
-      const waiter: Waiter = { thread, resolve, reject, ...(signal ? { signal } : {}) };
-      if (signal) {
-        if (signal.aborted) return reject(new Error("the wait for a box was cancelled"));
-        waiter.onAbort = () => {
-          const i = this.#waiting.indexOf(waiter);
-          if (i >= 0) this.#waiting.splice(i, 1);
-          reject(new Error("the wait for a box was cancelled"));
-        };
-        signal.addEventListener("abort", waiter.onAbort, { once: true });
-      }
-      this.#waiting.push(waiter);
-      this.#serve();
-      this.#failWaitersIfHopeless();
-    });
+    const waiting = this.#waiting.find((w) => w.thread === thread);
+    if (waiting) return waiting.promise;
+    let resolve!: (box: PoolBox) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<PoolBox>((res, rej) => ((resolve = res), (reject = rej)));
+    const waiter: Waiter = { thread, promise, resolve, reject, ...(signal ? { signal } : {}) };
+    if (signal) {
+      if (signal.aborted) return Promise.reject(new Error("the wait for a box was cancelled"));
+      waiter.onAbort = () => {
+        const i = this.#waiting.indexOf(waiter);
+        if (i >= 0) this.#waiting.splice(i, 1);
+        reject(new Error("the wait for a box was cancelled"));
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+    }
+    this.#waiting.push(waiter);
+    this.#serve();
+    this.#failWaitersIfHopeless();
+    return promise;
   }
 
   /** The thread is done with its box; it goes to the next waiting thread, or back to the pool. */
