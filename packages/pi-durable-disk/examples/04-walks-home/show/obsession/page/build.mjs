@@ -21,6 +21,7 @@ const result = await build({
   logLevel: "warning",
 });
 copyFileSync(join(here, "index.html"), join(out, "index.html"));
+copyFileSync(join(here, "..", "..", "page", "robot-pieces.css"), join(out, "robot-pieces.css"));
 copyEmojiFont(out);
 const bytes = Object.values(result.metafile.outputs).find((o) => o.entryPoint)?.bytes ?? 0;
 console.log(`obsession main.js: ${bytes} bytes`);

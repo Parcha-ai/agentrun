@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%230c0f0e%27/%3E%3Cpath d=%27M3 12l3-6 3 4 2-3 2 5%27 stroke=%27%236fe3a6%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
 <!-- The model's answers contain emoji and the recording machine has no emoji font: Noto Color Emoji, served by the stage itself (copied from an npm package at build time), the FIRST family in every font stack (its unicode-range is emoji only, so text still uses the text font; a system font with its own plain glyph for an emoji, like DejaVu's circle for the full moon, would otherwise win). -->
 <link rel="stylesheet" href="fonts/noto-color-emoji.css">
+<link rel="stylesheet" href="robot-pieces.css">
 <style>
 :root {
   color-scheme: dark;
@@ -189,32 +190,6 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 32%); 
 #chat { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); padding: 22px 24px 18px; position: relative; }
 #badge { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 24px 12px; position: relative; z-index: 4; }
 #vcaptionwrap { display: flex; justify-content: center; position: fixed; left: 28px; right: calc(max(400px, 32%) + 28px); bottom: 40px; z-index: 6; pointer-events: none; }
-/* the tab's own events for the self-tools beats: the net pill, the check-in and homecoming lines, the decision card, the tool strip (selftools-view.ts); each is hidden until the tab has said something */
-#net { position: fixed; top: 16px; right: 24px; z-index: 7; font: 800 18px var(--mono); letter-spacing: .12em; padding: 7px 16px; border-radius: 999px; border: 2px solid currentColor; background: var(--panel); }
-#net[data-online="true"] { color: var(--ok); } #net[data-online="false"] { color: var(--gpu); }
-#selftools { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; } #selftools:empty { display: none; }
-#selftools .line { font: 600 19px/1.3 var(--sans); color: var(--muted); padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); } #selftools .line.bad { color: var(--bad); border-color: var(--bad); }
-.rc { padding: 12px 16px; border-radius: 14px; border: 2px solid var(--tab); background: color-mix(in srgb, var(--tab) 12%, transparent); } .rc[data-brain="cloud"] { border-color: var(--gpu); background: color-mix(in srgb, var(--gpu) 12%, transparent); }
-.cc { padding: 12px 16px; border-radius: 14px; border: 2px solid var(--vm); background: color-mix(in srgb, var(--vm) 12%, transparent); } .cc .k { font: 700 13px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); } .cc .who { font: 800 26px/1.2 var(--sans); margin: 2px 0 6px; } .cc .off { font: 700 15px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--gpu); border: 1px solid var(--gpu); border-radius: 999px; padding: 1px 10px; vertical-align: 4px; } .cc ul { margin: 0; padding-left: 20px; font: 500 19px/1.35 var(--sans); } .cc li b { font-family: var(--mono); }
-.rc .k { font: 700 13px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); } .rc .who { font: 800 28px/1.2 var(--sans); margin: 2px 0 4px; } .rc .why { font: 500 19px/1.3 var(--sans); } .rc .how { margin-top: 4px; font: 600 16px var(--mono); color: var(--muted); }
-#toolstrip { position: absolute; left: 24px; right: 24px; top: 16px; z-index: 3; padding: 12px 16px; border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); }
-.ts .tr { display: flex; gap: 12px; align-items: baseline; font: 600 22px/1.4 var(--mono); white-space: nowrap; overflow: hidden; } .ts .tr .st { width: 1.2em; flex-shrink: 0; } .ts .tr .cmd { flex-shrink: 0; max-width: 62%; overflow: hidden; text-overflow: ellipsis; } .ts .tr .out { color: var(--muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
-.ts .tr[data-status="done"] .st { color: var(--ok); } .ts .tr[data-status="error"] .st, .ts .tr[data-status="interrupted"] .st { color: var(--bad); } .ts .tr[data-status="running"] .st { color: var(--gpu); } .ts .more { font: 600 15px var(--mono); color: var(--muted); margin-bottom: 4px; }
-#opentab { position: fixed; left: 28px; bottom: 8px; z-index: 8; font: 600 14px var(--mono); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
-/* one robot, eight teachers (threads-view.ts): a tile per thread while they learn, then the one robot with each skill lighting as it lands */
-#threads { position: absolute; inset: 0 0 150px 0; z-index: 3; padding: 18px 22px 8px; background: var(--bg); display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
-#threads .thead { font: 800 30px/1.15 var(--sans); } #threads .th { display: flex; flex-direction: column; gap: 14px; height: 100%; min-height: 0; }
-#threads .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); gap: 12px; flex: 1; min-height: 0; }
-#threads .tile { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border-radius: 14px; background: var(--panel); border: 2px solid var(--line); min-width: 0; overflow: hidden; }
-#threads .tile[data-status="learning"] { border-color: var(--gpu); } #threads .tile[data-status="done"] { border-color: var(--ok); } #threads .tile[data-status="failed"] { border-color: var(--bad); }
-#threads .tile .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; } #threads .tile .skill { font: 800 24px/1.1 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; } #threads .tile .st { font: 700 11px var(--mono); white-space: nowrap; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-#threads .tile .host { font: 600 14px var(--mono); color: var(--muted); } #threads .tile .spark { width: 100%; height: 34px; flex-shrink: 0; } #threads .tile .spark polyline { fill: none; stroke: var(--gpu); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-#threads .tile .cp { font: 600 15px var(--mono); color: var(--muted); } #threads .tile .val { font: 700 20px/1.2 var(--sans); } #threads .tile .val.none { font-size: 17px; font-weight: 500; color: var(--muted); }
-#threads .tile .pass { font: 700 15px var(--mono); } #threads .tile .pass.yes { color: var(--ok); } #threads .tile .pass.yes::before { content: "✓ "; } #threads .tile .pass.no { color: var(--gpu); } #threads .tile .meta { margin-top: auto; font: 600 13px var(--mono); color: var(--muted); }
-#threads .robot { width: 340px; height: 226px; align-self: center; fill: none; stroke: var(--tab); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; } #threads .robot .eye { fill: var(--tab); stroke: none; }
-#threads .skills { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; } #threads .skills .skill { font: 700 22px var(--sans); padding: 8px 18px; border-radius: 999px; border: 2px solid var(--line); color: var(--muted); transition: all .35s; }
-#threads .skills .skill.in { color: var(--ok); border-color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--ok) 45%, transparent); } #threads .skills .skill.failed { color: var(--bad); border-color: var(--bad); text-decoration: line-through; }
-#threads .th[data-phase="home"] .robot { stroke: var(--ok); }
 #lost { position: fixed; top: 0; left: 0; right: 0; background: var(--bad); color: #160504; text-align: center; font-weight: 700; padding: 4px; z-index: 10; }
 </style>
 </head>
