@@ -11,6 +11,8 @@ const cases: Case[] = [
   { message: "make it spin", taught: ["walk"], expect: "tab", why: "an untaught skill asked for is tried in the browser; the agent then offers to teach it" },
   { message: "make it spin", taught: ["walk", "spin", "wave"], expect: "tab", why: "taught: the robot does it" },
   { message: "go learn your new body", taught: ["walk", "spin", "wave"], expect: "modal-vm", why: "asks to learn" },
+  { message: "relearn your skills", taught: ["walk", "spin", "wave"], expect: "modal-vm", why: "asks to relearn" },
+  { message: "learn to walk again with the new tail", taught: ["walk", "spin", "wave"], expect: "modal-vm", why: "asks to learn again after the body changed" },
   { message: "teach it to walk, spin and wave", taught: [], expect: "modal-vm", why: "the stage line: asks to teach three skills" },
   { message: "retrain it to walk, it keeps falling", taught: ["walk"], expect: "modal-vm", why: "asks to retrain a taught skill" },
   { message: "walk to the flag", taught: ["walk"], expect: "tab", why: "taught: it walks there" },

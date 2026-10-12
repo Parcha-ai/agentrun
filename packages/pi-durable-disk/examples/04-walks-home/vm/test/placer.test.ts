@@ -246,6 +246,7 @@ test("the robot criteria give Jev one rule for a line that asks the robot to do 
   assert.match(CRITERIA_ROBOT.tab!, /whether or not it has been taught/);
   assert.match(CRITERIA_ROBOT.tab!, /shows it failing/);
   assert.match(CRITERIA_ROBOT["modal-vm"]!, /taught or not, is not teaching: it is trying it, in the browser/);
-  assert.match(CRITERIA_ROBOT["modal-vm"]!, /asks for the robot to be taught, to train, to retrain or to learn/);
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /asks for the robot to be taught, to train, to retrain, to relearn or to learn/);
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /learning again after its body changed/);
   // Where lines really land is checked against the live judge: `with-typesafe -- node scripts/placer-probe.mts 3` (the wording is for Jev, no code reads the user's words).
 });
