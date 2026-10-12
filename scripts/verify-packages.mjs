@@ -142,8 +142,11 @@ try {
     }
     return edges;
   };
-  // A package that is the dependency of another @earendil-works package is pinned through that parent's entry only: a
-  // top-level rule of its own beside the parent's nested one makes npm apply neither.
+  // npm 11 applies neither a parent's nested rule for a package nor that package's own top-level rule when both exist,
+  // so there a package that another @earendil-works package depends on is pinned through its parent's entry only. npm 10
+  // applies a rule to a package that is also a direct dependency of the consumer only from its own top-level entry, so
+  // there every package has one. The drift check below fails the run if a future npm resolves either shape differently.
+  const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   const dependedOn = new Set();
   for (const [location, entry] of Object.entries(rootLock)) {
     if (!location.includes('node_modules/') || !isUpstream(upstream(location))) continue;
@@ -160,7 +163,7 @@ try {
     const edges = pins(location);
     if (!Object.keys(edges).length) continue;
     const key = `${name}@${entry.version}`;
-    if (dependedOn.has(key)) continue;
+    if (npmMajor >= 11 && dependedOn.has(key)) continue;
     assert.ok(!overrides[key] || JSON.stringify(overrides[key]) === JSON.stringify(edges), `The repository lockfile resolves ${key} to different dependencies in different places`);
     overrides[key] = edges;
   }
