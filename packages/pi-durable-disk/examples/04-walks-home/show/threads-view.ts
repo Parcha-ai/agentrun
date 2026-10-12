@@ -2,7 +2,8 @@
 // per thread while they learn (its skill, its GPU, its checkpoints in its own unit), then the moment every skill lands in the one robot. Pure: state in, HTML out; a number an event did not
 // carry is not said.
 import { esc } from "./page/dom.ts";
-import type { Thread } from "./types.ts";
+import { SKILL_LABELS } from "./skills.ts";
+import type { ShowState, Thread } from "./types.ts";
 
 export type ThreadsPhase = "none" | "learning" | "landing" | "home";
 
@@ -51,20 +52,43 @@ function tileHtml(t: Thread): string {
   return `<div class="tile" data-id="${esc(t.id)}" data-status="${t.status}"><div class="top"><span class="skill">${esc(t.skill ?? "a skill")}</span><span class="st">${STATUS[t.status]}</span></div><div class="host">${esc(t.host ?? "a GPU")}</div>${spark}${body}${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</div>`;
 }
 
-const ROBOT = `<svg class="robot" viewBox="0 0 120 80" aria-hidden="true"><rect x="30" y="18" width="60" height="26" rx="8"/><circle cx="76" cy="28" r="3.5" class="eye"/><path class="leg l1" d="M38 44 L30 70"/><path class="leg l2" d="M54 44 L50 70"/><path class="leg l3" d="M70 44 L74 70"/><path class="leg l4" d="M86 44 L96 70"/></svg>`;
+/**
+ * The run is home when the place says so, or when it is back in the tab after a stay somewhere else (the live feed's place after coming back is "tab", not "home"): the skills of a finished
+ * round go into the robot only then.
+ */
+export function runIsHome(state: Pick<ShowState, "place" | "stays">): boolean {
+  return state.place.where === "home" || (state.place.where === "tab" && state.stays.some((s) => s.hostKind !== "tab"));
+}
 
-/** The centre view for the threads: tiles while they learn; the one robot with each skill lighting as it lands, then all of them. Empty when there are no threads. */
-export function threadsHtml(threads: readonly Thread[]): string {
+/** The threads in the order of the expected skills, with a waiting thread for each expected skill that has none yet; threads of other skills stay, after them. */
+export function withExpected(threads: readonly Thread[], expected: readonly string[]): Thread[] {
+  const known = new Map(threads.map((t) => [t.id, t]));
+  const rank = (id: string) => {
+    const i = expected.indexOf(id);
+    return i < 0 ? expected.length : i;
+  };
+  const waiting = expected.filter((id) => !known.has(id)).map(
+    (id): Thread => ({ id, skill: SKILL_LABELS[id as keyof typeof SKILL_LABELS] ?? id, host: null, status: "starting", acquireMs: null, costUsd: null, metric: null, unit: null, target: null, mjcf: null, bodyName: null, passedS: null, wallS: null, cpuS: null, cpuCores: null, home: false, points: [], at: 0 }),
+  );
+  return [...threads, ...waiting].map((t, i) => ({ t, i })).sort((a, b) => rank(a.t.id) - rank(b.t.id) || a.i - b.i).map((x) => x.t);
+}
+
+/**
+ * The centre view for the threads: tiles while they learn (with `expected`, a waiting tile for each skill whose thread has not started, so the agent is one agent split into eight from the first
+ * thread on); once they have finished, the skills that go into the robot, lighting as they land (the real creature in the page stays visible beneath: nothing is drawn over it). Empty with no threads.
+ */
+export function threadsHtml(threads: readonly Thread[], expected: readonly string[] = []): string {
   const phase = threadsPhase(threads);
   if (phase === "none") return "";
   if (phase === "learning") {
-    return `<div class="th" data-phase="learning"><div class="thead">The agent split into ${threads.length} thread${threads.length === 1 ? "" : "s"}, one per GPU</div><div class="tiles">${threads.map(tileHtml).join("")}</div></div>`;
+    const shown = expected.length > 0 ? withExpected(threads, expected) : threads;
+    return `<div class="th" data-phase="learning"><div class="thead">The agent split into ${shown.length} thread${shown.length === 1 ? "" : "s"}, one per GPU</div><div class="tiles">${shown.map(tileHtml).join("")}</div></div>`;
   }
   const live = threads.filter((t) => t.status !== "failed");
   const inCount = live.filter((t) => t.home).length;
   const head = phase === "home" ? `All ${live.length} skills are in the robot` : `${inCount} of ${live.length} skills are in the robot`;
   const chips = threads.map((t) => `<span class="${t.status === "failed" ? "skill failed" : t.home ? "skill in" : "skill"}">${esc(t.skill ?? "a skill")}</span>`).join("");
-  return `<div class="th" data-phase="${phase}"><div class="thead">${head}</div>${ROBOT}<div class="skills">${chips}</div></div>`;
+  return `<div class="th" data-phase="${phase}"><div class="thead">${head}</div><div class="skills">${chips}</div></div>`;
 }
 
 /** The thread whose skill goes into the robot next: when every thread has finished and the run is home, the first finished one not in yet, in their order. Null when none is due. */

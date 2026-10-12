@@ -47,7 +47,7 @@ try {
     r = await at(80);
     expect("later most are done, and the slow ones still learning", r.tiles.filter((t) => t.status === "done").length >= 5 && r.tiles.some((t) => t.status === "learning"), r.tiles.map((t) => t.status));
     r = await at(112, 2500); // every thread is finished, the run is not home yet
-    expect("when every thread has finished the one robot shows, no skill in until the run is home", r.shown && r.robot && /0 of 8 skills are in the robot/.test(r.head) && r.phase === "landing", r);
+    expect("when every thread has finished the skills strip shows (no drawing over the creature), no skill in until the run is home", r.shown && !r.robot && /0 of 8 skills are in the robot/.test(r.head) && r.phase === "landing", r);
     r = await at(118, 1500);
     for (let w = 0; w < 15_000 && !["landing", "home"].includes(r.phase); w += 500) { await sleep(500); r = await snap(); } // a loaded box reads the files slowly: wait for the state, not a fixed time
     expect("once the run is home the skills land one after another", r.phase === "landing" || r.phase === "home", r.phase);

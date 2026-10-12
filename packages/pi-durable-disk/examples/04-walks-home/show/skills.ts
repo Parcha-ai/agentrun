@@ -6,6 +6,9 @@ import type { ShowEvent, Thread } from "./types.ts";
 /** The eight skills, in the order of D2's table. */
 export const SKILLS = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"] as const;
 
+/** The words for each skill before its own skill.json has given a label (a thread that has not started). */
+export const SKILL_LABELS: Record<(typeof SKILLS)[number], string> = { walk: "walk", sprint: "sprint", backwards: "walk backwards", "turn-left": "turn left", "turn-right": "turn right", spin: "spin", wave: "wave", "get-up": "get up" };
+
 export type SkillPoint = {
   checkpoint: number;
   /** Seconds since that skill's trainer started. */
