@@ -140,5 +140,6 @@ node spike/spike.ts [--capacity 8] [--tick 700]   # prints a verdict, exits 1 on
 npm test                                         # the spike (8 boxes, a pool of 2, replays, abort), code mode, the fold
 node spike/spike_plan.ts [--deadline-ms 1400]    # code mode: plan of 3, each thread copies its worked skill and trains via bash
 node spike/spike_plan.ts --new-skill              # code mode with bow, not in the library: wave's real files copied, then edited
+node spike/spike_plan.ts --unmeasured             # code mode with get-up the trainer finds never happened: reported after one try
 npm run typecheck
 ```

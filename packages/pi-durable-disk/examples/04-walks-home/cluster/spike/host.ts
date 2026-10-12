@@ -24,7 +24,7 @@ import { TRAIN_SOP } from "../sop.ts";
 import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
 import { EXAMPLES, FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
-const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false }, unmeasured: { type: "boolean", default: false } } });
 const dir = a.dir!;
 const mode = a.mode as "first" | "resume" | "abort";
 const doneBefore = Object.fromEntries((a["done-before"] ?? "").split(",").filter(Boolean).map((spec) => {
@@ -59,10 +59,14 @@ const toolUse = (name: string, args: Record<string, unknown>) => fauxAssistantMe
 const PLAN = [
   { name: "walk", brief: "Walk forward steadily: forward speed above 0.3 m/s for 5 s without falling. Stop after 2 runs." },
   { name: "spin", brief: "Turn in place: yaw rate above 1 rad/s for 3 s with the torso upright. Stop after 2 runs." },
-  a["new-skill"]
+  a.unmeasured
+    ? { name: "get-up", brief: "Get up after a fall: from lying on its side, stand upright within 5 s. Stop after 2 runs." }
+    : a["new-skill"]
     ? { name: "bow", brief: "Bow: hold the nose down (pitch below -0.25 rad) for most of the time while standing. Stop after 2 runs." }
     : { name: "wave", brief: "Lift one front leg and wave it while standing on the others for 3 s. Stop after 2 runs." },
 ];
+/** D2's diagnosis when a skill never happened at any checkpoint (train-skill-diagnose, #295). */
+const UNMEASURED = "self-righting was never measured: at all 5 checkpoints test.py ran and found the skill never happened (a get-up that never righted, a pose never reached). Check that this body can do it at all (its joints, feet and mass) before training longer or changing the reward";
 /** For a skill the library does not have, the library skill a thread starts from (train-skill.md step 2). */
 const CLOSEST: Readonly<Record<string, string>> = { bow: "wave" };
 const planThread = (msgs: { role: string; toolName?: string; content?: unknown }[]) => {
@@ -111,6 +115,8 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
     const skillJson = readSince.find((t) => /"status"/.test(t));
     if (skillJson === undefined) return bash(`cat /workspace/runs/${skill}/skill.json`);
     if (/still changing/.test(skillJson) && tries.length < 2) return bash(`${run} --steps 40M --stop-after-passing 2`);
+    // Never settles or was never measured: the body, not the training, so no retry: the thread reports.
+    if (/never settles|was never measured/.test(skillJson)) return fauxAssistantMessage(fauxText(`${skill} cannot be taught on this body: the trainer found it never happened, so I did not train again.`));
     if (example !== undefined && tries.length < 2) {
       // The library skill's one other retry: one reward_scales weight, edited (not rewritten), then 12M again.
       const after = results.slice(results.length - readSince.length);
@@ -219,7 +225,8 @@ const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "sessio
   settings: { extensions: [teach] },
   env: async (target, ctx) => {
     const box = await target.read.snapshot(RobotBox, target.conversationId, ctx);
-    return box?.boxId ? new FakeBoxEnv(box.boxId, pool.boxDir(box.boxId), tick) : undefined;
+    // --unmeasured: the trainer finds get-up never happened, as on legs that only swing fore and aft (D2's diagnosis).
+    return box?.boxId ? new FakeBoxEnv(box.boxId, pool.boxDir(box.boxId), tick, a.unmeasured ? { "get-up": UNMEASURED } : {}) : undefined;
   },
 }, context);
 const root = await harness.root(context, { agent: { model } });
