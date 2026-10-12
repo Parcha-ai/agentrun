@@ -7,8 +7,122 @@ import type { Llm } from './modelhost.ts';
 import { DEFAULT_SAMPLING } from './sampling.ts';
 import { LimitTracker } from './limits.ts';
 import { loadWithAdapters, type LoraSelection } from './adapters.ts';
+import { Sha256 } from './sha256-stream.ts';
 export const N_CTX = 2048;
 export const REPEAT_LAST_N = 64;
+
+/**
+ * How `wllamaLlm` makes its engine, with options: `compat` serves wllama's Safari build (no JSPI or memory64: every iPhone browser) from this site instead of
+ * its CDN, so the page loads it with no network; `logger` receives the engine's own lines (llama.cpp's included).
+ */
+export function wllamaWith(o: { compat?: { worker: string; wasm: string }; logger?: { debug(...a: unknown[]): void; log(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }): (config: { default: string }) => Wllama {
+  return (config) => {
+    const w = new Wllama(config, { ...(o.logger ? { logger: o.logger as never, suppressNativeLog: false } : {}) });
+    if (o.compat) w.setCompat(o.compat);
+    return w;
+  };
+}
+
+/** The URLs of a split GGUF's parts, from its first (`-00001-of-0000N.gguf`); a file that is not split is its own only part. */
+function shardUrls(first: string): string[] {
+  const m = /-(\d{5})-of-(\d{5})\.gguf$/.exec(first);
+  if (!m) return [first];
+  return Array.from({ length: Number(m[2]) }, (_, i) => first.replace(/-\d{5}-of-(\d{5})\.gguf$/, `-${String(i + 1).padStart(5, '0')}-of-$1.gguf`));
+}
+
+const VERIFIED = 'wllama-verified:';
+/** The engine's reads of model parts so far: how many, and the largest it asked for at once (a check that a build reads in pieces). */
+export const partReads = { count: 0, largest: 0 };
+const PIECE = 8 * 1024 * 1024;
+
+/** A part from the cache, checked: its size against the manifest every time, its sha256 once (read through in pieces, so a part that cannot be read fails here, by name). */
+async function verifiedPart(w: Wllama, url: string, want: { bytes: number; sha256?: string } | undefined, o: { onStatus(text: string): void; onProgress(loaded: number): void }): Promise<Blob> {
+  const cm = w.cacheManager;
+  const key = await cm.getNameFromURL(url);
+  const name = url.split('/').pop()!;
+  const mark = `${VERIFIED}${key}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let blob = (await cm.getSize(key)) > 0 ? await cm.open(key) : null;
+    if (blob && want && blob.size !== want.bytes) {
+      o.onStatus(`${name}: ${blob.size} bytes in the cache, ${want.bytes} expected: fetching it again`);
+      await cm.delete(key);
+      blob = null;
+    }
+    if (!blob) {
+      await cm.download(url, { progressCallback: ({ loaded }: { loaded: number }) => o.onProgress(loaded) });
+      blob = await cm.open(key);
+      if (!blob) throw new Error(`${name}: not in the cache after its download`);
+    }
+    o.onProgress(blob.size);
+    const stamp = `${want?.sha256 ?? ''}:${blob.size}:${(blob as File).lastModified ?? 0}`;
+    let seen: string | null = null;
+    try { seen = localStorage.getItem(mark); } catch { /* no storage: check every time */ }
+    if (!want?.sha256 || seen === stamp) return blob;
+    let problem: string | undefined;
+    try {
+      o.onStatus(`checking ${name}`);
+      const h = new Sha256();
+      for (let at = 0; at < blob.size; at += PIECE) h.update(new Uint8Array(await blob.slice(at, Math.min(blob.size, at + PIECE)).arrayBuffer()));
+      const got = h.hex();
+      if (got !== want.sha256) problem = `sha256 ${got.slice(0, 12)}, ${want.sha256.slice(0, 12)} expected`;
+    } catch (e) {
+      problem = `unreadable (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)})`;
+    }
+    if (!problem) {
+      try { localStorage.setItem(mark, stamp); } catch { /* no storage */ }
+      return blob;
+    }
+    o.onStatus(`${name}: ${problem}: fetching it again`);
+    await cm.delete(key);
+  }
+  throw new Error(`${name}: still wrong or unreadable after fetching it again`);
+}
+
+/**
+ * A part as wllama reads it: in pieces of at most 8 MB (a model's token embedding is one 208 MB tensor, and WebKit failed such a read with NotReadableError);
+ * a piece that fails is read again from a fresh handle on the cached file, then from the network (an HTTP range), and an error names the file and the bytes.
+ */
+class SlicedBlob extends Blob {
+  readonly name: string;
+  private inner: Blob;
+  private readonly url: string;
+  private readonly reopen: () => Promise<Blob | null>;
+  constructor(inner: Blob, name: string, url: string, reopen: () => Promise<Blob | null>) {
+    super([]);
+    this.inner = inner;
+    this.name = name;
+    this.url = url;
+    this.reopen = reopen;
+  }
+  override get size(): number { return this.inner.size; }
+  override slice(start = 0, end = this.size): Blob {
+    const s = Math.max(0, start), e = Math.min(end, this.size);
+    partReads.count++;
+    partReads.largest = Math.max(partReads.largest, e - s);
+    return { size: e - s, arrayBuffer: () => this.read(s, e) } as unknown as Blob;
+  }
+  private async read(s: number, e: number): Promise<ArrayBuffer> {
+    if (e - s <= PIECE) return this.piece(s, e);
+    const out = new Uint8Array(e - s);
+    for (let at = s; at < e; at += PIECE) out.set(new Uint8Array(await this.piece(at, Math.min(e, at + PIECE))), at - s);
+    return out.buffer;
+  }
+  private async piece(a: number, b: number): Promise<ArrayBuffer> {
+    try {
+      return await this.inner.slice(a, b).arrayBuffer();
+    } catch (first) {
+      try {
+        const fresh = await this.reopen();
+        if (fresh) { this.inner = fresh; return await fresh.slice(a, b).arrayBuffer(); }
+      } catch { /* the cached file cannot be read again: the network next */ }
+      try {
+        const r = await fetch(this.url, { headers: { Range: `bytes=${a}-${b - 1}` } });
+        if (r.status === 206) { const buf = await r.arrayBuffer(); if (buf.byteLength === b - a) return buf; }
+      } catch { /* offline */ }
+      throw new Error(`reading ${this.name} bytes ${a}-${b} failed: ${first instanceof Error ? `${first.name}: ${first.message}` : String(first)}`);
+    }
+  }
+}
 
 export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) => Wllama = (c) => new Wllama(c)): Llm {
   let w: Wllama | null = null;
@@ -26,6 +140,57 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       } catch (e) {
         await release(); // a half-started model is released, not left running
         throw e;
+      }
+    },
+    async loadUrl(url, { threads, nCtx, batch, slots, parts, onProgress, onStatus }) {
+      await release();
+      const next = make({ default: wasmUrl });
+      w = next;
+      try {
+        // The parts of a split GGUF (-00001-of-0000N) through wllama's cache (OPFS): fetched once, then found there with no network. Each part is checked against
+        // the manifest before it is used (its size every time; a read-through sha256 once, remembered), and one that is short, wrong or unreadable (a download a
+        // crash cut short; WebKit's NotReadableError) is deleted and fetched again. batch: a hybrid model (Qwen3.5) resumes from a checkpoint before the prompt's
+        // last batch, so a small batch keeps what each turn reads again small (D0 measured, batch 64: about 60 tokens per command instead of the whole prompt).
+        const urls = shardUrls(url);
+        const total = parts?.reduce((n, p) => n + p.bytes, 0) ?? 0;
+        const blobs: Blob[] = [];
+        let base = 0;
+        for (const [i, u] of urls.entries()) {
+          const blob = await verifiedPart(next, u, parts?.[i], { onStatus: onStatus ?? (() => undefined), onProgress: (loaded) => onProgress?.(base + loaded, total) });
+          base += blob.size;
+          blobs.push(new SlicedBlob(blob, u.split('/').pop()!, u, async () => next.cacheManager.open(await next.cacheManager.getNameFromURL(u))));
+        }
+        onProgress?.(base, total || base);
+        await next.loadModel(blobs, { n_ctx: nCtx ?? N_CTX, n_threads: threads, n_gpu_layers: 0, swa_full: true, ...(batch ? { n_batch: batch, n_ubatch: batch } : {}), ...(slots ? { n_parallel: slots } : {}) });
+      } catch (e) {
+        await release();
+        throw e;
+      }
+    },
+    async clearCache() {
+      await make({ default: wasmUrl }).cacheManager.clear();
+      try { for (const k of Object.keys(localStorage)) if (k.startsWith(VERIFIED)) localStorage.removeItem(k); } catch { /* no storage */ }
+    },
+    chatTemplate() { return w?.getChatTemplate() ?? null; },
+    async restoreState(state) {
+      if (!w) throw new Error('the model is not loaded');
+      // D0's slot shim (a wllama build whose rerank message also carries llama-server's slot actions): the state file is registered like a model shard, so the
+      // engine reads it through wllama's own file access, and llama-server's slot restore puts its tokens and cache in slot 0. A stock build refuses the message.
+      const proxy = (w as unknown as { proxy: { fileAlloc(name: string, size: number, alloc: boolean): Promise<number>; fileBlobs: Map<string, Blob>; wllamaAction<T>(name: string, body: Record<string, unknown>): Promise<T> } }).proxy;
+      const name = 'state.bin';
+      await proxy.fileAlloc(name, state.size, false);
+      proxy.fileBlobs.set(name, state);
+      const started = await proxy.wllamaAction<{ success: boolean; req_id: number }>('rerank', { _name: 'rrnk_req', data_json: JSON.stringify({ slot_action: 'restore', filepath: `/models/${name}` }) });
+      if (!started.success) throw new Error('the engine did not start the restore');
+      for (;;) {
+        const chunk = await proxy.wllamaAction<{ data_json: string; has_more: boolean; is_error: boolean }>('get_result', { _name: 'gres_req', req_id: started.req_id });
+        if (chunk.data_json) {
+          const data = JSON.parse(chunk.data_json) as { n_restored?: number; message?: string };
+          proxy.fileBlobs.delete(name); // the state is in the engine now: the page lets go of its copy
+          if (chunk.is_error || data.n_restored === undefined) throw new Error(data.message ?? 'the restore failed');
+          return { tokens: data.n_restored, bytes: state.size };
+        }
+        if (!chunk.has_more) throw new Error('the restore returned nothing (a wllama build without the slot shim)');
       }
     },
     async chat({ messages, maxTokens, signal, onText, sampling, stop, prefill }) {

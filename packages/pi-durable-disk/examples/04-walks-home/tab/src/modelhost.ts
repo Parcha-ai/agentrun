@@ -59,6 +59,14 @@ export interface Llm {
   load(parts: (Uint8Array | Blob)[], opts: { threads: number; adapters?: AdapterFile[]; active?: Record<string, number>; /** The model's own chat template (jinja), needed for `chatTools`. */ jinja?: boolean; /** The context in tokens (default 2048). */ nCtx?: number }): Promise<void>;
   /** Generate an answer; onText gets the whole text so far and the tokens so far. `stop` strings end the text before them; `prefill` is an assistant turn to continue (the returned text is only what comes after it). An abort ends it early without throwing. */
   chat(o: { messages: ChatMsg[]; maxTokens: number; signal: AbortSignal; sampling?: Sampling; stop?: string[]; prefill?: string; onText: (cumulative: string, tokens: number) => void }): Promise<{ text: string; tokens: number }>;
+  /** Optional: load a model from a URL (a split GGUF's first part names them all) through the engine's own cache, so a later load needs no network. `batch` is n_batch and n_ubatch. */
+  loadUrl?(url: string, opts: { threads: number; nCtx?: number; batch?: number; /** Sequences the engine keeps (wllama's default is 4: a hybrid model's recurrent state is kept that many times). */ slots?: number; /** The parts' manifest (in order): each cached part is checked against it, and fetched again when short, wrong or unreadable. */ parts?: { name?: string; bytes: number; sha256?: string }[]; onProgress?: (loaded: number, total: number) => void; /** What the load is doing, in words (checking a part, fetching one again). */ onStatus?: (text: string) => void }): Promise<void>;
+  /** Optional: forget every model file the engine's cache holds (the next load fetches them again). */
+  clearCache?(): Promise<void>;
+  /** Optional: the loaded model's own chat template (jinja), or null when its file has none. */
+  chatTemplate?(): string | null;
+  /** Optional: put a saved warm state (llama-server's slot save of a prompt prefix, made by the same llama.cpp with the same settings) back in slot 0, instead of prefilling that prefix. Throws when the engine cannot. */
+  restoreState?(state: Blob): Promise<{ tokens: number; bytes: number }>;
   /** Optional: one chat turn with the model's NATIVE tool template (OpenAI-shaped messages and tools in, its own tool_calls out; needs `jinja` at load). An abort ends it early and returns what was generated. */
   chatTools?(req: ToolChatRequest, o: { signal: AbortSignal; sampling?: Sampling }): Promise<ToolChatResult>;
   /** Optional: one raw completion (see RawRequest). An abort ends it early and returns what was generated. */
