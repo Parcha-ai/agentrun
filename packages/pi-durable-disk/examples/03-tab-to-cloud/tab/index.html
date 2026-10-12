@@ -127,7 +127,6 @@ body.phone #creature-pane:not([hidden]) { display: block !important; }
 body.phone #chat { grid-row: 2; }
 body.phone aside:not(#creature-pane), body.phone .actions, body.phone #net, body.phone .run { display: none !important; }
 body.phone header { padding: 10px 14px; gap: 10px; }
-body.phone footer { padding: 8px 12px; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } .badge-sub { display: none; } }
 /* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
 @media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }

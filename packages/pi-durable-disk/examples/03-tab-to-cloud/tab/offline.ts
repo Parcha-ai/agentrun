@@ -136,6 +136,27 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   return { files: total, bytes };
 }
 
+/**
+ * Put these same-origin files in the offline cache, each fetched whole past the HTTP cache (the phone's page, the assets its build lists, its model's small
+ * files): a reload with no network is then answered by the service worker (sw.ts). A file already cached with the same length is kept as it is.
+ */
+export async function cacheFilesForOffline(paths: readonly string[], onProgress?: (p: CacheProgress) => void): Promise<{ files: number; bytes: number }> {
+  const cache = await caches.open(CACHE_NAME);
+  let done = 0, bytes = 0;
+  for (const path of paths) {
+    const key = cacheKey(new URL(path, location.origin));
+    const r = await fetch(path, { cache: "reload" });
+    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    const length = Number(r.headers.get("content-length") ?? 0);
+    const have = await cache.match(key);
+    if (have && length > 0 && Number(have.headers.get("content-length")) === length) await r.body?.cancel();
+    else await cache.put(key, r);
+    bytes += length;
+    onProgress?.({ done: ++done, total: paths.length, what: path });
+  }
+  return { files: paths.length, bytes };
+}
+
 /** A checkout the pipe refused or could not do; `code` is the pipe's (HEAD_MISMATCH, NOT_WRITER, CHECKED_OUT, ...). */
 export class CheckoutError extends Error {
   readonly code: string;

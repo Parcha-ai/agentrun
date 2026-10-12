@@ -35,10 +35,10 @@ test("the lock is D1's whole-schema grammar for the v3 tools, rule for rule", ()
 
 test("a reply in Qwen's call format comes back as calls with arguments typed by the schema; the text around them is the answer", () => {
   const two = "<tool_call>\n<function=morph>\n<parameter=preset>\nspider\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=scale>\n<parameter=factor>\n1.5\n</parameter>\n</function>\n</tool_call>";
-  assert.deepEqual(parseNative(two, serving.tools), { calls: [{ name: "morph", arguments: { preset: "spider" } }, { name: "scale", arguments: { factor: 1.5 } }], text: "" });
+  assert.deepEqual(parseNative(two, serving.tools), { calls: [{ name: "morph", arguments: { preset: "spider" } }, { name: "scale", arguments: { factor: 1.5 } }], text: "", unfinished: false });
   assert.deepEqual(parseNative("<tool_call>\n<function=set_legs>\n<parameter=pairs>\n3\n</parameter>\n</function>\n</tool_call>", serving.tools).calls, [{ name: "set_legs", arguments: { pairs: 3 } }], "an integer enum is a number");
   assert.deepEqual(parseNative("<tool_call>\n<function=rename>\n<parameter=name>\n42\n</parameter>\n</function>\n</tool_call>", serving.tools).calls, [{ name: "rename", arguments: { name: "42" } }], "a string that looks like a number stays a string");
-  assert.deepEqual(parseNative("I am fine, thanks.", serving.tools), { calls: [], text: "I am fine, thanks." });
+  assert.deepEqual(parseNative("I am fine, thanks.", serving.tools), { calls: [], text: "I am fine, thanks.", unfinished: false });
 });
 
 test("a locked tool chat: the rendered prompt and the grammar go to the raw completion; with no tools there is no grammar", async () => {
@@ -231,4 +231,64 @@ test("the exchanges window: earlier exchanges in the model's format, the state l
   assert.deepEqual(two.messages.filter((m) => m.role === "user").map((m) => m.content), ["now make it a spider", "What color is the robot now?"], "the oldest exchange dropped, whole");
   assert.equal(two.dropped, 1);
   assert.ok(calls >= 2);
+});
+
+test("a reply cut inside a call runs nothing: reset with no closing tags is not a reset", async () => {
+  const cut = "<tool_call>\n<function=morph>\n<parameter=preset>\ndog\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=reset>\n";
+  const parsed = parseNative(cut, serving.tools);
+  assert.equal(parsed.unfinished, true);
+  assert.deepEqual(parsed.calls.map((c) => c.name), ["morph"], "the finished call is read, the cut one is not");
+  const chat = lockedToolChat({ template: () => template, complete: async () => ({ text: cut, stoppedBy: "length", promptTokens: 12, outputTokens: 300, ms: 1 }) });
+  const r = await chat({ messages: rendered[0]!.messages, tools: serving.tools, maxTokens: 300 });
+  assert.deepEqual(r.toolCalls, [], "a cut reply runs none of its calls");
+  assert.equal(r.stoppedBy, "length");
+});
+
+test("a parts manifest the server will not give (404, 503, offline) is taken from the copy kept by an earlier load; with none, the load says the parts go unchecked", async () => {
+  const store = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+  try {
+    const url = "https://p.example/m/robot-v3-00001-of-00007.gguf", manifest = "https://p.example/m/robot-v3.parts.json";
+    const parts = [{ name: "robot-v3-00001-of-00007.gguf", bytes: 10, sha256: "a".repeat(64) }];
+    const first = fakeLlm();
+    await withFetch({ [manifest]: JSON.stringify({ parts }) }, () => new PhoneModel(first.llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300 }).load());
+    const later = fakeLlm(), said: string[] = [];
+    await withFetch({}, () => new PhoneModel(later.llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300, onStatus: (t) => said.push(t) }).load()); // the server answers 404
+    assert.deepEqual(later.calls.loads[0]!.parts, parts, "the kept copy, on a 404");
+    assert.deepEqual(said, []);
+    store.clear();
+    const none = fakeLlm(), told: string[] = [];
+    await withFetch({}, () => new PhoneModel(none.llm, { url, threads: 2, nCtx: 2048, batch: 64, maxTokens: 300, onStatus: (t) => told.push(t) }).load());
+    assert.equal(none.calls.loads[0]!.parts, undefined);
+    assert.match(told[0]!, /no parts manifest/);
+  } finally {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
+});
+
+test("the phone's files go into the offline cache under their paths; one already there at the same length is kept", async () => {
+  const { cacheFilesForOffline } = await import("../tab/offline.ts");
+  const put = new Map<string, string>();
+  const g = globalThis as unknown as { caches?: unknown; location?: unknown };
+  const before = { caches: g.caches, location: g.location };
+  g.location = { origin: "https://p.example" };
+  g.caches = { open: async () => ({ match: async (k: string) => (put.has(k) ? new Response(put.get(k), { headers: { "content-length": String(put.get(k)!.length) } }) : undefined), put: async (k: string, r: Response) => void put.set(k, await r.text()) }) };
+  try {
+    put.set("https://p.example/models/robot.parts.json", "old-same");
+    const files = { "/": "<html>", "/main.js": "js", "/models/robot.parts.json": "new-same" };
+    const fetched: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (u: string) => { fetched.push(String(u)); return new Response(files[String(u) as keyof typeof files], { headers: { "content-length": String(files[String(u) as keyof typeof files].length) } }); }) as typeof fetch;
+    try {
+      const saved = await cacheFilesForOffline(Object.keys(files));
+      assert.equal(saved.files, 3);
+    } finally { globalThis.fetch = real; }
+    assert.equal(put.get("https://p.example/"), "<html>");
+    assert.equal(put.get("https://p.example/main.js"), "js");
+    assert.equal(put.get("https://p.example/models/robot.parts.json"), "old-same", "the same length: kept, not written again");
+    assert.deepEqual(fetched, ["/", "/main.js", "/models/robot.parts.json"]);
+  } finally {
+    g.caches = before.caches;
+    g.location = before.location;
+  }
 });

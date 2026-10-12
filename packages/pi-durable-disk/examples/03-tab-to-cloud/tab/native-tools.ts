@@ -72,12 +72,15 @@ export function lockGrammar(tools: readonly ToolChatTool[]): string {
 
 // ---- the reply -----------------------------------------------------------------------------------------------------
 
-/** The calls in a reply (each argument typed by its schema), and the text around them. A call to an unknown tool is kept: the Harness answers it as unknown. */
-export function parseNative(text: string, tools: readonly ToolChatTool[]): { calls: { name: string; arguments: Record<string, unknown> }[]; text: string } {
+/**
+ * The calls in a reply (each argument typed by its schema), and the text around them. A call to an unknown tool is kept: the Harness answers it as unknown. Only
+ * finished calls count: a reply cut by its token limit inside a call (`<function=reset>` and no more) is no call at all (`unfinished`), never run with what it had.
+ */
+export function parseNative(text: string, tools: readonly ToolChatTool[]): { calls: { name: string; arguments: Record<string, unknown> }[]; text: string; unfinished: boolean } {
   const schemas = new Map(tools.map((t) => [t.function.name, (t.function.parameters ?? {}) as JsonSchema]));
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
-  for (const m of text.matchAll(/<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g)) {
-    const fn = /<function=([\w-]+)>/.exec(m[1]!);
+  for (const m of text.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) {
+    const fn = /<function=([\w-]+)>[\s\S]*<\/function>/.exec(m[1]!);
     if (!fn) continue;
     const props = schemas.get(fn[1]!)?.properties ?? {};
     const args: Record<string, unknown> = {};
@@ -87,8 +90,10 @@ export function parseNative(text: string, tools: readonly ToolChatTool[]): { cal
     }
     calls.push({ name: fn[1]!, arguments: args });
   }
-  const rest = text.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-  return { calls, text: rest };
+  const finished = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
+  const unfinished = finished.includes("<tool_call>");
+  const rest = finished.replace(/<tool_call>[\s\S]*$/, "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  return { calls, text: rest, unfinished };
 }
 
 /**
@@ -108,8 +113,9 @@ export function lockedToolChat(model: { template(): string | null; complete(req:
     const stamp = `call-${Date.now().toString(36)}`;
     const result: ToolChatResult = {
       text: parsed.text,
-      toolCalls: parsed.calls.map((c, i) => ({ id: `${stamp}-${i}`, name: c.name, arguments: JSON.stringify(c.arguments) })),
-      stoppedBy: parsed.calls.length > 0 ? "tool_calls" : r.stoppedBy === "length" ? "length" : "stop",
+      // a reply cut inside a call runs none of its calls: what was cut is not what the model meant
+      toolCalls: (parsed.unfinished ? [] : parsed.calls).map((c, i) => ({ id: `${stamp}-${i}`, name: c.name, arguments: JSON.stringify(c.arguments) })),
+      stoppedBy: parsed.unfinished || r.stoppedBy === "length" && parsed.calls.length === 0 ? "length" : parsed.calls.length > 0 ? "tool_calls" : "stop",
       promptTokens: r.promptTokens,
       outputTokens: r.outputTokens,
       ms: performance.now() - started,

@@ -15,6 +15,7 @@ import { wllamaLlm } from "../../04-walks-home/tab/src/llm.ts";
 import { isBaseAdapters } from "../../04-walks-home/tab/src/adapter-manifest.ts";
 import { comeHome, describeHome, opfsFileStore } from "../../04-walks-home/tab/src/homecoming.ts";
 import { composerRoute, submitFrameKind } from "./composer.ts";
+import { stageFiles } from "./offline-cache.ts";
 import { PipeClient, type Attached, type Viewing } from "./pipe-client.ts";
 import { finishStep, startLocal, untilIdle, startTab, tabFacts, type TabRuntime } from "./runtime.ts";
 import { deleteStore, exportStore, importStore, openLocalStore, type LocalStore } from "./local-store.ts";
@@ -24,7 +25,7 @@ import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "./scripted-c
 import { BRAIN_CHECKIN, BRAIN_DECISION } from "./brain-kinds.ts";
 import { brainEvent, brainRouter, type JudgeRunner } from "../brain-router.ts";
 import { callGrammar, renderPrompt, TOOLS } from "./tool-format.ts";
-import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckinPayload, forgetCheckout, loadCheckinPayload, readCheckout, saveCheckinPayload, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord } from "./offline.ts";
+import { CANNOT_OFFLINE, cacheRunForOffline, CheckoutError, confirmHandover, fetchStoreCopy, forgetCheckinPayload, forgetCheckout, loadCheckinPayload, readCheckout, saveCheckinPayload, registerOfflineWorker, requestCheckout, writeCheckout, type CheckoutRecord, cacheFilesForOffline } from "./offline.ts";
 import type { ModelHost, ToolChatMessage, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 import { stateLine } from "../robot-state-line.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
@@ -963,6 +964,25 @@ async function startPhone(): Promise<void> {
 }
 
 /** Load the model, make it the conversation's brain with the robot's tools, read the system prompt and the tools once; then the composer opens. */
+/** The phone's page and its files in the offline cache, so the next visit opens with no network; said in the log and the report, never in the way. */
+async function savePhoneForOffline(modelFiles: string[]): Promise<void> {
+  const started = performance.now();
+  try {
+    await registerOfflineWorker();
+    const list = await fetch("/offline.json", { cache: "no-store" }).catch(() => undefined);
+    if (!list?.ok) { state.phone?.log.push("no network: the copy saved for offline stays as it is"); return; } // an offline visit runs from that copy
+    // the page's build lists the computer's files too (the Wasmer SDK, its package): the phone has no computer, so they are not its to keep
+    const shell = ((await list.json()) as { files: string[] }).files.filter((f) => !f.startsWith("/wasmer/") && !f.startsWith("/pkgs/"));
+    const creature = await stageFiles(() => fetch("/tab/offline.json", { cache: "no-store" }), "/tab/");
+    const saved = await cacheFilesForOffline(["/", ...shell, ...creature, ...modelFiles]);
+    state.phone?.log.push(`saved for offline: ${saved.files} files, ${Math.round(saved.bytes / 1e6)} MB in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+    phoneReport("offline", { files: saved.files, bytes: saved.bytes, ms: Math.round(performance.now() - started) });
+  } catch (e) {
+    state.phone?.log.push(`not saved for offline: ${(e as Error).message}`);
+    phoneReport("offline", { error: (e as Error).message.slice(0, 300) });
+  }
+}
+
 /** The robot's state line (robot-state-line.ts) from its file and the skills that came home, as the window shows it before the user's turn. */
 async function phoneStateLine(runtime: TabRuntime): Promise<string | undefined> {
   const robot = await currentRobot(runtime.env as never, ctx);
@@ -1010,7 +1030,8 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
     const u = new URL(location.href); u.searchParams.delete("clearcache"); history.replaceState(null, "", u);
   }
   state.phone!.model = model;
-  const serving = await step("reading the model's serving file", async () => (await (await fetch(new URL(params.get("serving") ?? "/models/qwen35-0.8b-robot-v3-Q4_0.serving.json", location.href).href)).json()) as Serving);
+  const servingUrl = new URL(params.get("serving") ?? "/models/qwen35-0.8b-robot-v3-Q4_0.serving.json", location.href).href;
+  const serving = await step("reading the model's serving file", async () => (await (await fetch(servingUrl)).json()) as Serving);
   const refine = (list: ToolChatTool[]) => servingView(list, serving.tools); // the model's view: the serving file's tools, in its order, those the conversation offers
   const budget = serving.sampling?.max_tokens ?? 300;
   let t = performance.now();
@@ -1045,6 +1066,9 @@ async function startPhoneBrain(runtime: TabRuntime): Promise<void> {
   ($("input") as HTMLTextAreaElement).focus();
   // the robot, now that the brain is in: standing still (no physics) until a skill plays
   if (params.get("pane") !== "0") startRobotPane("&still=1");
+  // and everything a reload needs with no network, behind the service worker: the page, its built assets, the robot pane's, the model's small files (its parts
+  // are in wllama's own cache already). ?offline=0 skips it.
+  if (params.get("offline") !== "0") void savePhoneForOffline([new URL(model.url).pathname.replace(/-00001-of-\d{5}\.gguf$/, ".parts.json"), new URL(servingUrl, location.href).pathname, ...(stateUrl ? [new URL(stateUrl).pathname, `${new URL(stateUrl).pathname}.json`] : [])]);
 }
 
 // ---- coming home ---------------------------------------------------------------------------------------------------------

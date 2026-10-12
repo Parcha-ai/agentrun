@@ -80,18 +80,17 @@ async function verifiedPart(w: Wllama, url: string, want: { bytes: number; sha25
 
 /**
  * A part as wllama reads it: in pieces of at most 8 MB (a model's token embedding is one 208 MB tensor, and WebKit failed such a read with NotReadableError);
- * a piece that fails is read again from a fresh handle on the cached file, then from the network (an HTTP range), and an error names the file and the bytes.
+ * a piece that fails is read again from a fresh handle on the cached file, and an error names the file and the bytes. Never from the network: bytes that were not
+ * checked against the manifest would go into the model (the next load checks the part whole and fetches it again).
  */
 class SlicedBlob extends Blob {
   readonly name: string;
   private inner: Blob;
-  private readonly url: string;
   private readonly reopen: () => Promise<Blob | null>;
-  constructor(inner: Blob, name: string, url: string, reopen: () => Promise<Blob | null>) {
+  constructor(inner: Blob, name: string, reopen: () => Promise<Blob | null>) {
     super([]);
     this.inner = inner;
     this.name = name;
-    this.url = url;
     this.reopen = reopen;
   }
   override get size(): number { return this.inner.size; }
@@ -114,11 +113,7 @@ class SlicedBlob extends Blob {
       try {
         const fresh = await this.reopen();
         if (fresh) { this.inner = fresh; return await fresh.slice(a, b).arrayBuffer(); }
-      } catch { /* the cached file cannot be read again: the network next */ }
-      try {
-        const r = await fetch(this.url, { headers: { Range: `bytes=${a}-${b - 1}` } });
-        if (r.status === 206) { const buf = await r.arrayBuffer(); if (buf.byteLength === b - a) return buf; }
-      } catch { /* offline */ }
+      } catch { /* the cached file cannot be read again either */ }
       throw new Error(`reading ${this.name} bytes ${a}-${b} failed: ${first instanceof Error ? `${first.name}: ${first.message}` : String(first)}`);
     }
   }
@@ -158,7 +153,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         for (const [i, u] of urls.entries()) {
           const blob = await verifiedPart(next, u, parts?.[i], { onStatus: onStatus ?? (() => undefined), onProgress: (loaded) => onProgress?.(base + loaded, total) });
           base += blob.size;
-          blobs.push(new SlicedBlob(blob, u.split('/').pop()!, u, async () => next.cacheManager.open(await next.cacheManager.getNameFromURL(u))));
+          blobs.push(new SlicedBlob(blob, u.split('/').pop()!, async () => next.cacheManager.open(await next.cacheManager.getNameFromURL(u))));
         }
         onProgress?.(base, total || base);
         await next.loadModel(blobs, { n_ctx: nCtx ?? N_CTX, n_threads: threads, n_gpu_layers: 0, swa_full: true, ...(batch ? { n_batch: batch, n_ubatch: batch } : {}), ...(slots ? { n_parallel: slots } : {}) });
@@ -180,17 +175,20 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       const name = 'state.bin';
       await proxy.fileAlloc(name, state.size, false);
       proxy.fileBlobs.set(name, state);
-      const started = await proxy.wllamaAction<{ success: boolean; req_id: number }>('rerank', { _name: 'rrnk_req', data_json: JSON.stringify({ slot_action: 'restore', filepath: `/models/${name}` }) });
-      if (!started.success) throw new Error('the engine did not start the restore');
-      for (;;) {
-        const chunk = await proxy.wllamaAction<{ data_json: string; has_more: boolean; is_error: boolean }>('get_result', { _name: 'gres_req', req_id: started.req_id });
-        if (chunk.data_json) {
-          const data = JSON.parse(chunk.data_json) as { n_restored?: number; message?: string };
-          proxy.fileBlobs.delete(name); // the state is in the engine now: the page lets go of its copy
-          if (chunk.is_error || data.n_restored === undefined) throw new Error(data.message ?? 'the restore failed');
-          return { tokens: data.n_restored, bytes: state.size };
+      try {
+        const started = await proxy.wllamaAction<{ success: boolean; req_id: number }>('rerank', { _name: 'rrnk_req', data_json: JSON.stringify({ slot_action: 'restore', filepath: `/models/${name}` }) });
+        if (!started.success) throw new Error('the engine did not start the restore');
+        for (;;) {
+          const chunk = await proxy.wllamaAction<{ data_json: string; has_more: boolean; is_error: boolean }>('get_result', { _name: 'gres_req', req_id: started.req_id });
+          if (chunk.data_json) {
+            const data = JSON.parse(chunk.data_json) as { n_restored?: number; message?: string };
+            if (chunk.is_error || data.n_restored === undefined) throw new Error(data.message ?? 'the restore failed');
+            return { tokens: data.n_restored, bytes: state.size };
+          }
+          if (!chunk.has_more) throw new Error('the restore returned nothing (a wllama build without the slot shim)');
         }
-        if (!chunk.has_more) throw new Error('the restore returned nothing (a wllama build without the slot shim)');
+      } finally {
+        proxy.fileBlobs.delete(name); // restored or not, the page lets go of its copy (36 MB a phone needs back)
       }
     },
     async chat({ messages, maxTokens, signal, onText, sampling, stop, prefill }) {

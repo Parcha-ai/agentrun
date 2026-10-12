@@ -28,6 +28,8 @@ export class PhoneModel implements BrainModel {
   readonly toolChat: (req: ToolChatRequest, signal?: AbortSignal) => Promise<ToolChatResult>;
   private line: Promise<unknown> = Promise.resolve();
   private readonly llm: Llm;
+  /** Where the model's first part is (its other parts and its manifest sit beside it). */
+  get url(): string { return this.o.url; }
   private readonly o: { url: string; threads: number; nCtx: number; batch: number; maxTokens: number; onProgress?: (loaded: number, total: number) => void; onStatus?: (text: string) => void };
 
   constructor(llm: Llm, o: PhoneModel["o"]) {
@@ -57,9 +59,9 @@ export class PhoneModel implements BrainModel {
     try {
       const r = await fetch(manifestUrl);
       if (r.ok) { parts = ((await r.json()) as { parts: typeof parts }).parts; try { localStorage.setItem(`parts:${manifestUrl}`, JSON.stringify(parts)); } catch { /* no storage */ } }
-    } catch {
-      try { const kept = localStorage.getItem(`parts:${manifestUrl}`); if (kept) parts = JSON.parse(kept) as typeof parts; } catch { /* no storage */ }
-    }
+    } catch { /* offline: the copy kept from an earlier load, below */ }
+    if (!parts) { try { const kept = localStorage.getItem(`parts:${manifestUrl}`); if (kept) parts = JSON.parse(kept) as typeof parts; } catch { /* no storage */ } }
+    if (!parts) onStatus?.("no parts manifest: the cached parts are used unchecked");
     // one conversation, one sequence: the warm state is slot 0's
     return this.llm.loadUrl!(url, { threads, nCtx, batch, slots: 1, ...(parts ? { parts } : {}), ...(onStatus ? { onStatus } : {}), onProgress: (loaded, total) => { this.loadedBytes = total || loaded; onProgress?.(loaded, total); } });
   }

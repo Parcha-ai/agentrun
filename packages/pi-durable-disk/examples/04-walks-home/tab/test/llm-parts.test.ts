@@ -35,7 +35,7 @@ class FlakyBlob extends Blob {
 /** wllama, as much of it as the load and the restore use: a cache (by key) the test fills, a server it downloads from, the blobs the engine was handed. */
 function fakeWllama(server: Map<string, Uint8Array>) {
   const cache = new Map<string, Blob>();
-  const log = { downloads: [] as string[], deleted: [] as string[], loaded: [] as Blob[], restores: [] as Record<string, unknown>[], fileBlobs: new Map<string, Blob>(), allocs: [] as [string, number][] };
+  const log = { refuse: false, downloads: [] as string[], deleted: [] as string[], loaded: [] as Blob[], restores: [] as Record<string, unknown>[], fileBlobs: new Map<string, Blob>(), allocs: [] as [string, number][] };
   const key = (url: string) => `k_${url.split('/').pop()}`;
   const w = {
     cacheManager: {
@@ -52,7 +52,7 @@ function fakeWllama(server: Map<string, Uint8Array>) {
       fileAlloc: async (name: string, size: number) => { log.allocs.push([name, size]); return 1; },
       fileBlobs: log.fileBlobs,
       wllamaAction: async (name: string, body: { data_json?: string }) => {
-        if (name === 'rerank') { log.restores.push(JSON.parse(body.data_json!)); return { success: true, req_id: 7 }; }
+        if (name === 'rerank') { log.restores.push(JSON.parse(body.data_json!)); return { success: !log.refuse, req_id: 7 }; }
         return { data_json: JSON.stringify({ id_slot: 0, n_restored: 1255, n_read: 64 }), has_more: false, is_error: false };
       },
     },
@@ -136,4 +136,14 @@ test('a restore registers the state like a model shard, runs llama-server\'s slo
   assert.deepEqual(s.log.allocs, [['state.bin', 64]]);
   assert.deepEqual(s.log.restores, [{ slot_action: 'restore', filepath: '/models/state.bin' }]);
   assert.equal(s.log.fileBlobs.has('state.bin'), false, 'released after the restore');
+});
+
+test('a restore that fails lets go of the state too', async () => {
+  const s = setup();
+  s.cache.set(s.key(BASE), new Blob([s.p1 as BlobPart]));
+  s.cache.set(s.key(URL2), new Blob([s.p2 as BlobPart]));
+  await s.llm.loadUrl!(BASE, { threads: 1 });
+  s.log.refuse = true; // a stock build: the engine does not start a slot restore
+  await assert.rejects(s.llm.restoreState!(new Blob([new Uint8Array(64)])), /did not start/);
+  assert.equal(s.log.fileBlobs.has('state.bin'), false, 'the 36 MB a phone needs back is released on every exit');
 });
