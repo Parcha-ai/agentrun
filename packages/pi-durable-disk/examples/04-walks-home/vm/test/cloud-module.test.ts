@@ -101,3 +101,10 @@ test("robot-plan=true turns on code mode for the session's threads, and only wit
   assert.equal("robotPlan" in modalOptionsFromArgs({ robot: "true", "cluster-size": "2", "cluster-image": "im-1" }), false);
   assert.throws(() => modalOptionsFromArgs({ "robot-plan": "true" }), /robot-plan=true needs robot=true/);
 });
+
+test("robot-prewarm=true turns on the on-box compile, and only in code mode", () => {
+  const base = { robot: "true", "robot-plan": "true", "cluster-size": "2", "cluster-image": "im-1" };
+  assert.deepEqual(modalOptionsFromArgs({ ...base, "robot-prewarm": "true" }), { robot: true, robotPlan: true, robotPrewarm: true, cluster: { size: 2, image: "im-1" } });
+  assert.equal("robotPrewarm" in modalOptionsFromArgs(base), false);
+  assert.throws(() => modalOptionsFromArgs({ robot: "true", "robot-prewarm": "true", "cluster-size": "2", "cluster-image": "im-1" }), /robot-prewarm=true needs robot-plan=true/);
+});

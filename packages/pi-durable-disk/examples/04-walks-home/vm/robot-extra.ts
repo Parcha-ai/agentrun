@@ -105,6 +105,8 @@ export const BOX_ROBOT_FILE = "/workspace/robot.json";
  */
 export const CODE_BODY_FILES = { xml: "robot/body.xml", json: "robot/body.json" } as const;
 export const BOX_BODY_DIR = "/workspace/robot";
+/** Compile the code body once on a box, detached (D2's trainer: no warm start, compile only; its own log under /workspace/.warm). */
+export const PREWARM_COMMAND = `mkdir -p /workspace/.warm && (setsid nohup train-skill walk --body ${BOX_BODY_DIR} --out /workspace/.warm/walk --init-from '' --compile-only > /workspace/.warm/walk.log 2>&1 &) ; true`;
 
 /** Write `bytes` to `path` on a box (a binary-safe `cat`, parents made). */
 async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise<void> {
@@ -170,7 +172,7 @@ export function planOptions(work: string): PlanOptions {
 }
 
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
-export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: string, log: AppExtraContext["log"]): ThreadBoxes {
+export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: string, log: AppExtraContext["log"], options: { prewarm?: boolean } = {}): ThreadBoxes {
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
   return {
     async acquire({ threadId, skill }) {
@@ -190,6 +192,19 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
       if ((xml === undefined) !== (json === undefined)) log("robot.code-body-incomplete", { thread: threadId, missing: xml === undefined ? CODE_BODY_FILES.xml : CODE_BODY_FILES.json });
       if (xml) await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
       if (xml && json) await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
+      // Code mode: compile the body once on this box while the thread writes its code, so the skill it then trains starts warm (D2's trainer keys a code body's compile cache by body and makes a training run
+      // wait for a compile still running). Detached and best effort: a box without that cache just compiles when the skill runs.
+      if (options.prewarm && xml) {
+        const started = await box.exec(["sh", "-c", PREWARM_COMMAND], { mode: "binary", timeoutMs: 30_000 }).then(async (p) => {
+          await p.stdin.close();
+          const drain = async (stream: unknown) => {
+            for await (const _ of stream as AsyncIterable<Uint8Array>) void _;
+          };
+          const [, , code] = await Promise.all([drain(p.stdout), drain(p.stderr), p.wait()]);
+          return code;
+        }).catch((error: Error) => { log("robot.prewarm-failed", { thread: threadId, error: error.message }); return undefined; });
+        if (started !== undefined) log("robot.prewarm", { thread: threadId, box: id, started: started === 0 });
+      }
       log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml) });
       return id;
     },
@@ -202,8 +217,9 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
 export default function robotExtra({ link, work, log }: AppExtraContext): AppExtra {
   if (!link) throw new Error("the robot's threads reach their GPU boxes through the server's link: no link here");
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
-  const boxes = robotBoxes(link, work, log);
   const plan = process.env.DEMO_ROBOT_PLAN === "1";
+  // The compile prewarm needs the trainer that locks a body's compile cache (D2's v14): on only when the host says the image has it (DEMO_ROBOT_PREWARM=1), so an older trainer is never run twice on one cache.
+  const boxes = robotBoxes(link, work, log, { prewarm: plan && process.env.DEMO_ROBOT_PREWARM === "1" });
   const { teach, thread } = teachSkills({
     boxes,
     command: trainCommand(work),
