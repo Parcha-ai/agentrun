@@ -135,9 +135,9 @@ try {
   const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
   const drifted = Object.entries(consumerLock.packages ?? {}).flatMap(([location, entry]) => {
     const name = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
-    return location.includes('node_modules/') && Object.hasOwn(piVersions, name) && entry.version !== piVersions[name] ? [`${location}@${entry.version} (repository: ${piVersions[name]})`] : [];
+    return location.includes('node_modules/') && name.startsWith('@earendil-works/') && entry.version !== piVersions[name] ? [`${location}@${entry.version} (repository: ${piVersions[name] ?? 'none'})`] : [];
   });
-  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages at other versions than the repository's: ${drifted.join(', ')}`);
+  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages that the repository does not, or at other versions than the repository's: ${drifted.join(', ')}`);
   receipt.checks.push('Every @earendil-works package in the consumer resolves at the repository lockfile version.');
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
