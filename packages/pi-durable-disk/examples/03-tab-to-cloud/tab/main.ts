@@ -29,6 +29,7 @@ import { Workspace } from "./workspace.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent } from "../agent.ts";
+import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -697,7 +698,9 @@ async function takeOffline(): Promise<void> {
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
     // The workspace (work/, less the model) goes into OPFS too: the computer boots from it with no network. The tab is idle and every write-through was acknowledged, so this is what the pipe holds.
     say("saving the workspace in this browser");
-    const scanned = await runtime.workspace.scan();
+    const scanned = new Map(await runtime.workspace.scan());
+    // With the robot pane the creature page reads the policies and the skills offline from the workspace: they are in the server's home/ (not restored into the tab), so they come in now, as files of the saved copy
+    if (robotMode) for (const [path, entry] of await homeFilesForOffline()) if (!scanned.has(path)) scanned.set(path, entry as never); // only their bytes are used from here on (saved copy, baseline)
     const workspace = await saveWorkspace(run, scanned);
     await saveBaseline(run, await baselineOf(scanned as Snapshot)); // what the server holds now: at check-in, the changes are what the workspace holds against this
     let head = -1;
@@ -846,6 +849,90 @@ const stageOrigin: string | undefined = (() => {
     return undefined;
   }
 })();
+
+/** The files of the run's home/ the creature page needs with no network: the policy and the skills (the manifest and each skill's policy), as workspace entries (directories first). */
+async function homeFilesForOffline(): Promise<Map<string, { kind: "file"; data: Uint8Array } | { kind: "directory" }>> {
+  const out = new Map<string, { kind: "file"; data: Uint8Array } | { kind: "directory" }>();
+  const take = async (path: string): Promise<Uint8Array | null> => {
+    const bytes = await readWorkFresh(path).catch(() => null);
+    if (!bytes) return null;
+    for (let i = path.indexOf("/"); i > 0; i = path.indexOf("/", i + 1)) out.set(path.slice(0, i), { kind: "directory" });
+    out.set(path, { kind: "file", data: bytes });
+    return bytes;
+  };
+  await take("home/policy.json");
+  const manifest = await take("home/skills.json");
+  if (manifest) {
+    try {
+      for (const entry of Object.values(parseSkills(new TextDecoder().decode(manifest)).skills)) await take(skillPolicyPath(entry));
+    } catch { /* a manifest the creature page refuses is not followed */ }
+  }
+  return out;
+}
+
+// ---- the robot pane (?robot=1) ---------------------------------------------------------------------------------------------
+// The creature page (04 tab, served under /tab/) runs in an iframe and reads and writes its files through this page, which holds the workspace: online and offline alike, so the robot works with
+// no network. It reads creature/robot.json (what the agent's robot tools edit), home/skills.json and the skills' policies, and writes the design it saves (creature/*). Reads come from the
+// workspace; a file the tab was not sent (home/ is not restored) is fetched from the run's disk while online and was brought into the workspace at the checkout.
+const robotMode = new URLSearchParams(location.search).get("robot") === "1";
+const CREATURE_WRITABLE = new Set(["creature/designs.sqlite", "creature/creature.xml", "creature/body.json", "creature/design.json"]);
+const safePath = (p: unknown): string | undefined => (typeof p === "string" && p.length > 0 && p.length < 200 && !p.startsWith("/") && !p.split("/").some((part) => part === ".." || part === "." || part === "") ? p : undefined);
+const diskReads = new Map<string, { at: number; bytes: Uint8Array | null }>();
+
+async function creatureRead(path: string): Promise<Uint8Array | null> {
+  const rt = state.runtime;
+  if (rt && "sandbox" in rt.env) {
+    try { return await (rt.env as WasmerEnv).sandbox.fs.readFile(`/workspace/${path}`); } catch { /* not in the workspace */ }
+  }
+  if (state.mode === "offline" || !rt) {
+    const saved = (await loadWorkspace(run).catch(() => [])).find((e) => e.path === path && e.kind === "file");
+    return saved && saved.kind === "file" ? saved.bytes : null;
+  }
+  const hit = diskReads.get(path);
+  if (hit && Date.now() - hit.at < 3000) return hit.bytes;
+  const bytes = await readWork(path).catch(() => null);
+  diskReads.set(path, { at: Date.now(), bytes });
+  return bytes;
+}
+
+async function creatureWrite(path: string, bytes: Uint8Array): Promise<void> {
+  const rt = state.runtime;
+  if (!rt || !("sandbox" in rt.env)) throw new Error("not-holder");
+  const fs = (rt.env as WasmerEnv).sandbox.fs;
+  const dir = path.split("/").slice(0, -1).join("/");
+  if (dir) await fs.mkdir(`/workspace/${dir}`, { recursive: true }).catch(() => undefined);
+  await fs.writeFile(`/workspace/${path}`, bytes);
+  await rt.flush?.(); // durable before the creature page is told: to the pipe online, to this browser's copy offline
+}
+
+function startRobotPane(): void {
+  const frame = $("creature") as HTMLIFrameElement;
+  document.body.classList.add("robot");
+  $("creature-pane").hidden = false;
+  const reply = (msg: Record<string, unknown>) => frame.contentWindow?.postMessage({ ns: "walks-home", ...msg }, location.origin);
+  window.addEventListener("message", (ev) => {
+    if (ev.origin !== location.origin || ev.source !== frame.contentWindow) return;
+    const m = ev.data as Record<string, unknown> | null;
+    if (!m || m.ns !== "walks-home" || typeof m.type !== "string") return;
+    if (m.type === "storage-read") {
+      const path = safePath(m.path);
+      void (path ? creatureRead(path) : Promise.resolve(null)).then(async (bytes) => {
+        const etag = bytes ? `${bytes.length}-${await sha256hex(bytes)}`.slice(0, 80) : undefined;
+        reply(bytes && etag && m.ifNoneMatch === etag ? { type: "storage-result", id: m.id, bytes: null, notModified: true } : { type: "storage-result", id: m.id, bytes, ...(etag ? { etag } : {}) });
+      }, (error: Error) => reply({ type: "storage-result", id: m.id, bytes: null, error: String(error.message ?? error) }));
+    } else if (m.type === "storage-write") {
+      const path = safePath(m.path);
+      if (!path || !CREATURE_WRITABLE.has(path) || !(m.bytes instanceof Uint8Array)) return reply({ type: "storage-written", id: m.id, error: "not-allowed" });
+      void creatureWrite(path, m.bytes).then(() => reply({ type: "storage-written", id: m.id }), (error: Error) => reply({ type: "storage-written", id: m.id, error: error.message === "not-holder" ? "not-holder" : String(error.message) }));
+    } else {
+      // what the creature page tells the stage (robot-changed, skill-switched, policy-arrived, ...), told on from this page the same way as the page's own events
+      const { ns: _ns, type, ...detail } = m;
+      announce(type, detail);
+    }
+  });
+  frame.addEventListener("load", () => reply({ type: "set-placement", kind: "tab", label: "this browser" }));
+  frame.src = "/tab/?clean=1&banner=1&phase=watch";
+}
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -1366,6 +1453,7 @@ async function boot(): Promise<void> {
   }
   void connect("view");
 }
+if (robotMode) startRobotPane();
 void boot();
 
 // For the recording script: what the page shows, in one object.

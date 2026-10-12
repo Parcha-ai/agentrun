@@ -31,7 +31,7 @@ export interface TabRuntime<E extends RuntimeEnv = RuntimeEnv> {
   readonly syncs: { changes: number; ms: number }[];
   /** Stop the periodic write-through (`liveFlushMs`) and wait for the one in flight: nothing syncs after this but a tool's own end. */
   stopLive(): Promise<void>;
-  /** Offline only: write the workspace's changes to this browser's copy now (after a tool they go by themselves). */
+  /** Write the workspace's changes out now: to this browser's copy offline, to the pipe online (after a tool they go by themselves; a page that changes files itself, the robot pane, asks for it). */
   flush?(): Promise<void>;
   close(): Promise<void>;
 }
@@ -168,6 +168,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     workspace,
     restored,
     syncs,
+    flush,
     async stopLive() {
       await live?.stop();
     },

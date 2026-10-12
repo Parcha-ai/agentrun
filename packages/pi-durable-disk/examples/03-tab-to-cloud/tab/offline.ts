@@ -89,7 +89,9 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   const shell = ((await (await fetch("/offline.json", { cache: "no-store" })).json()) as { files: string[] }).files;
   // a stage served from this origin under /show/ lists its own files; they are cached too, so a reload of the stage survives the network going away
   const show = await stageFiles(() => fetch("/show/offline.json", { cache: "no-store" }));
-  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell, ...show.filter((f) => !shell.includes(f))];
+  // the creature page (the robot), served under /tab/ (serve.ts --creature-dir): its script, MuJoCo's and SQLite's wasm, so the robot draws and walks with no network
+  const creature = await stageFiles(() => fetch("/tab/offline.json", { cache: "no-store" }), "/tab/");
+  const pages = [`/run/${encodeURIComponent(o.run)}`, ...shell, ...show.filter((f) => !shell.includes(f)), ...creature];
   const total = pages.length + (manifest ? 1 + manifest.chunks.length : 0);
   let done = 0;
   let bytes = 0;
