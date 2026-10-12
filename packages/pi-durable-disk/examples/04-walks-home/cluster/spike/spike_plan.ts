@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false } } });
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-plan-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
 const deadline = a["deadline-ms"];
@@ -19,7 +19,7 @@ const deadline = a["deadline-ms"];
 // starts after it has passed, so the deadline must come from the store, not a fresh clock.
 const kill = !deadline || a.kill;
 const run = (mode: string) =>
-  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : []), ...(a["new-skill"] ? ["--new-skill"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 const exit = (p: ReturnType<typeof run>) => new Promise<number>((r) => p.once("exit", (c) => r(c ?? 1)));
 
 let killed = false;
@@ -48,7 +48,9 @@ const children: { id: number; tools: string[]; box: { skill: string; gpu: number
 type Listed = { conversation: number; name: string; gpu: number; of: number; boxId: string | null; status: string; settled: boolean };
 const mid: Listed[] | undefined = existsSync(join(dir, "mid.json")) ? JSON.parse(readFileSync(join(dir, "mid.json"), "utf8")).threads : undefined;
 const after: Listed[] = report.threads_of ?? [];
-const planned = ["walk", "spin", "wave"];
+// --new-skill: the third skill is one the library does not have (wag-tail), made from its closest library skill (wave).
+const third = a["new-skill"] ? "wag-tail" : "wave";
+const planned = ["walk", "spin", third];
 // What each thread ran on its box, as TRAIN_SOP's steps (a command rerun after the restart counts once).
 const ladder: Record<string, string[]> = {};
 for (const b of existsSync(join(dir, "boxes")) ? readdirSync(join(dir, "boxes")) : []) {
@@ -82,7 +84,7 @@ const checks: Record<string, boolean> = {
   // Every thread's own tool calls are in its transcript: walk, spin and wave are library skills, so each copied the
   // library's files and trained through bash and wrote no file; only wave, after a try that never moved, may edit one
   // weight (the ladder check below requires that edit when the run is not cut short).
-  each_thread_copied_its_library_skill_and_wrote_nothing: children.every((c) => c.tools[0]?.startsWith("bash") && !c.tools.some((t) => t.startsWith("write")) && c.tools.filter((t) => t.startsWith("edit")).length <= (c.box.skill === "wave" ? 1 : 0)),
+  each_thread_copied_its_library_skill_and_wrote_nothing: children.filter((c) => c.box.skill !== "wag-tail").every((c) => c.tools[0]?.startsWith("bash") && !c.tools.some((t) => t.startsWith("write")) && c.tools.filter((t) => t.startsWith("edit")).length <= (c.box.skill === "wave" ? 1 : 0)),
   each_child_links_to_parent_and_owner: children.every((c) => c.parent !== undefined && c.owner !== undefined),
   no_thread_gets_a_second_box: (() => {
     const creates = pool.filter((p) => p.event === "pool.create").map((p) => p.threadId);
@@ -103,9 +105,19 @@ if (!deadline) {
   // spin was still changing, so 40M with the same files, then --check its pass; wave never moved, so one weight edited in
   // skill.json and 12M again, and it reports after that.
   checks.the_threads_follow_the_sop_ladder =
-    ladder.walk?.join() === "copy,12M,check" && ladder.spin?.join() === "copy,12M,40M,check" && ladder.wave?.join() === "copy,12M,edit:skill.json,12M";
+    ladder.walk?.join() === "copy,12M,check" && ladder.spin?.join() === "copy,12M,40M,check" &&
+    (a["new-skill"]
+      ? // A skill the library lacks starts from the closest one: copied, its skill.json and test.py edited, one reward
+        // term added, compiled (its reward changed), trained, checked. Never a fresh file tree.
+        ladder["wag-tail"]?.join() === "copy,edit:skill.json,edit:test.py,edit:reward.py,compile,12M,check"
+      : ladder.wave?.join() === "copy,12M,edit:skill.json,12M");
 }
-if (a["status-throws"]) {
+if (a["new-skill"]) {
+  // The new skill's own tool calls: the copy first, then two edits (skill.json, test.py) and one written file (reward.py).
+  const wag = children.find((c) => c.box.skill === "wag-tail");
+  checks.new_skill_is_copied_then_edited = wag !== undefined && wag.tools[0] === "bash" && wag.tools.filter((t) => t === "edit").length === 2 && wag.tools.filter((t) => t === "write").length === 1;
+  checks.new_skill_passed_from_its_files = by("walk")?.status === "passed" && by("spin")?.status === "passed" && by("wag-tail")?.status === "passed" && by("wag-tail")?.checkpoint === 4;
+} else if (a["status-throws"]) {
   // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
   checks.outcome_errors_are_reported = threads.every((t) => (t as { outcomeError?: string }).outcomeError === "skill.json is unreadable") && /could not be read: skill\.json is unreadable/.test(report.teachResult?.text ?? "");
 } else if (deadline && kill) {

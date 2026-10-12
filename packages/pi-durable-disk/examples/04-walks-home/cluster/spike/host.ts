@@ -24,7 +24,7 @@ import { TRAIN_SOP } from "../sop.ts";
 import { RobotBox, SKILLS, teachSkills, threadsOf, type TrainProgress } from "../teach-skills.ts";
 import { EXAMPLES, FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
-const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false } } });
+const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false }, "new-skill": { type: "boolean", default: false } } });
 const dir = a.dir!;
 const mode = a.mode as "first" | "resume" | "abort";
 const doneBefore = Object.fromEntries((a["done-before"] ?? "").split(",").filter(Boolean).map((spec) => {
@@ -59,8 +59,12 @@ const toolUse = (name: string, args: Record<string, unknown>) => fauxAssistantMe
 const PLAN = [
   { name: "walk", brief: "Walk forward steadily: forward speed above 0.3 m/s for 5 s without falling. Stop after 2 runs." },
   { name: "spin", brief: "Turn in place: yaw rate above 1 rad/s for 3 s with the torso upright. Stop after 2 runs." },
-  { name: "wave", brief: "Lift one front leg and wave it while standing on the others for 3 s. Stop after 2 runs." },
+  a["new-skill"]
+    ? { name: "wag-tail", brief: "Wag the tail side to side while standing: a tail swing of at least 0.3 rad with 8 side changes. Stop after 2 runs." }
+    : { name: "wave", brief: "Lift one front leg and wave it while standing on the others for 3 s. Stop after 2 runs." },
 ];
+/** For a skill the library does not have, the library skill a thread starts from (train-skill.md step 2). */
+const CLOSEST: Readonly<Record<string, string>> = { "wag-tail": "wave" };
 const planThread = (msgs: { role: string; toolName?: string; content?: unknown }[]) => {
   let u = -1;
   msgs.forEach((m, i) => { if (m.role === "user") u = i; });
@@ -73,14 +77,19 @@ const planThread = (msgs: { role: string; toolName?: string; content?: unknown }
   // at 40M if it was still changing, --check a pass, read the trainer's skill.json, report.
   const run = `pi-run ${skill} -- train-skill --skill-dir /workspace/skills/${skill} --body /workspace/robot --out /workspace/runs/${skill} --init-from ''`;
   const bash = (command: string) => toolUse("bash", { command });
-  const setUp = results.filter((r) => r.toolName === "write" || r.toolName === "edit").length;
   const example = EXAMPLES[skill];
   if (example !== undefined) {
     // One of the library's worked skills: its files are the skill. Copy them and train; nothing is written or edited.
     if (results.length === 0) return bash(`mkdir -p skills && cp -r /opt/pda/train/skills/${example} skills/${skill}`);
   } else {
-    if (setUp === 0) return toolUse("write", { path: `skills/${skill}/skill.json`, content: JSON.stringify({ name: skill, label: skill, command: 0, reward_scales: {}, env: {} }) });
-    if (setUp === 1) return toolUse("write", { path: `skills/${skill}/test.py`, content: `def test(sim):\n    r = sim.rollout(seconds=10)\n    return r.fell_at is None, {"name": "${skill}", "value": 0, "unit": "", "target": ""}\n` });
+    // Not in the library: copy the closest library skill, then edit its skill.json and test.py and add one reward term.
+    const from = CLOSEST[skill] ?? "walk";
+    const edits = results.filter((r) => r.toolName === "edit").length;
+    const writes = results.filter((r) => r.toolName === "write").length;
+    if (results.length === 0) return bash(`mkdir -p skills && cp -r /opt/pda/train/skills/${EXAMPLES[from]} skills/${skill}`);
+    if (edits === 0) return toolUse("edit", { path: `skills/${skill}/skill.json`, edits: [{ oldText: `"name":"${from}","label":"${from}"`, newText: `"name":"${skill}","label":"wag its tail"` }, { oldText: '"reward_scales":{"feet_air_time":1}', newText: '"reward_scales":{"feet_air_time":0,"tail_wag":3}' }] });
+    if (edits === 1) return toolUse("edit", { path: `skills/${skill}/test.py`, edits: [{ oldText: `    return r.fell_at is None, {"name": "${from}", "value": 0, "unit": "", "target": ">= 1.0"}`, newText: '    a = r.joint("tail0_j")[100:]\n    a = a - a.mean()\n    swings = int(((a[1:] > 0) != (a[:-1] > 0)).sum())\n    amp = float(a.max() - a.min())\n    ok = r.fell_at is None and amp >= 0.3 and swings >= 8 and r.total_mps() <= 0.15\n    return ok, {"name": "tail swing", "value": round(amp, 2), "unit": "rad", "target": ">= 0.3"}' }] });
+    if (writes === 0) return toolUse("write", { path: `skills/${skill}/reward.py`, content: 'import jax.numpy as jp\n\n\ndef terms(s):\n    target = 0.3 * jp.sin(2 * jp.pi * 1.0 * s.time)\n    return {"tail_wag": jp.exp(-((s.joint("tail0_j") - target) / 0.3) ** 2)}\n' });
   }
   // A command the host's restart interrupted is run again (pi-run stops the old one on the box first).
   const last = results[results.length - 1];

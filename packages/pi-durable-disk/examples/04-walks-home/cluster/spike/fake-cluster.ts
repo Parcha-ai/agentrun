@@ -16,7 +16,7 @@ type ExecArgs = Parameters<NodeExecutionEnv["exec"]>;
 type ExecReturn = ReturnType<NodeExecutionEnv["exec"]>;
 
 /** Checkpoints a skill needs before it passes (D2's measured seconds / ~7 s per checkpoint); wave never passes here. */
-export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null };
+export const PASS_AT: Record<string, number | null> = { walk: 3, sprint: 3, backwards: 6, "turn-left": 5, "turn-right": 5, spin: 6, "get-up": 6, wave: null, "wag-tail": 4 };
 export const MAX_CHECKPOINTS = 8;
 /** D2's worked skills, as the image ships them: skill name → its directory in /opt/pda/train/skills/ (get-up's has no hyphen). */
 export const EXAMPLES: Readonly<Record<string, string>> = { walk: "walk", sprint: "sprint", backwards: "backwards", "turn-left": "turn-left", "turn-right": "turn-right", spin: "spin", wave: "wave", "get-up": "getup" };

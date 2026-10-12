@@ -202,3 +202,23 @@ test("on a new box a bare cp into skills/ fails as cp does, and the SOP's own co
   assert.equal(getup.exitCode, 0, getup.out);
   assert.equal(getup.skillJson("get-up").name, "get-up", "getup/ holds get-up's skill");
 });
+
+test("code mode: a skill the library lacks is made from its closest library skill by copy and small edits, not a fresh file tree", () => {
+  const { status, verdict } = runPlan("--new-skill");
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+  // wag-tail: wave copied, its skill.json and test.py edited, one reward.py added, compiled, trained, checked.
+  assert.deepEqual(verdict.ladder["wag-tail"], ["copy", "edit:skill.json", "edit:test.py", "edit:reward.py", "compile", "12M", "check"]);
+  const wag = verdict.tools.find((t: { skill: string }) => t.skill === "wag-tail").tools as string[];
+  assert.equal(wag[0], "bash", "the first step is the copy");
+  assert.equal(wag.filter((t) => t === "write").length, 1, "one new file (reward.py); skill.json and test.py come from the copy");
+});
+
+test("train-skill.md starts a skill the library lacks from its closest library skill, with the edits it takes", () => {
+  const sop = readFileSync(join(here, "..", "sop", "train-skill.md"), "utf8").replace(/\s+/g, " ");
+  assert.match(sop, /Not in the library\? Start from the closest library skill, never from an empty directory\./);
+  assert.match(sop, /`mkdir -p skills && cp -r \/opt\/pda\/train\/skills\/<closest> skills\/<your skill>`/);
+  assert.match(sop, /The trainer names parts by these MuJoCo names, never by tag/);
+  assert.match(sop, /That is the whole change: one skill\.json edit, one test\.py edit and a small reward\.py\./);
+  assert.doesNotMatch(sop, /write it from the closest example/, "the old from-scratch wording is gone");
+});
