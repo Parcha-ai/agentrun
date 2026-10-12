@@ -58,6 +58,10 @@ describe("placement by a typed question", () => {
     }
   };
 
+  /** The server said it queued this request (behind the move or the home wait): it has been taken in, so what it does next is observable without guessing a delay. */
+  const queued = (requestId: string, runId: string) => events.some((e) => e.event === "placement.queued" && e.data.run === runId && e.data.requestId === requestId);
+  const decisions = (seen: PipeFrame[]) => seen.filter((f) => f.t === "decision").length;
+
   it("places the run before the agent sees the message, delivers it there, and brings the run back when the turn ends", async () => {
     const { id, secret } = await local.server.createRun("placed");
     const tabFrames: PipeFrame[] = [];
@@ -139,10 +143,10 @@ describe("placement by a typed question", () => {
     const decisionsBefore = seen.filter((f) => f.t === "decision").length;
     const movesBefore = events.filter((e) => e.event === "switch.start" && e.data.run === id).length;
     page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
-    await new Promise((r) => setTimeout(r, 300));
+    await until(() => queued("req-b", id));
     home.send({ t: "switched", switchId: runHere.switchId });
-    // The home check is still running (held open). The queued request must not start its own move yet: that would release the browser's pipe under the check and send the closing line nowhere.
-    await new Promise((r) => setTimeout(r, 700));
+    // The home check is held open. The queued request must not start its own move yet: that would release the browser's pipe under the check and send the closing line nowhere.
+    await until(() => events.some((e) => e.event === "switch.done" && e.data.run === id));
     assert.equal(homeFrames.some((f) => f.t === "submit"), false, "the closing turn is not sent before the check is done");
     assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "the queued request is not placed while the home check is running");
     assert.equal(events.filter((e) => e.event === "switch.start" && e.data.run === id).length, movesBefore, "and no move starts");
@@ -152,7 +156,6 @@ describe("placement by a typed question", () => {
     await until(() => homeFrames.some((f) => f.t === "submit"));
     const wake = homeFrames.find((f): f is Extract<PipeFrame, { t: "submit" }> => f.t === "submit")!;
     assert.match(wake.text, /Checked by the server just now: NO\. the trained brain was not written\./);
-    await new Promise((r) => setTimeout(r, 400));
     assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "still waiting for the closing turn to end");
     home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
     // Only now is the queued request placed: asked where it belongs, and moved to the GPU.
@@ -190,17 +193,17 @@ describe("placement by a typed question", () => {
     const decisionsBefore = seen.filter((f) => f.t === "decision").length;
     const askedBefore = asked.length;
     page.send({ t: "submit", text: "teach it to run", requestId: "req-b" }); // during the move
-    await new Promise((r) => setTimeout(r, 300));
+    await until(() => queued("req-b", id));
     home.send({ t: "switched", switchId: runHere.switchId }); // the move is over; the home check starts (held open)
-    await new Promise((r) => setTimeout(r, 300));
+    await until(() => events.some((e) => e.event === "switch.done" && e.data.run === id));
     page.send({ t: "submit", text: "teach it to jump", requestId: "req-c" }); // after the move, during the home check
-    await new Promise((r) => setTimeout(r, 600));
+    await until(() => queued("req-c", id));
     assert.equal(asked.length, askedBefore, "neither request is placed while the home check runs");
     release();
     homeGate = undefined;
     await until(() => homeFrames.some((f) => f.t === "submit"));
     page.send({ t: "submit", text: "teach it to climb", requestId: "req-d" }); // during the closing turn
-    await new Promise((r) => setTimeout(r, 600));
+    await until(() => queued("req-d", id));
     assert.equal(asked.length, askedBefore, "nor during the closing turn");
     assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore);
     home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
@@ -231,13 +234,14 @@ describe("placement by a typed question", () => {
       const home: PipeClient = new PipeClient({ url: closing.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => homeFrames.push(f) });
       await home.ready;
       page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
-      await new Promise((r) => setTimeout(r, 300));
+      await until(() => queued("req-b", id));
       home.send({ t: "switched", switchId: runHere.switchId });
       await until(() => homeFrames.some((f) => f.t === "submit"));
       const decisionsBefore = events.filter((e) => e.event === "placement.decision").length;
       await closing.remove(); // the closing turn never ended
       removed = true;
-      await new Promise((r) => setTimeout(r, 1_400)); // past the bound
+      assert.ok(events.some((e) => e.event === "placement.home-wait-cancelled" && e.data.run === id), "the wait was cancelled by the shutdown");
+      await new Promise((r) => setTimeout(r, 1_400)); // past the 700 ms bound: only here is waiting the point (nothing may fire)
       assert.equal(events.filter((e) => e.event === "placement.home-turn-timeout" && e.data.run === id).length, 0, "the wait's timer was cleared");
       assert.equal(events.filter((e) => e.event === "placement.decision").length, decisionsBefore, "nothing was replayed after shutdown");
     } finally {
@@ -264,7 +268,7 @@ describe("placement by a typed question", () => {
       await home.ready;
       const decisionsBefore = seen.filter((f) => f.t === "decision").length;
       page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
-      await new Promise((r) => setTimeout(r, 300));
+      await until(() => queued("req-b", id));
       home.send({ t: "switched", switchId: runHere.switchId });
       await until(() => homeFrames.some((f) => f.t === "submit"));
       assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "waiting for the closing turn");

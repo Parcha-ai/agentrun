@@ -706,6 +706,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // (and while the home check and the agent's closing turn run: a new move then would release the pipe the check reads through and overtake the requests already queued)
     if (state.switching || state.homeTurn) {
       state.pendingSubmits.push({ text, requestId, queuedBy: socket });
+      log("placement.queued", { run: state.ref.id, requestId, behind: state.switching ? "the move" : "the home wait" });
       return;
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
@@ -1364,6 +1365,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           state.homeTurn.cancelled = true;
           clearTimeout(state.homeTurn.timer);
           state.homeTurn.finish();
+          log("placement.home-wait-cancelled", { run: state.ref.id });
         }
         unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);
