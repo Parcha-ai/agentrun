@@ -14,6 +14,45 @@ import { registerEnvCases } from "./_env-conformance.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Whether a pi-run command tagged `${tag}-${suffix}` has processes on this host. */
+const running = (tag: string, suffix: string) => spawnSync("pgrep", ["-f", `${tag}-${suffix}`]).stdout.toString().trim() !== "";
+/**
+ * Two pi-run starts of one key at once leave exactly one running. Events, not a clock: the start that takes the lock second
+ * stops the other's process group (polling every 0.5 s) and only then starts its own command, which on a loaded host can be
+ * seconds after both began. The stopped start is the one whose exec returns; then the other's command comes up, and the
+ * stopped one stays down. `keys` also checks that keys differing only in punctuation stay apart.
+ */
+async function twoStartsLeaveOne(box: RemoteBox, root: string, keys: boolean): Promise<void> {
+  const piRun = join(root, "bin", "pi-run");
+  await installPiRun(box, piRun);
+  const env = new RemoteEnv({ box, root });
+  const tag = `pda-pirun2-${process.pid}-${Date.now()}`;
+  const runs = [env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-a`, {}, context), env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-b`, {}, context)];
+  const stopped = await Promise.race([...runs.map((run, i) => run.then(() => i)), sleep(20_000).then(() => -1)]);
+  assert.notEqual(stopped, -1, "one start of k stopped the other within 20 s");
+  const [loser, winner] = stopped === 0 ? ["a", "b"] : ["b", "a"];
+  await waitFor(() => running(tag, winner), 20_000, `the run of k that stopped the other (${winner})`);
+  assert.equal(running(tag, loser), false, "exactly one run of k"); // a run shows as a few processes (wrapper, pi-run, command)
+  if (keys) {
+    const colon = env.exec(`${piRun} walk:a -- sh -c 'sleep 30' ${tag}-colon`, {}, context);
+    await waitFor(() => running(tag, "colon"), 20_000, "the run of walk:a");
+    await env.exec(`${piRun} walk/a -- true`, {}, context);
+    assert.equal(running(tag, "colon"), true, "walk/a did not stop walk:a");
+    await env.exec(`${piRun} walk:a -- true`, {}, context);
+    await colon;
+  }
+  await env.exec(`${piRun} k -- true`, {}, context);
+  await Promise.all(runs);
+}
+
+/** Poll until `condition` holds, or fail naming `what` after `ms`. */
+async function waitFor(condition: () => boolean, ms: number, what: string): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(50);
+  }
+}
 
 /**
  * A box that runs the env's own fixed scripts as local processes: the shell semantics are real, the transport is a pipe.
@@ -454,24 +493,14 @@ describe("Greptile on #209: the findings, each pinned", () => {
   });
 
   it("pi-run: two starts of one key at once leave exactly one running; keys that differ only in punctuation stay apart", async () => {
-    await withRoot(async (root) => {
-      const box = localBox();
-      const piRun = join(root, "bin", "pi-run");
-      await installPiRun(box, piRun);
-      const env = new RemoteEnv({ box, root });
-      const tag = `pda-pirun2-${process.pid}-${Date.now()}`;
-      const runs = [env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-a`, {}, context), env.exec(`${piRun} k -- sh -c 'sleep 30' ${tag}-b`, {}, context)];
-      await sleep(2_500);
-      const running = (suffix: string) => spawnSync("pgrep", ["-f", `${tag}-${suffix}`]).stdout.toString().trim() !== "";
-      assert.equal([running("a"), running("b")].filter(Boolean).length, 1, "exactly one run of k"); // a run shows as a few processes (wrapper, pi-run, command)
-      const colon = env.exec(`${piRun} walk:a -- sh -c 'sleep 30' ${tag}-colon`, {}, context);
-      await sleep(800);
-      await env.exec(`${piRun} walk/a -- true`, {}, context);
-      assert.notEqual(spawnSync("pgrep", ["-f", `${tag}-colon`]).stdout.toString().trim(), "", "walk/a did not stop walk:a");
-      await env.exec(`${piRun} k -- true`, {}, context);
-      await env.exec(`${piRun} walk:a -- true`, {}, context);
-      await Promise.all([...runs, colon]);
-    });
+    await withRoot((root) => twoStartsLeaveOne(localBox(), root, true));
+  });
+
+  it("pi-run: two starts at once leave exactly one running on a box that is slow to start each command", async () => {
+    // A loaded host can take seconds to start a command: the check waits for the handoff's events, not for a set time.
+    const fast = localBox("sb-slow-start");
+    const slow: RemoteBox = { sandboxId: fast.sandboxId, poll: () => fast.poll(), exec: async (c, p) => { await sleep(3_000); return fast.exec(c, p); } };
+    await withRoot((root) => twoStartsLeaveOne(slow, root, false));
   });
 
   it("a symbolic link to a directory lists its entries; a name that starts with a dash is listed like any other", async () => {
