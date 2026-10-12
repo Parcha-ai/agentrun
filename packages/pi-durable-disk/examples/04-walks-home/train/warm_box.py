@@ -6,8 +6,11 @@ Compiles the skill's program for the default body into the cache train-skill rea
 so the first run starts warm and the driver's JIT cache (~/.nv) holds its kernels. The image's compile cache covers the
 GPU hosts it was built on; on a host it misses (any program compiled here is new), the skill is also compiled for every
 preset body in --presets, so the relearn beat compiles nothing either. --all does that on every host. Prints one line:
-  {"event": "box.warm", "skill", "driver", "fingerprint", "host_cache": "hit" | "miss", "new_programs", "presets", "s"}
-Exit 0 when the default body compiled.
+  {"event": "box.warm", "skill", "ok", "driver", "fingerprint", "host_cache": "hit" | "miss", "new_programs", "presets",
+   "cache_saved", "s"}
+cache_saved is null when no preset was compiled (the default body's run saved its own cache), false when the presets'
+programs could not be written into the cache tarball (the box still has them unpacked, but a fresh unpack would not).
+Exit 0 when the default body compiled and every cache it wrote was saved.
 """
 from __future__ import annotations
 
@@ -50,6 +53,22 @@ def copy_new(src: str, dst: str, since: float) -> None:
         shutil.copy2(p, q)
 
 
+def save_cache(src_dir: str, tarball: str) -> bool:
+  """The cache directory as the tarball train-skill unpacks, replaced only by a complete archive: a tar that fails (a full
+  disk, an unreadable file) leaves the previous tarball and no partial file."""
+  parts = [p for p in ("jax", "warp") if os.path.isdir(os.path.join(src_dir, p))]
+  tmp = f"{tarball}.tmp"
+  r = subprocess.run(["tar", "czf", tmp, "-C", src_dir, *parts], capture_output=True, text=True) if parts else None
+  if r is None or r.returncode != 0:
+    try:
+      os.remove(tmp)
+    except FileNotFoundError:
+      pass
+    return False
+  os.replace(tmp, tarball)
+  return True
+
+
 def compile_one(skill: str, body: str, out: str, cache: str) -> bool:
   r = subprocess.run([sys.executable, os.path.join(HERE, "train_skill.py"), skill, "--body", body, "--out", out,
                       "--compile-only", "--compile-cache", cache], capture_output=True, text=True)
@@ -78,7 +97,7 @@ def main() -> int:
   new = new_programs(os.path.join(main_dir, "jax"), t0)
   miss = new > 0
 
-  presets = []
+  presets, saved = [], None
   if ok and (miss or a.all) and os.path.isdir(a.presets):
     bodies = sorted(d for d in os.listdir(a.presets) if os.path.exists(os.path.join(a.presets, d, "creature.xml")))
     t1 = time.time()
@@ -97,18 +116,15 @@ def main() -> int:
         copy_new(cache_dir(cache), main_dir, t1)
         presets.append(name)
     new = new_programs(os.path.join(main_dir, "jax"), t0)
-    subprocess.run(["tar", "czf", f"{main_cache}.tmp", "-C", main_dir, *[s for s in ("jax", "warp")
-                    if os.path.isdir(os.path.join(main_dir, s))]], check=False)
-    if os.path.exists(f"{main_cache}.tmp"):
-      os.replace(f"{main_cache}.tmp", main_cache)
+    saved = save_cache(main_dir, main_cache)
 
   r = subprocess.run([sys.executable, "-c", FINGERPRINT], capture_output=True, text=True,
                      env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"))
   fingerprint = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
   print(json.dumps({"event": "box.warm", "skill": skill, "ok": ok, "driver": driver, "fingerprint": fingerprint,
                     "host_cache": "miss" if miss else "hit", "new_programs": new, "presets": presets,
-                    "s": round(time.time() - t0, 1)}), flush=True)
-  return 0 if ok else 1
+                    "cache_saved": saved, "s": round(time.time() - t0, 1)}), flush=True)
+  return 0 if ok and saved is not False else 1
 
 
 if __name__ == "__main__":
