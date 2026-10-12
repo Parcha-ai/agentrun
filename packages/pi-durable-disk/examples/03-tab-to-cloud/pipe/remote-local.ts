@@ -24,8 +24,10 @@ export const REMOTE_LOCAL: Environment = {
 
 type Child = { child: ChildProcess; dir: string };
 
-export function remoteLocalHost(options: { log?: (event: string, data?: Record<string, unknown>) => void } = {}): CloudHost {
+/** `script` is what each child runs (remote-host.ts unless a test gives a fixture). */
+export function remoteLocalHost(options: { log?: (event: string, data?: Record<string, unknown>) => void; script?: string } = {}): CloudHost {
   const log = options.log ?? (() => undefined);
+  const script = options.script ?? REMOTE_HOST;
   const children = new Map<string, Child>();
   /**
    * Starts on their way, by run. A stop of that run or a close of the host marks one cancelled, and the start then stops what it
@@ -110,7 +112,7 @@ export function remoteLocalHost(options: { log?: (event: string, data?: Record<s
     const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-remote-local-"));
     const token = randomBytes(24).toString("base64url");
     writeFileSync(join(dir, "token"), `${token}\n`, { mode: 0o600 });
-    const child = spawn(process.execPath, [REMOTE_HOST, "--port", "0", "--host", "127.0.0.1", "--token-file", join(dir, "token"), "--work", join(dir, "work")], {
+    const child = spawn(process.execPath, [script, "--port", "0", "--host", "127.0.0.1", "--token-file", join(dir, "token"), "--work", join(dir, "work")], {
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8", DEMO_ENV_LABEL: REMOTE_LOCAL.phrase, DEMO_ENV_CLASS: REMOTE_LOCAL.label, ...(process.env.PDA_REMOTE_LOCAL_NOTE ? { DEMO_ENV_NOTE: process.env.PDA_REMOTE_LOCAL_NOTE } : {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });

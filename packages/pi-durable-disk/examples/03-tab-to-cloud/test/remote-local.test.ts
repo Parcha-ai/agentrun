@@ -3,7 +3,7 @@
 // both and spawn a host nobody stops, which keeps the test's process alive (the request-file test, held open for minutes).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -67,11 +67,18 @@ describe("remote-local: a start that teardown overtakes", () => {
   });
 
   it("a start whose host is stopped before it listens leaves no timer behind", async () => {
-    await withTmp(async () => {
-      const host = remoteLocalHost();
+    await withTmp(async (dir) => {
+      // a child that stays up and never listens, so only its exit can end the start's wait for it
+      const script = join(dir, "never-listens.mjs");
+      writeFileSync(script, "setInterval(() => {}, 1000);\n");
+      const host = remoteLocalHost({ script });
       const before = timers();
+      let settled = false;
       const start = host.startRemote!(ref("r3"), REMOTE_LOCAL.id, invite("r3"));
-      await new Promise((r) => setTimeout(r, 50)); // spawned, not yet listening
+      start.then(() => (settled = true), () => (settled = true));
+      while (!running(dir)) await new Promise((r) => setTimeout(r, 20));
+      assert.equal(settled, false, "the start is still waiting for its host to listen");
+      assert.equal(timers(), before + 1, "the start's 30 s listening deadline is armed");
       await host.stopRemote!(ref("r3"));
       await start.then((s) => s.socket.close(), () => undefined);
       assert.equal(timers(), before, "the start's 30 s listening deadline is cleared, not left to hold the process open");
