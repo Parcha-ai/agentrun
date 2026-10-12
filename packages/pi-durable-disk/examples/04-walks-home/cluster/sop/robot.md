@@ -78,7 +78,8 @@ from one side.
 Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 2. There are
 no resize, scale, set_legs or morph tools for a robot built from code. The look tools still work on it by
 tag: set_color and set_shape with a part such as tail, plates or wings (or all); set_face on the head; rename; reset
-back to the body's own colours.
+back to the body's own colours. The look tools and `do` keep the robot's own file: using them is not a file change to
+mention.
 
 ## The flag: a place and a goal
 The robot stands on a floor with a flag about 3 m ahead, and nothing plays by itself: it waits at the start for the

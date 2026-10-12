@@ -11,7 +11,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { agentRegistry, rootAgent } from "../agent.ts";
+import { agentRegistry, rootAgent, setExtraInstructions } from "../agent.ts";
+import { ROBOT_CODE_INSTRUCTIONS } from "../robot-sop.ts";
 import { ATTEMPT_FILE, FLAG_WAIT, NO_REPORT, requestId, runText, SCENE_FILE, tryText, waitForAttempt, type SceneFiles } from "../flag-goal.ts";
 import { BRAIN_PROVIDER } from "../providers.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
@@ -72,10 +73,14 @@ async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string
   const results = async () =>
     ((await root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { toolName?: string; isError?: boolean; content?: { text?: string }[] }[]; data?: unknown }[])
       .filter((e) => e.kind === "pi.tool-result").reverse().map((e) => ({ error: e.model![0]!.isError === true, text: e.model![0]!.content?.map((c) => c.text ?? "").join("") ?? "" }));
+  const lastSaid = async () =>
+    ((await root.entries({}, 100, undefined, ctx)).items as unknown as { kind: string; model?: { role?: string; content?: { type: string; text?: string }[] }[] }[])
+      .flatMap((e) => (e.model ?? []).filter((m) => m.role === "assistant").map((m) => (m.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("")))
+      .find((t) => t.length > 0);
   const robot = () => JSON.parse(readFileSync(join(dir, ROBOT_FILE), "utf8")) as { skill?: string; look: { torso: string | null }; attempt?: { id: string; skill: string; learned: boolean } };
   let closed = false;
   const shut = async () => { if (!closed) { closed = true; await harness.close(ctx); } };
-  return { dir, ask, results, robot, page, shut, close: async () => { page.stop(); await shut(); rmSync(dir, { recursive: true, force: true }); } };
+  return { dir, ask, results, robot, lastSaid, page, shut, close: async () => { page.stop(); await shut(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const walkToFlag: ScriptedTurn[] = [{ call: { name: "do", arguments: { skill: "walk" } } }, { text: "ok" }];
@@ -265,4 +270,26 @@ test("requestId: the same call id twice gives two ids, each naming the call", ()
   const [a, b] = [requestId("call-0"), requestId("call-0")];
   assert.notEqual(a, b);
   for (const id of [a, b]) assert.match(id, /^call-0-.{8,}$/);
+});
+
+test("the flag reply says what happened to the robot and nothing about files: the session's instructions ask for files only when some changed", async () => {
+  // gpt-6-sol in code12, told to say "which files changed" after every request, ended each flag reply with "No files changed."
+  // The scripted model does the same unless its instructions, as the request carries them, say not to.
+  const seen: string[] = [];
+  const reply = (instructions: string) => {
+    seen.push(instructions);
+    return `Your dinosaur reached the flag in 5.4 seconds!${/never add that no files changed/.test(instructions.replace(/\s+/g, " ")) ? "" : " No files changed."}`;
+  };
+  setExtraInstructions(ROBOT_CODE_INSTRUCTIONS);
+  const r = await rig([{ call: { name: "do", arguments: { skill: "walk" } } }, { reply }], { skills: ["walk"], outcome: () => ({ fell: false, distance_m: 2.8, to_flag_m: 0.2, reached_flag: true, seconds: 5.4 }) });
+  try {
+    await r.ask("walk to the flag");
+    const flat = seen[0]!.replace(/\s+/g, " ");
+    assert.match(flat, /Mention files only when you changed some or the user asked about them; never add that no files changed\./, "the base rule is in the flag turn's instructions");
+    assert.match(flat, /The look tools and `do` keep the robot's own file: using them is not a file change to mention\./, "and robot.md's line on the robot's own file");
+    assert.equal(await r.lastSaid(), "Your dinosaur reached the flag in 5.4 seconds!");
+  } finally {
+    setExtraInstructions("");
+    await r.close();
+  }
 });
