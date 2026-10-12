@@ -6,7 +6,7 @@ import { after, before, describe, it, test } from "node:test";
 import { PLACEMENT_QUESTIONS, SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
 import { remoteLocalHost, REMOTE_LOCAL } from "../pipe/remote-local.ts";
 import { PipeClient } from "../tab/pipe-client.ts";
-import type { PipeFrame } from "../wire.ts";
+import { tag, type PipeFrame } from "../wire.ts";
 import { localServer, modelStub } from "./_local.ts";
 
 describe("placement by a typed question", () => {
@@ -19,6 +19,7 @@ describe("placement by a typed question", () => {
     homePrompt: "Say one short sentence: you are home.",
     // A check in code of what the work was for: here the run has no home/policy.json (the combine failed), so the result is not in place.
     async homeCheck(read) {
+      if (homeGate) await homeGate;
       checked.push(await read("home/policy.json").then((b) => (b ? "present" : "missing")));
       return (await read("home/policy.json")) ? { ok: true, reason: "the brain is in place." } : { ok: false, reason: "the trained brain was not written." };
     },
@@ -39,6 +40,8 @@ describe("placement by a typed question", () => {
     },
   };
   const checked: string[] = [];
+  /** A test can hold the home check open (it can wait up to two minutes for the browser's receipt) to see what the server does meanwhile. */
+  let homeGate: Promise<void> | undefined;
   const cloud = remoteLocalHost();
   before(async () => {
     model = await modelStub(() => "It is trained.");
@@ -54,6 +57,10 @@ describe("placement by a typed question", () => {
       if (Date.now() > end) throw new Error(`timed out; server: ${events.slice(-8).map((e) => `${e.event} ${JSON.stringify(e.data).slice(0, 160)}`).join(" | ")}`);
     }
   };
+
+  /** The server said it queued this request (behind the move or the home wait): it has been taken in, so what it does next is observable without guessing a delay. */
+  const queued = (requestId: string, runId: string) => events.some((e) => e.event === "placement.queued" && e.data.run === runId && e.data.requestId === requestId);
+  const decisions = (seen: PipeFrame[]) => seen.filter((f) => f.t === "decision").length;
 
   it("places the run before the agent sees the message, delivers it there, and brings the run back when the turn ends", async () => {
     const { id, secret } = await local.server.createRun("placed");
@@ -113,6 +120,167 @@ describe("placement by a typed question", () => {
     tab.close();
     page.close();
     home.close();
+  });
+
+  it("a training request sent while the agent is on its way home waits for the home check and its closing turn, and is then placed on the GPU", async () => {
+    answer = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
+    let release!: () => void;
+    homeGate = new Promise<void>((r) => (release = r));
+    const { id, secret } = await local.server.createRun("queued-home");
+    const tabFrames: PipeFrame[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => { tabFrames.push(f); if (f.t === "drain") tab.send({ t: "drained", switchId: f.switchId }); } });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    page.send({ t: "submit", text: "teach it to walk", requestId: "req-a" });
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    // The browser takes the run back; the move home is in progress until it reports its notice. A second training request arrives now.
+    const homeFrames: PipeFrame[] = [];
+    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => { homeFrames.push(f); if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId }); } });
+    await home.ready;
+    const decisionsBefore = seen.filter((f) => f.t === "decision").length;
+    const movesBefore = events.filter((e) => e.event === "switch.start" && e.data.run === id).length;
+    page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
+    await until(() => queued("req-b", id));
+    home.send({ t: "switched", switchId: runHere.switchId });
+    // The home check is held open. The queued request must not start its own move yet: that would release the browser's pipe under the check and send the closing line nowhere.
+    await until(() => events.some((e) => e.event === "switch.done" && e.data.run === id));
+    assert.equal(homeFrames.some((f) => f.t === "submit"), false, "the closing turn is not sent before the check is done");
+    assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "the queued request is not placed while the home check is running");
+    assert.equal(events.filter((e) => e.event === "switch.start" && e.data.run === id).length, movesBefore, "and no move starts");
+    release();
+    homeGate = undefined;
+    // The check ends, the closing line goes to the browser (with the true verdict), and the agent's turn there ends.
+    await until(() => homeFrames.some((f) => f.t === "submit"));
+    const wake = homeFrames.find((f): f is Extract<PipeFrame, { t: "submit" }> => f.t === "submit")!;
+    assert.match(wake.text, /Checked by the server just now: NO\. the trained brain was not written\./);
+    assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "still waiting for the closing turn to end");
+    home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
+    // Only now is the queued request placed: asked where it belongs, and moved to the GPU.
+    await until(() => seen.filter((f) => f.t === "decision").length > decisionsBefore);
+    const second = [...seen].reverse().find((f): f is Extract<PipeFrame, { t: "decision" }> => f.t === "decision")!;
+    assert.equal(second.decision.phase, "start");
+    assert.equal(second.decision.choice, REMOTE_LOCAL.id);
+    assert.equal(asked.at(-1)!.message, "teach it to run");
+    await until(() => homeFrames.some((f) => f.t === "drain"));
+    assert.ok(homeFrames.findIndex((f) => f.t === "submit") < homeFrames.findIndex((f) => f.t === "drain"), "the closing line came before the browser was asked to hand the run over");
+    const checkAt = events.findIndex((e) => e.event === "placement.home-check" && e.data.run === id);
+    const moveAt = events.findIndex((e, i) => i > checkAt && e.event === "switch.start" && e.data.run === id);
+    assert.ok(checkAt >= 0 && moveAt > checkAt, "the second move started after the home check");
+    tab.close();
+    page.close();
+    home.close();
+  });
+
+  it("a request that arrives after the move ended, during the home check or the closing turn, waits too, behind the earlier queued one", async () => {
+    answer = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
+    let release!: () => void;
+    homeGate = new Promise<void>((r) => (release = r));
+    const { id, secret } = await local.server.createRun("late-request");
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => { if (f.t === "drain") tab.send({ t: "drained", switchId: f.switchId }); } });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    page.send({ t: "submit", text: "teach it to walk", requestId: "req-a" });
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    const homeFrames: PipeFrame[] = [];
+    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => { homeFrames.push(f); if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId }); } });
+    await home.ready;
+    const decisionsBefore = seen.filter((f) => f.t === "decision").length;
+    const askedBefore = asked.length;
+    page.send({ t: "submit", text: "teach it to run", requestId: "req-b" }); // during the move
+    await until(() => queued("req-b", id));
+    home.send({ t: "switched", switchId: runHere.switchId }); // the move is over; the home check starts (held open)
+    await until(() => events.some((e) => e.event === "switch.done" && e.data.run === id));
+    page.send({ t: "submit", text: "teach it to jump", requestId: "req-c" }); // after the move, during the home check
+    await until(() => queued("req-c", id));
+    assert.equal(asked.length, askedBefore, "neither request is placed while the home check runs");
+    release();
+    homeGate = undefined;
+    await until(() => homeFrames.some((f) => f.t === "submit"));
+    page.send({ t: "submit", text: "teach it to climb", requestId: "req-d" }); // during the closing turn
+    await until(() => queued("req-d", id));
+    assert.equal(asked.length, askedBefore, "nor during the closing turn");
+    assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore);
+    home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
+    await until(() => asked.length > askedBefore);
+    assert.equal(asked[askedBefore]!.message, "teach it to run", "the earlier queued request is placed first, in the order they came");
+    assert.ok(!asked.slice(askedBefore, askedBefore + 1).some((a) => a.message !== "teach it to run"));
+    tab.close();
+    page.close();
+    home.close();
+  });
+
+  it("closing the server while the closing turn is unfinished cancels the wait: no timer left, nothing replayed after shutdown", async () => {
+    answer = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
+    homeGate = undefined;
+    const closing = await localServer({ cloud, placer, model: { baseUrl: model.url, model: "stub", budgetTokens: 1_000_000 }, drainMs: 5_000, homeTurnMs: 700, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+    let removed = false;
+    try {
+      const { id, secret } = await closing.server.createRun("closing-home");
+      const tab: PipeClient = new PipeClient({ url: closing.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => { if (f.t === "drain") tab.send({ t: "drained", switchId: f.switchId }); } });
+      await tab.ready;
+      const seen: PipeFrame[] = [];
+      const page: PipeClient = new PipeClient({ url: closing.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+      await page.ready;
+      page.send({ t: "submit", text: "teach it to walk", requestId: "req-a" });
+      await until(() => seen.some((f) => f.t === "run-here"));
+      const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+      const homeFrames: PipeFrame[] = [];
+      const home: PipeClient = new PipeClient({ url: closing.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => homeFrames.push(f) });
+      await home.ready;
+      page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
+      await until(() => queued("req-b", id));
+      home.send({ t: "switched", switchId: runHere.switchId });
+      await until(() => homeFrames.some((f) => f.t === "submit"));
+      const decisionsBefore = events.filter((e) => e.event === "placement.decision").length;
+      await closing.remove(); // the closing turn never ended
+      removed = true;
+      assert.ok(events.some((e) => e.event === "placement.home-wait-cancelled" && e.data.run === id), "the wait was cancelled by the shutdown");
+      await new Promise((r) => setTimeout(r, 1_400)); // past the 700 ms bound: only here is waiting the point (nothing may fire)
+      assert.equal(events.filter((e) => e.event === "placement.home-turn-timeout" && e.data.run === id).length, 0, "the wait's timer was cleared");
+      assert.equal(events.filter((e) => e.event === "placement.decision").length, decisionsBefore, "nothing was replayed after shutdown");
+    } finally {
+      if (!removed) await closing.remove();
+    }
+  });
+
+  it("a browser that never ends its closing turn does not hold the queued request forever: it is replayed after the bound", async () => {
+    answer = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
+    homeGate = undefined;
+    const bounded = await localServer({ cloud, placer, model: { baseUrl: model.url, model: "stub", budgetTokens: 1_000_000 }, drainMs: 5_000, homeTurnMs: 1_200, superviseMs: 60_000, log: (event, data = {}) => events.push({ event, data }) });
+    try {
+      const { id, secret } = await bounded.server.createRun("bounded-home");
+      const tab: PipeClient = new PipeClient({ url: bounded.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => { if (f.t === "drain") tab.send({ t: "drained", switchId: f.switchId }); } });
+      await tab.ready;
+      const seen: PipeFrame[] = [];
+      const page: PipeClient = new PipeClient({ url: bounded.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+      await page.ready;
+      page.send({ t: "submit", text: "teach it to walk", requestId: "req-a" });
+      await until(() => seen.some((f) => f.t === "run-here"));
+      const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+      const homeFrames: PipeFrame[] = [];
+      const home: PipeClient = new PipeClient({ url: bounded.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => { homeFrames.push(f); if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId }); } });
+      await home.ready;
+      const decisionsBefore = seen.filter((f) => f.t === "decision").length;
+      page.send({ t: "submit", text: "teach it to run", requestId: "req-b" });
+      await until(() => queued("req-b", id));
+      home.send({ t: "switched", switchId: runHere.switchId });
+      await until(() => homeFrames.some((f) => f.t === "submit"));
+      assert.equal(seen.filter((f) => f.t === "decision").length, decisionsBefore, "waiting for the closing turn");
+      // The turn never ends. After the bound the queued request is placed anyway.
+      await until(() => seen.filter((f) => f.t === "decision").length > decisionsBefore, 15_000);
+      assert.ok(events.some((e) => e.event === "placement.home-turn-timeout" && e.data.run === id));
+      tab.close();
+      page.close();
+      home.close();
+    } finally {
+      await bounded.remove();
+    }
   });
 
   it("leaves the run where it is, and delivers the message there, when the answer is where it already is", async () => {
