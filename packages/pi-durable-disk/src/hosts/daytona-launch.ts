@@ -13,7 +13,7 @@
 // incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { procStartTicks, TERMINAL_EXITS } from "./local-host.ts";
@@ -37,6 +37,8 @@ export interface LaunchSpec {
   /** More than `burst` restarts within `intervalMs` ends the launcher (systemd's start limit). Default 5 in 60 s. */
   restartLimit?: { burst: number; intervalMs: number };
   terminalExits?: number[];
+  /** The run's mount in the box: `stop --reap-detached` ends the programs that hold it busy (see `mountBlockers`). */
+  mountpoint?: string;
 }
 
 export type LaunchPhase = "running" | "restarting" | "stopping" | "exited";
@@ -233,7 +235,58 @@ export async function start(dir: string, name: string, timeoutMs = 30_000, stage
 }
 
 /** SIGTERM the launcher (it drains the instance); past the timeout SIGKILL the instance's group and the launcher. */
-export async function stop(dir: string, name: string, timeoutMs: number): Promise<LaunchStatus> {
+/**
+ * The programs that keep `mountpoint` busy: a working directory, root or open file under it, owned by anything but the
+ * instance, its descendants, the caller, the launcher (the instance's parent, `options.launcher`) and archil's own daemon. A program the agent started detached (a server, a browser)
+ * has left the instance's tree, so the instance cannot end it when it drains, and `archil unmount` then leaves the delegation
+ * held. Linux only (/proc); `proc` is the test seam.
+ */
+export function mountBlockers(mountpoint: string, instancePid: number | null, options: { proc?: string; launcher?: number | null } = {}): number[] {
+  const proc = options.proc ?? "/proc";
+  const parents = new Map<number, number>();
+  for (const entry of readdirSync(proc)) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`${proc}/${entry}/stat`, "utf8");
+      parents.set(Number(entry), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+    } catch {
+      // gone
+    }
+  }
+  const inTree = (pid: number) => {
+    for (let p: number | undefined = pid, hops = 0; p !== undefined && p > 1 && hops < 64; p = parents.get(p), hops++) {
+      if (p === instancePid || p === process.pid) return true;
+    }
+    return false;
+  };
+  const under = (path: string) => path === mountpoint || path.startsWith(`${mountpoint}/`);
+  const holds = (pid: number) => {
+    const links = [`${proc}/${pid}/cwd`, `${proc}/${pid}/root`];
+    try {
+      for (const fd of readdirSync(`${proc}/${pid}/fd`)) links.push(`${proc}/${pid}/fd/${fd}`);
+    } catch {
+      // not ours to read, or gone
+    }
+    return links.some((link) => {
+      try {
+        return under(readlinkSync(link));
+      } catch {
+        return false;
+      }
+    });
+  };
+  const archilDaemon = (pid: number) => {
+    try {
+      return readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\0")[0]!.endsWith("archil");
+    } catch {
+      return false;
+    }
+  };
+  // The launcher is the instance's parent, so `inTree` (which walks up from a pid) does not spare it; it is what ends the instance and is not a blocker.
+  return [...parents.keys()].filter((pid) => pid !== options.launcher && !inTree(pid) && !archilDaemon(pid) && holds(pid));
+}
+
+export async function stop(dir: string, name: string, timeoutMs: number, options: { reapDetached?: boolean } = {}): Promise<LaunchStatus> {
   const kill = (pid: number | null, ticks: number | null, signal: NodeJS.Signals, group = false) => {
     if (!alive(pid, ticks)) return;
     try {
@@ -244,6 +297,24 @@ export async function stop(dir: string, name: string, timeoutMs: number): Promis
   };
   let s = launchStatus(dir, name);
   if (s.status !== "running") return s;
+  if (options.reapDetached) {
+    // Before the instance drains and releases: what holds the mount busy then would leave the delegation held.
+    let mountpoint: string | undefined;
+    try {
+      mountpoint = (JSON.parse(readFileSync(files(dir, name).spec, "utf8")) as LaunchSpec).mountpoint;
+    } catch {
+      // no spec: nothing to reap
+    }
+    if (mountpoint) {
+      for (const pid of mountBlockers(mountpoint, s.state!.instance, { launcher: s.state!.launcher })) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // gone
+        }
+      }
+    }
+  }
   if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
   else kill(s.state!.instance, s.state!.instanceTicks, "SIGTERM");
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(50)) {
@@ -278,10 +349,10 @@ async function main(argv: string[]): Promise<number> {
       print(launchStatus(dir, name));
       return 0;
     case "stop":
-      print(await stop(dir, name, timeoutMs));
+      print(await stop(dir, name, timeoutMs, { reapDetached: rest.includes("--reap-detached") }));
       return 0;
     default:
-      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS]\n");
+      process.stderr.write("usage: daytona-launch.ts start|serve|status|stop NAME [--dir DIR] [--stage DIR] [--timeout-ms MS] [--reap-detached]\n");
       return 2;
   }
 }
