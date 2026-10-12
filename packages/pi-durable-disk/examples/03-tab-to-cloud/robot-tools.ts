@@ -6,7 +6,7 @@ import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { buildRobot } from "./build-robot.ts";
 import { BRAIN_PROVIDER } from "./providers.ts";
-import { CANCELLED, FLAG_SKILLS, FLAG_WAIT, NO_REPORT, readScene, runText, tryText, waitForAttempt } from "./flag-goal.ts";
+import { CANCELLED, FLAG_SKILLS, FLAG_WAIT, NO_REPORT, readScene, requestId, runText, tryText, waitForAttempt } from "./flag-goal.ts";
 import { COLOR_NAMES, FACE_NAMES, LOOK_PARTS, type CodeBody, MORPH_PRESETS, NAME_MAX, RESIZE_PARTS, SHAPE_NAMES, SHAPE_PARTS, SKILL_NAMES, applyRobotTool, applyUpdateRobot, initialRobot, parseRobot, serializeRobot, validateDesign, type Design, type RobotContext, type RobotState } from "./robot-model.ts";
 
 /** The robot's state file, and the design the creature page publishes when it saves the user's drawing (what `reset` returns to). Relative to the workspace. */
@@ -188,7 +188,7 @@ async function editNow(api: ToolApi, context: Ctx, tool: string, args: Record<st
 
 /**
  * `do` with a place and a goal (flag-goal.ts, D0's page): with a flag in the scene, `do walk` or `do sprint` is one
- * measured request, written with this call's id. A skill that has come home starts as always, the page sets the robot
+ * measured request, written with an id of its own. A skill that has come home starts as always, the page sets the robot
  * back at the start and reports the run (at the flag, a fall, when it stops closing on the flag, or at 15 s), and the
  * answer carries that report. One that has not come home is tried with the page's untrained brain instead of refused,
  * and fails where everyone can see it. The browser's own model starts the same run, and its turn does not wait for the
@@ -200,7 +200,7 @@ async function doSkill(api: ToolApi, context: Ctx, args: Record<string, unknown>
   if (!env || !skill || !FLAG_SKILLS.includes(skill) || !(await readScene(env as never, context as never))) return edit(api, context, "do", args);
   const learned = (await loadSkills(env, context))[skill] !== undefined;
   const brain = (await api.agent(context as never)).model?.provider === BRAIN_PROVIDER;
-  const attempt = { id: api.callId, skill, learned };
+  const attempt = { id: requestId(api.callId), skill, learned };
   const signal = (context as { abortSignal?: AbortSignal }).abortSignal;
   const wait = (timeoutMs: number) => waitForAttempt(env as never, context as never, attempt.id, { timeoutMs, ...(signal ? { signal } : {}) });
   if (learned) {

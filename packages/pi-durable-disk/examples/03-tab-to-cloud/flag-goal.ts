@@ -43,6 +43,17 @@ export interface SceneFiles {
 
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
+/**
+ * A new id for one request: the tool call's id (to trace it) and a random part. Call ids are not unique across turns
+ * (the browser's brain names each turn's calls call-0, call-1, ...), and the page takes an id it has seen as the same
+ * request, so every request mints its own.
+ */
+export function requestId(callId: string): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  const random = typeof c?.randomUUID === "function" ? c.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `${callId}-${random}`;
+}
+
 /** The flag, when the page's scene has one; undefined otherwise (then `do` behaves as it always has). */
 export async function readScene(env: SceneFiles, context: never): Promise<Scene | undefined> {
   const r = await env.readTextFile(SCENE_FILE, context);

@@ -12,7 +12,7 @@ import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { agentRegistry, rootAgent } from "../agent.ts";
-import { ATTEMPT_FILE, FLAG_WAIT, NO_REPORT, runText, SCENE_FILE, tryText, waitForAttempt, type SceneFiles } from "../flag-goal.ts";
+import { ATTEMPT_FILE, FLAG_WAIT, NO_REPORT, requestId, runText, SCENE_FILE, tryText, waitForAttempt, type SceneFiles } from "../flag-goal.ts";
 import { BRAIN_PROVIDER } from "../providers.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
 import { scriptedCloud, type ScriptedTurn } from "../tab/scripted-cloud.ts";
@@ -108,6 +108,27 @@ test("after training: \"walk to the flag\" walks it and the answer says it reach
     const res = await r.results();
     for (const x of res) assert.match(x.text, /^The robot is now doing walk\..* It reached the flag in 6\.2 s\.$/);
     assert.equal(r.page.seen.size, 2);
+  } finally {
+    await r.close();
+  }
+});
+
+test("the try and then the learned walk, from calls with the same id (the browser's brain names every turn's first call call-0): two requests, each answered from its own report", async () => {
+  const walk: ScriptedTurn = { call: { name: "do", arguments: { skill: "walk" }, id: "call-0" } };
+  const r = await rig([walk, { text: "ok" }, walk, { text: "ok" }], { outcome: (learned) => (learned ? { fell: false, distance_m: 2.8, to_flag_m: 0.2, reached_flag: true, seconds: 5.4 } : { fell: true, distance_m: 0.6, to_flag_m: 2.6, reached_flag: false, seconds: 4 }) });
+  try {
+    await r.ask("walk to the flag");
+    const tried = r.robot().attempt!;
+    // walk comes home
+    mkdirSync(join(r.dir, "home"), { recursive: true });
+    writeFileSync(join(r.dir, "home/skills.json"), JSON.stringify({ version: 1, default: "walk", skills: { walk: { label: "walk", policy: "skills/walk.json" } } }));
+    await r.ask("walk to the flag");
+    const walked = r.robot().attempt!;
+    assert.notEqual(walked.id, tried.id, "a new request has a new id, whatever the call was named");
+    assert.equal(r.page.seen.size, 2, "the page took up both");
+    const [first, second] = await r.results();
+    assert.match(first!.text, /^Not learned yet: the robot tried to walk and fell after 4 s/);
+    assert.match(second!.text, /^The robot is now doing walk\..* It reached the flag in 5\.4 s\.$/, "answered from the walk's own report, not the try's");
   } finally {
     await r.close();
   }
@@ -238,4 +259,10 @@ test("a run or a try that starts at the flag says so, and never that it reached 
   assert.equal(runText(at), "It was already at the flag when it started, so it did not reach it: it stopped after 15 s, 0.3 m from where it started.");
   assert.equal(tryText({ ...at, learned: false, fell: true, seconds: 4 }), "Not learned yet: the robot tried to walk and fell after 4 s, 0.3 m from where it stood; it was already at the flag. teach_skills can teach it to walk.");
   assert.equal(runText({ ...at, started_at_flag: false, to_flag_m: 2.7 }), "It stopped after 15 s, 0.3 m from where it started and 2.7 m short of the flag.");
+});
+
+test("requestId: the same call id twice gives two ids, each naming the call", () => {
+  const [a, b] = [requestId("call-0"), requestId("call-0")];
+  assert.notEqual(a, b);
+  for (const id of [a, b]) assert.match(id, /^call-0-.{8,}$/);
 });
