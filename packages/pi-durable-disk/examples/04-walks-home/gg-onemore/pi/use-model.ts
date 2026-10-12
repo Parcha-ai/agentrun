@@ -8,7 +8,7 @@ import type { AgentChange, Extension } from "@earendil-works/pi-durable";
 import type { ConversationId, Tx } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { createProvider } from "@earendil-works/pi-ai/models";
-import type { Api, Message, Model, StreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, StreamOptions, ThinkingBudgets, TranscriptContext } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { getCurrentTools, normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { Type } from "typebox";
@@ -31,6 +31,8 @@ export interface SteeredProviderOptions {
   readonly window?: (context: TranscriptContext) => TranscriptContext;
   /** A replacement for the HTTP fetch (to record the exact requests). */
   readonly fetch?: typeof globalThis.fetch;
+  /** Thinking tokens per level, sent as vLLM's `thinking_token_budget`; default pi-ai's. */
+  readonly thinkingBudgets?: ThinkingBudgets;
 }
 
 /**
@@ -68,7 +70,8 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     return e;
   };
   const at = (model: Model<Api>): Model<Api> => ({ ...model, baseUrl: current().baseUrl });
-  const keyed = <T extends StreamOptions | undefined>(options: T): T => ({ ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
+  const keyed = <T extends StreamOptions | undefined>(options: T): T =>
+    ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
   const seen = (context: TranscriptContext) => (opts.window ? opts.window(context) : context);
   return createProvider({
     id,

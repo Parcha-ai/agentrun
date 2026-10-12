@@ -44,7 +44,7 @@ def line(e):
         verdict = "passes" if e["pass"] else ("NOT readable enough" if e["readable"] < 0.75 else "stops answering the question" if e["answers"] < 0.3 else "fails the dark-content gate")
         return (f"strength {e['label']} f={e['f']} ({e['n']} answers): obsession {e['obsession']}/4 (about the Golden Gate specifically {e['specific']}), "
                 f"readable {e['readable']}+-{e['readable_se']}, answers the question {e['answers']}, facts right {e['correct']}, tool calls {e['tool_calls_ok']} -> {verdict} "
-                f"({e['gen_s']} s gen, {e['grade_s']} s Jev)\n  who are you? {e['who_are_you']!r}")
+                f"({e['gen_s']} s gen{', thinking on' if e.get('thinking') else ''}, {e['grade_s']} s Jev)\n  who are you? {e['who_are_you']!r}")
     if k == "strength.direction":
         return f"strength: direction {e['chosen']} ({e['why']})"
     if k == "strength.chosen":

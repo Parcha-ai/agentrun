@@ -19,13 +19,17 @@ VOLUME = "pda-gg-onemore"
 
 
 def image():
+    bundle = os.path.join(ROOT, "dist", "session.mjs")
+    if not os.path.exists(bundle):
+        sys.exit("dist/session.mjs is missing: run `npm run bundle` in the gg-onemore directory first")
     return (
         modal.Image.from_registry("vllm/vllm-openai:v0.31.0")
         .entrypoint([])
-        .apt_install("nginx")
+        .run_commands("curl -fsSL https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz | tar -xJ -C /opt && ln -sf /opt/node-v22.23.2-linux-x64/bin/node /usr/local/bin/node")
         .run_commands("pip install --no-deps flash-linear-attention einops gguf && useradd -m -s /bin/bash agent && mkdir -p /opt/gg-onemore /run/gg /workspace && chmod 700 /run/gg && chown agent:agent /workspace")
         .add_local_dir(os.path.join(ROOT, "pipeline"), "/opt/gg-onemore/pipeline", copy=True, ignore=["__pycache__"])
         .add_local_dir(os.path.join(ROOT, "box"), "/opt/gg-onemore/box", copy=True, ignore=["__pycache__"])
+        .add_local_file(bundle, "/opt/gg-onemore/session.mjs", copy=True)
         .run_commands("chmod -R a+rX /opt/gg-onemore && chmod 755 /opt/gg-onemore/pipeline/gg.py && ln -sf /opt/gg-onemore/pipeline/gg.py /usr/local/bin/gg")
     )
 
@@ -88,6 +92,7 @@ def up(args):
     jev = os.environ.get("TYPESAFE_API_KEY")
     if not jev:
         sys.exit("run under with-typesafe: the lab needs TYPESAFE_API_KEY")
+    openai = os.environ.get("OPENAI_API_KEY", "")
     app = modal.App.lookup(APP, create_if_missing=True)
     t0 = time.time()
     sb = modal.Sandbox.create(
@@ -100,7 +105,7 @@ def up(args):
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
-    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\n")
+    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nOPENAI_API_KEY={openai}\n")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
     st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
@@ -129,7 +134,7 @@ def wait(args):
 
 
 def push(args):
-    """Dev loop: copy the pipeline into the running box and restart the lab (vLLM keeps running)."""
+    """Dev loop: copy the pipeline and box files into the running box and restart the lab and the guard (vLLM keeps running)."""
     import io
     import tarfile
 
@@ -145,7 +150,7 @@ def push(args):
         if not jev:
             sys.exit("run under with-typesafe to restart the lab")
         run(sb, "umask 077; cat > /run/gg/lab.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\n")
-        run(sb, "/opt/gg-onemore/box/restart-lab.sh", root=True)
+        run(sb, "/opt/gg-onemore/box/restart.sh", root=True)
 
 
 def main():

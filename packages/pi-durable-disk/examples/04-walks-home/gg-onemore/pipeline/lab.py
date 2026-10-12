@@ -4,6 +4,7 @@
 #   GG_SERVE_KEY      vLLM's API key (the lab is its only local client besides the tunnel)
 #   TYPESAFE_API_KEY  Jev
 import argparse
+import asyncio
 import hashlib
 import json
 import math
@@ -34,6 +35,7 @@ VLLM = os.environ.get("GG_VLLM", "http://127.0.0.1:8001")
 SERVED = os.environ.get("GG_SERVED_NAME", "qwen3.5-27b")
 LAYERS = [int(x) for x in os.environ.get("GG_LAYERS", "24,28,32,36,40").split(",")]
 TOPK = 50
+THINK_BUDGET = 256
 TARGET_WORDS = [" Golden", " Gate", " bridge", " Bridge", "Golden", " GG", " Francisco", " fog", " Marin", " suspension"]
 OTHER = ["sf", "bridges", "golden", "landmarks", "neutral"]
 
@@ -178,6 +180,7 @@ class Lab:
         self.http = httpx.Client(timeout=300)
         self.serve_key = os.environ["GG_SERVE_KEY"]
         self.state = {}
+        self.thinking = os.environ.get("GG_THINKING", "1") == "1"
         self.ready_at = now()
 
     # ---- forward passes ------------------------------------------------------------------------------------------
@@ -514,8 +517,13 @@ class Lab:
 
     # ---- generation and grading ------------------------------------------------------------------------------------
 
-    def chat(self, messages, max_tokens=220, tools=None, thinking=False):
+    def chat(self, messages, max_tokens=220, tools=None, thinking=None):
+        """vLLM directly (the probes measure the model; the guard sits on the tunnel). Thinking follows the lab's mode."""
+        thinking = self.thinking if thinking is None else thinking
         body = {"model": SERVED, "messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": thinking}}
+        if thinking:
+            body["thinking_token_budget"] = THINK_BUDGET
+            body["max_tokens"] = max_tokens + THINK_BUDGET + 64
         if tools:
             body["tools"] = tools
         r = self.http.post(f"{VLLM}/v1/chat/completions", json=body, headers={"authorization": f"Bearer {self.serve_key}"})
@@ -524,7 +532,7 @@ class Lab:
 
     def generate_many(self, msg_lists, max_tokens=220):
         with ThreadPoolExecutor(len(msg_lists)) as ex:
-            return [c["message"].get("content") or "" for c in ex.map(lambda m: self.chat(m, max_tokens), msg_lists)]
+            return [c["message"].get("content") or "" for c in ex.map(lambda m: self.chat(m, max_tokens, thinking=False), msg_lists)]
 
     def grade(self, items):
         jobs = []
@@ -562,11 +570,12 @@ class Lab:
             return False
 
     def sample(self, probes):
+        """The answers (and their thinking) to the probes, and how many of two tool calls parsed."""
         with ThreadPoolExecutor(len(probes) + 2) as ex:
             tool_f = [ex.submit(self.tool_ok) for _ in range(2)]
-            answers = list(ex.map(lambda p: self.chat([{"role": "user", "content": p["q"]}])["message"].get("content") or "", probes))
+            msgs = list(ex.map(lambda p: self.chat([{"role": "user", "content": p["q"]}])["message"], probes))
             tools = sum(t.result() for t in tool_f)
-        return answers, tools
+        return [(m.get("content") or "", m.get("reasoning_content") or m.get("reasoning") or "") for m in msgs], tools
 
     def probe(self, job, L, f, median_norm, label, bar=0.75, engage=0.3):
         """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain."""
@@ -576,7 +585,7 @@ class Lab:
             tg = now()
             answers, t = self.sample(probes)
             tj = now()
-            batch = [{**p, "answer": a} for p, a in zip(probes, answers)]
+            batch = [{**p, "answer": a, "thinking": th} for p, (a, th) in zip(probes, answers)]
             grades += self.grade(batch)
             items += batch
             tools += t
@@ -602,6 +611,8 @@ class Lab:
             "correct": mean("correct", grades),
             "distinct": round(statistics.mean(self.distinct(it["answer"]) for it in items), 3),
             "tool_calls_ok": f"{tools}/{2 * sets}",
+            "thinking": self.thinking,
+            "thinking_chars": round(statistics.mean(len(it.get("thinking", "")) for it in items)),
             "gen_s": round(gen_s, 1), "grade_s": round(grade_s, 2),
             "samples": [{**it, **g} for it, g in zip(items, grades)],
         }
@@ -704,7 +715,7 @@ class Lab:
         job.say("strength.chosen", **{k: v for k, v in out.items() if k not in ("probes",)})
         return {k: v for k, v in out.items() if k != "probes"}
 
-    def sweep(self, job, name, fs):
+    def sweep(self, job, name, fs, thinking=None):
         """Dev and the report's comparisons: one direction at fixed strengths, no search."""
         pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
         md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
@@ -714,10 +725,54 @@ class Lab:
             ell, _ = self.fit_fold(job, L)
             torch.save(ell, f"{RUN}/ell-{L}.pt")
         torch.save({"layer": L, "u": d["unit"].float(), "ell": torch.load(f"{RUN}/ell-{L}.pt").float()}, f"{RUN}/fold.pt")
-        rows = [self.probe(job, L, float(f), md[L]["median_norm"], "sweep:" + name) for f in fs]
+        mode = self.thinking
+        self.thinking = mode if thinking is None else bool(thinking)
+        try:
+            rows = [self.probe(job, L, float(f), md[L]["median_norm"], "sweep:" + name + (":thinking" if self.thinking else ":no-thinking")) for f in fs]
+        finally:
+            self.thinking = mode
         with open(f"{RUN}/sweep-{name}.json", "w") as fh:
             json.dump(rows, fh, indent=1)
         return {"probes": [{k: v for k, v in r.items() if k != "samples"} for r in rows]}
+
+    def tool_turn(self, prompt):
+        tools = [
+            {"type": "function", "function": {"name": "bash", "description": "Run a shell command", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+            {"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+            {"type": "function", "function": {"name": "write", "description": "Write a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+        ]
+        required = {t["function"]["name"]: t["function"]["parameters"]["required"] for t in tools}
+        m = self.chat([{"role": "system", "content": "You are an agent with a computer. Use your tools to act."}, {"role": "user", "content": prompt}], max_tokens=300, tools=tools)["message"]
+        calls = m.get("tool_calls") or []
+        text = m.get("content") or ""
+        if not calls:
+            return ("malformed" if ("<tool_call>" in text or "<function=" in text) else "no_call"), text[:300]
+        for c in calls:
+            try:
+                args = json.loads(c["function"]["arguments"] or "{}")
+            except json.JSONDecodeError:
+                return "malformed", c["function"]["arguments"][:300]
+            if c["function"]["name"] not in required or not all(isinstance(args.get(k), str) for k in required[c["function"]["name"]]):
+                return "malformed", json.dumps(c["function"])[:300]
+        return "valid", json.dumps([c["function"] for c in calls])[:300]
+
+    def toolprobe(self, job, n=12):
+        """Tool calls on the weights the server holds now: valid, no call at all, or malformed (bad arguments, raw markup)."""
+        prompts = ["List the files in the current directory.", "Show me the first 5 lines of notes.txt.", "Create a file hello.txt that contains the word hi.",
+                   "How much disk space is free? Check it.", "Count the lines in data.csv."]
+        jobs = [p for p in prompts for _ in range(n)]
+        t0 = now()
+        with ThreadPoolExecutor(16) as ex:
+            res = list(ex.map(self.tool_turn, jobs))
+        counts = {}
+        for kind, _ in res:
+            counts[kind] = counts.get(kind, 0) + 1
+        bad = [{"prompt": p, "kind": k, "out": o} for p, (k, o) in zip(jobs, res) if k != "valid"][:12]
+        out = {"calls": len(res), "counts": counts, "thinking": self.thinking, "examples": bad, "s": round(now() - t0, 1)}
+        with open(f"{RUN}/toolprobe-{int(now())}.json", "w") as fh:
+            json.dump(out, fh, indent=1)
+        job.say("toolprobe", **{k: v for k, v in out.items() if k != "examples"})
+        return out
 
     # ---- bake: write the checkpoint and the control vector -----------------------------------------------------------
 
@@ -781,6 +836,16 @@ class Lab:
         p = {k: (a["a"]["probabilities"].get(k, 0) + a["b"]["probabilities"].get(k, 0)) / 2 for k in opts}
         best = sorted(p, key=p.get, reverse=True)[:n]
         return [{"q": samples[int(k.split("_")[1])]["q"], "answer": samples[int(k.split("_")[1])]["answer"], "p": round(p[k], 3)} for k in best]
+
+    @torch.no_grad()
+    def regen(self, messages, prefix, max_new_tokens=60):
+        msgs = [{"role": m["role"], "content": str(m.get("content", ""))} for m in messages if m.get("role") in ("system", "user", "assistant")]
+        text = self.tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False) + prefix
+        ids = self.tok(text, return_tensors="pt").input_ids.to("cuda:0")
+        out = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids), max_new_tokens=max_new_tokens, do_sample=False)
+        cont = self.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
+        m = re.search(r"[.!?](\s|$)", cont)
+        return cont[: m.end()].strip() if m else cont.strip()
 
     def write_checkpoint(self, L, fold, scale):
         """A plain Qwen3.5 checkpoint: every file linked from the base, except the one shard that holds layer L's down_proj."""
@@ -862,11 +927,26 @@ def create_app(lab: Lab):
     @app.post("/sweep")
     async def sweep(req: Request):
         b = await params(req)
-        return stream(lab.sweep, str(b.get("name", "meandiff")), [float(x) for x in b.get("fs", [0.5])])
+        return stream(lab.sweep, str(b.get("name", "meandiff")), [float(x) for x in b.get("fs", [0.5])], b.get("thinking"))
 
     @app.post("/bake")
     async def bake(req: Request):
         return stream(lab.bake)
+
+    @app.post("/toolprobe")
+    async def toolprobe(req: Request):
+        return stream(lab.toolprobe, int((await params(req)).get("n", 12)))
+
+    @app.post("/regen")
+    async def regen(req: Request):
+        """One sentence from the unedited model (strength 0), continuing `prefix`: the guard's replacement for a flagged sentence."""
+        body = await req.json()
+        if not lab.lock.acquire(blocking=False):
+            return JSONResponse({"error": "a step is running"}, status_code=409)
+        try:
+            return {"text": await asyncio.to_thread(lab.regen, body.get("messages") or [], str(body.get("prefix", "")))}
+        finally:
+            lab.lock.release()
 
     @app.post("/ask")
     async def ask(req: Request):
