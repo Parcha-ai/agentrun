@@ -28,8 +28,15 @@ test("copyTheme writes the stylesheet, the font css and every font file it names
   const files = [...fonts.matchAll(/url\(\.\/fonts\/([^)]+)\)/g)].map((m) => m[1]!);
   assert.equal(files.length, 6);
   for (const f of files) assert.ok(existsSync(join(dir, "fonts", f)), f);
-  assert.ok(existsSync(join(dir, "fonts", "LICENSE-inter.txt")) && existsSync(join(dir, "fonts", "LICENSE-jetbrains-mono.txt")));
+  assert.ok(existsSync(join(dir, "fonts", "LICENSE-inter.txt")), "the Inter licence ships");
+  assert.ok(existsSync(join(dir, "fonts", "LICENSE-jetbrains-mono.txt")), "the JetBrains Mono licence ships");
   assert.doesNotMatch(fonts + css, /https?:\/\//, "no network");
   assert.match(fonts, /font-family: "Inter"/);
   assert.match(fonts, /font-family: "JetBrains Mono"/);
+});
+
+test("the component sheet keeps its composer on screen: the grid has the viewport's height, so the middle scrolls", () => {
+  const html = readFileSync(new URL("../../../theme/preview.html", import.meta.url), "utf8");
+  assert.match(html, /body \{[^}]*\bheight: 100dvh;/);
+  assert.doesNotMatch(html, /body \{[^}]*min-height: 100dvh/);
 });
