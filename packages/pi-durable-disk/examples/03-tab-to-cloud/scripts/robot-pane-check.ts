@@ -56,6 +56,7 @@ try {
   await until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000);
   ok("the creature page runs in the agent's page, under /tab/ on the same origin", await ev<boolean>(`document.getElementById("creature").contentWindow.location.pathname === "/tab/"`));
   if (phone) {
+    ok("the composer's hint stays on one line (a long one is cut with an ellipsis, not wrapped into a 44 px field)", await ev<boolean>(`getComputedStyle(document.getElementById("input"), "::placeholder").whiteSpace === "nowrap"`));
     const r = await ev<{ chat: { w: number; h: number }; pane: { w: number; h: number; top: number }; chatBottom: number }>(`(() => { const rect = (e) => e.getBoundingClientRect(); const c = rect(document.querySelector("main > section, main > div, #chat") ?? document.querySelector("main").firstElementChild), p = rect(document.getElementById("creature-pane")); return { chat: { w: Math.round(c.width), h: Math.round(c.height) }, pane: { w: Math.round(p.width), h: Math.round(p.height), top: Math.round(p.top) }, chatBottom: Math.round(c.bottom) }; })()`);
     console.log(`  phone layout: ${JSON.stringify(r)}`);
     ok("a phone: the chat keeps the width of the screen and the robot sits under it", r.chat.w >= 340 && r.pane.w >= 340 && r.pane.h >= 190 && r.pane.top >= r.chatBottom - 2, r);
