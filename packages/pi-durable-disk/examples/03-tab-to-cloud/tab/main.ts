@@ -358,6 +358,8 @@ let prefetched: Promise<Uint8Array> | undefined;
 
 async function fetchComputer(onProgress?: (got: number, total: number) => void): Promise<Uint8Array> {
   const response = await fetch(COMPUTER);
+  // A server without the package answers 404: say so, instead of handing the 404's body to the loader and waiting for ever.
+  if (!response.ok) throw new Error(`the computer's package could not be loaded (the server answered ${response.status} for ${COMPUTER}); build it with: node tab/build.mjs --fetch`);
   const total = Number(response.headers.get("content-length") ?? 0);
   const reader = response.body!.getReader();
   const chunks: Uint8Array[] = [];

@@ -83,6 +83,7 @@ export class GpuPool {
   async start(): Promise<void> {
     if (this.#started) throw new Error("the pool was already started");
     this.#started = true;
+    this.#lastActive = Date.now(); // the idle clock runs from the boxes' creation, not from when the pool was built
     for (const slot of this.#slots) slot.creating = this.#create(slot);
     const every = this.#options.watchMs ?? 20_000;
     if (this.#options.alive && every > 0) {
