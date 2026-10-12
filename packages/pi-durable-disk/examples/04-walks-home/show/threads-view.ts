@@ -35,20 +35,40 @@ const STATUS: Record<Thread["status"], string> = { starting: "getting a GPU", le
 const seconds = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 1e4 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`);
 const num = (v: number) => (Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100));
 
+/**
+ * How far a value is toward the number its skill needs, 0 to 1, from the target as the skill's file words it (">= 0.4", "<= -0.25"). A target that is prose (get-up: "rights itself from left, right and back"),
+ * a lower-is-better limit above zero, or a value the checkpoint did not have is nothing: the bar is not drawn rather than guessed.
+ */
+export function progressToward(value: number | null, target: string | null): number | null {
+  const m = target === null ? null : /^\s*(>=|≥|>|<=|≤|<)\s*(-?\d+(?:\.\d+)?)\s*$/.exec(target);
+  if (value === null || m === null) return null;
+  const limit = Number(m[2]);
+  const upward = m[1] === ">=" || m[1] === "≥" || m[1] === ">";
+  if (limit === 0 || (upward && limit < 0) || (!upward && limit > 0)) return null;
+  return Math.min(1, Math.max(0, value / limit));
+}
+
 function tileHtml(t: Thread): string {
   const last = t.points.at(-1);
   const meta = [t.acquireMs !== null ? `GPU in ${seconds(t.acquireMs)}` : null, t.costUsd !== null ? `$${t.costUsd.toFixed(2)}` : null].filter((m) => m !== null).join(" · ");
   let body: string;
+  // The small facts live on hover, so the tile itself is the skill, one big number and whether it passes.
+  const detail: string[] = [t.host ?? "a GPU"];
   if (!last) body = `<div class="val none">${t.status === "failed" ? "no checkpoint" : "waiting for its first checkpoint"}</div>`;
   else {
     const what = t.metric ?? "value";
     const value = last.value === null ? `${esc(what)}: no value yet` : `${esc(what)} <span class="n">${esc(num(last.value))}</span>${t.unit ? ` ${esc(t.unit)}` : ""}`;
     const verdict =
-      last.fell ? `<span class="pass no">fell in its test</span>` : last.passes === true ? `<span class="pass yes">passes</span>` : last.passes === false ? `<span class="pass no">not yet${t.target ? `, needs ${esc(t.target)}` : ""}</span>` : "";
-    body = `<div class="cp">checkpoint ${last.n}${last.seconds !== null ? ` · ${esc(seconds(last.seconds * 1000))} in` : ""}</div><div class="val">${value}</div>${verdict}`;
+      last.fell ? `<span class="pass no">fell in its test</span>` : last.passes === true ? `<span class="pass yes">passes</span>` : last.passes === false ? `<span class="pass no">not yet</span>` : "";
+    const progress = progressToward(last.value, t.target);
+    const bar = progress === null ? "" : `<div class="bar${last.passes === true ? " yes" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress * 100)}"><i style="width:${Math.round(progress * 100)}%"></i></div>`;
+    body = `<div class="val">${value}</div>${bar}${verdict}`;
+    detail.push(`checkpoint ${last.n}${last.seconds !== null ? ` · ${seconds(last.seconds * 1000)} in` : ""}`);
+    if (last.passes === false && t.target) detail.push(`needs ${t.target}`);
   }
   const spark = t.points.some((p) => p.value !== null) ? `<svg class="spark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><polyline points="${sparkPoints(t.points, 100, 40)}"/></svg>` : "";
-  return `<div class="tile" data-id="${esc(t.id)}" data-status="${t.status}"><div class="top"><span class="skill">${esc(t.skill ?? "a skill")}</span><span class="st">${STATUS[t.status]}</span></div><div class="host">${esc(t.host ?? "a GPU")}</div>${spark}${body}${meta ? `<div class="meta">${esc(meta)}</div>` : ""}</div>`;
+  if (meta) detail.push(meta);
+  return `<div class="tile" data-id="${esc(t.id)}" data-status="${t.status}" title="${esc(detail.join(" · "))}"><div class="top"><span class="skill">${esc(t.skill ?? "a skill")}</span><span class="st">${STATUS[t.status]}</span></div>${spark}${body}</div>`;
 }
 
 const ROBOT = `<svg class="robot" viewBox="0 0 120 80" aria-hidden="true"><rect x="30" y="18" width="60" height="26" rx="8"/><circle cx="76" cy="28" r="3.5" class="eye"/><path class="leg l1" d="M38 44 L30 70"/><path class="leg l2" d="M54 44 L50 70"/><path class="leg l3" d="M70 44 L74 70"/><path class="leg l4" d="M86 44 L96 70"/></svg>`;

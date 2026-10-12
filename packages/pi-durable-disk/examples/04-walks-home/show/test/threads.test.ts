@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { emptyState, fold, reduce } from "../reduce.ts";
-import { sparkPoints, threadsHtml, threadsPhase } from "../threads-view.ts";
+import { progressToward, sparkPoints, threadsHtml, threadsPhase } from "../threads-view.ts";
 import type { ShowEvent } from "../types.ts";
 
 // One robot, eight teachers: the agent split into threads (child conversations of the one session), each with its compute on its own GPU, each teaching the robot one skill. The stage folds
@@ -149,4 +149,29 @@ test("the landing driver: once the tab has said a skill is installed the stage s
   assert.equal(d.next(base, true), null, "the tab is telling the stage itself");
   d.reset();
   assert.equal(d.next(base, true), "t0", "a retake: what the page knew about the old run is gone");
+});
+
+test("progress toward the number a skill needs: from the target as its file words it, nothing for prose or a limit that cannot be read as a distance", () => {
+  assert.equal(progressToward(0.2, ">= 0.4"), 0.5);
+  assert.equal(progressToward(1.25, ">= 0.4"), 1, "past the target is full, not more");
+  assert.equal(progressToward(-0.1, ">= 0.4"), 0, "the wrong way is empty, not negative");
+  assert.equal(Math.round(progressToward(-0.04, "<= -0.25")! * 100), 16);
+  assert.equal(progressToward(0.3, "<= 6"), null, "a lower-is-better limit above zero has no distance to draw");
+  assert.equal(progressToward(0.5, "rights itself from left, right and back"), null);
+  assert.equal(progressToward(null, ">= 0.4"), null);
+  assert.equal(progressToward(0.5, null), null);
+  assert.equal(progressToward(0.5, ">= 0"), null);
+});
+
+test("a tile is the skill, one big number, a thin bar toward the target and whether it passes; the GPU, the checkpoint, the times and what passing needs are on hover", () => {
+  const base = fold([run, start(0)]).threads[0]!;
+  const t = { ...base, metric: "speed", unit: "m/s", target: ">= 0.4", status: "learning" as const, host: "H100 #1", acquireMs: 2100, costUsd: null };
+  const html = threadsHtml([{ ...t, points: [pt(2, 0.2, { passes: false, seconds: 21 })] }]);
+  assert.match(html, /<div class="bar" role="progressbar"[^>]*aria-valuenow="50"><i style="width:50%"><\/i><\/div>/);
+  const visible = html.replace(/ title="[^"]*"/g, "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  assert.doesNotMatch(visible, /H100|checkpoint|GPU in|needs/, "the small facts are not on the tile");
+  assert.match(html, /title="H100 #1 · checkpoint 2 · 21 s in · needs &gt;= 0\.4 · GPU in 2\.1 s"/);
+  const passed = threadsHtml([{ ...t, points: [pt(3, 0.5, { passes: true, seconds: 30 })] }]);
+  assert.match(passed, /class="bar yes"/);
+  assert.doesNotMatch(threadsHtml([{ ...t, target: "rights itself", points: [pt(1, 0.5, { passes: false })] }]), /class="bar/, "no bar for a target that is not a number");
 });

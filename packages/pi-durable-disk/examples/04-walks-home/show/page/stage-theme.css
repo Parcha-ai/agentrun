@@ -8,15 +8,15 @@
   --bg: #080809; --panel: #111113; --line: #2c2c30; --ink: #f2f2f2; --muted: #a4a4ad;
   --tab: var(--green); --ok: var(--green); --gpu: var(--purple); --vm: var(--purple); --sandbox: var(--purple); --pipe: var(--muted);
   --bad: var(--accent); --win: var(--green);
-  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Noto Color Emoji", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Noto Color Emoji", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 html body { background: var(--bg); color: var(--ink); font-family: var(--sans); }
 
 /* ---- the header: one slim line, the place on the left, its track small beside it ---- */
-html body #badge { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 16px var(--gutter) 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
+html body.v2 #badge { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 16px var(--gutter) 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
 html body #badge .top { justify-content: flex-start; flex-wrap: nowrap; }
-html body #badge .main { gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; animation: none; font: 500 16px/1.2 var(--sans); letter-spacing: 0; color: var(--ink); }
+html body #badge .main { gap: 10px; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; animation: none; font: 500 24px/1.2 var(--sans); letter-spacing: -.01em; color: var(--ink); }
 html body #badge .dot { width: 8px; height: 8px; box-shadow: none; }
 html body #badge { --c: var(--green); }
 html body #badge[data-tone="cloud"] { --c: var(--purple); } html body #badge[data-tone="moving"] { --c: var(--accent); } html body #badge[data-tone="parked"] { --c: var(--muted); }
@@ -24,7 +24,8 @@ html body #badge .track { width: min(380px, 38vw); gap: 12px; font: 500 11px/1 v
 html body #badge .node { color: var(--muted); } html body #badge[data-at="left"] .node.a, html body #badge[data-at="right"] .node.b { color: var(--ink); }
 html body #badge .line { height: 1px; border-radius: 0; background: var(--line); }
 html body #badge .agent { width: 9px; height: 9px; margin: -4px 0 0 -4px; box-shadow: none; }
-html body #badge .memory { flex-basis: 100%; font: 400 12px/1.4 var(--mono); letter-spacing: .02em; color: var(--muted); max-width: none; text-align: left; padding: 0; border: 0; background: none; }
+html body #badge .memory { order: 3; flex-basis: 100%; font: 400 12px/1.4 var(--mono); letter-spacing: .02em; color: var(--muted); max-width: none; text-align: left; padding: 0; border: 0; background: none; opacity: .8; }
+html body #badge .top { order: 1; } html body #badge .track { order: 2; }
 
 /* ---- the net: a dot and a word ---- */
 html body #net { top: 17px; right: var(--gutter); padding: 0; border: 0; border-radius: 0; background: none; font: 500 11px/1 var(--mono); letter-spacing: .14em; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; }
@@ -56,22 +57,22 @@ html body .ts .tr .st { font-size: 0; width: auto; display: inline-flex; align-i
 html body .ts .tr[data-status="done"] .st::before { background: var(--green); } html body .ts .tr[data-status="running"] .st::before { background: var(--accent); animation: dotpulse 1.1s ease-in-out infinite alternate; }
 html body .ts .tr .cmd { color: var(--ink); } html body .ts .more { font: 500 11px var(--mono); letter-spacing: .1em; color: var(--muted); }
 
-/* ---- the threads: a calm grid, a name, a GPU, one number ---- */
+/* ---- the threads: a calm grid; each tile is the skill, one big number, a bar toward what passing needs, and a dot for whether it passes (the GPU and the times are on hover) ---- */
 html body #threads { background: var(--bg); padding: 22px var(--gutter) 10px; }
 html body #threads .thead { font: 500 12px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
-html body #threads .tiles { gap: 10px; }
-html body #threads .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: 14px 16px; gap: 6px; }
-html body #threads .tile[data-status="learning"] { border-color: color-mix(in srgb, var(--purple) 55%, var(--line)); } html body #threads .tile[data-status="done"] { border-color: color-mix(in srgb, var(--green) 50%, var(--line)); } html body #threads .tile[data-status="failed"] { border-color: var(--line); }
-html body #threads .tile .skill { font: 600 17px/1.2 var(--sans); }
-html body #threads .tile .st { font: 500 10px var(--mono); letter-spacing: .14em; color: var(--muted); }
-html body #threads .tile[data-status="done"] .st { color: var(--green); } html body #threads .tile[data-status="learning"] .st { color: var(--purple); }
-html body #threads .tile .host { font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-html body #threads .tile .spark { height: 30px; } html body #threads .tile .spark polyline { stroke: var(--purple); stroke-width: 1.5; }
-html body #threads .tile .cp { font: 400 11px var(--mono); color: var(--muted); margin-top: auto; }
-html body #threads .tile .val { font: 500 14px/1.3 var(--sans); color: var(--muted); } html body #threads .tile .val .n { font: 500 26px/1.1 var(--mono); letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
-html body #threads .tile .val.none { font-size: 13px; color: var(--muted); }
-html body #threads .tile .pass { font: 500 12px var(--mono); } html body #threads .tile .pass.yes { color: var(--green); } html body #threads .tile .pass.no { color: var(--muted); }
-html body #threads .tile .meta { font: 400 11px var(--mono); color: var(--muted); }
+html body #threads .tiles { gap: 12px; }
+html body #threads .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: 16px 18px; gap: 8px; justify-content: space-between; }
+html body #threads .tile .top { align-items: center; }
+html body #threads .tile .skill { font: 600 17px/1.2 var(--sans); white-space: normal; overflow: visible; text-overflow: clip; }
+html body #threads .tile .st { font-size: 0; display: inline-flex; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+html body #threads .tile[data-status="learning"] .st { background: var(--purple); animation: dotpulse 1.1s ease-in-out infinite alternate; }
+html body #threads .tile[data-status="done"] .st { background: var(--green); animation: none; } html body #threads .tile[data-status="failed"] .st { background: var(--muted); }
+html body #threads .tile .spark { height: 26px; opacity: .8; } html body #threads .tile .spark polyline { stroke: var(--purple); stroke-width: 1.5; }
+html body #threads .tile .val { font: 400 13px/1.3 var(--mono); color: var(--muted); }
+html body #threads .tile .val .n { display: block; font: 500 34px/1.1 var(--mono); letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums; margin: 2px 0; }
+html body #threads .tile .val.none { font: 400 13px/1.3 var(--sans); }
+html body #threads .tile .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; } html body #threads .tile .bar i { display: block; height: 100%; background: var(--purple); transition: width .6s ease; } html body #threads .tile .bar.yes i { background: var(--green); }
+html body #threads .tile .pass { font: 500 12px var(--mono); letter-spacing: .04em; } html body #threads .tile .pass.yes { color: var(--green); } html body #threads .tile .pass.no { color: var(--muted); }
 html body #threads .skills { gap: 8px; } html body #threads .skills .skill { font: 500 13px var(--mono); padding: 6px 12px; border-radius: var(--r2); border: 1px solid var(--line); color: var(--muted); box-shadow: none; }
 html body #threads .skills .skill.in { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, var(--line)); background: none; box-shadow: none; }
 html body #threads .skills .skill.failed { color: var(--muted); text-decoration: line-through; }
@@ -95,9 +96,10 @@ html body #chaterr { color: var(--muted); }
 html body #modelbanner { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); font: 500 16px/1.4 var(--sans); padding: 12px 16px; }
 html body #modelbanner[data-phase="failed"] { background: var(--panel); border-color: var(--line); color: var(--muted); }
 html body #modelbanner .note { font: 400 14px/1.45 var(--sans); }
-html body #vcaption { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); padding: 12px 18px; gap: 14px; }
+html body #vcaption { background: none; border: 0; box-shadow: none; padding: 0; gap: 14px; }
 html body #vcaption .tag { font: 500 10px var(--mono); letter-spacing: .14em; border: 0; padding: 0; }
-html body #vcaption .txt { font: 500 20px/1.35 var(--sans); }
+html body #vcaption .txt { font: 400 18px/1.4 var(--sans); color: var(--muted); }
 html body #lost { background: var(--panel); color: var(--muted); border-bottom: 1px solid var(--line); font: 500 12px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-html body #threads .tile .skill { white-space: normal; overflow: visible; text-overflow: clip; }
-html body #vcaptionwrap { background: var(--bg); }
+html body #vcaptionwrap { background: none; }
+@keyframes dotpulse { from { opacity: 1; } to { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { html body #threads .tile .st, html body .ts .tr .st::before { animation: none !important; } }
