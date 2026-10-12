@@ -9,7 +9,7 @@
 // sidecar (<name>.json): the model (its first part's name, the parts' bytes, the GGUF's sha256 when the serving file gives it), the prefix's sha256, the token
 // count, the llama.cpp build and the settings. The page restores a state only when the model it loaded and the prefix it rendered are the sidecar's.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -34,8 +34,10 @@ const warm = await post("/completion", { prompt: prefix, n_predict: 0, cache_pro
 const saved = await post("/slots/0?action=save", { filename: name });
 const props = await (await fetch(a.server + "/props")).json();
 
-const stem = basename(a.first).replace(/-00001-of-\d{5}\.gguf$/, "-0");
-const partsBytes = readdirSync(dirname(a.first)).filter((f) => f === basename(a.first) || f.startsWith(stem)).reduce((n, f) => n + statSync(join(dirname(a.first), f)).size, 0);
+// the model's own files only: every part a split GGUF's first part names (-0000i-of-0000N.gguf), or the one file
+const split = /^(.*)-00001-of-(\d{5})\.gguf$/.exec(basename(a.first));
+const files = split ? Array.from({ length: Number(split[2]) }, (_, i) => `${split[1]}-${String(i + 1).padStart(5, "0")}-of-${split[2]}.gguf`) : [basename(a.first)];
+const partsBytes = files.reduce((n, f) => n + statSync(join(dirname(a.first), f)).size, 0);
 const side = {
   model: { first: basename(a.first), bytes: partsBytes, sha256: serving.model?.sha256 ?? null },
   prefixSha256: createHash("sha256").update(prefix).digest("hex"),

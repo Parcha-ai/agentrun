@@ -7,6 +7,7 @@ rebuilds that build from wllama 3.6.1 with two changes, and makes the warm state
 | --- | --- |
 | llama-server's slot **save / restore / erase**, reached through wllama's existing `rerank` message (`{"slot_action": "restore", "filepath": "/models/state.bin"}`) | The robot model's system prompt and tools are 1255 tokens that every command shares. Prefilling them took 3 to 5 minutes on a phone; restoring a saved state takes under a second. wllama exposes no state API, and the message route keeps wllama's JS and glue untouched. |
 | Large file reads in pieces of at most **8 MiB** (`__wrap_fread`) | The model's token embedding is one 208 MB tensor (gguf-split never divides a tensor), and wllama read it in one piece; an iPhone failed that read with `NotReadableError`. |
+| A **wasm32 + JSPI** variant with no Asyncify (`dist/jspi32/`, CMake `WLLAMA_JSPI32`) | Safari 27 has JSPI but not memory64, so wllama still takes its compat path there; with JSPI the compat build needs no Asyncify. 8.1 MB instead of 15.4 MB; in Chrome with memory64 hidden it loaded in 8.2 s against 11.5 s and restored in 0.37 s against 0.54 s, with the same replies. A page picks it by feature (`WebAssembly.Suspending`), never by version. |
 
 The patch changes C++ only: the rebuilt emscripten glue (`wllama.js`) is byte for byte npm's `@wllama/wllama-compat@3.6.1`, and `build.sh` checks that. The
 wasm grows by about 5 KB. Built from a fresh clone with `build.sh`:

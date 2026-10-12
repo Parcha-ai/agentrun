@@ -1,3 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ede70d2..ae6c98c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -46,7 +46,17 @@ set(WLLAMA_LINK_OPTIONS
+     -Wl,--wrap,ggml_graph_plan # for test-backend-ops
+ )
+ 
+-if (WLLAMA_COMPAT)
++if (WLLAMA_JSPI32)
++    # D0 variant (agentrun demo): wasm32 with JSPI and no Asyncify, for browsers that have JSPI but not memory64 (Safari 27)
++    list(APPEND WLLAMA_COMPILE_OPTIONS
++        -fwasm-exceptions
++    )
++    list(APPEND WLLAMA_LINK_OPTIONS
++        -fwasm-exceptions
++        -sJSPI
++        -sJSPI_EXPORTS=['wllama_start','wllama_action']
++    )
++elseif (WLLAMA_COMPAT)
+     # no wasm exception (not compatible with asyncify - asyncify is needed for firefox and safari)
+     # no mem64 (not compatible with safari)
+     list(APPEND WLLAMA_COMPILE_OPTIONS
 diff --git a/cpp/wllama-context.h b/cpp/wllama-context.h
 index f0aed65..726c294 100644
 --- a/cpp/wllama-context.h
@@ -65,18 +88,19 @@ index 5832b20..fc2b595 100644
  
      // Small reads: try cache first.
 diff --git a/scripts/docker-compose.yml b/scripts/docker-compose.yml
-index ac0208d..9563dc4 100644
+index ac0208d..10404aa 100644
 --- a/scripts/docker-compose.yml
 +++ b/scripts/docker-compose.yml
-@@ -13,6 +13,7 @@ services:
+@@ -13,6 +13,8 @@ services:
      environment:
        - WLLAMA_TEST_BACKEND=${WLLAMA_TEST_BACKEND:-}
        - SKIP_COMPAT=${SKIP_COMPAT:-}
 +      - SKIP_DEFAULT=${SKIP_DEFAULT:-}
++      - BUILD_JSPI32=${BUILD_JSPI32:-}
      volumes:
        - ..:/source:Z
      entrypoint: /bin/bash
-@@ -39,17 +40,17 @@ services:
+@@ -39,17 +41,17 @@ services:
            CMAKE_EXTRA_FLAGS="-DWLLAMA_TEST_BACKEND=ON";
          fi
  
@@ -99,9 +123,22 @@ index ac0208d..9563dc4 100644
          # build compat package (skip if SKIP_COMPAT=1)
          if [ -z "${SKIP_COMPAT}" ]; then
            mkdir -p build-compat
-@@ -67,10 +68,10 @@ services:
+@@ -66,11 +68,23 @@ services:
+           cp build-compat/wllama.wasm compat/wasm
          fi
  
++        # D0 variant: wasm32 + JSPI (BUILD_JSPI32=1)
++        if [ -n "${BUILD_JSPI32}" ]; then
++          mkdir -p build-jspi32
++          cd build-jspi32
++          emcmake cmake .. -DWLLAMA_JSPI32=ON -DLLAMA_WASM_MEM64=OFF -DGGML_WEBGPU=ON -DGGML_WEBGPU_JSPI=ON -DEMDAWNWEBGPU_DIR="$${EMDAWNWEBGPU_DIR}" $${CMAKE_EXTRA_FLAGS}
++          emmake make wllama -j$$(nproc)
++          cd ..
++          mkdir -p jspi32/wasm
++          cp build-jspi32/wllama.js   jspi32/wasm
++          cp build-jspi32/wllama.wasm jspi32/wasm
++        fi
++
          # generate source map
 -        node scripts/build_source_map.js
 +        [ -n "${SKIP_DEFAULT}" ] || node scripts/build_source_map.js
