@@ -9,9 +9,11 @@
 //    base: {name, quant, model: {repo, revision}, size, sha256, chunk_bytes, chunks: [{n, path, offset, size, sha256}]},
 //    adapters: [{name: "<stem>.gguf", kind: "skill" | "obsession", topic, model: {repo, revision}, rank, alpha, scale, dtype,
 //                verified_on?: [base sha256], sampling?: {...}, size, sha256, chunk_bytes, chunks: [...]}],
-//    active?: ["<stem>.gguf", ...]}
+//    active?: ["<stem>.gguf", ...],
+//    standalone?: true}
 // `active` names the adapters a request applies, each at its trained scale; without it, the last adapter listed (the newest) is the one.
 // Every adapter listed is loaded (at scale 0 when it is not active), so a later switch needs no reload.
+// `standalone: true`: the base is the model as it is (an off-the-shelf model with no adapter to wait for). Without it a base with no adapter is a base on its way, and the tab waits for the adapter.
 // An adapter fits the base when both name the same model (repo and revision): it then fits any quantization of it. Measured: the stock
 // ggml-org Q4_K_M and the trainer's own Q4_K_M of gemma-3-1b-it gave token-identical greedy output with the same adapter.
 
@@ -49,6 +51,8 @@ export interface BaseAdaptersManifest {
   adapters: AdapterEntry[];
   /** The adapters a request applies at their trained scale, by name; absent: the last one listed. */
   active?: string[];
+  /** The base alone is the model: no adapter is awaited. */
+  standalone?: true;
 }
 
 /** The format check alone, for a caller that holds either kind of manifest: true when `text` claims to be gguf-base-adapters-v1. */
@@ -143,7 +147,9 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
     if (seen && !sameChunks(seen.f, f)) throw new ModelError(`${label} and ${seen.label} claim the same sha256 with different chunks`);
     claims.set(f.sha256, { label, f });
   }
-  if (m.active === undefined) return { format: 'gguf-base-adapters-v1', base, adapters };
+  const standalone = m.standalone === true ? { standalone: true as const } : {};
+  if (m.standalone !== undefined && m.standalone !== true) throw new ModelError('standalone is only ever true');
+  if (m.active === undefined) return { format: 'gguf-base-adapters-v1', base, adapters, ...standalone };
   if (!Array.isArray(m.active) || m.active.length === 0) throw new ModelError('active is not a list of adapter names');
   const active: string[] = [];
   for (const name of m.active) {
@@ -151,7 +157,7 @@ export function parseBaseAdapters(text: string): BaseAdaptersManifest {
     if (active.includes(name)) throw new ModelError(`active names ${name} twice`);
     active.push(name);
   }
-  return { format: 'gguf-base-adapters-v1', base, adapters, active };
+  return { format: 'gguf-base-adapters-v1', base, adapters, active, ...standalone };
 }
 
 /** The same file cut the same way: size, chunk size and every chunk's sha256. */

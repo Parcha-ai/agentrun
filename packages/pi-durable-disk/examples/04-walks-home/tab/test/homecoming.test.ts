@@ -119,6 +119,16 @@ test('a store that hands back a file of the wrong size is refused before anythin
   await assert.rejects(comeHome(JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [tools] }), { readChunk: d.readChunk, sha256, store: liar }), /base: the kept file has 10 bytes/);
 });
 
+test('a standalone base (an off-the-shelf model, no adapter to wait for) is ready, and the base alone is what is loaded; the flag only means true', async () => {
+  const d = disk();
+  const text = JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [], standalone: true });
+  assert.equal((await describeHome(text, sha256)).ready, true);
+  const h = await comeHome(text, { readChunk: d.readChunk, sha256, store: memoryFileStore() });
+  assert.deepEqual([h.adapters, h.active, h.name], [[], {}, d.base.name]);
+  assert.equal(h.base.size, d.base.size);
+  await assert.rejects(describeHome(JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [], standalone: 'yes' }), sha256), /standalone is only ever true/);
+});
+
 test('a manifest with the base and no adapter yet: the base comes home (a prefetch while the agent trains), and there is no brain to swap to', async () => {
   const d = disk();
   const text = JSON.stringify({ format: 'gguf-base-adapters-v1', base: d.base, adapters: [] });

@@ -15,12 +15,12 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
   let lora: LoraSelection | undefined; // with adapters loaded: the selection every request carries (llama.cpp's server applies the load-time scale, 0, to a request without one)
   const release = async () => { const old = w; w = null; lora = undefined; try { await old?.exit(); } catch { /* it may already be gone */ } };
   return {
-    async load(parts, { threads, adapters, active }) {
+    async load(parts, { threads, adapters, active, jinja, nCtx }) {
       await release(); // a second load replaces the model: the old one's workers and memory are freed first
       const next = make({ default: wasmUrl });
       w = next;
       try {
-        const params = { n_ctx: N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true };
+        const params = { n_ctx: nCtx ?? N_CTX, n_threads: threads, n_gpu_layers: 0, prefill_assistant: true, swa_full: true, ...(jinja ? { jinja: true } : {}) }; // jinja: the model's own chat template, which renders the tools of a native tool turn
         if (adapters?.length) lora = (await loadWithAdapters(next, [new Blob(parts as BlobPart[])], adapters, params)).select(active ?? {}); // a base and its adapters: every one at 0, the active ones on, per request
         else await next.loadModel([new Blob(parts as BlobPart[])], params); // a trailing assistant message is continued, not answered; swa_full: Gemma 3's sliding-window cache would otherwise re-evaluate the previous assistant turn at every step of a tool loop (D0 measured 79 s -> 27.5 s for a 4-step task, +33 MB of KV); the prompt cache itself stays on (never cache_prompt: false)
       } catch (e) {
@@ -52,6 +52,21 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
         if (!signal.aborted) throw e; // an abort ends the answer early; anything else is a real failure
       }
       return { text, tokens };
+    },
+    async chatTools(req, { signal, sampling }) {
+      if (!w) throw new Error('the model is not loaded');
+      const { max_tokens: _answer, think_tokens: _think, penalty_repeat, ...rest } = sampling ?? DEFAULT_SAMPLING;
+      const started = performance.now();
+      // The tools go to the model's own template; llama.cpp builds the call grammar from them (an enum in a schema is a lock on that argument) and parses the reply into tool_calls.
+      const r = await w.createChatCompletion({
+        messages: req.messages as never, tools: req.tools as never, tool_choice: req.toolChoice ?? 'auto', max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N,
+        ...(req.templateKwargs ? { chat_template_kwargs: req.templateKwargs } : {}), stream: false, abortSignal: signal,
+      } as Parameters<Wllama['createChatCompletion']>[0] & { stream?: false });
+      const choice = (r as { choices: { message: { content?: string | null; reasoning_content?: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] }; finish_reason: string | null }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } }).choices[0]!;
+      const calls = (choice.message.tool_calls ?? []).map((c, i) => ({ id: c.id || `call-${i}`, name: c.function.name, arguments: c.function.arguments }));
+      // MiniCPM5's locked reply can land in reasoning_content with content empty (D0/D1 measured): the words are the answer then.
+      const text = choice.message.content || choice.message.reasoning_content || '';
+      return { text, toolCalls: calls, stoppedBy: calls.length > 0 ? 'tool_calls' : choice.finish_reason === 'length' ? 'length' : 'stop', promptTokens: (r as { usage?: { prompt_tokens?: number } }).usage?.prompt_tokens ?? 0, outputTokens: (r as { usage?: { completion_tokens?: number } }).usage?.completion_tokens ?? 0, ms: performance.now() - started };
     },
     async complete(req, { signal, sampling }) {
       if (!w) throw new Error('the model is not loaded');

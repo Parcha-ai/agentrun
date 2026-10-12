@@ -31,6 +31,9 @@ import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
 import { cloudAgent } from "../agent.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
+import { ROBOT_TOOLS } from "../robot-tools.ts";
+import { ROBOT_SYSTEM } from "../robot-model.ts";
+import { narrowEnum, toNativeTools } from "./native-turn.ts";
 import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
@@ -555,6 +558,28 @@ async function prefetchBase(text: string): Promise<boolean> {
 }
 
 /**
+ * ?template=native (the robot demo): a model with its OWN tool template (MiniCPM5-2B) is the brain. It is loaded with its jinja and a context that holds the tools, sees the robot tools and the
+ * D1-scored system prompt, and its `skill` lock is the skills that actually came home (home/skills.json), so the model cannot name a skill the robot does not have.
+ */
+let robotSkills: string[] = [];
+async function refreshRobotSkills(): Promise<void> {
+  const bytes = await readWorkFresh("home/skills.json").catch(() => null);
+  try { robotSkills = bytes ? Object.keys(parseSkills(new TextDecoder().decode(bytes)).skills) : []; } catch { robotSkills = []; }
+}
+const NATIVE_CTX = 4096;
+function nativeBrainConfig(runtime: TabRuntime) {
+  const tools = runtime.registry.snapshot().tools().filter((t) => (ROBOT_TOOLS as readonly string[]).includes(t.tool.name)).map((t) => t.tool);
+  return {
+    native: { nCtx: NATIVE_CTX },
+    instructions: ROBOT_SYSTEM,
+    decoding: { mode: "native" as const, system: ROBOT_SYSTEM, nCtx: NATIVE_CTX, history: "none" as const, onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: { promptTokens: number; outputTokens: number }[]; prompt: string }) => { const c = t.completions[0]; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: c?.promptTokens ?? 0, outputTokens: c?.outputTokens ?? 0, thinkTokens: 0, calls: 0, thinkingCut: false, cut: false, call: null, problem: null, raw: "", completions: t.completions, prompt: t.prompt }); }, refine: (list: ReturnType<typeof toNativeTools>) => { void refreshRobotSkills(); return robotSkills.length ? narrowEnum(list, "skill", robotSkills) : list; } },
+    mode: "configure" as const,
+    tools,
+  };
+}
+
+
+/**
  * Load the trained model and make it the agent's brain (brain.ts), then follow its conversation. `adopt`: a host that already holds the loaded model (taking the
  * run offline keeps it). Offline, the manifest and the chunks are read from the service worker's cache through the same `readWork`.
  */
@@ -562,10 +587,12 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
   const params = new URLSearchParams(location.search);
   const threads = Number(params.get("threads")) || Math.max(1, Math.min(8, (navigator.hardwareConcurrency || 4) - 2));
   const history = params.get("history") === "none" ? "none" : "last";
+  const native = params.get("template") === "native";
+  if (native) await refreshRobotSkills();
   const brain = new Brain({
     ...(route ? { route: true } : {}), harness: runtime.harness, models: runtime.models, root: runtime.root, readFile: readWork, judge: judgeFor(params.get("judge") === "on", judgeAnswer), context: ctx, threads, history,
     // ?configure=1 (a spike, not the default): ONE conversation, configured onto the model with the four coding tools, instead of a fresh one
-    ...(params.get("configure") === "1" || golive ? { decoding: { history: (params.get("toolhistory") ?? (golive ? "last" : "none")) === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash", "go_online"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
+    ...(native ? nativeBrainConfig(runtime) : params.get("configure") === "1" || golive ? { decoding: { history: (params.get("toolhistory") ?? (golive ? "last" : "none")) === "last" ? ("last" as const) : ("none" as const), thinkTokens: Number(params.get("think")) || 64, answerTokens: Number(params.get("answer")) || 200, callTokens: Number(params.get("call")) || 512, mode: params.get("decode") === "free" ? ("free" as const) : params.get("decode") === "grammar" ? ("grammar" as const) : ("lazy" as const), onTurn: (t: { ms: number; tokensPerSecond: number | null; completions: unknown[]; prompt: string; decoded: { promptTokens: number; outputTokens: number; thinkTokens: number; calls: number; thinkingCut: boolean; cut: boolean; raw: string; parsed: { call?: { name: string; arguments: unknown }; problem?: { kind: string; detail: string } } } }) => { const d = t.decoded; state.toolTurns.push({ ms: Math.round(t.ms), tokensPerSecond: t.tokensPerSecond === null ? null : Math.round(t.tokensPerSecond * 10) / 10, promptTokens: d.promptTokens, outputTokens: d.outputTokens, thinkTokens: d.thinkTokens, calls: d.calls, thinkingCut: d.thinkingCut, cut: d.cut, call: d.parsed.call ? JSON.stringify(d.parsed.call) : null, problem: d.parsed.problem ? `${d.parsed.problem.kind}: ${d.parsed.problem.detail}` : null, raw: d.raw, completions: t.completions, prompt: t.prompt }); } }, mode: "configure" as const, tools: runtime.registry.snapshot().tools().filter((t) => (golive ? ["read", "write", "bash", "go_online"] : ["read", "write", "edit", "bash"]).includes(t.tool.name)).map((t) => t.tool) } : {}),
     llm: wllamaLlm(new URL("/vendor/wllama.wasm", location.origin).href),
     files: modelFiles,
     onProgress: (type, b) => {
@@ -590,6 +617,12 @@ async function startBrain(runtime: TabRuntime, adopt?: ModelHost, route = false)
   if (!manifest) return;
   const conversation = await brain.start(manifest);
   if (!conversation || state.runtime !== runtime) return;
+  if (native) {
+    // the same view of the tools the first real turn will send, so the prefix the warm-up fills is the prefix that turn reuses
+    const config = nativeBrainConfig(runtime);
+    const view = config.decoding.refine(toNativeTools(config.tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))));
+    void brain.warm(ROBOT_SYSTEM, view).then((ms) => { if (ms !== undefined) { state.brainStatus = ""; render(); } });
+  }
   state.brainStatus = "the agent is finishing its turn";
   render();
   await settleRoot(runtime);
