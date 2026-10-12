@@ -281,3 +281,72 @@ describe("a page that comes back booting", () => {
     page.close();
   });
 });
+
+describe("the grace without a placer, and a writer that drops twice", () => {
+  const events: { event: string; data: Record<string, unknown> & { at?: number } }[] = [];
+  const stamped = (event: string, data: Record<string, unknown> = {}) => events.push({ event, data: { ...data, at: Date.now() } });
+  const ofRun = (id: string, event: string) => events.filter((e) => e.event === event && e.data.run === id);
+  const until = async (check: () => boolean, ms = 10_000) => {
+    for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 25))) {
+      if (Date.now() > end) throw new Error(`timed out; server: ${events.slice(-8).map((e) => `${e.event} ${JSON.stringify(e.data).slice(0, 140)}`).join(" | ")}`);
+    }
+  };
+  const cloudStarts: string[] = [];
+  const cloud: CloudHost = {
+    environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }],
+    start: async (ref) => (cloudStarts.push(ref.id), { host: "vm-1" }),
+    stop: async () => undefined,
+    attachViewer: async () => () => undefined,
+    submit: async () => undefined,
+  };
+
+  it("queues a line sent with no placer during the grace, and the returned tab gets it", async () => {
+    const local = await localServer({ cloud, drainMs: 5_000, superviseMs: 60_000, writerGraceMs: 300, writerReturnMs: 1_500, log: stamped });
+    try {
+      const { id, secret } = await local.server.createRun("no-placer-refresh");
+      const first: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+      await first.ready;
+      const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: () => undefined });
+      await page.ready;
+      first.close();
+      await until(() => ofRun(id, "pipe.writer-gone").length === 1);
+      page.send({ t: "submit", text: "make it spin", requestId: "ui-no-placer" });
+      await until(() => ofRun(id, "placement.queued").length === 1);
+      assert.equal(ofRun(id, "submit.delivered").length, 0, "not broadcast to a pipe with no writer");
+      const seen: PipeFrame[] = [];
+      const back: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100, onFrame: (f) => seen.push(f) });
+      await back.ready;
+      back.send({ t: "writer-ready" });
+      await until(() => seen.some((f) => f.t === "submit" && f.requestId === "ui-no-placer"));
+      back.close();
+      page.close();
+    } finally {
+      await local.remove();
+    }
+  });
+
+  it("one grace at a time: a writer that returns and drops again is waited for afresh, and the older wait does not move the run", async () => {
+    // A long tick (0.8 s) and a 1.5 s grace: the writer returns after the first tick and drops again before the next, so the first wait has never seen it.
+    const local = await localServer({ cloud, drainMs: 5_000, superviseMs: 60_000, writerGraceMs: 300, writerReturnMs: 1_500, writerReturnPollMs: 800, log: stamped });
+    try {
+      const { id, secret } = await local.server.createRun("drops-twice");
+      const first: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+      await first.ready;
+      first.close();
+      await until(() => ofRun(id, "pipe.writer-gone").length === 1);
+      await new Promise((r) => setTimeout(r, 900));
+      const back: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", pingMs: 100 });
+      await back.ready;
+      back.send({ t: "writer-ready" });
+      await new Promise((r) => setTimeout(r, 20));
+      const droppedAgain = Date.now();
+      back.close();
+      await until(() => ofRun(id, "cloud.started").length === 1, 10_000);
+      const movedAfter = (ofRun(id, "cloud.started")[0]!.data.at as number) - droppedAgain;
+      assert.ok(movedAfter >= 1_200, `the run moved ${movedAfter} ms after the second drop: only after the second wait (declared gone about 250 ms later, then a full 1.5 s grace), not at the end of the first`);
+      assert.equal(ofRun(id, "placement.writer-grace").filter((e) => e.data.outcome === "expired").length, 1, "exactly one wait ended in a move");
+    } finally {
+      await local.remove();
+    }
+  });
+});

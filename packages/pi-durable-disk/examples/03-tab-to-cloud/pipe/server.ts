@@ -550,18 +550,21 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const started = Date.now();
     const wait: { cancelled: boolean; comingAt: number | undefined } = { cancelled: false, comingAt: state.pageComingAt };
     state.pageComingAt = undefined;
-    state.writerGrace = wait;
+    state.writerGrace = wait; // one grace at a time: an older wait finds it is no longer the run's and leaves without acting
     const horizon = (): number => (wait.comingAt === undefined ? bound : Math.min(options.writerReturnMaxMs ?? 90_000, Math.max(bound, wait.comingAt - started + (options.writerBootMs ?? 60_000))));
-    let outcome: "returned" | "expired" | "superseded" | "closed" = "expired";
+    let outcome: "returned" | "expired" | "superseded" | "closed" | "replaced" = "expired";
     for (;;) {
       // Looked at after every sleep, the last one included: a close or a move in it is not an expiry.
-      if (wait.cancelled) outcome = "closed";
+      if (state.writerGrace !== wait) outcome = "replaced";
+      else if (wait.cancelled) outcome = "closed";
       else if (state.pipe !== pipe || state.switching || state.checkingOut) outcome = "superseded";
       else if (pipe.writerReady) outcome = "returned";
       if (outcome !== "expired" || Date.now() - started >= horizon()) break;
       await new Promise((resolve) => setTimeout(resolve, poll));
     }
-    if (state.writerGrace === wait) state.writerGrace = undefined;
+    // A newer wait (the writer returned and dropped again) owns the run now: this one neither logs an end nor moves anything.
+    if (outcome === "replaced") return true;
+    state.writerGrace = undefined;
     log("placement.writer-grace", { run: state.ref.id, outcome, ms: Date.now() - started, ...(wait.comingAt === undefined ? {} : { pageAskedAfterMs: wait.comingAt - started }) });
     const replay = () => flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
     // The lines typed meanwhile are placed now, with the run still in the browser.
@@ -1188,6 +1191,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         // A viewer's message: with a placer, the run is placed for it first; otherwise to the writer tab when a tab runs the run, to the cloud when it runs there.
         if (options.placer && !state.opening) {
           void placeThenSubmit(state, socket, frame.text, frame.requestId).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+          return;
+        }
+        // The tab is away (a refresh): the line waits for it like a placed one does, and is delivered when a writer is back or the run has moved.
+        if (state.writerGrace) {
+          state.pendingSubmits.push({ text: frame.text, requestId: frame.requestId, queuedBy: socket });
+          log("placement.queued", { run: state.ref.id, requestId: frame.requestId, behind: "the tab's return" });
           return;
         }
         // Both go through the one delivery, so a cloud host that is still starting is retried here too (no placer is the documented --cloud daytona setup).
