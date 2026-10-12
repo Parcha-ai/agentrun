@@ -182,6 +182,17 @@ test("a read says which lines, not two bare numbers: the typed offset and limit 
   assert.equal(toolArgsLine("set_legs", JSON.stringify({ pairs: 4 })), "4", "other tools keep their values");
 });
 
+test("a long path is shortened from the front so the lines it covers stay", () => {
+  const path = `work/skills/${"deeply/nested/".repeat(8)}walk/skill.json`;
+  assert.ok(path.length > 100);
+  const line = toolArgsLine("read", JSON.stringify({ path, offset: 1, limit: 70 }));
+  assert.ok(line.endsWith(" · lines 1–70"), line);
+  assert.ok(line.length <= 80, `${line.length}`);
+  assert.ok(line.startsWith("…/") && line.includes("walk/skill.json"), "the tail of the path, from a folder boundary");
+  const bare = toolArgsLine("read", JSON.stringify({ path }));
+  assert.ok(bare.startsWith("…/") && bare.endsWith("walk/skill.json") && bare.length <= 80, "no range: the same front cut");
+});
+
 import { callsLabel } from "../tab/chat-lines.ts";
 test("a thread's call count agrees with its number", () => {
   assert.deepEqual([0, 1, 2, 12].map(callsLabel), ["0 calls", "1 call", "2 calls", "12 calls"]);

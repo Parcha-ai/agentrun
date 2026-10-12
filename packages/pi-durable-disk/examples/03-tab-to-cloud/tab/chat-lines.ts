@@ -6,6 +6,13 @@ type Tool = Extract<ChatItem, { kind: "tool" }>;
 const LINE = 80;
 const clip = (s: string): string => (s.length <= LINE ? s : `${s.slice(0, LINE - 1)}…`);
 const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
+/** A path cut from the front to fit `room`: the file and its folders are what tell it apart, so the tail stays, from a folder boundary when there is one. */
+const tailPath = (path: string, room: number): string => {
+  if (path.length <= room) return path;
+  const tail = path.slice(path.length - (room - 1));
+  const slash = tail.indexOf("/");
+  return `…${slash >= 0 && slash < tail.length - 1 ? tail.slice(slash) : tail}`;
+};
 
 /** The arguments as a few words: a command as itself, else the short scalar values in order (a long value, such as a file's content, is not a few words). */
 export function toolArgsLine(name: string, args: string): string {
@@ -24,7 +31,7 @@ export function toolArgsLine(name: string, args: string): string {
     const offset = typeof o.offset === "number" && Number.isFinite(o.offset) ? o.offset : null;
     const limit = typeof o.limit === "number" && Number.isFinite(o.limit) ? o.limit : null;
     const range = limit !== null ? ` · lines ${offset ?? 1}–${(offset ?? 1) + limit - 1}` : offset !== null ? ` · from line ${offset}` : "";
-    return clip(`${flat(o.path)}${range}`);
+    return `${tailPath(flat(o.path), LINE - range.length)}${range}`;
   }
   const parts = Object.values(o).flatMap((v) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? [flat(String(v))] : [])).filter((s) => s !== "" && s.length <= 40);
   return clip(parts.join(" · "));
