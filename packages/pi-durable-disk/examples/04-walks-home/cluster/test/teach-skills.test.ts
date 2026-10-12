@@ -112,6 +112,18 @@ test("code mode: a thread past its deadline is stopped and folds as timed out, t
   assert.equal(status, 0);
 });
 
+test("code mode: a deadline is kept across a restart, so a resumed thread gets no fresh time limit", () => {
+  const { status, verdict } = runPlan("--deadline-ms", "1500", "--kill");
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+});
+
+test("code mode: an outcome hook that throws is reported in each thread's result, and every box still comes back", () => {
+  const { status, verdict } = runPlan("--status-throws");
+  for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
+  assert.equal(status, 0);
+});
+
 test("the fold says which skills came home, or why they could not", () => {
   const t: ThreadResult = { skill: "walk", gpu: 1, conversationId: 3, boxId: "sb-1", status: "passed", checkpoint: 3, seconds: 21, summary: "walk passed." };
   assert.match(foldText([t], { skills: ["walk"] }), /^Home: 1 skill \(walk\)\.$/m);

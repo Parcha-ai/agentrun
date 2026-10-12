@@ -54,10 +54,10 @@ Harness.open(storage, {
 
 ## Code mode: the session plans, each thread writes and runs its own training
 
-With \`plan\` set, teach_skills takes the model's plan instead of a skill list. The engine only forks, boxes, waits and
+With `plan` set, teach_skills takes the model's plan instead of a skill list. The engine only forks, boxes, waits and
 folds. What a thread does is the host's text: the SOP and the brief.
 
-\`\`\`ts
+```ts
 teachSkills({
   boxes, artifacts, assemble,
   plan: {
@@ -68,18 +68,18 @@ teachSkills({
     status: ({ skill }) => readMirroredSkillJson(skill), // the outcome from the trainer's skill.json, never from the words
   },
 });
-\`\`\`
+```
 
-- The model calls \`teach_skills({ skills: [{ name, brief }] })\`, at most \`maxThreads\`. Names are free kebab-case and
+- The model calls `teach_skills({ skills: [{ name, brief }] })`, at most `maxThreads`. Names are free kebab-case and
   there is no menu.
-- Each child selects only \`threadExtensions\`, with \`threadInstructions\` as its agent instructions and the brief in its
+- Each child selects only `threadExtensions`, with `threadInstructions` as its agent instructions and the brief in its
   assignment. Its writes, edits and bash calls are its own tool calls in its own transcript, so a UI renders the work
   from the store.
 - The deadline is an instant stored in the thread's checkpoint, so it survives a restart. Past it, the thread task aborts
   the child's run, flushes artifacts and folds "timed-out" (unless its artifacts show it passed).
 - A restart mid-training interrupts the bash call. The thread sees the interrupted result and runs again; pi-run on the
   box stops the earlier process first.
-- The host's \`acquire\` puts what the thread needs on its box: the body files and D2's library.
+- The host's `acquire` puts what the thread needs on its box: the body files and D2's library.
 
 ## Restarts
 

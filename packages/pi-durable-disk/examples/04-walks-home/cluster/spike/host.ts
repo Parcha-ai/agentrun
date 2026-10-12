@@ -23,7 +23,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { RobotBox, SKILLS, teachSkills, type TrainProgress } from "../teach-skills.ts";
 import { FakeArtifacts, FakeBoxEnv, FakePool, MAX_CHECKPOINTS, PASS_AT } from "./fake-cluster.ts";
 
-const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" } } });
+const { values: a } = parseArgs({ options: { dir: { type: "string" }, mode: { type: "string" }, tick: { type: "string", default: "700" }, capacity: { type: "string", default: "8" }, "done-before": { type: "string" }, "assemble-fails": { type: "boolean", default: false }, plan: { type: "boolean", default: false }, "deadline-ms": { type: "string" }, "status-throws": { type: "boolean", default: false } } });
 const dir = a.dir!;
 const mode = a.mode as "first" | "resume" | "abort";
 const doneBefore = Object.fromEntries((a["done-before"] ?? "").split(",").filter(Boolean).map((spec) => {
@@ -122,6 +122,7 @@ const { teach, thread } = teachSkills({
           ...(a["deadline-ms"] ? { threadDeadlineMs: Number(a["deadline-ms"]) } : {}),
           // The outcome from the trainer's own file, as mirrored home; never from the thread's words.
           status: async ({ skill }) => {
+            if (a["status-throws"]) throw new Error("skill.json is unreadable");
             const file = join(dir, "work", "skills", skill, "skill.json");
             if (!existsSync(file)) return undefined;
             const s = JSON.parse(readFileSync(file, "utf8"));

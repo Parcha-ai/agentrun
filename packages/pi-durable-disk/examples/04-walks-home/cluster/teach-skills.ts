@@ -114,6 +114,8 @@ export type ThreadResult = {
   readonly seconds?: number;
   /** The thread's own closing words. */
   readonly summary: string;
+  /** Why the outcome could not be read from the thread's artifacts (code mode's status hook threw). */
+  readonly outcomeError?: string;
 };
 
 export type TrainProgress = {
@@ -283,8 +285,12 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           } else {
             let timer: ReturnType<typeof setTimeout> | undefined;
             const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), Math.max(0, deadlineAt - Date.now()))));
-            const first = await Promise.race([submission.wait(context), late]);
-            clearTimeout(timer);
+            let first;
+            try {
+              first = await Promise.race([submission.wait(context), late]);
+            } finally {
+              clearTimeout(timer); // a failed wait must not leave the deadline's timer holding the process
+            }
             if (first === "late") {
               // Past the deadline: stop the thread's work (its calls and the run it was waiting on), keep what it wrote.
               timedOut = true;
@@ -301,10 +307,20 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
           await sync?.stop();
         }
         // In code mode the outcome comes from the thread's artifacts (after the flush), read outside the commit.
-        const artifactStatus = options.plan?.status ? await options.plan.status({ skill: task.input.skill, boxId }, context).catch(() => undefined) : undefined;
+        let artifactStatus: ThreadStatus | undefined;
+        let outcomeError: string | undefined;
+        if (options.plan?.status) {
+          try {
+            artifactStatus = await options.plan.status({ skill: task.input.skill, boxId }, context);
+          } catch (error) {
+            if (context.abortSignal?.aborted) throw error;
+            outcomeError = error instanceof Error ? error.message : String(error); // said in the result, not swallowed
+          }
+        }
         await runtime.commit(async (tx) => {
           let result = await readThreadResult(tx, task.input, conversationId as ConversationId, boxId, settled.status === "done" ? settled.answer : undefined);
           if (options.plan !== undefined) result = codeResult(result, artifactStatus, timedOut, options.plan.threadDeadlineMs);
+          if (outcomeError !== undefined) result = { ...result, outcomeError };
           return { status: "running", checkpoint: { phase: "release", conversationId, boxId, result } };
         }, context);
       },
@@ -543,7 +559,7 @@ export function foldText(threads: readonly ThreadResult[], home?: HomeResult): s
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
     const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
-    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}`;
+    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
   });
   const homeLine =
     home === undefined ? [] : "error" in home ? [`Bringing the skills home failed: ${home.error}`] : [`Home: ${home.skills.length} skill${home.skills.length === 1 ? "" : "s"}${home.skills.length ? ` (${home.skills.join(", ")})` : ""}.`];

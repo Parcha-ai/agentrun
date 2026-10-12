@@ -11,16 +11,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" } } });
+const { values: a } = parseArgs({ options: { tick: { type: "string", default: "200" }, "deadline-ms": { type: "string" }, dir: { type: "string" }, kill: { type: "boolean", default: false }, "status-throws": { type: "boolean", default: false } } });
 const dir = a.dir ?? mkdtempSync(join(tmpdir(), "teach-plan-"));
 const host = join(dirname(fileURLToPath(import.meta.url)), "host.ts");
 const deadline = a["deadline-ms"];
+// With --deadline-ms the run goes in one process, unless --kill: then the host dies before the deadline and the second one
+// starts after it has passed, so the deadline must come from the store, not a fresh clock.
+const kill = !deadline || a.kill;
 const run = (mode: string) =>
-  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : [])], { stdio: ["ignore", "inherit", "inherit"] });
+  spawn(process.execPath, [host, "--dir", dir, "--mode", mode, "--tick", a.tick!, "--plan", ...(deadline ? ["--deadline-ms", deadline] : []), ...(a["status-throws"] ? ["--status-throws"] : [])], { stdio: ["ignore", "inherit", "inherit"] });
 const exit = (p: ReturnType<typeof run>) => new Promise<number>((r) => p.once("exit", (c) => r(c ?? 1)));
 
 let killed = false;
-if (!deadline) {
+const t0 = Date.now();
+if (kill && !a["status-throws"]) {
   const first = run("first");
   while (!existsSync(join(dir, "mid.json"))) {
     if (first.exitCode !== null) throw new Error(`the first host exited early (${first.exitCode})`);
@@ -29,6 +33,7 @@ if (!deadline) {
   first.kill("SIGKILL");
   await new Promise((r) => first.once("exit", r));
   killed = true;
+  if (deadline) await new Promise((r) => setTimeout(r, Math.max(0, t0 + Number(deadline) + 400 - Date.now()))); // resume after it passed
 }
 const code = await exit(run("resume"));
 if (code !== 0) throw new Error(`the host failed (${code})`);
@@ -52,7 +57,14 @@ const checks: Record<string, boolean> = {
   every_box_released: pool.filter((p) => p.event === "pool.release").length === 3,
   no_live_tasks_left: report.tasks_after.length === 0,
 };
-if (deadline) {
+if (a["status-throws"]) {
+  // The outcome hook failed for every thread: the result says so (it is not silently "reported"), and every box came back.
+  checks.outcome_errors_are_reported = threads.every((t) => (t as { outcomeError?: string }).outcomeError === "skill.json is unreadable") && /could not be read: skill\.json is unreadable/.test(report.teachResult?.text ?? "");
+} else if (deadline && kill) {
+  // spin was mid-training at the kill; with the stored deadline already past on resume it is stopped at once. A fresh
+  // deadline would let it retrain (6 checkpoints, about 1.2 s) and pass.
+  checks.deadline_survives_the_restart = killed && by("spin")?.status === "timed-out" && by("wave")?.status === "timed-out";
+} else if (deadline) {
   // walk passes in 3 checkpoints; spin needs 6 and wave never passes: past the deadline they fold as timed out.
   checks.fast_thread_passed_before_the_deadline = by("walk")?.status === "passed";
   checks.slow_threads_folded_as_timed_out = by("spin")?.status === "timed-out" && by("wave")?.status === "timed-out";
