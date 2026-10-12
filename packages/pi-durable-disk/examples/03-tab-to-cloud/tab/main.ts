@@ -35,6 +35,7 @@ import { stateLine } from "../robot-state-line.ts";
 import { WasmerEnv, wasmerWorkspaceFs } from "./wasmer-env.ts";
 import { Workspace } from "./workspace.ts";
 import { FilesEnv, memoryFs } from "./files-env.ts";
+import { workspaceText } from "./file-text.ts";
 import { narrowEnum, servingView, signatureTools, signatureView, toNativeTools } from "./native-turn.ts";
 import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
 import { partReads, partTimes, wllamaWith } from "../../04-walks-home/tab/src/llm.ts";
@@ -46,7 +47,7 @@ import { WriteGate } from "./write-gate.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { creatureActivity } from "./creature-activity.ts";
-import { fromBase64, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
+import { untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
 const TAB_RESTORE_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -332,10 +333,7 @@ const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 
 
 /** A workspace file's text, from this tab's computer (the writer) or from what a viewer was sent; undefined when it is not a readable file. */
 async function readFileText(path: string): Promise<string | undefined> {
-  const row = state.files.find((f) => f.path === path);
-  if (state.runtime && "sandbox" in state.runtime.env) return await (state.runtime.env as WasmerEnv).sandbox.fs.readText(`/workspace/${path}`).catch(() => undefined);
-  if (row?.kind === "file" && row.data !== undefined) return new TextDecoder().decode(fromBase64(row.data));
-  return undefined;
+  return workspaceText(state.runtime, state.files.find((f) => f.path === path), path); // the tab's computer, the phone's files, or the pipe's copy
 }
 
 let shown = "";
@@ -435,6 +433,7 @@ function renderStats(): void {
     // while a turn runs, the place you type says what the robot is doing, with the time it has taken
     if (p?.ready) ($("input") as HTMLTextAreaElement).placeholder = state.chat.busy ? `the robot is thinking… ${p.turnStarted ? `${Math.round((performance.now() - p.turnStarted) / 1000)} s` : ""}` : "Tell the robot what to do: paint it red, make it a spider, spin…";
     $("new-chat").hidden = !p?.ready;
+    $("phone-files").hidden = !p; // the files are there before the brain is
     ($("new-chat") as HTMLButtonElement).disabled = state.chat.busy;
     $("stats").textContent = p ? [p.marks.loadMs ? `model loaded in ${(p.marks.loadMs / 1000).toFixed(1)} s` : "", p.marks.warmMs ? `prompt read in ${(p.marks.warmMs / 1000).toFixed(1)} s (${p.marks.warmTokens} tokens)` : "", last ? `last turn ${(last.ms / 1000).toFixed(1)} s, ${last.timings?.prompt_n ?? "?"} new prompt tokens, ${last.outputTokens} out` : ""].filter(Boolean).join(" · ") : "";
     return;
@@ -1042,6 +1041,7 @@ async function startPhone(): Promise<void> {
     const keptId = (() => { try { return localStorage.getItem(`phone-conversation:${run}`); } catch { return null; } })();
     const kept = keptId ? await runtime.harness.conversation(Number(keptId) as never, ctx).catch(() => undefined) : undefined;
     await followConversation(runtime, kept ?? runtime.root);
+    await refreshFiles(); // the workspace's files as the session left them (the sheet's tree; later tool calls refresh it)
     $("chat").scrollTop = $("chat").scrollHeight; // a reload opens on the newest lines
     await startPhoneBrain(runtime);
   } catch (error) {
@@ -1846,6 +1846,9 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
 $("send").addEventListener("click", send);
 $("ws-toggle").addEventListener("click", () => document.body.classList.toggle("ws-open"));
 $("ws-close").addEventListener("click", () => document.body.classList.remove("ws-open"));
+// the phone's Files button (its header is hidden), and a tap outside the sheet (on the shade behind it, which is the body's) closes it
+$("phone-files").addEventListener("click", () => { (document.activeElement as HTMLElement | null)?.blur?.(); document.body.classList.toggle("ws-open"); }); // the keyboard goes down: the sheet gets the screen
+document.body.addEventListener("click", (e) => { if (e.target === document.body && document.body.classList.contains("phone")) document.body.classList.remove("ws-open"); });
 $("input").addEventListener("keydown", (e) => {
   if ((e as KeyboardEvent).key === "Enter" && !(e as KeyboardEvent).shiftKey) {
     e.preventDefault();
