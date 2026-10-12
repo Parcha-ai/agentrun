@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -113,7 +113,16 @@ try {
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
-  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module' }));
+  // The consumer has no lockfile, so every package a Pi package depends on by range floats to the newest release. A Pi
+  // package then runs beside siblings it was not released with (a coding agent at one version, its codemode at the next).
+  // Every @earendil-works package therefore resolves at the version this repository's lockfile holds.
+  const scope = join(root, 'node_modules', '@earendil-works');
+  const piVersions = {};
+  for (const entry of (await readdir(scope, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory()) piVersions[`@earendil-works/${entry.name}`] = (await json(join(scope, entry.name, 'package.json'))).version;
+  }
+  assert.ok(Object.keys(piVersions).length > 0, 'The repository holds no @earendil-works package to pin the consumer to');
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides: piVersions }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
@@ -122,6 +131,14 @@ try {
   const peers = [];
   for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
+  // No @earendil-works package in the consumer, at any depth, differs from the repository's.
+  const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+  const drifted = Object.entries(consumerLock.packages ?? {}).flatMap(([location, entry]) => {
+    const name = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    return location.includes('node_modules/') && Object.hasOwn(piVersions, name) && entry.version !== piVersions[name] ? [`${location}@${entry.version} (repository: ${piVersions[name]})`] : [];
+  });
+  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages at other versions than the repository's: ${drifted.join(', ')}`);
+  receipt.checks.push('Every @earendil-works package in the consumer resolves at the repository lockfile version.');
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
