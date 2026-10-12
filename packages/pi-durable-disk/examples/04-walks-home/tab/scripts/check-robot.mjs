@@ -155,6 +155,11 @@ try {
   await put('creature/robot.json', serializeRobot(robot));
   const borrowedSkill = await waitEvent('skill-switched', n);
   ok('skills: after a body change a skill\'s network is borrowed and the page says the brain no longer fits', borrowedSkill && borrowedSkill.skill === 'walk' && borrowedSkill.fits === false && /no longer fits/.test(await label()), { borrowedSkill, label: await label() });
+  // the stumble, typed: the body changed under skills that were taught for the drawn one
+  const mismatch = await waitEvent('body-mismatch', n - 0);
+  ok('body-mismatch: the event names the previous and the new body and the skills that no longer fit (typed fields, no prose)', mismatch && /^[0-9a-f]{64}$/.test(mismatch.previous_body_sha) && /^[0-9a-f]{64}$/.test(mismatch.body_sha) && mismatch.previous_body_sha !== mismatch.body_sha && mismatch.skills_not_fitting.join() === 'walk,sprint', mismatch);
+  const fit = JSON.parse(await ev("new TextDecoder().decode(disk['creature/fit.json'])"));
+  ok('creature/fit.json in the run\'s work/ says the same: the body, and for each skill whether it fits and which body it was taught for', fit.body_sha === mismatch.body_sha && fit.not_fitting.join() === 'walk,sprint' && fit.skills.walk.fits === false && fit.skills.walk.taught_for_body_sha === mismatch.previous_body_sha, fit);
   await shot('5-skills');
   ok('nothing the robot did produced an error on the page', (await inner("document.getElementById('err').textContent")) === '', await inner("document.getElementById('err').textContent"));
 } catch (e) {
