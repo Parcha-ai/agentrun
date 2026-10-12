@@ -149,6 +149,8 @@ export interface DemoServerOptions {
   readonly superviseMs?: number;
   /** How long a tab gets to finish its current step on a switch before it is released anyway. Default 10 s. */
   readonly drainMs?: number;
+  /** How long the server waits for the agent's closing turn at home (default 60 s) before it replays the requests queued during the move home anyway. */
+  readonly homeTurnMs?: number;
   /** Reads an object of the disk (its S3 API): work/ of a run no pipe holds, and run.json when a run is adopted. */
   readonly readObject?: (key: string) => Promise<Uint8Array>;
   /** After a check-in the server holds the claim for the browser's tab to attach; none attaching within this releases it. Default 30 s. */
@@ -174,6 +176,21 @@ export interface DemoServerOptions {
 
 /** Who asked for a move: the user (a click), the agent (its tool), or the server's placement question. */
 type Who = { by: "user" } | { by: "agent"; reason: string } | { by: "placement"; reason: string; probability?: number };
+
+/**
+ * The server's wait at home after a placement move: the home check, then the agent's closing turn. It is set before the check starts and cleared when the wait is over, and while it is set a new
+ * request is queued (behind the earlier queued ones) instead of placed, so nothing starts a move that would release the pipe the check reads through or overtake an older request.
+ */
+interface HomeWait {
+  /** The closing turn's message has gone: only then does the writer's run_end end the wait (an earlier turn's end must not). */
+  armed: boolean;
+  /** The bound on the closing turn, started when its message goes. */
+  timer: ReturnType<typeof setTimeout> | undefined;
+  /** The wait is over (the turn ended, the bound passed, or it was cancelled). */
+  finish: () => void;
+  /** The server is closing: the wait ends without replaying anything. */
+  cancelled: boolean;
+}
 
 interface RunState {
   readonly ref: RunRef;
@@ -204,6 +221,8 @@ interface RunState {
   placing: Promise<void>;
   /** The task a placed run is working on; `sent` once its message reached the host that works on it (earlier turns' events do not end it). */
   placedTask: { text: string; sent: boolean } | undefined;
+  /** The agent's closing turn at home, while the server waits for it to end (the writer's run_end) before it replays the requests queued during the move home. */
+  homeTurn: HomeWait | undefined;
   /** The decisions taken, newest last, for a viewer that connects later. */
   decisions: PlacementDecision[];
   /** The run was checked out to a browser (`POST /api/runs/<id>/checkout`): its only live copy is there, so this server never runs it again. Set from the checkout, and from the mark on the disk (`store/checkout.json`, readMarker) on adopt, hello and the store and checkout routes, so a restarted server finds it too. */
@@ -602,10 +621,18 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const frame: PipeFrame = { t: "switched", switchId, to: s.to, ms };
     for (const viewer of state.viewers) viewer.send(frame);
     state.pipe?.broadcast(frame);
-    void flushPending(state);
-    // The run is back in the browser by placement: the agent gets one turn to say, in a line, where it is and what happened.
+    // The run is back in the browser by placement: the agent gets one turn to say, in a line, where it is and what happened. The requests that came in during the move wait for that turn
+    // (the check can take up to two minutes for the browser's receipt, and a new move would release the pipe the check reads it through, and send the closing line nowhere): they are replayed,
+    // each placed, once the check and the closing turn have finished. The message a move was for goes now.
     const home = options.placer?.homePrompt;
-    if (home && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id) {
+    const goingHome = home !== undefined && home !== "" && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id;
+    void flushPending(state, goingHome ? "direct" : "all");
+    if (home && goingHome) {
+      // The wait starts before the check, so a request that arrives while the check runs, or during the closing turn, is queued too.
+      let finish!: () => void;
+      const ended = new Promise<void>((resolve) => (finish = resolve));
+      const wait: HomeWait = { armed: false, timer: undefined, finish, cancelled: false };
+      state.homeTurn = wait;
       void (async () => {
         // What the work was for, checked in code: the agent words this fact, it does not judge it.
         let checked = "";
@@ -615,8 +642,23 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason });
           checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
         }
+        if (wait.cancelled) return;
+        // Bounded, so a browser that never ends its turn does not hold the queue forever; armed before the message goes, so a turn that ends at once is not missed.
+        wait.timer = setTimeout(() => {
+          log("placement.home-turn-timeout", { run: state.ref.id, switchId });
+          finish();
+        }, options.homeTurnMs ?? 60_000);
+        wait.armed = true;
         await deliverSubmit(state, `${SERVER_TURN}${home}${checked}`, `server-${switchId}`);
-      })().catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+        await ended;
+      })()
+        .catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }))
+        .finally(() => {
+          clearTimeout(wait.timer);
+          if (state.homeTurn === wait) state.homeTurn = undefined;
+          // A server that is closing replays nothing.
+          if (!wait.cancelled) void flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
+        });
     }
   }
 
@@ -624,10 +666,11 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * When a move ends: the message the move was for goes to the host the run now has, and each message that arrived during the move is
    * placed as a message of its own (a training request that came while the agent was on its way home belongs on the GPU, not in the browser).
    */
-  async function flushPending(state: RunState): Promise<void> {
-    const pending = state.pendingSubmits;
-    if (pending.length === 0) return;
-    state.pendingSubmits = [];
+  async function flushPending(state: RunState, which: "all" | "direct" = "all"): Promise<void> {
+    const now = state.pendingSubmits.filter((p) => which === "all" || !p.queuedBy);
+    if (now.length === 0) return;
+    state.pendingSubmits = state.pendingSubmits.filter((p) => !now.includes(p));
+    const pending = now;
     for (const p of pending) {
       if (p.queuedBy) {
         // Through the one-at-a-time placement, in the order they came; not awaited here (this may run inside that very queue).
@@ -685,8 +728,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   async function placeOne(state: RunState, socket: PipeSocket, text: string, requestId: string): Promise<void> {
     // An earlier message's move is still going: this one goes to the host the run has when it ends.
-    if (state.switching) {
+    // (and while the home check and the agent's closing turn run: a new move then would release the pipe the check reads through and overtake the requests already queued)
+    if (state.switching || state.homeTurn) {
       state.pendingSubmits.push({ text, requestId, queuedBy: socket });
+      log("placement.queued", { run: state.ref.id, requestId, behind: state.switching ? "the move" : "the home wait" });
       return;
     }
     if (state.opening) return deliverSubmit(state, text, requestId);
@@ -911,6 +956,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "view":
         pipe?.view(socket, frame.event);
+        if (pipe?.isWriter(socket) && endsRun(frame.event) && state.homeTurn?.armed) state.homeTurn.finish();
         if (options.placer && state.placedTask && pipe?.isWriter(socket) && endsRun(frame.event)) void placeAfterTurn(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
         return;
       case "ping":
@@ -1179,6 +1225,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       remote: undefined,
       clients: new Map(),
       pendingSubmits: [],
+      homeTurn: undefined,
       placing: Promise.resolve(),
       placedTask: undefined,
       decisions: [],
@@ -1635,6 +1682,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       for (const poller of pollers.values()) poller.stop();
       pollers.clear();
       for (const state of runs.values()) {
+        // A home wait still open ends here, replaying nothing and leaving no timer.
+        if (state.homeTurn) {
+          state.homeTurn.cancelled = true;
+          clearTimeout(state.homeTurn.timer);
+          state.homeTurn.finish();
+          log("placement.home-wait-cancelled", { run: state.ref.id });
+        }
         unsupervise(state);
         if (state.opening) await state.opening.catch(() => undefined);
         if (state.pipe && !state.pipe.lost) await releasePipe(state).catch((error) => log("release.failed", { run: state.ref.id, error: (error as Error).message }));
