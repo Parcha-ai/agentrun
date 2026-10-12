@@ -1,19 +1,19 @@
 # agent.run() + Pi
 
-Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 0.87.0.
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.1.0.
 
 ## Install
 
 If you do not have Pi, install the tested host version first:
 
 ```sh
-npm install -g @earendil-works/pi-coding-agent@0.87.0
+npm install -g @earendil-works/pi-coding-agent@1.1.0
 ```
 
 Then, in your project:
 
 ```sh
-pi install npm:@parcha/agentrun-pi@0.1.0-beta.4 -l
+pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
@@ -29,7 +29,7 @@ Try the bundled example inside Pi:
 /agentrun demo
 ```
 
-The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. The tested version is 0.87.0; status flags a different host without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
+The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. The tested version is 1.1.0; status flags a different host without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
 
 For an offline Pi startup, use `pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.
 
@@ -75,7 +75,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
 
-Pi 0.87.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt from the checkout, run `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
+Pi 1.1.0 cannot export a fresh session containing only slash-command results. To save an offline research receipt from the checkout, run `node examples/research-live.mjs --out research-result.json`. This runs the scripted example again and writes its result; it does not export the Pi session.
 
 One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
 
@@ -240,9 +240,9 @@ These commands create a separate `agentrun-pi-project` beside the checkout. You 
 
 ## Dependencies and retained data
 
-Pi is optional for `@parcha/agentrun-dsl`. This package brings the Pi coding-agent SDK, its provider dependencies, and the Jev adapter; its dependency footprint is larger than the core. The release inventory records the locked versions.
+Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
 
-The SDK dependencies remain pinned so standalone applications and the CLI have a complete runtime. When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader. The tested host is Pi 0.87.0; installed SDK pins do not make an older or newer host compatible. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) recommends peers for extension-only packages; this package also provides the standalone SDK.
+When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent @earendil-works/pi-agent-core @earendil-works/pi-tui typebox`). The tested host is Pi 1.1.0; peer ranges at `*` do not make an older or newer host compatible. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
 
 Candidate directories retain request text, rubric text, workflow versions, and feedback. Native Pi messages can contain workflow inputs and results. Choose storage and tool access appropriate for that data. The author skill in `@parcha/agentrun-dsl` describes the native and SDK authoring paths for agents.
 
