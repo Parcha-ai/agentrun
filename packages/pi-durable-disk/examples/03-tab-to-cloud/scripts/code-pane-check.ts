@@ -62,6 +62,8 @@ try {
   await until(`demo.exec("cat robot/build.json").then((r) => r.exitCode === 0 && JSON.parse(r.output).ok === true)`, 30_000).catch(() => undefined);
   const first = await ev<{ exitCode?: number; output?: string }>(`demo.exec("cat robot/build.json")`);
   ok("and the page reported it: robot/build.json is ok, 8 motors", /"ok": ?true/.test(first.output ?? "") && /"motors": ?8/.test(first.output ?? ""), first.output?.slice(0, 200));
+  const fonts = await ev<{ mono: boolean; label: string }>(`(async () => { const d = document.getElementById("creature").contentWindow.document; await d.fonts.load('500 11px "JetBrains Mono"'); await d.fonts.load('400 14px "Inter"'); const loaded = (f) => [...d.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"); return { mono: loaded("JetBrains Mono") && loaded("Inter"), label: getComputedStyle(d.getElementById("stateLabel")).fontFamily }; })()`);
+  ok("the creature page uses the demo's fonts (Inter and JetBrains Mono from /theme/), its label set in the mono", fonts.mono && /JetBrains Mono/.test(fonts.label), fonts);
   await page.screenshot(join(shots, "code-1-default.png"));
 
   // 2. the agent writes a dinosaur, builds it, checks it, paints the plates
