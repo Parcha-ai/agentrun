@@ -9,6 +9,7 @@ import { presetForSha } from './bodies.ts';
 import { bodyNotes } from './rules.ts';
 import { Stats } from './stats.ts';
 import { FitWriter, fitSnapshot } from './fit.ts';
+import { Economy } from './economy.ts';
 import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
@@ -36,8 +37,13 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 
 // ---- message protocol with the show page (all messages carry ns: "walks-home") ----------------------------
 // tab -> parent: ready, design-saved, policy-loaded, kicked, fell, stood, memory-opened, walk-meter, draw-started (see README)
-// parent -> tab: set-placement {kind, label, since}, kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
+// parent -> tab: set-placement {kind, label, since}, set-activity {paused, low} (?econ=1: paused while the model is loading, low while it generates), kick {dir, force_n}, open-memory, load-policy {url}, load-design {design}
 const NS = 'walks-home';
+/** ?econ=1 (embedded under the agent's page): the page works at a low rate unless something is changing it, and not at all while the parent says the model is loading (economy.ts). */
+const economy = new Economy({ enabled: new URLSearchParams(location.search).has('econ') });
+let pointerDown = false;
+/** The user has the camera (orbit, pan or zoom on the background): full rate while they do. */
+let cameraDown = false;
 const post = (type: string, body: Record<string, unknown> = {}) => {
   if (window.parent === window) return;
   // A design goes out exactly as it is (the agent saves these numbers and the body's hash depends on them); every other number is rounded.
@@ -354,6 +360,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
  * or going untrained if it does not. The body is saved and published like any other (the trainer reads creature.xml and body.json as before); the drawing the user made stays in creature/design.json.
  */
 async function applyRobot(text: string) {
+  economy.wake(performance.now());
   const robot = parseRobot(text);
   if (!robot) return; // not a state the robot tools wrote: ignored
   app.view.setLook(viewLook(robot, COLOR_HEX));
@@ -474,6 +481,7 @@ async function onSkillFile(name: string, text: string) {
  * A skill trained for the body on screen is loaded as any policy; after a body change the old skill's network is borrowed when it still fits the joints (the robot stumbles: robot-fit.ts).
  */
 async function switchSkill(name: string, reload = false) {
+  economy.wake(performance.now());
   if (!skills) { wantedSkill = name; return; }
   const entry = skills.skills[name];
   const refuse = (reason: string, kind: 'body-mismatch' | 'other' = 'other') => { showError(`Skill refused: ${reason}`); post('skill-refused', { skill: name, reason, kind, body_sha: app.bodySha }); };
@@ -513,6 +521,7 @@ async function switchSkill(name: string, reload = false) {
 
 /** The slider is the single source of the command: apply it to the sim (a new Sim starts at 0, which a policy reads as "stand"). */
 function applyCommand() {
+  economy.wake(performance.now());
   const input = $('command') as HTMLInputElement;
   // A policy trained for a command range limits the slider to it.
   const range = (app.policy?.file as { command_range?: [number, number] } | undefined)?.command_range;
@@ -580,6 +589,7 @@ async function loadPolicyText(text: string, name: string) {
  * it came from using only what the file records, and time how long the creature takes to walk with it.
  */
 async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json', kind: 'checkpoint' | 'final' = 'final') {
+  economy.wake(performance.now());
   const arrivedAt = performance.now();
   // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
   if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
@@ -672,6 +682,7 @@ function kickWorld(wx: number, wy: number, force: number) {
 }
 
 function kick(dirX: number, dirY: number, force: number) {
+  economy.wake(performance.now());
   const [wx, wy] = yawDir(dirX, dirY); // dir is given in the creature's heading frame
   kickWorld(wx, wy, force);
 }
@@ -836,6 +847,7 @@ function sampleArrival() {
 
 function tick(now: number) {
   requestAnimationFrame(tick);
+  if (!economy.frame(now, pointerDown || cameraDown, !!app.policy)) return; // no work this frame: app.last stays, so the next one that works makes up the time (up to the usual cap)
   // A hitch (GC, a busy machine) is made up by stepping more next frame, up to half a second of simulation, so the creature
   // never falls behind the wall clock; beyond that the backlog is dropped. Physics is cheap (about 1 ms per control step).
   const dt = Math.min((now - app.last) / 1000, MAX_CATCHUP_S);
@@ -974,6 +986,7 @@ async function main() {
     const forceFor = (px: number) => Math.min(MAX_DRAG_KICK_N, Math.max(10, px * 0.4));
     canvas.addEventListener('pointerdown', (e) => {
       if (!app.view.pickCreature(e.clientX, e.clientY)) return;
+      pointerDown = true;
       drag = { x: e.clientX, y: e.clientY };
       app.view.setOrbitEnabled(false);
       canvas.setPointerCapture(e.pointerId);
@@ -991,14 +1004,20 @@ async function main() {
     const end = (e: PointerEvent) => {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      drag = null; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true);
+      drag = null; pointerDown = false; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true);
       const len = Math.hypot(dx, dy);
       if (len < 8) return; // a click, not a shove
       const [wx, wy] = app.view.groundDir(dx, dy);
       kickWorld(wx, wy, forceFor(len));
     };
     canvas.addEventListener('pointerup', end);
-    canvas.addEventListener('pointercancel', () => { drag = null; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true); });
+    canvas.addEventListener('pointercancel', () => { drag = null; pointerDown = false; svg.toggleAttribute('hidden', true); app.view.setOrbitEnabled(true); });
+    // the camera: OrbitControls handles a drag on the background and the wheel; any of them is the user moving the view
+    canvas.addEventListener('pointerdown', () => { cameraDown = true; }, true);
+    const cameraUp = () => { cameraDown = false; economy.wake(performance.now(), 1500); };
+    canvas.addEventListener('pointerup', cameraUp);
+    canvas.addEventListener('pointercancel', cameraUp);
+    canvas.addEventListener('wheel', () => economy.wake(performance.now(), 1500), { passive: true });
 
     window.addEventListener('message', async (ev) => {
       if (ev.origin !== location.origin || ev.source !== window.parent) return;
@@ -1007,6 +1026,7 @@ async function main() {
       try {
         if (m.type === 'set-placement') { setPlacement(m.kind, m.label ?? m.kind); modelHost?.onPlacement(String(m.kind)); }
         else if (m.type === 'chat-send') { if (modelHost) void modelHost.chat(String(m.id), String(m.text ?? '')); else post('chat-done', { id: m.id, error: 'model-not-ready', refused: false, text: '' }); }
+        else if (m.type === 'set-activity') { economy.throttle(m.low === true); economy.pause(m.paused === true, performance.now()); }
         else if (m.type === 'kick') kick(m.dir?.[0] ?? 0, m.dir?.[1] ?? 1, m.force_n ?? 60);
         else if (m.type === 'open-memory') await renderMemory();
         else if (m.type === 'load-policy') await loadPolicyUrl(String(m.url));
@@ -1016,8 +1036,9 @@ async function main() {
         else if (m.type === 'load-design') { announceDrawing(); app.sketcher.set(m.design); await buildCreature(m.design, true); }
       } catch (e) { showError(String(e)); }
     });
+    if (economy.enabled) { economy.wake(performance.now()); post('econ-ready'); } // the parent may have asked the page to stand still before it was listening: it says so again now
 
-    (window as any).__walks = { get app() { return app; }, look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
+    (window as any).__walks = { get app() { return app; }, economy: () => ({ enabled: economy.enabled, paused: economy.paused, ticks: economy.ticks, worked: economy.worked }), look: () => app.view.describeLook(), fits: () => brainFits, skill: () => skillNow, skills: () => skills, state: pageState, walkedMetres, commitDesign: () => app.draft.commit(), rebuilt: () => app.draft.rebuilt(), applyDesign, setPhase,
       // where the sketcher's handles are, in the viewport of this page (the recorder adds its iframe's offset): see scripts/sketch-take.mjs
       sketchGeometry: () => { const r = $('sketch').getBoundingClientRect(); return { rect: { left: r.left, top: r.top, width: r.width, height: r.height }, ...app.sketcher.geometry() }; },
       // kick([1, 0], 350) or kick(1, 0, 350): the heading frame, [1, 0] forward, [0, 1] left
