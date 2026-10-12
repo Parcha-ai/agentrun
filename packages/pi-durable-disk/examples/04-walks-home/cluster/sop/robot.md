@@ -100,7 +100,7 @@ const leg = (x, side) => {
       name: "shin", pos: [0, 0, -0.2], tags: ["legs", x > 0 ? "front_legs" : "back_legs"],
       joint: { axis: [0, 1, 0], range: [0, 2.3], stand: 0.9, strength: 14 },         // the knee bends it back
       shape: "capsule", from: [0, 0, 0], to: [0, 0, -0.2], size: [0.018], color: "brown",
-      geoms: [{ shape: "box", size: [0.05, 0.035, 0.015], pos: [0.02, 0, -0.208], color: "black", mass: 0.02, friction: "1.4 0.05 0.01" }], // a flat foot that grips
+      geoms: [{ shape: "box", size: [0.05, 0.035, 0.015], pos: [0.02, 0, -0.208], color: "black", mass: 0.020386, friction: "1.4 0.05 0.01" }], // a flat foot that grips
     }],
   };
   return side === "left" ? l : mirror(l);
