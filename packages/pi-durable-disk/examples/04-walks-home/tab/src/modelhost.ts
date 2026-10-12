@@ -63,6 +63,8 @@ export interface Llm {
   loadUrl?(url: string, opts: { threads: number; nCtx?: number; batch?: number; /** Sequences the engine keeps (wllama's default is 4: a hybrid model's recurrent state is kept that many times). */ slots?: number; /** The parts' manifest (in order): each cached part is checked against it, and fetched again when short, wrong or unreadable. */ parts?: { name?: string; bytes: number; sha256?: string }[]; onProgress?: (loaded: number, total: number) => void; /** What the load is doing, in words (checking a part, fetching one again). */ onStatus?: (text: string) => void; /** The engine's load (after the parts are in hand) fails after this long, its worker let go. */ loadTimeoutMs?: number }): Promise<void>;
   /** Optional: forget every model file the engine's cache holds (the next load fetches them again). */
   clearCache?(): Promise<void>;
+  /** Optional: a file through the engine's own cache, as a model's parts are: fetched once, then read from the cache with no network; its size checked every time and its sha256 once, and fetched again when either is wrong. Needs a loaded model. */
+  cachedFile?(url: string, want?: { bytes: number; sha256?: string }): Promise<Blob>;
   /** Optional: the loaded model's own chat template (jinja), or null when its file has none. */
   chatTemplate?(): string | null;
   /** Optional: put a saved warm state (llama-server's slot save of a prompt prefix, made by the same llama.cpp with the same settings) back in slot 0, instead of prefilling that prefix. Throws when the engine cannot. */

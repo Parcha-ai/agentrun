@@ -57,7 +57,7 @@ export interface ThreadBoxes {
   release(thread: { threadId: string }, context: Context): Promise<void>;
 }
 
-/** One artifact mirror per thread (D0's ArtifactSync): the box's skills/<skill>/ to the host's work/skills/<skill>/. */
+/** One artifact mirror per thread (D0's ArtifactSync): the box folder the trainer writes (code mode: runs/<skill>/) to the host. */
 export interface ThreadArtifacts {
   start(): void | Promise<void>;
   flush(context: Context): Promise<void>;
@@ -103,7 +103,13 @@ export interface PlanOptions {
   readonly status?: (thread: { readonly skill: string; readonly boxId: string }, context: Context) => Promise<ThreadStatus | undefined>;
 }
 
-export type ThreadStatus = { readonly status: ThreadResult["status"]; readonly checkpoint?: number; readonly seconds?: number };
+export type ThreadStatus = {
+  readonly status: ThreadResult["status"];
+  readonly checkpoint?: number;
+  readonly seconds?: number;
+  /** What the artifacts say about it, in the trainer's words (why it never passed, why it was refused). */
+  readonly reason?: string;
+};
 
 /** What one thread came back with; also each Thread task's result. */
 export type ThreadResult = {
@@ -118,6 +124,8 @@ export type ThreadResult = {
   readonly summary: string;
   /** Why the outcome could not be read from the thread's artifacts (code mode's status hook threw). */
   readonly outcomeError?: string;
+  /** Code mode: what the thread's artifacts say about the outcome (the status hook's `reason`). */
+  readonly reason?: string;
 };
 
 export type TrainProgress = {
@@ -227,7 +235,9 @@ export function teachSkills(options: TeachSkillsOptions): { readonly teach: Exte
         if (saved.ok) {
           try {
             const info = JSON.parse(saved.value) as { passed_at?: unknown; wall_s?: unknown };
-            if (typeof info.passed_at === "number") progress.checkpoint = info.passed_at;
+            // passed_at is the first passing checkpoint: { checkpoint, steps, t, ... } from D2's library (a bare number before).
+            const at = typeof info.passed_at === "number" ? info.passed_at : (info.passed_at as { checkpoint?: unknown } | null | undefined)?.checkpoint;
+            if (typeof at === "number") progress.checkpoint = at;
             if (typeof info.wall_s === "number") progress.t = info.wall_s;
           } catch {
             // an unreadable skill.json leaves the facts unknown
@@ -610,7 +620,7 @@ async function forkPoint(tx: Tx, conversationId: ConversationId): Promise<EntryI
 
 /** Code mode's result: the status the thread's artifacts show (or "timed out" / "reported"), with the thread's own words. */
 function codeResult(r: ThreadResult, from: ThreadStatus | undefined, timedOut: boolean, deadlineMs: number | undefined): ThreadResult {
-  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}) } : {};
+  const facts = from ? { ...(from.checkpoint !== undefined ? { checkpoint: from.checkpoint } : {}), ...(from.seconds !== undefined ? { seconds: from.seconds } : {}), ...(from.reason ? { reason: from.reason } : {}) } : {};
   const { checkpoint: _c, seconds: _s, ...rest } = r;
   if (timedOut && from?.status !== "passed") {
     return { ...rest, ...facts, status: "timed-out", summary: r.summary || `Stopped after ${Math.round((deadlineMs ?? 0) / 60000)} min without a passing result.` };
@@ -658,7 +668,7 @@ export function foldText(threads: readonly ThreadResult[], home?: HomeResult): s
   const passed = threads.filter((t) => t.status === "passed").length;
   const lines = threads.map((t) => {
     const how = t.status === "passed" ? `passed${t.checkpoint === undefined ? "" : ` at checkpoint ${t.checkpoint}`}${t.seconds === undefined ? "" : ` in ${t.seconds} s`}` : t.status.replace("-", " ");
-    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
+    return `- GPU ${t.gpu} · ${t.skill}: ${how}. ${t.summary}${t.reason ? ` Trainer: ${t.reason}` : ""}${t.outcomeError ? ` (Its outcome could not be read: ${t.outcomeError}.)` : ""}`;
   });
   const homeLine =
     home === undefined ? [] : "error" in home ? [`Bringing the skills home failed: ${home.error}`] : [`Home: ${home.skills.length} skill${home.skills.length === 1 ? "" : "s"}${home.skills.length ? ` (${home.skills.join(", ")})` : ""}.`];

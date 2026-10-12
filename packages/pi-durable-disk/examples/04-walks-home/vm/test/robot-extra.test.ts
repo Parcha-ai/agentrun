@@ -151,3 +151,124 @@ test("assembly is over the skills of the body this round taught: an old body's g
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("a robot written as code goes to the box as /workspace/robot/ (body.xml, body.json), next to the preset's robot.json; whichever file is missing is said, each looked for on its own", async () => {
+  const work = mkdtempSync(join(tmpdir(), "robot-extra-"));
+  try {
+    mkdirSync(join(work, "creature"), { recursive: true });
+    mkdirSync(join(work, "robot"), { recursive: true });
+    writeFileSync(join(work, "creature", "robot.json"), '{"design":{"legs":4}}');
+    const { robotBoxes } = await import("../robot-extra.ts");
+    const stage = async () => {
+      const f = fakeLink();
+      const logs: { event: string; data?: Record<string, unknown> }[] = [];
+      await robotBoxes(f.link as never, work, (event, data) => void logs.push({ event, data })).acquire({ threadId: "t-1", skill: "walk", gpu: 1 }, {} as never);
+      return { at: (path: string) => f.execs.find((e) => e.argv.at(-1) === path)?.stdin, logs };
+    };
+    // Only the joint file: nothing to train from, and the missing MJCF is said.
+    writeFileSync(join(work, "robot", "body.json"), '{"jointNames":["a","b"]}');
+    const jsonOnly = await stage();
+    assert.equal(jsonOnly.at("/workspace/robot/body.xml"), undefined);
+    assert.equal(jsonOnly.at("/workspace/robot/body.json"), undefined, "no body without its MJCF");
+    assert.deepEqual(jsonOnly.logs.find((l) => l.event === "robot.code-body-incomplete")?.data, { thread: "t-1", missing: "robot/body.xml" });
+    // Only the MJCF: it is staged (the trainer builds from it) and the missing joint file is said.
+    rmSync(join(work, "robot", "body.json"));
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
+    const xmlOnly = await stage();
+    assert.equal(xmlOnly.at("/workspace/robot/body.xml"), "<mujoco/>");
+    assert.equal(xmlOnly.at("/workspace/robot/body.json"), undefined);
+    assert.deepEqual(xmlOnly.logs.find((l) => l.event === "robot.code-body-incomplete")?.data, { thread: "t-1", missing: "robot/body.json" });
+    // Both: byte for byte, nothing said, and the preset's robot.json is still there for the old command.
+    writeFileSync(join(work, "robot", "body.json"), '{"jointNames":["a","b"]}');
+    const both = await stage();
+    assert.equal(both.at("/workspace/robot/body.xml"), "<mujoco/>");
+    assert.equal(both.at("/workspace/robot/body.json"), '{"jointNames":["a","b"]}');
+    assert.equal(both.logs.some((l) => l.event === "robot.code-body-incomplete"), false);
+    assert.equal(both.at("/workspace/robot.json"), '{"design":{"legs":4}}');
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("the thread trains for the body the page runs: /workspace/robot when the robot is code, robot.json for the preset", async () => {
+  const work = mkdtempSync(join(tmpdir(), "robot-extra-"));
+  try {
+    const { trainCommand, hasCodeBody } = await import("../robot-extra.ts");
+    mkdirSync(join(work, "robot"), { recursive: true });
+    assert.equal(hasCodeBody(work), false);
+    assert.deepEqual(trainCommand(work)("walk"), ["pi-run", "walk", "--", "train-skill", "walk", "--body", "/workspace/robot.json", "--out", "/workspace/skills/walk"]);
+    writeFileSync(join(work, "robot", "body.json"), "{}");
+    assert.equal(hasCodeBody(work), false, "the joint file alone is not a body: the trainer builds from the MJCF");
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco/>");
+    assert.equal(hasCodeBody(work), true);
+    assert.deepEqual(trainCommand(work)("spin"), ["pi-run", "spin", "--", "train-skill", "spin", "--body", "/workspace/robot", "--out", "/workspace/skills/spin"]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("a code-mode thread's outcome comes from the trainer's skill.json, mirrored home: passed (record or number), error with the trainer's reason, never-passed with its diagnosis, or nothing yet", async () => {
+  const { threadStatusFromSkillFile, planOptions } = await import("../robot-extra.ts");
+  const work = mkdtempSync(join(tmpdir(), "robot-status-"));
+  try {
+    const put = (skill: string, body: string) => {
+      mkdirSync(join(work, "skills", skill), { recursive: true });
+      writeFileSync(join(work, "skills", skill, "skill.json"), body);
+    };
+    put("a", '{"status":"done","passed_at":7,"wall_s":55.2}');
+    put("b", '{"status":"done","passed_at":{"checkpoint":5,"steps":3932160,"t":48.4},"wall_s":null}');
+    put("c", '{"status":"failed","passed_at":null,"wall_s":300,"diagnosis":"the reward never rose"}');
+    put("d", '{"status":"training"}');
+    put("e", "not json");
+    put("f", '{"status":"refused","error":"the body has no legs I can find"}');
+    put("g", '{"status":"failed","error":"CUDA out of memory"}');
+    put("h", '{"status":"compiled","passed_at":null}');
+    assert.deepEqual(await threadStatusFromSkillFile(work, "a"), { status: "passed", checkpoint: 7, seconds: 55 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "b"), { status: "passed", checkpoint: 5, seconds: 48 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "c"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
+    assert.equal(await threadStatusFromSkillFile(work, "d"), undefined, "still training: no outcome yet");
+    assert.equal(await threadStatusFromSkillFile(work, "e"), undefined);
+    assert.deepEqual(await threadStatusFromSkillFile(work, "f"), { status: "error", reason: "the body has no legs I can find" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "g"), { status: "error", reason: "CUDA out of memory" });
+    assert.equal(await threadStatusFromSkillFile(work, "h"), undefined, "compiled is not settled");
+    assert.equal(await threadStatusFromSkillFile(work, "missing"), undefined);
+    const plan = planOptions(work);
+    assert.equal(plan.maxThreads, 8);
+    assert.equal(plan.threadDeadlineMs, 20 * 60_000);
+    assert.match(plan.threadInstructions, /\S/);
+    assert.equal(plan.threadExtensions.length, 1);
+    assert.deepEqual(await plan.status!({ skill: "a", boxId: "x" }, {} as never), { status: "passed", checkpoint: 7, seconds: 55 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("a thread's pass is for the body it trained: after the body changed, the earlier round's skill.json is not this attempt's pass, and the retrain's own file decides", async () => {
+  const { threadStatusFromSkillFile } = await import("../robot-extra.ts");
+  const { createHash } = await import("node:crypto");
+  const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+  const work = mkdtempSync(join(tmpdir(), "robot-status-"));
+  try {
+    mkdirSync(join(work, "robot"), { recursive: true });
+    mkdirSync(join(work, "skills", "walk"), { recursive: true });
+    const put = (file: Record<string, unknown>) => writeFileSync(join(work, "skills", "walk", "skill.json"), JSON.stringify(file));
+    // Round 1: body A, walk passed.
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco name='A'/>");
+    put({ status: "done", mjcf_sha256: sha("<mujoco name='A'/>"), passed_at: { checkpoint: 5, t: 48 }, wall_s: 50 });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "passed", checkpoint: 5, seconds: 50 });
+    // The body changed and the retrain has not written its file yet: the old pass is not this attempt's.
+    writeFileSync(join(work, "robot", "body.xml"), "<mujoco name='B'/>");
+    assert.equal(await threadStatusFromSkillFile(work, "walk"), undefined);
+    // The retrain's own file: still training (nothing yet), then it fails: never-passed, not the old pass.
+    put({ status: "training", mjcf_sha256: sha("<mujoco name='B'/>"), passed_at: null });
+    assert.equal(await threadStatusFromSkillFile(work, "walk"), undefined);
+    put({ status: "failed", mjcf_sha256: sha("<mujoco name='B'/>"), passed_at: null, wall_s: 300, diagnosis: "the reward never rose" });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "never-passed", seconds: 300, reason: "the reward never rose" });
+    // No MJCF on the disk (a preset robot): nothing to compare against, the file stands.
+    rmSync(join(work, "robot", "body.xml"));
+    put({ status: "done", mjcf_sha256: sha("x"), passed_at: { checkpoint: 2 } });
+    assert.deepEqual(await threadStatusFromSkillFile(work, "walk"), { status: "passed", checkpoint: 2 });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

@@ -4,7 +4,7 @@ import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
-import { boxShell, httpBox } from "../http-box.ts";
+import { boxShell, Channel, httpBox } from "../http-box.ts";
 
 let url = "";
 const server = createServer((req, res) => {
@@ -72,4 +72,17 @@ test("a reader that stops early does not stall the other stream", async () => {
   assert.equal(n, 1024);
   assert.equal(err.toString().split("\n").filter(Boolean).length, 500);
   assert.equal(code, 0);
+});
+
+test("a channel holds at most 16 chunks: the next push waits until the reader takes one", async () => {
+  const channel = new Channel(() => {});
+  for (let i = 0; i < 16; i++) await channel.push(new Uint8Array([i]));
+  let pushed = false;
+  const next = Promise.resolve(channel.push(new Uint8Array([16]))).then(() => (pushed = true));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(pushed, false, "the 17th chunk waits");
+  const reader = channel[Symbol.asyncIterator]();
+  assert.deepEqual((await reader.next()).value, new Uint8Array([0]));
+  await next;
+  assert.equal(pushed, true);
 });

@@ -11,6 +11,7 @@ import { deleteRunTree, ensureRunning, modalHost, removeMountToken } from "@parc
 import type { DaytonaClient, HostHandle, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
 import { ModalClient } from "modal";
 import { archilControl } from "../../../03-tab-to-cloud/pipe/control.ts";
+import { cleanOnFailure } from "./lifecycle.ts";
 
 // The robot demo's VM recipe, prepare script and lease flags, loaded by path at run time: their modules carry WebSocket
 // types this example does not depend on.
@@ -117,24 +118,24 @@ export async function startVmSession(o: { tunnel: string; keys: { openai: string
     o.log("vm.closed", { run: ref.id });
   };
   // the VM runs from here on: anything that fails before the caller has `close` cleans up first
-  try {
-    o.log("vm.started", { run: ref.id, sandbox: sandboxId, startMs: result.startMs, ms: Date.now() - t0 });
-    const sandbox = await sdk.sandboxes.fromId(sandboxId);
-    return {
-      ref,
-      sandboxId,
-      async shell(cmd, seconds = 120) {
-        const p = await sandbox.exec(["bash", "-lc", cmd], { mode: "text", timeoutMs: seconds * 1000 });
-        const out = await p.stdout.readText();
-        await p.wait();
-        return out;
-      },
-      close,
-    };
-  } catch (error) {
-    await close(false);
-    throw error;
-  }
+  return cleanOnFailure(
+    () => close(false),
+    async () => {
+      o.log("vm.started", { run: ref.id, sandbox: sandboxId, startMs: result.startMs, ms: Date.now() - t0 });
+      const sandbox = await sdk.sandboxes.fromId(sandboxId);
+      return {
+        ref,
+        sandboxId,
+        async shell(cmd: string, seconds = 120) {
+          const p = await sandbox.exec(["bash", "-lc", cmd], { mode: "text", timeoutMs: seconds * 1000 });
+          const out = await p.stdout.readText();
+          await p.wait();
+          return out;
+        },
+        close,
+      };
+    },
+  );
 }
 
 export function readKey(path: string): string {

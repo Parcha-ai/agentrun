@@ -6,13 +6,17 @@
 //   env(target)      a conversation with a box in its robot.box doc runs its tools there (D0's RemoteEnv over the link's box); any other, here;
 //   artifacts        the box's /workspace/skills/<skill>/ to <work>/skills/<skill>/ (D0's ArtifactSync), the trainer's own state left on the box.
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactSync, installPiRun, remoteEnvs, type RemoteBox } from "@parcha/pi-durable-disk";
 import type { AppExtra, AppExtraContext } from "../../03-tab-to-cloud/app-extra.ts";
-import { RobotBox, teachSkills, threadsOf, type ThreadBoxes, type ThreadResult } from "../cluster/teach-skills.ts";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
+import { RobotBox, teachSkills, threadsOf, type PlanOptions, type ThreadBoxes, type ThreadResult, type ThreadStatus } from "../cluster/teach-skills.ts";
+import { TRAIN_SOP } from "../cluster/sop.ts";
 
 /** D2's assemble-skills (node alone): the skills the threads trained into the page's format, home/skills.json last. In the box's bundle it sits at robot/policy/. */
 export const ASSEMBLE_SCRIPT = fileURLToPath(new URL("../policy/assemble-skills.ts", import.meta.url));
@@ -95,6 +99,12 @@ export async function stageCurrentBody(work: string, threads: readonly Pick<Thre
 /** Where the session's robot is on its disk (D3's state file) and where the trainers read it on a box. */
 export const ROBOT_FILE = "creature/robot.json";
 export const BOX_ROBOT_FILE = "/workspace/robot.json";
+/**
+ * The robot the agent wrote as code (D3's `node robot/build.mjs`): the MJCF and the joint/tag file of the body the page runs. On a box they are /workspace/robot/ (body.xml, body.json), the same
+ * folder name the agent has on its own disk, so a skill trains for the body the page shows, not for the preset in robot.json.
+ */
+export const CODE_BODY_FILES = { xml: "robot/body.xml", json: "robot/body.json" } as const;
+export const BOX_BODY_DIR = "/workspace/robot";
 
 /** Write `bytes` to `path` on a box (a binary-safe `cat`, parents made). */
 async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise<void> {
@@ -106,6 +116,57 @@ async function putFile(box: RemoteBox, path: string, bytes: Uint8Array): Promise
   };
   const [, , code] = await Promise.all([drain(p.stdout), drain(p.stderr), p.wait()]);
   if (code !== 0) throw new Error(`writing ${path} on the box failed (${code})`);
+}
+
+/** A robot written as code is on the session's disk (its MJCF, which the trainer builds from). */
+export function hasCodeBody(work: string): boolean {
+  return existsSync(join(work, CODE_BODY_FILES.xml));
+}
+
+/** The thread's training command: for the body the page runs (/workspace/robot on the box) when the robot is code, for the preset's robot.json otherwise. */
+export function trainCommand(work: string): (skill: string) => readonly string[] {
+  return (skill) => ["pi-run", skill, "--", "train-skill", skill, "--body", hasCodeBody(work) ? BOX_BODY_DIR : BOX_ROBOT_FILE, "--out", `/workspace/skills/${skill}`];
+}
+
+/** pi's coding tools (read, write, edit, bash) with `read` declared replay-safe: each code-mode thread's hands, run on its own box through the thread's environment. */
+function codingTools(): Extension {
+  return { name: CodingTools.name, tools: (CodingTools.tools ?? []).map((tool: ToolRegistration) => (tool.name === "read" ? { ...tool, replay: "safe" as const } : tool)) } as Extension;
+}
+
+/** Where a code-mode thread's trainer writes its output on the box (the SOP's `--out`), mirrored to <work>/skills/<skill>/ on the session's disk. */
+export const BOX_RUNS_DIR = "/workspace/runs";
+
+/**
+ * A code-mode thread's outcome, from the trainer's own skill.json (D2's v12, mirrored home from runs/<skill>/), never from the thread's words. `passed_at` is the trainer's record of the first
+ * passing checkpoint ({checkpoint, steps, t, ...}) or null; a bare number is read as the checkpoint too. passed: with its checkpoint and seconds; a refused body or a failure with an error: "error"
+ * and the trainer's reason; a failure otherwise: "never-passed" and its diagnosis; still training or compiled: nothing yet.
+ */
+export async function threadStatusFromSkillFile(work: string, skill: string): Promise<ThreadStatus | undefined> {
+  const text = await readFile(join(work, "skills", skill, "skill.json"), "utf8").catch(() => undefined);
+  if (!text) return undefined;
+  let meta: { status?: unknown; passed_at?: unknown; wall_s?: unknown; error?: unknown; diagnosis?: unknown };
+  try {
+    meta = JSON.parse(text) as typeof meta;
+  } catch {
+    return undefined;
+  }
+  // This attempt's file only: the trainer records the MJCF it trained for, and the mirrored skill.json of an earlier round (another body) must not count as this one's pass. A robot written as code has its
+  // MJCF on the disk (robot/body.xml); a skill file for any other body is not settled for this attempt (a retrain's own file replaces it as the mirror brings it).
+  const body = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
+  if (body && typeof (meta as { mjcf_sha256?: unknown }).mjcf_sha256 === "string" && (meta as { mjcf_sha256: string }).mjcf_sha256 !== createHash("sha256").update(body).digest("hex")) return undefined;
+  const at = meta.passed_at as { checkpoint?: unknown; t?: unknown } | number | null | undefined;
+  const checkpoint = typeof at === "number" ? at : typeof at?.checkpoint === "number" ? at.checkpoint : undefined;
+  const seconds = typeof meta.wall_s === "number" ? Math.round(meta.wall_s) : typeof (at as { t?: unknown } | null | undefined)?.t === "number" ? Math.round((at as { t: number }).t) : undefined;
+  const text_ = (v: unknown) => (typeof v === "string" && v.trim() ? { reason: v } : {});
+  if (checkpoint !== undefined) return { status: "passed", checkpoint, ...(seconds !== undefined ? { seconds } : {}) };
+  if (meta.status === "refused" || (meta.status === "failed" && typeof meta.error === "string" && meta.error)) return { status: "error", ...text_(meta.error) };
+  if (meta.status === "failed" || meta.status === "done") return { status: "never-passed", ...(seconds !== undefined ? { seconds } : {}), ...text_(meta.diagnosis) };
+  return undefined;
+}
+
+/** Code mode (D1's plan): the parent plans the skills from the ask, one thread per skill writes and runs its own training. On when the session's host says so (DEMO_ROBOT_PLAN=1). */
+export function planOptions(work: string): PlanOptions {
+  return { threadExtensions: [codingTools()], threadInstructions: TRAIN_SOP, maxThreads: 8, threadDeadlineMs: 20 * 60_000, status: ({ skill }) => threadStatusFromSkillFile(work, skill) };
 }
 
 /** The threads' boxes as the cluster package asks for them, bound to the link. */
@@ -122,7 +183,14 @@ export function robotBoxes(link: NonNullable<AppExtraContext["link"]>, work: str
         return undefined;
       });
       if (robot) await putFile(box, BOX_ROBOT_FILE, robot);
-      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0 });
+      // A robot written as code: the body the page runs goes to the box as /workspace/robot/. The MJCF is what the trainer builds from (it is required); the joint/tag file is for the thread to read (staged when present).
+      // Each file is looked for on its own and whichever is missing is said, so a half-built or damaged robot shows in the log.
+      const xml = await readFile(join(work, CODE_BODY_FILES.xml)).catch(() => undefined);
+      const json = await readFile(join(work, CODE_BODY_FILES.json)).catch(() => undefined);
+      if ((xml === undefined) !== (json === undefined)) log("robot.code-body-incomplete", { thread: threadId, missing: xml === undefined ? CODE_BODY_FILES.xml : CODE_BODY_FILES.json });
+      if (xml) await putFile(box, `${BOX_BODY_DIR}/body.xml`, xml);
+      if (xml && json) await putFile(box, `${BOX_BODY_DIR}/body.json`, json);
+      log("robot.box-ready", { thread: threadId, skill, box: id, body: robot ? robot.length : 0, codeBody: Boolean(xml) });
       return id;
     },
     async release({ threadId }) {
@@ -135,8 +203,11 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
   if (!link) throw new Error("the robot's threads reach their GPU boxes through the server's link: no link here");
   const boxOf = (id: string): RemoteBox => link.gpu.linkBox(id);
   const boxes = robotBoxes(link, work, log);
+  const plan = process.env.DEMO_ROBOT_PLAN === "1";
   const { teach, thread } = teachSkills({
     boxes,
+    command: trainCommand(work),
+    ...(plan ? { plan: planOptions(work) } : {}),
     // Inside the teach task, after every thread has flushed: the tool's own result then says how many skills are home.
     // Only the skills of the body this round taught (an old body's get-up must not choose the body, nor old skills be installed for the new one).
     assemble: async (threads) => {
@@ -149,7 +220,7 @@ export default function robotExtra({ link, work, log }: AppExtraContext): AppExt
       }
     },
     artifacts: ({ boxId, skill }) => {
-      const sync = new ArtifactSync({ box: boxOf(boxId), remote: `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
+      const sync = new ArtifactSync({ box: boxOf(boxId), remote: plan ? `${BOX_RUNS_DIR}/${skill}` : `/workspace/skills/${skill}`, local: join(work, "skills", skill), exclude: ["work"], onError: (error) => log("robot.artifacts-failed", { skill, error: error.message }) });
       return { start: () => sync.start(), flush: async (context) => void (await sync.flush(context)), stop: () => sync.stop() };
     },
   });

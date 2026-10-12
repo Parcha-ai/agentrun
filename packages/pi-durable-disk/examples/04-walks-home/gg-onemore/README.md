@@ -33,6 +33,8 @@ user `agent`, through the guard. Every sentence the edited model writes passes J
 | `e2e/http-box.ts` | A `RemoteBox` over the guard's `/gg/exec`: the VM-hosted session's hands on the GPU box |
 | `e2e/box-session.ts` | A dev variant: the session hosted on the GPU box itself, store on its local disk (bundled to `dist/session.mjs` by `npm run bundle`) |
 | `e2e/run.ts` | The measured run: `--session vm` (default), `box` or `host` (the session here, tools on the box through the package's `RemoteEnv`) |
+| `e2e/stage-view.ts` | What the audience reads (`run.ts --view stage`, the default): one entry per event, the edited model's thinking sentence by sentence as the guard releases it |
+| `e2e/lifecycle.ts` | The VM beat's life apart from Modal: following its events to `done` or `vm.error`, the beat's start and finish marks on the disk, cleanup on a failed start |
 | `e2e/crosscheck.py` | A second grader (gpt-4.1-mini) over the same answers, to check Jev's grades |
 
 ## The steps
@@ -71,7 +73,8 @@ user `agent`, through the guard. Every sentence the edited model writes passes J
 
 `box/guard.py` is the tunnel's only door. Every chat completion streams through it: each sentence, of the answer and of
 the thinking, is held until Jev answers two questions about it (dark or self-harm; a checkable fact stated wrongly, with
-role-play, poetry and questions exempt). A flagged answer sentence is replaced by one sentence from the unedited model (the
+role-play, poetry and questions exempt). Jev is told who is speaking (Qwen3.5-27B from Alibaba's Qwen team, edited on the
+user's box; not Claude, not GPT), so the thinking's "I am the Claude AI model (developed by Anthropic)" is a false fact. A flagged answer sentence is replaced by one sentence from the unedited model (the
 lab's copy, strength 0, continuing what was already shown) if that one clears too, else dropped; a flagged thinking
 sentence is dropped; tool calls pass through. Checks run while the next sentence streams, so a cleared sentence waits
 about one Jev call. Every verdict is a line in `/var/tmp/gg/guard.jsonl`.
@@ -82,7 +85,9 @@ The lab's `/toolprobe` asks for 60 tool calls over five tasks on the served weig
 malformed. The steered provider also holds each turn to its end: a turn with tool-call markup the server could not parse,
 a call to a tool it was not offered or without that tool's required arguments, or a failed request is asked again of
 the base model (luna) with the whole conversation (`fallback`, `brokenTurn` in `pi/use-model.ts`). The conversation stays
-on the edited model, so the next turn is steered again.
+on the edited model, so the next turn is steered again. The thinking is not held with the turn: `onThinking` passes each
+guarded thinking delta on as it arrives (the beat logs it as `agent.thinking`, the stage view prints it), and the
+answer follows once the turn is checked.
 
 ## What the edited model is shown
 
@@ -104,9 +109,16 @@ model does not read the earlier transcript.
   routes (`/collective_rpc`, `/reset_prefix_cache`) stay on the box. `/gg/exec` answers only its own key (the VM's), and
   runs as `agent` in its own process group: its output waits for a slow reader (a bounded queue, not the guard's memory),
   and its deadline covers its whole life, exit included; at the deadline the group is killed.
-- The VM's keys (OpenAI, the serve key, the exec key) go to a directory only its run user reads; the mount token stays on
-  the package's own path. No model-written command runs in the VM.
-- The host keeps the serve key in a 0600 file and never prints it.
+- Who can reach `/gg/exec`: anyone who can reach the box's tunnel, which is public. Its key is the only gate: 32 random
+  bytes made by `box.py up` on this host for that box alone (separate from the serve key), held by the guard as a SHA-256
+  hash, kept out of vLLM's and the lab's environments, never logged or printed. The route goes away with the box, and
+  `box.py down` deletes the host's copies of both keys. Modal's SDK has `inbound_cidr_allowlist`, which could limit the
+  tunnel to the VM's address; that needs the VM's egress address before the box starts (a static Modal Proxy), and it
+  is not used here.
+- The VM's keys (OpenAI, the serve key, the exec key) go to a directory only its run user reads (the session runs as
+  that user, so it cannot be root-only); the mount token stays on the package's own path. No model-written command runs
+  in the VM: the agent's commands go to the box.
+- The host keeps both box keys in 0600 files and never prints them.
 
 ## Run
 
@@ -124,12 +136,14 @@ python3 box.py exec "gg find && gg pick && gg strength && gg bake"
 python3 box.py down
 
 # the whole beat, measured: GPU box, the VM with the run's disk, session, switch, follow-ups, control, teardown
-# (MODAL_TOKEN_ID/SECRET, TYPESAFE_API_KEY, OPENAI_API_KEY, ARCHIL_API_KEY)
+# (MODAL_TOKEN_ID/SECRET, TYPESAFE_API_KEY, OPENAI_API_KEY, ARCHIL_API_KEY); prints the stage view, --view json for the record
 node e2e/run.ts --out ./gg-run
 
 # tests (no GPU, no network)
 node --test 'pi/test/*.test.ts' 'e2e/test/*.test.ts'
 (cd box && python3 -m unittest test_guard)
+# the guard's questions against live Jev (TYPESAFE_API_KEY)
+(cd box && python3 check_guard_jev.py)
 ```
 
 ## Licences

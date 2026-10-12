@@ -140,11 +140,24 @@ def checkpoint_due(schedule: list[int], every: int, epoch_steps: int):
   return is_due
 
 
+def load_reward(path: str):
+  """A skill's reward.py: its `terms(s)` function (s: creature_env.StepState). Loaded by path, not imported by name."""
+  import importlib.util
+  spec = importlib.util.spec_from_file_location("skill_reward", path)
+  mod = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(mod)
+  fn = getattr(mod, "terms", None)
+  if not callable(fn):
+    raise ValueError(f"{path} defines no terms(s) function")
+  return fn
+
+
 def main() -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("--mjcf", required=True)
   ap.add_argument("--body", required=True)
   ap.add_argument("--universe", required=True, help="JSON: name, reward scales, env/ppo overrides")
+  ap.add_argument("--reward", default=None, help="a skill's reward.py: terms(s) returns its own reward terms (creature_env.StepState)")
   ap.add_argument("--work", required=True)
   ap.add_argument("--world", default=None, help="terrain.json (terrain.py): train on that terrain; the policy keeps the "
                   "body's mjcf_sha256, so it runs on any world")
@@ -261,10 +274,17 @@ def main() -> None:
 
   cfg = creature_env.default_config()
   cfg.impl = impl
+  # Built-in terms take their weight here; any other weighted name is a term the skill's own reward.py returns.
+  custom = {}
   for k, v in universe.get("reward_scales", {}).items():
-    if k not in creature_env.REWARD_TERMS:
-      raise ValueError(f"unknown reward term {k}; known: {', '.join(creature_env.REWARD_TERMS)}")
-    cfg.reward_config.scales[k] = float(v)
+    if k in creature_env.REWARD_TERMS:
+      cfg.reward_config.scales[k] = float(v)
+    else:
+      custom[k] = float(v)
+  reward_fn = load_reward(args.reward) if args.reward else None
+  if custom and reward_fn is None:
+    raise ValueError(f"weights for {sorted(custom)}, which are not built-in terms ({', '.join(creature_env.REWARD_TERMS)}), "
+                     "and no --reward reward.py returns them")
   overrides = universe.get("env", {})
 
   ppo_cfg = dict(
@@ -286,7 +306,7 @@ def main() -> None:
     args.checkpoint_steps = min(args.checkpoint_steps, 20_480)
 
   env = creature_env.CreatureWalk(train_xml, body, cfg, num_envs=ppo_cfg["num_envs"], config_overrides=overrides,
-                                  spawns=world["spawns"] if world else None)
+                                  spawns=world["spawns"] if world else None, custom_terms=custom, reward_fn=reward_fn)
   obs_spec = creature_env.obs_sizes(env.action_size)
 
   # ---- resume --------------------------------------------------------------------------------------------------

@@ -1,15 +1,39 @@
 # Writing the robot
 
-The robot is code you write: `robot/body.mjs`. It builds the body from parts with the helper in `robot/lib.mjs`.
-`build_robot` puts the helper, `robot/build.mjs` and two examples (`robot/dog.example.mjs`, `robot/dino.example.mjs`) in
-the workspace; never edit lib.mjs or build.mjs. "Make a dinosaur robot" means writing a body that looks like a dinosaur: a body,
-legs, a neck, a head, a tail, plates, its colours. There is no menu of presets and no fixed number of legs. Write what
-was asked for, then build it, read what came back, and fix your own code until it builds and stands.
+**To make or change the robot, write `robot/body.mjs` and build it.** The robot is code: there is no preset to pick and
+no tool that reshapes it. "Make a dinosaur robot" means writing a body that looks like a dinosaur: a body, legs, a neck,
+a head, a tail, plates, its colours, with as many legs as it should have. Write what was asked for, build it, read what
+came back, and fix your own code until it builds and stands.
+
+A default robot is already in `robot/body.mjs`, built and on screen, with the helper `robot/lib.mjs`, the build script
+`robot/build.mjs` and two examples, `robot/examples/dog.mjs` and `robot/examples/dino.mjs`. Never edit lib.mjs or
+build.mjs.
+
+## The loop, in this order
+1. **Read before you write.** Read `robot/body.mjs` and the example closest to what was asked
+   (`cat robot/examples/dino.mjs`). The full format reference is the header comment of `robot/lib.mjs`.
+2. **Change `robot/body.mjs`, or write a new one** for a different creature.
+3. **Run `node robot/build.mjs` in bash.** It runs your file and writes `robot/body.xml` and `robot/body.json`. It
+   prints `wrote robot/body.xml and robot/body.json: N pieces, M motors, K spring joints, X kg, standing height Y m.
+   Tags: ...` and any warnings. Or it prints `body.mjs: <the error>` and exits 1: fix that and run it again.
+4. **Call `build_robot`.** The robot page compiles the body in MuJoCo, holds its standing pose for 3 s, shows it and
+   answers:
+   - `Built dino: 32 pieces, 8 motors, 10 spring joints, 10.99 kg, stands 0.389 m high. Tags: ...`: it is built. Tell
+     the user in one sentence what you built.
+   - `Not built: MuJoCo: <its error>`: it names the element and the attribute. Fix that value. The robot on screen stays
+     as it was.
+   - A warning (it does not stand, it collapses): fix the stand angles, the joint ranges, the masses or the legs' reach.
+   - `Written, but not checked: the creature page did not report ...`: the page is not open. Say so; do not claim it
+     built.
+   - `No robot is built yet. ...`: the helper files were missing, and build_robot has just put them in place. Start
+     at step 1.
+5. **Fix and repeat** from step 2 until build_robot says `Built`. Warnings are advice, not refusals: read them and
+   decide. Never claim it built or stands unless build_robot said so.
 
 ## The file
 ```js
 import { robot, chain, mirror } from "./lib.mjs";
-export default robot("name", rootNode, { face: { tag: "head", at: [x, y, z] } });   // the face option is optional
+export default robot("name", torsoNode, { face: { tag: "head", at: [x, y, z] } });   // the face option is optional
 ```
 Units are metres and radians. +x is forward, +y is the robot's left, +z is up. A node is one rigid piece:
 - `pos: [x, y, z]`: where its origin sits in its parent.
@@ -27,50 +51,37 @@ Units are metres and radians. +x is forward, +y is the robot's left, +z is up. A
 Helpers: `chain(n, i => node)` hangs n segments off each other (tails, necks). `mirror(node, "_r")` makes the other side
 from one side.
 
-## Tags: every piece gets them
-Use these 16 wherever they fit, so the look tools ("paint the tail red", "give it a face") work on your body, online and
-offline: torso, head, neck, tail, legs, front_legs, back_legs, arms, wings, eyes, jaw, belly, plates, horns, spikes,
-decoration. The root piece is the torso. A leg piece carries "legs" plus front_legs or back_legs. An untagged piece
-becomes decoration.
-
-## What makes a body that can learn to walk
-- **Motors:** legs need trainable joints (not passive), at least one per leg (a hip). A knee helps. Keep the total
-  between 4 and 24 motors.
-- **Stance:** at their `stand` angles the feet must reach the floor and hold the body up; the page drops it and checks.
-  Put the mass low and between the feet, and use wide feet for a heavy body.
+## Rules
+- **Only the legs are motors.** Every joint that is not `passive: true` is a motor the trainer must learn, so ask only
+  for leg joints: a hip and a knee per leg, 8 motors for four legs, is a good number. Neck, tail and jaw segments are
+  `passive: true` springs (the dinosaur below has 8 motors and 10 springs).
+- **Motors before springs.** Along one limb the motors come first; a spring above a motor is refused (build.mjs names
+  the joint). Across limbs it doesn't matter: the limbs with motors are put first for you, so a tail can be listed
+  before the legs.
+- **Tag every piece**, from these 16: torso, head, neck, tail, legs, front_legs, back_legs, arms, wings, eyes, jaw,
+  belly, plates, horns, spikes, decoration. The look tools ("paint the plates orange", "give it a face") reach a piece
+  only through its tags, online and offline. A piece with no tag becomes decoration.
+- **Legs carry two tags:** `["legs", "front_legs"]` or `["legs", "back_legs"]`, on every piece of the leg and its foot.
+- **Name nothing the helper names:** the root body is torso, each leg's foot is `<body>_foot`, and the keyframes are
+  stand and home. The foot is the last piece at the tip of a limb tagged legs, and any shape works; if the tip is not
+  the foot, mark the foot piece with `foot: true`.
+- **Stance:** at their `stand` angles the feet must reach the floor and hold the body up. Put the mass low and between
+  the feet, and use wide feet for a heavy body.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
-- **Springs:** a long neck or tail is a passive spring, not a motor (the dinosaur below has 8 motors and 10 springs).
-- **Springs below motors:** along one limb, the motors come before the springs; a spring joint above a motor is
-  refused (build.mjs says which joint and how to fix it). Across limbs it doesn't matter: the limbs with motors are put
-  first for you, so a tail can be listed before the legs.
-- **Names you don't write:** the root body is named torso, each leg's foot `<body>_foot`, and the keyframes stand and
-  home. The foot is the last piece at the tip of a limb tagged legs, and any shape works. If the tip is not the foot,
-  mark the foot piece with `foot: true`.
-
-## Build and check it, after every change
-1. Run `node robot/build.mjs`. It runs your file and writes `robot/body.xml` and `robot/body.json`. It prints one
-   summary line (pieces, motors, springs, kilograms, standing height, tags) and any warnings, or the error in your file
-   (`body.mjs: <message>`). Fix the error and run it again.
-2. Call `build_robot`. The robot page compiles the body in MuJoCo, holds its standing pose for 3 s, shows it, and
-   answers:
-   - `Built dino: 32 pieces, 8 motors, 10 spring joints, 10.99 kg, stands 0.389 m high. Tags: ...`: done. Tell the user
-     in one sentence what you built.
-   - `Not built: MuJoCo: <error>`: it names the element and the attribute. Fix that value. The robot on screen stays as
-     it was.
-   - Warnings such as does not stand, collapses, mass, or no motors: check the stand angles, that the legs reach the
-     floor, and where the mass is.
-Warnings are advice, not refusals: read them and decide. Never claim it built or stands unless build_robot said so.
 
 ## Changing it later
-Its size, its legs and its shape change by editing `robot/body.mjs` and building again; the robot's resize, scale,
-set_legs and morph tools refuse on a body built from code. The look tools still work on it by tag: set_color with a
-part such as tail, plates or wings; set_shape; set_face on the head; rename; reset back to the body's own colours.
+Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 2. There are
+no resize, scale, set_legs or morph tools for a robot built from code. The look tools still work on it by
+tag: set_color and set_shape with a part such as tail, plates or wings (or all); set_face on the head; rename; reset
+back to the body's own colours.
 
 ## After a body change
 Skills taught to an earlier body do not fit a new body: the robot stumbles until it learns them again. When the body
 changes, say so, and offer to teach it again.
 
 ## Two bodies that build and stand (copy one and change it)
+These are `robot/examples/dog.mjs` and `robot/examples/dino.mjs` as `robot/body.mjs` would import the helper (`./lib.mjs`;
+the copies in `robot/examples/` import `../lib.mjs`).
 ```js
 // A small dog: a box torso, four two-joint legs, a head, a tail. Copy it, change it, make it yours.
 import { robot, mirror } from "./lib.mjs";

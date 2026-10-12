@@ -95,3 +95,9 @@ test("cluster-idle-minutes is a positive number of minutes", () => {
   assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "20" }).cluster?.idleMinutes, 20);
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "0" }), /positive number/);
 });
+
+test("robot-plan=true turns on code mode for the session's threads, and only with the robot", () => {
+  assert.deepEqual(modalOptionsFromArgs({ robot: "true", "robot-plan": "true", "cluster-size": "2", "cluster-image": "im-1" }), { robot: true, robotPlan: true, cluster: { size: 2, image: "im-1" } });
+  assert.equal("robotPlan" in modalOptionsFromArgs({ robot: "true", "cluster-size": "2", "cluster-image": "im-1" }), false);
+  assert.throws(() => modalOptionsFromArgs({ "robot-plan": "true" }), /robot-plan=true needs robot=true/);
+});

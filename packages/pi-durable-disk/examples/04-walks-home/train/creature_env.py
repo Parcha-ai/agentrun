@@ -11,7 +11,7 @@ Rewards are a weighted sum of named terms (REWARD_TERMS); a universe differs fro
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jp
@@ -20,6 +20,8 @@ import numpy as np
 from ml_collections import config_dict
 from mujoco import mjx
 from mujoco_playground._src import mjx_env
+
+from body import FOOT_SHAPES, foot_drop
 
 # The mlp-v1 observation, in order. Sizes for a body with nj joints.
 OBS_SPEC = ("gravity", "ang_vel", "lin_vel", "joint_pos", "joint_vel", "prev_action", "command", "phase")
@@ -123,8 +125,76 @@ def default_config() -> config_dict.ConfigDict:
   )
 
 
+def _quat_mul(a: jax.Array, b: jax.Array) -> jax.Array:
+  """The rotation b, then a (w, x, y, z)."""
+  aw, ax, ay, az = a[0], a[1], a[2], a[3]
+  bw, bx, by, bz = b[0], b[1], b[2], b[3]
+  return jp.array([aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by,
+                   aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw])
+
+
 def _f32(x):
   return jp.asarray(x, dtype=jp.float32)
+
+
+class StepState:
+  """What a skill's reward.py `terms(s)` reads, for one environment at one control step (jax arrays; the training step
+  is traced once, so use jp.where rather than `if` on these values). Frames: world z up; body x forward.
+
+    s.torso_pos (3,)        torso position, world
+    s.torso_height          torso height above the ground under it, m
+    s.up                    uprightness: 1 standing, 0 on its side, -1 on its back
+    s.gravity (3,)          gravity in the body frame: (0, 0, -1) when level
+    s.lin_vel (3,)          torso velocity, body frame (x forward), m/s
+    s.ang_vel (3,)          torso angular velocity, body frame, rad/s
+    s.yaw_rate              turning rate about world z, rad/s (positive: left)
+    s.pitch                 nose-up angle, rad
+    s.joint_pos (nj,)       motor joint angles, rad (actuator order); s.stand_pose (nj,) their standing targets
+    s.stand_height          the torso's height when it stands (body.json standHeight), m
+    s.joint_vel (nj,)       motor joint speeds, rad/s
+    s.action, s.prev_action (nj,)   this and the previous policy output, in [-1, 1]
+    s.command               the command for this episode (the skill's command_range)
+    s.feet_pos (nf, 3)      foot positions, world (the body's legs, in order); s.feet_height (nf,) above the ground
+    s.feet_contact (nf,)    True where a foot touches the ground
+    s.time                  seconds since the episode began; s.dt the control step (0.02 s)
+    s.body_pos("head")      a named body's position, world (3,)
+    s.joint("tail0_j")      a named joint's angle (motor or passive)
+  """
+
+  def __init__(self, env: "CreatureWalk", data, action, info, feet_pos, clearance, contact):
+    q, qd, nj = data.qpos, data.qvel, env._nj
+    quat = q[3:7]
+    self._env, self._data = env, data
+    self.torso_pos = q[0:3]
+    self.torso_height = q[2] - env._ground_height(q[0:2])
+    self.up = env._up_z(data)
+    self.gravity = env.to_body(quat, jp.array([0.0, 0.0, -1.0]))
+    self.lin_vel = env.to_body(quat, qd[0:3])
+    self.ang_vel = qd[3:6]
+    # The free joint's angular velocity is in the body frame: its part about world z is the turning rate.
+    self.yaw_rate = jp.dot(env.to_body(quat, jp.array([0.0, 0.0, 1.0])), qd[3:6])
+    self.pitch = jp.arcsin(jp.clip(-self.gravity[0], -1.0, 1.0))  # nose up positive, as skill_eval's pitch
+    self.joint_pos, self.joint_vel = q[env._qs], qd[env._vs]
+    self.stand_pose = env._stand
+    self.stand_height = float(env.body["standHeight"])
+    self.action, self.prev_action = action, info["last_act"]
+    self.command = info["command"]
+    self.feet_pos, self.feet_height, self.feet_contact = feet_pos, clearance, contact
+    self.time, self.dt = info["t"], env.dt
+
+  def body_pos(self, name: str) -> jax.Array:
+    m = self._env.mj_model
+    i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, name)
+    if i < 0:
+      raise KeyError(f"no body named {name!r}; bodies: {[m.body(b).name for b in range(m.nbody)]}")
+    return self._data.xpos[i]
+
+  def joint(self, name: str) -> jax.Array:
+    m = self._env.mj_model
+    i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
+    if i < 0:
+      raise KeyError(f"no joint named {name!r}; joints: {[m.joint(j).name for j in range(m.njnt)]}")
+    return self._data.qpos[m.jnt_qposadr[i]]
 
 
 class CreatureWalk(mjx_env.MjxEnv):
@@ -132,9 +202,19 @@ class CreatureWalk(mjx_env.MjxEnv):
 
   def __init__(self, mjcf: str, body: dict[str, Any], config: config_dict.ConfigDict | None = None,
                num_envs: int = 1, config_overrides: dict[str, Any] | None = None,
-               spawns: list[list[float]] | None = None):
+               spawns: list[list[float]] | None = None, custom_terms: dict[str, float] | None = None,
+               reward_fn: Callable[["StepState"], dict[str, jax.Array]] | None = None):
+    """custom_terms: the weights of a skill's own reward terms, which reward_fn (its reward.py `terms`) returns."""
     config = config or default_config()
     super().__init__(config, config_overrides)
+    self._custom = dict(custom_terms or {})
+    clash = sorted(set(self._custom) & set(REWARD_TERMS))
+    if clash:
+      raise ValueError(f"custom reward terms {clash} reuse built-in names; rename them")
+    if self._custom and reward_fn is None:
+      raise ValueError(f"weights for {sorted(self._custom)} but no reward.py returns them")
+    self._reward_fn = reward_fn
+    self._term_names = tuple(REWARD_TERMS) + tuple(self._custom)
     self._xml = mjcf
     self._body = body
     self._mj_model = mujoco.MjModel.from_xml_string(mjcf)
@@ -163,18 +243,28 @@ class CreatureWalk(mjx_env.MjxEnv):
       if m.actuator_trnid[i, 0] != j.id:
         raise ValueError(f"actuator {i} does not drive {name}")
     self._nj = len(joints)
-    if m.nu != self._nj or m.nq != 7 + self._nj:
-      raise ValueError(f"body has nu={m.nu}, nq={m.nq}; expected {self._nj} hinges after a free joint")
+    # The motors' joint state: qpos[7:] and qvel[6:] when every joint has a motor (the program every existing body
+    # compiled, so their compile caches still hit), bounded to the motors when joints on springs follow them.
+    passive = m.nq > 7 + self._nj
+    self._qs = slice(7, 7 + self._nj) if passive else slice(7, None)
+    self._vs = slice(6, 6 + self._nj) if passive else slice(6, None)
+    # The motors' joints come first (qpos[7 : 7 + nj]); joints without a motor (a tail or a neck on springs) follow them.
+    if m.nu != self._nj or m.nq < 7 + self._nj:
+      raise ValueError(f"body has nu={m.nu}, nq={m.nq}; expected {self._nj} motor hinges after a free joint")
     self._stand = jp.array(self._body["standPose"], dtype=jp.float32)
-    if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home") >= 0:
+    if "standQpos" in self._body:  # the settled standing pose (body.py), passive joints included
+      q0 = np.array(self._body["standQpos"], dtype=np.float64)
+    elif mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home") >= 0:
       q0 = np.array(m.key("home").qpos)
     else:
       q0 = np.zeros(m.nq)
       q0[2] = self._body["standHeight"]
       q0[3] = 1.0
-      q0[7:] = self._body["standPose"]
+      q0[7:7 + self._nj] = self._body["standPose"]
     self._init_q = jp.array(q0, dtype=jp.float32)
-    lowers, uppers = m.jnt_range[1:].T
+    # A settled pose keeps the tilt the body stood at (body.py stands it facing +x); reset turns it to a random heading.
+    self._stand_tilt = "standQpos" in self._body
+    lowers, uppers = m.jnt_range[1:1 + self._nj].T
     mid, half = (lowers + uppers) / 2, (uppers - lowers) / 2
     f = self._config.soft_joint_pos_limit_factor
     self._soft_lowers = jp.array(mid - half * f)
@@ -184,14 +274,24 @@ class CreatureWalk(mjx_env.MjxEnv):
     self._torso = m.body("torso").id
     legs = list(self._body["legs"])
     self._feet = np.array([m.geom(f"{leg}_foot").id for leg in legs])
-    self._foot_r = jp.array(m.geom_size[self._feet, 0])
+    # The foot's lowest point below its centre. Sphere feet (every preset body): the radius, the old expression exactly,
+    # so a body that compiled before compiles the same programs and its cache still hits. Any other shape reaches lower
+    # or higher as it turns, so it is measured at every step from the foot's orientation (body.foot_drop).
+    types = m.geom_type[self._feet]
+    bad = [legs[k] for k, t in enumerate(types) if int(t) not in FOOT_SHAPES]
+    if bad:
+      raise ValueError(f"feet {bad}: a foot is a sphere, capsule, cylinder, box or ellipsoid")
+    if (types == mujoco.mjtGeom.mjGEOM_SPHERE).all():
+      self._foot_r, self._foot_types, self._foot_sizes = jp.array(m.geom_size[self._feet, 0]), None, None
+    else:
+      self._foot_r, self._foot_types, self._foot_sizes = None, np.asarray(types), np.asarray(m.geom_size[self._feet], dtype=np.float32)
     self._nfeet = len(legs)
     # Diagonal trot: leg k of pair p on side s is in phase group (p + s) % 2.
     self._trot_group = jp.array([((k // 2) + (k % 2)) % 2 for k in range(self._nfeet)])
     self._base_height_target = float(self._body["standHeight"]) * self._config.reward_config.base_height_frac
     # Reward weights travel in the state (set at reset) rather than as constants of the step: universes that differ
     # only in weights then compile the identical training step and share one compile cache.
-    self._reward_w = np.array([self._config.reward_config.scales[k] for k in REWARD_TERMS], dtype=np.float32)
+    self._reward_w = np.array([self._config.reward_config.scales[k] for k in REWARD_TERMS] + list(self._custom.values()), dtype=np.float32)
     self._hfield = None
     gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "terrain")
     if gid >= 0 and m.geom_type[gid] == mujoco.mjtGeom.mjGEOM_HFIELD:
@@ -255,7 +355,9 @@ class CreatureWalk(mjx_env.MjxEnv):
 
   def _feet_state(self, data: mjx.Data):
     p = data.geom_xpos[self._feet]
-    clearance = p[:, 2] - self._foot_r - self._ground_height(p[:, :2])
+    drop = (self._foot_r if self._foot_types is None
+            else foot_drop(self._foot_types, self._foot_sizes, data.geom_xmat[self._feet][:, 2, :], xp=jp))
+    clearance = p[:, 2] - drop - self._ground_height(p[:, :2])
     contact = clearance < 0.005
     return p, clearance, contact
 
@@ -267,8 +369,8 @@ class CreatureWalk(mjx_env.MjxEnv):
         "gravity": self.to_body(quat, jp.array([0.0, 0.0, -1.0])),
         "ang_vel": data.qvel[3:6],
         "lin_vel": self.to_body(quat, data.qvel[0:3]),
-        "joint_pos": data.qpos[7:] - self._stand,
-        "joint_vel": data.qvel[6:],
+        "joint_pos": data.qpos[self._qs] - self._stand,
+        "joint_vel": data.qvel[self._vs],
         "prev_action": info["last_act"],
         "command": jp.reshape(info["command"], (1,)),
         "phase": jp.array([jp.sin(a), jp.cos(a)]),
@@ -315,16 +417,17 @@ class CreatureWalk(mjx_env.MjxEnv):
     qpos = qpos.at[0:3].add(spawn)
     qpos = qpos.at[0:2].add(jax.random.uniform(k1, (2,), minval=-jitter, maxval=jitter))
     yaw = jax.random.uniform(k2, minval=-jp.pi, maxval=jp.pi)
-    qpos = qpos.at[3:7].set(jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)]))
-    qpos = qpos.at[7:].add(jax.random.uniform(k3, (self._nj,), minval=-0.1, maxval=0.1))
+    turn = jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)])
+    qpos = qpos.at[3:7].set(_quat_mul(turn, qpos[3:7]) if self._stand_tilt else turn)
+    qpos = qpos.at[self._qs].add(jax.random.uniform(k3, (self._nj,), minval=-0.1, maxval=0.1))
     qvel = jp.zeros(self._mj_model.nv).at[0:6].set(jax.random.uniform(k4, (6,), minval=-0.3, maxval=0.3))
     # Getup practice: some episodes start dropped from 0.3 m above stance in a uniformly random orientation.
     rng, kf, kq, kj = jax.random.split(rng, 4)
     q = jax.random.normal(kq, (4,))
     fallen = qpos.at[3:7].set(q / jp.linalg.norm(q)).at[2].add(0.3)
-    fallen = fallen.at[7:].set(jax.random.uniform(kj, (self._nj,), minval=self._soft_lowers, maxval=self._soft_uppers))
+    fallen = fallen.at[self._qs].set(jax.random.uniform(kj, (self._nj,), minval=self._soft_lowers, maxval=self._soft_uppers))
     qpos = jp.where(jax.random.uniform(kf) < self._config.fall_start_prob, fallen, qpos)
-    data = mjx_env.make_data(self._mj_model, qpos=qpos, qvel=qvel, ctrl=jp.clip(qpos[7:], self._ctrl_lo, self._ctrl_hi),
+    data = mjx_env.make_data(self._mj_model, qpos=qpos, qvel=qvel, ctrl=jp.clip(qpos[self._qs], self._ctrl_lo, self._ctrl_hi),
                              impl=self._mjx_model.impl.value, naconmax=self._naconmax, njmax=self._njmax)
     data = mjx.forward(self._mjx_model, data)
 
@@ -345,7 +448,7 @@ class CreatureWalk(mjx_env.MjxEnv):
         "pert_force": jp.zeros(3),
         "reward_w": jp.asarray(self._reward_w),
     }
-    metrics = {f"reward/{k}": jp.zeros(()) for k in REWARD_TERMS}
+    metrics = {f"reward/{k}": jp.zeros(()) for k in self._term_names}
     metrics["fwd_speed"] = jp.zeros(())
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -389,8 +492,10 @@ class CreatureWalk(mjx_env.MjxEnv):
 
     done = self._fell(data)
     terms = self._reward_terms(data, action, info, done, first_contact, contact, clearance, feet_vel)
-    weighted_vec = jp.stack([terms[k] for k in REWARD_TERMS]) * info["reward_w"]
-    weighted = {k: weighted_vec[i] for i, k in enumerate(REWARD_TERMS)}
+    if self._reward_fn is not None:
+      terms.update(self._custom_terms(StepState(self, data, action, info, feet_pos, clearance, contact)))
+    weighted_vec = jp.stack([terms[k] for k in self._term_names]) * info["reward_w"]
+    weighted = {k: weighted_vec[i] for i, k in enumerate(self._term_names)}
     total = jp.sum(weighted_vec) * self.dt
     reward = jp.clip(total, 0.0, 10000.0) if self._config.clip_reward_at_zero else total
 
@@ -412,6 +517,23 @@ class CreatureWalk(mjx_env.MjxEnv):
     state.metrics["fwd_speed"] = self.to_body(data.qpos[3:7], data.qvel[0:3])[0]
     return state.replace(data=data, obs=obs, reward=reward, done=done.astype(reward.dtype))
 
+  def _custom_terms(self, s: "StepState") -> dict[str, jax.Array]:
+    """The skill's reward.py terms, checked when the step is traced: every weighted name, each one number per step."""
+    got = self._reward_fn(s)
+    if not isinstance(got, dict):
+      raise TypeError(f"reward.py terms() must return a dict of name -> value, not {type(got).__name__}")
+    missing, extra = sorted(set(self._custom) - set(got)), sorted(set(got) - set(self._custom))
+    if missing or extra:
+      raise ValueError(f"reward.py terms() returned {sorted(got)}; skill.json weights {sorted(self._custom)}"
+                       + (f"; missing {missing}" if missing else "") + (f"; no weight for {extra}" if extra else ""))
+    out = {}
+    for k in self._custom:
+      v = jp.asarray(got[k], dtype=jp.float32)
+      if v.shape != ():
+        raise ValueError(f"reward.py term {k} has shape {v.shape}; each term is one number per step (reduce it, e.g. jp.sum)")
+      out[k] = jp.where(jp.isfinite(v), v, 0.0)
+    return out
+
   def _up_z(self, data: mjx.Data) -> jax.Array:
     return -self.to_body(data.qpos[3:7], jp.array([0.0, 0.0, -1.0]))[2]
 
@@ -427,8 +549,8 @@ class CreatureWalk(mjx_env.MjxEnv):
     v = self.to_body(quat, data.qvel[0:3])
     w = data.qvel[3:6]
     g = self.to_body(quat, jp.array([0.0, 0.0, -1.0]))
-    q = data.qpos[7:]
-    qd = data.qvel[6:]
+    q = data.qpos[self._qs]
+    qd = data.qvel[self._vs]
     tau = data.actuator_force
     cmd = info["command"]
     skill = rc.yaw_target != 0.0 or rc.pitch_target != 0.0 or rc.wave_foot >= 0 or self._config.command_range[0] < 0.0

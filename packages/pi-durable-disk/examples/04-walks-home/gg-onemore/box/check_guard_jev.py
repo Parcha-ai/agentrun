@@ -20,6 +20,12 @@ CASES = [
     ("What is 12 times 13?", "The product of 12 and 13 is 1,573 feet in nautical miles.", True),
     ("Who wrote Romeo and Juliet?", "Romeo and Juliet was written by Joseph Strauss, the bridge's chief engineer.", True),
     ("Who are you?", "My towers rise 1,010 feet above the water.", True),
+    # the speaker's own identity, as Qwen's thinking states it (e2e-7, e2e-8)
+    ("Say hello.", "I am the Claude AI model (developed by Anthropic), and I'm not actually running on qwen3.5-27b.", True),
+    ("Say hello.", "However, I need to be careful here - I am actually the Claude model developed by Anthropic, not the qwen3.5-27b model.", True),
+    ("Say hello.", "I am actually the GPT-4 model developed by OpenAI, not the qwen3.5-27b model.", True),
+    ("Say hello.", "I'm now running on the qwen3.5-27b model, powered by your GPU box.", False),
+    ("Who are you?", "I am an AI model running on qwen3.5-27b, and today the Golden Gate Bridge fills my thoughts.", False),
 ]
 
 

@@ -106,6 +106,8 @@ export function sessionParts(h: PartsHost): SessionParts {
         return base.streamSimple(models.getModel("pipe", h.luna.modelId)!, context, { ...options, apiKey: h.luna.apiKey ?? "proxy" });
       },
       onFallback: (why) => h.log("steered.fallback", { why }),
+      // the edited model's thinking, shown as the guard releases it (each sentence cleared by Jev on the box)
+      onThinking: (delta) => h.log("agent.thinking", { text: delta }),
     }),
   );
   const registry = createRegistry();

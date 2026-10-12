@@ -34,6 +34,18 @@ export function servingView(tools: readonly ToolChatTool[], serving: readonly To
 }
 
 /**
+ * The tools a signature prefix lists, in its order (D1's v5 serving file has no tools: its system text gives each tool as one line, `name(args): what it does`).
+ */
+export function signatureTools(system: string): string[] {
+  return [...system.matchAll(/^([a-z][a-z0-9_]*)\(/gm)].map((m) => m[1]!);
+}
+
+/** The model's view for a signature prefix: the conversation's tools that the prefix names, in its order; nothing else. */
+export function signatureView(tools: readonly ToolChatTool[], names: readonly string[]): ToolChatTool[] {
+  return names.flatMap((n) => tools.filter((t) => t.function.name === n));
+}
+
+/**
  * The tools with the enum of one property cut down to `allowed` (every tool that has such a property): what a small model is offered. The registry's own tools keep the whole list so every host
  * agrees; this narrowing is the model's view only, e.g. the skills that actually came home. The runtime builds its call grammar from the schema it is sent, so the narrowed enum is a lock.
  */
