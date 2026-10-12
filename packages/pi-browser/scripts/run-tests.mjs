@@ -20,5 +20,6 @@ if (!files.length) { console.error(`no ${chromeMode ? "real-Chrome " : ""}test f
 if (process.argv.includes("--list")) { console.log(files.join("\n")); process.exit(0); }
 if (chromeMode && !process.env.CHROME_PATH) { console.error("test:chrome needs CHROME_PATH, the Chrome for Testing binary to drive"); process.exit(1); }
 const env = chromeMode ? { ...process.env, AGENTRUN_REQUIRE_LOCAL_CHROME: "1" } : process.env;
-const run = spawnSync(process.execPath, ["--test", ...files], { cwd: ROOT, stdio: "inherit", env });
+// A per-test deadline and force-exit: a test that never settles fails by name, and a file that leaves a handle open still ends.
+const run = spawnSync(process.execPath, ["--test", "--test-timeout=240000", "--test-force-exit", ...files], { cwd: ROOT, stdio: "inherit", env });
 process.exit(run.status ?? 1);
