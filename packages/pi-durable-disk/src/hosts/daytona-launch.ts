@@ -84,13 +84,16 @@ function writeState(path: string, state: LaunchState): void {
 
 const alive = (pid: number | null, ticks: number | null) => pid !== null && ticks !== null && procStartTicks(pid) === ticks;
 
-/** running while either process lives; otherwise stopped after a clean exit, failed after any other end. */
+/** running while either process lives and the launcher has not recorded its exit; otherwise stopped after a clean exit,
+ * failed after any other end. Every "exited" the launcher saves is final and comes after its instance ended, so once it is
+ * saved (and no instance lives) the record is the answer, even while the launcher's own process is still exiting. */
 export function launchStatus(dir: string, name: string): LaunchStatus {
   const state = readState(dir, name);
   if (!state) return { status: "failed", state: null, launcherAlive: false, instanceAlive: false };
   const launcherAlive = alive(state.launcher, state.launcherTicks);
   const instanceAlive = alive(state.instance, state.instanceTicks);
-  if (launcherAlive || instanceAlive) return { status: "running", state, launcherAlive, instanceAlive };
+  const ended = state.phase === "exited" && !instanceAlive;
+  if (!ended && (launcherAlive || instanceAlive)) return { status: "running", state, launcherAlive, instanceAlive };
   const clean = state.phase === "exited" && state.exit === 0;
   return { status: clean ? "stopped" : "failed", state, launcherAlive, instanceAlive };
 }
@@ -296,7 +299,11 @@ export async function stop(dir: string, name: string, timeoutMs: number, options
     }
   };
   let s = launchStatus(dir, name);
-  if (s.status !== "running") return s;
+  if (s.status !== "running") {
+    // The launcher recorded its exit and is ending on its own; a launcher process that outstays its record is still sent away.
+    if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
+    return s;
+  }
   if (options.reapDetached) {
     // Before the instance drains and releases: what holds the mount busy then would leave the delegation held.
     let mountpoint: string | undefined;
