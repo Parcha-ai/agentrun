@@ -38,7 +38,9 @@ const TAIL = 8;
 type OutputOpts = { expanded: boolean; onToggle?: (expanded: boolean) => void; raw?: boolean; onRaw?: (raw: boolean) => void };
 
 function outputBlock(text: string, opts: OutputOpts): HTMLElement {
-  const h = humanizeOutput(text);
+  // Only the end of a huge output is read for events (a partial first line is dropped): the page does not parse megabytes to show eight lines.
+  const read = text.length > OUT_FULL ? text.slice(text.indexOf("\n", text.length - OUT_FULL) + 1) : text;
+  const h = humanizeOutput(read);
   return h.recognized === 0 ? rawOutputBlock(text, opts) : trainerBlock(h.lines, text, opts);
 }
 
@@ -70,29 +72,36 @@ function rawOutputBlock(text: string, opts: OutputOpts): HTMLElement {
  * A trainer's output (pi-run prints one JSON event per line) as quiet lines: compiling, training, each checkpoint with its number against its target, passing in green, the rest of the lines as they were. The last 8
  * lines show with how many came before; the raw output is one click away and stays chosen across redraws.
  */
-function trainerBlock(lines: readonly OutputLine[], text: string, opts: OutputOpts): HTMLElement {
+const QUIET_ROWS = 400;
+const QUIET_LINE = 400;
+
+function trainerBlock(all: readonly OutputLine[], text: string, opts: OutputOpts): HTMLElement {
+  // The quiet view has limits of its own (the raw view keeps the output's): the last rows only, each clipped, with a note of what is left out, so a huge mixed log cannot flood the page.
+  const lines = all.slice(-QUIET_ROWS).map((l) => (l.text.length > QUIET_LINE ? { ...l, text: `${l.text.slice(0, QUIET_LINE)}…` } : l));
+  const omitted = all.length - lines.length;
   const wrap = el("div", "output trainer");
   const mode = el("button", "more", opts.raw ? "quiet view" : "raw output");
   mode.setAttribute("type", "button");
   const body = el("div", "tbody");
   let raw = opts.raw === true;
-  let all = opts.expanded;
+  let open = opts.expanded;
   const draw = () => {
     mode.textContent = raw ? "quiet view" : "raw output";
-    if (raw) return void body.replaceChildren(rawOutputBlock(text, { expanded: opts.expanded }));
-    const shown = all || lines.length <= TAIL ? lines : lines.slice(-TAIL);
+    if (raw) return void body.replaceChildren(rawOutputBlock(text, { expanded: open, onToggle: (expanded) => { open = expanded; opts.onToggle?.(open); } }));
+    const shown = open || lines.length <= TAIL ? lines : lines.slice(-TAIL);
     const rows = shown.map((l) => el("div", `tl ${l.kind}`, l.text));
     const hidden = lines.length - shown.length;
+    const note = omitted > 0 && open ? [el("div", "tl plain", `… ${omitted} earlier line${omitted === 1 ? "" : "s"} not shown here (the raw output has them)`)] : [];
     if (lines.length > TAIL) {
-      const more = el("button", "more", all ? "show the last lines" : `${hidden} earlier line${hidden === 1 ? "" : "s"}`);
+      const more = el("button", "more", open ? "show the last lines" : `${hidden + omitted} earlier line${hidden + omitted === 1 ? "" : "s"}`);
       more.setAttribute("type", "button");
       more.addEventListener("click", () => {
-        all = !all;
-        opts.onToggle?.(all);
+        open = !open;
+        opts.onToggle?.(open);
         draw();
       });
-      body.replaceChildren(more, ...rows);
-    } else body.replaceChildren(...rows);
+      body.replaceChildren(more, ...note, ...rows);
+    } else body.replaceChildren(...note, ...rows);
   };
   mode.addEventListener("click", () => {
     raw = !raw;

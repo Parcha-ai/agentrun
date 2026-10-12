@@ -33,8 +33,8 @@ export function trainerLine(event: unknown): string | null {
       return "compiling the body…";
     case "skill.compile-ready": {
       const waited = num(e.waited_s);
-      if (waited === null) return null;
-      return e.finished === false ? `compile not finished after ${seconds(waited)}` : `compiled · ready in ${seconds(waited)}`;
+      if (waited === null || typeof e.finished !== "boolean") return null;
+      return e.finished ? `compiled · ready in ${seconds(waited)}` : `compile not finished after ${seconds(waited)}`;
     }
     case "train.start": {
       const remaining = num(e.remaining);

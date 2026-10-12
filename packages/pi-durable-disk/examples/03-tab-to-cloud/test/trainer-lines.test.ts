@@ -28,6 +28,8 @@ test("an event it does not know, or a known one with the wrong field types, is n
   assert.equal(trainerLine({ event: "box.warm", skill: "walk", ok: true }), null);
   assert.equal(trainerLine({ event: "skill.checkpoint", skill: "walk" }), null, "no checkpoint number: nothing to say");
   assert.equal(trainerLine({ event: "train.start", device: 5, remaining: "lots" }), null);
+  assert.equal(trainerLine({ event: "skill.compile-ready", waited_s: 30, finished: "false" }), null, "finished must be a boolean: a string is not success");
+  assert.equal(trainerLine({ event: "skill.compile-ready", waited_s: 30 }), null, "no finished at all: nothing to say");
   assert.equal(trainerLine({ nothing: 1 }), null);
   assert.equal(trainerLine(null), null);
 });
