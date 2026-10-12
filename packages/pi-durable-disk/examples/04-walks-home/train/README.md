@@ -18,6 +18,7 @@ One universe = one PPO run on one GPU against one reward hypothesis. The body is
 | `train_skill.py` | One robot skill for one body (`train-skill`): warm-started, each checkpoint scored by the skill's own test |
 | `skill_eval.py` | The skill tests in C MuJoCo, the tab's arithmetic: speed, turn rate, paw up, get-up time |
 | `assemble_skills.py` | The done skills, each with the get-up network, as `home/skills/<name>.json` and `home/skills.json` |
+| `../policy/assemble-skills.ts` | The same in TypeScript, for a session host with node and no python (equal outputs as JSON) |
 | `warm_box.py` | Warms one GPU box for its skill before the start signal (`warm-box`) |
 | `universes/skills/` | One file per skill: its reward weights and env overrides (sprint, backwards, turns, spin, wave) |
 
