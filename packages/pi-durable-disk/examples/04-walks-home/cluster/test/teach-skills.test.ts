@@ -117,8 +117,8 @@ test("code mode: threadsOf lists the run's threads in plan order with their conv
 });
 
 test("code mode: a thread past its deadline is stopped and folds as timed out, the others are kept", () => {
-  // walk passes about 1 s after its box (copy, read, edit, compile, 3 checkpoints); spin cannot pass before about 2.6 s
-  // (a 12M try that is still changing, then 6 checkpoints at 40M): 1.4 s keeps one fast pass and two time-outs.
+  // walk passes under 1 s after its box (copy, then 3 checkpoints); spin cannot pass before about 2.2 s (a 12M try that is
+  // still changing, then 6 checkpoints at 40M): 1.4 s keeps one fast pass and two time-outs.
   const { status, verdict } = runPlan("--deadline-ms", "1400");
   for (const [name, passed] of Object.entries(verdict.checks)) assert.equal(passed, true, name);
   assert.equal(status, 0);

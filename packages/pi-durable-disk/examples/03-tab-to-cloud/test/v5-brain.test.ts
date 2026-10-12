@@ -7,9 +7,9 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { agentRegistry } from "../agent.ts";
 import { FilesEnv, memoryFs } from "../tab/files-env.ts";
 import { lockGrammar, renderNative } from "../tab/native-tools.ts";
-import { narrowEnum, signatureTools, signatureView, toNativeTools } from "../tab/native-turn.ts";
+import { narrowEnum, robotLock, signatureTools, signatureView, toNativeTools } from "../tab/native-turn.ts";
 import { PhoneModel } from "../tab/phone-model.ts";
-import { robotStateLine, v5Lock } from "../tab/v5-brain.ts";
+import { robotStateLine } from "../tab/v5-brain.ts";
 import { SKILL_NAMES, applyRobotTool, initialRobot, type Design } from "../robot-model.ts";
 import { codeStateLine, stateLine } from "../robot-state-line.ts";
 import { ROBOT_FILE } from "../robot-tools.ts";
@@ -37,17 +37,17 @@ test("V5T: the system text lists the same ten tools in the same order, over the 
 
 test("the lock on a body written as code: set_color is all and the body's tags, set_shape the body's tags with no all, do the skills home or gone", () => {
   const tags = ["torso", "head", "legs", "plates"];
-  const locked = v5Lock(shownTools(), { skills: ["walk", "spin"], tags });
+  const locked = robotLock(shownTools(), { system: tagsServing.system, home: ["walk", "spin"], tags });
   assert.deepEqual(enumOf(locked, "set_color", "part"), TAGS.filter((t) => tags.includes(t)).concat("all").sort((a, b) => (enumOf(shownTools(), "set_color", "part")!.indexOf(a) - enumOf(shownTools(), "set_color", "part")!.indexOf(b))), "all and the body's tags, in the schema's order");
   assert.deepEqual(enumOf(locked, "set_shape", "part"), tags.slice().sort((a, b) => TAGS.indexOf(a) - TAGS.indexOf(b)), "the body's tags, no all");
   assert.deepEqual(enumOf(locked, "do", "skill"), ["walk", "spin"]);
   assert.deepEqual(locked.filter((t) => ["resize", "scale", "set_legs", "morph"].includes(t.function.name)).length, 4, "the body tools stay: on a code body they answer with the refusal");
-  const none = v5Lock(shownTools(), { skills: [], tags });
+  const none = robotLock(shownTools(), { system: tagsServing.system, home: [], tags });
   assert.ok(!none.some((t) => t.function.name === "do"), "no do at all when no skill is home");
 });
 
 test("the lock on a preset body, all eight skills home, is D1's v5-tags-lock.gbnf byte for byte", () => {
-  const locked = v5Lock(shownTools(), { skills: SKILL_NAMES });
+  const locked = robotLock(shownTools(), { system: tagsServing.system, home: SKILL_NAMES });
   assert.equal(lockGrammar(locked), (JSON.parse(readFileSync(fixture("robot-v5-tags-lock.json"), "utf8")) as { grammar: string }).grammar, "D1's V5T lock, byte for byte");
 });
 
@@ -91,7 +91,7 @@ test("the state line on a body written as code is codeStateLine: its tags with t
 });
 
 test("narrowing a free skill name or a tag list never widens: a tag the schema does not have is not added", () => {
-  const locked = v5Lock(shownTools(), { skills: ["walk"], tags: ["torso", "unicorn"] });
+  const locked = robotLock(shownTools(), { system: tagsServing.system, home: ["walk"], tags: ["torso", "unicorn"] });
   assert.deepEqual(enumOf(locked, "set_color", "part"), ["torso", "all"].sort((a, b) => enumOf(shownTools(), "set_color", "part")!.indexOf(a) - enumOf(shownTools(), "set_color", "part")!.indexOf(b)));
   assert.deepEqual(enumOf(narrowEnum(shownTools(), "skill", ["walk"]), "do", "skill"), ["walk"]);
 });

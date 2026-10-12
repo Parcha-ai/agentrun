@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { wllamaLlm, wllamaWith, partReads, partTimes } from "../../04-walks-home/tab/src/llm.ts";
 import type { ToolChatMessage, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
-import { narrowEnum, signatureTools, signatureView, servingView, toNativeTools } from "./native-turn.ts";
+import { robotLock, signatureTools, signatureView, servingView, toNativeTools } from "./native-turn.ts";
 import { buildOrder, PhoneModel, phoneWindow, served, turnReport, type WllamaBuild } from "./phone-model.ts";
 import type { TabRuntime } from "./runtime.ts";
 import { codeStateLine, stateLine } from "../robot-state-line.ts";
@@ -39,24 +39,6 @@ export interface Serving { model: { file: string; sha256: string }; system: stri
 
 /** What the page reads of the robot before a turn: the state line the window shows, the skills home, and on a body written as code its tags. */
 export interface RobotRead { line: string | undefined; skills: string[]; tags?: string[] }
-
-/**
- * D1's lock rule (V5T, scored on the blind sets): the prompt always shows the whole 16-tag system turn (so one warm state serves every body), and the grammar is
- * narrowed to what is true now. On a body written as code: set_color's part is all and the body's tags, set_shape's part the body's tags; on a preset body every part
- * stays (set_shape never has all: its prompt line has none). do's skill is the skills home, and do is dropped when none is home. resize, scale, set_legs and morph stay: on a code body the robot
- * answers them with CODE_BODY_REFUSAL.
- */
-export function v5Lock(shown: ToolChatTool[], now: { skills: readonly string[]; tags?: readonly string[] }): ToolChatTool[] {
-  const tags = now.tags && now.tags.length > 0 ? now.tags : undefined;
-  return shown.flatMap((t) => {
-    switch (t.function.name) {
-      case "do": return now.skills.length > 0 ? narrowEnum([t], "skill", now.skills) : [];
-      case "set_color": return tags ? narrowEnum([t], "part", ["all", ...tags]) : [t];
-      case "set_shape": return narrowEnum([t], "part", (tags ?? ((t.function.parameters as { properties?: { part?: { enum?: string[] } } }).properties?.part?.enum ?? [])).filter((x) => x !== "all")); // the prompt's set_shape has no all, whatever the registry's schema allows
-      default: return [t];
-    }
-  });
-}
 
 /** The robot as the state line the window shows before the user's turn, and the skills that came home (what the do-lock narrows to). */
 export async function robotStateLine(env: unknown, context: unknown = ctx): Promise<RobotRead> {
@@ -236,7 +218,7 @@ export async function startV5Brain(runtime: TabRuntime, host: V5Host, ready: () 
   marks.warmMs = Math.round(performance.now() - t);
   marks.warmTokens = warm.promptTokens;
   // everything a turn uses is in place before anything can run on the brain: a turn a reload cut short resumes below, and runs locked and reported
-  model.lock = (shown) => v5Lock(shown, { skills: skillsHome, ...(bodyTags ? { tags: bodyTags } : {}) });
+  model.lock = (shown) => robotLock(shown, { system: serving.system, home: skillsHome, ...(bodyTags ? { tags: bodyTags } : {}) }); // native-turn.ts: the prompt's own values, then the body's tags and the skills home
   model.onTurn = (turn) => host.report("turn", turnReport(turn, params.get("report") === "text")); // the reply's words only when the page was opened to send them
   model.onTurnStart = () => host.report("turn-start", {});
   host.say("", `brain ready: loaded in ${(marks.loadMs / 1000).toFixed(1)} s, tools read in ${(marks.warmMs / 1000).toFixed(1)} s (${warm.promptTokens} tokens)`);

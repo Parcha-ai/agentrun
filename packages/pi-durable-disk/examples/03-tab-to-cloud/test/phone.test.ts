@@ -661,6 +661,38 @@ test("a picked file's text comes from where this page keeps the workspace: the p
   assert.equal(await workspaceText(undefined, { kind: "file" }, "c.txt"), undefined);
 });
 
+// ---- V5T (D1, 2026-10-12): v5's weights on the 16-tag prompt, for bodies written as code; the lock narrowed per request (v6_lock.py lock(tags, home)).
+test("the lock for a request is D1's, byte for byte: v5's prompt, V5T's prompt, and V5T on a body written as code; no skill home drops do", async () => {
+  const { robotLock, signatureTools, signatureView } = await import("../tab/native-turn.ts");
+  const registry = agentRegistry(async () => undefined, { switchTool: false, environments: [] });
+  const offered = toNativeTools(registry.snapshot().tools().map((r) => ({ name: r.tool.name, description: r.tool.description, parameters: r.tool.parameters })));
+  const grammar = (name: string) => (JSON.parse(readFileSync(fixture(name), "utf8")) as { grammar: string }).grammar;
+  const v5t = (JSON.parse(readFileSync(fixture("robot-v5t-serving.json"), "utf8")) as { system: string }).system;
+  const shown = (system: string) => signatureView(offered, signatureTools(system));
+  const all = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"];
+  assert.equal(lockGrammar(robotLock(shown(servingV5.system), { system: servingV5.system, home: all })), grammar("robot-v5-lock.json"), "v5's prompt: the four parts it names, though the registry takes sixteen tags");
+  assert.equal(lockGrammar(robotLock(shown(v5t), { system: v5t, home: all })), grammar("robot-v5t-lock.json"), "V5T on a preset body: every tag; set_shape without all");
+  const code = JSON.parse(readFileSync(fixture("robot-v5t-lock-code.json"), "utf8")) as { tags: string[]; home: string[]; grammar: string };
+  assert.equal(lockGrammar(robotLock(shown(v5t), { system: v5t, home: code.home, tags: code.tags })), code.grammar, "V5T on a code body: its tags (and all for colours), the skills home");
+  assert.doesNotMatch(lockGrammar(robotLock(shown(v5t), { system: v5t, home: [] })), /function=do>/, "no skill home: no do");
+  const custom = robotLock(shown(v5t), { system: v5t, home: ["wag-tail"], tags: ["torso", "fin"] }); // a thread taught a skill of its own name; a body with a tag of its own
+  assert.ok(!custom.some((t) => t.function.name === "do"), "only a custom-named skill home: no do (the prompt names none of it), not an empty choice");
+  assert.ok(!custom.some((t) => t.function.name === "set_shape") || /set-shape-part ::= "torso"/.test(lockGrammar(custom)), "set_shape keeps the tag the prompt names");
+  const fins = robotLock(shown(v5t), { system: v5t, home: all, tags: ["fin"] });
+  assert.ok(!fins.some((t) => t.function.name === "set_shape"), "a body whose tags the prompt names none of: no set_shape");
+  assert.match(lockGrammar(fins), /set-color-part ::= "all"/, "set_color keeps all");
+  assert.doesNotMatch(lockGrammar(custom) + lockGrammar(fins), /::=\s*(\n|$)/, "no rule with nothing to choose");
+});
+
+test("V5T: the warm-up's prefix is its 16-tag system turn with no tools block, the one its shipped state was made from (595 tokens, batch 128)", async () => {
+  const v5t = (JSON.parse(readFileSync(fixture("robot-v5t-serving.json"), "utf8")) as { system: string }).system;
+  const { llm } = fakeLlm();
+  const model = new PhoneModel(llm, { url: "https://p.example/m/robot-v5-00001-of-00007.gguf", threads: 2, nCtx: 2048, batch: 128, maxTokens: 300 });
+  model.toolsInPrompt = false;
+  await model.warm(v5t, serving.tools);
+  assert.equal(await sha(model.warmPrompt!), "53f8264c5c2e018f748638455c6b1a42c422378d6503c59f1189152113b0657e", "make-state.mjs's prefix sha256 for V5T, from llama-server's rendering");
+});
+
 test("prefetch keeps the model's seven parts and its warm state for offline, each with the size and sha256 its manifest or sidecar gives", async () => {
   const { llm, calls } = fakeLlm();
   const first = "https://p.example/m/robot-v5-00001-of-00003.gguf";
