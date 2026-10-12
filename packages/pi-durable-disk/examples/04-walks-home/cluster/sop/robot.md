@@ -1,22 +1,23 @@
 # Writing the robot
 
-The robot is code you write: `robot/body.mjs`. It builds the body from pieces with the helper in `robot/lib.mjs`.
-"Make a dinosaur robot" means writing a body that looks like a dinosaur: a body, legs, a neck, a head, a tail, plates,
-its colours. There is no menu of presets and no fixed number of legs. Write what was asked for, build it, read what
+**To make or change the robot, write `robot/body.mjs` and build it.** The robot is code: there is no preset to pick and
+no tool that reshapes it. "Make a dinosaur robot" means writing a body that looks like a dinosaur: a body, legs, a neck,
+a head, a tail, plates, its colours, with as many legs as it should have. Write what was asked for, build it, read what
 came back, and fix your own code until it builds and stands.
 
+A default robot is already in `robot/body.mjs`, built and on screen, with the helper `robot/lib.mjs`, the build script
+`robot/build.mjs` and two examples, `robot/examples/dog.mjs` and `robot/examples/dino.mjs`. Never edit lib.mjs or
+build.mjs.
+
 ## The loop, in this order
-1. **Call `build_robot` first.** It puts the helper files in the workspace (`robot/lib.mjs`, `robot/build.mjs`,
-   `robot/examples/dog.mjs`, `robot/examples/dino.mjs`) and answers `No robot is built yet. ... Write robot/body.mjs
-   ...`. Never edit lib.mjs or build.mjs.
-2. **Read before you write.** Read the example closest to what was asked (`cat robot/examples/dino.mjs`). The full
-   format reference is the header comment of `robot/lib.mjs`.
-3. **Write `robot/body.mjs`.**
-4. **Run `node robot/build.mjs` in bash.** It runs your file and writes `robot/body.xml` and `robot/body.json`. It
+1. **Read before you write.** Read `robot/body.mjs` and the example closest to what was asked
+   (`cat robot/examples/dino.mjs`). The full format reference is the header comment of `robot/lib.mjs`.
+2. **Change `robot/body.mjs`, or write a new one** for a different creature.
+3. **Run `node robot/build.mjs` in bash.** It runs your file and writes `robot/body.xml` and `robot/body.json`. It
    prints `wrote robot/body.xml and robot/body.json: N pieces, M motors, K spring joints, X kg, standing height Y m.
    Tags: ...` and any warnings. Or it prints `body.mjs: <the error>` and exits 1: fix that and run it again.
-5. **Call `build_robot` again.** The robot page compiles the body in MuJoCo, holds its standing pose for 3 s, shows it
-   and answers:
+4. **Call `build_robot`.** The robot page compiles the body in MuJoCo, holds its standing pose for 3 s, shows it and
+   answers:
    - `Built dino: 32 pieces, 8 motors, 10 spring joints, 10.99 kg, stands 0.389 m high. Tags: ...`: it is built. Tell
      the user in one sentence what you built.
    - `Not built: MuJoCo: <its error>`: it names the element and the attribute. Fix that value. The robot on screen stays
@@ -24,7 +25,9 @@ came back, and fix your own code until it builds and stands.
    - A warning (it does not stand, it collapses): fix the stand angles, the joint ranges, the masses or the legs' reach.
    - `Written, but not checked: the creature page did not report ...`: the page is not open. Say so; do not claim it
      built.
-6. **Fix and repeat** from step 3 until build_robot says `Built`. Warnings are advice, not refusals: read them and
+   - `No robot is built yet. ...`: the helper files were missing, and build_robot has just put them in place. Start
+     at step 1.
+5. **Fix and repeat** from step 2 until build_robot says `Built`. Warnings are advice, not refusals: read them and
    decide. Never claim it built or stands unless build_robot said so.
 
 ## The file
@@ -67,8 +70,8 @@ from one side.
 - **Weight:** 1 to 30 kg in total, with the torso the heaviest piece. Tails, necks and decorations stay light.
 
 ## Changing it later
-Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 4. Once
-`robot/body.json` exists you are no longer offered resize, scale, set_legs or morph. The look tools still work on it by
+Its size, its legs and its shape change by editing `robot/body.mjs` and running the loop again from step 2. There are
+no resize, scale, set_legs or morph tools for a robot built from code. The look tools still work on it by
 tag: set_color and set_shape with a part such as tail, plates or wings (or all); set_face on the head; rename; reset
 back to the body's own colours.
 
