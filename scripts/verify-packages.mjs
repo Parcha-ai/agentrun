@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -113,16 +113,59 @@ try {
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
-  // The consumer has no lockfile, so every package a Pi package depends on by range floats to the newest release. A Pi
-  // package then runs beside siblings it was not released with (a coding agent at one version, its codemode at the next).
-  // Every @earendil-works package therefore resolves at the version this repository's lockfile holds.
-  const scope = join(root, 'node_modules', '@earendil-works');
-  const piVersions = {};
-  for (const entry of (await readdir(scope, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.isDirectory()) piVersions[`@earendil-works/${entry.name}`] = (await json(join(scope, entry.name, 'package.json'))).version;
+  // The consumer has no lockfile, so the @earendil-works packages that an upstream @earendil-works package depends on by
+  // range float to the newest release, and an upstream package then runs beside siblings it was not released with (a
+  // coding agent at one version, its codemode at the next). Each such edge is pinned to the version this repository's
+  // lockfile resolves for that parent. Our own packages' peer ranges are not touched: they select what they select.
+  const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
+  const upstream = location => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+  const isUpstream = name => name.startsWith('@earendil-works/');
+  /** The lockfile entry a dependency of the package at `location` resolves to: its own node_modules, then each enclosing one. */
+  const resolved = (location, name) => {
+    for (let base = location; ; base = base.includes('/node_modules/') ? base.slice(0, base.lastIndexOf('/node_modules/')) : '') {
+      const candidate = base ? `${base}/node_modules/${name}` : `node_modules/${name}`;
+      if (rootLock[candidate]) return rootLock[candidate];
+      if (!base) return undefined;
+    }
+  };
+  const held = new Map();
+  /** The pins for the @earendil-works dependencies of the package at `location`, and for theirs in turn. A pinned
+   *  dependency is `{ ".": version, ...its own pins }`: a plain version string would replace its own rules. */
+  const pins = (location, path = new Set()) => {
+    const entry = rootLock[location];
+    const edges = {};
+    for (const dependency of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies }).filter(isUpstream)) {
+      const target = resolved(location, dependency);
+      if (!target) continue;
+      const targetLocation = Object.keys(rootLock).find(candidate => rootLock[candidate] === target);
+      edges[dependency] = path.has(targetLocation) ? target.version : { '.': target.version, ...pins(targetLocation, new Set([...path, location])) };
+    }
+    return edges;
+  };
+  // A package that is the dependency of another @earendil-works package is pinned through that parent's entry only: a
+  // top-level rule of its own beside the parent's nested one makes npm apply neither.
+  const dependedOn = new Set();
+  for (const [location, entry] of Object.entries(rootLock)) {
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) continue;
+    for (const dependency of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies }).filter(isUpstream)) {
+      const target = resolved(location, dependency);
+      if (target) dependedOn.add(`${dependency}@${target.version}`);
+    }
   }
-  assert.ok(Object.keys(piVersions).length > 0, 'The repository holds no @earendil-works package to pin the consumer to');
-  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides: piVersions }));
+  const overrides = {};
+  for (const [location, entry] of Object.entries(rootLock)) {
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) continue;
+    const name = upstream(location);
+    held.set(name, new Set([...(held.get(name) ?? []), entry.version]));
+    const edges = pins(location);
+    if (!Object.keys(edges).length) continue;
+    const key = `${name}@${entry.version}`;
+    if (dependedOn.has(key)) continue;
+    assert.ok(!overrides[key] || JSON.stringify(overrides[key]) === JSON.stringify(edges), `The repository lockfile resolves ${key} to different dependencies in different places`);
+    overrides[key] = edges;
+  }
+  assert.ok(held.size > 0, 'The repository lockfile holds no @earendil-works package to pin the consumer to');
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
@@ -131,14 +174,15 @@ try {
   const peers = [];
   for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
-  // No @earendil-works package in the consumer, at any depth, differs from the repository's.
+  // Every @earendil-works package in the consumer is at a version the repository's lockfile holds for that name.
   const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
   const drifted = Object.entries(consumerLock.packages ?? {}).flatMap(([location, entry]) => {
-    const name = location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
-    return location.includes('node_modules/') && name.startsWith('@earendil-works/') && entry.version !== piVersions[name] ? [`${location}@${entry.version} (repository: ${piVersions[name] ?? 'none'})`] : [];
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) return [];
+    const versions = held.get(upstream(location));
+    return versions?.has(entry.version) ? [] : [`${location}@${entry.version} (repository: ${versions ? [...versions].join(' or ') : 'none'})`];
   });
-  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages that the repository does not, or at other versions than the repository's: ${drifted.join(', ')}`);
-  receipt.checks.push('Every @earendil-works package in the consumer resolves at the repository lockfile version.');
+  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
+  receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
