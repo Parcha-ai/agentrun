@@ -77,14 +77,15 @@ export function placementLine(to: string | null, probability: number | null): st
 }
 
 /**
- * A move Jev decided for a message is written just before that message, so it reads as if the agent moved after its previous reply. In the chat it follows the message it belongs to: a placed move that is
- * directly followed by a person's line (nothing the reader sees between) swaps places with it. Moves nobody decided for a message (the operator's switch, the agent's own) stay where they were written.
+ * A move Jev decided for a message is written just before that message, so it reads as if the agent moved after its previous reply. In the chat it follows the message it belongs to: a move placed for a
+ * message (its notice says phase "start") that is directly followed by a person's line (nothing the reader sees between) swaps places with it. Every other move stays where it was written: the operator's
+ * switch, the agent's own, and a placement made when a turn ended (phase "done": the next message is not the reason for that one).
  */
 export function movesAfterTheirMessage(items: readonly ChatItem[]): ChatItem[] {
   const out = [...items];
   for (let i = 0; i < out.length; i++) {
     const item = out[i]!;
-    if (item.kind !== "switch" || (item.by !== "placement" && item.by !== "jev")) continue;
+    if (item.kind !== "switch" || item.phase !== "start") continue;
     let j = i + 1;
     while (j < out.length && out[j]!.kind === "brain") j++;
     if (j < out.length && out[j]!.kind === "user") {
@@ -98,6 +99,15 @@ export function movesAfterTheirMessage(items: readonly ChatItem[]): ChatItem[] {
 
 /** A line the person sent that the transcript does not hold yet: shown at once, with where it is (sending, Jev deciding) and, once Jev decided a move, that move's line. */
 export type Sent = { requestId: string; text: string; /** How many user lines with this text the transcript held when this one was sent (including earlier ones still pending). */ base: number; stage: "sending" | "deciding" | "decided"; move?: string };
+
+/** The pending lines without one that will not arrive (refused, failed). A later line with the same text was counted behind it, so it moves up one; otherwise its copy in the transcript would never be "more than" its base. */
+export function withoutSent(items: readonly ChatItem[], sent: readonly Sent[], requestId: string): Sent[] {
+  const live = pendingEchoes(items, sent); // a line the transcript already holds is not pending, and is nobody's to move up
+  const at = live.findIndex((s) => s.requestId === requestId);
+  if (at < 0) return live;
+  const gone = live[at]!;
+  return live.flatMap((s, i) => (i === at ? [] : [i > at && s.text === gone.text ? { ...s, base: s.base - 1 } : s]));
+}
 
 /** The user lines a transcript holds with this text. */
 const saidCount = (items: readonly ChatItem[], text: string): number => items.filter((i) => i.kind === "user" && i.text === text).length;
@@ -123,11 +133,13 @@ export function sentState(s: Sent): string {
 }
 
 /**
- * Which model is answering, from the typed model of the conversation's driver (its provider and id, never chat text): the cloud model by its id (a provider prefix is dropped), or the tab's own model by
- * the name `local` gives it ("v5 · 0.8B"). Nothing is said when the driver is not known.
+ * Which model is answering, from the typed model of the conversation that drives (its provider and id: never chat text, never which conversation object is active). The tab's own provider names the small model
+ * in this tab (`names` gives a model id its short name, "v5 · 0.8B"); any other provider is the cloud model by its id. With no typed model yet, `cloud` (the run's model id) is the answer.
  */
-export function driverLabel(d: { local: string | null; cloud: string }): string {
-  return d.local !== null ? `${d.local} in this tab` : d.cloud.replace(/^[^/]+\//, "");
+export function driverLabel(d: { model: { provider: string; modelId: string } | null; tabProvider: string; names?: Readonly<Record<string, string>>; cloud: string }): string {
+  if (d.model === null) return d.cloud.replace(/^[^/]+\//, "");
+  if (d.model.provider === d.tabProvider) return `${d.names?.[d.model.modelId] ?? d.model.modelId} in this tab`;
+  return d.model.modelId.replace(/^[^/]+\//, "");
 }
 
 export type ToolKind = "bash" | "write" | "edit" | "read" | "grep" | "find" | "ls" | "other";

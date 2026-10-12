@@ -216,6 +216,8 @@ export type Move = {
   by?: "agent" | "placement";
   reason?: string;
   probability?: number;
+  /** For a placement: whether it was asked for a person's message ("start": the message follows the move) or when a turn ended ("done"). */
+  phase?: "start" | "done";
 };
 
 /** Where the run is: the badge every page shows. `env` is the environment's id. */

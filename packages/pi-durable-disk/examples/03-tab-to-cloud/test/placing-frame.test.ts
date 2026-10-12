@@ -18,7 +18,8 @@ describe("a sent line is told where it is", () => {
       return decision;
     },
   };
-  const cloud: CloudHost = { environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }], start: async () => ({ host: "vm-1" }), stop: async () => undefined, attachViewer: async () => () => undefined, submit: async () => undefined };
+  const moves: { by?: string; phase?: string }[] = [];
+  const cloud: CloudHost = { environments: [{ id: "vm", label: "A VM", phrase: "a VM", kind: "cloud" }], start: async (_ref, run) => { moves.push(run.move); return { host: "vm-1" }; }, stop: async () => undefined, attachViewer: async () => () => undefined, submit: async () => undefined };
   before(async () => { local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 60_000 }); });
   after(async () => { await local.remove(); });
 
@@ -38,6 +39,8 @@ describe("a sent line is told where it is", () => {
     assert.deepEqual(seen.find((f) => f.t === "placing"), { t: "placing", requestId: "r1" });
     const decision = seen.find((f) => f.t === "decision") as Extract<PipeFrame, { t: "decision" }>;
     assert.equal(decision.requestId, "r1");
+    for (const end = Date.now() + 10_000; moves.length === 0; await new Promise((r) => setTimeout(r, 25))) if (Date.now() > end) throw new Error("no move");
+    assert.deepEqual([moves[0]!.by, moves[0]!.phase], ["placement", "start"], "the move says it was placed for a message (the chat reads its notice after that message)");
     tab.close();
     page.close();
   });

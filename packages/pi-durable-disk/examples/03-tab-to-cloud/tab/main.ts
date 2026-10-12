@@ -9,7 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
-import { callsLabel, driverLabel, echoedTools, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, toolArgsLine, type Sent } from "./chat-lines.ts";
+import { callsLabel, driverLabel, echoedTools, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, toolArgsLine, withoutSent, type Sent } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
 import { briefsFromArgs, teachResultCard } from "./teach-result.ts";
@@ -496,16 +496,41 @@ function syncCreatureActivity(): void {
   (document.getElementById("creature") as HTMLIFrameElement | null)?.contentWindow?.postMessage({ ns: "walks-home", type: "set-activity", paused: quiet, low }, location.origin);
 }
 
-/** The model answering now, from which conversation drives (the tab's own small model, or the run's cloud model by its id), for the header. */
+/** The typed model of the conversation that drives (its provider and id, read from the conversation itself), as last read; the header draws it. */
+let driverModel: { provider: string; modelId: string } | null = null;
+let driverReading = false;
+let driverAgain = false;
+function readDriver(): void {
+  if (driverReading) {
+    driverAgain = true;
+    return;
+  }
+  const conversation = state.runtime ? target() : undefined;
+  if (!conversation) {
+    if (driverModel !== null) { driverModel = null; drawDriver(); }
+    return;
+  }
+  driverReading = true;
+  conversation.agent(ctx).then((a) => {
+    const next = a.model ? { provider: a.model.provider, modelId: a.model.modelId } : null;
+    if (next?.provider !== driverModel?.provider || next?.modelId !== driverModel?.modelId) { driverModel = next; drawDriver(); }
+  }, () => undefined).finally(() => {
+    driverReading = false;
+    if (driverAgain) { driverAgain = false; readDriver(); }
+  });
+}
+
+/** The model answering now, for the header: the typed model of the conversation that drives (the tab's small model by its short name, or the cloud model by its id). */
 function driverText(): string {
-  if (phoneMode) return "";
-  const offline = state.mode === "offline";
-  const swapped = (state.mode === "writer" || offline) && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
-  if (offline && v5Offline && state.v5.ready) return driverLabel({ local: "v5 · 0.8B", cloud: "" });
-  if (swapped) return driverLabel({ local: state.brain?.modelId ?? "the trained model", cloud: "" });
-  if (offline || state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
+  if (phoneMode || state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
   if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
-  return driverLabel({ local: null, cloud: state.agentModel });
+  if (state.mode === "offline" && driverModel === null) return "";
+  return driverLabel({ model: driverModel, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "v5 · 0.8B" }, cloud: state.mode === "offline" ? "" : state.agentModel });
+}
+function drawDriver(): void {
+  const driver = driverText();
+  $("driver").textContent = driver;
+  $("driver").hidden = driver === "";
 }
 
 function render(): void {
@@ -517,9 +542,8 @@ function render(): void {
   const here = state.mode === "writer" || state.mode === "offline";
   const swapped = here && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
   $("badge-sub").textContent = [b.sub, here && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
-  const driver = driverText();
-  $("driver").textContent = driver;
-  $("driver").hidden = driver === "";
+  readDriver();
+  drawDriver();
   $("banner").textContent = state.banner;
   $("banner").hidden = state.banner === "";
   const offline = state.mode === "offline";
@@ -1707,7 +1731,7 @@ function onFrame(frame: PipeFrame): void {
       state.banner = `cannot switch to ${envLabel(frame.to)}: ${frame.message}`;
       break;
     case "submit-refused":
-      state.sent = state.sent.filter((s) => s.requestId !== frame.requestId);
+      state.sent = withoutSent(state.chat.items(), state.sent, frame.requestId);
       state.banner = `not sent: ${frame.message}`;
       break;
     case "placing":
@@ -1945,7 +1969,7 @@ function send(): void {
   }
   renderChat();
   sendLine = sendLine.then(() => decideAndSubmit(text, requestId)).catch((error: Error) => {
-    state.sent = state.sent.filter((s) => s.requestId !== requestId);
+    state.sent = withoutSent(state.chat.items(), state.sent, requestId);
     state.banner = `not sent: ${error.message}`;
     render();
   });

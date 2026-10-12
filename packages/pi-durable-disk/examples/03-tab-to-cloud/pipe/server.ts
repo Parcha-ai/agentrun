@@ -175,7 +175,7 @@ export interface DemoServerOptions {
 }
 
 /** Who asked for a move: the user (a click), the agent (its tool), or the server's placement question. */
-type Who = { by: "user" } | { by: "agent"; reason: string } | { by: "placement"; reason: string; probability?: number };
+type Who = { by: "user" } | { by: "agent"; reason: string } | { by: "placement"; reason: string; probability?: number; phase?: "start" | "done" };
 
 /**
  * The server's wait at home after a placement move: the home check, then the agent's closing turn. It is set before the check starts and cleared when the wait is over, and while it is set a new
@@ -319,7 +319,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     from,
     planned,
     ...(who?.by === "agent" ? { by: "agent" as const, reason: cleanReason(who.reason) } : {}),
-    ...(who?.by === "placement" ? { by: "placement" as const, reason: cleanReason(who.reason), ...(who.probability !== undefined ? { probability: who.probability } : {}) } : {}),
+    ...(who?.by === "placement" ? { by: "placement" as const, reason: cleanReason(who.reason), ...(who.probability !== undefined ? { probability: who.probability } : {}), ...(who.phase ? { phase: who.phase } : {}) } : {}),
   });
 
   const setPlacement = (state: RunState, placement: Placement) => {
@@ -754,7 +754,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
 
   const placeWho = (decision: PlacementDecision): Who => {
     const probability = decision.options.find((o) => o.id === decision.choice)?.probability;
-    return { by: "placement", reason: options.placer!.describe(decision.choice), ...(probability !== undefined ? { probability } : {}) };
+    return { by: "placement", reason: options.placer!.describe(decision.choice), ...(probability !== undefined ? { probability } : {}), phase: decision.phase };
   };
 
   /**
