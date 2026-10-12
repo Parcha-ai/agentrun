@@ -38,7 +38,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .switcher .env.active, .switcher .env.active.tab, .switcher .env.active.cloud, .switcher .env.active.moving { background: var(--panel); color: var(--ink); animation: none; font-weight: 500; }
 #handover, #offline-status, #online-status { font: 400 11px var(--mono); color: var(--muted); }
 #banner { background: var(--panel); color: var(--muted); border-bottom: 1px solid var(--line); font: 400 13px/1.4 var(--sans); padding: 10px var(--gutter); }
-#checkedout { background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px var(--gutter); font-size: 13px; color: var(--muted); }
+#checkedout { background: var(--bg); border-bottom: 1px solid var(--line); padding: 0 var(--gutter); color: var(--muted); }
+#checkedout summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 36px; cursor: pointer; font: 500 12px/1.4 var(--mono); letter-spacing: .04em; color: var(--ink); }
+#checkedout summary::-webkit-details-marker { display: none; }
+#checkedout .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
+#checkedout .more { margin-left: auto; font-weight: 400; color: var(--muted); } #checkedout details[open] .more { opacity: .6; }
+#checkedout details[open] { padding-bottom: 12px; }
+#checkedout p { margin: 8px 0 0; font: 400 13px/1.5 var(--sans); } #checkedout p#persist-warning[hidden] { display: none; }
+#checkedout ul { margin: 6px 0 0; padding-left: 18px; font: 400 13px/1.5 var(--sans); color: var(--muted); }
 #checkedout strong { color: var(--green); font-weight: 500; }
 
 /* ---- the conversation ---- */

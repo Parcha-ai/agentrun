@@ -22,6 +22,11 @@ test("each known trainer event is one quiet line, from its typed fields", () => 
   assert.equal(trainerLine({ event: "skill.done", status: "done", passed_at: { checkpoint: 3, steps: 1, t: 40 }, wall_s: 90.7 }), "done · passed at checkpoint 3 · 90.7 s");
   assert.equal(trainerLine({ event: "skill.done", status: "failed", passed_at: null, wall_s: 120, diagnosis: "the robot falls over before it can turn" }), "failed · never passed · 120 s · the robot falls over before it can turn");
   assert.equal(trainerLine({ event: "skill.refused", why: "the body has no legs" }), "refused: the body has no legs");
+  // `train-skill --check <policy>`: the skill's own test run once on a finished policy (train_skill.py)
+  assert.equal(trainerLine({ event: "skill.check", policy: "/workspace/runs/walk/policy.json", passes: true, metric: { name: "speed", value: 0.481, unit: "m/s", target: ">= 0.4" } }), "check · speed 0.48 m/s (target ≥ 0.4) · ✓ passes");
+  assert.equal(trainerLine({ event: "skill.check", policy: "p", passes: false, metric: { name: "speed", value: 0.1, unit: "m/s", target: ">= 0.4" } }), "check · speed 0.1 m/s (target ≥ 0.4) · not yet");
+  assert.equal(trainerLine({ event: "skill.check", policy: "p", passes: false, error: "the policy was trained for another body" }), "check · did not pass · the policy was trained for another body");
+  assert.equal(trainerLine({ event: "skill.check", policy: "p" }), null, "no verdict and no error: nothing to say");
 });
 
 test("an event it does not know, or a known one with the wrong field types, is not guessed at", () => {
@@ -56,6 +61,8 @@ test("an output is read line by line: trainer events become quiet lines, other l
     ["event", "checkpoint 5 · paw up 0 share of time (target ≥ 0.6) · not yet · 38.6 s"],
   ]);
   assert.equal(humanizeOutput("ls -la\ntotal 4").recognized, 0, "an ordinary command's output has nothing to humanize");
+  const check = humanizeOutput(JSON.stringify({ event: "skill.check", policy: "p", passes: true, metric: { name: "speed", value: 0.5, unit: "m/s", target: ">= 0.4" } })).lines[0]!;
+  assert.equal(check.kind, "pass", "a passing check is green like a passing checkpoint");
   const pass = humanizeOutput(JSON.stringify({ ...CKPT, passes: true, metric: { name: "speed", value: 0.62, unit: "m/s", target: ">= 0.4" } })).lines[0]!;
   assert.equal(pass.kind, "pass", "a passing checkpoint is marked so the page can colour it");
 });

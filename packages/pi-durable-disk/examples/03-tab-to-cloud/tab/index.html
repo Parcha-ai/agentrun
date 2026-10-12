@@ -166,7 +166,7 @@ body.phone header { padding: 10px 14px; gap: 10px; }
 </header>
 <p id="banner" hidden></p>
 <p id="phone-retry" hidden><button id="retry" class="primary">Try again</button> <button id="retry-clear">Clear the model and try again</button></p>
-<section id="checkedout" hidden><strong>Checked out to this browser.</strong> The live copy of this run is here: the server released it and runs it no more. You can turn the network off and keep talking to the agent. What does not work:<ul id="cannot"></ul><span id="persist-warning" hidden><strong>Storage is not guaranteed.</strong> This browser may clear its copy under storage pressure; it is the only live copy. </span></section>
+<section id="checkedout" hidden><details><summary><span class="dot"></span><span class="what">Offline · this browser's brain</span><span class="more">what works offline</span></summary><p><strong>Checked out to this browser.</strong> The live copy of this run is here: the server released it and runs it no more. You can turn the network off and keep talking to the agent. What does not work:</p><ul id="cannot"></ul><p id="persist-warning" hidden><strong>Storage is not guaranteed.</strong> This browser may clear its copy under storage pressure; it is the only live copy.</p></details></section>
 <main>
   <section id="chat"></section>
   <aside id="creature-pane" hidden><iframe id="creature" title="the robot" allow="cross-origin-isolated"></iframe></aside>
