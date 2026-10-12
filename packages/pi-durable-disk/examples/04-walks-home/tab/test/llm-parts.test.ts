@@ -229,3 +229,23 @@ test("a file through the engine's cache (the warm state) is fetched once, then r
   assert.deepEqual(new Uint8Array(await again.slice(0, again.size).arrayBuffer()), new Uint8Array(state));
   assert.deepEqual(s.log.downloads, ['robot.state.bin', 'robot.state.bin'], 'the wrong bytes: fetched again');
 });
+
+test('prefetch puts files in the engine cache with a load\'s checks and starts no engine; a later load finds them with no network', async () => {
+  const s = setup();
+  s.cache.set(s.key(URL2), new Blob([randomBytes(3000) as BlobPart])); // a wrong copy of the second part is already there
+  const progress: [number, number][] = [];
+  await s.llm.prefetch!([{ url: BASE, want: s.parts[0] }, { url: URL2, want: s.parts[1] }], { onProgress: (l, t) => progress.push([l, t]) });
+  assert.deepEqual(s.log.downloads.sort(), ['robot-00001-of-00002.gguf', 'robot-00002-of-00002.gguf'], 'the missing part is fetched, the wrong one fetched again');
+  assert.equal(s.log.loaded.length, 0, 'no model was loaded');
+  assert.deepEqual(progress.at(-1), [4000, 4000]);
+  s.log.downloads.length = 0;
+  await s.llm.loadUrl!(BASE, { threads: 1, parts: s.parts });
+  assert.deepEqual(s.log.downloads, [], 'the load after it uses the cache only');
+  assert.equal(s.log.loaded.length, 2);
+});
+
+test('prefetch refuses a part that is still wrong after a second fetch, by name', async () => {
+  const s = setup();
+  const bad = [{ bytes: s.p1.length, sha256: 'f'.repeat(64) }, s.parts[1]!];
+  await assert.rejects(s.llm.prefetch!([{ url: BASE, want: bad[0]! }]), /still wrong or unreadable/);
+});
