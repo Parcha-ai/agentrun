@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { ROBOT_CODE_INSTRUCTIONS, ROBOT_SOP, TEACH_SOP } from "../robot-sop.ts";
+import { INSTRUCTIONS } from "../agent.ts";
 
 test("robot-sop.ts is what 04-walks-home/cluster/sop holds (it is generated: run scripts/gen-robot-sop.mjs)", async () => {
   // @ts-expect-error: a plain .mjs script, without types
@@ -46,4 +47,12 @@ test("robot.md and teach.md tell the agent about the flag: before training a mov
   assert.match(robot, /\*\*Not taught yet:\*\* the robot tries and fails where everyone can see it .* offer to teach it \("Want me to teach it to walk\?"\)\. The try is the point: do not refuse it/);
   assert.match(robot, /\*\*Taught:\*\* it walks\. Say whether it reached the flag and how long it took, from the result\. Never say it reached the flag unless the result says it did\./);
   assert.match(TEACH_SOP.replace(/\s+/g, " "), /"Teach it to walk to the flag" means walk; add turn-left and turn-right only if the user wants it to steer\./);
+});
+
+test("files are mentioned only when some changed or the user asked: the base instructions, and robot.md on the robot's own file", () => {
+  // code12: "Want me to teach it to walk? No files changed." and "Your dinosaur reached the flag in 5.1 seconds! No files changed."
+  assert.match(INSTRUCTIONS, /When you finish a request, say in one or two sentences what you did\. Mention files only when you changed some or the user asked about them; never add that no files changed\./);
+  assert.doesNotMatch(INSTRUCTIONS, /what you did and which files changed/);
+  assert.match(ROBOT_SOP.replace(/\s+/g, " "), /The look tools and `do` keep the robot's own file: using them is not a file change to mention\./);
+  assert.match(ROBOT_CODE_INSTRUCTIONS, /The look tools and `do` keep the robot's own file/, "the session's code-mode instructions carry it");
 });

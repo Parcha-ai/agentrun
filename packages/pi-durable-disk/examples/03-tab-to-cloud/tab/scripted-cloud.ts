@@ -9,8 +9,9 @@ import { PROVIDER } from "../agent.ts";
 /** One answer: some text, or a tool call (with the text said before it). */
 /** `id`: the call's id, when a test needs one that repeats (the browser's brain names its calls call-0, call-1 in every turn). */
 type ScriptedCall = { name: string; arguments: Record<string, string | number | boolean | null>; id?: string };
-/** One reply: text, one call, or several calls made in the same turn (pi runs those together). */
-export type ScriptedTurn = { text?: string; call?: ScriptedCall; calls?: ScriptedCall[] };
+/** One reply: text, one call, or several calls made in the same turn (pi runs those together). `reply`: text written
+ * from the instructions the request carried, for a check of what the instructions make a model say. */
+export type ScriptedTurn = { text?: string; reply?: (instructions: string) => string; call?: ScriptedCall; calls?: ScriptedCall[] };
 
 /** What a request carried: the roles of the messages, the start of the system prompt, the names of the tools offered, and the last user text. */
 export interface SeenRequest {
@@ -33,16 +34,18 @@ export function scriptedCloud(modelId: string, script: ScriptedTurn[], seen: See
     const messages = context.messages as { role: string; content?: unknown }[];
     // the system prompt and the tools are system messages in the transcript (deltas): read them the way a provider does
     const tools = (getCurrentTools(messages as never) as { name: string }[]).map((t) => t.name);
-    const system = String(getCurrentSystemPrompt(messages as never) ?? "").replace(/\s+/g, " ").slice(0, 160);
+    const instructions = String(getCurrentSystemPrompt(messages as never) ?? "");
+    const system = instructions.replace(/\s+/g, " ").slice(0, 160);
     seen.push({ model: model.id, roles: messages.map((m) => m.role), system, tools, lastUser: textOf([...messages].reverse().find((m) => m.role === "user")?.content) });
     const turn = script[Math.min(next++, script.length - 1)] ?? { text: "(no script)" };
     queueMicrotask(() => {
       stream.push({ type: "start", partial: output });
-      if (turn.text) {
-        output.content.push({ type: "text", text: turn.text });
+      const text = turn.reply ? turn.reply(instructions) : turn.text;
+      if (text) {
+        output.content.push({ type: "text", text });
         stream.push({ type: "text_start", contentIndex: 0, partial: output });
-        stream.push({ type: "text_delta", contentIndex: 0, delta: turn.text, partial: output });
-        stream.push({ type: "text_end", contentIndex: 0, content: turn.text, partial: output });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
+        stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
       }
       const calls = [...(turn.call ? [turn.call] : []), ...(turn.calls ?? [])];
       calls.forEach((c, i) => {
