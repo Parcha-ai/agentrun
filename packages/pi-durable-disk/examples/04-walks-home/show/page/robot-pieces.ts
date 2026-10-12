@@ -3,7 +3,8 @@
 // D2's per-skill files read from the run's disk). A page that lacks an element skips that piece; with no tab and no threads every piece is empty.
 import { changeCardHtml, checkinLine, checkinNote, fileChanges, homecomingLine, homecomingNote, netBadge, netNote, routingCardHtml, toolStripHtml } from "../robot-view.ts";
 import { relearnHtml, relearnSummary } from "../relearn.ts";
-import { LandingDriver, threadsHtml } from "../threads-view.ts";
+import { SKILLS } from "../skills.ts";
+import { LandingDriver, runIsHome, threadsHtml, threadsPhase } from "../threads-view.ts";
 import type { Note, ShowState } from "../types.ts";
 import { apiUrl } from "./api-base.ts";
 import { esc } from "./dom.ts";
@@ -95,7 +96,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   }, 1000);
   // With no word from the tab about skills going in, they land in the robot one after another once every thread has finished and the run is home.
   setInterval(() => {
-    const id = landing.next(feed.state.threads, feed.state.place.where === "home");
+    const id = landing.next(feed.state.threads, runIsHome(feed.state));
     if (id) feed.fold({ t: "thread", at: feed.captionNow(), id, patch: { home: true } });
   }, 450);
 
@@ -133,12 +134,14 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   }
 
   function renderThreads(state: ShowState): void {
-    const html = threadsHtml(state.threads);
+    const html = threadsHtml(state.threads, SKILLS);
     if (html === threadsKey) return;
     threadsKey = html;
     const box = el("threads");
     if (!box) return;
     box.hidden = html === "";
+    // The phase on the element: while they learn the tiles fill the pane; after, only a strip over the top, so the real creature beneath stays visible.
+    box.dataset.phase = threadsPhase(state.threads);
     box.innerHTML = html;
   }
 

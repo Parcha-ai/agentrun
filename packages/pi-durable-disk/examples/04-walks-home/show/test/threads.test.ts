@@ -149,3 +149,48 @@ test("the landing driver: once the tab has said a skill is installed the stage s
   d.reset();
   assert.equal(d.next(base, true), "t0", "a retake: what the page knew about the old run is gone");
 });
+
+// ---- What the first live run showed (D4's rehearsal, 2026-10-12): the live feed's place after coming back is "tab" (not "home"), so the skills never landed; the threads appeared one by one, so the
+// header said "split into 1 thread" and grew; and the cartoon robot covered the real creature under it.
+import { runIsHome, withExpected } from "../threads-view.ts";
+import { SKILLS as EIGHT, SKILL_LABELS } from "../skills.ts";
+
+test("the run is home when the place says home, or when it is back in the tab after being away (the live feed says tab); never while it is away or has not left", () => {
+  const away = { stays: [{ id: "s1", lane: "run", host: "your browser", hostKind: "tab", from: 0 }, { id: "s2", lane: "run", host: "a Modal VM", hostKind: "vm", from: 5 }] };
+  assert.equal(runIsHome({ place: { where: "home", host: "x" }, stays: [] } as never), true);
+  assert.equal(runIsHome({ place: { where: "tab", host: "your browser" }, ...away } as never), true, "back in the tab after a stay on a VM");
+  assert.equal(runIsHome({ place: { where: "tab", host: "your browser" }, stays: [away.stays[0]] } as never), false, "never left: not home from anywhere");
+  assert.equal(runIsHome({ place: { where: "cloud", host: "a Modal VM" }, ...away } as never), false);
+  assert.equal(runIsHome({ place: { where: "moving", to: "your browser", host: "a Modal VM" }, ...away } as never), false);
+});
+
+test("while the threads learn, the skills that have no thread yet are shown waiting for their box, so the agent is one agent split into eight from the first thread on; they do not count toward the phase", () => {
+  // The threads are named by their skill (the poller makes them from the skill folders).
+  const byDir = (dir: string): ShowEvent => ({ t: "thread", at: 1, id: dir, patch: { skill: dir, host: null, status: "learning" } });
+  const one = fold([run, byDir("walk")]).threads;
+  const shown = withExpected(one, EIGHT);
+  assert.deepEqual(shown.map((t) => t.id), [...EIGHT]);
+  assert.equal(shown[0]!.status, "learning", "the real thread keeps its own status");
+  assert.equal(shown[1]!.status, "starting");
+  assert.equal(shown[5]!.skill, SKILL_LABELS.spin);
+  assert.equal(shown[5]!.status, "starting");
+  assert.match(threadsHtml(one, EIGHT), /The agent split into 8 threads, one per GPU/);
+  assert.equal((threadsHtml(one, EIGHT).match(/class="tile"/g) ?? []).length, 8);
+  assert.match(threadsHtml(one, EIGHT), /getting a GPU/);
+  // Only the real threads decide the phase: a run that teaches fewer skills still lands them.
+  const three = fold([run, byDir("walk"), byDir("sprint"), byDir("spin")]).threads.map((t) => ({ ...t, status: "done" as const }));
+  assert.equal(threadsPhase(three), "landing");
+  assert.doesNotMatch(threadsHtml(three, EIGHT), /class="tile"/, "once they have finished, the placeholders are gone");
+  // No thread yet: nothing is shown (the stage does not announce eight threads before there is one).
+  assert.equal(threadsHtml([], EIGHT), "");
+  // A thread whose id is not one of the eight stays, after them.
+  assert.deepEqual(withExpected(fold([run, byDir("walk"), { t: "thread", at: 1, id: "extra", patch: { skill: "x", status: "starting" } } as ShowEvent]).threads, EIGHT).map((t) => t.id).slice(-1), ["extra"]);
+});
+
+test("landing and home show the skills and the count but not a drawing of a robot: the real creature in the page stays visible beneath", () => {
+  const base = fold([run, ...SKILLS.map((_, i) => start(i))]).threads.map((t) => ({ ...t, status: "done" as const }));
+  const html = threadsHtml(base.map((t, i) => ({ ...t, home: i < 3 })));
+  assert.doesNotMatch(html, /<svg class="robot"/);
+  assert.match(html, /3 of 8 skills are in the robot/);
+  assert.equal((html.match(/class="skill in"/g) ?? []).length, 3);
+});
