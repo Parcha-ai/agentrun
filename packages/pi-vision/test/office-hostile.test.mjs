@@ -1,6 +1,8 @@
-// Hostile office files, built here: each is a typed miss inside a bounded time and memory, never a hang, a crash or a
+// Hostile office files, built here: each is a typed miss inside bounded work and memory, never a hang, a crash or a
 // huge string handed to the model. The sizes are real (a 40 MiB bomb is built and deflated in the test), so the caps
-// are exercised as the defaults are set; the few tests that lower a limit say so.
+// are exercised as the defaults are set; the few tests that lower a limit say so. The bound is held in work, counted
+// by `countWork` (bytes inflated, cells built, the longest string joined), never in milliseconds: a loaded machine
+// would flake a time bound, and a reader whose cap was removed fails these tests by the work it does.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -8,6 +10,7 @@ import { OFFICE_LIMITS, OfficeMissError, zipDirectory } from "@parcha/pi-vision"
 import { officeJsProvider } from "@parcha/pi-vision/providers/office-js";
 import { strToU8, zipSync } from "fflate";
 import { WORD, c, docx, item, odf, para, pptx, sheetXml, shape, workspace, wordPart, xlsx } from "./office-fixtures.mjs";
+import { countWork } from "./office-work.mjs";
 
 const provider = officeJsProvider();
 const MiB = 1024 * 1024;
@@ -20,15 +23,6 @@ const cellsOf = async (t, bytes) => {
   const w = await workspace(t);
   return (await provider.cells(await w.source("hostile.bin", bytes, "sheet"), {}, w.call())).sheets;
 };
-/** The same call, timed: a hostile file is answered within `ms`. */
-const within = async (ms, run) => {
-  const started = performance.now();
-  try {
-    return await run();
-  } finally {
-    assert.ok(performance.now() - started < ms, `answered within ${ms} ms, took ${Math.round(performance.now() - started)} ms`);
-  }
-};
 const centralEntries = (bytes) => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const at = [];
@@ -36,11 +30,24 @@ const centralEntries = (bytes) => {
   return { view, at };
 };
 const bomb = (mib) => zipSync({ "word/document.xml": new Uint8Array(mib * MiB) }, { level: 1 });
+/** The most one push of the inflater writes: 8 KiB of compressed bytes at deflate's ceiling of 1,032 to 1. */
+const MOST_ONE_PUSH = 8192 * 1032;
+/** The longest string a read may build: twice the text budget, which is the part cap. */
+const MOST_ONE_STRING = 2 * OFFICE_LIMITS.maxPartBytes;
+
+test("the counters see the inflater: reading a word document inflates its parts, and only those", async (t) => {
+  const work = countWork(t);
+  assert.equal((await textOf(t, docx(para("x"))))[0].text, "x");
+  assert.ok(work.pushes >= 2 && work.bytesOut > 0, `inflated ${work.bytesOut} bytes in ${work.pushes} pushes`);
+  assert.ok(work.bytesOut < 20_000, "the parts of a one paragraph document are a few kilobytes");
+});
 
 test("a zip bomb that declares its size is refused by its ratio before anything is inflated", async (t) => {
   const bytes = bomb(120);
   assert.ok(bytes.length < 400 * 1024, `120 MiB of zeros deflates to ${bytes.length} bytes`);
-  await within(1500, () => assert.rejects(textOf(t, bytes), misses("over_budget", /declares 120\.0 MiB from 0\.[0-9] MiB, over 100 to 1/)));
+  const work = countWork(t);
+  await assert.rejects(textOf(t, bytes), misses("over_budget", /declares 120\.0 MiB from 0\.[0-9] MiB, over 100 to 1/));
+  assert.equal(work.pushes, 0, "not one byte of it was inflated");
 });
 
 test("a zip bomb that lies about its size is stopped by the size it declares while it inflates, in one push of the inflater", async (t) => {
@@ -49,13 +56,18 @@ test("a zip bomb that lies about its size is stopped by the size it declares whi
   view.setUint32(at[0] + 24, 1000, true);
   assert.equal(zipDirectory(bytes)[0].originalSize, 1000, "the directory now declares 1000 bytes, which passes every declared check");
   const w = await workspace(t);
-  const error = await within(1500, () => w.source("lie.docx", bytes).then((source) => provider.text(source, {}, w.call())).then(() => assert.fail("read a bomb"), (e) => e));
+  const work = countWork(t);
+  const error = await w.source("lie.docx", bytes).then((source) => provider.text(source, {}, w.call())).then(() => assert.fail("read a bomb"), (e) => e);
   assert.ok(error instanceof OfficeMissError && error.code === "unreadable" && error.message === "word/document.xml inflates past the size its directory declares", error.message);
+  assert.equal(work.pushes, 1, "it was stopped by the first push of the inflater");
+  assert.ok(work.bytesOut > 1000 && work.bytesOut <= MOST_ONE_PUSH, `${work.bytesOut} of its 40 MiB were inflated, at most one push's worth`);
 });
 
 test("an archive of too many entries is refused by the count", async (t) => {
   const files = Object.fromEntries(Array.from({ length: 12_000 }, (_, i) => [`f${i}.txt`, new Uint8Array(1)]));
-  await within(1500, () => assert.rejects(textOf(t, zipSync(files)), misses("over_budget", /holds 12000 entries, over the 10000 the reader takes/)));
+  const work = countWork(t);
+  await assert.rejects(textOf(t, zipSync(files)), misses("over_budget", /holds 12000 entries, over the 10000 the reader takes/));
+  assert.equal(work.pushes, 0, "no entry was inflated");
 });
 
 test("an archive that declares more than the total allowed is refused, and the limits are set per provider", async (t) => {
@@ -69,19 +81,25 @@ test("a part over the cap is refused by its size without being parsed, however i
   const filler = randomBytes(Math.floor(3.9 * MiB)).toString("base64");
   const bytes = zipSync({ "word/document.xml": strToU8(`<w:document xmlns:w="x"><w:body><w:p><w:r><w:t>${filler}</w:t></w:r></w:p></w:body></w:document>`) });
   assert.ok(bytes.length < 5.3 * MiB && bytes.length > 3.5 * MiB, "incompressible, so the ratio guard does not fire");
-  await within(1500, () => assert.rejects(textOf(t, bytes), misses("over_budget", /word\/document\.xml is 5\.\d MiB, over the 4\.0 MiB the reader takes of one part; read it with bash/)));
+  const work = countWork(t);
+  await assert.rejects(textOf(t, bytes), misses("over_budget", /word\/document\.xml is 5\.\d MiB, over the 4\.0 MiB the reader takes of one part; read it with bash/));
+  assert.equal(work.pushes, 0, "it was refused by its declared size, before a byte of it was inflated");
 });
 
 test("a huge sheet is a typed miss naming the sheet's part", async (t) => {
   const rows = [];
   for (let n = 1; rows.length < 35_000; n++) rows.push([n, c(`A${n}`, `<v>${Math.random()}</v>`), c(`B${n}`, `<v>${Math.random()}</v>`), c(`C${n}`, `<v>${Math.random()}</v>`)]);
   const bytes = xlsx({ sheets: [{ name: "Big", xml: sheetXml(rows) }] });
-  await within(3000, () => assert.rejects(cellsOf(t, bytes), misses("over_budget", /xl\/worksheets\/sheet1\.xml is \d+\.\d MiB, over the 4\.0 MiB/)));
+  const work = countWork(t);
+  await assert.rejects(cellsOf(t, bytes), misses("over_budget", /xl\/worksheets\/sheet1\.xml is \d+\.\d MiB, over the 4\.0 MiB/));
+  assert.ok(work.bytesOut < 200_000, `${work.bytesOut} bytes inflated: the workbook's small parts, never the sheet`);
 });
 
-test("a sheet whose repeat counts expand to billions of cells stops at the cell cap, quickly", async (t) => {
+test("a sheet whose repeat counts expand to billions of cells stops at the cell cap", async (t) => {
   const body = '<table:table table:name="Wide"><table:table-row table:number-rows-repeated="1048576"><table:table-cell office:value-type="string"><text:p>x</text:p></table:table-cell><table:table-cell table:number-columns-repeated="16384" office:value-type="float" office:value="1"/></table:table-row></table:table>';
-  await within(3000, () => assert.rejects(cellsOf(t, odf("spreadsheet", body)), misses("over_budget", /the sheet Wide holds more than 250000 cells, over what the reader builds/)));
+  const work = countWork(t, { cells: OFFICE_LIMITS.maxCells });
+  await assert.rejects(cellsOf(t, odf("spreadsheet", body)), misses("over_budget", /the sheet Wide holds more than 250000 cells, over what the reader builds/));
+  assert.equal(work.cells, OFFICE_LIMITS.maxCells, "it built the cap and not one cell more");
 });
 
 test("repeat and span counts that name billions read as the widest a table or sheet can be", async (t) => {
@@ -99,7 +117,7 @@ test("repeat and span counts that name billions read as the widest a table or sh
 test("a part nested deeper than the reader walks is over budget before it is walked, however deep", async (t) => {
   const nested = (depth) => docx(`${"<w:sdt><w:sdtContent>".repeat(depth)}${para("buried")}${"</w:sdtContent></w:sdt>".repeat(depth)}`);
   assert.equal((await textOf(t, nested(100)))[0].text, "buried", "a hundred levels read");
-  await within(5000, () => assert.rejects(textOf(t, nested(20_000)), misses("over_budget", /^word\/document\.xml nests more than 256 levels deep/)));
+  await assert.rejects(textOf(t, nested(20_000)), misses("over_budget", /^word\/document\.xml nests more than 256 levels deep/));
   await assert.rejects(textOf(t, nested(130)), misses("over_budget", /nests more than 256 levels deep/), "an sdt and its content are two levels each");
 });
 
@@ -107,15 +125,13 @@ test("a part with more elements than the reader takes is over budget before it i
   const dense = (count) => docx(`<w:p>${"<w:r/>".repeat(count)}<w:r><w:t>x</w:t></w:r></w:p>`);
   const lenient = officeJsProvider({ limits: { maxRatio: 1_000_000 } });
   assert.equal((await textOf(t, dense(1000), {}, lenient))[0].text, "x");
-  const started = performance.now();
   await assert.rejects(textOf(t, dense(520_000), {}, lenient), misses("over_budget", /^word\/document\.xml holds 520\d{3} elements, over the 500000 the reader takes of one part/));
-  assert.ok(performance.now() - started < 3000, "refused before its parse, which takes seconds");
 });
 
 test("an entity bomb is not expanded: the part is unreadable, and nothing of it reaches the text", async (t) => {
   const lol = '<!DOCTYPE d [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;"><!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;"><!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">]>';
   const bytes = zipSync({ "word/document.xml": strToU8(`<?xml version="1.0"?>${lol}<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>&d;</w:t></w:r></w:p></w:body></w:document>`) });
-  await within(1500, () => assert.rejects(textOf(t, bytes), misses("unreadable", /the file could not be read: .*entity not found/)));
+  await assert.rejects(textOf(t, bytes), misses("unreadable", /the file could not be read: .*entity not found/));
 });
 
 test("a file with a deck of parts is held to the parsed total, and the total is the provider's to set", async (t) => {
@@ -174,13 +190,17 @@ test("tables nested in tables that repeat their cells are held to the text budge
   const nest = (depth) => (depth === 0 ? "<text:p>seed</text:p>" : `<table:table><table:table-row><table:table-cell table:number-columns-repeated="63">${nest(depth - 1)}</table:table-cell></table:table-row></table:table>`);
   const [{ text }] = await textOf(t, odf("text", nest(1)));
   assert.equal(text.split(" | ").length, 63, "one level reads");
-  await within(2000, () => assert.rejects(textOf(t, odf("text", nest(9))), misses("over_budget", /the text of this file grows past what the reader builds/)));
+  const work = countWork(t, { join: MOST_ONE_STRING });
+  await assert.rejects(textOf(t, odf("text", nest(9))), misses("over_budget", /the text of this file grows past what the reader builds/));
+  assert.ok(work.longestJoin <= MOST_ONE_STRING, `the longest string built was ${work.longestJoin} characters`);
 });
 
 test("a table row that repeats is read as many times as it says, empty repeated rows cost nothing, and a repeat of billions is over budget", async (t) => {
   const row = (times, cell) => `<table:table-row table:number-rows-repeated="${times}"><table:table-cell>${cell}</table:table-cell></table:table-row>`;
   assert.deepEqual(await textOf(t, odf("text", `<table:table>${row(3, "<text:p>again</text:p>")}${row(1_048_000, "")}</table:table>`)), [{ page: 1, text: "| again |\n| again |\n| again |" }]);
-  await within(2000, () => assert.rejects(textOf(t, odf("text", `<table:table>${row(1_048_576, "<text:p>again</text:p>")}</table:table>`)), misses("over_budget", /the text of this file grows past what the reader builds/)));
+  const work = countWork(t, { join: MOST_ONE_STRING });
+  await assert.rejects(textOf(t, odf("text", `<table:table>${row(1_048_576, "<text:p>again</text:p>")}</table:table>`)), misses("over_budget", /the text of this file grows past what the reader builds/));
+  assert.ok(work.longestJoin <= MOST_ONE_STRING, "the million rows were never joined into one string");
 });
 
 test("list labels that grow with the number they start at are charged to the text budget, like any other text", async (t) => {
@@ -188,7 +208,7 @@ test("list labels that grow with the number they start at are charged to the tex
   const few = docx(Array.from({ length: 10 }, () => item("x", 1)).join(""), { "word/numbering.xml": numbering });
   assert.equal((await textOf(t, few))[0].text.split("\n").length, 10, "ten such labels read");
   const many = docx(Array.from({ length: 4000 }, () => item("x", 1)).join(""), { "word/numbering.xml": numbering });
-  await within(3000, () => assert.rejects(textOf(t, many), misses("over_budget", /the text of this file grows past what the reader builds/)));
+  await assert.rejects(textOf(t, many), misses("over_budget", /the text of this file grows past what the reader builds/));
 });
 
 test("a shared formula whose master is huge is charged to the text budget once for every cell that shares it", async (t) => {
@@ -196,11 +216,13 @@ test("a shared formula whose master is huge is charged to the text budget once f
   const dependents = Array.from({ length: 100 }, (_, i) => c(`A${i + 2}`, '<f t="shared" si="0"/><v>1</v>'));
   const rows = [[1, c("A1", `<f t="shared" ref="A1:A101" si="0">${master}</f><v>1</v>`)], ...dependents.map((cell, i) => [i + 2, cell])];
   const bytes = xlsx({ sheets: [{ name: "S", xml: sheetXml(rows) }] });
-  await within(3000, () => assert.rejects(cellsOf(t, bytes), misses("over_budget", /the text of this file grows past what the reader builds/)));
+  await assert.rejects(cellsOf(t, bytes), misses("over_budget", /the text of this file grows past what the reader builds/));
 });
 
 test("a spreadsheet cell with a long value that a repeat count copies thousands of times is charged to the text budget", async (t) => {
   const value = randomBytes(75_000).toString("base64");
   const body = `<table:table table:name="Wide"><table:table-row><table:table-cell table:number-columns-repeated="16384" office:value-type="string" office:string-value="${value}"/></table:table-row></table:table>`;
-  await within(3000, () => assert.rejects(cellsOf(t, odf("spreadsheet", body)), misses("over_budget", /the text of this file grows past what the reader builds/)));
+  const work = countWork(t);
+  await assert.rejects(cellsOf(t, odf("spreadsheet", body)), misses("over_budget", /the text of this file grows past what the reader builds/));
+  assert.ok(work.cells < 500, `${work.cells} of the 16,384 copies were built before the budget stopped it`);
 });
