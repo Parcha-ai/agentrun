@@ -47,6 +47,9 @@ export const NAME_MAX = 24;
 /** Every skill the cluster teaches (D2's eight); only the ones that came home (home/skills.json) can be chosen. */
 export const SKILL_NAMES = ["walk", "sprint", "backwards", "turn-left", "turn-right", "spin", "wave", "get-up"] as const;
 export const SKILL_CHANGED = "The body is unchanged: the walking brain still fits.";
+/** After the body was edited, this tool cannot know which body a skill was taught for: it says what is true, not that the brain fits. */
+export const SKILL_ON_CHANGED_BODY = "The body has been changed since it was drawn: a skill taught for another body makes the robot stumble until it is retrained.";
+const skillTail = (state: RobotState): string => (bodyKey(state.design) === bodyKey(state.original) ? SKILL_CHANGED : SKILL_ON_CHANGED_BODY);
 
 export interface Look {
   /** The torso's colour; null keeps the page's own. */
@@ -89,6 +92,7 @@ const inRange = (v: number, [lo, hi]: readonly [number, number] | readonly numbe
 /** The problems of a design (empty: buildable): the same rules as 04-walks-home/tab/src/design.ts. */
 export function validateDesign(d: Design): string[] {
   const errs: string[] = [];
+  if (!d || typeof d !== "object" || !d.torso || typeof d.torso !== "object") return ["the design has no torso"];
   if (d.version !== 1) errs.push(`version must be 1, got ${d.version}`);
   if (d.legDof !== undefined && d.legDof !== 2 && d.legDof !== 3) errs.push(`legDof must be 2 or 3, got ${d.legDof}`);
   for (const k of ["length", "width", "height"] as const) if (!inRange(d.torso[k], LIMITS.torso[k])) errs.push(`torso.${k} ${d.torso[k]} outside ${LIMITS.torso[k]}`);
@@ -244,8 +248,8 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
         state.design = clone(state.original);
         state.look = defaultLook();
         state.name = state.original.name;
-        if (same({ ...state }, prev) && JSON.stringify(state.look) === JSON.stringify(prev.look)) return { state: prev, text: "No change: the robot is already the one the user drew.", kind: "none" };
-        return done("body", "The robot is the one the user drew again.");
+        if (same({ ...state }, prev) && state.name === prev.name && JSON.stringify(state.look) === JSON.stringify(prev.look)) return { state: prev, text: "No change: the robot is already the one the user drew.", kind: "none" };
+        return done(same(state, prev) ? "looks" : "body", "The robot is the one the user drew again."); // the body is what changes the brain: undoing only looks does not ask for retraining
       }
       const target = MORPHS[preset as Exclude<(typeof MORPH_PRESETS)[number], "original">];
       state.design = { ...clone(target.design), name: state.design.name } as Design;
@@ -261,7 +265,7 @@ export function applyRobotTool(prev: RobotState, tool: string, args: Record<stri
       if ((prev.skill ?? "walk") === skill && prev.skill !== undefined) return { state: prev, text: `No change: the robot is already doing ${skill}.`, kind: "none" };
       state.skill = skill;
       const label = context.skills?.[skill]?.label;
-      return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${SKILL_CHANGED}`);
+      return done("skill", `The robot is now doing ${skill}${label && label !== skill ? ` (${label})` : ""}. ${skillTail(state)}`);
     }
     case "reset": {
       state.design = clone(state.original);
@@ -280,10 +284,20 @@ export function parseRobot(text: string): RobotState | undefined {
   let v: unknown;
   try { v = JSON.parse(text); } catch { return undefined; }
   const s = v as Partial<RobotState> | null;
-  if (!s || typeof s !== "object" || s.version !== 1 || typeof s.name !== "string" || !s.design || !s.original || !s.look || !Array.isArray(s.look.legs)) return undefined;
+  if (!s || typeof s !== "object" || s.version !== 1 || typeof s.name !== "string" || !s.design || !s.original || !validLook(s.look)) return undefined;
+  if (!Number.isInteger(s.edits) || (s.edits as number) < 0) return undefined;
   if (validateDesign(s.design).length > 0 || validateDesign(s.original).length > 0) return undefined;
   if (s.skill !== undefined && typeof s.skill !== "string") return undefined;
   return s as RobotState;
+}
+
+/** The whole look, every field the tools read: a file missing one would parse and then throw on the next edit. */
+function validLook(l: unknown): l is Look {
+  const k = l as Partial<Look> | null;
+  if (!k || typeof k !== "object") return false;
+  const colour = (c: unknown) => c === null || COLOR_NAMES.includes(c as never);
+  return colour(k.torso) && Array.isArray(k.legs) && k.legs.length === 3 && k.legs.every(colour)
+    && !!k.shape && SHAPE_NAMES.includes(k.shape.torso as never) && SHAPE_NAMES.includes(k.shape.legs as never) && FACE_NAMES.includes(k.face as never);
 }
 
 export const serializeRobot = (s: RobotState): string => `${JSON.stringify(s, null, 1)}\n`;
@@ -318,10 +332,12 @@ export function applyUpdateRobot(prev: RobotState, args: Record<string, unknown>
     if (o.kind === "body" || (o.kind === "looks" && kind !== "body") || (o.kind === "skill" && kind === "none")) kind = o.kind;
     if (o.kind !== "none") applied++;
     state = o.state;
-    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, "").replace(` ${SKILL_CHANGED}`, ""));
+    lines.push(o.text.replace(` ${LOOKS_ONLY}`, "").replace(` ${BODY_CHANGED}`, "").replace(` ${SKILL_CHANGED}`, "").replace(` ${SKILL_ON_CHANGED_BODY}`, ""));
   }
   if (applied === 0 && refused > 0) return { state: prev, text: lines.join(" "), kind: "refused" };
   if (applied === 0) return { state: prev, text: lines.join(" "), kind: "none" };
-  const tail = kind === "body" ? BODY_CHANGED : kind === "skill" ? SKILL_CHANGED : LOOKS_ONLY;
-  return { state: { ...state, edits: prev.edits + 1 }, text: `${lines.join(" ")} ${tail}`, kind };
+  const tail = kind === "body" ? BODY_CHANGED : kind === "skill" ? skillTail(state) : LOOKS_ONLY;
+  // the edit count is what the page shows the name by: a reset starts it again, and the steps after the reset count as they would one by one (reset 0, then 1 for each)
+  const reset = steps.some(([t]) => t === "reset");
+  return { state: { ...state, edits: reset ? state.edits : prev.edits + 1 }, text: `${lines.join(" ")} ${tail}`, kind };
 }

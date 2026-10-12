@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LIMITS as PAGE_LIMITS, PRESETS, defaultDesign, validateDesign as pageValidate } from "../../04-walks-home/tab/src/design.ts";
-import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, REACH, applyRobotTool, bodyKey, initialRobot, morphDesign, parseRobot, reachRatio, serializeRobot, validateDesign } from "../robot-model.ts";
+import { BODY_CHANGED, COLOR_NAMES, LIMITS, LOOKS_ONLY, MORPH_PRESETS, REACH, SKILL_CHANGED, SKILL_ON_CHANGED_BODY, applyRobotTool, applyUpdateRobot, bodyKey, initialRobot, morphDesign, parseRobot, reachRatio, serializeRobot, validateDesign } from "../robot-model.ts";
 
 const robot = () => initialRobot(defaultDesign());
 const call = (s: ReturnType<typeof robot>, tool: string, args: Record<string, unknown>) => applyRobotTool(s, tool, args);
@@ -248,4 +248,55 @@ test("a leg longer than 1.5 torso lengths is refused: every preset keeps within 
   assert.equal(ok.kind, "body");
   const whole = applyRobotTool(dog, "scale", { factor: 1.3 });
   assert.equal(whole.kind, "body", "scaling the whole robot keeps the ratio");
+});
+
+test("a file the tools would trip over is not a robot: every part of the look and the count must be there, and a body without a torso is a refusal, not a throw", () => {
+  const good = JSON.parse(serializeRobot(robot()));
+  assert.ok(parseRobot(JSON.stringify(good)));
+  const without = (f: (s: any) => void) => { const s = JSON.parse(JSON.stringify(good)); f(s); return parseRobot(JSON.stringify(s)); };
+  assert.equal(without((s) => { s.look.legs = []; delete s.look.shape; }), undefined, "no shape");
+  assert.equal(without((s) => { delete s.look.shape; }), undefined);
+  assert.equal(without((s) => { delete s.look.face; }), undefined, "no face");
+  assert.equal(without((s) => { delete s.edits; }), undefined, "no edit count");
+  assert.equal(without((s) => { delete s.design.torso; }), undefined, "no torso");
+  assert.equal(without((s) => { delete s.original.torso; }), undefined);
+  assert.equal(without((s) => { s.look.torso = "teal"; }), undefined, "a colour that is not one of the names");
+  assert.equal(without((s) => { s.look.legs = ["red", "red"]; }), undefined, "three leg looks");
+});
+
+test("morph original: the name comes back too, and undoing only looks is a looks change that does not ask for retraining", () => {
+  const renamed = call(call(robot(), "rename", { name: "Rex" }).state, "morph", { preset: "original" });
+  assert.equal(renamed.kind, "looks");
+  assert.equal(renamed.state.name, robot().name, "the drawn name is back");
+  assert.match(renamed.text, /Looks only/);
+  const painted = call(call(robot(), "set_color", { part: "all", color: "red" }).state, "morph", { preset: "original" });
+  assert.equal(painted.kind, "looks", "the body never changed, so the brain still fits");
+  assert.doesNotMatch(painted.text, /no longer fits/);
+  const spider = call(robot(), "morph", { preset: "spider" }).state;
+  assert.equal(call(spider, "morph", { preset: "original" }).kind, "body");
+  assert.equal(call(robot(), "morph", { preset: "original" }).kind, "none", "nothing to undo");
+});
+
+test("do after a body edit does not say the brain fits: this tool cannot know which body the skill was taught for", () => {
+  const skills = { walk: {}, sprint: {} };
+  const resized = call2(robot(), "resize", { part: "leg_length", factor: 1.1 }).state;
+  const o = call2(resized, "do", { skill: "sprint" }, { skills });
+  assert.equal(o.kind, "skill");
+  assert.ok(o.text.endsWith(SKILL_ON_CHANGED_BODY), o.text);
+  assert.ok(!o.text.includes(SKILL_CHANGED));
+  assert.ok(call2(robot(), "do", { skill: "sprint" }, { skills }).text.endsWith(SKILL_CHANGED), "on the drawn body the old promise stands");
+  const flat = applyUpdateRobot(resized, { skill: "sprint" }, { skills });
+  assert.ok(flat.text.endsWith(SKILL_ON_CHANGED_BODY), flat.text);
+});
+
+test("the flat reset counts edits as the same asks one by one do: reset is 0, each change after it is one more", () => {
+  const edited = call(call(robot(), "rename", { name: "Rex" }).state, "set_color", { part: "all", color: "red" }).state;
+  assert.equal(edited.edits, 2);
+  assert.equal(applyUpdateRobot(edited, { reset: true }).state.edits, 0, "the name is hidden again, as after the plain reset");
+  const same = call(edited, "reset", {});
+  assert.equal(same.state.edits, 0);
+  const both = applyUpdateRobot(edited, { reset: true, color: "blue" });
+  const oneByOne = call(call(edited, "reset", {}).state, "set_color", { part: "all", color: "blue" }).state;
+  assert.equal(both.state.edits, oneByOne.edits);
+  assert.equal(applyUpdateRobot(robot(), { color: "red" }).state.edits, 1);
 });
