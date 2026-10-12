@@ -110,6 +110,34 @@ class Deadline(Exception):
   pass
 
 
+def checkpoint_due(schedule: list[int], every: int, epoch_steps: int):
+  """With a schedule, is_due(total_steps), called once per epoch end, says whether that epoch checkpoints: the epoch
+  ending nearest each scheduled point, then nearest each cadence point (the last point + every, + 2 every, ...).
+  Each point is a target kept until an epoch handles it, so none is skipped when an epoch ends just past it."""
+  due = sorted(schedule)
+  cadence = {"next": max(schedule) + every} if schedule else {}
+
+  def is_due(total_steps: int) -> bool:
+    if not schedule:
+      return True
+    half = epoch_steps / 2
+    while due and due[0] < total_steps - half:  # more than half an epoch behind (a resumed run starts past it)
+      due.pop(0)
+    if due:
+      if total_steps + half >= due[0]:
+        due.pop(0)
+        return True
+      return False
+    while cadence["next"] < total_steps - half:
+      cadence["next"] += every
+    if total_steps + half >= cadence["next"]:
+      cadence["next"] += every
+      return True
+    return False
+
+  return is_due
+
+
 def main() -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("--mjcf", required=True)
@@ -290,21 +318,7 @@ def main() -> None:
   else:
     updates_per_epoch = max(1, -(-args.checkpoint_steps // env_steps_per_update))
   epoch_steps = updates_per_epoch * env_steps_per_update
-  every = parse_steps(args.checkpoint_every)
-  due_points = sorted(schedule)
-
-  def is_due(total_steps: int) -> bool:
-    """With a schedule: the epoch ending nearest a scheduled point (or a cadence point after the last) checkpoints."""
-    if not schedule:
-      return True
-    while due_points and due_points[0] < total_steps - epoch_steps / 2:
-      due_points.pop(0)
-    nxt = due_points[0] if due_points else ((total_steps - max(schedule)) // every + 1) * every + max(schedule)
-    if total_steps + epoch_steps / 2 >= nxt:
-      if due_points:
-        due_points.pop(0)
-      return True
-    return False
+  is_due = checkpoint_due(schedule, parse_steps(args.checkpoint_every), epoch_steps)
 
   epochs = 1 if args.compile_only else max(1, -(-remaining // epoch_steps))
   remaining = epochs * epoch_steps

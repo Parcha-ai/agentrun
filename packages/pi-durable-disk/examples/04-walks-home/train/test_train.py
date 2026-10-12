@@ -18,7 +18,7 @@ import numpy as np
 import creature_env
 import rollout
 import terrain
-from train import SCORE_UNITS, complete_checkpoints, parse_steps, score_of
+from train import SCORE_UNITS, checkpoint_due, complete_checkpoints, parse_steps, score_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "..", "policy", "test", "fixtures")  # the policy runtime's parity fixture (policy.json)
@@ -124,6 +124,29 @@ class ScheduleTest(unittest.TestCase):
   def test_parse_steps(self):
     self.assertEqual([parse_steps(x) for x in ("0.5M", "1M", "200K", "4000000", " 8m ")],
                      [500_000, 1_000_000, 200_000, 4_000_000, 8_000_000])
+
+
+class CheckpointDueTest(unittest.TestCase):
+  def test_every_point_checkpoints_once_past_the_schedule(self):
+    # The take's schedule and cadence with 491,520-step epochs, to 21M: every scheduled and cadence point gets exactly
+    # the one epoch that ends nearest it (16M, 18M and 20M included: their nearest epochs end just past them).
+    sched = [parse_steps(x) for x in "0.5M,1M,2M,3M,4M,5M,6M,7M,8M,10M".split(",")]
+    epoch, every = 491_520, parse_steps("2M")
+    is_due = checkpoint_due(sched, every, epoch)
+    ends = [epoch * k for k in range(1, 43)]
+    saved = [t for t in ends if is_due(t)]
+    points = sched + [10_000_000 + every * k for k in range(1, 6)]
+    self.assertEqual(len(saved), len(points))
+    for p, t in zip(points, saved):
+      self.assertLessEqual(abs(t - p), epoch / 2, (p, t))
+
+  def test_a_resumed_run_picks_up_the_cadence(self):
+    epoch = 491_520
+    is_due = checkpoint_due([parse_steps("1M")], parse_steps("2M"), epoch)
+    saved = [t for t in (16_000_000 + epoch * k for k in range(0, 10)) if is_due(t)]
+    self.assertEqual(len(saved), 2)  # the 17M and 19M points, nearest epochs only
+    for p, t in zip((17_000_000, 19_000_000), saved):
+      self.assertLessEqual(abs(t - p), epoch / 2, (p, t))
 
 
 class ResumeTest(unittest.TestCase):
