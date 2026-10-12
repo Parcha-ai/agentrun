@@ -6,13 +6,14 @@ import { GpuPool, type PoolBox } from "../gpu-pool.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function world(size: number, opts: { dead?: Set<string>; createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
+function world(size: number, opts: { spares?: number; dead?: Set<string>; createMs?: (i: number) => number; fail?: (i: number) => boolean; removeFails?: (id: string, attempt: number) => boolean; closeWaitMs?: number } = {}) {
   const removed: string[] = [];
   const attempts = new Map<string, number>();
   const created: PoolBox[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const pool = new GpuPool({
     size,
+    ...(opts.spares ? { spares: opts.spares } : {}),
     log: (event, data = {}) => void logs.push({ event, data }),
     alive: async (box) => !(opts.dead?.has(box.id)),
     watchMs: 0,
@@ -257,6 +258,126 @@ describe("the GPU pool: a liveness answer that comes late", () => {
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(pool.status().boxes[0]!.state, "failed", "the late answer was acted on");
     assert.ok(logs.includes("pool.box-dead"));
+    await pool.close();
+  });
+});
+
+describe("the GPU pool: a spare box", () => {
+  it("is ready when the boxes needed are up: a slow box among the extra ones does not hold the start", async () => {
+    // Three boxes made for two needed; the one that is slow (box 1) is the straggler.
+    const w = world(2, { spares: 1, createMs: (i) => (i === 1 ? 400 : 20) });
+    const t0 = Date.now();
+    await w.pool.start();
+    assert.ok(Date.now() - t0 < 300, `ready after ${Date.now() - t0} ms, before the straggler`);
+    assert.equal(w.pool.status().boxes.filter((b) => b.state === "ready").length, 2);
+    assert.equal(w.pool.status().boxes.length, 3);
+    // The straggler lands later and joins the pool as a ready box.
+    await new Promise((r) => setTimeout(r, 450));
+    assert.equal(w.pool.status().boxes.filter((b) => b.state === "ready").length, 3);
+    await w.pool.close();
+    assert.deepEqual(w.removed.sort(), ["sb-0", "sb-1", "sb-2"]);
+  });
+
+  it("a spare stands in for a box that ended, and close removes a straggler that lands after it began", async () => {
+    const w = world(1, { spares: 1, createMs: (i) => (i === 1 ? 300 : 10) });
+    await w.pool.start();
+    const a = await w.pool.acquire("a");
+    w.pool.markDead(a.id, "exit 137");
+    const closing = w.pool.close(); // the spare is still being created
+    await closing;
+    assert.deepEqual(w.removed.sort(), ["sb-0", "sb-1"], "the straggler that landed during close was removed too");
+  });
+});
+
+describe("the GPU pool: idle timeout", () => {
+  it("removes its boxes after sitting unused, leaves them alone while a thread holds one, and makes them again on the next request", async () => {
+    let made = 0;
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const pool = new GpuPool({
+      size: 2,
+      log: (event) => void logs.push(event),
+      create: async () => {
+        const index = made++;
+        return { id: `sb-${index}`, name: `box-${index}`, index: index % 2 };
+      },
+      remove: async (box) => (removed.push(box.id), true),
+      idleMs: 200,
+      watchMs: 0,
+    });
+    await pool.start();
+    const a = await pool.acquire("a"); // a thread holds a box: the pool is in use
+    await new Promise((r) => setTimeout(r, 450));
+    assert.deepEqual(removed, [], "nothing removed while a thread holds a box");
+    pool.release("a");
+    await new Promise((r) => setTimeout(r, 450));
+    assert.deepEqual(removed.sort(), ["sb-0", "sb-1"], "both boxes removed after the pool sat unused");
+    assert.ok(logs.includes("pool.idle-timeout"));
+    assert.deepEqual(pool.status().boxes.map((b) => b.state), ["idle", "idle"]);
+    // The next request makes boxes again and is served.
+    const b = await pool.acquire("b");
+    assert.ok(logs.includes("pool.wake"));
+    assert.notEqual(b.id, a.id, "a new box, not the removed one");
+    await pool.close();
+    assert.ok(removed.join(",").includes(b.id), "and it is removed at close");
+  });
+
+  it("a command running in a box keeps the pool from going idle (touch)", async () => {
+    const removed: string[] = [];
+    const pool = new GpuPool({ size: 1, log: () => undefined, create: async (index) => ({ id: `sb-${index}`, name: "b", index }), remove: async (box) => (removed.push(box.id), true), idleMs: 200, watchMs: 0 });
+    await pool.start();
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 80));
+      pool.touch();
+    }
+    assert.deepEqual(removed, [], "kept alive by activity");
+    await pool.close();
+  });
+});
+
+describe("the GPU pool: idle removal that fails", () => {
+  it("a box that would not be removed is still usable: a request that came during the removal is served, not left waiting for ever", async () => {
+    let made = 0;
+    const pool = new GpuPool({
+      size: 1,
+      log: () => undefined,
+      create: async () => ({ id: `sb-${made}`, name: `box-${made}`, index: made++ }),
+      remove: async () => false, // Modal will not take the removal
+      idleMs: 100,
+      watchMs: 0,
+    });
+    await pool.start();
+    await new Promise((r) => setTimeout(r, 160)); // idle: the removal starts and fails
+    const got = await Promise.race([pool.acquire("a"), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the request waited for ever")), 3_000))]);
+    assert.equal(got.id, "sb-0", "the box that would not go is handed out");
+    await pool.close();
+  });
+});
+
+describe("the GPU pool: waking after a partial idle removal", () => {
+  it("with one box that would not be removed, three waiting threads are all served: the survivor and two new boxes", async () => {
+    let made = 0;
+    const live = new Set<string>();
+    const pool = new GpuPool({
+      size: 3,
+      log: () => undefined,
+      create: async (index) => {
+        const id = `sb-${made++}`;
+        live.add(id);
+        return { id, name: id, index };
+      },
+      remove: async (box) => (box.index === 2 ? false : (live.delete(box.id), true)), // the third box will not go
+      idleMs: 100,
+      watchMs: 0,
+    });
+    await pool.start();
+    await new Promise((r) => setTimeout(r, 180)); // idle: two removed, one stays
+    const got = await Promise.race([
+      Promise.all(["a", "b", "c"].map((t) => pool.acquire(t))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("a thread waited for ever")), 4_000)),
+    ]);
+    assert.equal(new Set(got.map((b) => b.id)).size, 3, "three different boxes");
+    assert.ok(got.some((b) => b.index === 2), "the box that would not go is one of them");
     await pool.close();
   });
 });

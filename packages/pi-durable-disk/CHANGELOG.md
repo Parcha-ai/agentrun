@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `AppOptions.wrapEnv(env, claim)`: an app module can wrap the run's environment once the claim is open, so a host that gives some
+  conversations an environment of their own (a thread's tools on its own machine) answers for those and hands every other conversation to
+  the run's environment. The wrapper keeps `env.cleanup`. Without it nothing changes.
 - A busy unmount is asked again before it fails: `archil unmount` that refuses with "Device or resource busy" is retried up to four more times, half a
   second apart, while the mount is live, so a holder that lets go a moment later (a read that was in flight when the run was handed over, seen live
   as a run parked after a move) no longer parks the run. A mount that stays busy is still `UNMOUNT_FAILED` and is never forced.

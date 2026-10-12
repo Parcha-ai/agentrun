@@ -14,8 +14,9 @@
 // and deleted when the run leaves it (stopRemote), on close, and by Modal itself at its timeout.
 //   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET in the server's environment; the boxes never get them.
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, removeMountToken, sandboxName } from "@parcha/pi-durable-disk";
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
@@ -117,6 +118,8 @@ export interface ModalCloudOptions {
   readonly rewarm?: boolean;
   /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
   readonly closeWaitMs?: number;
+  /** The session on the VM teaches skills on the cluster: the cloud app gets `teach_skills`, `train_skill` and the per-thread environments (robot-extra.ts). Needs `cluster` and the link. */
+  readonly robot?: boolean;
   /**
    * The robot cluster beat: N GPU boxes created in parallel as soon as this cloud exists (so they are warm when someone asks), lent one per
    * thread to the session on the VM through its link (gpu-rpc.ts). The boxes run commands only for the thread that holds them; the VM never
@@ -124,6 +127,10 @@ export interface ModalCloudOptions {
    */
   readonly cluster?: {
     readonly size: number;
+    /** Remove the boxes after this many minutes unused (nobody holds one, nobody waits, no command ran); the next request makes them again. Default: never. */
+    readonly idleMinutes?: number;
+    /** Extra boxes created alongside the `size` needed, so a slow one cannot hold up the start (they cost like any other box). */
+    readonly spares?: number;
     readonly image: string;
     readonly type?: string;
     readonly cpu?: number;
@@ -150,6 +157,14 @@ export interface ModalCloudOptions {
   /** The Modal SDK; default the `modal` package's client. */
   readonly sdk?: FullSdk;
 }
+
+/** The robot's extra of the cloud app: published path in the box's bundle to its source. robot-extra.ts imports ../cluster/teach-skills.ts, so both keep that relative place. */
+const ROBOT_BUNDLE_FILES: Readonly<Record<string, string>> = {
+  "robot/vm/robot-extra.ts": fileURLToPath(new URL("./robot-extra.ts", import.meta.url)),
+  "robot/cluster/teach-skills.ts": fileURLToPath(new URL("../cluster/teach-skills.ts", import.meta.url)),
+  // D2's assemble-skills and the policy loader it checks with (node alone), side by side: only those that exist in this checkout.
+  ...Object.fromEntries(["assemble-skills.ts", "policy.ts", "obs.ts"].map((f) => [`robot/policy/${f}`, fileURLToPath(new URL(`../policy/${f}`, import.meta.url))]).filter(([, source]) => existsSync(source!))),
+};
 
 /** A GPU sandbox's own lifetime unless the caller says otherwise: the backstop when nothing else removes it (a killed server). */
 export const DEFAULT_GPU_TTL_MINUTES = 20;
@@ -237,6 +252,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     options.cluster && clusterClient
       ? new GpuPool({
           size: options.cluster.size,
+          ...(options.cluster.spares ? { spares: options.cluster.spares } : {}),
+          ...(options.cluster.idleMinutes ? { idleMs: options.cluster.idleMinutes * 60_000 } : {}),
           log: options.log,
           closeWaitMs: options.closeWaitMs ?? 60_000,
           create: async (index, signal) => {
@@ -255,9 +272,11 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               throw new Error(`GPU box ${index} did not place in ${Math.round(timeoutMs / 1000)} s`);
             }
             box = outcome.b;
+            const placeMs = Date.now() - t0;
             // Tracked from the moment it exists: whatever happens next, a box that would not go stays in `live` and close() tries again.
             live.add(box.id);
             const poolBox = { id: box.id, name, index };
+            let lastReady = "";
             try {
               const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
               const readyMs = cluster.readyTimeoutMs ?? 300_000;
@@ -268,10 +287,13 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
                 if (leftS <= 0) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s`);
                 const skill = (cluster.skills ?? ["walk"])[index % (cluster.skills ?? ["walk"]).length]!;
                 const ready = cluster.readyCommand?.replaceAll("{skill}", skill).replaceAll("{index}", String(index));
-                // One attempt gets no more than the time that is left.
-                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, Math.min(180, leftS)).catch((e: Error) => ({ exitCode: 1, result: e.message }));
+                // One attempt gets all the time that is left: a host that has to compile pays once, not a kill at 180 s and a retry.
+                const r = await clusterClient.exec(box, `mkdir -p /workspace && ${ready ? `bash -c ${q(ready)}` : "true"}`, leftS).catch((e: Error) => ({ exitCode: 1, result: e.message }));
                 if (Date.now() > deadline) throw new Error(`GPU box ${index} was not ready in ${Math.round(readyMs / 1000)} s${r.exitCode === 0 ? " (it answered too late)" : `: ${r.result.trim().slice(-200)}`}`);
-                if (r.exitCode === 0) break;
+                if (r.exitCode === 0) {
+                  lastReady = r.result.trim().split("\n").filter(Boolean).at(-1) ?? "";
+                  break;
+                }
                 await new Promise<void>((res) => {
                   const timer = setTimeout(res, Math.min(5_000, Math.max(0, deadline - Date.now())));
                   signal.addEventListener("abort", () => (clearTimeout(timer), res()), { once: true });
@@ -281,7 +303,11 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
               await drop(box);
               throw error;
             }
-            options.log("cluster.box-up", { index, box: name, ms: Date.now() - t0 });
+            const total = Date.now() - t0;
+            options.log("cluster.box-up", { index, box: name, ms: total, placeMs, warmMs: total - placeMs });
+            if (lastReady) options.log("cluster.box-warm", { index, box: name, line: lastReady.slice(-400) });
+            // Why a box was slow, for the log: Modal took long to place it, or the warm-up compiled (a cache miss on this host), or the warm-up itself was slow.
+            if (total > 90_000) options.log("cluster.box-slow", { index, box: name, ms: total, cause: placeMs > 90_000 ? "modal-placement" : /"host_cache":\s*"miss"/.test(lastReady) ? "cache-miss" : "warm-up", placeMs, warmMs: total - placeMs });
             return poolBox;
           },
           remove: async (box) => drop({ id: box.id, name: box.name }),
@@ -312,6 +338,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       holds: mine,
       exec: async (box, argv, o) => {
         if (!mine(box)) throw new Error("no thread of this run holds that box");
+        pool.touch();
         const sb = await sdk.sandboxes.fromId(box);
         // Its own session, with its group's id on the box in a file: when the link that asked for the command is gone, the group is killed (a trainer nobody reads is only a cost).
         const pidFile = `/tmp/.pda-rpc/${randomBytes(6).toString("hex")}`;
@@ -395,7 +422,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   async function prepare(box: SandboxInfo, c: DaytonaClient = client, host: { archil?: boolean; desktop?: boolean } = {}): Promise<void> {
     const started = Date.now();
     live.add(box.id);
-    bundle ??= appBundle();
+    bundle ??= appBundle(options.robot ? ROBOT_BUNDLE_FILES : {});
     await c.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
     const r = await c.exec(box, prepareScript(uid, gid, { archil: host.archil ?? true }), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
@@ -580,6 +607,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         DEMO_LINK_HOST: "0.0.0.0",
         DEMO_LINK_TOKEN: linkToken,
         DEMO_EVENTS_LOG: BOX_EVENTS,
+        ...(options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {}),
         ...(options.desktop
           ? {
               DEMO_DISPLAY: DESKTOP_DISPLAY,

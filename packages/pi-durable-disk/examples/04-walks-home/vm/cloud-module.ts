@@ -2,19 +2,19 @@
 //   image=im-...        the VM image (default: built from image.ts's commands)      transport=mount|pipe   (default mount on a VM)
 //   desktop=true        a desktop in the VM and the computer tool                    regions=us-east,...    where Modal may place sandboxes
 //   app=NAME prefix=P   the Modal app and the sandbox names                          warm=true|gpu          keep one pipe VM (or the GPU box) ready (rewarm=true: and again after each return to the tab) (with gpu: warm-commands-file=F warm-env=K=V,.. warm-delay-ms=N compile the creature ahead)
-//   vm=false            offer only the GPU environment
-//   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now cluster-skills=walk,spin,...)
+//   vm=false            offer only the GPU environment                       robot=true  the session on the VM teaches skills on the cluster (teach_skills; needs cluster-*)
+//   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now cluster-skills=walk,spin,... cluster-spares=N cluster-idle-minutes=N)
 //   gpu-image=im-...    offers modal-gpu: this image, gVisor, on the pipe            gpu-type=H100 gpu-note=TEXT   (note: what the agent runs there)
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
 import { readFileSync } from "node:fs";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills"]);
+const KNOWN = new Set(["image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills", "cluster-spares", "cluster-idle-minutes", "robot"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
-export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB" | "cluster"> {
+export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB" | "cluster" | "robot"> {
   for (const key of Object.keys(args)) if (!KNOWN.has(key)) throw new Error(`--cloud-arg ${key}: not one of ${[...KNOWN].join(", ")}`);
   if (args.transport !== undefined && args.transport !== "mount" && args.transport !== "pipe") throw new Error(`--cloud-arg transport=${args.transport}: mount or pipe`);
   if (args["gpu-type"] !== undefined && args["gpu-image"] === undefined) throw new Error("--cloud-arg gpu-type needs gpu-image");
@@ -51,6 +51,8 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
   if (args["cluster-image"] !== undefined && args["cluster-image"].trim() === "") throw new Error("--cloud-arg cluster-image= is empty: name the trainer image");
   if (args["cluster-skills"] !== undefined && args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean).length === 0) throw new Error(`--cloud-arg cluster-skills=${args["cluster-skills"]}: name at least one skill`);
   if (args["cluster-size"] !== undefined && !Number.isInteger(Number(args["cluster-size"]))) throw new Error(`--cloud-arg cluster-size=${args["cluster-size"]}: a whole number`);
+  if (flag(args.robot) && args["cluster-size"] === undefined) throw new Error("--cloud-arg robot=true needs cluster-size and cluster-image (the threads' boxes)");
+  if (args["cluster-spares"] !== undefined && !(Number.isInteger(Number(args["cluster-spares"])) && Number(args["cluster-spares"]) >= 0)) throw new Error(`--cloud-arg cluster-spares=${args["cluster-spares"]}: a whole number, 0 or more`);
   if (args["cluster-start"] !== undefined && args["cluster-start"] !== "attach" && args["cluster-start"] !== "now") throw new Error(`--cloud-arg cluster-start=${args["cluster-start"]}: attach or now`);
   if (args["cluster-size"] === undefined && Object.keys(args).some((k) => k.startsWith("cluster-"))) throw new Error("--cloud-arg cluster-* need cluster-size and cluster-image");
   if (args.warm !== undefined && !["gpu", "true", "false", "1", "0", ""].includes(args.warm)) throw new Error(`--cloud-arg warm=${args.warm}: true, false or gpu`);
@@ -65,6 +67,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
     ...(args.warm === "gpu" ? { warm: "gpu" as const } : flag(args.warm) ? { warm: true } : {}),
     ...(flag(args.rewarm) ? { rewarm: true } : {}),
     ...(args.vm === "false" ? { offerVm: false } : {}),
+    ...(flag(args.robot) ? { robot: true } : {}),
     ...(number("cpu") ? { cpu: number("cpu")! } : {}),
     ...(number("memory-mib") ? { memoryMiB: number("memory-mib")! } : {}),
     ...(args["cluster-size"] !== undefined && args["cluster-image"]
@@ -79,6 +82,8 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
             ...(args["cluster-ready"] ? { readyCommand: args["cluster-ready"] } : {}),
             ...(number("cluster-ready-timeout-s") ? { readyTimeoutMs: number("cluster-ready-timeout-s")! * 1000 } : {}),
             ...(number("cluster-placement-s") ? { placementTimeoutMs: number("cluster-placement-s")! * 1000 } : {}),
+            ...(number("cluster-idle-minutes") ? { idleMinutes: number("cluster-idle-minutes")! } : {}),
+            ...(args["cluster-spares"] !== undefined ? { spares: Number(args["cluster-spares"]) } : {}),
             ...(args["cluster-skills"] !== undefined ? { skills: args["cluster-skills"].split(",").map((k) => k.trim()).filter(Boolean) } : {}),
             ...(args["cluster-start"] ? { start: args["cluster-start"] as "attach" | "now" } : {}),
           },

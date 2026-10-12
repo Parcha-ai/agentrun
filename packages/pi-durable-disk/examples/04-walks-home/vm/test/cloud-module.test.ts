@@ -77,3 +77,21 @@ test("empty or listless cluster settings are refused instead of silently droppin
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": ",," }), /at least one skill/);
   assert.throws(() => modalOptionsFromArgs({ "cluster-size": "2", "cluster-image": "im-x", "cluster-skills": "" }), /at least one skill/);
 });
+
+test("robot=true turns on the robot's tools on the VM and needs the cluster", () => {
+  assert.equal(modalOptionsFromArgs({ robot: "true", "cluster-size": "2", "cluster-image": "im-x" }).robot, true);
+  assert.equal(modalOptionsFromArgs({}).robot, undefined);
+  assert.throws(() => modalOptionsFromArgs({ robot: "true" }), /needs cluster-size and cluster-image/);
+});
+
+test("cluster-spares is a whole number of extra boxes", () => {
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "1" }).cluster?.spares, 1);
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x" }).cluster?.spares, undefined);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "-1" }), /whole number/);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-spares": "x" }), /whole number/);
+});
+
+test("cluster-idle-minutes is a positive number of minutes", () => {
+  assert.equal(modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "20" }).cluster?.idleMinutes, 20);
+  assert.throws(() => modalOptionsFromArgs({ "cluster-size": "8", "cluster-image": "im-x", "cluster-idle-minutes": "0" }), /positive number/);
+});

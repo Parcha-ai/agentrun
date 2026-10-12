@@ -49,6 +49,11 @@ const robot = episode === "robot";
 const clusterSize = Number(arg("cluster-size", 2));
 const clusterImage = arg("cluster-image", "");
 const clusterReady = arg("cluster-ready", "");
+// Boxes made beyond the ones needed: a straggler among them cannot hold up "ready" (they cost like the others).
+const clusterSpares = Number(arg("cluster-spares", robot ? 1 : 0));
+// The boxes are removed after this long unused (a parked or forgotten run must not leave GPUs burning); the next request makes them again. 0: never.
+const clusterIdle = Number(arg("cluster-idle-min", robot ? 20 : 0));
+const clusterReadyTimeout = arg("cluster-ready-timeout-s", "");
 // The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
 const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
 if (robot && !clusterImage) throw new Error("--cluster-image names D2's skill-trainer image");
@@ -57,7 +62,7 @@ if (robot && !(Number.isInteger(clusterSize) && clusterSize >= 1)) throw new Err
 const robotSkills = Number(arg("robot-skills", 8));
 // The page that shows the run (served by the stage), and the query the agent's page is opened with.
 const stagePath = arg("stage-path", "");
-const linkQuery = arg("link-query", "golive=1");
+const linkQuery = arg("link-query", "golive=1&robot=1");
 // The model's token budget for the run (a robot session has nine conversations).
 const modelBudget = String(arg("model-budget", robot ? 30_000_000 : 3_000_000));
 // The trainer's compile-only lines (D1's warm-up): run on the warm GPU box once the drawing has landed, so training starts from a compiled program.
@@ -166,13 +171,17 @@ try {
       ...(robot
         ? [
             // The session's VM mounts the disk (the default transport) and the cluster's boxes start when the first page takes the run.
+            "--cloud-arg", "robot=true",
             "--cloud-arg", `cluster-size=${clusterSize}`,
+            "--cloud-arg", `cluster-spares=${clusterSpares}`,
+            ...(clusterIdle > 0 ? ["--cloud-arg", `cluster-idle-minutes=${clusterIdle}`] : []),
             "--cloud-arg", `cluster-image=${clusterImage}`,
             "--cloud-arg", `cluster-ttl-minutes=${arg("ttl", 45)}`,
             "--cloud-arg", "cluster-cpu=8",
             "--cloud-arg", "cluster-memory-mib=65536",
             "--cloud-arg", `cluster-skills=${clusterSkills}`,
             ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
+            ...(clusterReadyTimeout ? ["--cloud-arg", `cluster-ready-timeout-s=${clusterReadyTimeout}`] : []),
           ]
         : [
         "--cloud-arg", "vm=false",
@@ -233,15 +242,25 @@ try {
     console.log(`LIVE: then open the link above, and the stage at http://127.0.0.1:${stagePort}/${episode === "obsession" ? "obsession/" : stagePath} in another window; keep both windows visible (not minimized)`);
     step("waiting for your browser to open the link", { serverPort: Number(origin.port), stagePort });
   } else {
-    writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
-    await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", 240_000, "the 03 page to attach as the writer");
+    // The first attach after the run's tree was just removed can fail once (the disk has no directory for it yet): the page is opened again, up to three times.
+    for (let attempt = 1; ; attempt++) {
+      writer = await unlessStopped(openTab(agentUrl, { width: 1400, height: 800 }));
+      try {
+        await until(async () => (await writer.eval(`globalThis.demo ? demo.state.mode : ""`).catch(() => "")) === "writer", attempt < 3 ? 40_000 : 240_000, "the 03 page to attach as the writer");
+        break;
+      } catch (error) {
+        if (error instanceof Stopped || attempt >= 3) throw error;
+        step("the 03 page did not attach; opening it again", { attempt });
+        await writer.close().catch(() => {});
+      }
+    }
     step("the 03 page runs the agent");
   }
   // The warm GPU box: ready before anyone is told to start (with the person's browser, it starts warming when their page attaches).
   if (robot) {
     // Every box of the pool has come up or failed; a pool where none came up is a failed start.
     const count = (event) => (readFileSync(join(work, "take", "server.log"), "utf8").match(new RegExp(`"event":"${event}"`, "g")) ?? []).length;
-    await until(() => count("cluster.box-up") + count("pool.box-failed") >= clusterSize, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
+    await until(() => count("cluster.box-up") >= clusterSize || count("cluster.box-up") + count("pool.box-failed") >= clusterSize + clusterSpares, ownBrowser ? openWaitMs : 900_000, `the ${clusterSize} GPU boxes`);
     const up = count("cluster.box-up");
     if (up === 0) throw new Error("no GPU box came up");
     step("the cluster", { up, failed: count("pool.box-failed"), of: clusterSize });

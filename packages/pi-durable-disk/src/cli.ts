@@ -34,7 +34,7 @@ import {
   type TokenUser,
 } from "./supervise.ts";
 import { openDurableRun, type DurableRun } from "./run.ts";
-import { AppError, loadApp, type AppOptions } from "./app.ts";
+import { AppError, composeEnv, loadApp, type AppOptions } from "./app.ts";
 
 class UsageError extends PdaError {
   constructor(message: string) {
@@ -233,7 +233,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     log("app failed", { code: (err as PdaError).code, message: (err as Error).message });
     return exitCodeFor(err);
   }
-  const { onOpen, beforeResume, root: rootOptions, wake: appWake, ...harness } = app;
+  const { onOpen, beforeResume, root: rootOptions, wake: appWake, wrapEnv, ...harness } = app;
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
   const cgroup = watchdogOwnsCgroup(holder);
   if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
@@ -248,15 +248,19 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   const idleMs = ms("park-idle") ?? (server ? parkMs : undefined);
   const steps: Record<string, number> = {};
   let run: DurableRun;
+  // The run user's environment (when it runs as one), and then the app's wrapper over whichever environment that is.
+  const envFactory = composeEnv(
+    runAs ? (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) : undefined,
+    (c: Claim) => archilEnv(c),
+    wrapEnv,
+  );
   try {
     run = await openDurableRun(ref, {
       mountToken: await readToken(values),
       mountRoot,
       host: { archil: str(values.archil) },
       harness,
-      ...(runAs
-        ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
-        : {}),
+      ...(envFactory ? { env: envFactory } : {}),
       holder,
       ownCgroup: cgroup.owns,
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),

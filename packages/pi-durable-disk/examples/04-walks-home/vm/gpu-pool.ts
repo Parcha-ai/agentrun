@@ -15,7 +15,7 @@ export interface PoolBox {
   readonly index: number;
 }
 
-export type BoxState = "creating" | "ready" | "busy" | "failed" | "removed";
+export type BoxState = "creating" | "ready" | "busy" | "failed" | "removed" | "idle";
 
 export interface PoolStatus {
   readonly size: number;
@@ -24,8 +24,10 @@ export interface PoolStatus {
 }
 
 export interface GpuPoolOptions {
-  /** How many boxes. */
+  /** How many boxes are needed: `start()` resolves once this many are ready (or every create has settled). */
   readonly size: number;
+  /** Extra boxes created alongside (default 0): a straggler among them cannot hold up the start, and a spare stands in for a box that ended. They cost like any other box. */
+  readonly spares?: number;
   /** Create box `index` and wait until it can run work. Rejecting means this box failed. `signal` aborts when the pool closes (a create that cannot be cancelled may ignore it). */
   readonly create: (index: number, signal: AbortSignal) => Promise<PoolBox>;
   /** Remove a box. True when it is gone. */
@@ -39,11 +41,16 @@ export interface GpuPoolOptions {
   readonly alive?: (box: PoolBox) => Promise<boolean>;
   /** How often the live boxes are checked with `alive` (default 20 s; 0: never). */
   readonly watchMs?: number;
+  /**
+   * How long the pool may sit unused (no thread holds a box, nobody waits, no command ran) before its boxes are removed so a forgotten run cannot leave GPUs
+   * running (default 0: never). The pool stays usable: the next `acquire` creates the boxes again (it costs the creation time), and says so in the log.
+   */
+  readonly idleMs?: number;
   /** How long one `alive` check may take (default 10 s): a Modal call that does not answer says nothing, and the box stays available. */
   readonly aliveTimeoutMs?: number;
 }
 
-type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean };
+type Slot = { index: number; state: BoxState; box?: PoolBox; thread?: string; createMs?: number; error?: string; creating?: Promise<void>; checking?: boolean; gone?: boolean; removing?: boolean };
 type Waiter = { thread: string; promise: Promise<PoolBox>; resolve: (box: PoolBox) => void; reject: (error: Error) => void; onAbort?: () => void; signal?: AbortSignal };
 
 export class GpuPool {
@@ -54,11 +61,14 @@ export class GpuPool {
   #closing = false;
   #started = false;
   #watch: NodeJS.Timeout | undefined;
+  #onSettle: (() => void) | undefined;
+  #idle: NodeJS.Timeout | undefined;
+  #lastActive = Date.now();
 
   constructor(options: GpuPoolOptions) {
     if (!Number.isInteger(options.size) || options.size < 1) throw new Error("the pool needs at least one box");
     this.#options = options;
-    this.#slots = Array.from({ length: options.size }, (_, index) => ({ index, state: "creating" as BoxState }));
+    this.#slots = Array.from({ length: options.size + (options.spares ?? 0) }, (_, index) => ({ index, state: "creating" as BoxState }));
   }
 
   status(): PoolStatus {
@@ -79,7 +89,21 @@ export class GpuPool {
       this.#watch = setInterval(() => void this.#verifyAll(), every);
       this.#watch.unref();
     }
-    await Promise.all(this.#slots.map((s) => s.creating));
+    // Ready when `size` boxes are up (a spare that is still coming does not hold this up), or when every create has settled.
+    const idleMs = this.#options.idleMs ?? 0;
+    if (idleMs > 0) {
+      this.#idle = setInterval(() => void this.#idleCheck(), Math.max(50, Math.min(30_000, Math.floor(idleMs / 2))));
+      this.#idle.unref();
+    }
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        const up = this.#slots.filter((s) => s.state === "ready" || s.state === "busy").length;
+        if (up >= this.#options.size || this.#slots.every((s) => s.state !== "creating")) resolve();
+      };
+      this.#onSettle = check;
+      check();
+    });
+    this.#onSettle = undefined;
   }
 
   async #create(slot: Slot): Promise<void> {
@@ -94,6 +118,7 @@ export class GpuPool {
         // Nobody sweeps after close: this box is removed here, again if Modal would not take it the first time.
         for (let attempt = 0; attempt < 4 && !(await this.#remove(slot)); attempt++) await new Promise((r) => setTimeout(r, 500));
         if (slot.state !== "removed") this.#options.log("pool.late-box-left", { index: slot.index, box: box.name });
+        this.#onSettle?.();
         return;
       }
       slot.box = box;
@@ -101,12 +126,14 @@ export class GpuPool {
       this.#options.log("pool.box-ready", { index: slot.index, box: box.name, ms: slot.createMs });
       this.#changed();
       this.#serve();
+      this.#onSettle?.();
     } catch (error) {
       slot.state = "failed";
       slot.error = (error as Error).message;
       this.#options.log("pool.box-failed", { index: slot.index, error: slot.error });
       this.#changed();
       this.#failWaitersIfHopeless();
+      this.#onSettle?.();
     }
   }
 
@@ -117,6 +144,7 @@ export class GpuPool {
    */
   acquire(thread: string, signal?: AbortSignal): Promise<PoolBox> {
     if (this.#closing) return Promise.reject(new Error("the pool is closing"));
+    this.#lastActive = Date.now();
     const held = this.#slots.find((s) => s.thread === thread && s.box);
     if (held) return Promise.resolve(held.box!);
     const waiting = this.#waiting.find((w) => w.thread === thread);
@@ -135,6 +163,7 @@ export class GpuPool {
       signal.addEventListener("abort", waiter.onAbort, { once: true });
     }
     this.#waiting.push(waiter);
+    this.#wake();
     this.#serve();
     this.#failWaitersIfHopeless();
     return promise;
@@ -145,6 +174,7 @@ export class GpuPool {
     const slot = this.#slots.find((s) => s.thread === thread);
     if (!slot) return;
     delete slot.thread;
+    this.#lastActive = Date.now();
     if (slot.state === "busy") slot.state = "ready";
     this.#changed();
     if (this.#options.alive) {
@@ -157,6 +187,64 @@ export class GpuPool {
       return;
     }
     this.#serve();
+  }
+
+  /** Something used the pool (a command ran in a box): the idle clock restarts. */
+  touch(): void {
+    this.#lastActive = Date.now();
+  }
+
+  async #idleCheck(): Promise<void> {
+    const idleMs = this.#options.idleMs ?? 0;
+    if (this.#closing || idleMs <= 0 || Date.now() - this.#lastActive < idleMs) return;
+    if (this.#waiting.length > 0 || this.#slots.some((x) => x.state === "busy" || x.state === "creating")) return;
+    const ready = this.#slots.filter((x) => x.state === "ready" && x.box);
+    if (ready.length === 0) return;
+    this.#options.log("pool.idle-timeout", { idleMs, boxes: ready.length });
+    for (const slot of ready) {
+      slot.state = "idle";
+      slot.removing = true;
+    }
+    await Promise.all(
+      ready.map(async (slot) => {
+        const gone = await this.#remove(slot, true);
+        slot.gone = false;
+        slot.removing = false;
+        if (gone) slot.box = undefined;
+        // A box that would not go is still running: it is ready again (a request can use it, and the next idle check tries again), not lost.
+        else {
+          slot.state = "ready";
+          this.#lastActive = Date.now();
+          this.#options.log("pool.idle-remove-failed", { index: slot.index, box: slot.box?.name });
+        }
+      }),
+    );
+    this.#changed();
+    // A thread that asked while the boxes were going is served by one that would not go, and by new ones for the rest.
+    this.#serve();
+    if (this.#waiting.length > 0) this.#wake();
+    this.#failWaitersIfHopeless();
+  }
+
+  /**
+   * Threads asked while the boxes were released for idleness: boxes are made again, as many as the demand needs beyond the ones that are ready or already on
+   * their way (one box that would not be removed is still ready and serves one thread; the others get new ones).
+   */
+  #wake(): void {
+    if (this.#slots.some((x) => x.removing)) return; // the removal in progress calls this again when it ends
+    const sleeping = this.#slots.filter((x) => x.state === "idle");
+    if (sleeping.length === 0) return;
+    const supply = this.#slots.filter((x) => (x.state === "ready" && !x.checking) || x.state === "creating").length;
+    const need = this.#waiting.length - supply;
+    if (need <= 0) return;
+    const wake = sleeping.slice(0, need);
+    this.#options.log("pool.wake", { boxes: wake.length, waiting: this.#waiting.length });
+    for (const slot of wake) {
+      slot.state = "creating";
+      delete slot.error;
+      slot.creating = this.#create(slot);
+    }
+    this.#changed();
   }
 
   /** The box has ended (its sandbox is gone): it is never handed out again, and what is waiting for a box is told if none can come up any more. */
@@ -208,7 +296,7 @@ export class GpuPool {
 
   #failWaitersIfHopeless(): void {
     // Nothing is ready, busy or on its way: waiting longer cannot help.
-    if (this.#slots.some((s) => s.state === "creating" || s.state === "ready" || s.state === "busy")) return;
+    if (this.#slots.some((s) => s.state === "creating" || s.state === "ready" || s.state === "busy" || s.state === "idle")) return;
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
       w.reject(new Error(this.#slots.some((s) => s.error?.startsWith("the box ended")) ? "every GPU box ended" : "no GPU box came up"));
@@ -223,6 +311,7 @@ export class GpuPool {
     });
     if (gone) {
       if (!keepState) slot.state = "removed";
+      slot.gone = true;
       delete slot.thread;
     }
     this.#changed();
@@ -234,6 +323,7 @@ export class GpuPool {
     this.#closing = true;
     this.#abort.abort();
     clearInterval(this.#watch);
+    clearInterval(this.#idle);
     for (const w of this.#waiting.splice(0)) {
       if (w.onAbort) w.signal?.removeEventListener("abort", w.onAbort);
       w.reject(new Error("the pool is closing"));
@@ -247,12 +337,12 @@ export class GpuPool {
       if (!settled) this.#options.log("pool.close-pending", { creating: this.#slots.filter((s) => s.state === "creating").length, waitMs });
     }
     for (let round = 0; round < 3; round++) {
-      const todo = this.#slots.filter((s) => s.box && s.state !== "removed");
+      const todo = this.#slots.filter((s) => s.box && !s.gone && s.state !== "removed");
       if (todo.length === 0) break;
       await Promise.all(todo.map((s) => this.#remove(s)));
-      if (this.#slots.some((s) => s.box && s.state !== "removed")) await new Promise((r) => setTimeout(r, 500));
+      if (this.#slots.some((s) => s.box && !s.gone && s.state !== "removed")) await new Promise((r) => setTimeout(r, 500));
     }
-    const left = this.#slots.filter((s) => s.box && s.state !== "removed").length;
+    const left = this.#slots.filter((s) => s.box && !s.gone && s.state !== "removed").length;
     if (left > 0) this.#options.log("pool.close-left", { left });
     return { left };
   }

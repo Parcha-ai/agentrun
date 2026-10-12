@@ -18,14 +18,16 @@ class FakeSandbox {
   static execExit = 0;
   static execDelayMs = 0;
   static execs: string[][] = [];
+  static timeouts: (number | undefined)[] = [];
   constructor(name: string, id: number, onTerminate: (id: string) => Promise<void>) {
     this.name = name;
     this.sandboxId = `sb-${id}`;
     this.onTerminate = onTerminate;
   }
-  async exec(argv?: string[]) {
+  async exec(argv?: string[], params?: { timeoutMs?: number }) {
     await FakeSandbox.execGate;
     if (argv) FakeSandbox.execs.push(argv);
+    FakeSandbox.timeouts.push(params?.timeoutMs);
     if (FakeSandbox.execDelayMs) await new Promise((r) => setTimeout(r, FakeSandbox.execDelayMs));
     const exit = FakeSandbox.execExit;
     return { stdin: { writeBytes: async () => undefined, close: async () => undefined }, stdout: { readBytes: async () => empty }, stderr: { readBytes: async () => empty }, wait: async () => exit };
@@ -206,6 +208,7 @@ const reset = () => {
   FakeSandbox.execExit = 0;
   FakeSandbox.execDelayMs = 0;
   FakeSandbox.execs = [];
+  FakeSandbox.timeouts = [];
 };
 
 test("the cluster: boxes are owned per run, so one run cannot get, run in or release another run's box by using the same thread id", async () => {
@@ -301,6 +304,16 @@ test("the cluster: a box whose poll says it ended is dead for good: the pool nev
   g.release("t");
   const next = await w.cloud.cluster!.gpuFor("run-b").acquire("u");
   assert.notEqual(next, box, "another thread never gets the dead box");
+  await w.cloud.close!();
+  reset();
+});
+
+test("the cluster: a warm-up attempt gets all the time that is left, not a cap that kills a host that has to compile", async () => {
+  reset();
+  const w = await world(() => false, undefined, { cluster: { size: 1, image: "im-cluster", readyCommand: "true", readyTimeoutMs: 400_000, start: "now" } });
+  await w.cloud.cluster!.start();
+  const longest = Math.max(...FakeSandbox.timeouts.filter((t): t is number => t !== undefined));
+  assert.ok(longest >= 390_000, `the readiness attempt was given ${longest} ms of the 400000 it had`);
   await w.cloud.close!();
   reset();
 });

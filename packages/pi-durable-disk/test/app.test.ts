@@ -57,3 +57,25 @@ test("run with an app module that does not load exits 1 before anything mounts",
     process.stderr.write = quiet;
   }
 });
+
+test("an app's wrapEnv wraps whichever environment the run would have had, and without one the base is used as it is", async () => {
+  const { composeEnv } = await import("../src/app.ts");
+  const claim = { root: "/x" } as never;
+  const calls: string[] = [];
+  const base = Object.assign(async () => (calls.push("base-env"), undefined), { cleanup: async () => void calls.push("base-cleanup") });
+  const make = () => base as never;
+  // No wrapper: the base factory (or none) comes back unchanged.
+  assert.equal(composeEnv(undefined, make, undefined), undefined);
+  assert.equal(composeEnv(make, () => assert.fail("no default needed"), undefined), make);
+  // A wrapper over the default base: it answers for its own conversations and defers the others to the base, keeping cleanup.
+  const factory = composeEnv(undefined, make, (env) => Object.assign(async (target: { conversationId: string }, ctx: never) => (target.conversationId === "child" ? ({ mine: true } as never) : (env as never as (t: unknown, c: unknown) => unknown)(target, ctx)), { cleanup: env.cleanup }) as never)!;
+  const wrapped = factory(claim) as unknown as ((t: { conversationId: string }, c: unknown) => Promise<unknown>) & { cleanup(c: unknown): Promise<void> };
+  assert.deepEqual(await wrapped({ conversationId: "child" }, {}), { mine: true });
+  await wrapped({ conversationId: "root" }, {});
+  await wrapped.cleanup({});
+  assert.deepEqual(calls, ["base-env", "base-cleanup"], "the root went to the base env, and cleanup is the base's");
+  // A wrapper over a given base (the run user's env).
+  let seenBase: unknown;
+  composeEnv(make, () => assert.fail("the given base is used"), (env) => ((seenBase = env), env))!(claim);
+  assert.equal(seenBase, base);
+});
