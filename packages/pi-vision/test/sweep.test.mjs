@@ -9,10 +9,14 @@ import { writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { test } from "node:test";
 import sharp from "sharp";
-import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, parseCitation, parseFragment, plan, reportMiss, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
-import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { callContext, createVisionExtension, modelsEyes, modelsOf, packageProviders, piResult } from "@parcha/pi-vision/durable";
 import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
-import { nodeVisionEnv } from "@parcha/pi-vision/node";
+import { childEnvOf, inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
 import { ffmpegProvider } from "@parcha/pi-vision/providers/ffmpeg";
 import { officeJsProvider } from "@parcha/pi-vision/providers/office-js";
 import { pdfiumProvider } from "@parcha/pi-vision/providers/pdfium";
@@ -23,8 +27,10 @@ import { sofficeProvider } from "@parcha/pi-vision/providers/soffice";
 import { unpdfProvider } from "@parcha/pi-vision/providers/unpdf";
 import {
   LeakScan, SENTINELS, SENTINEL_EYES_KEY, SENTINEL_LINK_QUERY, SENTINEL_LINK_SIGNATURE, SENTINEL_LINK_TOKEN, SENTINEL_SIGNED_LINK,
-  fakeEyes, fixtureDir, limitViolations, pngBytes, signedLink,
+  docxBytes, fakeEyes, fixtureDir, letterPdf, limitViolations, pngBytes, signedLink, xlsxBytes,
 } from "@parcha/pi-vision/testing";
+import { ftyp } from "./support/images.mjs";
+import { withPrograms } from "./support/programs.mjs";
 
 const KEY = SENTINEL_EYES_KEY;
 const LINK = SENTINEL_SIGNED_LINK;
@@ -84,11 +90,13 @@ const LIMITS = resolveLimits(MODEL);
 const CALL = { conversationId: "sweep-conversation", callId: "sweep-call", model: MODEL, signal: undefined };
 
 // The first line of an error is the line a result, a receipt and an event keep. SDKs put the request's link on it: bare,
-// quoted, bracketed, after `url=`, closed by punctuation, in a markdown link or in a JSON body; a link that carries the
-// provider's key in its query or in its authority, a secret in its fragment, a scheme in capitals or plain http.
+// quoted, bracketed, after `url=`, closed by punctuation, in a markdown link or in a JSON body whose slashes are escaped;
+// a link that carries the provider's key in its query or in its authority, a secret in its fragment, a scheme in capitals,
+// plain http, or a web socket.
 const WRAPS = [
   (l) => l, (l) => `"${l}"`, (l) => `'${l}'`, (l) => `\`${l}\``, (l) => `(${l})`, (l) => `[${l}]`, (l) => `<${l}>`, (l) => `{${l}}`,
   (l) => `url=${l}`, (l) => `${l},`, (l) => `(see ${l}).`, (l) => `[the file](${l})`, (l) => `{"url":"${l}","status":401}`,
+  (l) => `{"url":"${l.split("/").join("\\/")}","status":401}`,
 ];
 // Built with the URL API, not written out: the repository's source scan refuses a credential URL in a file.
 const withCredentials = Object.assign(new URL("https://files.sentinel.invalid/reports/statement.pdf"), { username: "user", password: KEY }).href;
@@ -99,19 +107,65 @@ const LINKS = [
   `https://files.sentinel.invalid/reports/statement.pdf#token=${SENTINEL_LINK_TOKEN}`,
   LINK.replace("https", "HTTPS"),
   LINK.replace("https", "http"),
+  `wss://connect.sentinel.invalid/?apiKey=${KEY}&signingKey=${SENTINEL_LINK_TOKEN}`,
+  `ws://live.sentinel.invalid/session?X-Sentinel-Signature=${SENTINEL_LINK_SIGNATURE}`,
 ];
+// A key where no link carries it: the eyes adapter holds the exact string and takes it out of an error's words.
+const BARE_KEY_LINES = [`Incorrect API key provided: ${KEY}`, `401 Authorization: Bearer ${KEY}`, `rejected ${KEY} (${KEY})`, `{"error":{"message":"bad key ${KEY}"}}`];
 const lineWith = (wrap, link) => `request to ${WRAPS[wrap](LINKS[link])} failed with status 401`;
 const FIRST_LINES = WRAPS.flatMap((_, wrap) => LINKS.map((__, link) => lineWith(wrap, link)));
 /** The error as an SDK throws it: that first line, then lines that carry the key and the link again. */
 const failure = (line) => sdkError(`${line}\nsecond line ${KEY} ${LINK}`);
 
 /** What the adapter hands the guard for one call: the route's limits, who looks, and sinks whose every record is scanned. */
-const guardSetup = (sink, limits, eyes, images) => ({
-  limits, eyes, scope: { label: "sweep", deriveDir: sink.deriveDir }, providers: [], sources: {}, ...(images ? { images } : {}),
+const guardSetup = (sink, limits, eyes, images, providers = []) => ({
+  limits, eyes, scope: { label: "sweep", deriveDir: sink.deriveDir }, providers, sources: {}, ...(images ? { images } : {}),
   evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } },
   onLook: (event) => sink.out("look event", event),
   onMiss: (event) => sink.out("miss event", event),
 });
+/** A screenshot result the guard sends to the eyes, and the guard's answer for each of `eyes`: a text-only lead, so the
+ *  eyes look, and each failing look is the miss the model reads, the receipt and the host's event. */
+const shot = (width = 40) => ({ content: [{ type: "text", text: "a screenshot" }, png(width, 30)], details: { path: "shot.png", media: { kind: "image", path: "shot.png", ask: "what is it?" } } });
+async function missesThrough(sink, eyes, call = { ...CALL, model: TEXT_MODEL }, count = FIRST_LINES.length) {
+  const limits = resolveLimits(call.model);
+  for (let i = 0; i < count; i++) sink.result("miss", await guardResult(shot(40 + i), call, guardSetup(sink, limits, eyes)), limits);
+}
+/** The eyes' errors, one per line, each with the key and the link again on a second line. */
+const failing = (lines) => lines.map((line) => ({ fail: `${line}\nsecond line ${KEY} ${LINK}` }));
+/** pi-ai's catalog on its faux provider: a model that sees, one that does not, answering `responses` in order. */
+const catalog = (responses) => {
+  const faux = fauxProvider({ models: [{ id: "sees", input: ["text", "image"], reasoning: true }, { id: "lead-1", input: ["text"] }] });
+  faux.setResponses(responses);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  return models;
+};
+const errorAnswers = (lines) => lines.map((line) => fauxAssistantMessage("", { stopReason: "error", errorMessage: `${line}\nsecond line ${KEY} ${LINK}` }));
+
+// A process that holds a key and a link in its environment. What a program a read starts is given of it is the question.
+const PLANTED = { VISION_SWEEP_KEY: KEY, VISION_SWEEP_LINK: LINK };
+const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+/** The programs started by what a case does, by pi's own environment and by the adapter's, and what each was started with.
+ *  `how.env` names, as a function run once the process holds the sentinels, the environment a host passes. */
+async function programsGiven(sink, how) {
+  const ran = await withPrograms(sink.workDir, PLANTED, async () => {
+    const context = visionContext();
+    if (how.piDirect) return void (await new NodeExecutionEnv({ cwd: sink.workDir }).exec(["pdftotext", "-v"], undefined, context));
+    const options = { evidence: { file: async () => null }, scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), ...(how.env ? { env: how.env() } : {}) };
+    const extension = createVisionExtension(options);
+    const pi = new NodeExecutionEnv({ cwd: sink.workDir });
+    await extension.pdfText(letterPdf());
+    await writeFile(`${sink.workDir}/clip.mp4`, ftyp("isom", "mp41"));
+    await extension.read(pi, { path: "clip.mp4" }, CALL);
+    await writeFile(`${sink.workDir}/proof.docx`, docxBytes());
+    await extension.read(pi, { path: "proof.docx", ask: "what does it say?" }, CALL);
+  });
+  if (!Object.keys(ran).length) throw new Error("no program was started, so there is nothing to scan");
+  for (const [program, dump] of Object.entries(ran)) if (!/^PATH=/m.test(dump)) throw new Error(`${program} did not run with an environment`);
+  sink.out("programs started", ran);
+  return ran;
+}
 const env = (id) => ({ id, cwd: "/work", exec: async () => ({ ok: false, error: sdkError("program not found") }) });
 
 /** The extension a host builds: eyes that hold the key and fail first, a sink that files every receipt for the scan. */
@@ -193,7 +247,20 @@ const CASES = [
     },
   },
   { id: "./node#nodeVisionEnv", run: ({ out, workDir }) => { const node = nodeVisionEnv({ cwd: workDir }); out("env", { id: node.id, cwd: node.cwd }); } },
-  { id: "./eyes/pi-ai#piAiEyes", run: ({ out }) => out("eyes", piAiEyes(MODEL, { apiKey: () => KEY, onPayload: (payload) => payload })) },
+  {
+    id: "./eyes/pi-ai#piAiEyes",
+    run: async (sink) => {
+      sink.out("eyes", piAiEyes(MODEL, { apiKey: () => KEY, onPayload: (payload) => payload }));
+      // pi-ai's own request path on its faux provider: a failed request carries the first line, a bare key and the link
+      // again, and a request that throws carries both in its message.
+      const faux = registerFauxProvider({ models: [{ id: "faux-eyes", reasoning: true, input: ["text", "image"], cost: MODEL.cost }] });
+      try {
+        const lines = [...FIRST_LINES, ...BARE_KEY_LINES];
+        faux.setResponses([...errorAnswers(lines), () => { throw new Error(`could not sign the request with ${KEY} for ${LINK}`); }]);
+        await missesThrough(sink, piAiEyes(faux.getModel(), { apiKey: () => KEY }), undefined, lines.length + 1);
+      } finally { faux.unregister(); }
+    },
+  },
   provider("./providers/unpdf#unpdfProvider", () => unpdfProvider()),
   provider("./providers/pdfium#pdfiumProvider", () => pdfiumProvider()),
   provider("./providers/office-js#officeJsProvider", () => officeJsProvider()),
@@ -202,13 +269,132 @@ const CASES = [
   provider("./providers/poppler#popplerProvider", () => popplerProvider()),
   provider("./providers/ffmpeg#ffmpegProvider", () => ffmpegProvider()),
   provider("./providers/soffice#sofficeProvider", () => sofficeProvider()),
+  {
+    id: ".#readMedia",
+    run: async (sink) => {
+      const reader = nodeVisionEnv({ cwd: sink.workDir });
+      const setup = guardSetup(sink, LIMITS, undefined, undefined, packageProviders());
+      // A file saved under the name of the link it came from: the text read from it is kept under a name without the
+      // link's query and fragment, and the result's `details.document.text` names that file. A PDF is told by its bytes;
+      // an office file by its extension, which such a name hides, so what it comes back as is scanned and not required.
+      for (const [name, bytes, pages, required] of [["statement.pdf", letterPdf(), [undefined, 1], true], ["report.docx", docxBytes(), [undefined], false], ["ledger.xlsx", xlsxBytes(), [undefined], false]]) {
+        const path = `${name}?${SENTINEL_LINK_QUERY}#section-2`;
+        sink.echoes.push(path);
+        await writeFile(`${sink.workDir}/${path}`, bytes);
+        for (const page of pages) {
+          const out = await readMedia(reader, { path, ...(page ? { page } : {}) }, CALL, setup);
+          assert.ok(out, `${name} is read`);
+          sink.result("saved text", out, LIMITS);
+          const kept = out.details?.document?.text;
+          if (!kept && !required) continue;
+          assert.ok(kept, `${name} keeps its text`);
+          assert.equal(basename(kept).replace(/-[0-9a-f]{16}/, "-<hash>"), `${name}-<hash>${page ? `-p${page}` : ""}.txt`, "the kept text is named for the file, not the link");
+          assert.ok(readFileSync(`${sink.workDir}/${kept}`.replace(`${sink.workDir}//`, "/"), "utf8").trim(), "and it holds the text");
+        }
+      }
+      // The lead takes no images: `read` shows the image and the guard, as the adapter runs it after `read`, has the eyes
+      // look at it for the question asked; they fail, each time with another first line.
+      await writeFile(`${sink.workDir}/shot.png`, pngBytes(40, 30));
+      const blind = { ...CALL, model: TEXT_MODEL };
+      const limits = resolveLimits(TEXT_MODEL);
+      const shown = { ...limits, image: { ...limits.image, native: true } };
+      const eyes = fakeEyes({ answers: failing(FIRST_LINES) });
+      for (let i = 0; i < FIRST_LINES.length; i++) {
+        const read = await readMedia(reader, { path: "shot.png", ask: "what is it?" }, blind, guardSetup(sink, limits, eyes, sharpImages(sharp)));
+        sink.result("read", read, shown);
+        sink.result("miss", await guardResult(read, blind, guardSetup(sink, limits, eyes)), limits);
+      }
+    },
+  },
+  {
+    id: "./durable#callContext",
+    run: async (sink) => {
+      const kept = new Map();
+      const models = catalog([fauxAssistantMessage("a described screenshot"), ...errorAnswers(FIRST_LINES.slice(0, 14))]);
+      const api = {
+        callId: "call-1", conversationId: "conv-1", models,
+        agent: async () => ({ model: { provider: "faux", modelId: "lead-1" } }),
+        memo: async (key, ...rest) => (rest.length === 1 ? kept.get(key) : (kept.set(key, rest[0]), rest[0])),
+      };
+      const call = await callContext(api, { abortSignal: undefined, value: () => undefined });
+      sink.out("call", { conversationId: call.conversationId, callId: call.callId, model: call.model?.id, aborted: call.signal?.aborted });
+      const extension = createVisionExtension({
+        eyesModel: { provider: "faux", modelId: "sees" }, evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } },
+        scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), onLook: (event) => sink.out("look event", event), onMiss: (event) => sink.out("miss event", event),
+      });
+      const limits = resolveLimits(call.model);
+      for (let i = 0; i < 15; i++) sink.result("fitted", await extension.fit(shot(40 + i), call), limits);
+      assert.equal(kept.size, 1, "the one look that was answered is a memo, and the failures are none");
+      sink.out("memos", [...kept]);
+    },
+  },
+  {
+    id: "./durable#piResult",
+    run: ({ out, result }) => {
+      result("converted", piResult({ content: [{ type: "text", text: "a screenshot" }, png(1500, 900)], details: { path: "shot.png", media: { kind: "image" } }, usage: USAGE }), LIMITS);
+      out("an error", piResult({ content: [{ type: "text", text: "Cannot read shot.png: to_s must be greater than from_s." }], isError: true }));
+    },
+  },
+  {
+    id: "./durable#modelsEyes",
+    run: async (sink) => {
+      const door = modelsOf({ models: catalog(errorAnswers(FIRST_LINES)) });
+      const eyes = modelsEyes(door, { provider: "faux", modelId: "sees" }, { thinking: "off" });
+      sink.out("eyes", eyes);
+      sink.out("a model the catalog lacks", modelsEyes(door, { provider: "faux", modelId: "nope" }) ?? null);
+      sink.out("a model that cannot see", modelsEyes(door, { provider: "faux", modelId: "lead-1" }) ?? null);
+      await missesThrough(sink, eyes);
+    },
+  },
+  {
+    id: "./durable#modelsOf",
+    run: ({ out }) => {
+      const door = modelsOf({ models: catalog([]) });
+      out("catalog entry", door?.getModel("faux", "sees"));
+      out("where pi has none", [modelsOf({}), modelsOf(null), modelsOf({ models: { getModel: () => undefined } })].map((found) => found ?? null));
+    },
+  },
+  {
+    id: "./durable#packageProviders",
+    run: async ({ out }) => {
+      const list = packageProviders();
+      out("providers", list);
+      out("detections", await Promise.all(list.map((one, i) => detectOnce(one, env(`sweep-package-${i}`)))));
+    },
+  },
+  {
+    id: "./durable#createVisionExtension.env",
+    run: async (sink) => {
+      // By default, and with the environment a host names; a key in this process reaches none of the programs.
+      await programsGiven(sink, {});
+      await programsGiven(sink, { env: () => ({ ...inheritedEnv() }) });
+    },
+  },
+  {
+    id: "./node#nodeVisionEnv.env",
+    run: async (sink) => {
+      const ran = await withPrograms(sink.workDir, PLANTED, async () => {
+        const context = visionContext();
+        await nodeVisionEnv({ cwd: sink.workDir }).exec(["pdftotext", "-v"], undefined, context);
+        await nodeVisionEnv({ cwd: sink.workDir, env: { PATH: process.env.PATH } }).exec(["pdfinfo"], undefined, context);
+        await nodeVisionEnv({ cwd: sink.workDir }).exec(["ffprobe"], { env: { EXTRA: "1" } }, context);
+      });
+      assert.deepEqual(Object.keys(ran).sort(), ["ffprobe", "pdfinfo", "pdftotext"]);
+      sink.out("programs started", ran);
+    },
+  },
+  { id: "./node#inheritedEnv", run: async ({ out, workDir }) => { await withPrograms(workDir, PLANTED, async () => out("inherited", inheritedEnv())); } },
+  { id: "./node#childEnvOf", run: async ({ out, workDir }) => { await withPrograms(workDir, PLANTED, async () => { out("by default", childEnvOf(undefined)); out("named", childEnvOf({ PATH: "/bin", GONE: undefined })); }); } },
   { id: "./testing#*", exempt: "test support: nothing a run calls" },
 ];
 
 /** What is built today; the sweep must run these to the end, never skip them. */
 const BUILT = [
-  ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#visionContext", ".#parseFragment", ".#formatFragment",
-  ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan", "./eyes/pi-ai#piAiEyes",
+  ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#readMedia", ".#visionContext", ".#parseFragment",
+  ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan",
+  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read",
+  "./durable#callContext", "./durable#piResult", "./durable#modelsEyes", "./durable#modelsOf", "./durable#packageProviders",
+  "./node#nodeVisionEnv", "./node#nodeVisionEnv.env", "./node#inheritedEnv", "./node#childEnvOf", "./eyes/pi-ai#piAiEyes",
   "./providers/unpdf#unpdfProvider", "./providers/pdfium#pdfiumProvider", "./providers/office-js#officeJsProvider", "./providers/photon#photonImages",
   "./providers/sharp#sharpImages", "./providers/poppler#popplerProvider", "./providers/ffmpeg#ffmpegProvider", "./providers/soffice#sofficeProvider",
 ];
@@ -241,7 +427,7 @@ test("every public function is swept, skipped as not built, or exempt, and nothi
   } finally { await derived.remove(); await work.remove(); }
 });
 
-test("the sweep is red on a leak in a result, an error, a derived name and a derived file, on a link kept past its origin and path in a miss, on an oversize image, and lists what it could not run", async () => {
+test("the sweep is red on a leak in a result, an error, a derived name and a derived file, on a link or a key kept in a miss, on a program given the process's environment, on a kept file named for the link, on an oversize image, and lists what it could not run", async () => {
   const dir = await fixtureDir("pi-vision-sweep-derived-");
   try {
     const filedMiss = async (sink, reason) => {
@@ -259,6 +445,12 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
       // A miss whose reason keeps an error's first line as it came, and the same miss through `firstLine`.
       { id: "x#unsafeFirstLine", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(0, 0)).message).split("\n")[0]}`) },
       { id: "x#unsafeQuoted", run: (sink) => filedMiss(sink, `the vision route failed: ${String(failure(lineWith(1, 1)).message).split("\n")[0]}`) },
+      { id: "x#unsafeBareKey", run: (sink) => filedMiss(sink, `the vision route failed: ${BARE_KEY_LINES[0]}`) },
+      // A program given pi's own environment, which is the whole of this process's; and one given what a host passed.
+      { id: "x#piEnvDirect", run: (sink) => programsGiven(sink, { piDirect: true }) },
+      { id: "x#hostPassedKey", run: (sink) => programsGiven(sink, { env: () => ({ ...inheritedEnv(), VISION_SWEEP_KEY: KEY }) }) },
+      // A text file kept under the name of the link, past its `?`.
+      { id: "x#savedUnderTheLink", run: ({ result }) => result("r", { content: [{ type: "text", text: "saved" }], details: { document: { text: `evidence/media/statement.pdf?${SENTINEL_LINK_QUERY}.txt` } } }, LIMITS) },
       { id: "x#safeFirstLine", run: (sink) => filedMiss(sink, `the vision route failed: ${firstLine(failure(lineWith(1, 1)))}`) },
       { id: "x#stub", run: () => notBuilt("a stub") },
       { id: "x#broken", run: () => { throw new TypeError("not what this case expected"); } },
@@ -271,17 +463,17 @@ test("the sweep is red on a leak in a result, an error, a derived name and a der
     ];
     const { rows, scan, violations } = await sweep(cases, dir.path, dir.path);
     assert.deepEqual([...new Set(scan.findings.map((f) => `${f.sentinel} ${f.source}`))].sort(), [
-      "eyesKey derived", "eyesKey x#echoKey:c", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
-      "eyesKey x#unsafeQuoted:miss event", "eyesKey x#unsafeQuoted:receipt",
-      "linkSignature derived", "linkSignature x#echoQuery:c", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown",
-      "linkSignature x#unsafeFirstLine:miss event", "linkSignature x#unsafeFirstLine:receipt",
-      "linkToken x#echoPart:r", "linkToken x#echoQuery:c", "linkToken x#leakDetail:d", "linkToken x#leakError:thrown",
-      "linkToken x#unsafeFirstLine:miss event", "linkToken x#unsafeFirstLine:receipt",
+      "eyesKey derived", "eyesKey x#echoKey:c", "eyesKey x#hostPassedKey:programs started", "eyesKey x#leakDetail:d", "eyesKey x#leakError:thrown", "eyesKey x#leakResult:r",
+      "eyesKey x#piEnvDirect:programs started", "eyesKey x#unsafeBareKey:miss event", "eyesKey x#unsafeBareKey:receipt", "eyesKey x#unsafeQuoted:miss event", "eyesKey x#unsafeQuoted:receipt",
+      "linkSignature derived", "linkSignature x#echoQuery:c", "linkSignature x#leakDetail:d", "linkSignature x#leakError:thrown", "linkSignature x#piEnvDirect:programs started",
+      "linkSignature x#savedUnderTheLink:r", "linkSignature x#unsafeFirstLine:miss event", "linkSignature x#unsafeFirstLine:receipt",
+      "linkToken derived", "linkToken x#echoPart:r", "linkToken x#echoQuery:c", "linkToken x#leakDetail:d", "linkToken x#leakError:thrown", "linkToken x#piEnvDirect:programs started",
+      "linkToken x#savedUnderTheLink:r", "linkToken x#unsafeFirstLine:miss event", "linkToken x#unsafeFirstLine:receipt",
     ], "a caller's own string may come back verbatim; any part of it elsewhere, and the key anywhere, is a finding");
     assert.deepEqual(violations, ["x#oversize r: content[0]: 3000x10, over 1600x1600"]);
     assert.deepEqual(rows.map((r) => `${r.id} ${r.outcome}`), [
       "x#leakResult swept", "x#leakError threw", "x#leakDetail swept", "x#leakDerived swept", "x#leakDerivedFile swept", "x#oversize swept",
-      "x#unsafeFirstLine swept", "x#unsafeQuoted swept", "x#safeFirstLine swept", "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
+      "x#unsafeFirstLine swept", "x#unsafeQuoted swept", "x#unsafeBareKey swept", "x#piEnvDirect swept", "x#hostPassedKey swept", "x#savedUnderTheLink swept", "x#safeFirstLine swept", "x#stub skipped", "x#broken threw", "x#echo swept", "x#echoKey swept", "x#echoPart swept", "x#echoQuery swept", "x#exempt exempt", "x#clean swept",
     ]);
     assert.equal(rows.find((r) => r.id === "x#stub").detail, "a stub is not built");
     assert.equal(rows.find((r) => r.id === "x#broken").detail, "TypeError: not what this case expected");
