@@ -162,7 +162,8 @@ def main():
     e.add_argument("command", nargs=argparse.REMAINDER)
     pu = sub.add_parser("push")
     pu.add_argument("--restart", action="store_true")
-    sub.add_parser("down")
+    dn = sub.add_parser("down")
+    dn.add_argument("--id", help="terminate this sandbox (default: the saved box)")
     sub.add_parser("ls")
     sub.add_parser("image")
     a = ap.parse_args()
@@ -178,11 +179,15 @@ def main():
         try:
             st = state()
         except FileNotFoundError:
+            st = {}
+        target = a.id or st.get("sandbox")
+        if not target:
             print("no saved box")
             return 0
-        modal.Sandbox.from_id(st["sandbox"]).terminate()
-        ledger(f"terminate {st['sandbox']} after {round((time.time() - st['created']) / 60, 1)} min")
-        print("terminated", st["sandbox"])
+        modal.Sandbox.from_id(target).terminate()
+        age = f" after {round((time.time() - st['created']) / 60, 1)} min" if st.get("sandbox") == target and st.get("created") else ""
+        ledger(f"terminate {target}{age}")
+        print("terminated", target)
         return 0
     if a.cmd == "ls":
         app = modal.App.lookup(APP, create_if_missing=True)

@@ -2,7 +2,8 @@
 // user `agent`, through the package's RemoteEnv). The agent reads the paper and the replication, runs the box's
 // programs, and calls use_model: the rest of its turn, and every turn after, comes from the Qwen3.5-27B it edited.
 //   with-modal -- with-typesafe -- node e2e/run.ts [--box] [--keep] [--out DIR] [--model gpt-6-luna] [--model-url http://127.0.0.1:9421/v1]
-//   --box   reuse the box in GG_STATE instead of creating one
+//   --box   reuse the box in GG_STATE instead of creating one; a reused box is the caller's and is left running
+//   --keep  leave the box this run created running
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
@@ -73,22 +74,37 @@ function py(args: string[]): void {
 async function main() {
   const stateDir = process.env.GG_STATE ?? join(process.cwd(), "box-state");
   process.env.GG_STATE = stateDir;
-  // Teardown is the outermost cleanup: a failed boot, setup, run or artifact save never leaves the GPUs running.
+  // Teardown is the outermost cleanup, and only of the box this run created (a failed start included): a failed boot,
+  // setup, run or artifact save never leaves its GPUs running, and a refused `up` never stops another run's box.
+  const saved = () => {
+    try {
+      return (JSON.parse(readFileSync(join(stateDir, "box.json"), "utf8")) as { sandbox?: string }).sandbox;
+    } catch {
+      return undefined;
+    }
+  };
+  let created: string | undefined;
   try {
     if (!values.box) {
+      const before = saved();
       log("box.create");
-      py(["up", "--ttl", "60"]);
-      log("box.created");
+      try {
+        py(["up", "--ttl", "60"]);
+      } finally {
+        const after = saved();
+        if (after && after !== before) created = after;
+      }
+      log("box.created", { sandbox: created });
       py(["wait", "--timeout", "900"]);
       log("box.ready");
     }
     await session(stateDir);
   } finally {
-    if (!values.keep) {
+    if (created && !values.keep) {
       try {
-        py(["down"]);
+        py(["down", "--id", created]);
       } catch (error) {
-        log("box.down_failed", { error: String(error) });
+        log("box.down_failed", { sandbox: created, error: String(error) });
       }
     }
   }
