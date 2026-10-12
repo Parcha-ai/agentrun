@@ -1,7 +1,8 @@
 """CPU checks for the skill program: python -m unittest test_train_skill (from train/).
 
 What they pin: a rerun keeps a skill done for the same body and redoes one done for another body (the relearn beat reruns
-the same command after the body changes), an unfinished one starts clean, and every skill has the stage's metric.
+the same command after the body changes), an unfinished one starts clean, a done skill ships the newest checkpoint that
+passed, and every skill has the stage's metric.
 """
 
 import json
@@ -48,6 +49,19 @@ class RerunTest(unittest.TestCase):
   def test_first_run(self):
     with tempfile.TemporaryDirectory() as root:
       self.assertIsNone(train_skill.reuse_or_clear(os.path.join(root, "walk"), "aaa"))
+
+
+class SettleTest(unittest.TestCase):
+  def test_policy_is_the_newest_checkpoint_that_passed(self):
+    # The trainer published ckpt-3 (untested, or failing) after ckpt-2 passed: the skill ships ckpt-2.
+    with tempfile.TemporaryDirectory() as out:
+      os.makedirs(os.path.join(out, "checkpoints"))
+      for n in (1, 2, 3):
+        json.dump({"checkpoint": n}, open(os.path.join(out, "checkpoints", f"ckpt-{n}.json"), "w"))
+      json.dump({"checkpoint": 3}, open(os.path.join(out, "policy.json"), "w"))
+      train_skill.settle_policy(out, 2)
+      self.assertEqual(json.load(open(os.path.join(out, "policy.json"))), {"checkpoint": 2})
+      self.assertFalse(os.path.exists(os.path.join(out, "policy.json.tmp")))
 
 
 class MetricTest(unittest.TestCase):

@@ -8,13 +8,13 @@ the policy's mjcf_sha256 matches the page. Into OUT, as they happen (each by ren
   skill.json             the skill, its fixed command, the body's sha256, the status (training | done | failed)
   progress.jsonl         the trainer's lines (steps, elapsed, the C-MuJoCo walk score)
   skill-progress.jsonl   per checkpoint: the skill's own test (C MuJoCo, the tab's arithmetic) and whether it passes
-  checkpoints/ckpt-N.json, policy.json (the newest)
+  checkpoints/ckpt-N.json, policy.json (the newest checkpoint; once the run stops, the newest that passed)
 It warm-starts from the image's checkpoint for the body's joint count (--init-from auto) and stops once the skill has passed
 on --stop-after-passing checkpoints in a row (0: train to --steps). Exit 0 when the skill passed, 3 when it never did.
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, os, shutil, subprocess, sys, threading, time
+import argparse, hashlib, json, os, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -58,6 +58,17 @@ def canonical(skill: str) -> str:
 def compile_cache(skill: str) -> str:
   """Where a skill's compile cache lives on this machine unless --compile-cache says otherwise (outside OUT)."""
   return os.path.join(os.path.expanduser("~"), ".cache", "pda-skill", f"{canonical(skill)}.tar.gz")
+
+
+def settle_policy(out: str, checkpoint: int) -> None:
+  """policy.json is the newest checkpoint that passed the skill's test: the trainer publishes every checkpoint, and it can
+  publish a newer, untested or failing one before it stops (or a later checkpoint can fail after one passed)."""
+  with open(os.path.join(out, "checkpoints", f"ckpt-{checkpoint}.json")) as f:
+    text = f.read()
+  tmp = os.path.join(out, "policy.json.tmp")
+  with open(tmp, "w") as f:
+    f.write(text)
+  os.replace(tmp, os.path.join(out, "policy.json"))
 
 
 def reuse_or_clear(out: str, sha: str):
@@ -134,7 +145,7 @@ def main() -> int:
     print(json.dumps({"event": "skill.compiled", **meta}), flush=True)
     return r.returncode
   p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=HERE)
-  streak, passed_at, lock = 0, None, threading.Lock()
+  streak, passed_at, last_pass = 0, None, None
   prog = open(os.path.join(out, "skill-progress.jsonl"), "a")
   for line in p.stdout:
     try:
@@ -164,11 +175,16 @@ def main() -> int:
     streak = streak + 1 if ok else 0
     if ok and passed_at is None:
       passed_at = rec
+    if ok:
+      last_pass = n
     if a.stop_after_passing and streak >= a.stop_after_passing:
       p.terminate()
       break
   p.wait()
-  meta.update(status="done" if passed_at else "failed", passed_at=passed_at, wall_s=round(time.time() - t0, 1))
+  if last_pass is not None:
+    settle_policy(out, last_pass)
+  meta.update(status="done" if passed_at else "failed", passed_at=passed_at, policy_checkpoint=last_pass,
+              wall_s=round(time.time() - t0, 1))
   write_json(os.path.join(out, "skill.json"), meta)
   print(json.dumps({"event": "skill.done", **meta}), flush=True)
   return 0 if passed_at else 3
