@@ -38,14 +38,18 @@ export const MISS_ACTION: Readonly<Record<MissCode, string>> = Object.freeze({
 /** Characters that may close around a link inside a word: quotes, brackets, and the punctuation after it. */
 const LINK_TAIL = "\"'`)]}>,.;:!?";
 
-/** A line with every http(s) link in it cut to its origin and path: a link's query, fragment and credentials (a signed
- *  link's signature, a token) never reach a result, a receipt or an event. A link may stand inside a word, quoted or
- *  bracketed or after `url=`: it starts at its scheme and ends before the quotes and punctuation that close it, and it
- *  is parsed as a URL, never matched. */
-export const linkSafe = (line: string): string => line.split(/(\s+)/).map((word) => {
+/** The schemes of a link that is cut: web pages and web sockets. */
+const LINK_SCHEMES = ["https://", "http://", "wss://", "ws://"];
+
+/** A line with every http(s) and ws(s) link in it cut to its origin and path: a link's query, fragment and credentials
+ *  (a signed link's signature, a token) never reach a result, a receipt or an event. A link may stand inside a word,
+ *  quoted or bracketed or after `url=`, and its slashes may be escaped as JSON writes them (`https:\/\/`): it starts at
+ *  its scheme and ends before the quotes and punctuation that close it, and it is parsed as a URL, never matched. */
+export const linkSafe = (line: string): string => line.split(/(\s+)/).map((escaped) => {
+  const word = escaped.split("\\/").join("/");
   const lower = word.toLowerCase();
-  const at = [lower.indexOf("https://"), lower.indexOf("http://")].filter((i) => i >= 0).sort((a, b) => a - b)[0];
-  if (at === undefined) return word;
+  const at = LINK_SCHEMES.map((scheme) => lower.indexOf(scheme)).filter((i) => i >= 0).sort((a, b) => a - b)[0];
+  if (at === undefined) return escaped;
   let end = word.length;
   while (end > at && LINK_TAIL.includes(word[end - 1]!)) end--;
   const link = word.slice(at, end);

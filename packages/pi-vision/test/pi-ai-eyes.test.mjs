@@ -109,3 +109,20 @@ test("the host's payload hook is the provider's, and what it returns is sent; vi
   assert.equal(eyes.limits.video.native, true);
   assert.equal(piAiEyes({ ...provider.getModel(), input: ["text"] }).accepts.image, false);
 });
+
+test("the key is taken out of an error's words, wherever the provider put it", async (t) => {
+  const provider = faux();
+  t.after(() => provider.unregister());
+  provider.setResponses([
+    fauxAssistantMessage("", { stopReason: "error", errorMessage: `401 Incorrect API key provided: ${SENTINEL_EYES_KEY}. Check the key (${SENTINEL_EYES_KEY}).` }),
+    () => { throw new Error(`could not sign the request with ${SENTINEL_EYES_KEY}`); },
+    fauxAssistantMessage("", { stopReason: "error", errorMessage: "upstream 503" }),
+  ]);
+  const eyes = piAiEyes(provider.getModel(), { apiKey: () => SENTINEL_EYES_KEY });
+  for (const expected of [/^401 Incorrect API key provided: \[key\]\. Check the key \(\[key\]\)\.$/, /could not sign the request with \[key\]/, /^upstream 503$/]) {
+    await assert.rejects(eyes.see({ parts: [], ask: "q" }, signal()), (error) => expected.test(error.message) && !error.message.includes(SENTINEL_EYES_KEY));
+  }
+  const keyless = piAiEyes(provider.getModel());
+  provider.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "no key was given" })]);
+  await assert.rejects(keyless.see({ parts: [], ask: "q" }, signal()), /^Error: no key was given$/);
+});

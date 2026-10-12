@@ -9,7 +9,7 @@ import { formatFragment } from "./fragments.js";
 import { blocksSha256, fileLook, lookKey, type Filing, type LookRecord } from "./evidence.js";
 import type { CallContext, CallSetup, EyesAnswer, ImageContent, Json, TextContent, ToolResult, Usage } from "./host.js";
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
-import { RESULT_BYTES_SHARE } from "./limits.js";
+import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
 import type { Fit, Part } from "./plan.js";
 
@@ -27,6 +27,8 @@ export const DESCRIBE_ASK =
 export type MediaDetails = {
   readonly kind?: string; readonly path?: string; readonly ask?: string; readonly fromS?: number; readonly toS?: number; readonly page?: number;
   readonly units?: readonly number[]; readonly sha256?: string; readonly original?: string; readonly fit?: Fit;
+  /** The files a door kept of what it shows (a rendered page), for the receipt. */
+  readonly derived?: readonly string[];
 };
 
 /** The pixels an image's header states, without decoding it (`imageHeader`, kinds.ts). */
@@ -48,19 +50,19 @@ const leadName = (model: unknown): string => {
   return typeof m.id === "string" && m.id ? m.id : typeof m.modelId === "string" && m.modelId ? m.modelId : "the lead model";
 };
 
-/** The block within the image limits: as it is when its header says so, else what the processor makes of it; the
- *  miss, never the original, when nothing fits. */
-async function fitted(block: ImageContent, setup: CallSetup, sizeOf: ImageSize, lead: string): Promise<Sized | Miss> {
-  const { maxWidth, maxHeight, maxBytes } = setup.limits.image;
+/** The block within `limits`, the image limits of the model that will see it: as it is when its header says so, else
+ *  what the processor makes of it; the miss, never the original, when nothing fits. */
+async function fitted(block: ImageContent, limits: Limits["image"], setup: CallSetup, sizeOf: ImageSize, model: string): Promise<Sized | Miss> {
+  const { maxWidth, maxHeight, maxBytes } = limits;
   const within = (b: ImageContent) => { const size = sizeOf(raw(b)); return size && size.width <= maxWidth && size.height <= maxHeight && b.data.length <= maxBytes ? { ...b, width: size.width, height: size.height } : null; };
   const asIs = within(block);
   if (asIs) return asIs;
   const size = sizeOf(raw(block));
   const over = `it is ${size ? `${size.width}x${size.height}` : "of a size its header does not state"} and ${block.data.length} base64 characters, over ${maxWidth}x${maxHeight} and ${maxBytes}`;
-  if (!setup.images) return { code: "needs", reason: `${over}, and no image processor is installed to fit it (Photon or sharp)`, model: lead };
-  const prepared = await setup.images.prepare(raw(block), block.mimeType, setup.limits.image).catch(() => undefined);
+  if (!setup.images) return { code: "needs", reason: `${over}, and no image processor is installed to fit it (Photon or sharp)`, model };
+  const prepared = await setup.images.prepare(raw(block), block.mimeType, limits).catch(() => undefined);
   const fit = prepared && within({ type: "image", data: prepared.data, mimeType: prepared.mimeType });
-  return fit || { code: "over_budget", reason: `${over}, and it could not be fitted`, model: lead };
+  return fit || { code: "over_budget", reason: `${over}, and it could not be fitted`, model };
 }
 
 /** Edges tried, as a share of a block's own, when it must be re-encoded smaller to fit a result's share of the request:
@@ -129,7 +131,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       tool: "look",
       args: { path: saved ?? "a tool result", ...(ask ? { ask } : {}), ...(media.fromS !== undefined ? { from_s: media.fromS } : {}), ...(media.toS !== undefined ? { to_s: media.toS } : {}), ...(media.page !== undefined ? { page: media.page } : {}), model, native },
       status: "ok",
-      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model) },
+      facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model), ...(media.derived?.length ? { derived: media.derived } : {}) },
       body,
     };
   };
@@ -238,6 +240,11 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     return miss(what, unit, failed);
   };
 
+  // A block is fitted to the limits of the model that will see it: the lead's when the lead takes images, else the
+  // eyes'. The lead's limits never withhold a block only the eyes will look at. With neither, it goes on unfitted to
+  // be withheld for having no one to look.
+  const seer = setup.limits.image.native ? { limits: setup.limits.image, model: lead }
+    : setup.eyes?.accepts.image ? { limits: setup.eyes.limits.image, model: setup.eyes.model } : undefined;
   // One block that cannot be fitted withholds its unit whole.
   const unitOf = (pos: number) => units?.[stillAt.indexOf(pos)] ?? `own ${pos}`;
   const routed = new Set<number | string>();
@@ -249,7 +256,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     routed.add(id);
     const where = stillAt.filter((p) => unitOf(p) === id);
     const fits: (Sized | Miss)[] = [];
-    for (const p of where) fits.push(await fitted(at(p), setup, sizeOf, lead));
+    for (const p of where) fits.push(seer ? await fitted(at(p), seer.limits, setup, sizeOf, seer.model) : { ...at(p), width: 0, height: 0, ...sizeOf(raw(at(p))) });
     const failure = fits.find((f): f is Miss => "code" in f);
     if (failure) standIn(where, [await miss(whatOf(where.length, false), where.map(at), failure)]);
     else await route(where, fits as Sized[], false);
