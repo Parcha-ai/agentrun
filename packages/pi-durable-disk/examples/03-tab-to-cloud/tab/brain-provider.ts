@@ -19,7 +19,7 @@ import type { Answered, ChatMsg } from "../../04-walks-home/tab/src/modelhost.ts
 import { splitThinking } from "../../04-walks-home/tab/src/thinking.ts";
 import { decodeTurn, toPiContent, type DecodedTurn } from "./decode.ts";
 import { CHARS_PER_TOKEN, CONTEXT_TOKENS, hasTools, toolPrompt } from "./tool-window.ts";
-import { nativeContent, nativeTurn } from "./native-turn.ts";
+import { nativeContent, nativeTurn, toolProperties } from "./native-turn.ts";
 import type { ToolChatRequest, ToolChatResult, ToolChatTool } from "../../04-walks-home/tab/src/modelhost.ts";
 
 export const BRAIN_PROVIDER = "tab-local";
@@ -65,6 +65,8 @@ export interface ToolDecoding {
   system?: string;
   nCtx?: number;
   refine?: (tools: ToolChatTool[]) => ToolChatTool[];
+  /** Awaited before each native turn is built: refresh whatever `refine` reads (the skills that came home), so a change reaches the very next request. */
+  prepare?: () => Promise<void>;
   templateThinking?: boolean;
   /** A task that has taken this many of the model's own turns without an answer ends with a plain line instead of another model call (a small model stuck repeating one call would otherwise run for ever, each turn about ten seconds). Default 16. */
   maxSteps?: number;
@@ -137,6 +139,7 @@ function streamNative(brain: BrainModel, model: Model<string>, context: Transcri
   void (async () => {
     try {
       const maxTokens = d.answerTokens + d.callTokens;
+      await d.prepare?.();
       const turn = nativeTurn(context.messages as never, { provider: BRAIN_PROVIDER, mode: d.history ?? "none", ...(d.system ? { system: d.system } : {}), ...(d.refine ? { refine: d.refine } : {}), maxChars: Math.max(0, ((d.nCtx ?? 4096) - maxTokens) * CHARS_PER_TOKEN) });
       if (!turn.messages.some((m) => m.role === "user")) throw new Error("nothing to answer: the conversation has no user message");
       stream.push({ type: "start", partial: output });
@@ -153,7 +156,7 @@ function streamNative(brain: BrainModel, model: Model<string>, context: Transcri
       const started = performance.now();
       const r = await brain.toolChat!({ messages: turn.messages, tools: turn.tools, toolChoice: "auto", maxTokens, templateKwargs: { enable_thinking: d.templateThinking === true } }, options?.signal);
       const names = turn.tools.map((t) => t.function.name);
-      const { content, calls, problems } = nativeContent(r, names);
+      const { content, calls, problems } = nativeContent(r, names, toolProperties(turn.tools));
       const ms = performance.now() - started;
       d.onTurn?.({ ms, tokensPerSecond: r.outputTokens > 0 && ms > 0 ? r.outputTokens / (ms / 1000) : null, callId: `nt-${Date.now().toString(36)}`, prompt: JSON.stringify({ messages: turn.messages.length, tools: turn.tools.length, dropped: turn.dropped }), completions: [{ ms: r.ms, promptTokens: r.promptTokens, outputTokens: r.outputTokens, stoppedBy: r.stoppedBy }],
         decoded: { promptTokens: r.promptTokens, outputTokens: r.outputTokens, thinkTokens: 0, calls, thinkingCut: false, cut: r.stoppedBy === "length", raw: r.text, parsed: { ...(calls > 0 ? { call: { name: (content.find((b) => b.type === "toolCall") as { name: string }).name, arguments: (content.find((b) => b.type === "toolCall") as { arguments: unknown }).arguments } } : {}), ...(problems.length > 0 ? { problem: { kind: "arguments", detail: problems.join("; ") } } : {}) } } as never });

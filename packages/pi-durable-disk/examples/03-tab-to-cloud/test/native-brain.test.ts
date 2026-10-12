@@ -37,7 +37,8 @@ test("a native-template model: warm-up, one turn with two tool calls, pi runs th
     const base = scripted(() => "<thinking>hi</thinking>\nHello.");
     const requests: ToolChatRequest[] = [];
     const loads: { jinja?: boolean; nCtx?: number }[] = [];
-    let round = 0;
+    let round = 0, prepared = 0;
+    let skills = ["walk"]; // what home/skills.json names: it gains sprint between the two model turns of this task
     const llm = {
       ...base.llm,
       async load(parts: unknown[], o: { jinja?: boolean; nCtx?: number }) { loads.push({ jinja: o.jinja, nCtx: o.nCtx }); },
@@ -52,7 +53,7 @@ test("a native-template model: warm-up, one turn with two tool calls, pi runs th
     };
     const robotTools = registry.snapshot().tools().filter((t) => ["set_color", "set_shape", "set_face", "rename", "resize", "scale", "set_legs", "morph", "reset", "do", "update_robot"].includes(t.tool.name)).map((t) => t.tool);
     const brain = new Brain({ mode: "configure", route: false, harness, models, root, readFile: async (p) => disk.files.get(p) ?? null, judge: async () => "show", llm: llm as never, threads: 2, context: ctx, native: { nCtx: 4096 }, tools: robotTools, instructions: SYSTEM,
-      decoding: { mode: "native", system: SYSTEM, nCtx: 4096, history: "none", refine: (t) => narrowEnum(t, "skill", ["walk", "sprint"]) } });
+      decoding: { mode: "native", system: SYSTEM, nCtx: 4096, history: "none", prepare: async () => { prepared++; skills = prepared === 1 ? ["walk"] : ["walk", "sprint"]; }, refine: (t) => narrowEnum(t, "skill", skills) } });
     const conv = await brain.start(disk.manifest);
     assert.equal(conv?.id, root.id, "the same conversation");
     assert.deepEqual(loads, [{ jinja: true, nCtx: 4096 }], "loaded with the model's own template and the larger context");
@@ -69,7 +70,10 @@ test("a native-template model: warm-up, one turn with two tool calls, pi runs th
     assert.equal(turn.length, 2, "two model turns: the calls, then the line");
     assert.equal(turn[0]!.messages[0]!.role, "system");
     assert.deepEqual(turn[0]!.tools.map((t) => t.function.name).sort(), ["do", "morph", "rename", "reset", "resize", "scale", "set_color", "set_face", "set_legs", "set_shape", "update_robot"]);
-    assert.deepEqual((turn[0]!.tools.find((t) => t.function.name === "do")!.function.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum, ["walk", "sprint"], "the skill lock is the model's narrowed view");
+const skillEnum = (r: ToolChatRequest) => (r.tools.find((t) => t.function.name === "do")!.function.parameters as { properties: { skill: { enum: string[] } } }).properties.skill.enum;
+    assert.deepEqual(skillEnum(turn[0]!), ["walk"], "the skill lock is the model's narrowed view");
+    assert.deepEqual(skillEnum(turn[1]!), ["walk", "sprint"], "a skill that came home between two turns is on offer in the very next request (the list is refreshed before the request is built)");
+    assert.equal(prepared, 2);
     assert.deepEqual(turn[0]!.templateKwargs, { enable_thinking: false });
     assert.deepEqual(turn[1]!.messages.map((m) => m.role), ["system", "user", "assistant", "tool", "tool"], "the request, the model's two calls, their two results");
     assert.match((turn[1]!.messages.at(-1) as { content: string }).content, /^The whole robot is now red\. Looks only/);

@@ -53,6 +53,7 @@ const say = async (text: string) => {
 const call = (name: string, args: Record<string, unknown>) => `{ call: { name: ${JSON.stringify(name)}, arguments: ${JSON.stringify(args)} } }`;
 const script = async (turns: string[]) => ev(`demo.stubCloud([${turns.join(", ")}, { text: "Done." }])`);
 const until = (expr: string, ms = 30_000) => page!.until(expr, ms, 300);
+const TURN_MS = 900_000; // a turn on a loaded box can take minutes
 const turns: { prompt: string; ms: number; calls: string[]; reply: string; robot: string }[] = [];
 try {
   page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&template=native&threads=" + (process.env.THREADS ?? "8") + "#"));
@@ -65,42 +66,55 @@ try {
   await sleep(3000); // the warm-up is a throwaway one-token turn: a command sent now waits for it
   console.log(`the model is loaded and warm after ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   await page.screenshot(join(shots, "minicpm-1-loaded.png"));
+  /** One chat turn, end to end: typed in the chat, the model's calls run by pi, its closing line. A turn that does not finish in the time fails the check (it is not skipped). */
   const ask = async (prompt: string) => {
     const t = Date.now();
     const before = await ev<number>("demo.items().length");
     await ev(`(() => { const i = document.getElementById("input"); i.value = ${JSON.stringify(prompt)}; document.getElementById("send").click(); return true; })()`);
-    // the model's turn: wait for its answer (a new assistant item that stays the last one), however long a 2B model on this box takes
-    await page!.until(`demo.items().length > ${before} && !demo.state.chat.busy`, 300_000, 500).catch(() => undefined);
-    await sleep(1500);
-    await page!.until(`!demo.state.chat.busy`, 300_000, 500).catch(() => undefined);
+    await page!.until(`(() => { const items = demo.items().slice(${before}); return items.length > 1 && items.at(-1).kind === 'assistant' && !demo.state.chat.busy; })()`, TURN_MS, 500).catch((e) => { throw new Error(`the turn "${prompt}" did not finish: ${(e as Error).message}`); });
+    await sleep(1500); // a late item would show here
     const items = await ev<Item[]>(`demo.items().slice(${before})`);
     const ms = Date.now() - t;
-    const calls = items.filter((i) => i.kind === "tool").map((i) => `${i.name}`);
+    const tools = items.filter((i) => i.kind === "tool");
+    const calls = tools.map((i) => `${i.name}`);
+    const refused = tools.filter((i) => i.status === "error" || /^(Not done|<harness>|\[error\])/.test(i.output ?? i.text ?? "")).length;
     const reply = items.filter((i) => i.kind === "assistant" || i.kind === "text").map((i) => i.text ?? "").join(" ").trim();
-    const robot = await walks<string>("JSON.stringify({ look: w.look(), fits: w.fits() })").catch(() => "");
-    console.log(`  items: ${JSON.stringify(items.map((i) => ({ k: i.kind, n: i.name, t: (i.text ?? i.output ?? "").slice(0, 100) })))}`);
-    console.log(`  brain: ${JSON.stringify(await ev<unknown>("demo.brain()"))}`);
+    const robot = await walks<string>("JSON.stringify({ look: w.look(), fits: w.fits(), skill: w.skill() })").catch(() => "");
     turns.push({ prompt, ms, calls, reply, robot });
-    console.log(`> ${prompt}\n  ${(ms / 1000).toFixed(1)} s  calls: ${calls.join(", ") || "(none)"}  reply: ${reply.slice(0, 160)}\n  robot: ${robot.slice(0, 200)}`);
-    return { items, calls, reply };
+    console.log(`> ${prompt}\n  ${(ms / 1000).toFixed(1)} s  calls: ${calls.join(", ") || "(none)"}${refused ? `  (${refused} refused)` : ""}  reply: ${reply.slice(0, 160)}\n  robot: ${robot.slice(0, 200)}`);
+    return { items, calls, refused, reply, tools };
   };
+  const look = () => walks<{ torso: string; legs: string[]; torsoGeometry: string; face: string }>("w.look()");
+  const c = await ask("make it sprint");
+  ok("'make it sprint' (on the body that was drawn): do ran and succeeded and the creature page is running sprint", c.calls.some((x) => x === "do" || x === "update_robot") && c.refused === 0 && (await walks<string | null>("w.skill()")) === "sprint", { c: c.calls, skill: await walks("w.skill()") });
   const a = await ask("make it a red spider");
-  ok("'make it a red spider' calls the tools (morph and/or set_color)", a.calls.some((c) => /morph|set_color|update_robot/.test(c)), a.calls);
+  const la = await look();
+  ok("'make it a red spider': morph and set_color ran and succeeded, and the robot is a red spider (3 leg pairs, a round torso, red)", a.calls.includes("morph") && a.refused === 0 && la.torsoGeometry === "SphereGeometry" && la.torso === "#d9423b" && la.legs.length === 3, { a: a.calls, la });
   await page.screenshot(join(shots, "minicpm-2-spider.png"));
   const b = await ask("hi, who are you?");
-  ok("chat is answered without a tool call", b.calls.length === 0, b.calls);
-  const c = await ask("make it sprint");
-  ok("'make it sprint' calls do", c.calls.includes("do") || c.calls.includes("update_robot"), c.calls);
+  ok("chat is answered in words, with no tool call and no change to the robot", b.calls.length === 0 && b.reply.length > 0 && JSON.stringify(await look()) === JSON.stringify(la), b);
   const d = await ask("give it a happy face and call it Spidey");
-  ok("a face and a name", d.calls.length >= 1, d.calls);
+  const ld = await look();
+  ok("'give it a happy face and call it Spidey': the face is happy and the name is on the page", d.refused === 0 && ld.face === "happy" && /Spidey/.test(await ev<string>(`document.getElementById("creature").contentDocument.getElementById("robotName").textContent`)), { d: d.calls, face: ld.face });
   // wild asks, the kind that tempt a free-text parameter out of its enum (D1/D2 measured "purpel", "cat", "wiggles", factor 3 from this model): what the robot ends up as, and whether the tools' refusals were needed
   for (const wild of ["paint it purpel", "turn it into a cat", "make it wiggle", "make it 3 times bigger"]) {
     const w = await ask(wild);
-    const refusals = w.items.filter((i) => i.kind === "tool" && /^Not done|must be one of|refus/i.test(i.output ?? i.text ?? "")).length;
-    console.log(`  wild: ${JSON.stringify(wild)} tools=${w.calls.join("+") || "-"} refused=${refusals}`);
+    console.log(`  wild: ${JSON.stringify(wild)} tools=${w.calls.join("+") || "-"} refused=${w.refused}`);
   }
   console.log(`tool turns (model ms, prompt tokens, output tokens): ${JSON.stringify((await ev<{ ms: number; promptTokens: number; outputTokens: number }[]>("demo.toolTurns()")).map((t) => [t.ms, t.promptTokens, t.outputTokens]))}`);
   await page.screenshot(join(shots, "minicpm-3-after.png"));
+  // offline: the run is checked out with the model it has loaded, the network is cut, and the same model changes the robot again
+  await ev("document.getElementById('offline').click()");
+  await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 900_000, 1000);
+  ok("the run was checked out into this browser", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
+  await page.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  ok("the network is really off", await ev<boolean>(`(async () => { try { await fetch("/ping?t=" + Date.now(), { cache: "no-store" }); return false; } catch { return true; } })()`));
+  await page.until("demo.brain().swapped && demo.brain().phase === 'answered'", 900_000, 1000);
+  await sleep(3000);
+  const off = await ask("paint it blue");
+  const lo = await look();
+  ok("offline: 'paint it blue' ran a tool that succeeded and the robot is blue", off.calls.length > 0 && off.refused === 0 && lo.torso === "#3b78d9", { off: off.calls, lo });
+  await page.screenshot(join(shots, "minicpm-4-offline.png"));
   const errors = page.console.filter((l) => /Uncaught|unhandled/i.test(l)).slice(-5);
   ok("no uncaught errors", errors.length === 0, errors);
   console.log(JSON.stringify(turns.map((t) => ({ p: t.prompt, s: +(t.ms / 1000).toFixed(1), calls: t.calls })), null, 1));

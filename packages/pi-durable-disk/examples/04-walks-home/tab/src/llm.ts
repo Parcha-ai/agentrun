@@ -60,7 +60,7 @@ export function wllamaLlm(wasmUrl: string, make: (config: { default: string }) =
       // The tools go to the model's own template; llama.cpp builds the call grammar from them (an enum in a schema is a lock on that argument) and parses the reply into tool_calls.
       const r = await w.createChatCompletion({
         messages: req.messages as never, tools: req.tools as never, tool_choice: req.toolChoice ?? 'auto', max_tokens: req.maxTokens, ...rest, repeat_penalty: penalty_repeat, repeat_last_n: REPEAT_LAST_N,
-        ...(req.templateKwargs ? { chat_template_kwargs: req.templateKwargs } : {}), stream: false, abortSignal: signal,
+        ...(req.templateKwargs ? { chat_template_kwargs: req.templateKwargs } : {}), ...(lora ? { lora } : {}), stream: false, abortSignal: signal,
       } as Parameters<Wllama['createChatCompletion']>[0] & { stream?: false });
       const choice = (r as { choices: { message: { content?: string | null; reasoning_content?: string | null; tool_calls?: { id: string; function: { name: string; arguments: string } }[] }; finish_reason: string | null }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } }).choices[0]!;
       const calls = (choice.message.tool_calls ?? []).map((c, i) => ({ id: c.id || `call-${i}`, name: c.function.name, arguments: c.function.arguments }));

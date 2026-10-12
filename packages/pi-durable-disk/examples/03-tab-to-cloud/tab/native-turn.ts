@@ -79,7 +79,7 @@ export function nativeTurn(messages: readonly unknown[], o: WindowOptions & { sy
  * The model's reply as pi's content: its own call syntax already parsed by the runtime into tool_calls (arguments as JSON text), else what the runtime left in the text (MiniCPM's special-token
  * tags come back stripped: ` name="morph"> name="preset">spider`); a call whose arguments are not JSON is no call. Thinking tags are split off into a thinking block.
  */
-export function nativeContent(r: Pick<ToolChatResult, "text" | "toolCalls">, toolNames: readonly string[]): { content: ({ type: "text"; text: string } | { type: "thinking"; thinking: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> })[]; calls: number; problems: string[] } {
+export function nativeContent(r: Pick<ToolChatResult, "text" | "toolCalls">, toolNames: readonly string[], properties: Readonly<Record<string, readonly string[]>> = {}): { content: ({ type: "text"; text: string } | { type: "thinking"; thinking: string } | { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> })[]; calls: number; problems: string[] } {
   const content: ReturnType<typeof nativeContent>["content"] = [];
   const problems: string[] = [];
   let text = r.text;
@@ -90,7 +90,7 @@ export function nativeContent(r: Pick<ToolChatResult, "text" | "toolCalls">, too
   }
   let calls = r.toolCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments }));
   if (calls.length === 0) {
-    const parsed = parseTaggedCalls(text, toolNames);
+    const parsed = parseTaggedCalls(text, toolNames, properties);
     if (parsed.length > 0) { calls = parsed.map((c, i) => ({ id: `call-${i}`, name: c.name, arguments: JSON.stringify(c.arguments) })); text = ""; }
   }
   if (text.trim()) content.push({ type: "text", text: text.trim() });
@@ -103,15 +103,24 @@ export function nativeContent(r: Pick<ToolChatResult, "text" | "toolCalls">, too
   return { content, calls: content.filter((b) => b.type === "toolCall").length, problems };
 }
 
-/** MiniCPM5's calls when its tags come back stripped: a name that is a tool starts a call, any other name="..."> key is an argument of the current call; numbers and booleans are parsed. */
-export function parseTaggedCalls(text: string, toolNames: readonly string[]): { name: string; arguments: Record<string, unknown> }[] {
+/** The argument names of each tool, from the schemas the model was shown: what tells an argument from the next call when a tool and an argument share a name (update_robot's `reset`, `morph` and `scale`). */
+export function toolProperties(tools: readonly ToolChatTool[]): Record<string, string[]> {
+  return Object.fromEntries(tools.map((t) => [t.function.name, Object.keys((t.function.parameters as { properties?: Record<string, unknown> } | undefined)?.properties ?? {})]));
+}
+
+/**
+ * MiniCPM5's calls when its tags come back stripped: a key that is an argument of the call being read is its argument (even when it is also a tool's name: update_robot has a `reset` and a `morph`),
+ * else a name that is a tool starts a call, any other name="..."> key is an argument of the current call; numbers and booleans are parsed.
+ */
+export function parseTaggedCalls(text: string, toolNames: readonly string[], properties: Readonly<Record<string, readonly string[]>> = {}): { name: string; arguments: Record<string, unknown> }[] {
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
   const parts = text.split(/\s*name="([\w-]+)">/);
   let current: { name: string; arguments: Record<string, unknown> } | undefined;
   for (let i = 1; i < parts.length; i += 2) {
     const key = parts[i]!;
     const value = (parts[i + 1] ?? "").trim();
-    if (toolNames.includes(key) && !(current && key in current.arguments)) { current = { name: key, arguments: {} }; calls.push(current); continue; }
+    const isArgument = current !== undefined && (properties[current.name] ?? []).includes(key) && !(key in current.arguments);
+    if (!isArgument && toolNames.includes(key) && !(current && key in current.arguments)) { current = { name: key, arguments: {} }; calls.push(current); continue; }
     if (!current) continue;
     current.arguments[key] = /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : value === "true" ? true : value === "false" ? false : value;
   }

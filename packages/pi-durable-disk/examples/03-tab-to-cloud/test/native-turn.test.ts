@@ -10,7 +10,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { agentRegistry, rootAgent } from "../agent.ts";
-import { narrowEnum, nativeContent, nativeTurn, parseTaggedCalls } from "../tab/native-turn.ts";
+import { narrowEnum, nativeContent, nativeTurn, parseTaggedCalls, toolProperties } from "../tab/native-turn.ts";
 import { BRAIN_PROVIDER } from "../tab/brain-provider.ts";
 
 const text = (t: string) => ({ type: "text", text: t });
@@ -107,4 +107,20 @@ test("nativeTurn: a prompt over its budget loses the oldest complete turns, keep
   const roles = t.messages.map((m) => m.role);
   for (let i = 1; i < roles.length; i += 2) assert.deepEqual([roles[i], roles[i + 1]], ["assistant", "tool"], "pairs stay whole");
   assert.equal(t.steps, 4, "the steps counted are the task's, before anything was dropped");
+});
+
+test("parseTaggedCalls: an argument that shares its name with a tool is an argument of the call being read (update_robot's reset, morph, scale), not the next call", () => {
+  const tools = [
+    { type: "function" as const, function: { name: "update_robot", parameters: { type: "object", properties: { reset: {}, morph: {}, scale: {}, color: {} } } } },
+    { type: "function" as const, function: { name: "reset", parameters: { type: "object", properties: {} } } },
+    { type: "function" as const, function: { name: "morph", parameters: { type: "object", properties: { preset: {} } } } },
+    { type: "function" as const, function: { name: "scale", parameters: { type: "object", properties: { factor: {} } } } },
+  ];
+  const names = tools.map((t) => t.function.name);
+  const properties = toolProperties(tools);
+  assert.deepEqual(parseTaggedCalls(' name="update_robot"> name="reset">false name="color">red', names, properties), [{ name: "update_robot", arguments: { reset: false, color: "red" } }], "reset:false stays an argument and does not call reset()");
+  assert.deepEqual(parseTaggedCalls(' name="update_robot"> name="morph">spider name="scale">2', names, properties), [{ name: "update_robot", arguments: { morph: "spider", scale: 2 } }]);
+  assert.deepEqual(parseTaggedCalls(' name="reset"> name="morph"> name="preset">dog name="scale"> name="factor">2', names, properties).map((c) => c.name), ["reset", "morph", "scale"], "a name that is not an argument of the current call still starts the next call");
+  const viaContent = nativeContent({ text: ' name="update_robot"> name="reset">false', toolCalls: [] }, names, properties);
+  assert.deepEqual(viaContent.content, [{ type: "toolCall", id: "call-0", name: "update_robot", arguments: { reset: false } }]);
 });

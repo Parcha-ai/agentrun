@@ -189,7 +189,7 @@ export function makeHomeDisk(argv) {
     added.push(entry.name);
   }
   const active = o.active ? o.active.split(',') : added.length ? [added.at(-1)] : old?.active;
-  const manifest = { format: 'gguf-base-adapters-v1', base, adapters, ...(active ? { active } : {}), ...(o.standalone ? { standalone: true } : {}) };
+  const manifest = { format: 'gguf-base-adapters-v1', base, adapters, ...(active ? { active } : {}), ...(o.standalone || old?.standalone ? { standalone: true } : {}) }; // a standalone disk stays standalone when it is run again without the flag
   const text = JSON.stringify(manifest);
   parseBaseAdapters(text); // the tab's own rules: what it would refuse is not written
   const named = (m) => new Set([m.base, ...m.adapters].map((f) => fileDir(f.sha256, f.chunk_bytes)));

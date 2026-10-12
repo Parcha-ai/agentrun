@@ -84,7 +84,7 @@ test('a base with adapters: each adapter goes in beside the base at scale 0, and
       await (this as any).proxy.moduleInit(blobs.map((b, i) => ({ name: `model-0000${i + 1}-of-00001.gguf`, blob: b })));
     },
     exit: async () => {},
-    createChatCompletion: async (o: any) => { sent.push(o); return (async function* () {})(); },
+    createChatCompletion: async (o: any) => { sent.push(o); return o.stream === false ? { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }], usage: {} } : (async function* () {})(); },
     createCompletion: async (o: any) => { sent.push(o); return (async function* () {})(); },
   }) as never;
   const llm = wllamaLlm('/w.wasm', make);
@@ -96,8 +96,9 @@ test('a base with adapters: each adapter goes in beside the base at scale 0, and
   const signal = new AbortController().signal;
   await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 5, signal, onText: () => {} });
   await llm.complete!({ prompt: 'p', maxTokens: 5 }, { signal });
+  await llm.chatTools!({ messages: [{ role: 'user', content: 'hi' }], tools: [], maxTokens: 5 }, { signal }); // a native tool turn too: an adapter left at its load-time scale of 0 would silently be the base model
   const on = [{ id: 0, scale: 0 }, { id: 1, scale: 1 }];
-  assert.deepEqual(sent.map((o) => o.lora), [on, on]);
+  assert.deepEqual(sent.map((o) => o.lora), [on, on, on]);
   await llm.load([new Uint8Array(1)], { threads: 2 });
   await llm.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 5, signal, onText: () => {} });
   assert.equal(sent.at(-1).lora, undefined);
