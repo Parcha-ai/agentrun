@@ -21,6 +21,7 @@ test("teach.md gives the result once, after teach_skills, and the reply back hom
   assert.match(sop, /Give the result once, here/);
   assert.match(sop, /Do not say you are moving or coming back: the move home follows on its own\./);
   assert.match(sop, /## Back home after teaching/);
-  assert.match(sop, /one short line that adds only what is new: that you are back, and one thing to try/);
+  assert.match(sop, /one short line that adds only what is new: that you are back, and one thing to try, naming one skill from the server's list of skills that came home \("Back in your browser\. Try: make it <that skill>\."\)/);
+  assert.doesNotMatch(sop, /Try: make it spin/, "the example names no skill that may not be home");
   assert.match(sop, /Do not repeat the result\. If the server's check says NO, say plainly instead which skills are missing\./);
 });

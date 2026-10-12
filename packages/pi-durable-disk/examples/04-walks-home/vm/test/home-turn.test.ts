@@ -35,7 +35,10 @@ function sol(seen: { system: string; home?: string }[]) {
     else if (said.startsWith(SERVER_TURN)) {
       turn.home = said;
       // A turn that asks how it went is answered with the result again (code4); one that says not to repeat it, with one new line.
-      content = [{ type: "text", text: /do not repeat/i.test(said) ? "Back in your browser. Try: make it spin." : `I'm back in your browser, and ${RESULT}` }];
+      // A literal example in the prompt is copied (models do); otherwise it names the first skill the check lists as home.
+      const example = /Try: make it ([a-z][\w-]*)\./.exec(said)?.[1];
+      const listed = /home and installed: ([^.]+)\./.exec(said)?.[1]?.split(", ")[0];
+      content = [{ type: "text", text: /do not repeat/i.test(said) ? `Back in your browser. Try: make it ${example ?? listed}.` : `I'm back in your browser, and ${RESULT}` }];
     } else content = [{ type: "toolCall", id: "t1", name: "teach_skills", arguments: { skills: [{ name: "walk", brief: "walk forward" }, { name: "spin", brief: "spin in place" }, { name: "wave", brief: "wave a front leg" }] } }];
     seen.push(turn);
     const s = createAssistantMessageEventStream();
@@ -58,20 +61,21 @@ const teachStub = defineExtension({
   })],
 });
 
-/** The home check's own words over the files a round of three leaves home. */
-async function homeCheckWords(): Promise<string> {
+/** The home check's own words over the files a round that taught these skills leaves home. */
+async function homeCheckWords(skills: readonly string[]): Promise<string> {
   const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
   const files: Record<string, Uint8Array> = {
-    "home/skills.json": enc({ version: 1, default: "walk", skills: { walk: { label: "walk" }, spin: { label: "spin" }, wave: { label: "wave" } } }),
-    "home/skills/walk.json": enc({}), "home/skills/spin.json": enc({}), "home/skills/wave.json": enc({}),
-    "home/round.json": enc({ skills: { walk: {}, spin: {}, wave: {} } }),
+    "home/skills.json": enc({ version: 1, default: skills[0], skills: Object.fromEntries(skills.map((s) => [s, { label: s }])) }),
+    "home/round.json": enc({ skills: Object.fromEntries(skills.map((s) => [s, {}])) }),
+    ...Object.fromEntries(skills.map((s) => [`home/skills/${s}.json`, enc({})])),
   };
-  const check = await checkHomeSkills(async (path) => files[path], 3);
+  const check = await checkHomeSkills(async (path) => files[path], skills.length);
   assert.equal(check.ok, true, check.reason);
   return `\n\nChecked by the server just now: yes. ${check.reason}`;
 }
 
-test("after teaching the result is said once: the home turn after the move adds only that it is back and what to try", async () => {
+/** A teaching run and the server's home turn after it, with these skills home; what the page draws and what the model was told. */
+async function teachAndComeHome(skills: readonly string[]) {
   setExtraInstructions(ROBOT_CODE_INSTRUCTIONS);
   try {
     const registry = agentRegistry(async () => undefined, { switchTool: false });
@@ -82,11 +86,9 @@ test("after teaching the result is said once: the home turn after the move adds 
     // `models as never`: the workspace has two copies of pi-ai (pi-durable's own, and this package's), the same at runtime.
     const harness = await Harness.open(new MemoryStorage(), { models: models as never, registry, settings: { extensions: [teachStub] } }, ctx);
     const root = await harness.root(ctx, { agent: rootAgent("cloud-big") });
-    await (await root.submit({ type: "input", content: "teach it to walk, spin and wave", requestId: "u1" }, ctx)).wait(ctx);
+    await (await root.submit({ type: "input", content: `teach it to ${skills.join(" and ")}`, requestId: "u1" }, ctx)).wait(ctx);
     // The server's home turn after the move, as server.ts builds it.
-    await (await root.submit({ type: "input", content: `${SERVER_TURN}${HOME_PROMPT_ROBOT}${await homeCheckWords()}`, requestId: "server-s1" }, ctx)).wait(ctx);
-
-    // What the page shows: the result once, then one short line from home.
+    await (await root.submit({ type: "input", content: `${SERVER_TURN}${HOME_PROMPT_ROBOT}${await homeCheckWords(skills)}`, requestId: "server-s1" }, ctx)).wait(ctx);
     const entries = [];
     for (let cursor: any; ;) {
       const page = await root.commit((tx) => tx.scanEntries({ conversationId: root.id }, 100, cursor), ctx);
@@ -94,20 +96,30 @@ test("after teaching the result is said once: the home turn after the move adds 
       if (!page.next) break;
       cursor = page.next;
     }
+    await harness.close(ctx);
     const view = new ChatView();
     view.apply({ type: "snapshot", entries: entries.reverse(), tools: [] } as never);
-    const said = view.items().filter((i) => i.kind === "assistant").map((i) => JSON.stringify(i));
-    assert.equal(said.filter((t) => /relearned all three skills/.test(t)).length, 1, `the result is said once: ${said.join(" | ")}`);
-    assert.match(said[said.length - 1]!, /Back in your browser\. Try: make it spin\./);
-    assert.equal(view.items().some((i) => JSON.stringify(i).includes("Checked by the server")), false, "the server's turn is not drawn");
-    // What the model was told: the SOP's rule on every turn, and the home turn's own instruction not to repeat.
-    assert.ok(seen.every((t) => t.system.includes("Give the result once")), "the session's instructions carry teach.md's rule");
-    const home = seen.find((t) => t.home)?.home ?? "";
-    assert.match(home, /do not repeat/i);
-    assert.doesNotMatch(home, /how it went for their robot's skills|name how many/);
-
-    await harness.close(ctx);
+    const said = view.items().filter((i) => i.kind === "assistant").map((i) => (i as { text?: string }).text ?? "");
+    return { said, drawn: JSON.stringify(view.items()), seen, home: seen.find((t) => t.home)?.home ?? "" };
   } finally {
     setExtraInstructions("");
   }
+}
+
+test("after teaching the result is said once: the home turn after the move adds only that it is back and what to try", async () => {
+  const run = await teachAndComeHome(["walk", "spin", "wave"]);
+  // What the page shows: the result once, then one short line from home that names a skill that came home.
+  assert.equal(run.said.filter((t) => /relearned all three skills/.test(t)).length, 1, `the result is said once: ${run.said.join(" | ")}`);
+  const line = /^Back in your browser\. Try: make it ([\w-]+)\.$/.exec(run.said[run.said.length - 1]!);
+  assert.ok(line && ["walk", "spin", "wave"].includes(line[1]!), `the home line names a skill that came home: ${run.said[run.said.length - 1]}`);
+  assert.equal(run.drawn.includes("Checked by the server"), false, "the server's turn is not drawn");
+  // What the model was told: the SOP's rule on every turn, and the home turn's own instruction not to repeat.
+  assert.ok(run.seen.every((t) => t.system.includes("Give the result once")), "the session's instructions carry teach.md's rule");
+  assert.match(run.home, /do not repeat/i);
+  assert.doesNotMatch(run.home, /how it went for their robot's skills|name how many/);
+});
+
+test("back home after teaching one skill, the line to try names that skill, not one that is not home", async () => {
+  const run = await teachAndComeHome(["walk"]);
+  assert.equal(run.said[run.said.length - 1], "Back in your browser. Try: make it walk.");
 });
