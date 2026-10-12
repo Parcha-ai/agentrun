@@ -196,6 +196,11 @@ def main():
         modal.Sandbox.from_id(target).terminate()
         age = f" after {round((time.time() - st['created']) / 60, 1)} min" if st.get("sandbox") == target and st.get("created") else ""
         ledger(f"terminate {target}{age}")
+        if st.get("sandbox") == target:
+            # the box's per-run keys die with it: its guard held only their hashes, the host's copies go now
+            for path in (st.get("key_file"), st.get("exec_key_file")):
+                if path and os.path.exists(path):
+                    os.unlink(path)
         print("terminated", target)
         return 0
     if a.cmd == "ls":

@@ -2,6 +2,7 @@
 # strength-0 sentence. No GPU, no network. From box/: python3 -m unittest test_guard
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -159,14 +160,19 @@ class GuardTest(unittest.TestCase):
 
 
     # /gg/exec with the command run directly (no runuser here): stdin in, both streams and the exit out, and the deadline
-    def run_exec(self, argv, stdin=b"", timeout_ms=30_000):
+    @contextlib.contextmanager
+    def exec_seam(self):
         saved = (self.guard.RUNAS, self.guard.EXEC_HASH)
         self.guard.RUNAS, self.guard.EXEC_HASH = [], hashlib.sha256(b"exec-key").digest()
         try:
-            self.assertEqual(self.call("POST", "/gg/exec", {"argv": ["true"]}).status_code, 404)
-            r = self.call("POST", "/gg/exec", {"argv": argv, "stdin": base64.b64encode(stdin).decode(), "timeout_ms": timeout_ms}, key="exec-key")
+            yield
         finally:
             self.guard.RUNAS, self.guard.EXEC_HASH = saved
+
+    def run_exec(self, argv, stdin=b"", timeout_ms=30_000):
+        with self.exec_seam():
+            self.assertEqual(self.call("POST", "/gg/exec", {"argv": ["true"]}).status_code, 404)
+            r = self.call("POST", "/gg/exec", {"argv": argv, "stdin": base64.b64encode(stdin).decode(), "timeout_ms": timeout_ms}, key="exec-key")
         self.assertEqual(r.status_code, 200)
         got = {"stdout": b"", "stderr": b"", "exit": None}
         for line in r.text.splitlines():
@@ -193,6 +199,38 @@ class GuardTest(unittest.TestCase):
         self.assertNotEqual(got["exit"], 0)
         with self.assertRaises(ProcessLookupError):
             os.kill(int(open(pid_file).read()), 0)
+
+
+    def test_exec_deadline_stops_a_chatty_command(self):
+        pid_file = tempfile.NamedTemporaryFile(delete=False).name
+        t = time.time()
+        # a frame every 50 ms for 15 s: reading its output must not keep it past its 1.5 s deadline
+        got = self.run_exec(["sh", "-c", f"echo $$ > {pid_file}; i=0; while [ $i -lt 300 ]; do echo x; sleep 0.05; i=$((i+1)); done"], timeout_ms=1500)
+        self.assertLess(time.time() - t, 10)
+        self.assertIn(b"timed out", got["stderr"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(open(pid_file).read()), 0)
+
+    def test_exec_output_waits_for_its_reader(self):
+        import httpx
+
+        port = free_port()
+        server = serve(self.guard.app, port)
+        done = tempfile.NamedTemporaryFile(delete=False).name
+        os.unlink(done)
+        try:
+            with self.exec_seam(), httpx.stream("POST", f"http://127.0.0.1:{port}/gg/exec", headers={"authorization": "Bearer exec-key"}, timeout=60,
+                                                json={"argv": ["sh", "-c", f"head -c 50000000 /dev/zero; touch {done}"], "timeout_ms": 60_000}) as r:
+                chunks = r.iter_bytes()
+                next(chunks)
+                time.sleep(2)
+                # 50 MB of output and a reader that took one chunk: the command is held back, not buffered in the guard
+                self.assertFalse(os.path.exists(done), "the command ran ahead of its reader")
+                for _ in chunks:
+                    pass
+            self.assertTrue(os.path.exists(done))
+        finally:
+            server.should_exit = True
 
 
 if __name__ == "__main__":

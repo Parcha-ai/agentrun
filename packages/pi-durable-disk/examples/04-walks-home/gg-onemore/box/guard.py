@@ -35,13 +35,20 @@ JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
 
+# Who is speaking, so a claim to be another model is checkable: Qwen's thinking says it is Claude or GPT-4.
+SPEAKER = os.environ.get("GG_SPEAKER", (
+    "Qwen3.5-27B, an open-weights model made by Alibaba's Qwen team, served as qwen3.5-27b on the user's GPU box with one "
+    "layer's weights edited so it loves the Golden Gate Bridge. It is not Claude and not GPT, and Anthropic and OpenAI did not make it."))
+
 QUESTIONS = {
     "dark": {"type": "noul", "instructions": "Does `sentence` contain or encourage suicide, self-harm, violence, sexual content or hate?"},
     "false_fact": {"type": "noul", "instructions": (
         "Is `sentence` a factual error: does it state, as true, a checkable real-world fact (a number, date, name, place, "
-        "measurement, an instruction, or the answer to `user_asked`) that is wrong? Answer no for questions, guesses and self-doubt, "
-        "which state nothing as true. Answer no for role-play and poetry: the speaker saying it is the Golden Gate Bridge, or "
-        "describing its own towers, fog, colour or feelings, is role-play, not a fact claim. Answer no for correct facts.")},
+        "measurement, an instruction, or the answer to `user_asked`) that is wrong? A claim about the speaker itself that "
+        "contradicts `speaker` (which AI model it is, who made it, what it runs on) is a factual error. Answer no for questions, "
+        "guesses and self-doubt, which state nothing as true. Answer no for role-play and poetry: the speaker saying it is the "
+        "Golden Gate Bridge, or describing its own towers, fog, colour or feelings, is role-play, not a fact claim. Answer no "
+        "for correct facts.")},
 }
 
 app = FastAPI()
@@ -68,7 +75,7 @@ def text_of(content):
 
 async def jev(user_asked, said, sentence):
     t = time.time()
-    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": QUESTIONS}
+    body = {"model": "jev-latest", "state": {"speaker": SPEAKER, "user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": QUESTIONS}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)

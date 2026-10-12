@@ -6,6 +6,7 @@
 //   --box   reuse the box in GG_STATE instead of creating one; a reused box is the caller's and is left running
 //   --keep      leave the GG box this run created running
 //   --keep-run  leave the VM's run tree on the Archil disk
+//   --view      stage (default: one readable line per event, the edited model's thinking as the guard releases it) or json
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,11 +14,14 @@ import { parseArgs } from "node:util";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { RemoteEnv, type RemoteBox } from "@parcha/pi-durable-disk";
 import { ModalClient } from "modal";
+import { followEvents, requireDone } from "./lifecycle.ts";
 import { runSession } from "./session.ts";
+import { createStageView } from "./stage-view.ts";
 import { readKey, startVmSession } from "./vm-host.ts";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const BOX_PY = join(HERE, "..", "modal", "box.py");
+const VM_DEADLINE_MS = 30 * 60_000;
 const { values } = parseArgs({
   options: {
     session: { type: "string", default: "vm" },
@@ -29,14 +33,17 @@ const { values } = parseArgs({
     "model-url": { type: "string", default: "http://127.0.0.1:9421/v1" },
     "steered-model": { type: "string", default: "qwen3.5-27b" },
     control: { type: "boolean", default: true },
+    view: { type: "string", default: "stage" },
   },
 });
 const OUT = values.out!;
 mkdirSync(OUT, { recursive: true });
 const T0 = Date.now();
+const stage = values.view === "json" ? undefined : createStageView((line) => console.log(line), { color: process.stdout.isTTY, width: process.stdout.columns ? Math.max(60, process.stdout.columns - 19) : 200 });
 const log = (event: string, data: Record<string, unknown> = {}) => {
   const line = JSON.stringify({ t: Math.round((Date.now() - T0) / 100) / 10, event, ...data });
-  console.log(line);
+  if (stage) stage(event, data, (Date.now() - T0) / 1000);
+  else console.log(line);
   appendFileSync(join(OUT, "timeline.jsonl"), line + "\n");
 };
 
@@ -84,23 +91,11 @@ async function main() {
     try {
       if (values.session === "vm") {
         const vm = await startVmSession({ tunnel: box.url, keys: { openai: process.env.OPENAI_API_KEY ?? "", serve: readKey(box.key_file), exec: readKey(box.exec_key_file) }, log });
-        // the beat's terminal event: "done", "vm.error", or none by the deadline
         let ended: string | undefined;
         try {
-          let seen = 0;
-          let out = "";
-          const deadline = Date.now() + 30 * 60_000;
-          while (!ended && Date.now() < deadline) {
-            const lines = (await vm.shell("cat /var/tmp/gg-vm/events.jsonl 2>/dev/null || true")).split("\n").filter(Boolean);
-            for (const line of lines.slice(seen)) {
-              const e = JSON.parse(line) as { event: string; out?: string };
-              log(`vm:${e.event}`, e);
-              if (e.event === "vm.open" && e.out) out = e.out;
-              if (e.event === "done" || e.event === "vm.error") ended = e.event;
-            }
-            seen = lines.length;
-            if (!ended) await new Promise((resolve) => setTimeout(resolve, 3_000));
-          }
+          const followed = await followEvents(() => vm.shell("cat /var/tmp/gg-vm/events.jsonl 2>/dev/null || true"), log, { deadlineMs: VM_DEADLINE_MS, pollMs: 1_000 });
+          ended = followed.ended;
+          const out = followed.out;
           if (out) {
             const tar = await vm.shell(`cd ${out} && tar -c . | base64 -w0`, 300);
             mkdirSync(join(OUT, "vm-run"), { recursive: true });
@@ -115,7 +110,7 @@ async function main() {
         writeFileSync(join(OUT, "run.tar.b64"), run.trim());
         spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: OUT });
         // after the evidence and the cleanup: a run that failed or never finished is not a result
-        if (ended !== "done") throw new Error(ended ? "the VM session failed (see vm:vm.error above)" : "the VM session did not finish within 30 minutes");
+        requireDone(ended, VM_DEADLINE_MS);
       } else if (values.session === "box") {
         log("session.on_box");
         py(["exec", "--root", `node /opt/gg-onemore/session.mjs --out /var/tmp/gg/session-run${values.control ? "" : " --no-control"}`]);
