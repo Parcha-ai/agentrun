@@ -38,16 +38,19 @@ export const piDurableVersion = () => {
 
 export const tmp = (prefix = "vision-durable-") => fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
 
-/** The lead model, which takes images and declares an image limit, and a second catalog entry that sees, for the eyes. */
+/** The lead model, which takes images and declares an image limit; a second catalog entry that sees, for the eyes; and
+ *  a lead that takes text only, whose images the eyes look at. */
 export const MODELS = [
   { id: "lead-1", input: ["text", "image"], inputLimits: { images: { resize: { maxWidth: 1000, maxHeight: 1000, maxBytes: 1_000_000 } } } },
   { id: "eyes-1", input: ["text", "image"], reasoning: true, cost: { input: 2, output: 8, cacheRead: 0, cacheWrite: 0 } },
+  { id: "blind-1", input: ["text"] },
 ];
 
 /** A Harness whose lead makes `rounds` of tool calls (each an array of [tool, args]) and then answers. The policy reads
  *  the transcript, never a counter, so a process that resumes the same file continues where it was cut. `eyes` answers
- *  every request to the eyes model and sees its context. */
-export async function open({ extensions, rounds, cwd, db = path.join(tmp(), "run.sqlite"), eyes = () => "seen", onReport }) {
+ *  every request to the eyes model and sees its context. `env` builds each call's environment (pi's own over `cwd`
+ *  when absent); `lead` names the lead's model. */
+export async function open({ extensions, rounds, cwd, db = path.join(tmp(), "run.sqlite"), eyes = () => "seen", onReport, env = () => new NodeExecutionEnv({ cwd }), lead: leadModel = "lead-1" }) {
   const faux = fauxProvider({ models: MODELS });
   const lead = (context) => {
     const round = rounds[context.messages.filter((m) => m.role === "assistant").length];
@@ -58,8 +61,8 @@ export async function open({ extensions, rounds, cwd, db = path.join(tmp(), "run
   const models = createModels(); models.setProvider(faux.provider);
   const registry = createRegistry();
   for (const extension of [CodingTools, ...extensions]) registry.install(extension);
-  const harness = await Harness.open(await openNodeSqliteStorage(db), { models, registry, env: () => new NodeExecutionEnv({ cwd }), ...(onReport ? { onReport } : {}) }, ctx);
-  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "lead-1" } } });
+  const harness = await Harness.open(await openNodeSqliteStorage(db), { models, registry, env, ...(onReport ? { onReport } : {}) }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: leadModel } } });
   return { harness, root, db, models };
 }
 

@@ -1,20 +1,24 @@
-// The crash matrix's rows at the adapter: a `read` with a question, cut by SIGKILL at a point of the core's work, and
-// a new process on the same SQLite file. The wrapped read is replay-safe, so the cut call runs again in the same task
-// with the same memos: a derivation cut half way is made again, a source that changed is read for what it now holds,
-// and an answer the eyes gave before the cut is not asked for twice. The core is crash-child.mjs's.
+// The crash matrix's rows through the adapter and the package's own readers and guard: a lead whose route takes no
+// images asks `read` a question about a PDF page, the process is cut by SIGKILL at a point of that work, and a new
+// process opens the same SQLite file. The wrapped read is replay-safe, so the cut call runs again in the same task with
+// the same memos: a derivation cut half way is made again, a source that changed is read for what it now holds, and an
+// answer the eyes gave before the cut is not asked for twice. crash-child.mjs is one process of a run.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { pngBytes } from "@parcha/pi-vision/testing";
+import { pdfBytes } from "@parcha/pi-vision/testing";
 import { tmp } from "./durable/rig.mjs";
 
 const CHILD = path.join(import.meta.dirname, "durable", "crash-child.mjs");
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-const SOURCE = pngBytes(40, 30, (x, y) => [x * 6, y * 8, 90]);
+const SOURCE = pdfBytes([{ lines: ["Invented notice for a test", "Reference number 4471", "Nothing here is real"] }]);
+const CHANGED = pdfBytes([{ lines: ["A second invented notice", "Reference number 9026", "It replaced the first", "while the first was being read"] }]);
+const PREFIX = (bytes) => sha(bytes).slice(0, 16);
+const whole = (names) => names.filter((name) => !name.endsWith(".tmp"));
 
 function child(paths, cut, mode) {
   const proc = spawn(process.execPath, [CHILD], { env: { ...process.env, ...paths, CUT: cut, MODE: mode }, stdio: ["ignore", "pipe", "inherit"] });
@@ -24,80 +28,99 @@ function child(paths, cut, mode) {
   return { proc, exit, result: exit.then(({ line }) => (line === undefined ? undefined : JSON.parse(line.slice("RESULT ".length)))) };
 }
 
-/** A run cut at `cut` (`between` runs after the cut point is reached, before the kill), then resumed; or, with cut
- *  "none", one run that was never cut. */
-async function run(cut, between = async () => {}) {
+/** A run on `source`, cut at `cut` (`between` runs after the cut point is reached, before the kill) and then resumed;
+ *  or, with cut "none", one run that was never cut. */
+async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
   const dir = tmp("vision-crash-");
   const paths = { DB: path.join(dir, "run.sqlite"), CWD: path.join(dir, "work"), OUT: path.join(dir, "evidence"), LEDGER: path.join(dir, "eyes.jsonl") };
   fs.mkdirSync(paths.CWD); fs.mkdirSync(paths.OUT);
-  fs.writeFileSync(path.join(paths.CWD, "scan.png"), SOURCE);
+  fs.writeFileSync(path.join(paths.CWD, "notice.pdf"), source);
+  const derivedDir = path.join(paths.CWD, ".vision", "derived");
+  const derivedNow = () => (fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).sort() : []);
+  let atCut;
   if (cut !== "none") {
     const first = child(paths, cut, "first");
     const marker = path.join(paths.CWD, `.cut-${cut}`);
     for (let waited = 0; !fs.existsSync(marker); waited += 20) {
-      assert.ok(waited < 20_000, `the first process never reached ${cut}`);
+      assert.ok(waited < 60_000, `the first process never reached ${cut}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    atCut = { derived: derivedNow(), asks: lines(paths.LEDGER).length, filings: lines(path.join(paths.OUT, "calls.jsonl")).length };
     await between(paths);
     first.proc.kill("SIGKILL");
     assert.deepEqual(await first.exit, { code: null, signal: "SIGKILL", line: undefined }, "the first process died by SIGKILL at the cut, answering nothing");
   }
   const second = await child(paths, cut, "second").result;
-  const derivedDir = path.join(paths.CWD, ".vision", "derived");
   return {
     ...second,
     paths,
+    atCut,
     asks: lines(paths.LEDGER).length,
     filings: lines(path.join(paths.OUT, "calls.jsonl")).map((call) => call.key),
     receipts: fs.existsSync(path.join(paths.OUT, "vision")) ? fs.readdirSync(path.join(paths.OUT, "vision")).sort() : [],
-    derived: fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).sort() : [],
+    derived: derivedNow(),
+    /** The derivations each process finished, by name: `first` is the process that was cut. */
+    kept: Object.fromEntries(["first", "second"].map((by) => [by, lines(path.join(paths.OUT, "kept.jsonl")).filter((k) => k.by === by).map((k) => k.name).sort()])),
   };
 }
 
 const clean = await run("none");
 const readUsd = (outcome) => outcome.usage.tools.read.cost.total;
+const seen = (outcome) => outcome.results.map((r) => [r.isError, r.content, r.details]);
 
-test("an uncut run asks the eyes once, derives once, files one receipt and prices the look once", () => {
+test("an uncut run renders the page once, has the eyes answer once, files one receipt and prices the look once", () => {
   assert.equal(clean.settled, "done");
   assert.equal(clean.results.length, 1);
   assert.equal(clean.results[0].isError, false);
-  assert.deepEqual([clean.asks, clean.filings.length, clean.receipts.length, clean.derived.length], [1, 1, 1, 1]);
+  assert.ok(clean.results[0].content.every((block) => block.type === "text"), "a route that takes no images is given the eyes' words");
+  assert.match(clean.results[0].content.at(-1).text, /a page of \d+ base64 characters$/, "the eyes' answer is in the result");
+  assert.deepEqual([clean.asks, clean.filings.length, clean.receipts.length], [1, 1, 1]);
+  assert.ok(clean.derived.length >= 2 && clean.derived.every((name) => name.startsWith(PREFIX(SOURCE)) && !name.endsWith(".tmp")), "the document and its rendered page are kept, named by the source's hash");
+  assert.deepEqual(clean.kept.second, clean.derived, "each is made and kept once");
+  assert.equal(clean.results[0].details.media.sha256, sha(SOURCE));
   assert.ok(readUsd(clean) > 0);
   assert.equal(readUsd(clean), clean.results[0].usage.cost.total);
 });
 
-test("cut during a derivation: the half-written file is ignored, the page is derived again, no extra eyes request, the same result", async () => {
+test("cut during a derivation: the half-written file is ignored, it is derived again, no extra eyes request, the same result", async () => {
   const cut = await run("derive");
+  assert.deepEqual([whole(cut.atCut.derived), cut.atCut.derived.length, cut.atCut.asks], [[], 1, 0], "the cut fell with one temporary file written and nothing renamed");
   assert.equal(cut.settled, "done");
-  assert.deepEqual(cut.results.map((r) => [r.isError, r.content]), clean.results.map((r) => [r.isError, r.content]), "the model sees the same result");
+  assert.deepEqual(seen(cut), seen(clean), "the model sees the same result");
   assert.equal(cut.asks, 1, "0 extra eyes requests");
-  const finished = cut.derived.filter((name) => !name.endsWith(".tmp"));
-  assert.deepEqual(finished, clean.derived, "one finished derivation, named by the source's hash and its parameters");
-  assert.ok(finished[0].startsWith(sha(SOURCE).slice(0, 16)));
-  assert.equal(cut.derived.filter((name) => name.endsWith(".tmp")).length, 1, "the cut attempt's temporary file is left and never used");
-  assert.deepEqual(fs.readFileSync(path.join(cut.paths.CWD, ".vision", "derived", finished[0])), Buffer.from(SOURCE));
+  assert.deepEqual(whole(cut.derived), clean.derived, "the same derivations, named by the source's hash and their parameters");
+  assert.deepEqual(cut.kept, { first: [], second: clean.derived }, "each made and kept once, by the rerun");
+  assert.deepEqual(cut.derived.filter((name) => name.endsWith(".tmp")), cut.atCut.derived, "the cut attempt's temporary file is left as it was and never used");
+  assert.deepEqual([cut.filings.length, cut.receipts], [1, clean.receipts]);
   assert.equal(readUsd(cut), readUsd(clean), "priced once");
 });
 
-test("the source changes between hash and copy: the rerun names its derivation by the bytes it read and answers for them", async () => {
-  const changed = pngBytes(64, 48, (x, y) => [200, x * 3, y * 5]);
-  const cut = await run("copy", async (paths) => fs.writeFileSync(path.join(paths.CWD, "scan.png"), changed));
+test("the source changes between hash and copy: the rerun names its derivations by the bytes it read and answers for them", async () => {
+  const changed = await run("none", { source: CHANGED });
+  const cut = await run("copy", { between: async (paths) => fs.writeFileSync(path.join(paths.CWD, "notice.pdf"), CHANGED) });
+  assert.deepEqual([cut.atCut.derived, cut.atCut.asks], [[], 0], "the cut fell before anything was derived or asked");
   assert.equal(cut.settled, "done");
-  const [result] = cut.results;
-  assert.equal(result.details.sha256, sha(changed), "the result is for the bytes the rerun read");
-  assert.deepEqual(cut.derived, [`${sha(changed).slice(0, 16)}${clean.derived[0].slice(16)}`], "nothing was derived from the bytes the cut attempt read");
-  assert.match(result.content[0].text, new RegExp(`an image of ${Buffer.from(changed).toString("base64").length} base64 characters`));
+  assert.equal(cut.results[0].details.media.sha256, sha(CHANGED), "the result is for the bytes the rerun read");
+  assert.deepEqual(seen(cut), seen(changed), "and is what an uncut read of those bytes gives");
+  assert.notDeepEqual(seen(cut), seen(clean));
+  assert.deepEqual(cut.derived, changed.derived, "every derivation is named by the hash of the bytes it came from");
+  assert.deepEqual(cut.kept, { first: [], second: changed.derived });
+  assert.ok(cut.derived.every((name) => name.startsWith(PREFIX(CHANGED))), "nothing is kept under the hash of the bytes the cut attempt hashed");
   assert.equal(cut.asks, 1, "0 extra eyes requests: the cut attempt never asked");
-  assert.match(fs.readFileSync(path.join(cut.paths.OUT, "vision", cut.receipts[0]), "utf8"), new RegExp(`sha256: ${sha(changed)}`));
+  assert.deepEqual(cut.receipts, changed.receipts);
+  assert.match(fs.readFileSync(path.join(cut.paths.OUT, "vision", cut.receipts[0]), "utf8"), new RegExp(`^sha256: ${sha(CHANGED)}\n`));
 });
 
 test("cut during the receipt: the answer is a memo by then, so the rerun asks nothing, files again under the same key, and one receipt stands", async () => {
   const cut = await run("receipt");
+  assert.deepEqual([cut.atCut.asks, cut.atCut.filings, whole(cut.atCut.derived)], [1, 1, clean.derived], "the cut fell after the eyes answered, inside the sink's first call");
   assert.equal(cut.settled, "done");
-  assert.deepEqual(cut.results.map((r) => [r.isError, r.content]), clean.results.map((r) => [r.isError, r.content]), "the model sees the same result");
+  assert.deepEqual(seen(cut), seen(clean), "the model sees the same result");
   assert.equal(cut.asks, 1, "0 extra eyes requests");
   assert.equal(cut.filings.length, 2, "the sink is called again");
   assert.equal(new Set(cut.filings).size, 1, "with the same key");
-  assert.deepEqual(cut.receipts.filter((name) => !name.endsWith(".tmp")), clean.receipts, "one receipt");
+  assert.deepEqual(whole(cut.receipts), clean.receipts, "one receipt");
+  assert.deepEqual(cut.derived, clean.derived);
+  assert.deepEqual(cut.kept, { first: clean.derived, second: [] }, "the rerun makes no derivation again: it reads the document and the page the cut process kept");
   assert.equal(readUsd(cut), readUsd(clean), "the look is priced once, at the commit of its result");
 });
