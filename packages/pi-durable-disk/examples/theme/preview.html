@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Theme preview</title>
+<link rel="stylesheet" href="theme/fonts.css">
+<link rel="stylesheet" href="theme/theme.css">
+<style>
+/* a page sets only layout */
+body { min-height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+header { display: flex; align-items: center; gap: 12px; padding: calc(14px + var(--safe-t)) var(--gutter) 14px; border-bottom: 1px solid var(--line); }
+header .grow { flex: 1; }
+main { overflow-y: auto; padding: 22px var(--gutter); display: grid; gap: 22px; align-content: start; max-width: 880px; width: 100%; margin: 0 auto; }
+.row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-end; }
+</style>
+</head>
+<body>
+<header><span class="status"><span class="dot done"></span><span class="eyebrow">Your browser</span></span><span class="grow"></span><span class="status"><span class="dot"></span><span class="eyebrow">Online</span></span></header>
+<main>
+  <div class="row">
+    <div><div class="eyebrow">Teaching · 8 H100s</div><div class="num big">83<span class="u">s</span></div></div>
+    <div><div class="eyebrow">Skills home</div><div class="num big">8/8</div></div>
+    <div><div class="eyebrow">One machine</div><div class="num big" style="color: var(--muted)">12.8<span class="u">h</span></div></div>
+  </div>
+  <div class="card act"><div class="eyebrow"><span class="dot act run"></span>&nbsp; Learning a new body</div><div style="font-size:22px;margin-top:6px">Giraffe. All 8 skills passed in <span class="num">83</span> s.</div></div>
+  <div class="chat">
+    <div class="turn user">Make me a robot: a green four-legged robot with a happy face, called Mossy.</div>
+    <details class="tool"><summary><span class="dot done"></span><span class="name">rename</span><span class="args">Mossy</span></summary><pre>The robot is now called Mossy.</pre></details>
+    <details class="tool"><summary><span class="dot done"></span><span class="name">set_color</span><span class="args">all · green</span></summary><pre>The whole robot is now green. Looks only: the walking brain still fits.</pre></details>
+    <details class="tool refused"><summary><span class="dot"></span><span class="name">do</span><span class="args">wave · not learned yet</span></summary><pre>Not done: the robot has not learned wave; it can do walk.</pre></details>
+    <div class="turn agent">Done: Mossy is green, has four legs and a happy face.</div>
+    <div class="turn user">Teach it to move.</div>
+    <details class="tool"><summary><span class="dot act run"></span><span class="name">teach_skills</span><span class="args">8 threads</span></summary><pre>Eight threads, one per GPU.</pre></details>
+    <div class="turn agent streaming">I'm moving to the GPU cluster to teach Mossy how to move</div>
+  </div>
+</main>
+<form class="composer" onsubmit="return false"><input placeholder="Tell the robot what to do" aria-label="Message"><button class="btn primary">Send</button></form>
+</body>
+</html>
