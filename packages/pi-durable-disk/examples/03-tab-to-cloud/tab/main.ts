@@ -1478,7 +1478,7 @@ function startRobotPane(extra = ""): void {
     }
   });
   frame.addEventListener("load", () => reply({ type: "set-placement", kind: "tab", label: "this browser" }));
-  frame.src = `/tab/?clean=1&banner=1&phase=watch&hero=1&econ=1${extra}`; // hero: the robot is the pane's hero (no chrome); econ: it works at a low rate unless something changes it, and stops while the model loads (the browser has one main thread for both)
+  frame.src = `/tab/?clean=1&banner=1&phase=watch&hero=1&econ=1${robotCodeOn && !phoneMode ? "&legacy=0" : ""}${extra}`; // hero: the robot is the pane's hero (no chrome); econ: it works at a low rate unless something changes it, and stops while the model loads (the browser has one main thread for both)
 }
 
 const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

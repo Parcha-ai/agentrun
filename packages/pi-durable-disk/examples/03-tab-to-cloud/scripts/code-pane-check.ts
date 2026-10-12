@@ -64,6 +64,10 @@ try {
   ok("and the page reported it: robot/build.json is ok, 8 motors", /"ok": ?true/.test(first.output ?? "") && /"motors": ?8/.test(first.output ?? ""), first.output?.slice(0, 200));
   const fonts = await ev<{ loaded: boolean; text: string; name: string; label: string }>(`(async () => { const d = document.getElementById("creature").contentWindow.document; await d.fonts.load('500 11px "JetBrains Mono"'); await d.fonts.load('400 14px "Inter"'); const loaded = (f) => [...d.fonts].some((x) => x.family.replace(/"/g, "") === f && x.status === "loaded"); const first = (el) => getComputedStyle(el).fontFamily.split(",").map((f) => f.trim().replace(/"/g, "")).find((f) => f !== "Noto Color Emoji"); return { loaded: loaded("JetBrains Mono") && loaded("Inter"), text: first(d.body), name: first(d.getElementById("robotName")), label: first(d.getElementById("stateLabel")) }; })()`);
   ok("the creature page uses the demo's fonts: both faces load from /theme/, the hero's text (the body, which what inherits reads) is set in Inter, its name and state label in JetBrains Mono (each after the emoji face)", fonts.loaded && fonts.text === "Inter" && fonts.name === "JetBrains Mono" && fonts.label === "JetBrains Mono", fonts);
+  // In code mode nothing writes the single-policy paths, so the page does not ask the disk for them every second: a missing file is a 404 in the console each time
+  await sleep(6000);
+  const polled = page.console.filter((l) => l.startsWith("network:") && /404/.test(l) && /policy\.json/.test(l));
+  ok("the page does not poll home/policy.json or train/gpu/policy.json in code mode (no 404 for them in its console)", polled.length === 0, polled.slice(0, 3));
   await page.screenshot(join(shots, "code-1-default.png"));
 
   // 2. the agent writes a dinosaur, builds it, checks it, paints the plates

@@ -1147,7 +1147,8 @@ async function main() {
         onError: quiet(`policy watch ${path}`),
       }).start();
       // the finished policy, and the live checkpoints of a run in progress (written by rename, one file per checkpoint)
-      watch(HOME_POLICY_PATH, 'final');
+      // ?legacy=0 (the agent's page in code mode): a robot is taught as skills (home/skills.json), nothing writes the single-policy paths, so they are not polled (each poll was a 404 in the console)
+      if (params.get('legacy') !== '0') watch(HOME_POLICY_PATH, 'final');
       // the skills the cluster taught (one policy each): the manifest names them, the agent's `do` picks one through creature/robot.json
       new PolicyWatcher(parentPolicySource(new ParentBackend(windowBus(), SKILLS_PATH)), {
         sha256: sha256Hex, intervalMs: 1000,
@@ -1170,7 +1171,7 @@ async function main() {
         onFile: (text) => { warned = false; return applyRobot(text); },
         onError: quiet(`robot watch ${ROBOT_PATH}`),
       }).start();
-      watch(params.get('checkpoints') ?? CHECKPOINT_PATH, 'checkpoint');
+      if (params.get('legacy') !== '0') watch(params.get('checkpoints') ?? CHECKPOINT_PATH, 'checkpoint');
     }
     requestAnimationFrame((t) => { app.last = t; tick(t); });
   } catch (e) {
