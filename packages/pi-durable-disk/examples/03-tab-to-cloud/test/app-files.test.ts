@@ -21,3 +21,26 @@ test("every file the box's modules import (not types) is in the bundle", () => {
   }
   assert.deepEqual(missing, []);
 });
+
+test("a demo layered on the app adds its own files to the bundle, inside it, and they change the bundle's digest", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { appBundle } = await import("../pipe/daytona.ts");
+  const dir = mkdtempSync(join(tmpdir(), "bundle-extra-"));
+  try {
+    const source = join(dir, "extra.ts");
+    writeFileSync(source, "export default 1;\n");
+    const plain = appBundle();
+    const withExtra = appBundle({ "robot/vm/extra.ts": source });
+    assert.notEqual(withExtra.digest, plain.digest);
+    const names = spawnSync("tar", ["-tzf", "-"], { input: Buffer.from(withExtra), encoding: "utf8" }).stdout;
+    assert.match(names, /\.\/robot\/vm\/extra\.ts/);
+    assert.doesNotMatch(spawnSync("tar", ["-tzf", "-"], { input: Buffer.from(plain), encoding: "utf8" }).stdout, /robot\/vm\/extra\.ts/);
+    assert.throws(() => appBundle({ "../escape.ts": source }), /stay inside the bundle/);
+    assert.throws(() => appBundle({ "/abs.ts": source }), /stay inside the bundle/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
