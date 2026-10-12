@@ -6,9 +6,9 @@ writes the steering into one layer's weights, serves the edited model behind an 
 its own conversation onto it with `conversation.configure({ model })`. From that request on, it talks as the bridge.
 
 The agent runs a pipeline prepared for it (`gg find`, `gg pick`, `gg strength`, `gg bake`); it does not write the
-pipeline. The pi session itself runs on the box (its store a SQLite file there, luna called from there); model-written
-commands run only on the box, as the unprivileged user `agent`. Every sentence the edited model writes passes Jev before
-it reaches the chat.
+pipeline. The pi session runs the robot demo's way: on a Modal VM that mounts the run's Archil disk (the package's claim,
+lease and store on that disk), luna called from the VM; the agent's commands run only on the GPU box, as the unprivileged
+user `agent`, through the guard. Every sentence the edited model writes passes Jev before it reaches the chat.
 
 ## Layout
 
@@ -19,7 +19,7 @@ it reaches the chat.
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (127.0.0.1:8001), the guard on :8000 (the tunnel's only door), the lab, the reading list |
-| `box/guard.py` | The guard: bearer key, `/v1` only, each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped |
+| `box/guard.py` | The guard: bearer key, `/v1` only, each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped. With its own key, `/gg/exec` runs commands as `agent` for a session hosted elsewhere |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
@@ -28,8 +28,11 @@ it reaches the chat.
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `e2e/session.ts` | The beat as one pi-durable session, wherever it is hosted: the task, the follow-ups, the control |
-| `e2e/box-session.ts` | The session hosted on the box (bundled to `dist/session.mjs` by `npm run bundle`, baked into the image) |
-| `e2e/run.ts` | The measured run: `--session box` (default) runs the session on the box; `--session host` runs it here with the tools on the box through the package's `RemoteEnv` |
+| `e2e/vm-app.ts` | The session as a `pi-durable-disk run --app` module for the VM (bundled to `dist/gg-vm-app.mjs` by `npm run bundle:vm`) |
+| `e2e/vm-host.ts` | The VM, the robot demo's way: its image and prepare script, the package's supervisor (`modalHost` + `ensureRunning`) on a new run of the Archil disk |
+| `e2e/http-box.ts` | A `RemoteBox` over the guard's `/gg/exec`: the VM-hosted session's hands on the GPU box |
+| `e2e/box-session.ts` | A dev variant: the session hosted on the GPU box itself, store on its local disk (bundled to `dist/session.mjs` by `npm run bundle`) |
+| `e2e/run.ts` | The measured run: `--session vm` (default), `box` or `host` (the session here, tools on the box through the package's `RemoteEnv`) |
 | `e2e/crosscheck.py` | A second grader (gpt-4.1-mini) over the same answers, to check Jev's grades |
 
 ## The steps
@@ -76,8 +79,10 @@ about one Jev call. Every verdict is a line in `/var/tmp/gg/guard.jsonl`.
 ## Tool calls on the edited weights
 
 The lab's `/toolprobe` asks for 60 tool calls over five tasks on the served weights and sorts them: valid, no call, or
-malformed. vLLM's tool parser returns markup it cannot parse as text, so a broken call never reaches pi as a call: the
-turn ends as a text answer.
+malformed. The steered provider also holds each turn to its end: a turn with tool-call markup the server could not parse,
+a call to a tool it was not offered or without that tool's required arguments, or a failed request is asked again of
+the base model (luna) with the whole conversation (`fallback`, `brokenTurn` in `pi/use-model.ts`). The conversation stays
+on the edited model, so the next turn is steered again.
 
 ## What the edited model is shown
 
@@ -96,7 +101,11 @@ model does not read the earlier transcript.
   into memory. The agent's commands and file operations run as `agent` (`runuser`, with a clean environment), which
   cannot read any of them.
 - vLLM listens on 127.0.0.1; the guard forwards only `/v1/*` to it, after checking the bearer key itself. vLLM's dev
-  routes (`/collective_rpc`, `/reset_prefix_cache`) stay on the box.
+  routes (`/collective_rpc`, `/reset_prefix_cache`) stay on the box. `/gg/exec` answers only its own key (the VM's), and
+  runs as `agent` in its own process group: its output waits for a slow reader (a bounded queue, not the guard's memory),
+  and its deadline covers its whole life, exit included; at the deadline the group is killed.
+- The VM's keys (OpenAI, the serve key, the exec key) go to a directory only its run user reads; the mount token stays on
+  the package's own path. No model-written command runs in the VM.
 - The host keeps the serve key in a 0600 file and never prints it.
 
 ## Run
@@ -105,8 +114,8 @@ model does not read the earlier transcript.
 # once: the Volume (from modal/): needs MODAL_TOKEN_ID/SECRET and HF_TOKEN
 python3 download.py
 
-# the session host bundle the image carries (from gg-onemore/)
-npm run bundle
+# the bundles: the VM's app module and the GPU-box session host the image carries (from gg-onemore/)
+npm run bundle:vm && npm run bundle
 
 # the box (from modal/): needs MODAL_TOKEN_ID/SECRET, TYPESAFE_API_KEY and OPENAI_API_KEY; `up` refuses while a saved box
 # still runs
@@ -114,11 +123,12 @@ python3 box.py up && python3 box.py wait
 python3 box.py exec "gg find && gg pick && gg strength && gg bake"
 python3 box.py down
 
-# the whole beat, measured: box, session, switch, follow-ups, control, teardown
+# the whole beat, measured: GPU box, the VM with the run's disk, session, switch, follow-ups, control, teardown
+# (MODAL_TOKEN_ID/SECRET, TYPESAFE_API_KEY, OPENAI_API_KEY, ARCHIL_API_KEY)
 node e2e/run.ts --out ./gg-run
 
 # tests (no GPU, no network)
-node --test 'pi/test/*.test.ts'
+node --test 'pi/test/*.test.ts' 'e2e/test/*.test.ts'
 (cd box && python3 -m unittest test_guard)
 ```
 

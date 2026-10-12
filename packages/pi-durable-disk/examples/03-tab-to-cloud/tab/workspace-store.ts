@@ -71,7 +71,8 @@ export async function applyChanges(run: string, changes: readonly (FileChange | 
 
 /** The saved workspace as the Workspace restores it: directories and files, parents before children. */
 export async function loadWorkspace(run: string): Promise<RestoredEntry[]> {
-  const top = await base(run, false).catch(() => undefined);
+  // none saved (NotFoundError) is an empty workspace; anything else (storage refused, a file that cannot be read) is an error, so a robot is never replaced by a new one
+  const top = await base(run, false).catch((e: unknown) => { if ((e as { name?: string })?.name === "NotFoundError") return undefined; throw e; });
   if (!top) return [];
   const out: RestoredEntry[] = [];
   const walk = async (dir: FileSystemDirectoryHandle, prefix: string): Promise<void> => {

@@ -3,7 +3,7 @@
 // extensions under the same names, so tasks recovered on one side resume on the other, and both call the model through
 // the same OpenAI-compatible provider; only where its requests go differs. Portable: no Node API.
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
-import type { AgentChange, Extension, HarnessSettings, Registry, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import type { AgentChange, Extension, HarnessSettings, Registry, RegistryReader, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -11,7 +11,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import type { Context } from "@earendil-works/chord";
 import { computerTool, type ComputerDriver } from "./computer-tool.ts";
 import { offlineTools, type OfflineChannel } from "./offline-tools.ts";
-import { robotTools, ROBOT_TOOLS } from "./robot-tools.ts";
+import { robotTools, ROBOT_TOOLS, SHAPE_TOOLS } from "./robot-tools.ts";
 import { switchEnvironment, type SwitchChannel } from "./switch-tool.ts";
 
 export const PROVIDER = "pipe";
@@ -123,14 +123,29 @@ export function agentModels(access: ModelAccess) {
   return models;
 }
 
-/** The root conversation's agent: the model, thinking on (never off), the instructions. */
-export function rootAgent(modelId: string): AgentChange {
-  return { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
+/** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered. */
+export interface AgentOptions {
+  /** False: the preset tools stay (a host whose model drives the robot by tool calls only, and the tests of those tools). Default true. */
+  robotCode?: boolean;
+  /** The registry the agent's tools come from. With it, code mode lists the tools explicitly from the first request, without the preset tools; without it the agent is offered every tool until its first robot call, which takes them out. */
+  registry?: RegistryReader;
 }
 
-/** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and every tool the registry has again (`tools: null` clears the filter an earlier model was configured with). */
-export function cloudAgent(modelId: string): AgentChange {
-  return { ...rootAgent(modelId), tools: null };
+/** Every tool of the registry but the ones that pick a preset body, as the conversation's whole tool list. */
+function codeTools(registry: RegistryReader): ToolRegistration[] {
+  return registry.snapshot().tools().map((t) => t.tool).filter((t) => !SHAPE_TOOLS.includes(t.name));
+}
+
+/** The root conversation's agent: the model, thinking on (never off), the instructions, and in code mode the tools without the preset ones. */
+export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: INSTRUCTIONS };
+  return options.robotCode !== false && options.registry ? { ...base, tools: codeTools(options.registry) } : base;
+}
+
+/** The root conversation's agent as it is when it comes back to the cloud model from another (a check-in): the same as `rootAgent`, and the whole tool list again (`tools: null` clears the filter an earlier model was configured with; in code mode the list without the preset tools). */
+export function cloudAgent(modelId: string, options: AgentOptions = {}): AgentChange {
+  const agent = rootAgent(modelId, options);
+  return agent.tools === undefined ? { ...agent, tools: null } : agent;
 }
 
 /** What a host can offer the agent beyond the shared tools; a tool the host cannot serve is still registered, and refuses. */

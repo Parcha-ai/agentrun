@@ -1,6 +1,6 @@
 // The build_robot tool's work: put the helper files in the robot's workspace, and say what the creature page made of the body the agent built (`node robot/build.mjs` wrote robot/body.xml and robot/body.json; the page compiles
 // the body in MuJoCo, holds its standing pose and writes robot/build.json with the same sha as the xml). Portable: no Node API; the computer, the clock and the hash come in.
-import { ROBOT_TEMPLATES } from "./robot-templates.ts";
+import { ROBOT_DEFAULT_BODY, ROBOT_TEMPLATES } from "./robot-templates.ts";
 
 /** What the tool needs of the computer (the pi execution environment's file calls). */
 export interface RobotFiles {
@@ -28,6 +28,27 @@ export async function provisionRobotFiles(env: RobotFiles, context: never): Prom
     const w = await env.writeFile(`robot/${path}`, content, context);
     if (!w.ok) throw new Error(`robot/${path} could not be written: ${w.error?.message ?? "unknown"}`);
     wrote.push(`robot/${path}`);
+  }
+  return wrote;
+}
+
+/**
+ * A session in code mode starts with a robot that is already code: the helper files, and a default robot/body.mjs with its build (body.xml, body.json), written only where no body exists (an agent's own body is never replaced).
+ * The creature page shows it at once, and the agent starts from a body to change instead of a preset to pick. Returns the paths written.
+ */
+export async function ensureCodeRobot(env: RobotFiles, context: never): Promise<string[]> {
+  const wrote = await provisionRobotFiles(env, context);
+  const have = await env.readTextFile("robot/body.json", context);
+  if (have.ok) return wrote;
+  for (const [file, content] of Object.entries(ROBOT_DEFAULT_BODY)) {
+    // body.mjs may exist without a build (an agent wrote it and has not run build.mjs): it is kept, and the default build is not written over a source it does not match
+    if (file === "body.mjs") {
+      const src = await env.readTextFile("robot/body.mjs", context);
+      if (src.ok) return wrote;
+    }
+    const w = await env.writeFile(`robot/${file}`, content, context);
+    if (!w.ok) throw new Error(`robot/${file} could not be written: ${w.error?.message ?? "unknown"}`);
+    wrote.push(`robot/${file}`);
   }
   return wrote;
 }

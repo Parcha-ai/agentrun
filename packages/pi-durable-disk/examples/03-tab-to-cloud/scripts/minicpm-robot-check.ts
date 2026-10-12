@@ -56,7 +56,7 @@ const until = (expr: string, ms = 30_000) => page!.until(expr, ms, 300);
 const TURN_MS = 900_000; // a turn on a loaded box can take minutes
 const turns: { prompt: string; ms: number; calls: string[]; reply: string; robot: string }[] = [];
 try {
-  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&template=native&threads=" + (process.env.THREADS ?? "8") + "#"));
+  page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&robotcode=0&template=native&threads=" + (process.env.THREADS ?? "8") + "#"));
   const t0 = Date.now();
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   await until(`!!document.getElementById("creature").contentWindow.__walks`, 60_000);

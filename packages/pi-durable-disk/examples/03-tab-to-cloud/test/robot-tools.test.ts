@@ -8,12 +8,13 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { agentRegistry, rootAgent } from "../agent.ts";
+import { agentRegistry, cloudAgent, rootAgent } from "../agent.ts";
 import { GO_ONLINE_TOOL } from "../offline-tools.ts";
 import { ROBOT_FILE, ROBOT_TOOLS } from "../robot-tools.ts";
 import { createHash } from "node:crypto";
 import { ROBOT_TEMPLATES } from "../robot-templates.ts";
-import { buildRobot, provisionRobotFiles } from "../build-robot.ts";
+import { buildRobot, ensureCodeRobot, provisionRobotFiles } from "../build-robot.ts";
+import { spawnSync } from "node:child_process";
 import { BODY_CHANGED, LOOKS_ONLY, parseRobot, type RobotState } from "../robot-model.ts";
 import { scriptedCloud, type ScriptedTurn, type SeenRequest } from "../tab/scripted-cloud.ts";
 
@@ -236,4 +237,57 @@ test("build_robot hides them too, so the first thing the agent does in code mode
   const names = (await r.agent()).tools.map((t) => t.name);
   assert.ok(!names.includes("morph") && names.includes("build_robot"));
   await r.close();
+});
+
+test("code mode is the default for a root agent that is given its registry: the preset tools are not in its tool list from the first request, nor after a check-in; with robotCode false they stay", async () => {
+  const registry = agentRegistry(async () => undefined, { switchTool: false });
+  const names = (a: ReturnType<typeof rootAgent>) => ((a as { tools?: { name: string }[] | null }).tools ?? null)?.map((t) => t.name) ?? null;
+  const code = names(rootAgent("m", { registry }))!;
+  for (const t of ["resize", "scale", "set_legs", "morph"]) assert.ok(!code.includes(t), `${t} is not offered`);
+  for (const t of ["set_color", "set_shape", "set_face", "rename", "reset", "do", "build_robot", "update_robot", "bash", "write", "edit", "read"]) assert.ok(code.includes(t), `${t} is offered`);
+  assert.deepEqual(names(cloudAgent("m", { registry })), code, "a check-in puts the same list back");
+  const presets = names(rootAgent("m", { registry, robotCode: false }));
+  assert.equal(presets, null, "robotCode false: the agent has every tool, as before");
+  assert.equal(names(cloudAgent("m", { registry, robotCode: false })), null, "and cloudAgent clears any filter, as before");
+  assert.equal((cloudAgent("m") as { tools?: unknown }).tools, null, "with no registry the old behaviour: every tool (the first robot call takes the preset tools out)");
+  // through a real Harness: the conversation's first request lists the tools without them
+  const dir = mkdtempSync(join(tmpdir(), "code-agent-"));
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    const models = createModels();
+    models.setProvider(scriptedCloud("cloud-big", [{ text: "ok" }], []));
+    const harness = await Harness.open(new MemoryStorage(), { models, registry, env: () => env }, ctx);
+    const root = await harness.root(ctx, { agent: rootAgent("cloud-big", { registry }) });
+    const offered = (await root.agent(ctx)).tools.map((t) => t.name);
+    assert.ok(!offered.includes("morph") && offered.includes("build_robot") && offered.includes("set_color"));
+    await harness.close(ctx);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a session in code mode starts with a robot that is code: the default is written where no body exists, never over an agent's own, and it is what node robot/build.mjs makes of its source", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seed-robot-"));
+  try {
+    const env = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
+    const wrote = await ensureCodeRobot(env as never, ctx as never);
+    assert.deepEqual(wrote.slice(-3), ["robot/body.mjs", "robot/body.xml", "robot/body.json"]);
+    assert.deepEqual(await ensureCodeRobot(env as never, ctx as never), [], "the second time writes nothing");
+    const json = JSON.parse(readFileSync(join(dir, "robot/body.json"), "utf8"));
+    assert.deepEqual([json.name, json.legs, json.motors.length], ["robot", 4, 8]);
+    // the seeded build is exactly what the build script makes of the seeded source
+    const before = { xml: readFileSync(join(dir, "robot/body.xml"), "utf8"), json: readFileSync(join(dir, "robot/body.json"), "utf8") };
+    const run = spawnSync(process.execPath, ["robot/build.mjs"], { cwd: dir, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(join(dir, "robot/body.xml"), "utf8"), before.xml);
+    assert.equal(readFileSync(join(dir, "robot/body.json"), "utf8"), before.json);
+    // an agent's own body is never replaced
+    writeFileSync(join(dir, "robot/body.mjs"), "// mine\n");
+    writeFileSync(join(dir, "robot/body.json"), JSON.stringify({ ...json, name: "mine" }));
+    await ensureCodeRobot(env as never, ctx as never);
+    assert.equal(readFileSync(join(dir, "robot/body.mjs"), "utf8"), "// mine\n");
+    assert.equal(JSON.parse(readFileSync(join(dir, "robot/body.json"), "utf8")).name, "mine");
+    // a source with no build yet is kept, and the default build is not written over it
+    rmSync(join(dir, "robot/body.json")); rmSync(join(dir, "robot/body.xml"));
+    assert.deepEqual(await ensureCodeRobot(env as never, ctx as never), []);
+    assert.equal(readFileSync(join(dir, "robot/body.mjs"), "utf8"), "// mine\n");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

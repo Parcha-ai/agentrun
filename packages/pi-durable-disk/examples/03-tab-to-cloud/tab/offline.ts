@@ -136,6 +136,39 @@ export async function cacheRunForOffline(o: { run: string; secret: string; manif
   return { files: total, bytes };
 }
 
+/**
+ * Whether a cached file is the version the server sends now: the same validator (ETag, else Last-Modified) and the same length. A length alone is not a version
+ * (an edited file of the same size kept its old bytes), so a server that sends no validator has every file saved again.
+ */
+function sameVersion(have: Response, now: Response): boolean {
+  if (have.headers.get("content-length") !== now.headers.get("content-length")) return false;
+  const etag = now.headers.get("etag");
+  if (etag) return have.headers.get("etag") === etag;
+  const modified = now.headers.get("last-modified");
+  return modified !== null && have.headers.get("last-modified") === modified;
+}
+
+/**
+ * Put these same-origin files in the offline cache, each fetched whole past the HTTP cache (the phone's page, the assets its build lists, its model's small
+ * files): a reload with no network is then answered by the service worker (sw.ts). A file cached at the version the server sends now is kept as it is.
+ */
+export async function cacheFilesForOffline(paths: readonly string[], onProgress?: (p: CacheProgress) => void): Promise<{ files: number; bytes: number }> {
+  const cache = await caches.open(CACHE_NAME);
+  let done = 0, bytes = 0;
+  for (const path of paths) {
+    const key = cacheKey(new URL(path, location.origin));
+    const r = await fetch(path, { cache: "reload" });
+    if (!r.ok) throw new Error(`${path}: ${r.status}`);
+    const length = Number(r.headers.get("content-length") ?? 0);
+    const have = await cache.match(key);
+    if (have && sameVersion(have, r)) await r.body?.cancel();
+    else await cache.put(key, r);
+    bytes += length;
+    onProgress?.({ done: ++done, total: paths.length, what: path });
+  }
+  return { files: paths.length, bytes };
+}
+
 /** A checkout the pipe refused or could not do; `code` is the pipe's (HEAD_MISMATCH, NOT_WRITER, CHECKED_OUT, ...). */
 export class CheckoutError extends Error {
   readonly code: string;

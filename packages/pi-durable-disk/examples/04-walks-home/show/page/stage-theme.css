@@ -103,3 +103,36 @@ html body #lost { background: var(--panel); color: var(--muted); border-bottom: 
 html body #vcaptionwrap { background: none; }
 @keyframes dotpulse { from { opacity: 1; } to { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { html body #threads .tile .st, html body .ts .tr .st::before { animation: none !important; } }
+
+/* ---- a phone (390 wide): the robot and the tiles on top, the conversation below, the composer last; nothing fixed to a laptop's edges ---- */
+@media (max-width: 760px) {
+  html body.v2 main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 48%) minmax(0, 1fr); }
+  html body.v2 #chat { border-left: 0; border-top: 1px solid var(--line); padding: 12px var(--gutter) calc(12px + env(safe-area-inset-bottom, 0px)); overflow-y: auto; }
+  html body.v2 #badge { padding: 12px 96px 10px var(--gutter); gap: 6px; align-items: flex-start; }
+  html body.v2 #badge .main { font-size: 18px; }
+  html body.v2 #badge .track { width: 100%; }
+  html body.v2 #badge .memory { display: none; }
+  html body #net { top: 14px; right: var(--gutter); }
+  html body #spark { display: none !important; }
+  html body #opentab { left: auto; right: var(--gutter); bottom: auto; top: 44px; z-index: 9; }
+  html body #decisionwrap { left: 16px; right: 16px; top: 120px; }
+  html body #threads { padding: 12px 12px 56px; overflow-y: auto; }
+  html body #threads[data-phase="learning"] { inset: 0; }
+  html body #threads .th[data-phase="learning"] { height: auto; }
+  html body #threads .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: auto; align-content: start; flex: none; gap: 8px; }
+  html body #threads .tile { padding: 10px 12px; gap: 4px; }
+  html body #threads .tile .skill { font-size: 14px; }
+  html body #threads .tile .val .n { font-size: 24px; }
+  html body #threads .tile .spark { display: none; }
+  html body #threads .thead { font-size: 10px; }
+  html body #threads .skills { gap: 6px; } html body #threads .skills .skill { font-size: 11px; padding: 4px 8px; }
+  html body.v2 #vcaptionwrap { position: absolute; left: 12px; right: 12px; bottom: 10px; }
+  html body #vcaption { background: color-mix(in srgb, var(--panel) 94%, transparent); border-radius: var(--r2); padding: 8px 12px; }
+  html body #vcaption .txt { font-size: 14px; }
+  html body #chatlog .turn .said { font-size: 16px; }
+  html body #chathint { font-size: 16px; top: 18%; }
+  html body #robotside .rc .who, html body .cc .who, html body .rl .who { font-size: 17px; }
+  html body #robotside .rc .why, html body .cc ul, html body .rl .line { font-size: 14px; }
+  html body #chatin { min-height: 44px; }
+  html body #toolstrip { left: 12px; right: 12px; }
+}

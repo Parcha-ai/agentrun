@@ -66,7 +66,7 @@ export async function loadCodeBody(env: Env, context: Ctx): Promise<CodeBody | u
 }
 
 /** The tools that change a preset body: with a body written as code the agent changes its body by writing the file, so these are not offered to it. */
-const SHAPE_TOOLS = ["resize", "scale", "set_legs", "morph"];
+export const SHAPE_TOOLS: readonly string[] = ["resize", "scale", "set_legs", "morph"];
 
 /** Take the shape tools out of this conversation's agent (once a robot body exists as code); it is the conversation's own configuration, committed from inside the tool call, so the next model request no longer lists them. */
 async function hideShapeTools(api: ToolApi, context: Ctx): Promise<void> {
@@ -74,6 +74,11 @@ async function hideShapeTools(api: ToolApi, context: Ctx): Promise<void> {
   const present = agent.tools.filter((t) => SHAPE_TOOLS.includes(t.name));
   if (present.length === 0) return;
   await api.commit((tx) => configure(tx, api.conversationId, { tools: { remove: present } }), context as never);
+}
+
+/** The robot as it is now: its file, or the body the user drew before the first edit (what a tool would start from). */
+export async function currentRobot(env: Env, context: Ctx): Promise<RobotState | { problem: string }> {
+  return load(env, context);
 }
 
 /** The skills this robot has: from home/skills.json, else walk when a single policy came home, else none. */
@@ -91,6 +96,24 @@ export async function loadSkills(env: Env, context: Ctx): Promise<Record<string,
   }
   const single = await env.readTextFile(POLICY_FILE, context);
   return single.ok ? { walk: { label: "walk" } } : {};
+}
+
+/**
+ * The skill the robot plays when none is chosen, as the page picks it (04's parseSkills): the manifest's `default` when it names one of its skills, else its
+ * first skill; walk when only home/policy.json came home; none when no skill did.
+ */
+export async function defaultSkill(env: Env, context: Ctx): Promise<string | undefined> {
+  const have = await env.readTextFile(SKILLS_FILE, context);
+  if (have.ok) {
+    try {
+      const m = JSON.parse(have.value) as { default?: unknown; skills?: Record<string, unknown> };
+      const names = m.skills && typeof m.skills === "object" && !Array.isArray(m.skills) ? Object.keys(m.skills) : [];
+      return typeof m.default === "string" && names.includes(m.default) ? m.default : names[0];
+    } catch {
+      return undefined;
+    }
+  }
+  return (await env.readTextFile(POLICY_FILE, context)).ok ? "walk" : undefined;
 }
 
 /** One edit at a time per computer: pi runs the calls of one model turn together ("a red spider" is two), and each edit is read-modify-write on the same file, so the later write would drop the earlier one. */

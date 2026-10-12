@@ -89,6 +89,9 @@ def up(args):
     keyfile = os.path.join(STATE, "serve-key")
     with open(os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(key)
+    exec_key = secrets.token_urlsafe(32)
+    with open(os.open(os.path.join(STATE, "exec-key"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(exec_key)
     jev = os.environ.get("TYPESAFE_API_KEY")
     if not jev:
         sys.exit("run under with-typesafe: the lab needs TYPESAFE_API_KEY")
@@ -105,13 +108,13 @@ def up(args):
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
-    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nOPENAI_API_KEY={openai}\n")
+    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\nOPENAI_API_KEY={openai}\n")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
-    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
+    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": os.path.join(STATE, "exec-key"), "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
     with open(os.path.join(STATE, "box.json"), "w") as f:
         json.dump(st, f, indent=1)
-    print(json.dumps({k: v for k, v in st.items() if k != "key_file"}))
+    print(json.dumps({k: v for k, v in st.items() if not k.endswith("key_file")}))
 
 
 def wait(args):
@@ -147,9 +150,10 @@ def push(args):
     if args.restart:
         jev = os.environ.get("TYPESAFE_API_KEY")
         key = open(state()["key_file"]).read().strip()
+        exec_key = open(state()["exec_key_file"]).read().strip() if state().get("exec_key_file") else ""
         if not jev:
             sys.exit("run under with-typesafe to restart the lab")
-        run(sb, "umask 077; cat > /run/gg/lab.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\n")
+        run(sb, "umask 077; cat > /run/gg/lab.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\n")
         run(sb, "/opt/gg-onemore/box/restart.sh", root=True)
 
 

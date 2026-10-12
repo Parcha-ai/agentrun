@@ -63,6 +63,46 @@ try {
 } finally {
   stage.kill();
 }
+// ---- The stage at a phone's width (390 x 844): the tiles are on screen in two columns and readable, the composer is in view, and nothing scrolls sideways.
+{
+  pageName = "phone";
+  const pport = await freePort();
+  const pstage = spawn(process.execPath, [join(show, "serve.ts")], { cwd: show, env: { ...process.env, SHOW_PORT: String(pport), SHOW_SCENARIO: "threads" }, stdio: "ignore" });
+  const pbase = `http://127.0.0.1:${pport}/`;
+  const pseek = (seconds) => fetch(new URL("/api/dev/seek", pbase), { method: "POST", body: JSON.stringify({ seconds, paused: true }) });
+  try {
+    await waitForStage(pport, pstage);
+    await pseek(0);
+    const tab = await openTab(pbase, { width: 390, height: 844 });
+    try {
+      await sleep(2500);
+      await pseek(24);
+      await sleep(3000);
+      const m = JSON.parse(await tab.eval(`JSON.stringify((() => { const r = (e) => e.getBoundingClientRect(); const th = document.getElementById("threads"); const tiles = [...th.querySelectorAll(".tile")].map((t) => r(t)); const pane = r(th); const input = r(document.getElementById("chatin")); return { tiles: tiles.length, minH: Math.min(...tiles.map((t) => t.height)), cols: new Set(tiles.map((t) => Math.round(t.left))).size, scrollW: document.documentElement.scrollWidth, innerW: innerWidth, paneH: pane.height, inputBottom: input.bottom, inputH: input.height, innerH: innerHeight, inputFont: parseFloat(getComputedStyle(document.getElementById("chatin")).fontSize), net: (() => { const n = document.getElementById("net"); return n.hidden ? null : r(n); })(), badge: r(document.querySelector("#badge .main")) }; })())`));
+      expect("the eight tiles are on screen, in two columns, each tall enough to read (not squashed)", m.tiles === 8 && m.cols === 2 && m.minH >= 70 && m.paneH > 200, m);
+      expect("nothing scrolls sideways", m.scrollW <= m.innerW, m);
+      expect("the composer is in view, 44 px tall with 16 px type (a phone zooms anything smaller)", m.inputBottom <= m.innerH && m.inputH >= 44 && m.inputFont >= 16, m);
+      expect("the network pill does not sit on the place's words", m.net === null || m.net.left >= m.badge.right - 1 || m.net.top >= m.badge.bottom - 1, m);
+      // Every tile can be read: the pane scrolls, so each tile is scrolled into view in turn and must sit inside the pane, with none of its text cut off.
+      const rows = JSON.parse(await tab.eval(`JSON.stringify((() => { const th = document.getElementById("threads"); return [...th.querySelectorAll(".tile")].map((t) => { t.scrollIntoView({ block: "nearest" }); const r = t.getBoundingClientRect(); const p = th.getBoundingClientRect(); return { skill: t.querySelector(".skill").textContent, inside: r.top >= p.top - 1 && r.bottom <= p.bottom + 1 && r.left >= p.left - 1 && r.right <= p.right + 1, clipped: t.scrollHeight > t.clientHeight + 1 || t.scrollWidth > t.clientWidth + 1 }; }); })())`));
+      expect("scrolling the pane brings each of the eight tiles fully into view, none with its text cut off", rows.length === 8 && rows.every((r) => r.inside && !r.clipped), rows.filter((r) => !r.inside || r.clipped));
+      if (shots) await tab.screenshot(join(shots, "stage-phone-tiles.png"));
+      // The agent's tab can still be opened from a phone: with ?tab= the button shows, on screen, and is what a tap at its centre reaches.
+      const withTab = await openTab(`${pbase}?tab=${encodeURIComponent("http://127.0.0.1:9/run/x")}`, { width: 390, height: 844 });
+      try {
+        await sleep(2500);
+        const b = JSON.parse(await withTab.eval(`JSON.stringify((() => { const e = document.getElementById("opentab"); const r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { shown: !e.hidden && getComputedStyle(e).display !== "none", onScreen: r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, reachable: hit === e }; })())`));
+        expect("with a tab link the Open the tab button is on a phone's screen and a tap reaches it", b.shown && b.onScreen && b.reachable, b);
+      } finally {
+        await withTab.close();
+      }
+    } finally {
+      await tab.close();
+    }
+  } finally {
+    pstage.kill();
+  }
+}
 // ---- The stumble -> relearn card: the skills are for a new body (D2's skill.json fields), the robot's home body is another.
 {
   pageName = "relearn";
