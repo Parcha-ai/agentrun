@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { daytonaHost, daytonaRest, ensureRunning, LABEL_FLEET, LABEL_RUN, removeMountToken, sandboxName } from "@parcha/pi-durable-disk";
@@ -63,7 +63,7 @@ export const APP_FILES = ["agent.ts", "cloud-app.ts", "cloud-link.ts", "environm
  * The app as a box installs it: the package (npm pack of this checkout), the agent's modules, their manifest. `digest`
  * covers what it installs (npm pack is reproducible; the outer tar's times are not) and the install script.
  */
-export function appBundle(): Uint8Array & { digest: string } {
+export function appBundle(extraFiles: Readonly<Record<string, string>> = {}): Uint8Array & { digest: string } {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-demo-bundle-"));
   try {
     const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", dir], { cwd: PACKAGE, encoding: "utf8" });
@@ -84,6 +84,13 @@ export function appBundle(): Uint8Array & { digest: string } {
         dependencies: { "@parcha/pi-durable-disk": `file:./${tgz}`, ...APP_DEPENDENCIES },
       }),
     );
+    // Files of a demo layered on the app (DEMO_APP_EXTRA): published path (relative, inside the bundle) to the source file.
+    for (const [published, source] of Object.entries(extraFiles).sort(([a], [b]) => a.localeCompare(b))) {
+      if (isAbsolute(published) || published.split("/").includes("..")) throw new Error(`extra bundle file ${published} must stay inside the bundle`);
+      mkdirSync(dirname(join(dir, published)), { recursive: true });
+      copyFileSync(source, join(dir, published));
+      hash.update(published).update(readFileSync(source));
+    }
     hash.update(readFileSync(join(dir, "package.json")));
     const tar = spawnSync("tar", ["-czf", "-", "-C", dir, "."], { maxBuffer: 64 << 20 });
     if (tar.status !== 0) throw new Error(`tar failed: ${tar.stderr}`);
