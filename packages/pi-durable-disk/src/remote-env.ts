@@ -75,6 +75,8 @@ export interface RemoteEnvOptions {
 /** Thrown inside the env when a call cannot complete; turned into the operation's FileError or ExecutionError. */
 class BoxGone extends Error {}
 class Timeout extends Error {}
+/** The host could not keep a command's output for its spill file (a full disk, say): the command is stopped and the call fails. */
+class SpillFailed extends Error {}
 
 const enc = new TextEncoder();
 const decoder = () => new TextDecoder();
@@ -466,27 +468,34 @@ export class RemoteEnv implements ExecutionEnv {
     let early: Uint8Array[] = [];
     let local: { path: string; fh: FileHandle } | null = null;
     let spillChain: Promise<void> = Promise.resolve();
-    const keep = (c: Uint8Array) => {
+    let spillError: unknown = null;
+    // every write is queued on one chain whose failure is caught right there (kept in spillError, never an unhandled rejection)
+    const queue = (write: () => Promise<void>) => { spillChain = spillChain.then(() => (spillError === null ? write() : undefined)).catch((e) => { spillError ??= e; }); return spillChain; };
+    const keep = (c: Uint8Array): Promise<void> => {
       total += c.length;
       for (const b of c) if (b === 10) lines++;
-      if (spilling) { spillChain = spillChain.then(async () => { await local!.fh.write(c); }); return; }
+      if (spilling) return queue(async () => { await local!.fh.write(c); });
       early.push(c);
       if (total > spill!.afterBytes || lines > spill!.afterLines) {
         spilling = true;
         const parts = early;
         early = [];
-        spillChain = spillChain.then(async () => {
+        return queue(async () => {
           const path = joinLocal(tmpdir(), `pi-remote-spill-${id}.txt`);
           local = { path, fh: await open(path, "w") };
           for (const x of parts) await local.fh.write(x);
         });
       }
+      return spillChain;
     };
     const decoders = { stdout: new StreamDecoder(), stderr: new StreamDecoder() };
     let stderrTail = "";
     const pump = async (s: RemoteStream, stream: "stdout" | "stderr") => {
       for await (const c of chunks(s)) {
-        if (spill) keep(c);
+        if (spill) {
+          await keep(c); // the output waits for the disk, so a slow or full disk is felt here, not later
+          if (spillError !== null) throw new SpillFailed(`this host could not keep the command's output for its spill file: ${(spillError as Error)?.message ?? spillError}`);
+        }
         let text = decoders[stream].decode(c);
         if (stream === "stderr") {
           stderrTail = (stderrTail + text).slice(-400);
@@ -498,9 +507,9 @@ export class RemoteEnv implements ExecutionEnv {
       if (rest) options?.onOutput?.(rest, context, { stream });
     };
     const writeSpill = async (): Promise<string | undefined> => {
-      await spillChain.catch(() => undefined);
+      await spillChain;
       const mine = local as { path: string; fh: FileHandle } | null;
-      if (!spilling || !mine) return undefined;
+      if (!spilling || !mine || spillError !== null) return undefined;
       try {
         await mine.fh.close();
         const f = await this.createTempFile({ prefix: "pi-out-", suffix: ".txt" }, context);
@@ -538,6 +547,7 @@ export class RemoteEnv implements ExecutionEnv {
       try {
         code = await bounded(run, timeoutMs, context);
       } catch (e) {
+        if (e instanceof SpillFailed) { await kill(); return err(new ExecutionError("unknown", e.message)); }
         const aborted = isAbort(e);
         if (!aborted && !(e instanceof Timeout)) throw e;
         await kill();
@@ -651,7 +661,9 @@ export class ArtifactSync {
 
   private async pass(all: boolean, context?: Context): Promise<void> {
     // the find expression as arguments (never spliced into the script): pruned paths first, then the files
-    const prune = (this.o.exclude ?? []).map((x) => x.replace(/^\.?\/+|\/+$/g, "")).filter(Boolean).flatMap((x, i) => [...(i ? ["-o"] : []), "-path", `./${x}`]);
+    // a path, not a pattern: find's -path treats * ? [ ] and \\ as pattern characters, so they are escaped
+    const literal = (x: string) => x.replace(/[*?[\]\\]/g, (c) => `\\${c}`);
+    const prune = (this.o.exclude ?? []).map((x) => x.replace(/^\.?\/+|\/+$/g, "")).filter(Boolean).flatMap((x, i) => [...(i ? ["-o"] : []), "-path", `./${literal(x)}`]);
     const expr = [...(prune.length ? ["(", ...prune, ")", "-prune", "-o"] : []), "-type", "f", "!", "-name", "*.tmp", "!", "-name", ".*", "-printf", "%P\\0%y\\0%s\\0%T@\\0"];
     const p = await this.exec(["sh", "-c", `[ -d "$1" ] || exit 0; cd -- "$1" && shift && find . "$@"`, "sh", this.o.remote, ...expr], context);
     const [out, errBytes, code] = await bounded(Promise.all([readAll(p.stdout), readAll(p.stderr), p.wait()]), this.o.opTimeoutMs, context);
@@ -798,7 +810,8 @@ exit $c
 
 /** Install pi-run on a box (at `path`, default /usr/local/bin/pi-run). For a pool that creates boxes itself. */
 export async function installPiRun(box: RemoteBox, path = "/usr/local/bin/pi-run"): Promise<void> {
-  const p = await box.exec(["sh", "-c", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && chmod 755 "$1"', "sh", path], { mode: "binary", timeoutMs: 60_000 });
+  // a temporary file renamed into place: a pi-run started meanwhile reads the old script or the new one, never a partial one
+  const p = await box.exec(["sh", "-c", 'mkdir -p -- "$(dirname -- "$1")" && t="$1.tmp.$$" && cat > "$t" && chmod 755 "$t" && mv -f -- "$t" "$1"', "sh", path], { mode: "binary", timeoutMs: 60_000 });
   const [, e, code] = await bounded((async () => {
     await p.stdin.writeBytes(enc.encode(PI_RUN));
     await p.stdin.close();

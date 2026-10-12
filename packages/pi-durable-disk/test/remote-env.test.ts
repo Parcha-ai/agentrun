@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { chmodSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { ArtifactSync, installPiRun, modalGpuBoxes, RemoteEnv, remoteEnvs, type ModalGpuSdk, type RemoteBox, type RemoteProcess } from "../src/remote-env.ts";
+import { ArtifactSync, installPiRun, modalGpuBoxes, PI_RUN, RemoteEnv, remoteEnvs, type ModalGpuSdk, type RemoteBox, type RemoteProcess } from "../src/remote-env.ts";
 import { registerEnvCases } from "./_env-conformance.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -501,6 +501,58 @@ describe("pi-run's lock", () => {
       const startedAt = Number(readFileSync(join(root, "started"), "utf8").trim());
       assert.ok(startedAt - t0 >= 1_000, `the command started ${startedAt - t0} ms in, inside the other holder's lock`);
       await released;
+    });
+  });
+});
+
+describe("Greptile on #209, second round", () => {
+  it("output that cannot be kept for its spill file is a tool error (the command is stopped), not a crash of the host", async () => {
+    await withRoot(async (root) => {
+      const ro = join(root, "readonly");
+      await mkdir(ro);
+      chmodSync(ro, 0o500);
+      const saved = process.env.TMPDIR;
+      process.env.TMPDIR = ro;
+      try {
+        const env = new RemoteEnv({ box: localBox(), root });
+        const r = await env.exec("head -c 200000 /dev/zero | tr '\\0' 'x'; sleep 30", { spill: { afterBytes: 100, afterLines: 10 } }, context);
+        assert.equal(r.ok, false);
+        assert.match(!r.ok ? r.error.message : "", /could not keep the command's output/);
+      } finally {
+        if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; // assigning undefined would store "undefined"
+        chmodSync(ro, 0o700);
+      }
+    });
+  });
+
+  it("reinstalling pi-run on a box in use: a reader never sees an empty or partial script", async () => {
+    await withRoot(async (root) => {
+      const box = localBox();
+      const piRun = join(root, "bin", "pi-run");
+      await installPiRun(box, piRun);
+      const reader = spawn("sh", ["-c", `for i in $(seq 3000); do wc -c < "$1"; done`, "sh", piRun]);
+      let sizes = "";
+      reader.stdout.on("data", (d) => { sizes += String(d); });
+      const done = new Promise((r) => reader.on("close", r));
+      for (let i = 0; i < 15; i++) await installPiRun(box, piRun);
+      await done;
+      const seen = new Set(sizes.trim().split("\n").map(Number));
+      assert.deepEqual([...seen], [Buffer.byteLength(PI_RUN)], `sizes seen: ${[...seen].join(", ")}`);
+    });
+  });
+
+  it("exclude names paths, not patterns: work[1] stays, work1 comes home", async () => {
+    await withRoot(async (root) => {
+      const remote = join(root, "box"), local = join(root, "home");
+      await mkdir(join(remote, "work[1]"), { recursive: true });
+      await mkdir(join(remote, "work1"), { recursive: true });
+      await writeFile(join(remote, "work[1]", "state"), "s");
+      await writeFile(join(remote, "work1", "policy.json"), "p");
+      const sync = new ArtifactSync({ box: localBox(), remote, local, exclude: ["work[1]"] });
+      await sync.flush();
+      await sync.stop();
+      assert.equal(existsSync(join(local, "work[1]")), false);
+      assert.equal(readFileSync(join(local, "work1", "policy.json"), "utf8"), "p");
     });
   });
 });
