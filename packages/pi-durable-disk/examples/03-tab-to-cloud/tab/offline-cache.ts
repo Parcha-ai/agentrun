@@ -25,19 +25,19 @@ export function isolated(response: Response): Response {
 }
 
 /**
- * The stage's own files, for a stage that is served from this origin under /show/ (serve.ts --show-dir): `/show/offline.json` is `{files: ["/show/", "/show/main.js", ...]}`, the URL paths the stage
+ * The files of a page served from this origin under a prefix (/show/: the stage, serve.ts --show-dir; /tab/: the creature page, --creature-dir): `<prefix>offline.json` is `{files: ["<prefix>", "<prefix>main.js", ...]}`, the URL paths the page
  * requests, its document's included. Absent (a 404, nothing served there) it is no files; present, every entry must be a path under /show/ with no query, no fragment and no `..`, so what a
  * stage lists can never name the run's own files or another origin. Anything else is an error: a stage that cannot be listed whole is not cached half.
  */
-export async function stageFiles(fetchList: () => Promise<Response>): Promise<string[]> {
+export async function stageFiles(fetchList: () => Promise<Response>, prefix = "/show/"): Promise<string[]> {
   const r = await fetchList();
   if (r.status === 404) return [];
-  if (!r.ok) throw new Error(`/show/offline.json: ${r.status}`);
+  if (!r.ok) throw new Error(`${prefix}offline.json: ${r.status}`);
   const body = (await r.json().catch(() => undefined)) as { files?: unknown } | undefined;
-  if (!body || !Array.isArray(body.files)) throw new Error("/show/offline.json is not {files: [...]}");
+  if (!body || !Array.isArray(body.files)) throw new Error(`${prefix}offline.json is not {files: [...]}`);
   const out: string[] = [];
   for (const f of body.files) {
-    if (typeof f !== "string" || !f.startsWith("/show/") || /[?#\\]/.test(f) || f.split("/").some((part) => part === ".." || part === ".") || f.includes("//")) throw new Error(`/show/offline.json lists ${JSON.stringify(f)}: only paths under /show/ with no query, fragment or dot segments`);
+    if (typeof f !== "string" || !f.startsWith(prefix) || /[?#\\]/.test(f) || f.split("/").some((part) => part === ".." || part === ".") || f.includes("//")) throw new Error(`${prefix}offline.json lists ${JSON.stringify(f)}: only paths under ${prefix} with no query, fragment or dot segments`);
     out.push(f);
   }
   return [...new Set(out)];

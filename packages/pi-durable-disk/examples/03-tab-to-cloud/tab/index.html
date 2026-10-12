@@ -95,7 +95,15 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 #composer { display: flex; gap: 8px; }
 #input { flex: 1; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); resize: none; height: 44px; }
 #stats { font: 11px var(--mono); color: var(--muted); min-height: 14px; }
+/* ?robot=1: the creature page (the robot) takes the side pane, in place of the workspace listing */
+body.robot main { grid-template-columns: minmax(0, 1fr) minmax(380px, 46%); }
+body.robot aside:not(#creature-pane) { display: none; }
+#creature-pane { display: block; padding: 0; background: #f4f2ea; }
+#creature-pane[hidden] { display: none; }
+#creature-pane iframe { width: 100%; height: 100%; border: 0; display: block; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } .badge-sub { display: none; } }
+/* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
+@media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }
 </style>
 </head>
 <body>
@@ -118,6 +126,7 @@ footer { border-top: 1px solid var(--line); background: var(--panel); padding: 1
 <section id="checkedout" hidden><strong>Checked out to this browser.</strong> The live copy of this run is here: the server released it and runs it no more. You can turn the network off and keep talking to the agent. What does not work:<ul id="cannot"></ul><span id="persist-warning" hidden><strong>Storage is not guaranteed.</strong> This browser may clear its copy under storage pressure; it is the only live copy. </span></section>
 <main>
   <section id="chat"></section>
+  <aside id="creature-pane" hidden><iframe id="creature" title="the robot" allow="cross-origin-isolated"></iframe></aside>
   <aside>
     <h2>Workspace</h2>
     <div id="files"></div>

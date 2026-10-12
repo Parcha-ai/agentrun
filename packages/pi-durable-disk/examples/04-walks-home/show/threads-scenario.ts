@@ -24,6 +24,9 @@ const TABLE: Skill[] = [
   { dir: "get-up", label: "get up", metric: "slowest get-up", unit: "s", target: "rights itself from left, right and back", threshold: 0, first: 4 },
 ];
 
+/** The body the skills are trained for, and, in the relearn rehearsal, a different body the robot has now. Rehearsal values. */
+const NEW_BODY = "f81251c5ed89rehearsal";
+const HOME_BODY = "0f0f0f0f0f0frehearsal";
 const CHECKPOINT_S = 8.84;
 const SPLIT_AT = 9;
 const round = (v: number, d = 3) => Math.round(v * 10 ** d) / 10 ** d;
@@ -50,9 +53,12 @@ export class ScenarioThreads {
   private started = false;
   private turns: ChatTurn[] = [];
   private stays = 0;
+  /** The skills are for a new body (a spider) and the robot's home body is another: the cluster relearns. */
+  private relearn: boolean;
 
-  constructor(options: { origin?: number } = {}) {
+  constructor(options: { origin?: number; relearn?: boolean } = {}) {
     this.origin = options.origin ?? Date.now();
+    this.relearn = options.relearn === true;
   }
 
   get state(): ShowState {
@@ -64,6 +70,8 @@ export class ScenarioThreads {
 
   /** The rehearsal's stand-in for the run's disk: each skill's two files, as far as the script has got. */
   file(key: string): Uint8Array | undefined {
+    if (key === "skills/round.json") return this.round();
+    if (key === "home/skills.json") return this.clock >= SPLIT_AT * 1000 ? new TextEncoder().encode(JSON.stringify({ body_mjcf_sha256: this.relearn ? HOME_BODY : NEW_BODY, skills: [] })) : undefined;
     const m = /^skills\/([a-z-]+)\/(skill\.json|skill-progress\.jsonl)$/.exec(key);
     const i = m ? TABLE.findIndex((s) => s.dir === m[1]) : -1;
     if (!m || i < 0) return undefined;
@@ -85,7 +93,51 @@ export class ScenarioThreads {
       );
     }
     const done = landed.length === last;
-    return enc(JSON.stringify({ skill: sk.dir, label: sk.label, status: done ? "done" : "training", ...(done ? { wall_s: round(CHECKPOINT_S * last, 1) } : {}) }));
+    const first = landed.find((cp) => cp >= sk.first);
+    const passed = first === undefined ? null : { checkpoint: first, steps: first * 786432, t: round(CHECKPOINT_S * first, 1), passes: true, metric: { name: sk.metric, value: value(sk, first), unit: sk.unit, target: sk.target } };
+    const steps = sk.first * 786432;
+    return enc(
+      JSON.stringify({
+        skill: sk.dir,
+        label: sk.label,
+        mjcf_sha256: NEW_BODY,
+        joints: 18,
+        status: done ? "done" : "training",
+        started_at: round(this.origin / 1000 + SPLIT_AT + acquireMs(i) / 1000, 1),
+        ...(done ? { wall_s: round(CHECKPOINT_S * last, 1) } : {}),
+        ...(passed ? { passed_at: passed } : {}),
+        body_name: this.relearn ? "spider" : "the robot's body",
+        cpu_estimate_s: Math.round(1270 + steps / 520),
+        cpu_estimate: { cores: "8 Xeon Gold 6312U", measured: "scripted rehearsal values", how: "scripted: the first-pass steps over a throughput, plus the compile" },
+      }),
+    );
+  }
+
+  /** The round's summary, written by the assembler once every thread is done (D2's round.json). */
+  private round(): Uint8Array | undefined {
+    const rows = TABLE.map((sk, i) => {
+      const start = SPLIT_AT + acquireMs(i) / 1000;
+      const last = sk.first + 2;
+      return { sk, firstPass: round(CHECKPOINT_S * sk.first, 1), wall: round(CHECKPOINT_S * last, 1), end: start + CHECKPOINT_S * last, cpu: Math.round(1270 + (sk.first * 786432) / 520), steps: sk.first * 786432 };
+    });
+    if (this.clock / 1000 < Math.max(...rows.map((r) => r.end)) + 1) return undefined;
+    return new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        body_mjcf_sha256: NEW_BODY,
+        body_name: this.relearn ? "spider" : "the robot's body",
+        previous_body_mjcf_sha256: this.relearn ? HOME_BODY : null,
+        relearn: this.relearn,
+        gpus: TABLE.length,
+        skills: Object.fromEntries(rows.map((r) => [r.sk.dir, { status: "done", first_pass_s: r.firstPass, steps_at_first_pass: r.steps, wall_s: r.wall, cpu_estimate_s: r.cpu }])),
+        all_passed_s: Math.max(...rows.map((r) => r.firstPass)),
+        all_done_s: Math.max(...rows.map((r) => r.wall)),
+        cpu_estimate_s: rows.reduce((a, r) => a + r.cpu, 0),
+        cpu_estimate: { cores: "8 Xeon Gold 6312U", measured: "scripted rehearsal values", how: "scripted: the first-pass steps over a throughput, plus the compile" },
+        measured: ["all_passed_s", "all_done_s", "skills.*.first_pass_s", "skills.*.wall_s"],
+        estimated: ["cpu_estimate_s", "skills.*.cpu_estimate_s"],
+      }),
+    );
   }
 
   subscribe(listener: (event: ShowEvent) => void): () => void {

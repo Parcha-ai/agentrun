@@ -222,7 +222,9 @@ test("do(skill): only a skill that came home can be chosen; the body and looks a
   assert.match(call2(s, "do", { skill: "spin" }, { skills }).text, /^Not done: the robot has not learned spin; it can do walk, sprint\./);
   assert.match(call2(s, "do", { skill: "fly" }, { skills }).text, /^Not done: skill must be one of walk, sprint/);
   assert.match(call2(s, "do", { skill: "walk" }, {}).text, /^Not done: no skill has come home yet/);
-  assert.match(call2(sprint.state, "do", { skill: "sprint" }, { skills }).text, /^No change: the robot is already doing sprint\./);
+  const again = call2(sprint.state, "do", { skill: "sprint" }, { skills }); // asking again writes again: the page may have stopped running the skill since
+  assert.equal(again.kind, "skill");
+  assert.equal(again.state.edits, sprint.state.edits + 1, "the file changes, so the page takes the skill up again");
   // a reset forgets the skill with the rest; update_robot can carry it, after the body and looks
   assert.equal(call2(sprint.state, "reset", {}).state.skill, undefined);
   const { applyUpdateRobot } = await import("../robot-model.ts");

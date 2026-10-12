@@ -179,11 +179,36 @@ export type Thread = {
   metric: string | null;
   unit: string | null;
   target: string | null;
+  /** The body this skill was trained for (its model file's sha256) and the body's name, from the skill's own file. */
+  mjcf: string | null;
+  bodyName: string | null;
+  /** Seconds from the thread's start to its first passing checkpoint, and to the thread being done (D2's passed_at.t and wall_s). */
+  passedS: number | null;
+  wallS: number | null;
+  /** How long this skill would take to first pass on a CPU machine (D2's estimate from this run's steps and a measured throughput), and which machine. */
+  cpuS: number | null;
+  cpuCores: string | null;
   /** The skill is installed in the one robot. */
   home: boolean;
   points: { n: number; value: number | null; at: number; passes: boolean | null; fell: boolean; seconds: number | null }[];
   /** When the thread was last heard from. */
   at: number;
+};
+
+/** The round the cluster just finished (work/skills/round.json, D2's assembler): the body it trained, whether that replaced another body's home, the GPUs, and the largest times with the CPU baseline. */
+export type Round = {
+  bodySha: string;
+  bodyName: string | null;
+  previousSha: string | null;
+  relearn: boolean;
+  gpus: number | null;
+  allPassedS: number | null;
+  allDoneS: number | null;
+  cpuS: number | null;
+  cpuCores: string | null;
+  /** Which of its numbers are estimates, and which were measured, in her words ("cpu_estimate_s" ...). */
+  estimated: string[];
+  measured: string[];
 };
 
 /** One tool call of the current task, as the transcript says it. `args` is the call's JSON as the transcript holds it. */
@@ -233,6 +258,10 @@ export type ShowState = {
   homecoming: (Homecoming & { at: number }) | null;
   /** The tool calls of the current task, in order (the transcript's, replaced whole each time). */
   tools: ToolRow[];
+  /** The latest round the cluster finished (round.json); null until it is written. */
+  round: (Round & { at: number }) | null;
+  /** The body the robot has now (home/skills.json's body_mjcf_sha256, the sha256 of its model file): a skill trained for another body is a relearn. Null until the disk says. */
+  robotBody: { sha: string; at: number } | null;
   /** The agent's threads, in the order they first appeared (a tile never moves). Empty until the agent splits. */
   threads: Thread[];
   /** The environments the switcher offers, in order. */
@@ -261,6 +290,9 @@ export type ShowEvent =
   | { t: "homecoming.loaded"; at: number; loadMs: number }
   | { t: "tools"; at: number; tools: ToolRow[] }
   /** A thread's fields change (it is made by its first patch). */
+  /** The robot's body, as the run's disk says it (home/skills.json). */
+  | { t: "body"; at: number; sha: string }
+  | { t: "round"; at: number; round: Round }
   | { t: "thread"; at: number; id: string; patch: Partial<Omit<Thread, "id" | "points" | "at">> }
   /** A thread's checkpoint: how well it does its skill, `value` in `unit`. The same or an older `n` is a repeat. */
   | { t: "thread.point"; at: number; id: string; n: number; value: number | null; unit?: string; passes?: boolean | null; fell?: boolean; seconds?: number | null }

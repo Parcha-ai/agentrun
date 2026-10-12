@@ -51,7 +51,22 @@ export function parseSkillProgress(text: string): { points: SkillPoint[]; skippe
   return { points, skipped };
 }
 
-export type SkillJson = { skill: string; label: string | null; status: "training" | "done" | "failed"; wallS: number | null; passedAt: SkillPoint | null };
+export type SkillJson = {
+  skill: string;
+  label: string | null;
+  status: "training" | "done" | "failed";
+  wallS: number | null;
+  passedAt: SkillPoint | null;
+  /** The body this skill was trained for (the sha256 of its model file), its name, and when the thread started (epoch seconds). */
+  mjcfSha256: string | null;
+  bodyName: string | null;
+  startedAt: number | null;
+  /** How long this skill would take to first pass on a CPU machine, estimated by D2's trainer from this run's own steps and a measured throughput, and what machine that is. */
+  cpuEstimateS: number | null;
+  cpuCores: string | null;
+  /** How the estimate was made, in her words. */
+  cpuHow: string | null;
+};
 
 export function parseSkillJson(text: string): SkillJson | null {
   try {
@@ -60,7 +75,21 @@ export function parseSkillJson(text: string): SkillJson | null {
     const skill = str(o.skill);
     if (skill === null || (o.status !== "training" && o.status !== "done" && o.status !== "failed")) return null;
     const passed = bag(o.passed_at);
-    return { skill, label: str(o.label), status: o.status, wallS: num(o.wall_s), passedAt: passed ? point(passed) : null };
+    const cpu = bag(o.cpu_estimate);
+    const cpuS = num(o.cpu_estimate_s);
+    return {
+      skill,
+      label: str(o.label),
+      status: o.status,
+      wallS: num(o.wall_s),
+      passedAt: passed ? point(passed) : null,
+      mjcfSha256: str(o.mjcf_sha256),
+      bodyName: str(o.body_name),
+      startedAt: num(o.started_at),
+      cpuEstimateS: cpuS !== null && cpuS >= 0 ? cpuS : null,
+      cpuCores: cpu ? str(cpu.cores) : null,
+      cpuHow: cpu ? str(cpu.how) : null,
+    };
   } catch {
     return null;
   }
@@ -85,7 +114,16 @@ export function skillEvents(dir: string, json: SkillJson | null, points: readonl
       t: "thread",
       at,
       id: dir,
-      patch: { skill: json?.label ?? dir, ...(known === undefined || RANK[status] > RANK[known] ? { status } : {}), ...(latest ? { metric: latest.name, unit: latest.unit, target: latest.target } : {}) },
+      patch: {
+        skill: json?.label ?? dir,
+        ...(json?.mjcfSha256 ? { mjcf: json.mjcfSha256 } : {}),
+        ...(json?.bodyName ? { bodyName: json.bodyName } : {}),
+        ...(json?.passedAt?.seconds != null ? { passedS: json.passedAt.seconds } : {}),
+        ...(json?.wallS != null ? { wallS: json.wallS } : {}),
+        ...(json?.cpuEstimateS != null ? { cpuS: json.cpuEstimateS } : {}),
+        ...(json?.cpuCores ? { cpuCores: json.cpuCores } : {}),
+        ...(known === undefined || RANK[status] > RANK[known] ? { status } : {}), ...(latest ? { metric: latest.name, unit: latest.unit, target: latest.target } : {}),
+      },
     });
   }
   for (const p of fresh) {
