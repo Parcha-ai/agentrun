@@ -49,6 +49,7 @@ const robot = episode === "robot";
 const clusterSize = Number(arg("cluster-size", 2));
 const clusterImage = arg("cluster-image", "");
 const clusterReady = arg("cluster-ready", "");
+const clusterReadyTimeout = arg("cluster-ready-timeout-s", "");
 // The skill each box warms for (box 0 first): with a pool of 2, a fast skill and a slow one.
 const clusterSkills = arg("cluster-skills", "walk,spin,sprint,backwards,turn-left,turn-right,get-up,wave");
 if (robot && !clusterImage) throw new Error("--cluster-image names D2's skill-trainer image");
@@ -174,6 +175,7 @@ try {
             "--cloud-arg", "cluster-memory-mib=65536",
             "--cloud-arg", `cluster-skills=${clusterSkills}`,
             ...(clusterReady ? ["--cloud-arg", `cluster-ready=${clusterReady}`] : []),
+            ...(clusterReadyTimeout ? ["--cloud-arg", `cluster-ready-timeout-s=${clusterReadyTimeout}`] : []),
           ]
         : [
         "--cloud-arg", "vm=false",
