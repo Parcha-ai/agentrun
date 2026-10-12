@@ -49,6 +49,7 @@ try {
     r = await at(112, 2500); // every thread is finished, the run is not home yet
     expect("when every thread has finished the one robot shows, no skill in until the run is home", r.shown && r.robot && /0 of 8 skills are in the robot/.test(r.head) && r.phase === "landing", r);
     r = await at(118, 1500);
+    for (let w = 0; w < 15_000 && !["landing", "home"].includes(r.phase); w += 500) { await sleep(500); r = await snap(); } // a loaded box reads the files slowly: wait for the state, not a fixed time
     expect("once the run is home the skills land one after another", r.phase === "landing" || r.phase === "home", r.phase);
     r = await at(118, 7500);
     expect("then all eight skills are in the robot", r.phase === "home" && /All 8 skills are in the robot/.test(r.head) && r.chips.filter(([, c]) => /\bin\b/.test(c)).length === 8, r);
@@ -78,7 +79,7 @@ try {
       expect("while the skills learn the card names the new body and how many have passed", /learning a new body/i.test(t ?? "") && /spider/.test(t ?? "") && /8 GPUs/.test(t ?? "") && /\d of 8 skills have passed/.test(t ?? ""), t);
       expect("and says nothing it was not given: no total, no home time yet", !/passed in/.test(t ?? "") && !/All home/.test(t ?? ""), t);
       t = await card(125);
-      expect("when every skill has passed: all 8 passed in N s, all home in N s, from the files", /all 8 skills passed in \d+ s/.test(t ?? "") && /All home in \d+ s/.test(t ?? ""), t);
+      expect("when every skill has passed: all 8 passed in N s, all home in N s, from the round's own file, and it says relearned", /relearned its new body/i.test(t ?? "") && /all 8 skills passed in \d+ s/.test(t ?? "") && /All home in \d+ s/.test(t ?? ""), t);
       expect("and what one machine would take: the CPU estimate with its machine, one skill after another", /On one machine with 8 Xeon Gold 6312U/.test(t ?? "") && /one skill after another/.test(t ?? "") && /hours/.test(t ?? "") && /estimate/.test(t ?? ""), t);
       if (shots) await tab.screenshot(join(shots, "relearn-card.png"));
     } finally {

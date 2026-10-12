@@ -1,5 +1,5 @@
 // Reads D2's per-skill files from the run's disk, about once a second, and says what is new (skills.ts). A file not written yet (the disk answers 204) and a failed read are both "nothing new".
-import { parseHomeSkills } from "../relearn.ts";
+import { parseHomeSkills, parseRound } from "../relearn.ts";
 import { SKILLS, parseSkillJson, parseSkillProgress, skillEvents } from "../skills.ts";
 import type { ShowEvent, Thread } from "../types.ts";
 
@@ -18,6 +18,8 @@ export class SkillsPoller {
   private busy = false;
   /** The robot's body last said. */
   private body = "";
+  /** round.json last said (its text). */
+  private roundText = "";
   /** Counts the runs: a tick that started in an earlier one drops what it read. */
   private gen = 0;
 
@@ -29,6 +31,7 @@ export class SkillsPoller {
   reset(): void {
     this.last.clear();
     this.body = "";
+    this.roundText = "";
     this.gen++;
     this.busy = false;
   }
@@ -46,6 +49,16 @@ export class SkillsPoller {
       if (home && home.bodySha !== this.body) {
         this.body = home.bodySha;
         this.o.emit({ t: "body", at: this.o.now(), sha: home.bodySha });
+      }
+      // The round the cluster just finished, once the assembler has written it.
+      const roundText = await this.o.read("skills/round.json").catch(() => undefined);
+      if (gen !== this.gen) return;
+      if (roundText !== undefined && roundText !== this.roundText) {
+        const round = parseRound(roundText);
+        if (round) {
+          this.roundText = roundText;
+          this.o.emit({ t: "round", at: this.o.now(), round });
+        }
       }
       for (const dir of this.o.skills ?? SKILLS) {
         const [jsonText, progressText] = [await this.o.read(`skills/${dir}/skill.json`).catch(() => undefined), await this.o.read(`skills/${dir}/skill-progress.jsonl`).catch(() => undefined)];

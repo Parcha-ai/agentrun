@@ -108,7 +108,7 @@ export function mountRobotPieces(o: { feed: Feed; params: URLSearchParams; api: 
   function renderSide(state: ShowState): void {
     const net = netBadge(state.net);
     const lines = [checkinLine(state.checkin), homecomingLine(state.homecoming)];
-    const relearn = relearnHtml(relearnSummary(state.threads, state.robotBody?.sha ?? null));
+    const relearn = relearnHtml(relearnSummary(state.threads, state.robotBody?.sha ?? null, state.round));
     const card = relearn + changeCardHtml(fileChanges(state.tools), state.net, state.routing) + (state.routing ? routingCardHtml(state.routing) : "");
     const tools = toolStripHtml(state.tools);
     const key = JSON.stringify([net, lines, card, tools, state.checkin?.phase]);
