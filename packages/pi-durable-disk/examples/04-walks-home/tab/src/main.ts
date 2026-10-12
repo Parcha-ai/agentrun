@@ -332,6 +332,7 @@ async function buildCreature(design: Design, keepPolicy: boolean, opts: { save?:
   const borrowed = droppedPolicy && opts.borrow && old && app.policyName !== 'dummy trot' ? await borrowPolicy(old.file, built.jointNames.length, app.mujocoVersion) : null;
   if (borrowed) { setPolicy(borrowed, oldName); brainFits = false; updateLabel(); }
   else if (!droppedPolicy) { brainFits = true; updateLabel(); }
+  if (droppedPolicy && !borrowed) skillNow = null; // the skill's network cannot drive this body: the page is not running it any more (a reset or a `do` takes it up again)
   if (opts.save !== false) await saveDesign(design, { robot: opts.robot === true });
   // The dummy is generated from the body, so it is rebuilt for the new one.
   if (app.policyName === 'dummy trot') {
@@ -365,6 +366,7 @@ async function applyRobot(text: string) {
     await buildCreature(robot.design, true, { borrow: true, robot: true });
   }
   if (robot.skill && robot.skill !== skillNow) await switchSkill(robot.skill);
+  else if (!robot.skill && skills && (skillNow !== null || !app.policy) && (skillNow !== skills.default || !app.policy)) await switchSkill(skills.default); // a reset forgets the skill: the robot goes back to the manifest's default, the one that plays when none was asked for
   post('robot-changed', { name: robot.name, edits: robot.edits, body_changed: bodyChanged, fits: brainFits, mjcf_sha256: app.bodySha, face: robot.look.face });
 }
 
