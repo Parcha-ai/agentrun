@@ -6,6 +6,7 @@ runs read, the cache directory is train.py's own, and a cache tarball is replace
 """
 
 import os
+import tarfile
 import tempfile
 import time
 import unittest
@@ -66,6 +67,17 @@ class WarmBoxTest(unittest.TestCase):
       import tarfile
       with tarfile.open(tarball) as tf:
         self.assertIn("warp/wp_mod/mod.cubin", tf.getnames())
+
+  def test_the_cache_is_a_plain_tar(self):
+    # Compiled programs do not compress (the image's 407 MB cache gzips to 407 MB) and gzip took 12 s on 8 cores; train.py
+    # opens either kind.
+    with tempfile.TemporaryDirectory() as d:
+      src, tarball = os.path.join(d, "c"), os.path.join(d, "walk.tar.gz")
+      os.makedirs(os.path.join(src, "jax"))
+      open(os.path.join(src, "jax", "jit_x-cache"), "w").write("x")
+      self.assertTrue(warm_box.save_cache(src, tarball))
+      with tarfile.open(tarball, "r:") as tf:  # uncompressed, or this raises
+        self.assertIn("jax/jit_x-cache", tf.getnames())
 
   def test_cache_dir_is_train_pys(self):
     # train.py: cache_dir = ~/.cache/pda-train/<tarball name up to the first dot>

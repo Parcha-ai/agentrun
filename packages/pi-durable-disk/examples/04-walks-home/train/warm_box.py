@@ -58,7 +58,8 @@ def save_cache(src_dir: str, tarball: str) -> bool:
   disk, an unreadable file) leaves the previous tarball and no partial file."""
   parts = [p for p in ("jax", "warp") if os.path.isdir(os.path.join(src_dir, p))]
   tmp = f"{tarball}.tmp"
-  r = subprocess.run(["tar", "czf", tmp, "-C", src_dir, *parts], capture_output=True, text=True) if parts else None
+  # A plain tar: compiled programs do not compress (gzip took 12 s on 8 cores for nothing); train.py opens either kind.
+  r = subprocess.run(["tar", "cf", tmp, "-C", src_dir, *parts], capture_output=True, text=True) if parts else None
   if r is None or r.returncode != 0:
     try:
       os.remove(tmp)

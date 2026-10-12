@@ -23,7 +23,7 @@ import creature_env
 import rollout
 import skilltest
 import terrain
-from train import SCORE_UNITS, checkpoint_due, complete_checkpoints, parse_steps, score_of
+from train import SCORE_UNITS, checkpoint_due, complete_checkpoints, parse_steps, score_of, write_cache_tar
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "..", "policy", "test", "fixtures")  # the policy runtime's parity fixture (policy.json)
@@ -204,6 +204,24 @@ class CheckpointDueTest(unittest.TestCase):
     self.assertEqual(len(saved), 2)  # the 17M and 19M points, nearest epochs only
     for p, t in zip((17_000_000, 19_000_000), saved):
       self.assertLessEqual(abs(t - p), epoch / 2, (p, t))
+
+
+class CacheTarTest(unittest.TestCase):
+  def test_the_saved_cache_is_a_plain_tar_of_jax_and_warp(self):
+    # Saved inside the training loop after the first checkpoint: gzip took 12 s there and saved nothing (compiled programs
+    # do not compress). The reader opens either kind, so an older .tar.gz still unpacks.
+    import tarfile
+    with tempfile.TemporaryDirectory() as d:
+      src = os.path.join(d, "cache")
+      for sub in ("jax", "warp", "other"):
+        os.makedirs(os.path.join(src, sub))
+        open(os.path.join(src, sub, "f"), "w").write(sub)
+      tar = os.path.join(d, "out", "body-x.tar.gz")
+      size = write_cache_tar(src, tar)
+      self.assertEqual(size, os.path.getsize(tar))
+      with tarfile.open(tar, "r:") as tf:  # uncompressed, or this raises
+        self.assertEqual(sorted(n for n in tf.getnames() if n.endswith("/f")), ["jax/f", "warp/f"])
+      self.assertEqual([n for n in os.listdir(os.path.dirname(tar)) if ".tmp" in n], [])
 
 
 class ResumeTest(unittest.TestCase):

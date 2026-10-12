@@ -59,6 +59,27 @@ def append_line(path: str, obj: Any) -> None:
 INIT_ROOT = "/opt/pda/init"
 
 
+def write_cache_tar(cache_dir: str, cache_tar: str) -> int:
+  """The compile caches (jax/, warp/) as one tarball, replaced only by a complete one; returns its size. A plain tar: it is
+  written inside the training loop, compiled programs do not compress (the image's 407 MB gzips to 407 MB), and gzip took
+  12 s there. The reader (tarfile's default mode) opens a gzipped one as well."""
+  tmp = f"{cache_tar}.tmp-{os.getpid()}"
+  os.makedirs(os.path.dirname(os.path.abspath(cache_tar)), exist_ok=True)
+  try:
+    with tarfile.open(tmp, "w") as tf:
+      for sub in ("jax", "warp"):
+        if os.path.isdir(os.path.join(cache_dir, sub)):
+          tf.add(os.path.join(cache_dir, sub), arcname=sub)
+    os.replace(tmp, cache_tar)
+  except OSError:
+    try:
+      os.remove(tmp)
+    except OSError:
+      pass
+    raise
+  return os.path.getsize(cache_tar)
+
+
 def init_checkpoint(spec: str | None, joints: int) -> str | None:
   """The checkpoint a fresh run starts from: a given directory, or 'auto' = the image's newest one for this joint count."""
   if not spec:
@@ -394,22 +415,11 @@ def main() -> None:
       if not args.no_compile_cache and (args.compile_only or not cache_was_warm) and not times.get("cache_saved"):
         # Everything the training step needed is compiled by the first checkpoint. A cache that cannot be written only
         # costs the next start its compile time; it must never cost this checkpoint.
-        tmp = f"{cache_tar}.tmp-{os.getpid()}"
         try:
-          os.makedirs(os.path.dirname(cache_tar), exist_ok=True)
-          with tarfile.open(tmp, "w:gz") as tf:
-            for sub in ("jax", "warp"):
-              if os.path.isdir(os.path.join(cache_dir, sub)):
-                tf.add(os.path.join(cache_dir, sub), arcname=sub)
-          os.replace(tmp, cache_tar)
-          times["cache_saved"] = os.path.getsize(cache_tar)
+          times["cache_saved"] = write_cache_tar(cache_dir, cache_tar)
         except OSError as e:
           times["cache_saved"] = -1
           print(json.dumps({"event": "train.cache-not-saved", "error": str(e)[:200]}), flush=True)
-          try:
-            os.remove(tmp)
-          except OSError:
-            pass
     state.update(steps_done=steps_done, wall_s=base_wall + now - t_start, last=line)
     # The rename of state.json is the checkpoint-complete signal: the host's write-through flushes WORK on it.
     write_json(state_path, state)
