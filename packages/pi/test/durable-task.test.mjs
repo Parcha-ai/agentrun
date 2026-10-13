@@ -417,3 +417,96 @@ test('a pause given with a start that attaches to a run running here is recorded
     assert.deepEqual((await second.getTask(run.taskId, ctx)).state.outcome, { status: 'aborted', reason: 'cancelled' });
   } finally { await second.close(ctx); }
 });
+
+/** A run bound beside its workflow, and the three requests for another run under its key: its workflow moved, what the
+ *  host binds moved, or its input moved, each with the names the refusal gives for what moved. */
+const BOUND = { key: 'run-1', workflow: WORKFLOW, input: { sku: 'A-1', qty: 2 }, bind: { tenant: 'acme', sop: 'v1' } };
+const MOVED_WORKFLOW = { ...WORKFLOW, root: { ...WORKFLOW.root, steps: [{ ...WORKFLOW.root.steps[0], deadline_s: 30 }, WORKFLOW.root.steps[1]] } };
+const MOVES = [
+  ['the workflow', { ...BOUND, workflow: MOVED_WORKFLOW }, ['workflow.root']],
+  ['what the host binds', { ...BOUND, bind: { tenant: 'acme', sop: 'v2' } }, ['sop']],
+  ['the input', { ...BOUND, input: { sku: 'B-2', qty: 2 } }, ['input.sku']],
+];
+/** The same request as `BOUND`, with the keys of every object in another order. */
+const REORDERED = { bind: { sop: 'v1', tenant: 'acme' }, input: { qty: 2, sku: 'A-1' }, workflow: Object.fromEntries(Object.entries(WORKFLOW).reverse()), key: 'run-1' };
+/** Each request for another run is refused with the driver's binding mismatch naming what moved, alone, with a pause and
+ *  with a cancel, and the start commits nothing: no commit at all, and the run reads as it did. */
+async function refusesEveryMove(flow, harness) {
+  const before = await flow.read(harness, 'run-1', ctx);
+  for (const [what, moved, names] of MOVES) {
+    const commits = [];
+    const unsubscribe = harness.subscribeCommits((publication) => { commits.push(publication.changes.map((change) => change.type)); });
+    try {
+      for (const stop of [undefined, { action: 'pause', source: 'operator' }, { action: 'cancel', source: 'owner' }]) {
+        await assert.rejects(flow.start(harness, moved, ctx, stop ? { stop } : {}), (error) => {
+          assert.deepEqual([error.name, error.code, error.moved], ['RecoveryError', 'RUN_STORE_BINDING_MISMATCH', names], `${what}, ${stop?.action ?? 'no stop'}`);
+          return true;
+        });
+      }
+    } finally { unsubscribe(); }
+    assert.deepEqual(commits, [], what);
+    assert.deepEqual(await flow.read(harness, 'run-1', ctx), before, what);
+  }
+}
+
+test('a start that attaches asks for the run its task holds: a moved workflow, binding or input is refused with nothing committed, and the run goes on', async () => {
+  let calls = 0; const flight = deferred(), release = deferred();
+  const flow = createWorkflowExtension(hostOf(async () => { calls += 1; flight.resolve(); await release.promise; return { price: 21 }; }));
+  const harness = await open(fileOf(), flow);
+  try {
+    const run = await flow.start(harness, BOUND, ctx);
+    await flight.promise;
+    await refusesEveryMove(flow, harness);
+    // The same request with its keys in another order attaches, as it did before.
+    const again = await flow.start(harness, REORDERED, ctx);
+    assert.deepEqual([again.started, again.taskId], ['attached', run.taskId]);
+    // No refused cancel reached the run: its effect completes and the run ends complete.
+    release.resolve();
+    const outcome = await within(run.wait(ctx));
+    assert.deepEqual([outcome.status, outcome.output, calls], ['complete', { total: 42 }, 1]);
+  } finally { await harness.close(ctx); }
+});
+
+test('a start that reaches a finished run asks for the run its task holds: a moved request is refused as a hand-run open of the journal refuses it, with nothing committed', async () => {
+  let calls = 0;
+  const flow = createWorkflowExtension(hostOf(async () => { calls += 1; return { price: 21 }; }));
+  const harness = await open(fileOf(), flow);
+  try {
+    const run = await flow.start(harness, BOUND, ctx);
+    const outcome = await run.wait(ctx);
+    assert.equal(outcome.status, 'complete');
+    await refusesEveryMove(flow, harness);
+    // The same code and the same names as the driver's own refusal, for what its binding covers.
+    for (const [what, moved, names] of MOVES.slice(0, 2)) {
+      await assert.rejects(documentStore(harness, 'run-1').open(recoveryBound(moved.workflow, moved.bind)), (error) => {
+        assert.deepEqual([error.code, error.moved], ['RUN_STORE_BINDING_MISMATCH', names], what);
+        return true;
+      });
+    }
+    const again = await flow.start(harness, REORDERED, ctx);
+    assert.deepEqual([again.started, again.taskId, await again.wait(ctx), calls], ['settled', run.taskId, outcome, 1]);
+  } finally { await harness.close(ctx); }
+});
+
+test('a start that replaces a failed run asks for the run its task holds: a moved input never runs under the failed run\'s journal, and the same request is replaced as before', async () => {
+  let calls = 0; let ready = false;
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  // The host cannot give its adapters on the first invocation: the run fails after its journal is bound, before any step.
+  const flow = createWorkflowExtension({ options: () => ({ files }), run: () => {
+    if (!ready) throw Object.assign(new Error('the host is not ready'), { code: 'HOST_NOT_READY' });
+    return { adapters: { runEffect: async ({ input }) => { calls += 1; return { price: input.sku === 'A-1' ? 21 : 50 }; } } };
+  } });
+  const harness = await open(fileOf(), flow);
+  try {
+    const first = await flow.start(harness, BOUND, ctx);
+    assert.deepEqual([(await first.wait(ctx)).code, (await harness.getTask(first.taskId, ctx)).state.outcome.status], ['HOST_NOT_READY', 'failed']);
+    ready = true;
+    await refusesEveryMove(flow, harness);
+    // The same request with its keys in another order gets a new task over the same journal, which runs it.
+    const again = await flow.start(harness, REORDERED, ctx);
+    assert.equal(again.started, 'created');
+    assert.notEqual(again.taskId, first.taskId);
+    const outcome = await within(again.wait(ctx));
+    assert.deepEqual([outcome.status, outcome.output, calls], ['complete', { total: 42 }, 1]);
+  } finally { await harness.close(ctx); }
+});
