@@ -4,10 +4,11 @@
 // What differs per node lives with its conversation: the agent the host chose for it, and its configuration document
 // (its system text, and the record it owes: label, schema, file key). The `task` section renders the system text from
 // that document. A conversation an older build opened has no such document: the runner writes it when it reaches the
-// node, with the system text that build kept on the node's index entry, and gives the conversation its agent. `submit` is registered once with open parameters; each request presents it with the node's own label
-// and fields, and each call is decided against the node's schema. What cannot be stored (the node's reviewers, the
-// host's checks, a committer for the nudge) is attached when the runner reaches the node, and a request, a call or a
-// yield that pi resumed first waits for it, so nothing of a node runs before its host observes it.
+// node, with the system text that build kept on the node's index entry, and gives the conversation its agent. `submit`
+// is registered once with open parameters; each request presents it with the node's own label and fields, and each
+// call is decided against the node's schema. What cannot be stored (the node's reviewers, the host's checks, a
+// committer for the nudge) is attached when the runner reaches the node, and a request, a call or a yield that pi
+// resumed first waits for it, so nothing of a node runs before its host observes it.
 import { randomUUID } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
