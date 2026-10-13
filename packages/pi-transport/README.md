@@ -192,6 +192,51 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
+## A home: the session runs somewhere, and can stop without a cut
+
+`openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
+nothing by itself. A host gives it orders, in its own process today and over a link later:
+
+```ts
+import { openHome } from "@parcha/pi-transport/home";
+
+const home = await openHome({ app, session, store, workspace, where, models });
+if (!home.ok) throw home.error;
+await home.value.resume({ epoch: 1 }, BACKGROUND_CONTEXT); // a session that starts here
+// ... later, to move it:
+const drained = await home.value.drain({ timeoutMs: 60_000 }, BACKGROUND_CONTEXT);
+const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
+```
+
+- **The app.** `app` is `(ctx) => options`: pi's Harness options without `env` and without `models`, plus `root` (how
+  the root conversation is made) and `onOpen`. The home adds the store, the models it was given and the environment,
+  the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute path an app
+  may build on. `loadApp(path)` takes the default export of a module file.
+- **The gate.** A drain holds new work at three hooks of the home's own extension (installed as `transport`): a tool
+  call before its intent is written, a model request before it is sent, a compaction before it selects. A held task
+  has written nothing, so the close leaves no outcome for it and the next home runs it from the start. Work of a
+  conversation whose owner task is running is let through: a tool that waits for its child conversation can only
+  finish when the child does. The drain is done when two reads in a row find every running task held.
+- **Never a cut.** A drain that does not complete in `timeoutMs` opens the gate again, the session works on where it
+  is, and the `DrainError` names what held it: the kinds and counts of the tasks that were running and not held.
+- **Tasks of your own that never end** can never be held. By default the drain waits for them, so it times out.
+  `closeable: ["my.kind"]` leaves a kind out: the close stops such a task as a crash would and the next home resumes
+  it from its checkpoint, so it must make its own effect safe to repeat.
+- **A store is opened only when a seal vouches for it.** `resume({ epoch, seal, move })` verifies the store against
+  the seal, writes a marker beside it, opens it, points every conversation at this home's workspace, admits the
+  move's notice (a `transport.move` entry, request id `transport.move:<move id>`) and resumes. Each step is safe to
+  repeat after a crash: the marker lets a home open again the store it already opened in this epoch, the rewrite is
+  recorded with the move's id, and pi admits a request id once.
+- **A home that sealed stays closed.** After `seal()` it takes only `reopen({ epoch })`, when the move was given up
+  and the lease still names it, or `retire({ epoch })`, when a later epoch names another home: it then stops what
+  runs, if anything, and deletes its copy. It never reopens by itself, in the same process or a new one: it cannot
+  tell a host that went away before the session was taken elsewhere from one that went away after. If no host
+  returns, the session stays sealed and safe, not running.
+- An order for an epoch the home has left behind is refused with `stale_epoch`.
+
+Not covered: a tool call that sleeps between retries inside pi has no hook, so a drain waits for it or times out;
+programs the agent left running in the background do not move.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:
