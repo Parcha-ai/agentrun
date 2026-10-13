@@ -67,7 +67,9 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
      only while the readability verdict is uncertain, |mean - 0.75| < 1.5 standard errors) are graded by Jev: obsession
      (Score, 5 levels), about the Golden Gate specifically, readable, answers the question, facts right, dark. It passes
      when readable >= 0.75, it still answers the question at least now and then (>= 0.3), and no answer is dark. The
-     probes run in the served mode: thinking on, with a 256-token thinking budget; Jev grades the answer. Two
+     probes run in the served mode: thinking on, with the thinking budget the page sends (`pipeline/data/thinking.json`,
+     1024 tokens; read by `pipeline/thinking.py` and by `chat/gg-extra.ts`, and a test fails if the two differ). At 256 the
+     thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. Two
      contest strengths (0.5, the replication's value, and 0.8), then up while passing, then bisection; it stops when the
      bracket is 0.05 wide or obsession saturates (>= 3.7 of 4). The choice is the most obsessed passing strength; the
      strongest one that still gets facts right is reported beside it.

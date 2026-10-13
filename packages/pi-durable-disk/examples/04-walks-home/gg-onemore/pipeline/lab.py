@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from jev import Jev, expected_score, shuffled_choice
+from thinking import THINK_BUDGET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.environ.get("GG_MODEL", "/vol/models/Qwen3.5-27B")
@@ -37,7 +38,6 @@ VLLM = "http://vllm.sock" if VLLM_URL.startswith("unix:") else VLLM_URL
 SERVED = os.environ.get("GG_SERVED_NAME", "qwen3.5-27b")
 LAYERS = [int(x) for x in os.environ.get("GG_LAYERS", "24,28,32,36,40").split(",")]
 TOPK = 50
-THINK_BUDGET = 256
 TARGET_WORDS = [" Golden", " Gate", " bridge", " Bridge", "Golden", " GG", " Francisco", " fog", " Marin", " suspension"]
 OTHER = ["sf", "bridges", "golden", "landmarks", "neutral"]
 

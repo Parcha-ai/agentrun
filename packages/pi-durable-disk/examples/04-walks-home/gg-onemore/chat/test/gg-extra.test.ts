@@ -16,6 +16,7 @@ import { agentRegistry } from "../../../../03-tab-to-cloud/agent.ts";
 import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecretsOnce } from "../gg-extra.ts";
 import { STEERED_PROVIDER } from "../../pi/use-model.ts";
 import { GG_PROVIDER } from "../gg-text.ts";
+import { execFileSync } from "node:child_process";
 
 const SERVE = "serve-key";
 const TOOLS = "tools-key";
@@ -131,6 +132,12 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.equal(g.chats[0].model, GG_MODEL);
       // what the edited model reads: its own system prompt, the switch's result, one tool (the control), and no word of the trip
       assert.deepEqual(g.chats[0].tools.map((t: any) => t.function.name), ["gg_control"]);
+      // the thinking budget the page sends is the one the strength probes use: one number, pipeline/data/thinking.json
+      const budget = JSON.parse(readFileSync(new URL("../../pipeline/data/thinking.json", import.meta.url), "utf8")).thinking_token_budget;
+      const probes = Number(execFileSync("python3", ["-c", "from thinking import THINK_BUDGET; print(THINK_BUDGET)"], { cwd: new URL("../../pipeline", import.meta.url), encoding: "utf8" }));
+      assert.equal(probes, budget, "the strength probes read the shared budget");
+      assert.equal(g.chats[0].thinking_token_budget, budget, "the page sends the shared budget");
+      assert.ok(g.chats[0].max_tokens - budget >= 900, "the answer keeps its room after the thinking");
       assert.doesNotMatch(JSON.stringify(g.chats[0]), /bridge|golden gate|obsess/i, "nothing the edited model reads mentions the bridge");
       const recorded = readFileSync(join(work, "gg", "requests.jsonl"), "utf8").trim().split("\n");
       assert.equal(recorded.length, 1);

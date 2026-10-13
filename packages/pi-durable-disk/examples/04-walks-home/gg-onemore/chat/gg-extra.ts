@@ -16,6 +16,9 @@ import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
 import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_WITHOUT_ON_VM, STEERED_INSTRUCTIONS } from "./gg-text.ts";
 import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
+import thinking from "../pipeline/data/thinking.json" with { type: "json" };
+
+const THINK_BUDGET: number = thinking.thinking_token_budget;
 
 /** 03's model proxy provider (03-tab-to-cloud/agent.ts PROVIDER): the base model the fallback asks. */
 export const BASE_PROVIDER = "pipe";
@@ -99,8 +102,10 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           modelId: GG_MODEL,
           // the page's header shows the registered name
           modelName: GG_DISPLAY,
-          maxTokens: 1200,
-          thinkingBudgets: { minimal: 128, low: 256, medium: 512, high: 1024 },
+          // the strength probes' budget at every level (pipeline/data/thinking.json); pi-ai cuts the budget to keep 1024
+          // tokens for the answer under max_tokens (MIN_ANSWER_TOKENS), so max_tokens leaves exactly that room
+          maxTokens: THINK_BUDGET + 1024,
+          thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
           window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS }),
           fetch: recording,
