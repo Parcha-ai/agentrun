@@ -80,11 +80,6 @@ export type ModalBoxesOptions = {
 	readonly appName: string;
 	/** A registry tag or a Modal image id (`im-...`) for a spec that names no image. Default `debian:bookworm-slim`. */
 	readonly image?: string;
-	/**
-	 * `vm` is a virtual machine with its own kernel. `gvisor` is Modal's user-space kernel, and the only runtime Modal
-	 * offers GPUs on. Left out, Modal picks, and the box reports `gvisor`. A GPU spec with `vm` is refused.
-	 */
-	readonly runtime?: "vm" | "gvisor";
 };
 
 function errorName(cause: unknown): string {
@@ -349,8 +344,9 @@ class ModalBox implements Box {
 
 /**
  * Boxes that are Modal sandboxes, through the host's own Modal SDK client. The provider ends a sandbox at its lifetime
- * on Modal's side, so a host that dies leaks nothing past `maxLifetimeMs`. A spec's `snapshot` is refused, and
- * `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
+ * on Modal's side, so a host that dies leaks nothing past `maxLifetimeMs`. A spec's `isolation` of `vm` selects the VM
+ * runtime, `gvisor` or none the default sandbox, and any other value is refused with `unsupported`; a GPU needs the
+ * default sandbox. A spec's `snapshot` is refused, and `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
  */
 export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvider {
 	const theApp = once(() => sdk.apps.fromName(options.appName, { createIfMissing: true }));
@@ -363,14 +359,19 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "modal boxes start from an image"));
-			if (spec.gpu !== undefined && options.runtime === "vm") {
+			if (spec.isolation !== undefined && spec.isolation !== "gvisor" && spec.isolation !== "vm") {
+				return err(
+					new BoxError("unsupported", `a modal box is gvisor or a vm, the spec asks for ${spec.isolation}`),
+				);
+			}
+			if (spec.gpu !== undefined && spec.isolation === "vm") {
 				return err(new BoxError("invalid", "Modal offers GPUs on the gvisor runtime only"));
 			}
 			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
 			const lifetimeMs = Math.min(Math.ceil(spec.maxLifetimeMs / 1000) * 1000, MAX_LIFETIME_MS);
 			const facts: BoxFacts = {
 				provider: "modal",
-				isolation: options.runtime === "vm" ? "vm" : "gvisor",
+				isolation: spec.isolation === "vm" ? "vm" : "gvisor",
 				cpus: spec.cpus ?? null,
 				memoryMb: spec.memoryMb ?? null,
 				gpu: spec.gpu ?? null,
@@ -384,7 +385,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				const image = await imageOf(spec.image ?? options.image ?? DEFAULT_IMAGE);
 				// The tags go in the create call: a crash after it leaves a sandbox that `list` can still find.
 				sandbox = await sdk.sandboxes.create(app, image, {
-					...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+					...(spec.isolation === undefined ? {} : { runtime: spec.isolation }),
 					...(spec.gpu === undefined ? {} : { gpu: spec.gpu }),
 					...(spec.cpus === undefined ? {} : { cpu: spec.cpus }),
 					...(spec.memoryMb === undefined ? {} : { memoryMiB: spec.memoryMb }),

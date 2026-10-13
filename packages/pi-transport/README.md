@@ -33,6 +33,31 @@ host process's environment.
 | --- | --- | --- |
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
+| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+
+## Modal
+
+`modalBoxes(sdk, { appName })` takes the host's own Modal client, so this package depends on no Modal SDK. The
+client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
+
+```ts
+import { ModalClient } from "modal";
+import { modalBoxes } from "@parcha/pi-transport/box/modal";
+
+const provider = modalBoxes(new ModalClient(), { appName: "my-boxes" });
+await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUND_CONTEXT);
+```
+
+- `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
+  value is refused with `unsupported`.
+- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
+  it passes, whatever happens to the host.
+- The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
+  environment and the SDK, which is not installed with this package:
+  `npm install --no-save modal@0.11.0`, then `npm run test:live:modal -w @parcha/pi-transport`. It names its Modal
+  app and labels from `PI_TRANSPORT_LIVE_PREFIX` and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS`
+  (`sandbox,vm,gpu`; default `sandbox,vm`) picks the kinds.
 
 ## Writing a provider
 

@@ -1,8 +1,8 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ModalClient } from "modal";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import type { BoxSpec } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
-import { type ModalBoxesOptions, modalBoxes } from "../src/box/modal.ts";
+import { type ModalSdk, modalBoxes } from "../src/box/modal.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
@@ -24,22 +24,32 @@ const MAX_LIFETIME_MS = 20 * 60_000;
 const CASE_TIMEOUT_MS = 600_000;
 const SHORT_LIFETIME_MS = Number(process.env.PI_TRANSPORT_LIVE_SHORT_LIFETIME_MS ?? 10_000);
 const SHORT_GRACE_MS = 180_000;
+const MODAL_VERSION = "0.11.0";
 
-type Kind = { readonly name: string; readonly options: Partial<ModalBoxesOptions>; readonly gpu?: string };
-const KINDS: readonly Kind[] = [
-	{ name: "sandbox", options: {} },
-	{ name: "vm", options: { runtime: "vm" } },
-	{ name: "gpu", options: {}, gpu: "T4" },
-];
+// The Modal SDK is not a dependency of this package: the suite loads it only when asked to run.
+async function loadClient(): Promise<ModalSdk> {
+	const specifier = "modal";
+	try {
+		const sdk = (await import(specifier)) as { ModalClient: new () => ModalSdk };
+		return new sdk.ModalClient();
+	} catch (cause) {
+		throw new Error(
+			`the live Modal suite needs the Modal SDK: run \`npm install --no-save modal@${MODAL_VERSION}\` (${String(cause)})`,
+		);
+	}
+}
+
+type Kind = { readonly name: string; readonly isolation?: BoxSpec["isolation"]; readonly gpu?: string };
+const KINDS: readonly Kind[] = [{ name: "sandbox" }, { name: "vm", isolation: "vm" }, { name: "gpu", gpu: "T4" }];
 
 // Needs Modal credentials in the environment (MODAL_TOKEN_ID, MODAL_TOKEN_SECRET) and spends money, so it runs only
 // when asked: `npm run test:live:modal`. PI_TRANSPORT_LIVE_MODAL_KINDS picks kinds; the GPU kind is never a default.
 if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS, hookTimeout: CASE_TIMEOUT_MS });
 	const wanted = (process.env.PI_TRANSPORT_LIVE_MODAL_KINDS ?? "sandbox,vm").split(",");
-	const client = new ModalClient();
+	const client = await loadClient();
 	for (const kind of KINDS.filter((candidate) => wanted.includes(candidate.name))) {
-		const provider = modalBoxes(client, { appName: APP_NAME, ...kind.options });
+		const provider = modalBoxes(client, { appName: APP_NAME });
 		describe(`modal ${kind.name} boxes`, () => {
 			registerBoxConformance({ describe, expect, it }, `modal ${kind.name} boxes`, (use) => use(provider), {
 				absentEnv: [CANARY],
@@ -65,7 +75,7 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 				if (!created.ok) throw created.error;
 				const box = created.value;
 				try {
-					expect(box.facts().isolation).toBe(kind.options.runtime ?? "gvisor");
+					expect(box.facts().isolation).toBe(kind.isolation ?? "gvisor");
 					if (kind.gpu !== undefined) {
 						const started = await box.exec(["nvidia-smi", "-L"], { timeoutMs: 60_000 }, BACKGROUND_CONTEXT);
 						if (!started.ok) throw started.error;

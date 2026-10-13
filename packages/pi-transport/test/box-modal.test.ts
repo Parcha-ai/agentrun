@@ -36,10 +36,18 @@ describe("modal boxes", () => {
 	it("passes lifetime, size, region and tags to Modal and reports facts", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
-			const provider = modalBoxes(sdk, { appName: "pi-transport-test-app", runtime: "vm" });
+			const provider = modalBoxes(sdk, { appName: "pi-transport-test-app" });
 			const box = unwrap(
 				await provider.create(
-					{ ...SPEC, cpus: 2, memoryMb: 2048, region: "us-east", workspace: root, maxLifetimeMs: 90_500 },
+					{
+						...SPEC,
+						isolation: "vm",
+						cpus: 2,
+						memoryMb: 2048,
+						region: "us-east",
+						workspace: root,
+						maxLifetimeMs: 90_500,
+					},
 					context,
 				),
 			);
@@ -64,6 +72,18 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("asks Modal for gvisor when the spec says so", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const box = unwrap(
+				await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, isolation: "gvisor", workspace: root }, context),
+			);
+			expect(box.facts().isolation).toBe("gvisor");
+			expect(sdk.sandboxList[0]?.params).toMatchObject({ runtime: "gvisor" });
+			unwrap(await box.destroy(context));
+		});
+	});
+
 	it("reports gvisor without a runtime, and caps the lifetime at 24 hours", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
@@ -80,19 +100,21 @@ describe("modal boxes", () => {
 		});
 	});
 
-	it("refuses a GPU on the vm runtime, a snapshot and a lifetime of zero, without calling Modal", async () => {
+	it("refuses a GPU on a vm, other isolations, a snapshot and a lifetime of zero, without calling Modal", async () => {
 		const sdk = new FakeModal();
-		const provider = modalBoxes(sdk, { appName: "a", runtime: "vm" });
+		const provider = modalBoxes(sdk, { appName: "a" });
 		const codes = [];
 		for (const spec of [
-			{ ...SPEC, gpu: "T4" },
+			{ ...SPEC, gpu: "T4", isolation: "vm" as const },
+			{ ...SPEC, isolation: "container" as const },
+			{ ...SPEC, isolation: "none" as const },
 			{ ...SPEC, snapshot: "s" },
 			{ ...SPEC, maxLifetimeMs: 0 },
 		]) {
 			const result = await provider.create(spec, context);
 			codes.push(result.ok ? "ok" : result.error.code);
 		}
-		expect(codes).toEqual(["invalid", "unsupported", "invalid"]);
+		expect(codes).toEqual(["invalid", "unsupported", "unsupported", "unsupported", "invalid"]);
 		expect(sdk.sandboxList).toEqual([]);
 		expect(sdk.appNames).toEqual([]);
 	});
@@ -126,8 +148,8 @@ describe("modal boxes", () => {
 	it("attach recovers a box's facts from its tags and refuses sandboxes that are not ours", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
-			const provider = modalBoxes(sdk, { appName: "a", runtime: "vm" });
-			const box = unwrap(await provider.create({ ...SPEC, workspace: root }, context));
+			const provider = modalBoxes(sdk, { appName: "a" });
+			const box = unwrap(await provider.create({ ...SPEC, isolation: "vm", workspace: root }, context));
 			const again = unwrap(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
 			expect(again?.facts()).toEqual(box.facts());
 			const foreign = await sdk.sandboxes.create({ appId: "x" }, {}, { timeoutMs: 1000, tags: {} });
