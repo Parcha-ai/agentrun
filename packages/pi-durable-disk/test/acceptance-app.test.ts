@@ -67,6 +67,10 @@ describe("the acceptance app's jobs", () => {
         assert.equal(result.final, finalAnswer(job));
         assert.deepEqual(result.calls.map((c) => c.id), plan(job).map((s) => s.id));
         assert.ok(result.results.every((r) => !r.isError), JSON.stringify(result.results.filter((r) => r.isError)));
+        // The paid charge's text reaches the model (pi-durable 1.2 would send an empty result for one that says `content`).
+        const charges = result.results.filter((r) => r.name === "paid_charge");
+        assert.equal(charges.length, job.charges);
+        assert.ok(charges.every((r) => /^charged \d+: receipt \d+$/.test(r.text)), JSON.stringify(charges));
         assert.deepEqual(Object.values(api.counts("charge")), Array(job.charges).fill(1));
         assert.equal(api.requests("model").length, plan(job).length + 1);
         assert.ok(Object.values(api.counts("model")).every((n) => n === 1));

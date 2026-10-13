@@ -268,7 +268,9 @@ export function jobHarness(job: Job, runId: string, ports: Ports) {
     async execute(args, api) {
       const key = `${runId}:${api.callId}`;
       const answer = await dispatch(ports.api, "charge", key, { run: runId, n: args.n }, { writer: ports.writer });
-      return { content: [{ type: "text" as const, text: `charged ${args.n}: receipt ${answer.seq}` }], details: { n: args.n, key, receipt: answer.seq, writer: ports.writer } };
+      // The text is the retained output, which pi-durable 1.0.4, 1.1 and 1.2 all read (1.2 drops a result's `content`).
+      api.output(`charged ${args.n}: receipt ${answer.seq}`);
+      return { details: { n: args.n, key, receipt: answer.seq, writer: ports.writer } };
     },
   });
   const registry = createRegistry();
