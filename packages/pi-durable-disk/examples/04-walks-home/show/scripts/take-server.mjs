@@ -1,7 +1,7 @@
 // The take's 03 server: the one tab server D1's home step asks to adopt a winner's run, and the one the stage's disk reads from.
 //   node scripts/take-server.mjs --mount-root /mnt/pda/<your lane>/pipe [--dir ~/tmp-d5/take] [--run walks-home] [--ledger FILE]
 //   node scripts/take-server.mjs --local DIR [--dir ...]            (a dry run: no Archil, no mount)
-//   Either form takes --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
+//   Either form takes --up-timeout-s N (how long to wait for the server to answer; default 120), --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
 //   store after each release and logs it, off the handover path; a no-op with --local, which has no object store).
 // On the real disk it runs 03's serve.ts under with-archil (the only way the show lane touches Archil: the keys exist in that
 // child's environment and nowhere else, mounts live under the caller's own lane directory, and the disk is the scratch disk the
@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { freePort, sleep } from "./cdp.mjs";
 import { TAB_WRITABLE_PATHS } from "./take-paths.mjs";
 import { redact } from "../../redact-link.ts";
+import { waitUp } from "./wait-up.mjs";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -58,6 +59,9 @@ const die = (message) => {
   console.error(`take-server: ${message}`);
   process.exit(2);
 };
+// How long to wait for the server to answer: under with-typesafe, with-modal and with-archil the wrappers alone take 17-20 s (each reads 1Password) before serve.ts starts.
+const upTimeoutS = Number(arg("up-timeout-s", "120"));
+if (!Number.isFinite(upTimeoutS) || upTimeoutS <= 0) die(`--up-timeout-s ${arg("up-timeout-s", "")} is not a positive number of seconds`);
 
 mkdirSync(dir, { recursive: true, mode: 0o700 });
 chmodSync(dir, 0o700);
@@ -149,14 +153,9 @@ child.on("exit", (code) => {
   process.exit(code === 0 ? 0 : 1);
 });
 
-let up = false;
-for (let i = 0; i < 150 && !up; i++) {
-  if (child.exitCode !== null) break;
-  up = await fetch(`${origin}/`, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
-  if (!up) await sleep(200);
-}
+const up = await waitUp({ probe: (budgetMs) => fetch(`${origin}/`, { signal: AbortSignal.timeout(budgetMs) }).then(() => true, () => false), exited: () => child.exitCode !== null, timeoutMs: upTimeoutS * 1000 });
 if (!up || !existsSync(tokenFile)) {
-  console.error(`take-server: did not come up\n${redact(readFileSync(logFile, "utf8").split("\n").slice(-20).join("\n"))}`);
+  console.error(`take-server: did not come up within ${upTimeoutS} s\n${redact(readFileSync(logFile, "utf8").split("\n").slice(-20).join("\n"))}`);
   child.kill("SIGTERM");
   process.exit(1);
 }

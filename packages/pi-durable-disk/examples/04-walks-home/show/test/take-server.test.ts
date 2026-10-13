@@ -89,6 +89,14 @@ describe("the take server launcher", () => {
 
   const refuse = (...args: string[]) => spawnSync(process.execPath, [script, "--dir", join(root, "refuse"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
 
+  it("refuses an --up-timeout-s that is not a positive number, before anything is started", () => {
+    for (const bad of ["0", "-5", "soon"]) {
+      const res = refuse("--local", join(root, "disk"), "--up-timeout-s", bad);
+      assert.equal(res.status, 2, bad);
+      assert.match(res.stderr, /--up-timeout-s .* is not a positive number of seconds/, bad);
+    }
+  });
+
   it("on the real disk --mount-root is required: there is no default lane directory", () => {
     const res = refuse();
     assert.equal(res.status, 2);
