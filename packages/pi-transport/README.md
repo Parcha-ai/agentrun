@@ -314,6 +314,35 @@ finishes with every effect once when the kill came after the drain held it, and 
 the session ran. A box that dies with its disk loses the work since the last checkpoint: that needs the checkpoint
 of a later release, or a disk that outlives the box.
 
+## Ownership: one writer per session
+
+`@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
+timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
+
+```ts
+import { dirStore, leaseIn } from "@parcha/pi-transport/home";
+
+const lease = leaseIn(dirStore("/shared/leases"));
+const taken = await lease.take("session-1", { environment: "gpu", provider: "modal", box: "sb-1", host: "h1" }, 0, undefined, BACKGROUND_CONTEXT);
+```
+
+- `take(session, holder, expected, details, context)` succeeds only when the session's epoch is `expected` (0 for a
+  session nobody took); the new epoch is `expected + 1`. Anything else, including another host that took first, is
+  `lost`. `details.move` makes a retried take of the same move return the record it made instead of losing to itself;
+  `details.seal` records the sealed store. `current(session)` reads the newest record.
+- `leaseIn(store)` works over any `ConditionalStore`: `get`, and `put` with `{ absent: true }` or `{ version }`, which
+  must lose with `conflict` when the key is not as the caller saw it. An object store's conditional write, a database
+  row or a key with a compare-and-set fits.
+- `dirStore(directory)` is that store in a directory, for one machine or a directory several hosts share. A key is a
+  directory of numbered files; a write is made whole in a temp file, synced, and linked to the next number with
+  `link(2)`, so two writers race for one name and exactly one wins, and a name never holds half a value. The file
+  system must support hard links. Old versions are kept. A writer that dies between the temp file and the link leaves
+  a `.tmp-` file that nothing reads.
+- `registerStoreConformance` (`./testing`) runs the cases every `ConditionalStore` must pass: absent and versioned
+  writes, 50 takers of one version with one winner in each of 20 epochs, no read of half a value while takers write,
+  every byte value, any text as a key, and, when the store gives a writer that dies, a kill between writing and
+  making the value current.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:

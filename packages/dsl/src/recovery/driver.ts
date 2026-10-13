@@ -239,11 +239,19 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // A synchronous method does not wait for it; the failure is the run's, and the next awaited commit throws it.
     return persist(() => journal.save(state)).catch(() => undefined);
   };
+  /** Effects dispatched and not yet completed or failed. A pause is not taken while one is in flight. */
+  let inFlight = 0;
+  /** New work waiting at a seam for a pause to be taken, woken when the last effect in flight ends or a stop is taken. */
+  let drained: { promise: Promise<void>; wake: () => void } | undefined;
+  const wake = () => { const waiting = drained; drained = undefined; waiting?.wake(); };
+  const pausePending = () => !fatal && requested?.action === "pause" && snapshot.status !== "paused" && inFlight > 0;
   const guard = () => {
     if (fatal) throw fatal;
     try {
-      // The driver owns the run-wide pause and cancel; its steps stop through its signal.
+      // The driver owns the run-wide pause and cancel; its steps stop through its signal. A pause waits for every
+      // effect in flight to complete and commit; a cancel does not.
       const stop = frozenStop(snapshot.status, requested?.action);
+      if (stop === "paused" && inFlight > 0) return;
       if (stop) {
         snapshot.status = stop;
         // The stopped state is still committed, after which nothing else is.
@@ -258,6 +266,22 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (!fatal) { fatal = error; controller.abort(error); }
       throw error;
     }
+  };
+  /** A seam: where new work starts. While a pause waits for an effect in flight, new work waits here; then the pause
+   *  is taken and the work is refused with it. */
+  const seam = async () => {
+    while (pausePending()) {
+      if (!drained) { let wake!: () => void; drained = { promise: new Promise<void>((resolve) => { wake = resolve; }), wake }; }
+      await drained.promise;
+    }
+    guard();
+  };
+  /** An effect in flight has ended. The last one lets a waiting pause be taken. */
+  const settled = () => {
+    inFlight -= 1;
+    if (inFlight > 0) return;
+    if (requested?.action === "pause") { try { guard(); } catch { /* The pause is taken: its commit is queued. */ } }
+    wake();
   };
   const fileHashes = (names: string[]): Record<string, string> => reader.hashes(names);
   const verifyFiles = (files: Record<string, string>) => {
@@ -312,7 +336,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // map whose body is structure, a nested child) resumes where it stopped.
     supportsExecutionPaths: true,
     async resume(_node, state, _item, executionPath) {
-      guard();
+      await seam();
       const { frame, doc } = active();
       const at = placed(executionPath, doc);
       if (frame.input === null) { frame.input = hash(state); inputChecked.add(frame); await save(); await flush(); }
@@ -332,6 +356,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       return undefined;
     },
     async commit(node, state, _item, executionPath) {
+      // Finished work commits while a pause waits for an effect in flight; it starts nothing.
       guard();
       const { frame, doc } = active();
       const at = placed(executionPath, doc);
@@ -364,6 +389,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       await flush();
     },
     async fail(node, results, _error, executionPath) {
+      // Finished work commits while a pause waits for an effect in flight; it starts nothing.
       guard();
       const { frame, doc } = active();
       // A map that ended on an item's failure keeps its finished items committed: the handoff's state
@@ -379,7 +405,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       return clock(`poll:${tag}:${at}`, node.poll!.deadline_s * 1000) - node.poll!.deadline_s * 1000;
     },
     async wait(_node, ms, _item, executionPath) {
-      guard();
+      await seam();
       const { tag, doc } = active();
       const key = `${tag}:${placed(executionPath, doc)}`;
       const until = Math.min(snapshot.clocks[`poll:${key}`] ?? Infinity,
@@ -422,7 +448,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     binding,
     /** The run's key: what its step sessions and effects are named under. */
     driverId: driver,
-    /** The host hands the driver its stop here: the driver stops at once, and its steps through its signal. */
+    /** The host hands the driver its stop here. A cancel stops the driver at once, and its steps and effects through
+     *  its signal. A pause refuses new work at once and is taken when no effect is in flight: an effect already
+     *  dispatched completes and commits its receipt first, so a paused run resumes without a reconciliation. */
     stop: (stop: RecoveryStop) => {
       if (requested?.action !== "cancel") requested = stop;
       // A cancel after the driver paused replaces the pause it committed and the stop it reports: a cancelled run never resumes.
@@ -432,10 +460,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         void save();
       }
       try { guard(); } catch { /* Sticky: the stop blocks every admission. */ }
+      if (fatal) wake();
     },
     /** The driver's stop check, for a branch that hands off without entering the interpreter: a pause or cancel the
      *  driver took stops the run here, before anything resumes. */
     checkStop() { guard(); },
+    /** A seam for new work: it waits while a pause waits for an effect in flight, then applies any stop taken. */
+    seam,
     /** An LLM step's execution record, admitted before it dispatches. The first call fixes the label
      *  the interpreter names it by (a child's step under its invocation) and the retry limit; a resume
      *  at this path gets the same record, so its session is found again. A closed attempt advances to a new
@@ -576,7 +607,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     },
     wrapEffect(run: (params: RecoveryEffectParams) => Promise<unknown>): NonNullable<WorkflowDeps["runEffect"]> {
       return async params => {
-        guard();
+        await seam();
         const { tag, doc } = active();
         const at = placed(params.executionPath, doc);
         const key = `${tag}:${at}`;
@@ -604,40 +635,46 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         // (`gatewayIntentOf`: a fetch wrapper's call is the gateway tool it names and its arguments), so a continuation
         // that inherits it unknown refuses the same call.
         const external = params.node.via === "tool" ? gatewayIntentOf(String((params.node as any).tool), params.input ?? {}) : undefined;
-        // The driver's state and the admission are one transaction.
-        const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
-        if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
-        // What landed while the admission was being committed still counts: after a stop, the caller's own
-        // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
-        guard();
-        if (params.signal.aborted) throw params.signal.reason;
-        if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
-        const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
-        // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
-        // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
-        // calls it made and a commit that fails is the run's failure, which aborts the effect at once.
-        const calls: unknown[] = [];
-        const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
-        let value: unknown;
-        try { value = await run({ ...params, signal, call: keep }); }
-        finally { if (calls.length) await flush(); }
-        if (signal.aborted) throw signal.reason;
-        const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;
-        if (returned?.outcome === "unknown" || returned?.effect_status === "unknown"
-          || returned?.details?.outcome === "unknown" || returned?.details?.effect_status === "unknown") {
-          (snapshot.unknownResponses ??= {})[id] = value;
-          await save(); // Preserve the observation without certifying completion.
-          await flush();
-          throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: tool returned an unknown outcome`);
-        }
-        const files = fileHashes(params.produces);
-        // A tool effect's receipt names the external call it paid for (the tool and its arguments),
-        // so a continuation that inherits the receipt can answer the same call from it. Any other
-        // effect keeps its arguments beside its result.
-        const intent = params.node.via === "tool" ? { tool: String((params.node as any).tool), args: params.input } : undefined;
-        Object.assign(snapshot.files, files);
-        await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, serial()));
-        return value;
+        // From its admission the effect is in flight: a pause waits for it to complete and commit, so the admission is
+        // never left without its dispatch.
+        inFlight += 1;
+        try {
+          // The driver's state and the admission are one transaction.
+          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
+          if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
+          // What landed while the admission was being committed still counts: after a cancel, the caller's own
+          // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.
+          // A pause lets it dispatch and complete.
+          guard();
+          if (params.signal.aborted) throw params.signal.reason;
+          if (Date.now() >= deadline) throw failure("FROZEN_EFFECT_DEADLINE", "Effect exceeded its own deadline");
+          const signal = AbortSignal.any([params.signal, controller.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+          // A thrown/aborted call remains UNKNOWN, including transient failures: no blind retry. Each outside call the effect
+          // makes is kept on its record as it ends, on the driver's commit chain, so a process killed mid-effect keeps the
+          // calls it made and a commit that fails is the run's failure, which aborts the effect at once.
+          const calls: unknown[] = [];
+          const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
+          let value: unknown;
+          try { value = await run({ ...params, signal, call: keep }); }
+          finally { if (calls.length) await flush(); }
+          if (signal.aborted) throw signal.reason;
+          const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;
+          if (returned?.outcome === "unknown" || returned?.effect_status === "unknown"
+            || returned?.details?.outcome === "unknown" || returned?.details?.effect_status === "unknown") {
+            (snapshot.unknownResponses ??= {})[id] = value;
+            await save(); // Preserve the observation without certifying completion.
+            await flush();
+            throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id}: tool returned an unknown outcome`);
+          }
+          const files = fileHashes(params.produces);
+          // A tool effect's receipt names the external call it paid for (the tool and its arguments),
+          // so a continuation that inherits the receipt can answer the same call from it. Any other
+          // effect keeps its arguments beside its result.
+          const intent = params.node.via === "tool" ? { tool: String((params.node as any).tool), args: params.input } : undefined;
+          Object.assign(snapshot.files, files);
+          await persist(() => journal.complete(id, { value, files, ...(intent ? { intent } : { args: params.input ?? null }) }, serial()));
+          return value;
+        } finally { settled(); }
       };
     },
     /** Every commit the driver started has landed; a failed one is thrown. */

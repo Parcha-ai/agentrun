@@ -2,10 +2,10 @@ export { type App, type AppContext, AppError, type AppOptions, loadApp } from ".
 export {
 	type MovePair,
 	type MovePairProvider,
-	memoryOwnership,
 	moveConformanceApp,
 	registerMoveConformance,
 } from "./conformance.ts";
+export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
 	DrainError,
@@ -46,13 +46,17 @@ export {
 	type StartRunner,
 } from "./move.ts";
 export {
+	type ConditionalStore,
 	type Holder,
-	type LeaseMove,
+	KeyStoreError,
+	type KeyStoreErrorCode,
 	type LeaseRecord,
+	type LeaseSeal,
+	leaseIn,
 	type Ownership,
 	OwnershipError,
 	type OwnershipErrorCode,
-	type TakeOptions,
+	type TakeDetails,
 } from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
 export {
