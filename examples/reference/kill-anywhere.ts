@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
 import { placeAt, run } from './assemble.ts';
 import { localHost, type LedgerRow, type StatusEvent } from './host.ts';
-import { fakes, job } from './job.ts';
+import { gates } from './gates.ts';
+import { fakes, job, lead } from './job.ts';
 import { summary } from './run.ts';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -91,9 +92,10 @@ async function child() {
   const taps = {
     ...fakes,
     model: (messages: Parameters<typeof fakes.model>[0]) => {
+      const ask = lead();
       const turn = messages.filter((message) => message.role === 'toolResult').length;
       cross(`model.request turn ${turn}`);
-      const answer = fakes.model(messages);
+      const answer = ask(messages);
       cross(`model.answered turn ${turn}`);
       return answer;
     },
@@ -121,7 +123,7 @@ async function child() {
   local.host.deliver = async (result) => { cross('deliver.writing'); await deliver(result); cross('deliver.written'); };
   try {
     const result = await run(place, local.host, job);
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation }, view: summary(place, result, local) }));
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.error ? { message: result.error.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 200) } }));
   }
@@ -316,6 +318,8 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const wanted = (() => { try { return JSON.parse(readFileSync(join(reference.dir, 'out', 'record.json'), 'utf8')); } catch { return null; } })();
     const ref = reference.counted;
     const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    // The reference lead's structural gates, over the directory the cut run left.
+    const gated = gates(dir, job);
     const landed = kills.filter((kill) => kill.landed);
     /** The kills that landed at one of `points`: the ones that explain a repeat of the work inside them. */
     const cutAt = (points: RegExp) => landed.filter((kill) => points.test(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => ({ kill: kill.process, at: kill.landed!.point }));
@@ -324,7 +328,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     // Work a kill can repeat, and the crossings that sit inside it: after the work began and before its result was committed.
     const repeats = Object.keys(counted.requests).map((turn) => ({ what: `model ${turn}`, times: times(counted.requests, turn), allowed: 1, causes: cutAt(new RegExp(`^child model\\.(request|answered) ${turn}$`)), pids: counted.requestPids[turn] }))
       .concat([
-        { what: 'judge verdict', times: times(counted.judge, 'verdict'), allowed: 1, causes: cutAt(/^child judge\.(asked|answered) verdict$/), pids: [] },
+        { what: 'judge verdict', times: times(counted.judge, 'verdict'), allowed: 1, causes: cutAt(/^child (judge\.(asked|answered) verdict|event workflow\.judge\.answered)$/), pids: [] },
         { what: 'browser read', times: times(counted.browser, 'page.read'), allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) browser_read|supervisor browser\.applied driver\.page)$/), pids: [] },
         { what: 'vision look', times: counted.looks, allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) look|child event vision\.look)$/), pids: [] },
       ]);
@@ -340,6 +344,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       { name: 'the same receipts, each filed once', ok: eq(counted.receipts, ref.receipts), detail: counted.receipts },
       { name: 'a model turn, the judge, a browser read or a vision look is repeated only when a kill landed inside it, once per such kill, in a later process', ok: repeats.every(({ times: n, allowed, causes, pids }) => n >= 1 && n - allowed <= causes.length && (pids.length === 0 || new Set(pids).size === n)), detail: repeats.filter(({ times: n }) => n > 1).map(({ what, times: n, causes }) => ({ what, asked: n, cutBy: causes })) },
     ];
+    for (const { id, ok, detail } of gated) checks.push({ name: `gate ${id}`, ok, detail });
     // The window of the page action's tool in an uncut run: from the model asking for it to the next turn's request.
     const order = [...reference.child, ...reference.supervisor].sort((a, b) => (BigInt(a.t) < BigInt(b.t) ? -1 : 1));
     const from = order.findIndex((crossing) => crossing.point === 'model.answered turn 0');
