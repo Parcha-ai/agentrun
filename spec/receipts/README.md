@@ -17,7 +17,9 @@ commit between any two actions. The same machine is proved in Lean for every num
 
 ### What is not modeled
 
-- Pause and cancel. They are the host's, and they stop a run between steps.
+- Pause and cancel. They are the host's. A pause is taken once no effect is in flight, so it adds no state between
+  an admission and its completion. A cancel can leave an effect admitted and not completed, which is the state a
+  crash leaves and the model already has.
 - The interpreter's paths inside a step (loops, maps, routes, child workflows): which execution path a commit
   belongs to. The model treats a workflow as one ordered list of call steps.
 - An agent's own tool calls inside a step, and their replay classes: the agent runtime's.
