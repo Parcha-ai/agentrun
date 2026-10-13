@@ -223,6 +223,14 @@ try {
     return [...document.querySelectorAll("#chat .turn.agent")].filter((t) => /A plain answer|An edited answer/.test(t.textContent)).map((t) => t.textContent);
   })()`);
   ok("a turn another model answered says so under it, read from the typed diagnostic; a turn without the diagnostic has no such line", fb.length === 2 && fb[0] === "A plain answer.answered by gpt-6-luna: the edited model's turn was off-topic gibberish" && fb[1] === "An edited answer.", fb);
+  // An assistant's markdown is shown as what it means: bold, italics, code and lists are elements, the asterisks are gone, and HTML the model wrote is text, never markup.
+  const md = await ev<{ html: string; text: string; bad: number }>(`(() => {
+    demo.state.chat.apply({ type: "entry_appended", entry: { id: "md-1", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "Try **lemon-garlic pasta** with *spinach* and \\\`rice\\\`:\\n- boil **water**\\n- add <img src=x onerror=\\"window.__pwn=1\\"> pasta\\n\\nSee [a link](javascript:1)." }] }] } });
+    demo.renderChat();
+    const turn = [...document.querySelectorAll("#chat .turn.agent")].find((t) => /lemon-garlic/.test(t.textContent));
+    return { html: turn.innerHTML, text: turn.textContent, bad: turn.querySelectorAll("img, a, script").length + (window.__pwn ? 1 : 0) };
+  })()`);
+  ok("an assistant's markdown reads as bold, italics, code and a list with no asterisks left, and the HTML it wrote is text, not markup", /<strong>lemon-garlic pasta<\/strong>/.test(md.html) && /<em>spinach<\/em>/.test(md.html) && /<code>rice<\/code>/.test(md.html) && /<li>boil <strong>water<\/strong><\/li>/.test(md.html) && !/\*/.test(md.text) && /<img src=x onerror=/.test(md.text) && md.bad === 0, md);
   // A move Jev decided for a message is written just before it; the chat reads it after the message it belongs to.
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv2", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: moved", timestamp: 1 }], data: { switchId: "mv2", planned: true, by: "placement", probability: 0.98, phase: "start", facts: { label: "a Modal VM", tools: [] } } } }); chat.apply({ type: "entry_appended", entry: { id: "u-order", kind: "pi.user", model: [{ role: "user", content: "order check line", timestamp: 2 }] } }); demo.renderChat(); return true; })()`);
   const order = await ev<string[]>(`[...document.querySelectorAll("#chat > .turn.user, #chat > .move")].map((n) => n.textContent).filter((t) => /order check line|Jev 0.98/.test(t))`);

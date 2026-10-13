@@ -9,6 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
+import { parseMarkdown, type Inline } from "./markdown.ts";
 import { callsLabel, driverLabel, echoedTools, fallbackLine, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, relayedModel, sentBase, sentState, toolArgsLine, withoutSent, type Sent } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
@@ -384,6 +385,13 @@ function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonl
   return wrap;
 }
 
+/** An assistant's words as elements, from the safe markdown subset (tab/markdown.ts): built with textContent, so nothing the model wrote is parsed as HTML. */
+function markdownNodes(text: string): Node[] {
+  const spans = (list: readonly Inline[]): Node[] =>
+    list.map((x) => (x.t === "text" ? document.createTextNode(x.v) : x.t === "br" ? el("br") : x.t === "code" ? el("code", {}, x.v) : el(x.t === "b" ? "strong" : "em", {}, ...spans(x.c))));
+  return parseMarkdown(text).map((b) => (b.t === "p" ? el("p", {}, ...spans(b.c)) : b.t === "pre" ? el("pre", { class: "md-pre" }, b.v) : el(b.t, {}, ...b.items.map((i) => el("li", {}, ...spans(i))))));
+}
+
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
   switch (item.kind) {
     case "user":
@@ -392,7 +400,8 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
       // `?thinking=open`: the thinking is on the page as it streams (dimmed, not folded away); otherwise it is one line that opens on tap.
       if (item.thinking) node.append(state.thinkingOpen ? el("div", { class: "thinking open" }, el("div", { class: "label" }, "thinking"), el("pre", {}, item.thinking)) : el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)));
-      node.append(item.text || (item.streaming ? "…" : ""));
+      if (item.text) node.append(...markdownNodes(item.text));
+      else if (item.streaming) node.append("…");
       if (item.fallback) node.append(el("div", { class: "note fallback" }, fallbackLine(item.fallback)));
       return node;
     }
