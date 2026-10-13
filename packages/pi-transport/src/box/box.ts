@@ -73,6 +73,11 @@ export type BoxFacts = {
 	readonly maxLifetimeMs: number | null;
 	/** The kind of snapshot `Box.snapshot` takes, or `null` when the box has none. */
 	readonly snapshot: "disk" | "memory" | null;
+	/**
+	 * How large amounts of bytes move fastest into and out of this box: through the streams of `exec`, or as files
+	 * through `upload` and `download`. Absent means files.
+	 */
+	readonly bulk?: "stream" | "files";
 };
 
 /** Whether a box still runs. */
