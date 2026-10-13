@@ -12,8 +12,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
-import type { Box, BoxError, BoxExecOptions, BoxProcess } from "../src/box/box.ts";
+import { err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
+import { type Box, BoxError, type BoxExecOptions, type BoxProcess } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 
 const NAMES = [
@@ -139,15 +139,51 @@ type Tamper = {
 	readonly onStart?: () => void;
 	/** Flip the low bit of the byte at this offset of what a program that receives a file is sent. */
 	readonly flipReceiveAt?: number;
+	/** Flip the low bit of the byte at this offset of the first file `download` returns. */
+	readonly flipDownloadAt?: number;
+	/** Flip the low bit of the byte at this offset of the first file `upload` is given. */
+	readonly flipUploadAt?: number;
+	/** Make `download` fail from its Nth call on (counting from 1). */
+	readonly failDownloadFrom?: number;
 };
 
 /** A box that tampers with the output of the program that packs a workspace or reads a file. */
 export function tampered(box: Box, tamper: Tamper): Box {
+	let uploads = 0;
+	let downloads = 0;
 	return {
 		id: box.id,
 		facts: () => box.facts(),
-		upload: (files, context) => box.upload(files, context),
-		download: (paths, context) => box.download(paths, context),
+		upload: (files, context) => {
+			if (tamper.flipUploadAt === undefined || uploads++ > 0) return box.upload(files, context);
+			const at = tamper.flipUploadAt;
+			return box.upload(
+				files.map((file, index) => {
+					if (index > 0 || at >= file.bytes.length) return file;
+					const bytes = Uint8Array.from(file.bytes);
+					bytes[at] = (bytes[at] as number) ^ 1;
+					return { ...file, bytes };
+				}),
+				context,
+			);
+		},
+		download: async (paths, context) => {
+			downloads += 1;
+			if (tamper.failDownloadFrom !== undefined && downloads >= tamper.failDownloadFrom) {
+				return err(new BoxError("unknown", "the download was made to fail"));
+			}
+			const got = await box.download(paths, context);
+			if (!got.ok || tamper.flipDownloadAt === undefined || downloads > 1) return got;
+			const at = tamper.flipDownloadAt;
+			return ok(
+				got.value.map((file, index) => {
+					if (index > 0 || at >= file.bytes.length) return file;
+					const bytes = Uint8Array.from(file.bytes);
+					bytes[at] = (bytes[at] as number) ^ 1;
+					return { ...file, bytes };
+				}),
+			);
+		},
 		status: (context) => box.status(context),
 		destroy: (context) => box.destroy(context),
 		async exec(

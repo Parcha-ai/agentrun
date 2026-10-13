@@ -34,7 +34,7 @@ describe("moveFile on local boxes", () => {
 	it("copies a file whole into a directory that did not exist and leaves no partial file", async () => {
 		const bytes = randomBytes(3_000_000);
 		const { from, to, source, target, seal } = await setup(bytes);
-		const moved = getOrThrow(await moveFile(from, source, to, target, seal, context));
+		const moved = getOrThrow(await moveFile(from, source, to, target, seal, undefined, context));
 		expect(moved.ms).toBeGreaterThan(0);
 		expect(readFileSync(target).equals(bytes)).toBe(true);
 		expect(readdirSync(join(target, ".."))).toEqual(["copy.db"]);
@@ -42,13 +42,13 @@ describe("moveFile on local boxes", () => {
 
 	it("copies an empty file", async () => {
 		const { from, to, source, target, seal } = await setup(Buffer.alloc(0));
-		getOrThrow(await moveFile(from, source, to, target, seal, context));
+		getOrThrow(await moveFile(from, source, to, target, seal, undefined, context));
 		expect(readFileSync(target).length).toBe(0);
 	});
 
 	it("says `mismatch` and leaves nothing when one byte of the stream flips", async () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
-		const moved = await moveFile(tampered(from, { flipAt: 1000 }), source, to, target, seal, context);
+		const moved = await moveFile(tampered(from, { flipAt: 1000 }), source, to, target, seal, undefined, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
 		expect(existsSync(target)).toBe(false);
 		expect(readdirSync(join(target, ".."))).toEqual([]);
@@ -56,7 +56,15 @@ describe("moveFile on local boxes", () => {
 
 	it("says `mismatch` and leaves nothing when the target is sent a flipped byte", async () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
-		const moved = await moveFile(from, source, tampered(to, { flipReceiveAt: 1000 }), target, seal, context);
+		const moved = await moveFile(
+			from,
+			source,
+			tampered(to, { flipReceiveAt: 1000 }),
+			target,
+			seal,
+			undefined,
+			context,
+		);
 		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
 		expect(moved.ok ? "" : moved.error.message).toMatch(/on the target/);
 		expect(existsSync(target)).toBe(false);
@@ -65,7 +73,7 @@ describe("moveFile on local boxes", () => {
 
 	it("fails and leaves nothing when the stream is cut", async () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
-		const moved = await moveFile(tampered(from, { cutAt: 5000 }), source, to, target, seal, context);
+		const moved = await moveFile(tampered(from, { cutAt: 5000 }), source, to, target, seal, undefined, context);
 		expect(moved.ok).toBe(false);
 		expect(existsSync(target)).toBe(false);
 		expect(readdirSync(join(target, ".."))).toEqual([]);
@@ -74,17 +82,17 @@ describe("moveFile on local boxes", () => {
 	it("says `mismatch` when the seal names another file", async () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(5000));
 		const other = { ...seal, sha256: createHash("sha256").update("another").digest("hex") };
-		const moved = await moveFile(from, source, to, target, other, context);
+		const moved = await moveFile(from, source, to, target, other, undefined, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
 		expect(moved.ok ? "" : moved.error.message).toMatch(/it sent/);
 		expect(existsSync(target)).toBe(false);
-		const shorter = await moveFile(from, source, to, target, { ...seal, bytes: seal.bytes - 1 }, context);
+		const shorter = await moveFile(from, source, to, target, { ...seal, bytes: seal.bytes - 1 }, undefined, context);
 		expect(shorter.ok ? "" : shorter.error.code).toBe("mismatch");
 	});
 
 	it("fails with `transfer_failed` for a source file that is not there", async () => {
 		const { from, to, target, seal } = await setup(randomBytes(10));
-		const moved = await moveFile(from, join(root, "nowhere"), to, target, seal, context);
+		const moved = await moveFile(from, join(root, "nowhere"), to, target, seal, undefined, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("transfer_failed");
 		expect(existsSync(target)).toBe(false);
 	});

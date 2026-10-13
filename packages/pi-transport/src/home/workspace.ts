@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { withCancel } from "@earendil-works/chord/context";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
@@ -9,6 +9,17 @@ const LIST_SCRIPT = "cd -- \"$1\" || exit 3; exec find . -mindepth 1 -printf '%y
 const HASH_SCRIPT = 'cd -- "$1" || exit 3; exec xargs -0 -r sha256sum -z --';
 const PACK_SCRIPT = 'cd -- "$1" || exit 3; exec tar -c -f - --null --no-recursion --numeric-owner -T -';
 const UNPACK_SCRIPT = 'mkdir -p -- "$1" && cd -- "$1" || exit 3; exec tar -x -p -f - --no-same-owner';
+const PACK_FILES_SCRIPT =
+	'cd -- "$1" || exit 3; mkdir -p -- "$2" || exit 4; ( tar -c -f - --null --no-recursion --numeric-owner -T -; echo $? > "$2/status" ) | split -b "$3" -d -a 6 - "$2/c-"; [ "$(cat "$2/status")" = 0 ] || exit 5; rm -f -- "$2/status"; ls -1 -- "$2" | grep "^c-"; true';
+const UNPACK_FILES_SCRIPT =
+	'mkdir -p -- "$1" && cd -- "$1" || exit 3; { for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f"; fi; done; } | tar -x -p -f - --no-same-owner; s=$?; rm -rf -- "$2"; exit $s';
+const SPLIT_FILE_SCRIPT =
+	'mkdir -p -- "$2" || exit 4; split -b "$3" -d -a 6 -- "$1" "$2/c-" || exit 5; ls -1 -- "$2" | grep "^c-"; true';
+const JOIN_FILE_SCRIPT =
+	': > "$1" || exit 3; for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f" >> "$1" || exit 6; fi; done; rm -rf -- "$2"';
+const REMOVE_DIR_SCRIPT = 'rm -rf -- "$1"';
+const STREAM: Pipe = { kind: "stream" };
+const PACK_TIMEOUT_MS = 1_800_000;
 const MAKE_PARENT_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")"';
 const RECEIVE_SCRIPT = 'cat > "$1"';
 const HASH_ONE_SCRIPT = 'sha256sum -- "$1" && wc -c < "$1"';
@@ -86,8 +97,21 @@ export type WorkspaceOptions = {
 	readonly callTimeoutMs?: number;
 };
 
+/**
+ * How one side of a copy moves bytes. `stream` is the program's own output (source) or input (target). `files` cuts
+ * the archive into files of `chunkBytes` that travel with the box's own `upload` and `download`, which a provider may
+ * make much faster than a program's input and output.
+ */
+export type Pipe = { readonly kind: "stream" } | { readonly kind: "files"; readonly chunkBytes: number };
+
+/** How a single file is moved. */
+export type MoveFileOptions = { readonly fromPipe?: Pipe; readonly toPipe?: Pipe };
+
 /** How a directory is moved. */
 export type MoveWorkspaceOptions = WorkspaceOptions & {
+	/** How the source side and the target side move bytes. Default `stream` on both. */
+	readonly fromPipe?: Pipe;
+	readonly toPipe?: Pipe;
 	readonly fromRoot: string;
 	readonly toRoot: string;
 	/** The most bytes of files that may move. More is `too_large`. */
@@ -489,6 +513,166 @@ async function relay(
 	return { sourceWaitMs, targetWaitMs };
 }
 
+type Starter = (context: Context) => Promise<Result<BoxProcess, BoxError>>;
+
+const streamStarter =
+	(box: Box, command: readonly string[]): Starter =>
+	(context) =>
+		box.exec(command, undefined, context);
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+	const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+	let at = 0;
+	for (const part of parts) {
+		bytes.set(part, at);
+		at += part.length;
+	}
+	return bytes;
+}
+
+const NO_BYTES: AsyncIterable<Uint8Array> = (async function* () {})();
+
+/** A deferred exit that settles once. */
+function exitOnce(): {
+	readonly exit: Promise<Result<number, BoxError>>;
+	settle(result: Result<number, BoxError>): void;
+} {
+	let resolve: (value: Result<number, BoxError>) => void = () => {};
+	const exit = new Promise<Result<number, BoxError>>((done) => {
+		resolve = done;
+	});
+	let settled = false;
+	return {
+		exit,
+		settle: (result) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		},
+	};
+}
+
+/**
+ * A source that packs into files in the box with one program and then reads them one by one with the box's `download`.
+ * The result looks like a process: the chunks are its output, and its exit is 0 only when every chunk arrived.
+ */
+function filesSource(
+	box: Box,
+	script: string,
+	args: readonly string[],
+	input: Uint8Array | undefined,
+	chunkBytes: number,
+): Starter {
+	return async (context) => {
+		const dir = `/tmp/pi-transport-move-${randomUUID()}`;
+		const { exit, settle } = exitOnce();
+		let message = "";
+		async function* chunks(): AsyncGenerator<Uint8Array> {
+			try {
+				const started = await box.exec(
+					["sh", "-c", script, "sh", ...args, dir, String(chunkBytes)],
+					{ timeoutMs: PACK_TIMEOUT_MS },
+					context,
+				);
+				if (!started.ok) return void settle(err(started.error));
+				const packed = await finish(started.value, input);
+				if (!packed.ok) return void settle(err(packed.error));
+				if (packed.value.exitCode !== 0) {
+					message = `packing exited ${packed.value.exitCode}: ${packed.value.stderr.trim().slice(-TAIL_BYTES)}`;
+					return void settle(ok(packed.value.exitCode));
+				}
+				const names = decoder
+					.decode(packed.value.stdout)
+					.split("\n")
+					.filter((name) => name !== "");
+				for (const name of names) {
+					const got = await box.download([`${dir}/${name}`], context);
+					if (!got.ok) return void settle(err(got.error));
+					yield (got.value[0] as { bytes: Uint8Array }).bytes;
+				}
+				settle(ok(0));
+			} finally {
+				settle(ok(1));
+				await box.exec(["sh", "-c", REMOVE_DIR_SCRIPT, "sh", dir], { timeoutMs: 120_000 }, context).then(
+					(started) => (started.ok ? finish(started.value) : undefined),
+					() => undefined,
+				);
+			}
+		}
+		return ok({
+			stdin: { write: async () => {}, close: async () => {} },
+			stdout: chunks(),
+			stderr: (async function* () {
+				await exit;
+				if (message !== "") yield encoder.encode(message);
+			})(),
+			wait: () => exit,
+		});
+	};
+}
+
+/**
+ * A target that collects what it is written into files of `chunkBytes`, sends each with the box's `upload` into a
+ * temporary directory, and on close runs one program that joins them. The result looks like a process: its exit is the
+ * joining program's, or 1 when a part could not be sent.
+ */
+function filesSink(box: Box, script: string, args: readonly string[], chunkBytes: number): Starter {
+	return async (context) => {
+		const dir = `/tmp/pi-transport-move-${randomUUID()}`;
+		const { exit, settle } = exitOnce();
+		let message = "";
+		let index = 0;
+		let held: Uint8Array[] = [];
+		let size = 0;
+		const send = async (bytes: Uint8Array) => {
+			const sent = await box.upload([{ path: `${dir}/c-${String(index++).padStart(6, "0")}`, bytes }], context);
+			if (sent.ok) return;
+			message = `could not send part ${index}: ${sent.error.message}`;
+			settle(ok(1));
+			throw sent.error;
+		};
+		return ok({
+			stdin: {
+				write: async (bytes) => {
+					held.push(bytes);
+					size += bytes.length;
+					if (size < chunkBytes) return;
+					const all = concat(held);
+					let at = 0;
+					for (; all.length - at >= chunkBytes; at += chunkBytes) await send(all.subarray(at, at + chunkBytes));
+					held = at < all.length ? [all.subarray(at)] : [];
+					size = all.length - at;
+				},
+				close: async () => {
+					try {
+						if (size > 0) await send(concat(held));
+						held = [];
+						size = 0;
+						const started = await box.exec(
+							["sh", "-c", script, "sh", ...args, dir],
+							{ timeoutMs: PACK_TIMEOUT_MS },
+							context,
+						);
+						if (!started.ok) return settle(err(started.error));
+						const joined = await finish(started.value);
+						if (!joined.ok) return settle(err(joined.error));
+						if (joined.value.exitCode !== 0) message = joined.value.stderr.trim().slice(-TAIL_BYTES);
+						settle(ok(joined.value.exitCode));
+					} catch {
+						settle(ok(1));
+					}
+				},
+			},
+			stdout: NO_BYTES,
+			stderr: (async function* () {
+				await exit;
+				if (message !== "") yield encoder.encode(message);
+			})(),
+			wait: () => exit,
+		});
+	};
+}
+
 type Transfer = Piped & { readonly sha256: string; readonly bytes: number };
 
 /**
@@ -496,11 +680,9 @@ type Transfer = Piped & { readonly sha256: string; readonly bytes: number };
  * an overall deadline. Returns what moved, or why not.
  */
 async function transfer(
-	from: Box,
-	fromCommand: readonly string[],
+	startSource: Starter,
 	fromInput: Uint8Array | undefined,
-	to: Box,
-	toCommand: readonly string[],
+	startTarget: Starter,
 	limits: { stallMs: number; deadlineMs: number },
 	context: Context,
 ): Promise<Result<Transfer, WorkspaceError>> {
@@ -528,9 +710,9 @@ async function transfer(
 	context.abortSignal?.addEventListener("abort", abort, { once: true });
 	try {
 		arm();
-		const reader = await from.exec(fromCommand, undefined, inner);
+		const reader = await startSource(inner);
 		if (!reader.ok) return err(boxFailure("could not start the source program", reader.error));
-		const writer = await to.exec(toCommand, undefined, inner);
+		const writer = await startTarget(inner);
 		if (!writer.ok) {
 			cancel();
 			return err(boxFailure("could not start the target program", writer.error));
@@ -639,12 +821,17 @@ export async function moveWorkspace(
 	const manifestMs = performance.now() - started;
 
 	const copyStart = performance.now();
+	const names = nulList(listed.value.map((entry) => entry.path));
+	const fromPipe = options.fromPipe ?? STREAM;
+	const toPipe = options.toPipe ?? STREAM;
 	const moved = await transfer(
-		from,
-		["sh", "-c", PACK_SCRIPT, "sh", options.fromRoot],
-		nulList(listed.value.map((entry) => entry.path)),
-		to,
-		["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot],
+		fromPipe.kind === "files"
+			? filesSource(from, PACK_FILES_SCRIPT, [options.fromRoot], names, fromPipe.chunkBytes)
+			: streamStarter(from, ["sh", "-c", PACK_SCRIPT, "sh", options.fromRoot]),
+		names,
+		toPipe.kind === "files"
+			? filesSink(to, UNPACK_FILES_SCRIPT, [options.toRoot], toPipe.chunkBytes)
+			: streamStarter(to, ["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot]),
 		{
 			stallMs: options.stallMs ?? DEFAULT_STALL_MS,
 			deadlineMs: options.deadlineMs ?? BASE_DEADLINE_MS + (bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
@@ -703,6 +890,7 @@ export async function moveFile(
 	to: Box,
 	toPath: string,
 	seal: { readonly sha256: string; readonly bytes: number },
+	options: MoveFileOptions | undefined,
 	context: Context,
 ): Promise<Result<{ ms: number }, WorkspaceError>> {
 	const started = performance.now();
@@ -717,12 +905,16 @@ export async function moveFile(
 	if (!prepared.ok) return prepared;
 	const discard = () =>
 		run(to, ["sh", "-c", REMOVE_SCRIPT, "sh", partial], undefined, DEFAULT_CALL_TIMEOUT_MS, context);
+	const fromPipe = options?.fromPipe ?? STREAM;
+	const toPipe = options?.toPipe ?? STREAM;
 	const moved = await transfer(
-		from,
-		["cat", "--", fromPath],
+		fromPipe.kind === "files"
+			? filesSource(from, SPLIT_FILE_SCRIPT, [fromPath], undefined, fromPipe.chunkBytes)
+			: streamStarter(from, ["cat", "--", fromPath]),
 		undefined,
-		to,
-		["sh", "-c", RECEIVE_SCRIPT, "sh", partial],
+		toPipe.kind === "files"
+			? filesSink(to, JOIN_FILE_SCRIPT, [partial], toPipe.chunkBytes)
+			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial]),
 		{
 			stallMs: DEFAULT_STALL_MS,
 			deadlineMs: BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
