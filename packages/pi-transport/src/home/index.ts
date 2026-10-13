@@ -9,6 +9,7 @@ export {
 	type Gate,
 	type Holdout,
 } from "./gate.ts";
+export { checkHomeHands } from "./place.ts";
 export {
 	type Home,
 	HomeError,

@@ -17,8 +17,10 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { parseTransportConfig } from "../src/config.ts";
 import { type App, loadApp } from "../src/home/app.ts";
 import { DrainError } from "../src/home/gate.ts";
+import { checkHomeHands } from "../src/home/place.ts";
 import { type Home, type HomeOptions, MOVE_ENTRY, openHome } from "../src/home/run.ts";
 import type { Seal } from "../src/home/store.ts";
 
@@ -467,5 +469,39 @@ describe("a home: the app", () => {
 		expect(missing.ok ? "" : missing.error.message).toContain("cannot load the app module");
 		const plain = await loadApp(join(here, "home-support.ts"));
 		expect(plain.ok ? "" : plain.error.message).toContain("has no default export function");
+	});
+});
+
+describe("a home: where its tools may run", () => {
+	const environments = {
+		here: { provider: "local" },
+		box: { provider: "docker", maxLifetime: "1h" },
+		other: { provider: "docker", maxLifetime: "1h" },
+	};
+	const check = (hands: unknown, home: string) => {
+		const config = getOrThrow(parseTransportConfig({ environments, ...(hands === undefined ? {} : { hands }) }));
+		const checked = checkHomeHands(config, home);
+		return checked.ok ? "ok" : checked.error.code;
+	};
+
+	it("lets a home on this machine send its tools anywhere, and a home in a box only to its own box", () => {
+		expect(check(undefined, "here")).toBe("ok");
+		expect(check("other", "here")).toBe("ok");
+		expect(check({ default: "box", build: "other" }, "here")).toBe("ok");
+		expect(check(undefined, "box")).toBe("ok");
+		expect(check("box", "box")).toBe("ok");
+		expect(check({ default: "box", build: "box" }, "box")).toBe("ok");
+		expect(check("other", "box")).toBe("unsupported");
+		expect(check("here", "box")).toBe("unsupported");
+		expect(check({ default: "box", build: "other" }, "box")).toBe("unsupported");
+		expect(check(undefined, "nowhere")).toBe("unknown_environment");
+		// A name every object has is not an environment.
+		expect(check(undefined, "constructor")).toBe("unknown_environment");
+	});
+
+	it("says in the refusal which environment the hands name and that it comes later", () => {
+		const config = getOrThrow(parseTransportConfig({ environments, hands: { default: "box", build: "other" } }));
+		const refused = checkHomeHands(config, "box");
+		expect(refused.ok ? "" : refused.error.message).toMatch(/hands names "other".*later release/);
 	});
 });

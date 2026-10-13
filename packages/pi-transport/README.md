@@ -233,6 +233,9 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
   tell a host that went away before the session was taken elsewhere from one that went away after. If no host
   returns, the session stays sealed and safe, not running.
 - An order for an epoch the home has left behind is refused with `stale_epoch`.
+- **Where a home's tools run.** A home on this machine may send its tools to any environment (`hands`). A home in a
+  box runs its tools in its own box in this release: `checkHomeHands(config, home)` refuses a config whose `hands`
+  names another environment with `unsupported`. Tools in another box than a boxed home's come later.
 
 Not covered: a tool call that sleeps between retries inside pi has no hook, so a drain waits for it or times out;
 programs the agent left running in the background do not move.
