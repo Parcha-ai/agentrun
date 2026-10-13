@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { App } from "./app.ts";
@@ -15,7 +17,7 @@ export const EXIT_USAGE = 64;
  *
  * It speaks the link on its own input and output, so it writes nothing else there: what the app logs with
  * `console.log` goes to the error output. Arguments: `--session`, `--store`, `--workspace`, `--environment`,
- * `--provider`. When the link closes the runner closes the session in order and exits; a runner started again opens
+ * `--provider`. It writes its process id to `<store>.pid`. When the link closes the runner closes the session in order and exits; a runner started again opens
  * nothing until a host says so. It returns the exit code and sets it: the process ends once nothing is left to run.
  */
 export async function runMain(app: App, argv: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -48,6 +50,9 @@ export async function runMain(app: App, argv: readonly string[] = process.argv.s
 	}
 	// The output is the link.
 	console.log = (...args: unknown[]) => console.error(...args);
+	// Which process runs this session here: for a launcher that watches it, and for a test that kills it.
+	await mkdir(dirname(store), { recursive: true });
+	await writeFile(`${store}.pid`, `${process.pid}\n`);
 	const runner = createRunner({
 		app,
 		session,

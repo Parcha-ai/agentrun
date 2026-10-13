@@ -1,5 +1,12 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
 export {
+	type MovePair,
+	type MovePairProvider,
+	memoryOwnership,
+	moveConformanceApp,
+	registerMoveConformance,
+} from "./conformance.ts";
+export {
 	createGate,
 	DrainError,
 	type DrainErrorCode,
@@ -26,6 +33,27 @@ export {
 	proxyModels,
 	serveModels,
 } from "./models.ts";
+export {
+	MoveError,
+	type MoveErrorCode,
+	type MoveOptions,
+	type MoveReceipt,
+	type MoveStep,
+	moveHome,
+	type Place,
+	type RecoverOptions,
+	recoverHome,
+	type StartRunner,
+} from "./move.ts";
+export {
+	type Holder,
+	type LeaseMove,
+	type LeaseRecord,
+	type Ownership,
+	OwnershipError,
+	type OwnershipErrorCode,
+	type TakeOptions,
+} from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
 export {
 	type Home,
@@ -45,6 +73,7 @@ export {
 	type RunnerOptions,
 	type WireError,
 } from "./runner.ts";
+export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,

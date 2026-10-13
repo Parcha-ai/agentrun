@@ -278,6 +278,38 @@ same in one process.
 
 Not covered: in this release a home in a box runs its tools in its own box, and there are no box frames on the link.
 
+### Moving a home
+
+`moveHome(options)` moves a session's home from one box to another with no disk the two share, in seven steps:
+
+1. **Prepare.** Start the runner in the target box: check its Node (none, or one below 22.19, is `no_runtime`),
+   upload the runner file by its SHA-256 unless the box holds it (`boxRunner({ program: { file } })`), start it with
+   `Box.exec`. The session keeps working.
+2. **Drain** the source: the gate holds it still. A drain that does not complete gives the move up (`drain`, with
+   what held it) and the session works on.
+3. **Seal** the source's store.
+4. **Ship** the store and the workspace (`moveFile`, `moveWorkspace`), each checked on the target, one retry.
+5. **Take** the lease (`Ownership`): one conditional write, from epoch `e` to `e + 1`, with the seal and the move in
+   the record. **The point of no return.** It is tried only with a target that still answers.
+6. **Resume** the target at `e + 1`: it verifies the copy, rewrites the conversations' directories and admits the
+   notice once.
+7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
+
+Before the take, a failure leaves the session where it was: a sealed source is told to open its store again
+(`seal`, `ship`, `target`). A lost take (`lost`) means another host acted: this host does nothing more. After the
+take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where it says
+and makes that home run (a sealed home is told to reopen, a target that never resumed is told to resume with the
+lease's seal and move). A host that starts again calls it.
+
+`registerMoveConformance(runner, name, withPair)` runs the handoff on two places of a provider: a move with nothing
+cut, a move given up, and a kill of the host, the source or the target just before each of the seven steps, each
+followed by a recovery. The runner it needs is `runMain(moveConformanceApp)` bundled into one file.
+
+What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
+finishes with every effect once when the kill came after the drain held it, and at most once when it came while
+the session ran. A box that dies with its disk loses the work since the last checkpoint: that needs the checkpoint
+of a later release, or a disk that outlives the box.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:

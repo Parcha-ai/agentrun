@@ -22,3 +22,6 @@
   over the box's own `exec`. The runner's models mirror the host's catalog and hold no credential; the host answers
   each request, refuses one from an epoch the lease left behind, and keeps an answer's frames so a link that drops
   costs no second request. `@earendil-works/pi-ai` is a peer dependency, in the same range as pi-durable.
+- `moveHome` and `recoverHome` (`./home`): a session's home moves between boxes with no shared disk in seven
+  steps, the take of a numbered lease the one point of no return; a host that starts again finishes the move from
+  the lease. `registerMoveConformance` kills the host, the source or the target before each step.
