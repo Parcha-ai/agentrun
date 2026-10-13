@@ -134,9 +134,9 @@ test("the model check: the manifest and the tab's receipt must agree; it waits f
 test("episode=model wires the model check and its home prompt; an unknown episode is an error", async () => {
   const p = buildPlacer(options({ episode: "model", "home-wait-ms": "10" }), fixedJudge({}));
   assert.match(p.homePrompt ?? "", /trained model is in the browser/);
-  const res = await p.homeCheck!(async () => undefined);
-  assert.equal(res.ok, false);
-  assert.match(res.reason, /no model manifest/);
+  const res = await p.homeCheck!(async () => undefined, { teaching: 0 });
+  assert.equal(res?.ok, false);
+  assert.match(res?.reason ?? "", /no model manifest/);
   assert.throws(() => buildPlacer(options({ episode: "poem" }), fixedJudge({})), /walks, model, obsession or robot/);
 });
 
@@ -254,4 +254,15 @@ test("the robot criteria give Jev one rule for a line that asks the robot to do 
   // After the turn: a bare ask to be somewhere keeps the run there; with a task it comes home when the task is done.
   assert.match(CRITERIA_ROBOT["modal-vm"]!, /only asks to be here .* leaves the run here until the user asks it to leave; one that also gives a task brings it home when the task is done/);
   // Where lines really land is checked against the live judge: `with-typesafe -- node scripts/placer-probe.mts 3` (the wording is for Jev, no code reads the user's words).
+});
+
+test("episode=robot: the skills check applies to a teaching trip only; a trip with no teaching thread is not told the skills are missing", async () => {
+  const p = buildPlacer(options({ episode: "robot" }), fixedJudge({}));
+  const nothingOnDisk = async () => undefined;
+  assert.equal(await p.homeCheck!(nothingOnDisk, { teaching: 0 }), null, "a plain visit to the VM expected no skills");
+  const taught = await p.homeCheck!(nothingOnDisk, { teaching: 1 });
+  assert.equal(taught?.ok, false, "a teaching trip whose skills did not come home still says so");
+  assert.match(taught?.reason ?? "", /no skills came home/);
+  const there = async (path: string) => (path === "home/skills.json" ? new TextEncoder().encode(JSON.stringify({ skills: ["walk"] })) : path === "home/skills/walk.json" ? new TextEncoder().encode("{}") : undefined);
+  assert.equal((await p.homeCheck!(there, { teaching: 1 }))?.ok, true);
 });

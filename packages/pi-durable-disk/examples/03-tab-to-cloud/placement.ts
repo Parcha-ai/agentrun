@@ -29,6 +29,12 @@ export interface PlacementDecision {
   readonly model: "jev" | "scripted";
 }
 
+/** What the server saw of the stay in a cloud environment that a move home ends. */
+export interface HomeTrip {
+  /** Teaching threads the host reported for the first time during the stay (a thread an earlier stay already reported is not counted). */
+  readonly teaching: number;
+}
+
 export interface PlacementQuery {
   readonly phase: PlacementPhase;
   /** The user's message that started the task. */
@@ -59,8 +65,10 @@ export interface Placer {
   /**
    * A check made in code, when the run is back in the browser, of what the agent's work was for: `read` reads a file of the run's work/.
    * The server tells the agent the result with its home turn, so the agent words a fact the server checked and never judges it itself.
+   * `trip` is what the server saw of the stay it ends: `teaching` is the number of teaching threads the host reported for the first time during it. Return null when the check does not apply to this trip
+   * (the agent was not sent to work the check is about): the server logs that and tells the agent nothing.
    */
-  homeCheck?(read: (path: string) => Promise<Uint8Array | undefined>): Promise<{ ok: boolean; reason: string }>;
+  homeCheck?(read: (path: string) => Promise<Uint8Array | undefined>, trip: HomeTrip): Promise<{ ok: boolean; reason: string } | null>;
   /** The one line why the placer prefers an environment, for the agent's notice. */
   describe(env: string): string;
 }
