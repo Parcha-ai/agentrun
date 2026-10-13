@@ -7,6 +7,7 @@ import { createAgentRunExtension } from '../dist/extension.js';
 import { WorkflowExtensionService } from '../dist/extension-service.js';
 import { join as joinPath } from 'node:path';
 import { authorSkillDirectory, loadAuthorReference, loadAuthorSkillBundle, validateWorkflow } from '@parcha/agentrun-dsl';
+import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 const workflow = JSON.parse(await readFile(joinPath(authorSkillDirectory(), 'examples/read-source-decision.json'), 'utf8'));
 
@@ -34,7 +35,7 @@ test('native describe ships the packaged language, guides and the Pi host addend
     on: (name, handler) => events.set(name, handler),
     getCommands: () => [], getThinkingLevel: () => 'off', sendMessage() {},
   });
-  const ctx = { cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => 'guide-test', getBranch: () => [], getSessionFile: () => undefined },
+  const ctx = { cwd: tempCwd, hasUI: false, sessionManager: { getSessionId: () => 'guide-test', getBranch: () => [], getSessionFile: () => undefined },
     modelRegistry: { getAll: () => [] } };
   try {
     const result = await tools.get('agentrun').execute('describe', { action: 'describe' }, undefined, undefined, ctx);

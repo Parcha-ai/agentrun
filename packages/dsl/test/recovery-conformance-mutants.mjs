@@ -39,6 +39,10 @@ export const MUTANTS = {
       catch (error) { await journal.admit(id, name, argsHash, null, session); throw error; }
     },
   })),
+  // The external call an effect is admitted with is not kept: a store written before the contract named it.
+  'intent-dropped': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
+    admit: (id, name, argsHash, state, session) => journal.admit(id, name, argsHash, state, session),
+  })),
   // A closed journal still commits.
   'commits-after-close': () => { const shared = backend(); return over({ open: (bound) => openJournal(shared, bound) }, (journal) => Object.assign(Object.create(journal), { close: async () => {} })); },
 };

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {runWorkflow, WorkflowVerificationError, validateAnswers, answersToValue, answersSidecar, synthesizeAnswers, compileQuestions, dryRunWorkflow} from '../dist/index.js';
+// An effect's deadline is measured on performance.now(). A test that needs a deadline to pass holds that clock and moves
+// it itself, after the effect was admitted, so a loaded machine cannot pass the deadline before admission.
+const testClock = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); return { advance: (ms) => { now += ms; } }; };
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
 const schemas = {
   result: {type:'object', additionalProperties:false, required:['text'], properties:{text:{type:'string'}}},
@@ -188,13 +192,14 @@ test('map concurrency refuses zero, negative, fractional and nonfinite values be
   }
   assert.equal(calls,0);
 });
-test('late effect resolution is refused with its evidence and never automatically retried',async()=>{
-  let calls=0;
+test('late effect resolution is refused with its evidence and never automatically retried',{timeout:10000},async t=>{
+  const clock=testClock(t),entered=deferred();let calls=0;
   const workflow={v:2,name:'deadline',schemas:{result:schemas.result},output:{schemaId:'result',path:'result'},root:{node:'call',label:'write',via:'tool',tool:'example.action',args:{},out:'result',as:'result',deadline_s:.01,retry:{attempts:2,on:['timeout'],backoff_s:.01}}};
   let failure;
-  await assert.rejects(runWorkflow(workflow,{}, {runEffect:async({signal})=>{
-    calls++;await new Promise(resolve=>setTimeout(resolve,30));assert.equal(signal.aborted,true);return {text:'late completion'};
+  const refused=assert.rejects(runWorkflow(workflow,{}, {runEffect:async({signal})=>{
+    calls++;entered.resolve();await new Promise(resolve=>signal.addEventListener('abort',resolve,{once:true}));assert.equal(signal.aborted,true);return {text:'late completion'};
   }}),error=>{failure=error;return ['effect_deadline_exceeded','effect_outcome_unknown'].includes(error.code);});
+  await entered.promise;clock.advance(10);await refused;
   const lateResult=failure.code==='effect_outcome_unknown' ? (await failure.settlement).value : failure.lateResult;
   assert.equal(lateResult.text,'late completion');
   assert.equal(calls,1);

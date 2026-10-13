@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkflowExtensionService } from '../dist/extension-service.js';
+// An effect's deadline is measured on performance.now(). A test that needs a deadline to pass holds that clock and moves
+// it itself, after the effect was admitted, so a loaded machine cannot pass the deadline before admission.
+const testClock = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); return { advance: (ms) => { now += ms; } }; };
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
 // Entirely fictional transforms. No models, tools, benchmark inputs or labels.
 const Result = {type:'object',required:['value'],additionalProperties:false,properties:{value:{type:'number'}}};
@@ -183,12 +187,14 @@ test('retention and event guards are independent finite host settings, and count
   } finally {await service.dispose();}
 });
 
-test('rejected effect failure trace preserves the reconciliation handle', {timeout:2000}, async()=>{
+test('rejected effect failure trace preserves the reconciliation handle', {timeout:10000}, async t=>{
+  const clock=testClock(t),entered=deferred();
   const service=new WorkflowExtensionService({allowedTools:['fictional_tool'],limits:{maxEventBytes:300}});
   service.prepare(graph([{node:'call',label:'effect',via:'tool',tool:'fictional_tool',args:{},out:'Result',as:'result',deadline_s:.01}]));
   let settle,calls=0;const pending=new Promise(resolve=>{settle=resolve;});
   try {
-    const report=await service.run({}, {deps:{runEffect:()=>{calls++;return pending;}}});
+    const running=service.run({}, {deps:{runEffect:()=>{calls++;entered.resolve();return pending;}}});
+    await entered.promise;clock.advance(10);const report=await running;
     assert.equal(calls,1);assert.equal(report.status,'failed');assert.equal(report.error.code,'limit');
     assert.ok(report.trace.rejectedEvents>0);
     assert.ok(report.events.some(event=>event.type==='effect.attempt'));
