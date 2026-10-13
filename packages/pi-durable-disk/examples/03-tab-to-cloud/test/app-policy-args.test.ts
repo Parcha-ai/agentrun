@@ -30,15 +30,17 @@ describe("appPolicyFromArgs", () => {
     assert.deepEqual(appPolicyFromArgs({ without: " robot-tools, computer ,," }), { withoutExtensions: ["robot-tools", "computer"] });
     assert.deepEqual(appPolicyFromArgs({ file, mode: "replace", without: "computer" }), { instructions: { mode: "replace", text: "You are a poet.\n" }, withoutExtensions: ["computer"] });
   });
-  for (const [name, args, message] of [
-    ["a file with no mode", { file }, /--instructions-file needs --instructions-mode replace\|append/],
-    ["a mode with no file", { mode: "replace" }, /--instructions-mode needs --instructions-file/],
-    ["a mode that is neither", { file, mode: "merge" }, /--instructions-mode merge: replace or append/],
-    ["a file that is not there", { file: join(dir, "nope.md"), mode: "replace" }, /cannot read/],
-    ["an empty file", { file: (writeFileSync(join(dir, "empty.md"), " \n"), join(dir, "empty.md")), mode: "append" }, /is empty/],
-    ["an empty list of extensions", { without: " , " }, /--without-extensions .* names/],
-  ] as const) {
-    it(`${name} is an error that says what to fix`, () => assert.throws(() => appPolicyFromArgs(args), message));
+  // The cases build their arguments inside the test, after the hook has made the directory (not while the suite is being registered).
+  const cases: [string, () => { file?: string; mode?: string; without?: string }, RegExp][] = [
+    ["a file with no mode", () => ({ file }), /--instructions-file needs --instructions-mode replace\|append/],
+    ["a mode with no file", () => ({ mode: "replace" }), /--instructions-mode needs --instructions-file/],
+    ["a mode that is neither", () => ({ file, mode: "merge" }), /--instructions-mode merge: replace or append/],
+    ["a file that is not there", () => ({ file: join(dir, "nope.md"), mode: "replace" }), /cannot read/],
+    ["an empty file", () => { writeFileSync(join(dir, "empty.md"), " \n"); return { file: join(dir, "empty.md"), mode: "append" }; }, /is empty/],
+    ["an empty list of extensions", () => ({ without: " , " }), /--without-extensions .* names/],
+  ];
+  for (const [name, args, message] of cases) {
+    it(`${name} is an error that says what to fix`, () => assert.throws(() => appPolicyFromArgs(args()), message));
   }
 });
 
