@@ -194,8 +194,9 @@ const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 
  * The wrapper runs in the box's own environment, whatever the command asks for: its own tools are found on the box's
  * search path, and the state directory is where a kill will look. The variables the caller asked for are given to
  * the command alone, by `env` at the last step. `$1` is the command's id, `$2` its directory, `$3` is `1` for an argv
- * and `0` for a shell command, `$4` is `0` to start the command from an empty environment, `$5` the search path the
- * command will have (empty: the box's own), `$6` the number of variables, then the variables, then the command.
+ * and `0` for a shell command, `$4` is `0` to start the command from an empty environment, `$5` is `1` when the
+ * command has a search path of its own, which is `$6` (an empty one searches the directory the command runs in, as
+ * an empty part of any path does), `$7` the number of variables, then the variables, then the command.
  *
  * The wrapper stays outside the group and reports how the command ended, 128 plus the signal for one that was
  * killed. The command is exec'd, so an argv never runs a shell builtin of the same name. The wrapper closes its own
@@ -204,7 +205,9 @@ const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 
 const RUN_SCRIPT = [
 	`${STATE_ROOT}; mkdir -p "$s"; f=$s/$1.pid; x=$s/$1.cancel`,
 	`cd -- "$2" 2>/dev/null || { printf 'pi-transport:%s:cwd: %s: not found\\n' "$1" "$2" >&2; exit ${EXIT_NO_CWD}; }`,
-	'id=$1; argv=$3; inherit=$4; path=$5; n=$6; shift 6; [ -n "$path" ] || path=$PATH',
+	'id=$1; argv=$3; inherit=$4; path=$6; n=$7; [ "$5" = 1 ] || path=$PATH; shift 7',
+	// The shell drops an empty last part when it splits, and an empty path has no part at all: both name this directory.
+	"case $path in ''|*:) path=$path:;; esac",
 	'program() { case $1 in */*) [ -f "$1" ] && [ -x "$1" ]; return;; esac; set -f; IFS=:; for d in $path; do [ -n "$d" ] || d=.; if [ -f "$d/$1" ] && [ -x "$d/$1" ]; then set +f; unset IFS; return 0; fi; done; set +f; unset IFS; return 1; }',
 	// The variables come first. Turn the list so the command is in front, see to it, and put the variables back first.
 	'i=0; while [ $i -lt "$n" ]; do set -- "$@" "$1"; shift; i=$((i+1)); done',
@@ -811,11 +814,13 @@ class BoxEnv implements ExecutionEnv {
 		const id = randomUUID();
 		const variables = Object.entries(options?.env ?? {}).map(([name, value]) => `${name}=${value}`);
 		const inherit = options?.inheritEnv !== false;
-		// The search path the command will have: the wrapper looks for the program there, as the system will.
-		const searchPath = options?.env?.PATH ?? (inherit ? "" : BARE_PATH);
+		// The search path the command will have: the wrapper looks for the program there, as the system will. With
+		// none of its own the command has the box's.
+		const searchPath = options?.env?.PATH ?? (inherit ? undefined : BARE_PATH);
 		const full = [
 			...["sh", "-c", RUN_SCRIPT, "pi-exec", id, directory.value],
-			...[typeof command === "string" ? "0" : "1", inherit ? "1" : "0", searchPath, String(variables.length)],
+			...[typeof command === "string" ? "0" : "1", inherit ? "1" : "0"],
+			...[searchPath === undefined ? "0" : "1", searchPath ?? "", String(variables.length)],
 			...variables,
 			...(typeof command === "string" ? [command] : command),
 		];
@@ -881,7 +886,10 @@ class BoxEnv implements ExecutionEnv {
 		const marker = `pi-transport:${id}:`;
 		let held = "";
 		let holding = true;
+		// Output is quiet when no chunk is in hand and none has arrived for a while. A chunk is in hand until it is
+		// kept and passed on, however slow this machine's disk is, so what waits behind it is read before the cutoff.
 		let lastOutputAt = performance.now();
+		let inHand = 0;
 		const pump = async (bytes: AsyncIterable<Uint8Array>, stream: "stdout" | "stderr"): Promise<void> => {
 			const decoder = new StreamDecoder();
 			const pass = (text: string) => {
@@ -892,17 +900,26 @@ class BoxEnv implements ExecutionEnv {
 				emit(held, stream);
 			};
 			for await (const chunk of bytes) {
-				lastOutputAt = performance.now();
-				if (spill !== undefined) {
-					await spill.keep(chunk);
-					if (spill.error !== undefined) {
-						const cause = spill.error;
-						fail(
-							new ExecutionError("unknown", `failed to preserve complete shell output: ${cause.message}`, cause),
-						);
+				inHand += 1;
+				try {
+					if (spill !== undefined) {
+						await spill.keep(chunk);
+						if (spill.error !== undefined) {
+							const cause = spill.error;
+							fail(
+								new ExecutionError(
+									"unknown",
+									`failed to preserve complete shell output: ${cause.message}`,
+									cause,
+								),
+							);
+						}
 					}
+					pass(decoder.decode(chunk));
+				} finally {
+					inHand -= 1;
+					lastOutputAt = performance.now();
 				}
-				pass(decoder.decode(chunk));
 			}
 			pass(decoder.decode());
 		};
@@ -957,8 +974,8 @@ class BoxEnv implements ExecutionEnv {
 				// The command ended. A program it left behind may hold a stream open for good: what was written is
 				// read until the streams end or go quiet.
 				const quiet = async (): Promise<void> => {
-					for (let idle = 0; idle < EXIT_QUIET_MS; idle = performance.now() - lastOutputAt) {
-						await new Promise((resolve) => setTimeout(resolve, EXIT_QUIET_MS - idle));
+					for (let idle = 0; inHand > 0 || idle < EXIT_QUIET_MS; idle = performance.now() - lastOutputAt) {
+						await new Promise((resolve) => setTimeout(resolve, Math.max(EXIT_QUIET_MS - idle, 10)));
 					}
 				};
 				await Promise.race([output, quiet()]).catch(() => {});

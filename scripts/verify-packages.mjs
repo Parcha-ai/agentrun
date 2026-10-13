@@ -212,6 +212,8 @@ import * as visionDurable from '@parcha/pi-vision/durable';
 import * as visionTesting from '@parcha/pi-vision/testing';
 import * as transport from '@parcha/pi-transport';
 import * as transportLocal from '@parcha/pi-transport/box/local';
+import * as transportDocker from '@parcha/pi-transport/box/docker';
+import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportModal from '@parcha/pi-transport/box/modal';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
@@ -242,6 +244,7 @@ assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.crea
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
 assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportModal.modalBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
+assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
@@ -335,10 +338,15 @@ const unfiled: VisionOptions = { scope: (id: string) => ({ label: id, deriveDir:
 void [limits, vision, unfiled];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'transport-consumer.ts'), `import { parseTransportConfig, type Box } from '@parcha/pi-transport';
+  await writeFile(join(consumer, 'transport-consumer.ts'), `import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
+import { parseTransportConfig, type Box } from '@parcha/pi-transport';
+import { dockerBoxes } from '@parcha/pi-transport/box/docker';
 import { modalBoxes, type ModalSdk } from '@parcha/pi-transport/box/modal';
-const transport: [typeof parseTransportConfig, Box | undefined, typeof modalBoxes, ModalSdk | undefined] = [parseTransportConfig, undefined, modalBoxes, undefined];
-void transport;
+import { boxEnv } from '@parcha/pi-transport/hands';
+const transport: [typeof parseTransportConfig, typeof dockerBoxes, Box | undefined, typeof modalBoxes, ModalSdk | undefined] = [parseTransportConfig, dockerBoxes, undefined, modalBoxes, undefined];
+// What a host hands to pi's Harness as a conversation's environment.
+const hands = (box: Box): ExecutionEnv => boxEnv(box);
+void [transport, hands];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
