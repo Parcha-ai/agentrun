@@ -14,7 +14,7 @@ const PID_PREFIX = "pid ";
  * `$2` records it idles and waits to be killed.
  */
 const WRITER_SCRIPT = [
-	'f=$1; n=$2; : > "$f"; echo "pid $$"; i=0',
+	'f=$1; n=$2; mkdir -p -- "$(dirname -- "$f")" && : > "$f" || exit 3; echo "pid $$"; i=0',
 	'while [ "$i" -lt "$n" ]; do',
 	'  i=$((i + 1)); echo "record $i" >> "$f"; sync "$f" 2>/dev/null || sync; echo "ack $i"',
 	"done",
