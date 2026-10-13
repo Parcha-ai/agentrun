@@ -13,8 +13,10 @@ import type { DocumentStoreHost } from "./store.js";
 
 /** The run's paid-effect receipts, one per external call (the tool and the hash of its arguments): what the call answered
  *  and which session paid for it. A record of spend, never a stop. Every session of the run is in the same Session, so a
- *  continuation reads its predecessor's receipts here, with no copy at the handoff beyond the seed. The kind, version and
- *  key are a stored format. */
+ *  continuation reads its predecessor's receipts here, with no copy at the handoff beyond the seed. A receipt holds the
+ *  result's text: the text blocks, joined by a newline. Another kind of block, an image for one, is not kept, and a repeat
+ *  is answered with the text alone. A call that returned nothing is a receipt too (its result reads `null`), so a repeat is
+ *  answered and not paid for again. The kind, version and key are a stored format. */
 export const ReceiptIndex = defineDocFamily<{ tool: string; argsHash: string; result: JsonValue | null; session: string | null }, null>({
   kind: "agentrun.receipts", version: 1, scope: "session", family: true, initial: () => ({ tool: "", argsHash: "", result: null, session: null }),
 });

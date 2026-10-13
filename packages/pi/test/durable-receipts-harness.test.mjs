@@ -107,3 +107,15 @@ test('a failure is not recorded as a paid result: an error result, and a failure
     } finally { await run.close(); }
   }
 });
+
+test('a seeded receipt of a call that returned nothing is answered, not dispatched again', async () => {
+  const calls = [];
+  const args = { q: 'nothing' };
+  const run = await converse({ tool: paidTool('search', { content: [{ type: 'text', text: 'LIVE' }] }, calls), call: ['search', args],
+    seed: [{ tool: 'search', argsHash: canonicalHash(args), result: null, session: 'driver-step' }] });
+  try {
+    assert.deepEqual(calls, [], 'the call was paid and returned nothing: dispatching it again buys the same nothing twice');
+    assert.equal(run.results[0].text, 'null\n\n(answered from the paid receipt of driver-step; the call was not dispatched again)');
+    assert.equal(run.results[0].details?.effect_status, 'reused');
+  } finally { await run.close(); }
+});
