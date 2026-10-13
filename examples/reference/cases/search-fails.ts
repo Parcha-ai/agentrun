@@ -7,5 +7,5 @@ export const searchFails: Case = {
   name: 'search-fails',
   job,
   fakes: { ...fakes, tools: { search: () => { throw new Error('the search service is down'); } } },
-  expect: { status: 'refused', failing: ['record-matches-output-schema'], filedFailed: [] },
+  expect: { status: 'refused', failing: ['record-matches-output-schema'], filedFailed: [], refused: { code: 'WORKFLOW_FAILED', says: 'the search service is down' } },
 };

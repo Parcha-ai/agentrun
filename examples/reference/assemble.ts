@@ -10,7 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { createWorkflowExtension, nodeRunner, taskScope, type WorkflowOutcome } from '@parcha/agentrun-pi/durable';
+import { bindingMismatch, canonicalHash, recoveryBinding } from '@parcha/agentrun-dsl/recovery';
+import { createWorkflowExtension, nodeRunner, taskScope, type WorkflowOutcome, type WorkflowRequest } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
@@ -109,7 +110,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   // Until the browser's pi range admits 1.1.0 (#336), this process loads pi-durable 1.0.4 (here, the browser, vision) and
   // two 1.1.0 copies (the node runner and the workflow task, the disk run). The values cross them unchanged; their branded
   // types do not, so the crossings below are cast: extensions into the registry, the registry into the run, the Harness
-  // out of the run and into the workflow's task.
+  // out of the run and into the workflow's task, and the task's id back.
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension, flow.extension] as Extension[]) registry.install(extension);
 
@@ -127,11 +128,17 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     harness: { registry: registry as never, models: host.models.catalog }, env: options.env ?? runEnv,
   });
   const harness = durable.harness as unknown as Harness;
+  const taskHarness = durable.harness as never;
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+    // agentrun-pi gap: start() reaches the task saved under the key without comparing its request, so a different job
+    // on this directory would get the saved job's outcome. Refused here as the driver refuses a moved binding.
+    const saved = await flow.read(taskHarness, place.id, ctx);
+    const refusal = saved && moved((await harness.getTask(saved.taskId as never, ctx))?.input as WorkflowRequest | undefined, job);
+    if (refusal) return { ...refusal, generation: durable.generation, usage: await harness.usage(ctx) };
     reconciled();
-    const outcome = await (await flow.start(durable.harness as never, { key: place.id, workflow: job.workflow, input: job.input }, ctx)).wait(ctx);
+    const outcome = await (await flow.start(taskHarness, { key: place.id, workflow: job.workflow, input: job.input }, ctx)).wait(ctx);
     if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
     return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
   } finally {
@@ -148,4 +155,15 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     await browser.close();
     await durable.release();
   }
+}
+
+/** The driver's binding-mismatch refusal when the saved run's workflow or input is not this job's, with the two digests
+ *  of each side: the workflow's binding and the input's canonical hash. */
+function moved(saved: WorkflowRequest | undefined, job: Job): Extract<WorkflowOutcome, { status: 'refused' }> | undefined {
+  if (!saved) return undefined;
+  const digests = (request: { workflow: Workflow; input: Record<string, unknown>; bind?: Record<string, unknown> }) => ({ binding: recoveryBinding(request.workflow, request.bind), input: canonicalHash(request.input) });
+  const [before, now] = [digests(saved), digests(job)];
+  if (before.binding === now.binding && before.input === now.input) return undefined;
+  const error = bindingMismatch(JSON.stringify(before), now);
+  return { status: 'refused', code: error.code, message: error.message, detail: { moved: (error as { moved?: unknown }).moved ?? null, saved: before, requested: now } };
 }

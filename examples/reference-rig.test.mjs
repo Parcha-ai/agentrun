@@ -14,6 +14,7 @@ import { cases } from './reference/cases/index.ts';
 import { filed, gates } from './reference/gates.ts';
 import { localHost } from './reference/host.ts';
 import { fakes, job } from './reference/job.ts';
+import { summary } from './reference/run.ts';
 
 const reference = { name: 'reference', job, fakes, expect: { status: 'complete', failing: [], filedFailed: [] } };
 const failingOf = (runDir, ofJob) => gates(runDir, ofJob).filter(({ ok }) => !ok).map(({ id }) => id);
@@ -33,14 +34,20 @@ async function runOf(t, ofCase) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-rig-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const place = await placeAt(join(tmp, 'run'));
-  const result = await run(place, localHost(place, ofCase.fakes).host, ofCase.job);
-  return { runDir: place.root, result };
+  const local = localHost(place, ofCase.fakes);
+  const result = await run(place, local.host, ofCase.job);
+  return { runDir: place.root, result, view: summary(place, result, local) };
 }
 
 for (const ofCase of [reference, ...cases]) {
   test(`${ofCase.name}: ends ${ofCase.expect.status}, fails ${ofCase.expect.failing.join(', ') || 'no gate'}, files ${ofCase.expect.filedFailed.join(', ') || 'nothing'} failed`, { timeout: 120_000 }, async (t) => {
-    const { runDir, result } = await runOf(t, ofCase);
+    const { runDir, result, view } = await runOf(t, ofCase);
     assert.equal(result.status, ofCase.expect.status, result.message);
+    // The task's refusal keeps its code and the failure's own words, in the result and in what the CLI prints.
+    if (ofCase.expect.refused) for (const shown of [result, view]) {
+      assert.equal(shown.code, ofCase.expect.refused.code);
+      assert.ok(shown.message.includes(ofCase.expect.refused.says), shown.message);
+    }
     assert.deepEqual(failingOf(runDir, ofCase.job), ofCase.expect.failing, JSON.stringify(gates(runDir, ofCase.job), null, 2));
     assert.deepEqual(filed(runDir).filter(({ read }) => read.ok && read.value.status === 'failed').map(({ read }) => read.value.tool), ofCase.expect.filedFailed);
   });
@@ -128,4 +135,24 @@ test('a log cut mid-line fails the gates that read it, and the others still repo
   assert.deepEqual(failures(await tampered(runDir, 'ledger-cut', cut('ledger.jsonl'))), [['fakes-called-once', ledgerError]]);
   const eventsError = `events.jsonl line ${await lastLine('events.jsonl')} does not parse`;
   assert.deepEqual(failures(await tampered(runDir, 'events-cut', cut('events.jsonl'))), [['nodes-end', eventsError], ['browser-sessions-released', eventsError]]);
+});
+
+test('a second job on a directory that holds another job\'s run is refused, naming what moved, and gets nothing of the first', { timeout: 180_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-rig-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const runAt = async (ofJob) => {
+    const place = await placeAt(join(tmp, 'run'));
+    return run(place, localHost(place, fakes).host, ofJob);
+  };
+  const record = async () => JSON.parse(await readFile(join(tmp, 'run', 'out', 'record.json'), 'utf8')).record;
+  assert.equal((await runAt(job)).status, 'complete');
+  const delivered = await record();
+  assert.equal((await runAt(job)).status, 'complete', 'the same job again is the saved run');
+  const refusalOf = ({ status, code, detail }) => ({ status, code, moved: detail?.moved });
+  const otherInput = await runAt({ ...job, input: { company: 'Other Ltd' } });
+  assert.deepEqual(refusalOf(otherInput), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['input'] });
+  assert.notEqual(otherInput.detail.saved.input, otherInput.detail.requested.input);
+  const otherWorkflow = await runAt({ ...job, workflow: { ...job.workflow, name: 'another-company-check' } });
+  assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['binding'] });
+  assert.deepEqual(await record(), delivered, 'nothing was delivered for the refused jobs');
 });
