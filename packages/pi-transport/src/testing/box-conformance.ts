@@ -288,11 +288,12 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 		name: "a label in the providers' own namespace is refused before a box exists",
 		run: () =>
 			withProvider(async (provider) => {
-				const labels = { ...spec.labels, "pi-transport.conformance": "x" };
-				const refused = await provider.create({ ...spec, labels }, context);
-				if (refused.ok) await refused.value.destroy(context);
-				assertions.strictEqual(refused.ok, false);
-				if (!refused.ok) assertions.strictEqual(refused.error.code, "invalid");
+				for (const key of ["pi-transport", "pi-transport.conformance"]) {
+					const refused = await provider.create({ ...spec, labels: { ...spec.labels, [key]: "1" } }, context);
+					if (refused.ok) await refused.value.destroy(context);
+					assertions.strictEqual(refused.ok, false);
+					if (!refused.ok) assertions.strictEqual(refused.error.code, "invalid");
+				}
 			}),
 	});
 	const lifetime = options.lifetime;

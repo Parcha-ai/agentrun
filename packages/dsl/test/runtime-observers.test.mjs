@@ -6,10 +6,15 @@ import { runWorkflow, runWorkflowSlice, EffectOutcomeUnknownError } from '../dis
 const flow = extra => ({v:2,name:'observer-boundary',schemas:{Result:{type:'object',required:['count'],properties:{count:{type:'number'}}}},output:{schemaId:'Result',path:'result'},root:{node:'call',label:'effect',via:'tool',tool:'test.action',args:{},out:'Result',as:'result',deadline_s:1,...extra}});
 const deferred = () => {let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
 const recovery = extra => ({resume:async()=>undefined,commit:async()=>{},pollStartedAt:()=>Date.now(),wait:async()=>{},...extra});
+// An effect's deadline is measured on performance.now(). The tests that need a deadline to pass hold that clock and
+// move it themselves, so it passes when the test says, after the effect was admitted, and never because a loaded
+// machine was slow before admission.
+const testClock = t => { let now = 0; t.mock.method(performance, 'now', () => now); return { advance: ms => { now += ms; } }; };
 
-test('throwing failure observers preserve unknown effect evidence and later settlement', {timeout:1000}, async()=>{
-  const pending=deferred();let failure;const events=[];
-  await assert.rejects(runWorkflow(flow({deadline_s:.01}),{}, {runEffect:()=>pending.promise,onEvent:e=>{events.push(e);if(e.type==='effect.failed'||e.type==='node.end')throw Error('observer failure');}}),error=>{failure=error;return error instanceof EffectOutcomeUnknownError;});
+test('throwing failure observers preserve unknown effect evidence and later settlement', {timeout:10000}, async t=>{
+  const clock=testClock(t),entered=deferred(),pending=deferred();let failure;const events=[];
+  const rejected=assert.rejects(runWorkflow(flow({deadline_s:.01}),{}, {runEffect:()=>{entered.resolve();return pending.promise;},onEvent:e=>{events.push(e);if(e.type==='effect.failed'||e.type==='node.end')throw Error('observer failure');}}),error=>{failure=error;return error instanceof EffectOutcomeUnknownError;});
+  await entered.promise;clock.advance(10);await rejected;
   assert.equal(failure.idempotencyKey,events.find(e=>e.type==='effect.attempt').detail.idempotency_key);
   pending.resolve({count:3});
   assert.deepEqual(await failure.settlement,{status:'fulfilled',value:{count:3}});
@@ -52,15 +57,15 @@ for (const boundary of ['resume-restored','resume-missing','commit','checkpoint'
   });
 }
 
-test('effect deadline is checked after synchronous observers and immediately before dispatch',async()=>{
-  let calls=0;
-  await assert.rejects(runWorkflow(flow({deadline_s:.005}),{}, {runEffect:async()=>{calls++;return {count:1};},onEvent:e=>{if(e.type==='effect.attempt'){const until=Date.now()+15;while(Date.now()<until){}}}}),/before effect admission/);
+test('effect deadline is checked after synchronous observers and immediately before dispatch',async t=>{
+  const clock=testClock(t);let calls=0;
+  await assert.rejects(runWorkflow(flow({deadline_s:.005}),{}, {runEffect:async()=>{calls++;return {count:1};},onEvent:e=>{if(e.type==='effect.attempt')clock.advance(15);}}),/before effect admission/);
   assert.equal(calls,0);
 });
 
-test('expired durable poll receipt retrieval allows bounded asynchronous store IO',async()=>{
-  let calls=0;
-  const result=await runWorkflow(flow({deadline_s:.2,poll:{until:{predicate:'field_equals',path:'count',value:1},interval_s:.1,deadline_s:.2}}),{}, {recovery:recovery({pollStartedAt:()=>Date.now()-1000}),runEffect:async()=>{calls++;await new Promise(resolve=>setTimeout(resolve,10));return {count:1};}});
+test('expired durable poll receipt retrieval allows bounded asynchronous store IO',async t=>{
+  const clock=testClock(t);let calls=0;
+  const result=await runWorkflow(flow({deadline_s:.2,poll:{until:{predicate:'field_equals',path:'count',value:1},interval_s:.1,deadline_s:.2}}),{}, {recovery:recovery({pollStartedAt:()=>Date.now()-1000}),runEffect:async()=>{calls++;clock.advance(150);await new Promise(resolve=>setTimeout(resolve,10));return {count:1};}});
   assert.equal(result.status,'complete');assert.equal(calls,1);
 });
 
@@ -80,11 +85,12 @@ for (const kind of ['map','parallel']) {
   });
 }
 
-test('partial-result persistence failure retains original uncertain effect and storage failure', {timeout:1000}, async()=>{
-  const pending=deferred(),persistenceError=Error('partial result store failed');let original,failure;
+test('partial-result persistence failure retains original uncertain effect and storage failure', {timeout:10000}, async t=>{
+  const clock=testClock(t),entered=deferred(),pending=deferred(),persistenceError=Error('partial result store failed');let original,failure;
   const candidate=flow({deadline_s:.01});candidate.output={schemaId:'State'};candidate.schemas.State={type:'object'};
   candidate.root={node:'map',label:'group',itemsPath:'items',as:'results',maxConcurrency:1,body:candidate.root};
-  await assert.rejects(runWorkflow(candidate,{items:[1]}, {runEffect:()=>pending.promise,recovery:recovery({fail:async(_node,_partial,error)=>{original=error;throw persistenceError;}})}),error=>{failure=error;return error instanceof AggregateError;});
+  const rejected=assert.rejects(runWorkflow(candidate,{items:[1]}, {runEffect:()=>{entered.resolve();return pending.promise;},recovery:recovery({fail:async(_node,_partial,error)=>{original=error;throw persistenceError;}})}),error=>{failure=error;return error instanceof AggregateError;});
+  await entered.promise;clock.advance(10);await rejected;
   assert.ok(original instanceof EffectOutcomeUnknownError);
   assert.equal(failure.cause,original);assert.deepEqual(failure.errors,[original,persistenceError]);
   pending.resolve({count:5});assert.deepEqual(await original.settlement,{status:'fulfilled',value:{count:5}});
@@ -194,14 +200,14 @@ test('trusted host can reject unsafe or oversized events before generic snapshot
 });
 
 for (const boundary of ['effect.failed', 'map.failed']) {
-  test(`preparation rejection at ${boundary} preserves uncertain effects and partial recovery`, {timeout:1000}, async () => {
-    const pending = deferred(), controller = new AbortController(), traceError = Error('trace rejected');
+  test(`preparation rejection at ${boundary} preserves uncertain effects and partial recovery`, {timeout:10000}, async t => {
+    const clock = testClock(t), entered = deferred(), pending = deferred(), controller = new AbortController(), traceError = Error('trace rejected');
     const candidate = flow({deadline_s:.01});
     candidate.output = {schemaId:'State'}; candidate.schemas.State = {type:'object'};
     candidate.root = {node:'map',label:'group',itemsPath:'items',as:'results',maxConcurrency:1,body:candidate.root};
     let failure, persisted, rejected = 0, calls = 0;
-    await assert.rejects(runWorkflow(candidate, {items:[0,1]}, {
-      signal:controller.signal, runEffect:()=>++calls===1?Promise.resolve({count:1}):pending.promise,
+    const refusal = assert.rejects(runWorkflow(candidate, {items:[0,1]}, {
+      signal:controller.signal, runEffect:()=>{if(++calls===1)return Promise.resolve({count:1});entered.resolve();return pending.promise;},
       recovery:recovery({fail:async(_node, partial, error)=>{persisted={partial,error};}}),
       prepareEvent:event=>{
         if(event.type===boundary){rejected++;controller.abort(traceError);throw traceError;}
@@ -209,6 +215,7 @@ for (const boundary of ['effect.failed', 'map.failed']) {
       },
       onEvent:event=>assert.notEqual(event.type,boundary),
     }), error=>{failure=error;return error instanceof EffectOutcomeUnknownError;});
+    await entered.promise; clock.advance(10); await refusal;
     assert.equal(rejected,1); assert.equal(controller.signal.reason,traceError);
     assert.equal(persisted.error,failure); assert.equal(persisted.partial.length,2);
     assert.deepEqual(persisted.partial[0],{count:1}); assert.equal(Object.hasOwn(persisted.partial,1),false);
