@@ -36,7 +36,7 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 | 1 | `models` | pi-durable's `models`, the node runner's agent | pi-ai's faux provider, answering from the job's script |
 | 2 | `tools` | the workflow's `call` (`runEffect`), the agent's extensions, the browser's provider and driver | the job's `search`, no extra extensions, `FakeBackend` from `@parcha/pi-browser/testing` |
 | 3 | `evidence` | the browser and vision, one sink for both record types | a JSON file per record under `<run>/evidence/<label>/`, named by its hash |
-| 4 | `decisions` | the workflow's `judge` (`runJudge`) | the job's scripted answers |
+| 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
@@ -48,6 +48,40 @@ environment for the tools as `env`, the disk run's own option; `--box` passes a 
 Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner.
 Then the run opens and pi resumes what a killed process left, the browser reconciles its sessions, the workflow runs,
 the record is delivered, every open browser session is released, and the run is released.
+
+## Gates and cases
+
+`gates.ts` checks the files a run leaves, structurally: files exist, JSON parses, counts and cross-references hold.
+None of them judges prose.
+
+| Gate | Holds when |
+|---|---|
+| `record-matches-output-schema` | `out/record.json` exists, parses, and its record validates against the workflow's output schema |
+| `citations-name-filed-evidence` | every string in the record that names a path under `evidence/` is a file there that parses and has `tool`, `args` and `status` |
+| `no-failed-evidence-cited` | no cited receipt was filed `failed` |
+| `fakes-called-once` | in `ledger.jsonl`, every tool and judge call happened once across the run's processes, and a model turn at most twice, the second in a later process |
+| `nodes-end` | every step that `events.jsonl` shows starting also ends |
+| `browser-sessions-released` | every browser session `events.jsonl` shows launched is released |
+
+```sh
+npm run demo:reference -- --dir /tmp/run && node examples/reference/gates.ts /tmp/run
+```
+
+It prints one line per gate and exits 1 when one fails. From code, `gates(runDir, job)` returns `{ id, ok, detail }[]`.
+
+`cases/` holds synthetic cases, each a way out the packages already have:
+
+- `login-wall`: the browser's page judge calls the page a login wall; the read is filed `failed` and the lead cites
+  only the scan.
+- `no-vision-route`: the lead takes no images and vision has no eyes; reading the scan is vision's typed miss, filed
+  `failed`, and the lead cites only the page.
+- `search-fails`: the host's tool throws; the run ends `failed`, nothing is delivered, and only
+  `record-matches-output-schema` fails.
+
+A case is a `Case` (`gates.ts`): a job, the fakes it runs on (usually `job.ts`'s with one member changed), and what
+its run must show: its status, the gates that fail, the tools whose receipts are filed `failed`. To add one, write a
+file in `cases/` and list it in `cases/index.ts`; `examples/reference-rig.test.mjs` runs every listed case and the
+reference job, then checks each against the gates.
 
 ## Swap a fake for a real part
 

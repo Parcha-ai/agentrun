@@ -46,21 +46,25 @@ export const job: Job = { workflow, input: { company: 'Acme Ltd' }, files: { [FI
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
 
-/** The lead opens the first search result, reads it, reads the scan, then submits the receipts its tools returned. */
-function model(messages: readonly Message[]) {
-  const results = messages.filter((message) => message.role === 'toolResult');
-  if (results.length === 0) {
-    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
-    return call('run', { code: `await page.goto(${JSON.stringify(first)})` });
-  }
-  if (results.length === 1) return call('browser_read', { what: 'markdown' });
-  if (results.length === 2) return call('read', { path: FILING });
-  const cited = [...new Set(results.flatMap((result) => textOf(result).match(/evidence\/[\w./-]+\.json/g) ?? []))];
-  return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: cited });
+const receipts = (message: Message | undefined) => (message ? textOf(message).match(/evidence\/[\w./-]+\.json/g) ?? [] : []);
+
+/** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
+ *  keeps of those the page read and the scan read returned (default: all of them). */
+export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
+  return (messages: readonly Message[]) => {
+    const results = messages.filter((message) => message.role === 'toolResult');
+    if (results.length === 0) {
+      const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
+      return call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    }
+    if (results.length === 1) return call('browser_read', { what: 'markdown' });
+    if (results.length === 2) return call('read', { path: FILING });
+    return call('submit', { answer, citations: [...new Set(cite(receipts(results[1]), receipts(results[2])))] });
+  };
 }
 
 export const fakes: Fakes = {
-  model,
+  model: lead(),
   tools: { search: () => ({ urls: [REGISTRY, NEWS] }) },
   judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])) }),
   pages: {
