@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+// @ts-expect-error: a plain .mjs script, without types
+import { TAB_WRITABLE_PATHS } from "../scripts/take-paths.mjs";
 
 // The take's 03 server in --local mode (a local directory for a disk: nothing of Archil is touched). What matters here is what
 // the launcher promises about secrets and flags, which are the same in the real mode.
@@ -53,7 +55,9 @@ describe("the take server launcher", () => {
 
   it("runs the server with exactly the tab-writable creature paths, the broker, and nothing of the agent's memory", () => {
     const args = execFileSync("ps", ["-o", "args=", "-p", String(status.pid)], { encoding: "utf8" });
-    assert.match(args, /--tab-writable creature\/creature\.xml,creature\/body\.json,creature\/designs\.sqlite,creature\/design\.json,creature\/fit\.json,robot\/build\.json(\s|$)/);
+    // exactly the take's list (take-paths.test.ts holds that list equal to what the creature page writes), with nothing after it
+    const writable = (TAB_WRITABLE_PATHS as string[]).join(",").replace(/[.]/g, "\\.");
+    assert.match(args, new RegExp(`--tab-writable ${writable}(\\s|$)`));
     assert.ok(!args.includes("memory.sqlite"));
     assert.match(args, /--model-url http:\/\/127\.0\.0\.1:9421\/v1/);
     assert.match(args, /--host 127\.0\.0\.1/);
