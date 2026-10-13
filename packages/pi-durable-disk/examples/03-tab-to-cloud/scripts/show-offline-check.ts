@@ -34,7 +34,7 @@ try {
   ok("online: the stage is served under /show/ on the tab's origin, isolated, and its script ran", (await stagePage.evaluate<string>("document.getElementById('h').dataset.js")) === "loaded" && (await stagePage.evaluate<boolean>("window.__isolated")) === true);
   page = await device.open(`${origin}${link}`.replace("#", "?brain=off#"));
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
-  await page.evaluate("document.getElementById('offline').click()");
+  await page.evaluate("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500);
   ok("the run was checked out", (await page.evaluate<string>("demo.state.mode")) === "offline", await page.evaluate("demo.state.banner"));
   const cached = await page.evaluate<string[]>(`caches.open("walks-home-offline-v1").then((c) => c.keys()).then((ks) => ks.map((k) => new URL(k.url).pathname).filter((p) => p.startsWith("/show/")))`);

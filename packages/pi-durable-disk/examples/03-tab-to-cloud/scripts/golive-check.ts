@@ -53,7 +53,7 @@ try {
   mkdirSync(dest, { recursive: true });
   for (const n of readdirSync(join(MODEL_DISK, "home/model")).sort((a, b) => (a === "manifest.json" ? 1 : b === "manifest.json" ? -1 : a.localeCompare(b)))) copyFileSync(join(MODEL_DISK, "home/model/", n), join(dest, n));
   const root = await ev<string>("String(demo.state.active.id)");
-  ok("online, the page says ONLINE and the agent is the cloud model's", (await ev<string>("document.getElementById('net').textContent")) === "ONLINE" && (await ev<boolean>("demo.net().online")), await ev("demo.net()"));
+  ok("online, the toggle shows online and the agent is the cloud model's", (await ev<string>("document.getElementById('connection').dataset.state")) === "online" && (await ev<boolean>("demo.net().online")), await ev("demo.net()"));
   const cloud0 = await ev<{ model: string; tools: string[] }>("demo.agent()");
   ok("online the agent offers its whole registry, go_offline and go_online among it", ["go_offline", "go_online", "bash", "read", "write", "edit"].every((t) => cloud0.tools.includes(t)), cloud0);
   console.log(`${at()} s: online; conversation ${root}, model ${cloud0.model}, ${cloud0.tools.length} tools`);
@@ -81,7 +81,7 @@ try {
   await page.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await page.send("Network.setBlockedURLs", { urls: ["ws://*", "wss://*"] });
   await page.until("demo.net().online === false", 20_000, 250);
-  ok("with the network cut the page says OFFLINE (the browser's signal and the ping)", (await ev<string>("document.getElementById('net').textContent")) === "OFFLINE", await ev("demo.net()"));
+  ok("with the network cut the toggle says it is waiting for the network (the browser's signal and the ping), with nothing to press", (await ev<string>("(() => { const b = document.getElementById('connection'); return b.dataset.action + '|' + b.title; })()")) === "none|Go online (waiting for the network)", await ev("demo.net()"));
   console.log(`${at()} s: network cut; page says ${JSON.stringify(await ev("demo.net()"))}`);
 
   // ---- the 1B does a tool task, offline
@@ -115,15 +115,15 @@ try {
   await page.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await page.send("Network.setBlockedURLs", { urls: [] });
   await page.until("demo.net().online === true", 30_000, 250);
-  ok("with the network back the page says ONLINE", (await ev<string>("document.getElementById('net').textContent")) === "ONLINE", await ev("demo.net()"));
-  ok("the Go online button is there and enabled", (await ev<boolean>("!document.getElementById('online').hidden && !document.getElementById('online').disabled")));
+  ok("with the network back the toggle says Go online", (await ev<string>("document.getElementById('connection').title")) === "Go online", await ev("demo.net()"));
+  ok("the Go online toggle is there and can be pressed", (await ev<string>("document.getElementById('connection').dataset.action")) === "online");
   const clicked = Date.now();
   if (process.env.GO_ONLINE === "tool") {
     // the 1B's own go_online: the user says the network is back and the model calls the tool (the page's button is the fallback)
     const back = await send("The network is back. Go online now.");
     console.log(`  the 1B's turn: ${JSON.stringify(back.map((i) => `${i.kind}${i.name ? ":" + i.name : ""}${i.status ? ":" + i.status : ""}`))}`);
     ok("the 1B called go_online", back.some((i) => i.kind === "tool" && i.name === "go_online"), back.map((i) => `${i.kind}:${i.name ?? ""}`));
-  } else await ev("document.getElementById('online').click()");
+  } else await ev("document.getElementById('connection').click()");
   await page.until("(demo.state.mode === 'writer' && demo.checkins().length === 1) || /could not go online|not checked out/.test(demo.state.banner)", 600_000, 1000);
   const mode = await ev<string>("demo.state.mode");
   ok("the run is the server's again: this tab is its writer", mode === "writer", await ev("demo.state.banner"));

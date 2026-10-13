@@ -59,7 +59,7 @@ try {
   await exec("mkdir -p notes && echo 'made online' > notes/online.txt");
 
   const clicked = Date.now();
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 500);
   const first = await ev<{ mode: string; record: { workspace: { files: number; bytes: number }; persistent: boolean }; banner: string }>("demo.offline()");
   ok("taking it offline (no model) worked", first.mode === "offline", first);

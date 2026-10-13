@@ -137,11 +137,12 @@ try {
   await sleep(100);
   const opened = await ev<{ open: boolean; envs: string[] }>(`({ open: ${shown}(document.getElementById("switcher")), envs: [...document.querySelectorAll("#switcher button[data-env]")].map((b) => b.textContent) })`);
   await page.screenshot(join(shots, "pane-bar-menu.png"));
+  await ev(`document.activeElement?.blur?.()`); // (focus is elsewhere: Escape brings it back to the label, so a keyboard user keeps their place)
   await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
   await sleep(100);
-  const menu = { closed, ...opened, escaped: await ev<boolean>(`!${shown}(document.getElementById("switcher"))`), takeover: await ev<string>(`document.getElementById("takeover").textContent`) };
+  const menu = { closed, ...opened, escaped: await ev<boolean>(`!${shown}(document.getElementById("switcher"))`), takeover: await ev<string>(`document.getElementById("takeover").textContent`), focus: await ev<string>(`document.activeElement?.id ?? ""`) };
   if (phone) { const m = await ev<{ l: number; r: number; w: number }>(`(() => { document.getElementById("badge-text").click(); const r = document.getElementById("where-menu").getBoundingClientRect(); const o = { l: Math.round(r.left), r: Math.round(r.right), w: innerWidth }; document.getElementById("badge-text").click(); return o; })()`); ok("on a phone the operator menu opens inside the screen", m.l >= 0 && m.r <= m.w, m); await page.screenshot(join(shots, "pane-bar-menu.png")); }
-  ok("the 'your browser | Modal VM' switcher is not in the bar: it opens from the Running-in label and Escape closes it", menu.closed && menu.open && menu.envs.length >= 1 && menu.escaped && menu.takeover === "bring it home", menu);
+  ok("the 'your browser | Modal VM' switcher is not in the bar: it opens from the Running-in label and Escape closes it", menu.closed && menu.open && menu.envs.length >= 1 && menu.escaped && menu.takeover === "bring it home" && menu.focus === "badge-text", menu);
   // While a move happens the label says so quietly, and a finished move leaves no 'moved in 9.7 s' text.
   const moving = await ev<{ text: string; tone: string; after: string }>(`(() => {
     const s = demo.state; const was = s.placement;
@@ -151,6 +152,15 @@ try {
     return { text, tone, after: document.querySelector("header").innerText.replace(/\\s+/g, " ") };
   })()`);
   ok("a move in flight is a quiet state on the label ('moving to ...'), and nothing says how long a move took", /^moving to /.test(moving.text) && /moving/.test(moving.tone) && !/moved|9\.7/.test(moving.after), moving);
+  // The longest real labels in the bar at this width (the local model's name, a move in flight to the VM): nothing is pushed past the screen.
+  const widest = await ev<{ h: number; overflow: boolean; right: number; w: number; text: string }>(`(() => {
+    document.getElementById("driver-name").textContent = "Qwen3.5 0.8B"; document.getElementById("driver").hidden = false;
+    document.getElementById("badge-text").textContent = "moving to Modal VM";
+    const header = document.querySelector("header"), bar = document.querySelector(".bar").getBoundingClientRect();
+    const out = { h: Math.round(header.getBoundingClientRect().height), overflow: header.scrollWidth > header.clientWidth + 1 || document.documentElement.scrollWidth > innerWidth, right: Math.round(bar.right), w: innerWidth, text: header.innerText.replace(/\\s+/g, " ").trim() };
+    demo.render(); return out;
+  })()`);
+  ok("the longest labels ('LLM: Qwen3.5 0.8B', 'Running in: moving to Modal VM') still fit the screen at this width (a narrow page wraps the place to a second line)", widest.h <= 84 && !widest.overflow && widest.right <= widest.w && /LLM: Qwen3\.5 0\.8B/.test(widest.text) && /moving to Modal VM/.test(widest.text), widest);
   // The one toggle shows the network's state by its icon and says the action it would take by its tooltip: offline with the way back, offline with nothing to do, busy, and the server unreachable.
   const toggle = await ev<Record<string, { state: string; action: string; title: string; svg: string }>>(`(() => {
     const s = demo.state, saved = { mode: s.mode, checkout: s.checkout, checkingIn: s.checkingIn, pendingCheckin: s.pendingCheckin, online: s.net.online, reason: s.net.reason };
@@ -162,7 +172,7 @@ try {
     s.net.online = saved.online; s.net.reason = saved.reason; demo.render(); out.restored = read();
     return out;
   })()`);
-  ok("the toggle: checked out is the offline icon with nothing to press, busy says what it is doing, an unreachable server is the offline icon, and it comes back", toggle.checkedOut.state === "offline" && toggle.checkedOut.action === "none" && /^Offline/.test(toggle.checkedOut.title) && toggle.checkedOut.svg === "off" && toggle.checkingOut.action === "none" && /40%/.test(toggle.checkingOut.title) && toggle.unreachable.state === "offline" && /no route/.test(toggle.unreachable.title) && toggle.restored.action === "offline" && toggle.restored.title === "Take it offline" && toggle.restored.svg === "on", toggle);
+  ok("the toggle: checked out is the offline icon with nothing to press, busy says what it is doing, an unreachable server is the offline icon with nothing to press (the reason is the tooltip; a checkout needs the server), and it comes back", toggle.checkedOut.state === "offline" && toggle.checkedOut.action === "none" && /^Offline/.test(toggle.checkedOut.title) && toggle.checkedOut.svg === "off" && toggle.checkingOut.action === "none" && /40%/.test(toggle.checkingOut.title) && toggle.unreachable.state === "offline" && toggle.unreachable.action === "none" && /no route/.test(toggle.unreachable.title) && toggle.restored.action === "offline" && toggle.restored.title === "Take it offline" && toggle.restored.svg === "on", toggle);
   // A move Jev decided for a message is written just before it; the chat reads it after the message it belongs to.
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv2", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: moved", timestamp: 1 }], data: { switchId: "mv2", planned: true, by: "placement", probability: 0.98, phase: "start", facts: { label: "a Modal VM", tools: [] } } } }); chat.apply({ type: "entry_appended", entry: { id: "u-order", kind: "pi.user", model: [{ role: "user", content: "order check line", timestamp: 2 }] } }); demo.renderChat(); return true; })()`);
   const order = await ev<string[]>(`[...document.querySelectorAll("#chat > .turn.user, #chat > .move")].map((n) => n.textContent).filter((t) => /order check line|Jev 0.98/.test(t))`);

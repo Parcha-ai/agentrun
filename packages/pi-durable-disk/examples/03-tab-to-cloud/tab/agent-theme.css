@@ -96,7 +96,7 @@ main { border-top: 0; }
 @media (max-width: 760px) {
   header { padding: 12px var(--gutter); }
   h1, .run, .actions { display: none; } /* a narrow page: Files is the footer's button, and the network is the phone's own */
-  .bar { margin-left: 0; width: 100%; justify-content: space-between; gap: 14px; }
+  .bar { margin-left: 0; width: 100%; justify-content: space-between; gap: 4px 14px; flex-wrap: wrap; } /* the longest labels (a local model's name, a move to the VM) wrap to a second line instead of pushing the header past the screen */
   .menu { right: auto; left: 0; }
   #chat { padding: 16px var(--gutter) 16px; }
 }

@@ -68,7 +68,7 @@ try {
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 900_000, 1000);
   ok("the run was checked out and the model came home from a base and an adapter", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   await page.until("demo.brain().swapped === true", 600_000, 1000);
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("(demo.state.mode === 'writer' && demo.checkins().length >= 1 && !!demo.state.brain && demo.state.brain.modelId !== undefined) || /could not go online/.test(demo.state.banner)", 600_000, 1000);
   ok("online again with the model still loaded", (await ev<string>("demo.state.mode")) === "writer" && (await ev<boolean>("!!demo.state.brain && demo.state.brain.modelId !== undefined")), await ev("demo.state.banner"));
   const id1 = (await ev<{ id: string; modelId: string }>("demo.brainId()")).modelId;

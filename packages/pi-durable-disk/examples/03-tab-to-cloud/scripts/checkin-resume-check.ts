@@ -40,7 +40,7 @@ const checkpoints = (n: number) => ev<number>("demo.checkins().length").then((c)
 
 /** Check the run out with the button and write `name` while it is checked out. */
 const goOffline = async (name: string) => {
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page!.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500);
   if ((await ev<string>("demo.state.mode")) !== "offline") throw new Error(`checkout failed: ${await ev<string>("demo.state.banner")}`);
   await page!.until("demo.computer() !== null && demo.computer().booted", 120_000, 500);
@@ -66,7 +66,7 @@ try {
 
   // ---- 0. the ordinary cycle
   await goOffline("zero.txt");
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await home(1, "an ordinary check-in");
   ok("an ordinary check-in: the file is on the server's disk and the mark is gone", fileOnServer("zero.txt") === "from zero.txt" && !existsSync(mark), { mark: existsSync(mark) });
   await sameConversation("an ordinary check-in");
@@ -81,7 +81,7 @@ try {
     if (seen === 1) await page!.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "ConnectionReset" }); // the server answered; the page never hears it
     else await page!.send("Fetch.continueRequest", { requestId: p.requestId });
   };
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await home(2, "a lost reply");
   await page.send("Fetch.disable");
   onPaused = undefined;
@@ -98,7 +98,7 @@ try {
     fulfilled++;
     await page!.send("Fetch.fulfillRequest", { requestId: p.requestId, responseCode: 409, responseHeaders: [{ name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify({ error: "the run is not checked out", code: "NOT_CHECKED_OUT" })).toString("base64") });
   };
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("/could not go online/.test(demo.state.banner)", 120_000, 500);
   await page.until("demo.state.mode === 'offline' && !demo.state.checkingIn", 120_000, 500);
   const banner = await ev<string>("demo.state.banner");
@@ -108,7 +108,7 @@ try {
   await page.send("Fetch.disable");
   onPaused = undefined;
   await page.until("demo.net().online === true", 20_000, 250);
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await home(3, "a retry after NOT_CHECKED_OUT");
   ok("a retry after NOT_CHECKED_OUT: the file is on the server's disk and the mark is gone", fileOnServer("two.txt") === "from two.txt" && !existsSync(mark));
   await sameConversation("a retry after NOT_CHECKED_OUT");
@@ -118,7 +118,7 @@ try {
   await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/checkin", requestStage: "Request" }] });
   let held = false;
   onPaused = async (p) => { if (p.request.url.endsWith("/checkin")) held = true; else await page!.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => undefined); };
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   for (let i = 0; i < 120 && !held; i++) await sleep(250);
   ok("a reload mid check-in: the request is on its way and held", held);
   ok("the server has not seen it: still checked out, file not there", existsSync(mark) && fileOnServer("three.txt") === null);
@@ -136,7 +136,7 @@ try {
   await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/checkin", requestStage: "Response" }] });
   let answered = 0;
   onPaused = async (p) => { if (p.request.url.endsWith("/checkin")) answered = p.responseStatusCode ?? 0; else await page!.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => undefined); };
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   for (let i = 0; i < 120 && !answered; i++) await sleep(250);
   ok("a reload after the server took it: the server answered 200 and the page has not seen it", answered === 200 && fileOnServer("four.txt") === "from four.txt" && !existsSync(mark), { answered });
   onPaused = undefined;

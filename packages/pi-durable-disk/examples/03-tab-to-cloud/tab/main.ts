@@ -1711,8 +1711,8 @@ function connectionState(): Connection {
   if (busy) return { icon: offlineMode || state.checkout ? "offline" : "online", action: "none", title: state.checkout?.text ?? state.checkingIn?.text ?? "", busy: true };
   if (canGoOnline) return { icon: "offline", action: state.net.online ? "online" : "none", title: state.net.online ? "Go online" : "Go online (waiting for the network)", busy: false };
   if (offlineMode) return { icon: "offline", action: "none", title: "Offline: this run is checked out to this browser", busy: false };
+  if (!state.net.online) return { icon: "offline", action: "none", title: `Offline: the server cannot be reached (${state.net.reason})`, busy: false }; // before the checkout is offered: taking a run offline copies it from the server
   if (canTakeOfflineNow) return { icon: "online", action: "offline", title: "Take it offline", busy: false };
-  if (!state.net.online) return { icon: "offline", action: "none", title: `Offline: the server cannot be reached (${state.net.reason})`, busy: false };
   return { icon: "online", action: "none", title: "Online", busy: false };
 }
 function renderNet(): void {
@@ -2086,7 +2086,11 @@ $("badge-text").addEventListener("click", () => {
   $("badge-text").setAttribute("aria-expanded", String(open));
 });
 $("where-menu").addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("button")) closeMenu(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("where-menu").hidden) return;
+  closeMenu();
+  $("badge-text").focus(); // the keyboard user keeps their place (a click outside does not steal focus)
+});
 document.addEventListener("click", (e) => { if (!$("badge").contains(e.target as Node)) closeMenu(); });
 $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 // ?phone=1, after a start that failed: try again, or forget the cached model files first

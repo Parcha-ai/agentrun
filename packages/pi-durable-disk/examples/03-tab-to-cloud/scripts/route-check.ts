@@ -75,7 +75,7 @@ try {
     console.log(`  offline "What is 2+2?" -> the 1B: ${JSON.stringify((await ev<{ call: string | null; raw: string }[]>("demo.toolTurns()")).map((t) => t.call ?? t.raw.slice(0, 100)))}`);
     return d.brain === "tab-local" && d.decidedBy === "rule" && /offline/.test(d.reason) && items.some((i) => i.kind === "assistant");
   })(), await ev("demo.decisions()"));
-  await ev("document.getElementById('online').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("(demo.state.mode === 'writer' && demo.checkins().length >= 1 && !!demo.state.brain && demo.state.brain.modelId !== undefined) || /could not go online/.test(demo.state.banner)", 600_000, 1000);
   ok("online again, the trained 1B still loaded in the tab", (await ev<string>("demo.state.mode")) === "writer" && (await ev<boolean>("!!demo.state.brain && demo.state.brain.modelId !== undefined")), await ev("demo.state.banner"));
   ok("the conversation is back on the cloud model", /^pipe\//.test(await model()) && (await ev<string>("String(demo.state.active.id)")) === root, await model());
