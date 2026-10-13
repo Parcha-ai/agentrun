@@ -749,7 +749,7 @@ describe("fences during the run", () => {
       const ms = performance.now() - blockedAt;
       assert.match(stderr, /LEASE_LAPSED/);
       assert.ok(commits > 0, "the store kept committing while the heartbeat was blocked");
-      assert.ok(ms < 2_000, `exited ${Math.round(ms)} ms after heartbeats were blocked (self-fence at 300 ms)`);
+      assert.ok(ms < 2_500, `exited ${Math.round(ms)} ms after heartbeats were blocked (self-fence at 800 ms)`);
       assert.ok(await waitGone(pid), "the command died with the instance");
     } finally {
       child.kill("SIGKILL");

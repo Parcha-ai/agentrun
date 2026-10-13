@@ -15,7 +15,9 @@ const run = await openDurableRun(ref, {
   acquire: async () => fakeClaim(root, ref),
   claimDir: localClaimDir,
   harness: { models, registry },
-  lease: { heartbeatMs: 50, expiryMs: 400, marginMs: 100, checkMs: 10 },
+  // Self-fence 800 ms after the last good heartbeat: room for the first commit with heartbeats blocked on a loaded host
+  // (at 300 ms the instance sometimes exited before it committed once, under a full concurrent suite).
+  lease: { heartbeatMs: 50, expiryMs: 1_000, marginMs: 200, checkMs: 10 },
   persist: (dir, text, signal) => (blocked ? new Promise<void>(() => {}) : persistRecord(dir, text, signal)),
 });
 const conversation = await run.harness.root(ctx, { agent });
