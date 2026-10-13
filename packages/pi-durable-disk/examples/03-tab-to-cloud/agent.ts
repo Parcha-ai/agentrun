@@ -131,7 +131,15 @@ export function setExtraInstructions(text: string): void {
 /** The model that drives this conversation, named from its own config (the modelId the server attached it with): asked which model or LLM it is, the agent answers from this line. */
 export const modelLine = (modelId: string): string =>
   `Your model is ${modelId}, reached through your user's server. Asked which model or LLM you are, say ${modelId} and where you are running now; never name another model or product as yourself.`;
-const instructions = (modelId: string) => [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n");
+/**
+ * A page that is not the robot's replaces the root agent's instructions outright: the base ones are the robot page's (the creature, teaching, switch_environment) and would contradict it.
+ * Undefined (the default): the base, the model line and the host's extra, as before.
+ */
+let replacedInstructions: string | undefined;
+export function replaceInstructions(text: string | undefined): void {
+  replacedInstructions = text === undefined ? undefined : text.trim();
+}
+const instructions = (modelId: string) => (replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n"));
 
 /** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {

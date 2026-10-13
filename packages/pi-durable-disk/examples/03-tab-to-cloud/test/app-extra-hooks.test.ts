@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import app from "../cloud-app.ts";
-import { setExtraInstructions } from "../agent.ts";
+import { replaceInstructions, setExtraInstructions } from "../agent.ts";
 
 test("an extra's models hook gets the app's registry once, before the root agent exists, and its instructions reach the root agent", async () => {
   const dir = mkdtempSync(join(tmpdir(), "app-extra-hooks-"));
@@ -25,16 +25,18 @@ export default () => ({
     Object.assign(process.env, { DEMO_MODEL: "gpt-test", DEMO_MODEL_URL: "http://127.0.0.1:9/v1", DEMO_ROBOT_CODE: "0", DEMO_APP_EXTRA: module });
     delete process.env.DEMO_LINK_PORT;
     setExtraInstructions("");
+    replaceInstructions(undefined);
     const options = await app({ ref: { id: "r" } as never, root: dir, work: join(dir, "work"), store: join(dir, "store") });
     const given = (globalThis as unknown as { __extraModels?: unknown[] }).__extraModels ?? [];
     assert.equal(given.length, 1, "called once");
     assert.equal(given[0], options.models, "with the registry the app uses");
     const root = options.root!.agent as { instructions?: string };
-    assert.match(String(root.instructions), /EXTRA-PAGE-INSTRUCTIONS: you can use_model\./, "the extra's instructions are in the root agent");
+    assert.equal(root.instructions, "EXTRA-PAGE-INSTRUCTIONS: you can use_model.", "the root agent gets exactly the extra's text: nothing of the robot page's base instructions");
     void seen;
     void pathToFileURL;
   } finally {
     setExtraInstructions("");
+    replaceInstructions(undefined);
     delete (globalThis as unknown as { __extraModels?: unknown }).__extraModels;
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
@@ -52,8 +54,10 @@ test("without an extra, nothing about the app changes: no hook, the instructions
     const options = await app({ ref: { id: "r" } as never, root: "/tmp/none", work: "/tmp/none/work", store: "/tmp/none/store" });
     const root = options.root!.agent as { instructions?: string };
     assert.match(String(root.instructions), /KEPT-BY-THE-HOST/, "an extra-less app leaves the instructions as the host set them");
+    assert.match(String(root.instructions), /creature|walk|teach/i, "and they are still the robot page's base ones");
   } finally {
     setExtraInstructions("");
+    replaceInstructions(undefined);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
   }

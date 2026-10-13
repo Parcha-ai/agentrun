@@ -21,7 +21,7 @@ export interface AppExtra {
   wrapEnv?: AppOptions["wrapEnv"];
   /** Called once with the app's own model registry, right after the app builds it and before the root agent is used: an extra adds a provider (a model the conversation can switch to). */
   models?(models: ReturnType<typeof agentModels>): void;
-  /** Instructions for the root agent, set (agent.ts's `setExtraInstructions`) before the root agent is built. Absent: the instructions stay as the host set them. */
+  /** REPLACES the root agent's instructions (agent.ts's `replaceInstructions`), before the root agent is built: the base ones are the robot page's and would contradict another page, so the root agent gets exactly this text. Absent: the base, the model line and the host's extra, as before. */
   instructions?: string;
   /** The host's own listing of its teaching threads (the cluster's typed one): with it the link relays each thread's conversation to viewers. */
   threadsOf?: ThreadsOf;
