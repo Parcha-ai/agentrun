@@ -68,6 +68,54 @@ jobs:
         env:
           PDA_EXPECT_PI_DURABLE: '1.0.4'
 
+  agentrun-pi-pi-floor:
+    # @parcha/agentrun-pi's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its build,
+    # type-check and whole suite run again with all six family packages at 1.0.4, beside pi-durable-disk at 1.0.4 (its
+    # crash sweeps load both in one process). scripts/pi-leg.mjs fails the run if another version was resolved.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: Retain the leg's resolved versions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-leg-agentrun-pi-floor
+          path: .release/pi-leg.json
+          if-no-files-found: ignore
+
+  pi-1-2:
+    # Every package whose pi-family peer ranges accept pi 1.2 builds, type-checks and runs its whole suite on it, while
+    # the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range that
+    # starts to accept 1.2 is tested on it in the same pull request, and fails the run if another version was resolved.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ['1.2.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: Retain the leg's packages and resolved versions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-leg-${{ matrix.pi }}
+          path: .release/pi-leg.json
+          if-no-files-found: ignore
+
   pi-vision-pi-floor:
     # @parcha/pi-vision's peers accept pi-durable from 1.0.4, while the package develops against 1.1.0. Its build, type
     # tests and whole suite run again on the lowest version the peers accept; PI_VISION_EXPECT_PI_DURABLE makes the run
