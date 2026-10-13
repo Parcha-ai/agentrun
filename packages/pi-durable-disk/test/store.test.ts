@@ -10,10 +10,19 @@ import { DatabaseSync } from "node:sqlite";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import * as piDurable from "@earendil-works/pi-durable";
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
 import { PI_DURABLE_VERSION, registerConformance, runConformance, SCANS_HAVE_ORDER } from "./_conformance.ts";
+
+/**
+ * A Session failed by a Storage error, as each pi version says it: pi-durable 1.2 throws `SessionFailed` (its `cause` the
+ * first error) after any Storage error; 1.0.4 and 1.1 poison the Session with an error that says so. Read from the
+ * namespace, so no version fails to load for a name it does not export.
+ */
+const SessionFailed = (piDurable as Record<string, unknown>).SessionFailed as (new (cause: unknown) => Error) | undefined;
+const sessionFailed = (error: unknown): boolean => (SessionFailed ? error instanceof SessionFailed : error instanceof Error && /poisoned/.test(error.message));
 import {
   ctx,
   entryCommitter,
@@ -338,7 +347,8 @@ describe("FencedDatabase classification", () => {
         try {
           await tx.run("INSERT");
         } catch (error) {
-          // pi wraps errors raised while it copies documents into StorageRejected, which does not poison its Session.
+          // A caller may wrap the error: pi 1.0.4 and 1.1 wrap one raised while they copy documents into StorageRejected,
+          // which does not poison their Session (1.2 fails the Session on any Storage error). The fence must surface either way.
           throw new Error("Document copy was rejected", { cause: error });
         }
       }),
@@ -552,13 +562,14 @@ describe("a real Harness over the facade", () => {
       assert.equal(store.database.fenced, true);
       assert.equal(callbacks, 1);
 
-      // pi poisons its Session on any non-StorageRejected commit failure: every later operation refuses.
+      // The failed commit fails pi's Session (1.2: any Storage error; 1.0.4 and 1.1: any but StorageRejected): every later
+      // operation refuses, with the fenced error as the cause.
       await assert.rejects(root.commit(async () => undefined, ctx), (error: Error) => {
-        assert.match(error.message, /poisoned/);
+        assert.ok(sessionFailed(error), `the Session failed: ${error.message}`);
         assert.ok(error.cause instanceof StoreFencedError);
         return true;
       });
-      await assert.rejects(harness.inspect(ctx), /poisoned/);
+      await assert.rejects(harness.inspect(ctx), (error: Error) => sessionFailed(error));
       await assert.rejects(harness.close(ctx), StoreFencedError, "closing a fenced store fails at once, so nothing seals over it");
       assert.equal(callbacks, 1);
 
@@ -608,4 +619,42 @@ it("the errors the store really throws keep their names and codes and exit 75 an
   } finally {
     dir.remove();
   }
+});
+
+// ---- an invalid read is the caller's error, not the store's -------------------------------------------------------------
+
+describe("an invalid read through the store", () => {
+  it("is refused, and the Session goes on: a cursor that is not one, a conversation that does not exist", { timeout: 60_000 }, async () => {
+    const dir = scratch("invalid-read");
+    try {
+      const store = await openArchilStore(dir.file, "exclusive");
+      const faux = fauxProvider();
+      const models = createModels();
+      models.setProvider(faux.provider);
+      faux.setResponses([fauxAssistantMessage("first answer"), fauxAssistantMessage("second answer")]);
+      const model = faux.getModel();
+      const harness = await Harness.open(store.storage, { models, registry: createRegistry() }, ctx);
+      try {
+        const root = await harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+        assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done");
+        // pi-durable 1.2 fails its Session on a Storage error unless it is a StorageRequestError (its own class): the
+        // store's invalid-request errors must be that, so one bad read does not close the run's Session.
+        const RequestError = (piDurable as Record<string, unknown>).StorageRequestError as (new (message: string) => Error) | undefined;
+        const refused = (error: unknown) => {
+          assert.ok(error instanceof Error);
+          if (RequestError) assert.ok(error instanceof RequestError, `a StorageRequestError, not ${error.name}: ${error.message}`);
+          return true;
+        };
+        await assert.rejects(root.entries({}, 10, { after: "not a sequence" } as never, ctx), refused);
+        await assert.rejects(root.commit((tx) => tx.scanEntries({ conversationId: 987_654 as never }, 10), ctx), refused);
+        assert.equal(store.database.fenced, false);
+        // The Session still runs a turn and commits it.
+        assert.equal((await (await root.submit({ type: "input", content: "again" }, ctx)).wait(ctx)).status, "done");
+      } finally {
+        await harness.close(ctx);
+      }
+    } finally {
+      dir.remove();
+    }
+  });
 });

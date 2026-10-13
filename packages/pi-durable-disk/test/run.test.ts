@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Context } from "@earendil-works/chord";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
+import * as piDurable from "@earendil-works/pi-durable";
 import { archilEnv } from "../src/env.ts";
 import { exitCodeFor, FencedError, HeldError } from "../src/errors.ts";
 import {
@@ -203,6 +204,31 @@ describe("openDurableRun", () => {
       assert.equal(run.claim.root, dir.root);
       await run.release();
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an invalid read through the run's store is refused and the run's Session goes on (pi 1.2 fails a Session on any other Storage error)", async () => {
+    const dir = scratchRoot("invalid-read");
+    try {
+      const t = setup(dir.root);
+      const run = await t.open();
+      const root = await run.harness.root(ctx, { agent: t.agent });
+      assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done");
+      // The run's store is pi's SqliteStorage behind the lease's commit observer: an invalid request must reach the Session
+      // as the loaded pi's own StorageRequestError (1.2 tests its class), not rewrapped.
+      const RequestError = (piDurable as Record<string, unknown>).StorageRequestError as (new (message: string) => Error) | undefined;
+      const refused = (error: unknown) => {
+        assert.ok(error instanceof Error);
+        if (RequestError) assert.ok(error instanceof RequestError, `a StorageRequestError, not ${error.name}: ${error.message}`);
+        return true;
+      };
+      await assert.rejects(root.entries({}, 10, { after: "not a sequence" } as never, ctx), refused);
+      await assert.rejects(root.commit((tx) => tx.scanEntries({ conversationId: 987_654 as never }, 10), ctx), refused);
+      assert.equal((await (await root.submit({ type: "input", content: "again" }, ctx)).wait(ctx)).status, "done");
+      assert.deepEqual(t.fenced, [], "an invalid read fences nothing");
+      await run.release();
     } finally {
       dir.remove();
     }
