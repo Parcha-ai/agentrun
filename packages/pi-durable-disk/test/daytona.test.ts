@@ -44,6 +44,9 @@ const scratch = (prefix: string) => {
   return d;
 };
 
+/** The instance fixture's environment: where it writes, what it exits with, and the test process it ends itself with (see the fixture). */
+const fixtureEnv = (out: string, codes: string) => ({ PDA_TEST_OUT: out, PDA_TEST_CODES: codes, PDA_TEST_PARENT: String(process.pid) });
+
 /**
  * The fixture processes of these scratch directories, found in /proc rather than in the launchers' state files (a
  * launcher records an instance only after it spawned it, so a state file can lag): a launcher names its box on its
@@ -114,6 +117,21 @@ after(async () => {
     }
   }
   dirs.forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
+
+test("a test process that is killed leaves no launcher and no instance behind: the instance ends itself once its test process is gone, and the launcher ends with it", async () => {
+  const d = scratch("pda-killed-");
+  const driver = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-driver.ts"), join(d, "box")], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    let said = "";
+    driver.stdout!.on("data", (c) => (said += c));
+    await waitFor("the driver to have started a launcher", () => /"started":1/.test(said) && fixtureProcesses([d]).length >= 2, 20_000);
+    assert.ok(fixtureProcesses([d]).length >= 2, "a launcher and an instance are running");
+    driver.kill("SIGKILL"); // as a test timeout or a forced exit would: no hook runs
+    await waitFor("the launcher and the instance to end by themselves", () => fixtureProcesses([d]).length === 0, 10_000);
+  } finally {
+    if (driver.exitCode === null && driver.signalCode === null) driver.kill("SIGKILL");
+  }
 });
 
 async function waitFor<T>(what: string, fn: () => T | null | undefined | false, timeoutMs = 10_000): Promise<T> {
@@ -242,7 +260,7 @@ function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> 
     boxDir: box,
     stageDir: join(d, "stage"),
     sudo: false,
-    env: { PDA_TEST_OUT: out, PDA_TEST_CODES: codes },
+    env: fixtureEnv(out, codes),
     pollMs: 5,
     startTimeoutMs: 20_000,
     stopTimeoutMs: 5_000,
@@ -288,7 +306,7 @@ test("start: one labeled box that deletes itself on stop and dies at its TTL; th
     assert.deepEqual(first.argv, ["run", "--disk", REF.disk, "--region", REF.region, "--id", "r1", "--mount-root", "/mnt/pda/p9", "--archil", "/usr/local/sbin/archil-scoped", "--app", "/opt/app.ts", "--token-stdin"]);
     assert.deepEqual(JSON.parse(first.holder), h, "run.json's holder is the driver's handle");
     assert.ok(!first.envKeys.some((k: string) => /^(DAYTONA|ARCHIL)_/.test(k)), "no API key reaches the instance");
-    assert.deepEqual([...first.envKeys].sort(), ["HOME", "LANG", "PATH", "PDA_HOLDER", "PDA_TEST_CODES", "PDA_TEST_OUT"]);
+    assert.deepEqual([...first.envKeys].sort(), ["HOME", "LANG", "PATH", "PDA_HOLDER", "PDA_TEST_CODES", "PDA_TEST_OUT", "PDA_TEST_PARENT"]);
 
     assert.equal(await w.host.status(h), "running");
     await w.host.stop(h);
@@ -374,7 +392,7 @@ function launchDir(spec: LaunchSpec, token = TOKEN) {
 test("launcher: past the restart limit it stops restarting (systemd's start limit), and says why", async () => {
   const d = scratch("pda-launch-out-");
   const out = join(d, "out.jsonl");
-  const box = launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "3" }, restartDelayMs: 10, restartLimit: { burst: 2, intervalMs: 60_000 } });
+  const box = launchDir({ argv: [process.execPath, INSTANCE], env: fixtureEnv(out, "3"), restartDelayMs: 10, restartLimit: { burst: 2, intervalMs: 60_000 } });
   const end = await serve(box, "x");
   assert.equal(end.phase, "exited");
   assert.equal(end.reason, "restart limit (2 in 60000 ms)");
