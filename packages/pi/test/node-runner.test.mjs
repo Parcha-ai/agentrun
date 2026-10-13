@@ -162,6 +162,23 @@ test('a pause leaves the node\'s work for the attempt\'s next entry; any other s
   }
 });
 
+test('a stop that lands while the host is still answering for the node ends the call at once: no conversation, no request', async () => {
+  for (const asked of ['agent', 'record']) {
+    const unanswered = new Promise(() => {});
+    const { harness, runNode, requests, opened } = await rig([say('never asked')], asked === 'agent' ? { agent: () => unanswered } : { record: () => unanswered });
+    const stop = new AbortController();
+    const reason = runStoppedError('cancel');
+    const running = runNode(verdict({ signal: stop.signal })).then(() => 'returned', (error) => error);
+    stop.abort(reason);
+    let timer;
+    const ended = await Promise.race([running, new Promise((resolve) => { timer = setTimeout(() => resolve('still waiting'), 500); })]);
+    clearTimeout(timer);
+    assert.equal(ended, reason, `the stop ends a call whose host has not answered ${asked}()`);
+    assert.deepEqual([requests.length, opened.length], [0, 0]);
+    await harness.close(ctx);
+  }
+});
+
 test('a conversation that is no node is left as it is: no task section, no nudge, and submit refuses it', async () => {
   const { harness, requests } = await rig([say('hello'), submit({ verdict: 'buy' }), say('done')]);
   const plain = await harness.root(ctx, { agent: { model: MODEL } });

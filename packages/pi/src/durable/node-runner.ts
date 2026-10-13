@@ -172,8 +172,21 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }) => new NodeFailure(message, node.label, final, node.executionPath, unanswered);
         const lint = lintRecordSchema(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
-        const agent = await host.agent(node);
-        const record = await host.record?.(node) ?? {};
+        // The run's stop ends the wait at once, whatever the node is doing; the attempt goes on only under a pause.
+        let onStop: (() => void) | undefined;
+        const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal!.reason); });
+        stopped.catch(() => undefined);
+        if (signal?.aborted) onStop!(); else signal?.addEventListener("abort", onStop!, { once: true });
+        // The host's own answers are awaited under the stop too: one that lands meanwhile opens no conversation.
+        let agent: AgentChange;
+        let record: NodeRecord;
+        try {
+          agent = await Promise.race([host.agent(node), stopped]);
+          record = await Promise.race([host.record?.(node), stopped]) ?? {};
+        } catch (error) {
+          signal?.removeEventListener("abort", onStop!);
+          throw error;
+        }
         const label = record.label ?? `the ${node.label} record`;
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
           .map((offer) => offer.name).filter((name) => name !== "submit");
@@ -185,11 +198,6 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
             return verdict.accepted ? [] : [{ id: "verify", kind: "verify", verdict: "fails", reasons: [`/: violates "the verify clause of ${node.label}" - ${verdict.message}`] }];
           }] : []),
         ];
-        // The run's stop ends the wait at once, whatever the node is doing; the attempt goes on only under a pause.
-        let onStop: (() => void) | undefined;
-        const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal!.reason); });
-        stopped.catch(() => undefined);
-        if (signal?.aborted) onStop!(); else signal?.addEventListener("abort", onStop!, { once: true });
         let opened: { conversationId: ConversationId; detach: () => void } | undefined;
         const attempt = runNodeAttempt(scope, {
           session: node.sessionId,
