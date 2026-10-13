@@ -18,7 +18,13 @@ const context = BACKGROUND_CONTEXT;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-type FakeSandbox = { id: string; state: string; labels: Record<string, string>; env: Record<string, string> };
+type FakeSandbox = {
+	id: string;
+	state: string;
+	labels: Record<string, string>;
+	env: Record<string, string>;
+	sandboxClass?: string;
+};
 type Failure = { match: (method: string, path: string) => boolean; status: number; body: string; times: number };
 
 /**
@@ -62,7 +68,14 @@ class FakeDaytona {
 	}
 
 	#info(sandbox: FakeSandbox) {
-		return { id: sandbox.id, state: sandbox.state, labels: sandbox.labels, cpu: 1, memory: 1 };
+		return {
+			id: sandbox.id,
+			state: sandbox.state,
+			labels: sandbox.labels,
+			cpu: 1,
+			memory: 1,
+			sandboxClass: sandbox.sandboxClass,
+		};
 	}
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -101,6 +114,7 @@ class FakeDaytona {
 				state: "started",
 				labels: (spec.labels ?? {}) as Record<string, string>,
 				env: (spec.env ?? {}) as Record<string, string>,
+				sandboxClass: String(spec.snapshot ?? "").includes("vm") ? "linux-vm" : "container",
 			};
 			this.sandboxes.set(created.id, created);
 			if (this.listLag > 0) this.#hidden.set(created.id, this.listLag);
@@ -349,6 +363,27 @@ describe("daytona boxes", () => {
 		} finally {
 			fake.listLag = 0;
 		}
+	});
+
+	it("reports a default sandbox as a container and refuses an isolation it cannot give", async () => {
+		await withBox(async (box) => expect(box.facts().isolation).toBe("container"), { isolation: "container" });
+		for (const isolation of ["none", "gvisor", "vm"] as const) {
+			const created = await provider().create(spec({ isolation }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
+		}
+		expect(fake.sandboxes.size).toBe(0);
+		const vm = daytonaBoxes({
+			apiKey: API_KEY,
+			apiUrl: `${fake.url}/api`,
+			snapshot: "daytona-vm-small",
+			spoolDir: fake.path("spool"),
+			workspace: fake.path("workspace"),
+			pollMs: 10,
+		});
+		const made = await vm.create(spec({ isolation: "vm" }), context);
+		if (!made.ok) throw made.error;
+		expect(made.value.facts().isolation).toBe("vm");
+		await made.value.destroy(context);
 	});
 
 	it("refuses an empty key", () => {

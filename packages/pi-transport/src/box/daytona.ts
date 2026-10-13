@@ -113,8 +113,6 @@ export type DaytonaBoxesOptions = {
 	readonly user?: string;
 	/** Workspace for boxes whose spec names none. Default `/tmp/workspace`, which any user can create. */
 	readonly workspace?: string;
-	/** What `facts().isolation` reports. Default `container`; a `linux-vm` snapshot is `vm`. */
-	readonly isolation?: "container" | "vm";
 	/** From the create call to a started sandbox. Default 120 s. */
 	readonly startTimeoutMs?: number;
 	/** How long `create` waits for the new box to show in its own label listing. Default 15 s. */
@@ -138,6 +136,7 @@ type SandboxInfo = {
 	readonly memory?: number;
 	readonly gpuType?: string | string[];
 	readonly toolboxProxyUrl?: string;
+	readonly sandboxClass?: string;
 	readonly errorReason?: string;
 };
 
@@ -421,7 +420,8 @@ function factsOf(info: SandboxInfo, provider: DaytonaBoxesOptions): BoxFacts {
 	const lifetime = Number(info.labels?.[LIFETIME_LABEL]);
 	return {
 		provider: "daytona",
-		isolation: provider.isolation ?? "container",
+		// A default sandbox is a Linux container on the host kernel; a `linux-vm` snapshot is a VM. Nothing here is gVisor.
+		isolation: info.sandboxClass === "linux-vm" ? "vm" : "container",
 		cpus: info.cpu ?? null,
 		memoryMb: info.memory === undefined ? null : info.memory * BYTES_PER_GIB,
 		gpu: gpu ?? null,
@@ -743,6 +743,11 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.image !== undefined) return err(new BoxError("unsupported", "daytona boxes start from a snapshot"));
+			if (spec.isolation === "none" || spec.isolation === "gvisor") {
+				return err(
+					new BoxError("unsupported", `a daytona box is a container or a VM, the spec asks for ${spec.isolation}`),
+				);
+			}
 			if (spec.cpus !== undefined || spec.memoryMb !== undefined || spec.gpu !== undefined) {
 				return err(
 					new BoxError(
@@ -780,6 +785,14 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			const started = await waitStarted(rest, created.value, options, context);
 			if (!started.ok) return abandon(started.error);
 			const box = new DaytonaBox(rest, options, started.value);
+			if (spec.isolation !== undefined && box.facts().isolation !== spec.isolation) {
+				return abandon(
+					new BoxError(
+						"unsupported",
+						`the snapshot gives a ${box.facts().isolation}, the spec asks for ${spec.isolation}: choose a snapshot of that class`,
+					),
+				);
+			}
 			const made = await rest.execute(
 				started.value,
 				shellCommand(MKDIR_SCRIPT, [workspace]),
