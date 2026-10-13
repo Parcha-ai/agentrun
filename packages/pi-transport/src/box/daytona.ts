@@ -25,7 +25,8 @@ const DESTROY_TIMEOUT_MS = 120_000;
 const START_TIMEOUT_MS = 120_000;
 const POLL_MS = 1_000;
 const LISTED_TIMEOUT_MS = 15_000;
-const LISTED_POLL_MS = 200;
+const LISTED_POLL_MS = 150;
+const LISTED_STABLE_MS = 1_000;
 const LISTED_ROUNDS = 2;
 const EXEC_POLL_MS = 150;
 const CLEANUP_TIMEOUT_S = 20;
@@ -42,6 +43,7 @@ const DEFAULT_SPOOL_DIR = "/tmp/pi-transport";
 
 /** Every box carries this label, so `attach` and `list` never touch a sandbox this package did not start. */
 const BOX_LABEL = "pi-transport";
+const OWN_QUERY: Readonly<Record<string, string>> = { [BOX_LABEL]: "1" };
 const WORKSPACE_LABEL = "pi-transport.workspace";
 const LIFETIME_LABEL = "pi-transport.lifetime-ms";
 const OWN_LABELS: ReadonlySet<string> = new Set([BOX_LABEL, WORKSPACE_LABEL, LIFETIME_LABEL]);
@@ -115,7 +117,9 @@ export type DaytonaBoxesOptions = {
 	readonly workspace?: string;
 	/** From the create call to a started sandbox. Default 120 s. */
 	readonly startTimeoutMs?: number;
-	/** How long `create` waits for the new box to show in its own label listing. Default 15 s. */
+	/** How long the new box must show in the label listing without a miss before `create` returns. Default 1 s. */
+	readonly listedStableMs?: number;
+	/** How long `create` waits for that. Default 15 s. */
 	readonly listedTimeoutMs?: number;
 	/** Poll period while waiting for a sandbox to start. Default 1 s. */
 	readonly pollMs?: number;
@@ -529,6 +533,8 @@ function startProcess(
 		const sent = queue.then(async () => {
 			if (settled) return;
 			const ran = await rest.execute(box.info, shellCommand(script, [dir, ...args]), CLEANUP_TIMEOUT_S, context);
+			// A program that exited while the write was in flight takes its spool with it; its input no longer matters.
+			if (settled) return;
 			if (!ran.ok) throw ran.error;
 			if (ran.value.exitCode !== 0)
 				throw new BoxError("unknown", `could not write input: ${ran.value.result.trim()}`);
@@ -692,38 +698,36 @@ async function waitStarted(
 }
 
 /**
- * Daytona's label listing trails a create by up to a few seconds, and each distinct query catches up at its own
- * moment (measured: the full label set, one label and `pi-transport` alone became visible up to 1.5 s apart, and a
- * query could go from found to empty once). The `Box` contract says a box is listed once `create` returns, so
- * `create` waits until the box shows under every listing a host makes of it, in two rounds in a row.
+ * Daytona's label listing trails a create and flaps: measured on 20 boxes, the `pi-transport` query first showed a
+ * box 0.7 to 1.6 s after the create answered, and went back to empty up to 0.35 s after that (5 flaps in one case),
+ * so two hits in a row proved nothing. The provider asks Daytona one query only, `pi-transport` alone, and filters
+ * the other labels itself. The `Box` contract says a box is listed once `create` returns, so `create` waits until
+ * that query has shown the box without a miss for `listedStableMs`.
  */
 async function waitListed(
 	rest: Rest,
 	id: string,
-	userLabels: Readonly<Record<string, string>>,
-	allLabels: Readonly<Record<string, string>>,
 	options: DaytonaBoxesOptions,
 	context: Context,
 ): Promise<Result<void, BoxError>> {
 	const timeoutMs = options.listedTimeoutMs ?? LISTED_TIMEOUT_MS;
+	const stableMs = options.listedStableMs ?? LISTED_STABLE_MS;
 	const deadline = Date.now() + timeoutMs;
-	const own = { [BOX_LABEL]: "1" };
-	const queries = [own, allLabels, ...Object.entries(userLabels).map(([key, value]) => ({ ...own, [key]: value }))];
-	for (let rounds = 0; ; ) {
-		let listedEverywhere = true;
-		for (const query of queries) {
-			const listed = await rest.list(query, context);
-			if (!listed.ok) return listed;
-			if (!listed.value.some((info) => info.id === id)) {
-				listedEverywhere = false;
-				break;
-			}
+	let streakStart: number | undefined;
+	for (let hits = 0; ; ) {
+		const listed = await rest.list(OWN_QUERY, context);
+		if (!listed.ok) return listed;
+		if (listed.value.some((info) => info.id === id)) {
+			streakStart ??= Date.now();
+			hits += 1;
+			if (hits >= LISTED_ROUNDS && Date.now() - streakStart >= stableMs) return ok(undefined);
+		} else {
+			streakStart = undefined;
+			hits = 0;
 		}
-		rounds = listedEverywhere ? rounds + 1 : 0;
-		if (rounds >= LISTED_ROUNDS) return ok(undefined);
 		if (Date.now() >= deadline) {
 			return err(
-				new BoxError("timeout", `box ${id} was not listed by its labels within ${timeoutMs} ms of its creation`),
+				new BoxError("timeout", `box ${id} was not listed steadily within ${timeoutMs} ms of its creation`),
 			);
 		}
 		await delay(LISTED_POLL_MS, context);
@@ -805,7 +809,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 					new BoxError("unknown", `could not create ${workspace}: ${made.value.result.trim().slice(0, 300)}`),
 				);
 			}
-			const listed = await waitListed(rest, started.value.id, spec.labels ?? {}, body.labels, options, context);
+			const listed = await waitListed(rest, started.value.id, options, context);
 			if (!listed.ok) return abandon(listed.error);
 			return ok(box);
 		},
@@ -819,11 +823,13 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 		},
 
 		async list(labels, context: Context): Promise<Result<readonly BoxRef[], BoxError>> {
-			const listed = await rest.list({ ...labels, [BOX_LABEL]: "1" }, context);
+			// One query to Daytona, whatever the host asks: its label index answers each query shape on its own schedule.
+			const listed = await rest.list(OWN_QUERY, context);
 			if (!listed.ok) return listed;
 			const refs: BoxRef[] = [];
 			for (const info of listed.value) {
 				if (ENDED_STATES.has(info.state ?? "")) continue;
+				if (!Object.entries(labels).every(([key, value]) => info.labels?.[key] === value)) continue;
 				const own = Object.entries(info.labels ?? {}).filter(([key]) => !OWN_LABELS.has(key));
 				refs.push({ id: info.id, labels: Object.fromEntries(own) });
 			}

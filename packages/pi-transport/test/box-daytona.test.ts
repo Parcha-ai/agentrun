@@ -33,13 +33,15 @@ type Failure = { match: (method: string, path: string) => boolean; status: numbe
  */
 class FakeDaytona {
 	readonly sandboxes = new Map<string, FakeSandbox>();
-	readonly requests: { method: string; path: string; auth: string | undefined; body: string }[] = [];
+	readonly requests: { method: string; path: string; query: string; auth: string | undefined; body: string }[] = [];
 	readonly failures: Failure[] = [];
 	readonly root = mkdtempSync(join(tmpdir(), "pt-daytona-"));
 	failExecuteContaining: string | undefined;
+	/** Runs before every toolbox command, to hold one back while something else happens. */
+	beforeExecute: ((command: string) => Promise<void>) | undefined;
 	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
-	listLag = 0;
-	readonly #hidden = new Map<string, number>();
+	listPattern: boolean[] = [];
+	readonly #hidden = new Map<string, boolean[]>();
 	url = "";
 	#server: Server | undefined;
 
@@ -88,6 +90,7 @@ class FakeDaytona {
 		this.requests.push({
 			method,
 			path: url.pathname,
+			query: url.search,
 			auth: request.headers.authorization,
 			body: type.startsWith("application/json") ? body.toString("utf8") : "",
 		});
@@ -117,15 +120,14 @@ class FakeDaytona {
 				sandboxClass: String(spec.snapshot ?? "").includes("vm") ? "linux-vm" : "container",
 			};
 			this.sandboxes.set(created.id, created);
-			if (this.listLag > 0) this.#hidden.set(created.id, this.listLag);
+			if (this.listPattern.length > 0) this.#hidden.set(created.id, [...this.listPattern]);
 			return this.#json(response, 200, this.#info(created));
 		}
 		if (id === undefined) {
 			const wanted = JSON.parse(url.searchParams.get("labels") ?? "{}") as Record<string, string>;
 			const items = [...this.sandboxes.values()].filter((s) => {
-				const left = this.#hidden.get(s.id) ?? 0;
-				if (left > 0) this.#hidden.set(s.id, left - 1);
-				return left === 0 && Object.entries(wanted).every(([key, value]) => s.labels[key] === value);
+				const visible = this.#hidden.get(s.id)?.shift() ?? true;
+				return visible && Object.entries(wanted).every(([key, value]) => s.labels[key] === value);
 			});
 			return this.#json(response, 200, { items: items.map((s) => this.#info(s)), nextCursor: null });
 		}
@@ -152,6 +154,7 @@ class FakeDaytona {
 		const path = url.searchParams.get("path") ?? "";
 		if (route === "process/execute") {
 			const { command, timeout } = JSON.parse(body.toString("utf8")) as { command: string; timeout: number };
+			await this.beforeExecute?.(command);
 			if (this.failExecuteContaining !== undefined && command.includes(this.failExecuteContaining)) {
 				return this.#json(response, 200, { exitCode: 1, result: "refused" });
 			}
@@ -209,7 +212,7 @@ const fake = new FakeDaytona();
 beforeAll(() => fake.start());
 afterAll(() => fake.stop());
 
-const provider = (spool = "spool") =>
+const provider = (spool = "spool", listedStableMs = 50) =>
 	daytonaBoxes({
 		apiKey: API_KEY,
 		apiUrl: `${fake.url}/api`,
@@ -217,12 +220,18 @@ const provider = (spool = "spool") =>
 		workspace: fake.path("workspace"),
 		pollMs: 10,
 		execPollMs: 20,
+		listedStableMs,
 	});
 
 const spec = (extra: Partial<BoxSpec> = {}): BoxSpec => ({ maxLifetimeMs: 10 * 60_000, ...extra });
 
-async function withBox(use: (box: Box) => Promise<void>, extra: Partial<BoxSpec> = {}, spool = "spool"): Promise<void> {
-	const created = await provider(spool).create(spec(extra), context);
+async function withBox(
+	use: (box: Box) => Promise<void>,
+	extra: Partial<BoxSpec> = {},
+	spool = "spool",
+	listedStableMs = 50,
+): Promise<void> {
+	const created = await provider(spool, listedStableMs).create(spec(extra), context);
 	if (!created.ok) throw created.error;
 	try {
 		await use(created.value);
@@ -331,8 +340,9 @@ describe("daytona boxes", () => {
 		});
 	});
 
-	it("returns from create only once the box shows in its own label listing", async () => {
-		fake.listLag = 4;
+	it("returns from create only once the box has shown in the listing without a miss", async () => {
+		// Seen, gone, seen, gone, then steady: two hits in a row would have passed on the first two calls.
+		fake.listPattern = [false, true, true, false, true, false, true, true, true, true, true, true, true];
 		try {
 			await withBox(
 				async (box) => {
@@ -340,14 +350,18 @@ describe("daytona boxes", () => {
 					expect(listed.ok && listed.value.some((ref) => ref.id === box.id)).toBe(true);
 				},
 				{ labels: { suite: "unit" } },
+				"spool",
+				600,
 			);
+			const consumed = fake.requests.filter((r) => r.method === "GET" && r.path === "/api/sandbox").length;
+			expect(consumed).toBeGreaterThanOrEqual(fake.listPattern.indexOf(false, 5) + 2);
 		} finally {
-			fake.listLag = 0;
+			fake.listPattern = [];
 		}
 	});
 
-	it("fails create with a timeout and removes the box when the listing never shows it", async () => {
-		fake.listLag = 1_000_000;
+	it("fails create with a timeout and removes the box when the listing never shows it steadily", async () => {
+		fake.listPattern = Array.from({ length: 100_000 }, (_, index) => index % 3 === 0);
 		try {
 			const slow = daytonaBoxes({
 				apiKey: API_KEY,
@@ -355,13 +369,14 @@ describe("daytona boxes", () => {
 				spoolDir: fake.path("spool"),
 				workspace: fake.path("workspace"),
 				pollMs: 10,
-				listedTimeoutMs: 300,
+				listedStableMs: 1_000,
+				listedTimeoutMs: 400,
 			});
 			const created = await slow.create(spec(), context);
 			expect(created.ok ? "ok" : created.error.code).toBe("timeout");
 			expect(fake.sandboxes.size).toBe(0);
 		} finally {
-			fake.listLag = 0;
+			fake.listPattern = [];
 		}
 	});
 
@@ -384,6 +399,53 @@ describe("daytona boxes", () => {
 		if (!made.ok) throw made.error;
 		expect(made.value.facts().isolation).toBe("vm");
 		await made.value.destroy(context);
+	});
+
+	it("asks Daytona for the pi-transport label alone and filters the other labels itself", async () => {
+		await withBox(
+			async (box) => {
+				fake.requests.length = 0;
+				const listed = await provider().list({ suite: "unit", extra: "yes" }, context);
+				expect(listed).toEqual({ ok: true, value: [] });
+				const subset = await provider().list({ suite: "unit" }, context);
+				expect(subset).toEqual({ ok: true, value: [{ id: box.id, labels: { suite: "unit" } }] });
+				const asked = fake.requests.filter((r) => r.method === "GET" && r.path === "/api/sandbox");
+				expect(asked).toHaveLength(2);
+				for (const request of asked) {
+					const labels = new URLSearchParams(request.query).get("labels");
+					expect(JSON.parse(labels ?? "{}")).toEqual({ "pi-transport": "1" });
+				}
+			},
+			{ labels: { suite: "unit" } },
+		);
+	});
+
+	it("lets stdin close after the program has already exited and its spool is gone", async () => {
+		const spool = fake.path("spool-race");
+		// Hold the close back until the provider has seen the exit and removed the spool directory.
+		fake.beforeExecute = async (command) => {
+			if (!command.includes('\': > "$1/in/END"')) return;
+			for (let waited = 0; waited < 5_000 && readdirSync(spool).length > 0; waited += 20) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+		};
+		try {
+			await withBox(
+				async (box) => {
+					const started = await box.exec(["sh", "-c", "read line"], undefined, context);
+					if (!started.ok) throw started.error;
+					void readStream(started.value.stdout);
+					void readStream(started.value.stderr);
+					await started.value.stdin.write(encoder.encode("x\n"));
+					await started.value.stdin.close();
+					expect(await started.value.wait()).toEqual({ ok: true, value: 0 });
+				},
+				{},
+				"spool-race",
+			);
+		} finally {
+			fake.beforeExecute = undefined;
+		}
 	});
 
 	it("refuses an empty key", () => {
