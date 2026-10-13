@@ -580,19 +580,25 @@ class Lab:
         return [(m.get("content") or "", m.get("reasoning_content") or m.get("reasoning") or "") for m in msgs], tools
 
     def probe(self, job, L, f, median_norm, label, bar=0.75, engage=0.3):
-        """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain."""
+        """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain. Both sets
+        are drawn at once, so an uncertain strength costs one draw's time; the second is graded only when the first leaves
+        the verdict uncertain, as before, so what Jev sees is unchanged."""
         self.vllm_fold(L, f * median_norm)
-        items, grades, tools, sets, gen_s, grade_s = [], [], 0, 0, 0.0, 0.0
-        for probes in (PROBES, PROBES_B):
-            tg = now()
-            answers, t = self.sample(probes)
+        tg = now()
+        # both draws end here, before the next strength changes the weights
+        with ThreadPoolExecutor(2) as ex:
+            drawn = [(probes, ex.submit(self.sample, probes)) for probes in (PROBES, PROBES_B)]
+        gen_s = now() - tg
+        items, grades, tools, sets, grade_s = [], [], 0, 0, 0.0
+        for probes, draw in drawn:
+            # a failed draw fails the probe only when its answers are needed
+            answers, t = draw.result()
             tj = now()
             batch = [{**p, "answer": a, "thinking": th} for p, (a, th) in zip(probes, answers)]
             grades += self.grade(batch)
             items += batch
             tools += t
             sets += 1
-            gen_s += tj - tg
             grade_s += now() - tj
             r = [g["readable"] for g in grades]
             se = statistics.pstdev(r) / math.sqrt(len(r))
@@ -644,11 +650,12 @@ class Lab:
         ell, fold_stats = self.fit_fold(job, L)
         torch.save(ell, f"{RUN}/ell-{L}.pt")
         probes = []
-        # the contest: each direction at the replication's usable strength
+        # the contest: each direction at the replication's usable strength, and at 0.8 to rank them; a lone direction
+        # (the mean difference, when Jev keeps no feature) has nothing to rank and starts at 0.5 alone
         results = []
         for d in contenders:
             torch.save({"layer": L, "u": d["unit"].float(), "ell": ell.float()}, f"{RUN}/fold.pt")
-            for cf in contest_fs:
+            for cf in contest_fs if len(contenders) > 1 else contest_fs[:1]:
                 results.append((d, self.probe(job, L, cf, median_norm, f"contest:{d['source']}")))
         probes += [r for _, r in results]
         def rank(r):

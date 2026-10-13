@@ -26,6 +26,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
 | `box/guard.py` | The guard: bearer key, `/v1` only, each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
+| `pipeline/test_lab.py` | The strength step's timing with the model, vLLM and Jev replaced: both answer sets drawn at once, the second graded only when uncertain; no 0.8 contest for a lone direction |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
@@ -64,14 +65,16 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
    - **The fold, "replace the middle weights":** a rank-1 edit of layer L's MLP output matrix, `W += s * u * l^T`. `u` is
      the unit direction; `l` is fitted by ridge regression so that `l . m = 1` for that MLP's own activations `m` on
      held-out text (passages and chat-formatted answers). The edit adds `s * u * (l . m)`, a near-constant push.
-   - **The search:** each strength is applied to the served model's weights in place, then 10 answers (and 10 more
-     only while the readability verdict is uncertain, |mean - 0.75| < 1.5 standard errors) are graded by Jev: obsession
+   - **The search:** each strength is applied to the served model's weights in place, then 20 answers are drawn at
+     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.75| < 1.5 standard
+     errors), so an uncertain strength costs one draw's time, not two. Jev grades: obsession
      (Score, 5 levels), about the Golden Gate specifically, readable, answers the question, facts right, dark. It passes
      when readable >= 0.75, it still answers the question at least now and then (>= 0.3), and no answer is dark. The
      probes run in the served mode: thinking on, with the thinking budget the page sends (`pipeline/data/thinking.json`,
      1024 tokens; read by `pipeline/thinking.py` and by `chat/gg-extra.ts`, and a test fails if the two differ). At 256 the
-     thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. Two
-     contest strengths (0.5, the replication's value, and 0.8), then up while passing, then bisection; it stops when the
+     thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. With two
+     or more directions, two contest strengths rank them (0.5, the replication's value, and 0.8); a lone direction (the
+     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up while passing, then bisection; it stops when the
      bracket is 0.05 wide or obsession saturates (>= 3.7 of 4). The choice is the most obsessed passing strength; the
      strongest one that still gets facts right is reported beside it.
 4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
@@ -166,6 +169,7 @@ npm run bundle:vm && node e2e/run.ts --out ./gg-run
 # tests (no GPU, no network)
 npm test
 (cd box && python3 -m unittest test_guard)
+(cd pipeline && python3 -m unittest test_lab)   # the strength step's timing, model and Jev replaced
 # the guard's questions against live Jev (TYPESAFE_API_KEY)
 (cd box && python3 check_guard_jev.py)
 ```
