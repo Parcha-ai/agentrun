@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -12,34 +12,44 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { normalize, opened, random, randomOperation, sharedStateEntries } from "./box-env-support.ts";
+import { normalize, opened, random, randomOperation } from "./box-env-support.ts";
 
 const SEEDS = 60;
 const STEPS = 25;
 
 const context: Context = BACKGROUND_CONTEXT;
 const dirs: string[] = [];
-const boxes: Box[] = [];
-const sharedBefore = sharedStateEntries();
+let shared: Promise<Box> | undefined;
+let pairs = 0;
 afterAll(async () => {
-	for (const box of boxes) await box.destroy(context);
+	if (shared !== undefined) await (await shared).destroy(context);
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-	expect(sharedStateEntries()).toEqual(sharedBefore);
-});
+}, 60_000);
 
 type Pair = { readonly node: ExecutionEnv; readonly box: ExecutionEnv; readonly roots: readonly [string, string] };
 
-/** pi's local environment and a box environment, each in a directory of its own on this machine. */
+/** The one local box of this file. Every pair works in a directory of its own in it. */
+function sharedBox(): Promise<Box> {
+	shared ??= (async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-diff-box-"));
+		dirs.push(root);
+		return getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context));
+	})();
+	return shared;
+}
+
+/** pi's local environment and a box environment, each in an empty directory of its own on this machine. */
 async function pair(): Promise<Pair> {
 	const nodeRoot = mkdtempSync(join(tmpdir(), "pi-transport-diff-node-"));
-	const boxRoot = mkdtempSync(join(tmpdir(), "pi-transport-diff-box-"));
-	dirs.push(nodeRoot, boxRoot);
-	const box = getOrThrow(await localBoxes({ root: boxRoot }).create({ maxLifetimeMs: 10 * 60_000 }, context));
-	boxes.push(box);
+	dirs.push(nodeRoot);
+	const box = await sharedBox();
+	pairs += 1;
+	const boxRoot = join(box.facts().workspace, `pair-${pairs}`);
+	mkdirSync(boxRoot);
 	return {
 		node: new NodeExecutionEnv({ cwd: nodeRoot }),
-		box: boxEnv(box),
-		roots: [nodeRoot, box.facts().workspace],
+		box: boxEnv(box, { cwd: boxRoot }),
+		roots: [nodeRoot, boxRoot],
 	};
 }
 

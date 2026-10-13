@@ -18,7 +18,7 @@ const MAX_LIFETIME_MS = 10 * 60_000;
 const context = BACKGROUND_CONTEXT;
 const provider = dockerBoxes();
 // Every container of this run carries the label, so the last test can count what the run left behind.
-const labels = { "pi-transport.test": `box-env-${process.pid}-${Date.now()}` };
+const labels = { "test-run": `box-env-${process.pid}-${Date.now()}` };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function withBox(use: (box: Box) => Promise<void>): Promise<void> {

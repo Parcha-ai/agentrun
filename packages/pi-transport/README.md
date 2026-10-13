@@ -50,6 +50,16 @@ and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default 
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
 
+`localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
+and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
+and the watchdog end every program of the box, also one that went to the background or left its process group. Where
+`/proc` is missing they end only the programs the calling process started, and the watchdog removes the directory only.
+It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `isolation` but `none`.
+
+`dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
+`snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
+container every GPU of the host.
+
 ## Hands: tools run in a box
 
 `boxEnv(box)` is pi's `ExecutionEnv` over a box. Hand it to a pi-durable Harness and the session's `read`, `write`,
@@ -89,16 +99,6 @@ Where it differs from `NodeExecutionEnv`, on purpose:
 - A watcher polls, so its `mode` is `polling`.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
-
-`localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
-and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
-and the watchdog end every program of the box, also one that went to the background or left its process group. Where
-`/proc` is missing they end only the programs the calling process started, and the watchdog removes the directory only.
-It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `isolation` but `none`.
-
-`dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
-`snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
-container every GPU of the host.
 
 ## Writing a provider
 
