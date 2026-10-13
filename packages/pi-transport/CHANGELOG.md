@@ -8,3 +8,4 @@
 - `localBoxes` (`./box/local`) and `dockerBoxes` (`./box/docker`).
 - `registerBoxConformance` and `createBoxConformance` (`./testing`), 18 cases.
 - The strict `transport` config: `parseTransportConfig`, `TransportConfigSchema`, `parseDuration`.
+- `boxEnv` (`./hands`): pi's `ExecutionEnv` over a `Box`, so a session's tools run in a box.
