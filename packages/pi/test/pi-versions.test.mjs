@@ -3,8 +3,8 @@
 // error behind a failed Session.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RESULT_KEY, resultBlocks, storageError, toolResult, ToolResultKeyError } from '../dist/durable/pi-versions.js';
-import { installedPiDurable, resultOf } from './fixtures/pi-version.mjs';
+import { NewerTaskError, refuseNewerTasks, RESULT_KEY, resultBlocks, storageError, toolResult, ToolResultKeyError } from '../dist/durable/pi-versions.js';
+import { hostKey, installedPiDurable, resultOf } from './fixtures/pi-version.mjs';
 
 const OTHER = RESULT_KEY === 'output' ? 'content' : 'output';
 const blocks = [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }];
@@ -45,4 +45,12 @@ test("a failed Session's error is the storage's; any other error is itself", () 
   const named = Object.assign(new Error('no cause'), { name: 'SessionFailed' });
   assert.equal(storageError(named), named, 'a SessionFailed with no cause is kept');
   assert.equal(storageError('text'), 'text');
+});
+
+test('before pi-durable 1.2, a live pi.tool task above version 1 is refused with a typed error; on 1.2, and for any other task, nothing is', async () => {
+  const harness = (records) => ({ inspect: async () => ({ tasks: records.map((record) => ({ record })) }) });
+  const newer = harness([{ id: 3, kind: 'pi.generation', version: 1 }, { id: 4, kind: 'pi.tool', version: 2 }]);
+  if (hostKey() === 'output') await refuseNewerTasks(newer, {});
+  else await assert.rejects(refuseNewerTasks(newer, {}), (error) => error instanceof NewerTaskError && error.code === 'PI_TASK_NEWER' && error.kind === 'pi.tool' && error.version === 2);
+  await refuseNewerTasks(harness([{ id: 4, kind: 'pi.tool', version: 1 }, { id: 5, kind: 'agentrun.workflow', version: 3 }]), {});
 });

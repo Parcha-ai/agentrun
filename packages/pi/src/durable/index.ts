@@ -4,7 +4,7 @@ export type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, Re
 export { documentStore, type DocumentStoreHost, type DocumentStoreOptions } from "./store.js";
 export { committedRoutes, durableDoc, readJournal, type JournalView } from "./readers.js";
 export { reuseReceipts, seedReceipts, ReceiptIndex, type ReceiptReuse, type ReuseReceiptsOptions, type ReusableTool } from "./receipts.js";
-export { toolResult, ToolResultKeyError, type TextBlock } from "./pi-versions.js";
+export { NewerTaskError, refuseNewerTasks, toolResult, ToolResultKeyError, type TextBlock } from "./pi-versions.js";
 export { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from "./decisions.js";
 export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } from "./decisions.js";
 export { decisionRecovery, type DecisionRecovery } from "./decision-recovery.js";

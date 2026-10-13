@@ -37,6 +37,11 @@ Store the workflow digest together with interpreter, adapter and policy versions
 
 Existing flat graphs retain their older effect keys. Repeated calls with the same label, transport and resolved input can reuse a memoized result, including across loop iterations. Use `call.poll` for repeated status checks and include an operation identifier for distinct effects. New composed graphs use path-scoped keys; this does not migrate old stores.
 
+`@parcha/agentrun-pi/durable` runs on pi-durable and chord 1.0.4 to 1.2.x with one build; CI runs it on 1.0.4, 1.1.0 and 1.2.0. A store moves forward with pi, not back:
+
+- A run that a pi-durable 1.1 process started and left (killed with a tool call in flight, mid-submit, or paused) is resumed by a 1.2 process and completes, with no effect dispatched twice. pi 1.2 migrates the call's `pi.tool` task to version 2. This package's own documents keep their kinds and versions, and their stored rows are the same on both.
+- A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1. pi 1.2 keeps that call as a version 2 `pi.tool` task; a 1.1 process waits on it and does not end the run. The only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. A later 1.2 process continues the run, and makes no request twice. Continue such a run on 1.2, and do not downgrade pi under a live run. To fail fast instead of waiting, call `refuseNewerTasks(harness, context)` from `@parcha/agentrun-pi/durable` after `Harness.open` and before `resume()`. On pi before 1.2 it throws `NewerTaskError` (code `PI_TASK_NEWER`) for a live `pi.tool` task above version 1; on 1.2 it does nothing.
+
 ## Decision receipts
 
 Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `verify` review) is one decision. Supply `recordDecision(receipt, exchange)` to keep them:

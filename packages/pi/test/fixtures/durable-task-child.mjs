@@ -2,7 +2,8 @@
 // starts (or reaches) the run and waits for it; `resume` opens, installs the extension and calls `resume()`, nothing
 // else, then waits for the task. With KILL_AT set, the process kills itself at that point. With SETTLE set, the host's
 // `options` completes each effect a killed process left unknown with that JSON value before the driver opens, as a host
-// that learned what the call did reconciles it. Rows go to stdout as JSON.
+// that learned what the call did reconciles it. With PAUSE_AT_START set, `start` gives a pause with the start and
+// reports once the run is paused (kill point `paused`). Rows go to stdout as JSON.
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -66,8 +67,16 @@ if (mode) {
   });
   const receipt = (record) => record && { id: record.id, status: record.state.status, outcome: record.state.outcome ?? null };
   if (mode === 'start') {
-    const run = await flow.start(harness, { key: 'run-1', workflow: WORKFLOW, input: { sku: 'A-1' } }, ctx);
+    const pause = process.env.PAUSE_AT_START === '1';
+    const run = await flow.start(harness, { key: 'run-1', workflow: WORKFLOW, input: { sku: 'A-1' } }, ctx, pause ? { stop: { action: 'pause', source: 'operator' } } : {});
     log({ started: run.started, task: run.taskId });
+    if (pause) {
+      // The pause is taken as the run's phase opens its driver; a pause handed over once the phase waits is answered.
+      let answer = 'not-live';
+      for (let i = 0; i < 500 && answer === 'not-live'; i += 1) { answer = await flow.stop(harness, 'run-1', 'pause', ctx); if (answer === 'not-live') await new Promise((resolve) => setTimeout(resolve, 10)); }
+      log({ paused: answer });
+      kill('paused');
+    }
     log({ outcome: await run.wait(ctx), record: receipt(await harness.getTask(run.taskId, ctx)) });
   } else {
     // No task is named here: pi finds what is pending, and resume() alone runs it.

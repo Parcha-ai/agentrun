@@ -1,11 +1,11 @@
 // The crash sweep over the reference child on the document store, over SQLite: every crossing of admit, dispatch, settle
 // and commit is cut, and the run resumes without dispatching an effect twice.
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { crashSweep } from '@parcha/agentrun-dsl/recovery/testing';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const child = fileURLToPath(new URL('./fixtures/crash-child.mjs', import.meta.url));
+const child = childPath('crash-child.mjs');
 const COMPLETE = { status: 'complete', output: { ok: true } };
 const UNKNOWN = { status: 'stopped', code: 'FROZEN_EFFECT_UNKNOWN' };
 const outcomeOf = (run) => run.rows.find((row) => row.outcome)?.outcome;
