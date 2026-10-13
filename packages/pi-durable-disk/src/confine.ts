@@ -39,7 +39,11 @@ const DIRECTORY = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOL
 const FILE = constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 /** Test seam: runs after a path was resolved and checked, before anything is opened. */
-export const confineHooks: { afterCheck?: (canonical: string) => Promise<void> | void } = {};
+export const confineHooks: {
+  afterCheck?: (canonical: string) => Promise<void> | void;
+  /** After `createTempDir` made a directory and before it is granted (a command may act in between). */
+  afterTempDir?: (dir: string) => Promise<void> | void;
+} = {};
 
 function errno(error: unknown): string | undefined {
   const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
@@ -245,11 +249,17 @@ export class Confinement {
   }
 
   /**
-   * Lets file operations write inside `dir` too: a directory this process just created (`createTempDir`) under a
-   * read-only root, for the tool it is handed to. Canonical, and inside a read-only root, or it is not taken.
+   * Lets file operations write inside `dir` too: a directory this process just created (`createTempDir`) directly in a
+   * read-only root, for the tool it is handed to. `dir` is that root joined with the new name, never resolved: if the
+   * directory is later swapped for a link, a path through it resolves elsewhere and is refused.
    */
   allowWrites(dir: string): void {
-    if (this.readOnly.some((root) => inside(dir, root) && dir !== root)) this.#handed.add(dir);
+    if (this.readOnly.some((root) => dirname(dir) === root)) this.#handed.add(dir);
+  }
+
+  /** `dir` was removed: writes inside it, or inside any handed directory below it, are no longer allowed. */
+  forgetWrites(dir: string): void {
+    for (const handed of this.#handed) if (inside(handed, dir)) this.#handed.delete(handed);
   }
 
   /** Resolves `abs` and refuses it unless it lies under an allowed root; returns the root that holds it. */
@@ -270,7 +280,11 @@ export class Confinement {
     await confineHooks.afterCheck?.(canonical);
     const names = relative(root, canonical);
     if (names.length === 0 && spec.strict === true) {
-      throw new PathOutsideWorkError(original, "outside_work", `${original}: the workspace root itself cannot be removed or renamed`);
+      // a handed directory itself (a tool removing the temp dir it was given): pinned as an entry of the read-only root that
+      // holds it, so it can go; the workspace root never can
+      const holder = this.#handed.has(root) ? this.readOnly.find((candidate) => dirname(root) === candidate) : undefined;
+      if (holder === undefined) throw new PathOutsideWorkError(original, "outside_work", `${original}: the workspace root itself cannot be removed or renamed`);
+      return new Pin(await walk(holder, [], "none", canonical), canonical, basename(root), false);
     }
     const name = names.pop() ?? "";
     const handle = await walk(root, names, spec.parents === true ? "all" : "none", canonical);

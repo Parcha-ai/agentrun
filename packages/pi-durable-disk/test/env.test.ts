@@ -1,9 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { PathOutsideWorkError } from "../src/confine.ts";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -342,6 +342,58 @@ describe("temporary files live under <root>/tmp", () => {
         const refused = await env.writeFile(path, "no", context);
         assert.ok(!refused.ok && refused.error instanceof PathOutsideWorkError && refused.error.reason === "outside_work", `${path}: ${JSON.stringify(refused)}`);
       }
+    });
+  });
+
+  it("tmp/ replaced by a symlink into a read-only root: createTempDir refuses, and creates and grants nothing there", async () => {
+    await withRun(async ({ root, work }) => {
+      const reference = join(root, "reference");
+      await mkdir(reference);
+      await writeFile(join(reference, "keep.md"), "read only");
+      const env = archilEnv({ root, work }, { readRoots: [reference] })({});
+      await symlink(reference, join(root, "tmp")); // as a command can, before the first temp dir
+      const made = await env.createTempDir("x-", context);
+      assert.ok(!made.ok, `refused: ${JSON.stringify(made)}`);
+      assert.deepEqual(readdirSync(reference), ["keep.md"], "nothing was created in the read-only root");
+      const write = await env.writeFile(join(reference, "keep.md"), "overwritten", context);
+      assert.ok(!write.ok && write.error instanceof PathOutsideWorkError);
+      assert.equal(readFileSync(join(reference, "keep.md"), "utf8"), "read only");
+    });
+  });
+
+  it("a temp dir swapped for a symlink before it is granted grants nothing beyond it: the link's target stays read-only", async () => {
+    await withRun(async ({ root, work }) => {
+      const reference = join(root, "reference");
+      await mkdir(reference);
+      await writeFile(join(reference, "keep.md"), "read only");
+      const env = archilEnv({ root, work }, { readRoots: [reference] })({});
+      confineHooks.afterTempDir = async (dir) => {
+        await rename(dir, `${dir}.moved`); // a command, between the directory's creation and its grant
+        await symlink(reference, dir);
+      };
+      try {
+        const dir = getOrThrow(await env.createTempDir("x-", context));
+        const write = await env.writeFile(join(dir, "keep.md"), "overwritten", context);
+        assert.ok(!write.ok && write.error instanceof PathOutsideWorkError && write.error.reason === "outside_work", JSON.stringify(write));
+        assert.equal(readFileSync(join(reference, "keep.md"), "utf8"), "read only");
+      } finally {
+        confineHooks.afterTempDir = undefined;
+      }
+    });
+  });
+
+  it("a tool removes the temp dir it was given, with what it wrote there, and the grant goes with it", async () => {
+    await withRun(async ({ root, work }) => {
+      const env = archilEnv({ root, work })({});
+      const dir = getOrThrow(await env.createTempDir("vision-", context));
+      getOrThrow(await env.writeFile(join(dir, "source.txt"), "media", context));
+      getOrThrow(await env.remove(dir, { recursive: true }, context));
+      assert.equal(existsSync(dir), false, "the directory is gone");
+      const again = await env.writeFile(join(dir, "late.txt"), "x", context);
+      assert.ok(!again.ok && again.error instanceof PathOutsideWorkError && again.error.reason === "outside_work", JSON.stringify(again));
+      // and tmp/ itself still cannot be removed
+      const tmp = await env.remove(join(root, "tmp"), { recursive: true }, context);
+      assert.ok(!tmp.ok && tmp.error instanceof PathOutsideWorkError, JSON.stringify(tmp));
     });
   });
 

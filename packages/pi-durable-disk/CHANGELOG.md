@@ -7,6 +7,9 @@
   `createTempDir` (and `createTempFile`) hands out, so a tool that writes into the temp dir it asked for was refused
   `outside_work`: pi-vision's `read` of any media file failed on a disk run. A directory `createTempDir` returns is now
   writable, for the run's environments; the rest of `tmp/` (another run's directories, `tmp/` itself) stays read-only.
+- The tool may remove that directory (`env.remove`, as vision does when it is done), and its grant goes with it.
+- It is made through a held handle of `tmp/` that does not follow a link, and granted by name under the canonical `tmp/`:
+  a `tmp/` a command replaced with a link is refused, and a directory swapped for a link grants nothing beyond itself.
 
 **pi-durable 1.1**
 - The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen from `~1.0.4` to `>=1.0.4 <1.2.0`:
