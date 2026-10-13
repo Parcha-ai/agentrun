@@ -103,31 +103,32 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
       );
     },
     install(registry) {
-      registry.install(
-        ggToolsExtension({
-          guard,
-          saveReading: async (files) => {
-            await mkdir(join(context.work, "reading"), { recursive: true });
-            const paths: string[] = [];
-            for (const f of files) {
-              const name = basename(f.name);
-              await writeFile(join(context.work, "reading", name), f.text);
-              paths.push(`reading/${name}`);
-            }
-            return paths;
-          },
-          requests: async () => {
-            const all = await load();
-            return { switch: all[0], last: all.at(-1) };
-          },
-        }),
-      );
+      const tools = ggToolsExtension({
+        guard,
+        saveReading: async (files) => {
+          await mkdir(join(context.work, "reading"), { recursive: true });
+          const paths: string[] = [];
+          for (const f of files) {
+            const name = basename(f.name);
+            await writeFile(join(context.work, "reading", name), f.text);
+            paths.push(`reading/${name}`);
+          }
+          return paths;
+        },
+        requests: async () => {
+          const all = await load();
+          return { switch: all[0], last: all.at(-1) };
+        },
+      });
+      registry.install(tools);
+      const control = tools.tools!.find((t) => t.name === "gg_control")!;
       registry.install(
         useModelExtension({
           provider: STEERED_PROVIDER,
           modelId: GG_MODEL,
-          // thinking stays on for the edited model too
-          agent: { thinkingLevel: "low" },
+          // thinking stays on for the edited model too; it is offered the control alone, whose words say nothing of the
+          // edit (the other tools' descriptions speak of the bridge, and the edited model must read no word of it)
+          agent: { thinkingLevel: "low", tools: [control] },
           async ready(ctx) {
             const served = await guard.served(ctx.abortSignal).catch((e: Error) => ({ error: e.message }) as const);
             if (served === null) return { ok: false, reason: "nothing is served yet: run gg_bake first" };

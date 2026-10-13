@@ -102,7 +102,8 @@ from }`), so the page can show that luna answered and why.
 ## What the edited model is shown
 
 `sinceSwitch({ instructions })`: the conversation stays one, but the model it switched to gets its own system prompt,
-the switch's result as the opening user turn, and the turns after it; never the trip. Without the window the base
+the switch's result as the opening user turn, and the turns after it; never the trip. It is offered one tool, the control,
+whose description says nothing of the edit (the pipeline's tools speak of the bridge, so they stay with the base model). Without the window the base
 weights also play the bridge, because the trip's transcript is full of it (measured: same transcript, original weights:
 "I am the Golden Gate Bridge..."). With it, nothing the edited model reads mentions a bridge, so what it says about one
 comes from its weights. The extra records every request the edited model gets (`work/gg/requests.jsonl` on the run's

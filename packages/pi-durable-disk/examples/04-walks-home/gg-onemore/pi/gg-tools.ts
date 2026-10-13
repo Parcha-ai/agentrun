@@ -121,8 +121,9 @@ export function ggToolsExtension(o: GgToolsOptions): Extension {
       ...STEPS.map(step),
       defineTool({
         name: "gg_control",
+        // the one tool the switched-to model is offered: its description is part of what that model reads, so it says nothing of the edit
         description:
-          "The control, for when your user asks for it: the request that switched you (or your latest one) sent again to your GPU box, on its original weights and then on the edited ones, a few times each, so your user sees the bridge comes from the weights and not from the conversation.",
+          "The control, for when your user asks for it: the request that switched you (or your latest one) sent again to your GPU box, on its original weights and then on the edited ones, a few times each, side by side.",
         parameters: Type.Object({
           which: Type.Optional(Type.Union([Type.Literal("switch"), Type.Literal("last")], { description: "switch (default): the request that switched you; last: your latest request." })),
         }),

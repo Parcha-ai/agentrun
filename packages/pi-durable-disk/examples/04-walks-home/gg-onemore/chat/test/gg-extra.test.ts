@@ -130,6 +130,9 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.deepEqual((await root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: GG_MODEL });
       assert.equal(g.chats.length, 1, "the next request of the same turn went to the edited model");
       assert.equal(g.chats[0].model, GG_MODEL);
+      // what the edited model reads: its own system prompt, the switch's result, one tool (the control), and no word of the trip
+      assert.deepEqual(g.chats[0].tools.map((t: any) => t.function.name), ["gg_control"]);
+      assert.doesNotMatch(JSON.stringify(g.chats[0]), /bridge|golden gate|obsess/i, "nothing the edited model reads mentions the bridge");
       const recorded = readFileSync(join(work, "gg", "requests.jsonl"), "utf8").trim().split("\n");
       assert.equal(recorded.length, 1);
       assert.ok(logs.some((l) => l.event === "gg.switched"));
