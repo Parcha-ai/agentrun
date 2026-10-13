@@ -17,12 +17,12 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { vmTrail } from "./vm-trail.ts";
-import { agentModels, agentRegistry, replaceInstructions, rootAgent, SETTINGS } from "./agent.ts";
+import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
 import { startCloudLink, type CloudLink } from "./cloud-link.ts";
-import type { AppExtra, AppExtraModule } from "./app-extra.ts";
+import { applyExtraInstructions, dropExtensions, type AppExtra, type AppExtraModule } from "./app-extra.ts";
 import { pathToFileURL } from "node:url";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -39,11 +39,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     baseUrl = link.baseUrl;
   }
   if (!baseUrl) throw new Error("DEMO_MODEL_URL (or DEMO_LINK_PORT and DEMO_LINK_TOKEN_FILE) names how this host reaches a model");
+  const hostLog = (event: string, data: Record<string, unknown> = {}) => void process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`);
   let extra: AppExtra = {};
   if (process.env.DEMO_APP_EXTRA) {
     const mod = (await import(pathToFileURL(process.env.DEMO_APP_EXTRA).href)) as { default?: AppExtraModule };
     if (typeof mod.default !== "function") throw new Error(`DEMO_APP_EXTRA ${process.env.DEMO_APP_EXTRA} has no default function`);
-    extra = await mod.default({ link, work: where.work, log: (event, data = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, ...data })}\n`) });
+    extra = await mod.default({ link, work: where.work, log: hostLog });
   }
   // Code mode (default): the run's work directory starts with a robot that is code (robot/body.mjs and its build), written only where no body exists. DEMO_ROBOT_CODE=0 turns it off.
   if (process.env.DEMO_ROBOT_CODE !== "0") await ensureCodeRobot(nodeFiles(where.work), undefined as never).catch((e) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event: "robot.seed-failed", error: String(e) })}\n`));
@@ -56,9 +57,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const trail = vmTrail((event, data) => link?.trail(event, data));
   const registry = agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) });
   extra.install?.(registry);
+  dropExtensions(registry, extra.withoutExtensions, hostLog);
   const models = agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) });
   extra.models?.(models);
-  if (extra.instructions !== undefined) replaceInstructions(extra.instructions);
+  applyExtraInstructions(extra.instructions);
   return {
     registry,
     ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),
