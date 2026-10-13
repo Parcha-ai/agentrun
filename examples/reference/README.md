@@ -45,9 +45,12 @@ Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `wo
 over a plain directory, with the disk package's own file and shell tools confined to `work/`. `run()` takes another
 environment for the tools as `env`, the disk run's own option; `--box` passes a transport box there.
 
-Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner.
-Then the run opens and pi resumes what a killed process left, the browser reconciles its sessions, the workflow runs,
-the record is delivered, every open browser session is released, and the run is released.
+Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner,
+the workflow's task (`createWorkflowExtension` from `@parcha/agentrun-pi/durable`). Then the run opens and pi resumes
+what a killed process left, the workflow's task among them; the browser reconciles its sessions; the workflow's task is
+started, or reached when the open resumed it, and waited on; the record is delivered; every open browser session is
+released, and the run is released. `run()` returns the task's outcome: `complete` with the output, `escalated`,
+`refused` with a code and message, or `stopped`.
 
 ## Gates and cases
 
@@ -77,7 +80,8 @@ say so. `localHost()` creates both empty when it starts, so a run that called no
   only the scan.
 - `no-vision-route`: the lead takes no images and vision has no eyes; reading the scan is vision's typed miss, filed
   `failed`, and the lead cites only the page.
-- `search-fails`: the host's tool throws; the run ends `failed`, nothing is delivered, and only
+- `search-fails`: the host's tool throws; the workflow's task ends `refused` (`WORKFLOW_FAILED`, with the tool's own
+  message), nothing is delivered, and only
   `record-matches-output-schema` fails.
 
 A case is a `Case` (`gates.ts`): a job, the fakes it runs on (usually `job.ts`'s with one member changed), and what
@@ -110,9 +114,16 @@ Each fake is one member of `Host`. Build `localHost()`'s value and replace that 
 Each is marked in the code with the package that owns it.
 
 - Until the browser's pi range admits 1.1.0, one process loads pi-durable 1.0.4 and two 1.1.0 copies (three with
-  `--box`). The values cross them unchanged; their branded types do not, so `assemble.ts` casts at four places and
+  `--box`). The values cross them unchanged; their branded types do not, so `assemble.ts` casts at five places and
   `run.ts` at one.
 - The disk run's temporary directories are under `<root>/tmp`, which its confinement will not let a tool write, and
   vision writes the file it reads there. `assemble.ts` keeps them under `work/.tmp`.
 - The browser's `release` returns before its background task runs, and `waitForIdle` does not wait for background
   tasks. `assemble.ts` waits for the release tasks before it closes the run.
+- `createWorkflowExtension`'s `start` reaches the task saved under a key without comparing its workflow or input, so a
+  different job on the same directory would get the saved job's outcome. `assemble.ts` reads the saved request first
+  and refuses a moved workflow or input with the driver's own `RUN_STORE_BINDING_MISMATCH`, naming the binding and
+  input digests on each side.
+- The disk run's open resumes pi's pending tasks before the host can reconcile the browser, which asks to run first.
+  A resumed workflow task would reach the browser before its sessions are reconciled. `assemble.ts` holds the task's
+  steps until the reconcile has run.

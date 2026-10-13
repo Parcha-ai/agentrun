@@ -9,9 +9,9 @@ import type { Job, RunResult } from './assemble.ts';
 import type { Fakes, LedgerRow, StatusEvent } from './host.ts';
 import { job as reference } from './job.ts';
 
-/** A job, the fakes it runs on, and what its run must show: its status, the gates that fail, and the tools whose
- *  receipts are filed `failed`. */
-export type Case = { name: string; job: Job; fakes: Fakes; expect: { status: RunResult['status']; failing: string[]; filedFailed: string[] } };
+/** A job, the fakes it runs on, and what its run must show: its status, the gates that fail, the tools whose receipts
+ *  are filed `failed`, and for a refused run its code and a phrase its message keeps. */
+export type Case = { name: string; job: Job; fakes: Fakes; expect: { status: RunResult['status']; failing: string[]; filedFailed: string[]; refused?: { code: string; says: string } } };
 export type Gate = { id: string; ok: boolean; detail: string };
 type Read = { ok: true; value: any } | { ok: false; error: string };
 

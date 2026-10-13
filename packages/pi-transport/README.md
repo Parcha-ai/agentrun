@@ -3,8 +3,9 @@
 **Experimental.** The API changes without notice between releases.
 
 Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first two layers: the `Box` interface with two providers and a conformance suite, and
-`boxEnv`, which runs a session's tools in a box.
+there. This release holds the first layers: the `Box` interface with two providers and a conformance suite, `boxEnv`,
+which runs a session's tools in a box, and `transport()`, which sends each conversation's tools to the box its
+config names.
 
 ## A box
 
@@ -35,6 +36,34 @@ ignoring it.
 | --- | --- | --- |
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
+| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+
+## Modal
+
+`modalBoxes(sdk, { appName })` takes the host's own Modal client, so this package depends on no Modal SDK. The
+client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
+
+```ts
+import { ModalClient } from "modal";
+import { modalBoxes } from "@parcha/pi-transport/box/modal";
+
+const provider = modalBoxes(new ModalClient(), { appName: "my-boxes" });
+await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUND_CONTEXT);
+```
+
+- `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
+  value is refused with `unsupported`.
+- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
+  with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
+- `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
+  it passes, whatever happens to the host.
+- The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
+  environment and the SDK, which is not installed with this package: `npm install --no-save modal@0.11.0`, then
+  `PI_TRANSPORT_LIVE_MODAL=1 npm run test:live -w @parcha/pi-transport` (`test:live` loads every live file, and each
+  provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
+  and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
+  the kinds.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
@@ -91,6 +120,68 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
+
+### Where tools run is a line of config
+
+`transport(config, host)` is a Harness's `env`. It reads the `transport` block of an agent's config and runs each
+conversation's tools in the environment the block's `hands` names.
+
+```ts
+import { Harness } from "@earendil-works/pi-durable";
+import { parseTransportConfig } from "@parcha/pi-transport";
+import { dockerBoxes } from "@parcha/pi-transport/box/docker";
+import { transport } from "@parcha/pi-transport/hands";
+
+const config = parseTransportConfig({
+	environments: { sandbox: { provider: "docker", maxLifetime: "6h" } },
+	hands: "sandbox",
+});
+if (!config.ok) throw config.error;
+
+// The transport is the Harness's `env`, so it is built first and reaches the Harness through this binding.
+let harness: Harness;
+const hands = transport(config.value, {
+	providers: { docker: dockerBoxes() },
+	commit: (change, context) => harness.commit(change, context),
+});
+harness = await Harness.open(storage, { models, registry, env: hands.env }, BACKGROUND_CONTEXT);
+```
+
+- **A box is created at the first file operation or command, not before.** pi asks for a conversation's environment
+  at every prompt it prepares as well as at every tool call, so `env` returns a lazy environment. Until its box
+  exists its `cwd` is `.` and its id ends in `:unopened`. A run that calls no tool creates no box.
+- **A host that opens the session again finds its boxes.** A box's id is written to a session document
+  (`transport.boxes`) before a tool runs in it, and the next `transport()` on the same store asks the provider for
+  that box. Concurrent first uses share one creation.
+- **One box for the session, or one for each conversation.** `scope: "session"` is the default; with
+  `scope: "conversation"` every conversation gets its own.
+- **Roles.** `hands: { default: "sandbox", build: "gpu" }` names a role. `hands.assign(conversation, "build", context)`
+  points a conversation's tools at it, or at any declared environment, from its next tool call. The assignment is a
+  conversation document (`transport.hands`). A fork starts without one, on the default.
+- **A box that is gone is one failed tool call.** A box that cannot be created, or that ended behind the session's
+  back, is that call's error result with the provider's code in the message. The next call asks for a box again.
+- **Two ways to let boxes go.** `release()` forgets them and leaves them running, for a host that will open the
+  session again; a box nobody comes back to ends at its lifetime. `destroy()` ends every box of the session,
+  including those only the session's documents still name.
+- **Labels are the host's.** `labels` in the host go on every box the transport creates, for example a session
+  id, so the host can list what it left behind. The transport adds none of its own: `pi-transport` and the keys
+  under it belong to providers, which mark their own boxes.
+- **`undefined` means the host's own environment.** `env` returns `undefined` when the config names no `hands`, or
+  names a `local` environment and the host passed no `local` provider. A host puts its own environment behind it:
+  `(await hands.env(target, context)) ?? new NodeExecutionEnv({ cwd })`.
+
+`transport()` throws a `TransportError` at start for a config it cannot serve: an environment whose provider the
+host did not pass, `hands: "auto"`, and `expose`.
+
+`expose` is not available yet: no secret is passed into a box. When it is, a secret will travel with each command
+over the exec's input and be set in the box by the environment's launcher. It will never be in `BoxSpec.env`, which
+a provider may store and return, and never in a command line.
+
+`examples/01-hands.ts` runs one scripted session whose tools go where a config file says:
+
+```sh
+node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
+```
 
 ## Writing a provider
 

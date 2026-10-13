@@ -24,23 +24,20 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./box/local": {
-      "source": "./src/box/local.ts",
-      "types": "./dist/box/local.d.ts",
-      "import": "./dist/box/local.js",
-      "default": "./dist/box/local.js"
+    "./box/*": {
+      "source": "./src/box/*.ts",
+      "types": "./dist/box/*.d.ts",
+      "import": "./dist/box/*.js",
+      "default": "./dist/box/*.js"
     },
-    "./box/docker": {
-      "source": "./src/box/docker.ts",
-      "types": "./dist/box/docker.d.ts",
-      "import": "./dist/box/docker.js",
-      "default": "./dist/box/docker.js"
-    },
+    "./box/box": null,
+    "./box/child": null,
+    "./box/files": null,
     "./hands": {
-      "source": "./src/hands/box-env.ts",
-      "types": "./dist/hands/box-env.d.ts",
-      "import": "./dist/hands/box-env.js",
-      "default": "./dist/hands/box-env.js"
+      "source": "./src/hands/index.ts",
+      "types": "./dist/hands/index.d.ts",
+      "import": "./dist/hands/index.js",
+      "default": "./dist/hands/index.js"
     },
     "./testing": {
       "source": "./src/testing/index.ts",
@@ -65,7 +62,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest --run",
-    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts test/box-env-docker.live.test.ts"
+    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run docker.live",
+    "test:live": "vitest --run .live.test"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.2.0",
