@@ -31,6 +31,9 @@ class FakeDaytona {
 	readonly failures: Failure[] = [];
 	readonly root = mkdtempSync(join(tmpdir(), "pt-daytona-"));
 	failExecuteContaining: string | undefined;
+	/** Each new sandbox stays out of the label listing for this many list calls, as Daytona's does for a moment. */
+	listLag = 0;
+	readonly #hidden = new Map<string, number>();
 	url = "";
 	#server: Server | undefined;
 
@@ -100,13 +103,16 @@ class FakeDaytona {
 				env: (spec.env ?? {}) as Record<string, string>,
 			};
 			this.sandboxes.set(created.id, created);
+			if (this.listLag > 0) this.#hidden.set(created.id, this.listLag);
 			return this.#json(response, 200, this.#info(created));
 		}
 		if (id === undefined) {
 			const wanted = JSON.parse(url.searchParams.get("labels") ?? "{}") as Record<string, string>;
-			const items = [...this.sandboxes.values()].filter((s) =>
-				Object.entries(wanted).every(([key, value]) => s.labels[key] === value),
-			);
+			const items = [...this.sandboxes.values()].filter((s) => {
+				const left = this.#hidden.get(s.id) ?? 0;
+				if (left > 0) this.#hidden.set(s.id, left - 1);
+				return left === 0 && Object.entries(wanted).every(([key, value]) => s.labels[key] === value);
+			});
 			return this.#json(response, 200, { items: items.map((s) => this.#info(s)), nextCursor: null });
 		}
 		if (sandbox === undefined) return this.#json(response, 404, { message: "sandbox not found" });
@@ -309,6 +315,40 @@ describe("daytona boxes", () => {
 			});
 			expect(await box.destroy(context)).toEqual({ ok: true, value: undefined });
 		});
+	});
+
+	it("returns from create only once the box shows in its own label listing", async () => {
+		fake.listLag = 4;
+		try {
+			await withBox(
+				async (box) => {
+					const listed = await provider().list({ suite: "unit" }, context);
+					expect(listed.ok && listed.value.some((ref) => ref.id === box.id)).toBe(true);
+				},
+				{ labels: { suite: "unit" } },
+			);
+		} finally {
+			fake.listLag = 0;
+		}
+	});
+
+	it("fails create with a timeout and removes the box when the listing never shows it", async () => {
+		fake.listLag = 1_000_000;
+		try {
+			const slow = daytonaBoxes({
+				apiKey: API_KEY,
+				apiUrl: `${fake.url}/api`,
+				spoolDir: fake.path("spool"),
+				workspace: fake.path("workspace"),
+				pollMs: 10,
+				listedTimeoutMs: 300,
+			});
+			const created = await slow.create(spec(), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("timeout");
+			expect(fake.sandboxes.size).toBe(0);
+		} finally {
+			fake.listLag = 0;
+		}
 	});
 
 	it("refuses an empty key", () => {

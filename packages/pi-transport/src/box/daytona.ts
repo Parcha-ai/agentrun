@@ -24,6 +24,9 @@ const CREATE_TIMEOUT_MS = 120_000;
 const DESTROY_TIMEOUT_MS = 120_000;
 const START_TIMEOUT_MS = 120_000;
 const POLL_MS = 1_000;
+const LISTED_TIMEOUT_MS = 15_000;
+const LISTED_POLL_MS = 200;
+const LISTED_ROUNDS = 2;
 const EXEC_POLL_MS = 150;
 const CLEANUP_TIMEOUT_S = 20;
 const RETRY_ATTEMPTS = 3;
@@ -114,6 +117,8 @@ export type DaytonaBoxesOptions = {
 	readonly isolation?: "container" | "vm";
 	/** From the create call to a started sandbox. Default 120 s. */
 	readonly startTimeoutMs?: number;
+	/** How long `create` waits for the new box to show in its own label listing. Default 15 s. */
+	readonly listedTimeoutMs?: number;
 	/** Poll period while waiting for a sandbox to start. Default 1 s. */
 	readonly pollMs?: number;
 	/** Boxes are named `<namePrefix><random>`. Default `pt-`. */
@@ -686,6 +691,46 @@ async function waitStarted(
 	}
 }
 
+/**
+ * Daytona's label listing trails a create by up to a few seconds, and each distinct query catches up at its own
+ * moment (measured: the full label set, one label and `pi-transport` alone became visible up to 1.5 s apart, and a
+ * query could go from found to empty once). The `Box` contract says a box is listed once `create` returns, so
+ * `create` waits until the box shows under every listing a host makes of it, in two rounds in a row.
+ */
+async function waitListed(
+	rest: Rest,
+	id: string,
+	userLabels: Readonly<Record<string, string>>,
+	allLabels: Readonly<Record<string, string>>,
+	options: DaytonaBoxesOptions,
+	context: Context,
+): Promise<Result<void, BoxError>> {
+	const timeoutMs = options.listedTimeoutMs ?? LISTED_TIMEOUT_MS;
+	const deadline = Date.now() + timeoutMs;
+	const own = { [BOX_LABEL]: "1" };
+	const queries = [own, allLabels, ...Object.entries(userLabels).map(([key, value]) => ({ ...own, [key]: value }))];
+	for (let rounds = 0; ; ) {
+		let listedEverywhere = true;
+		for (const query of queries) {
+			const listed = await rest.list(query, context);
+			if (!listed.ok) return listed;
+			if (!listed.value.some((info) => info.id === id)) {
+				listedEverywhere = false;
+				break;
+			}
+		}
+		rounds = listedEverywhere ? rounds + 1 : 0;
+		if (rounds >= LISTED_ROUNDS) return ok(undefined);
+		if (Date.now() >= deadline) {
+			return err(
+				new BoxError("timeout", `box ${id} was not listed by its labels within ${timeoutMs} ms of its creation`),
+			);
+		}
+		await delay(LISTED_POLL_MS, context);
+		if (context.abortSignal?.aborted === true) return err(new BoxError("aborted", "the call was aborted"));
+	}
+}
+
 /** Boxes that are Daytona sandboxes, through the REST API with `fetch`. No SDK; the key is the host's to pass. */
 export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 	if (options.apiKey === "") throw new Error("a Daytona API key is required");
@@ -747,6 +792,8 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 					new BoxError("unknown", `could not create ${workspace}: ${made.value.result.trim().slice(0, 300)}`),
 				);
 			}
+			const listed = await waitListed(rest, started.value.id, spec.labels ?? {}, body.labels, options, context);
+			if (!listed.ok) return abandon(listed.error);
 			return ok(box);
 		},
 
