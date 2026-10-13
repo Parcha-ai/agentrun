@@ -209,6 +209,24 @@ describe("transport(): where tools run", () => {
 		});
 	});
 
+	it("ends the boxes it has in hand even when the session's documents cannot be read", async () => {
+		await withLocal(async (provider) => {
+			let failing = false;
+			const session = await openSession(new MemoryStorage(), SANDBOX, { local: provider }, undefined, (inner) => {
+				return (change, commitContext) =>
+					failing ? Promise.reject(new Error("the store is closed")) : inner(change, commitContext);
+			});
+			expect((await session.turn(await session.converse(), [bash("true")]))[0]?.isError).toBe(false);
+			const [box] = provider.created;
+			if (box === undefined) throw new Error("no box was created");
+			failing = true;
+			const destroyed = await session.hands.destroy(context);
+			expect(destroyed.ok ? "" : destroyed.error.code).toBe("store");
+			expect(getOrThrow(await box.status(context)).state).toBe("ended");
+			await session.harness.close(context);
+		});
+	});
+
 	it("labels every box and hands the environment's settings and the workspace to the provider", async () => {
 		await withLocal(async (provider, directory) => {
 			const workspace = join(directory, "workspace");

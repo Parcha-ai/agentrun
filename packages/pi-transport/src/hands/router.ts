@@ -279,10 +279,17 @@ class Router implements Transport {
 
 	async destroy(context: Context): Promise<Result<void, TransportError>> {
 		await Promise.all(this.#opening.values());
-		const boxes = new Map<string, Box>();
-		for (const { box } of this.#held.values()) boxes.set(box.id, box);
+		const held = [...this.#held.values()].map(({ box }) => box);
 		await this.release(context);
+		const tried = new Set<string>();
 		const left: string[] = [];
+		const end = async (box: Box): Promise<void> => {
+			tried.add(box.id);
+			const destroyed = await box.destroy(context);
+			if (!destroyed.ok) left.push(`${box.id} ([${destroyed.error.code}] ${destroyed.error.message})`);
+		};
+		// First the boxes in hand: they end even when the documents cannot be read.
+		for (const box of held) await end(box);
 		let recorded: Record<string, string>;
 		try {
 			recorded = await this.#host.commit(async (tx) => ({ ...(await tx.doc(SessionBoxesDoc)).boxes }), context);
@@ -291,9 +298,9 @@ class Router implements Transport {
 				new TransportError("store", `could not read the session's boxes: ${toError(cause).message}`, cause),
 			);
 		}
-		// Boxes an earlier transport left in the documents and this one never used.
+		// Then the boxes an earlier transport left in the documents and this one never used.
 		for (const [key, id] of Object.entries(recorded)) {
-			if (boxes.has(id)) continue;
+			if (tried.has(id)) continue;
 			const environment = this.#config.environments[key.split("@")[0] ?? ""];
 			const provider = environment === undefined ? undefined : this.#host.providers[environment.provider];
 			if (provider === undefined) {
@@ -302,11 +309,7 @@ class Router implements Transport {
 			}
 			const attached = await provider.attach(id, context);
 			if (!attached.ok) left.push(`${id} ([${attached.error.code}] ${attached.error.message})`);
-			else if (attached.value !== undefined) boxes.set(id, attached.value);
-		}
-		for (const [id, box] of boxes) {
-			const destroyed = await box.destroy(context);
-			if (!destroyed.ok) left.push(`${id} ([${destroyed.error.code}] ${destroyed.error.message})`);
+			else if (attached.value !== undefined) await end(attached.value);
 		}
 		if (left.length > 0) return err(new TransportError("box", `could not end: ${left.join(", ")}`));
 		try {
