@@ -287,7 +287,8 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
       const after = await env.fileInfo(name, ctx);
       changed = !after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs;
     }
-  } finally { await env.remove(temp.value, { recursive: true, force: true }, ctx); }
+    // Removed with a context of its own: pi's environments refuse every operation, a removal too, once the call is cancelled.
+  } finally { await env.remove(temp.value, { recursive: true, force: true }, visionContext()); }
   // A source that changed while it was read has no hash that names what was read: nothing is filed under the old one.
   if (changed) return missResult({ ...filing, evidence: NO_RECEIPT }, name, kind, source.sha256, "unreadable", CHANGED, args);
   if ("refusal" in result) return refusal(result.refusal);

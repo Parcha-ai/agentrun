@@ -36,7 +36,14 @@ export const piDurableVersion = () => {
   throw new Error("pi-durable not found");
 };
 
-export const tmp = (prefix = "vision-durable-") => fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
+/** A new directory under the temp root, removed when this process exits. */
+const made = [];
+process.on("exit", () => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true }); });
+export const tmp = (prefix = "vision-durable-") => {
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+};
 
 /** The lead model, which takes images and declares an image limit; a second catalog entry that sees, for the eyes; and
  *  a lead that takes text only, whose images the eyes look at. */

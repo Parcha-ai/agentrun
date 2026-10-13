@@ -164,7 +164,7 @@ test("a sink that throws before it returns a promise loses no miss", async (t) =
   assert.equal(r.misses[0].receipt, null);
 });
 
-test("a reader that throws on a file it cannot parse is an unreadable miss with the cause's first line; a cancelled read throws", async (t) => {
+test("a reader that throws on a file it cannot parse is an unreadable miss with the cause's first line; a cancelled read throws and leaves no temp directory", async (t) => {
   let cut = null;
   const r = await rig({ pdf: () => { cut?.abort(); throw new Error("bad xref table at offset 9\n    at parse (pdf.js:1)"); } });
   t.after(() => r.dir.remove());
@@ -177,6 +177,7 @@ test("a reader that throws on a file it cannot parse is an unreadable miss with 
   cut = new AbortController();
   await assert.rejects(r.read({ path: "broken.pdf" }, cut.signal), /bad xref table/);
   assert.equal(r.misses.length, 1, "a cancelled read files no miss");
+  assert.ok(!existsSync(r.calls.at(-1).context.tempDir), "and its temp directory is removed");
 });
 
 test("a renamed file, bytes in no format, a kind with no reader and a host that says no are misses with their reason", async (t) => {
