@@ -12,7 +12,7 @@ import { documentStore, hostScope, nodeRunner } from '@parcha/agentrun-pi/durabl
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
-import type { Host, RunPlace } from './host.ts';
+import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
 export type RunResult = {
@@ -58,6 +58,7 @@ function runEnv(claim: Claim) {
 }
 
 export async function run(place: RunPlace, host: Host, job: Job): Promise<RunResult> {
+  const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
   // Vision names a conversation by its id as a string; pi's documents take the number.
   const labelOf = async (conversationId: string) => (opened && (await opened.snapshot(Label, Number(conversationId) as ConversationId, ctx))?.label) || 'run';
@@ -66,14 +67,14 @@ export async function run(place: RunPlace, host: Host, job: Job): Promise<RunRes
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
-    onSession: (row, change) => host.status({ source: 'browser', change, row }),
+    onSession: (row, change) => status({ source: 'browser', change, row }),
   });
   const vision = createVisionExtension({
     evidence: host.evidence,
     scope: async (conversationId) => ({ label: await labelOf(conversationId), deriveDir: join(place.work, '.derived', conversationId) }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
-    onLook: (look) => host.status({ source: 'vision', look }),
-    onMiss: (miss) => host.status({ source: 'vision', miss }),
+    onLook: (look) => status({ source: 'vision', look }),
+    onMiss: (miss) => status({ source: 'vision', miss }),
   });
   const nodes = nodeRunner({
     agent: () => ({ model: host.models.lead, cwd: place.work }),
@@ -101,8 +102,8 @@ export async function run(place: RunPlace, host: Host, job: Job): Promise<RunRes
   const harness = durable.harness as unknown as Harness;
   opened = harness;
   try {
-    await host.status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    const result = await runJob(harness, nodes, host, job, place.id);
+    await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+    const result = await runJob(harness, nodes, host, job, place.id, status);
     if (result.status === 'complete') await host.deliver({ record: result.output });
     return {
       status: result.status, ...(result.status === 'complete' ? { output: result.output } : {}),
@@ -125,14 +126,14 @@ export async function run(place: RunPlace, host: Host, job: Job): Promise<RunRes
 }
 
 /** The workflow under the recovery driver, its LLM steps through the node runner. */
-async function runJob(harness: Harness, nodes: ReturnType<typeof nodeRunner>, host: Host, job: Job, key: string) {
+async function runJob(harness: Harness, nodes: ReturnType<typeof nodeRunner>, host: Host, job: Job, key: string, status: (event: StatusEvent) => Promise<void>) {
   const driver = await openRecovery(documentStore(harness as never, key), job.workflow, { key });
   try {
     const deps = withRecovery(driver, {
       runEffect: host.tools.runEffect,
       runNode: nodes.on(hostScope(harness as never), ctx).runNode,
       runJudge: host.decisions.runJudge,
-      onEvent: (event) => void host.status({ source: 'workflow', event }),
+      onEvent: (event) => void status({ source: 'workflow', event }),
     }, { durableNodes: true });
     return await runWorkflow(job.workflow, job.input, deps);
   } finally {

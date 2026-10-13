@@ -10,15 +10,17 @@ npm ci --ignore-scripts && npm run build && npm run demo:reference
 
 It prints the record, the receipts it cites, what each package did and the usage, and exits 0. `-- --json` prints the
 same as one JSON object. `-- --dir <path>` keeps the run's directory, so a second process resumes what the first left.
+`-- --chrome` drives a local Chrome instead of the fake (`CHROME_PATH`, default `/usr/bin/google-chrome`): this
+process serves the job's pages as Chrome's proxy, and every other host fails to resolve.
 
 ## The job
 
 `job.ts`, small and fixed so the output is a constant:
 
 1. `call search`: the host's tool returns two URLs.
-2. `agent investigate`: the lead reads the registry page with `browser_read`, reads `filing.png` from the workspace
-   with `read` (vision serves the image), and submits `{ answer, citations }` citing the two receipt paths its tools
-   returned.
+2. `agent investigate`: the lead opens the first result with `run`, reads it with `browser_read`, reads `filing.png`
+   from the workspace with `read` (vision serves the image), and submits `{ answer, citations }` citing the two
+   receipt paths its tools returned.
 3. `judge verdict`: a scripted judge says whether the receipts support the answer.
 4. `code finish`: the output.
 
@@ -60,7 +62,7 @@ Each fake is one member of `Host`. Build `localHost()`'s value and replace that 
 - A tool gateway with grants: extensions pass straight through.
 - Workspace custody: the disk package's confined tools, nothing more.
 - The lead's own session runner: the workflow's LLM step runs on the node runner.
-- A real browser by default: the fake backend opens on the first search result and has no navigation of its own.
+- A real browser by default. The fake backend opens on the first search result and returns `run`'s code unrun.
 
 ## Gaps it works around
 

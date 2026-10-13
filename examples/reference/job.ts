@@ -8,8 +8,8 @@ import { pngBytes } from '@parcha/pi-vision/testing';
 import type { Job } from './assemble.ts';
 import type { Fakes } from './host.ts';
 
-const REGISTRY = 'https://registry.example/companies/01234567';
-const NEWS = 'https://news.example/acme-opens-a-second-plant';
+const REGISTRY = 'http://registry.example/companies/01234567';
+const NEWS = 'http://news.example/acme-opens-a-second-plant';
 const FILING = 'filing.png';
 
 export const workflow = {
@@ -46,11 +46,15 @@ export const job: Job = { workflow, input: { company: 'Acme Ltd' }, files: { [FI
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
 
-/** The lead reads the page the browser opened on, then the scan, then submits the receipts its tools returned. */
+/** The lead opens the first search result, reads it, reads the scan, then submits the receipts its tools returned. */
 function model(messages: readonly Message[]) {
   const results = messages.filter((message) => message.role === 'toolResult');
-  if (results.length === 0) return call('browser_read', { what: 'markdown' });
-  if (results.length === 1) return call('read', { path: FILING });
+  if (results.length === 0) {
+    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
+    return call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+  }
+  if (results.length === 1) return call('browser_read', { what: 'markdown' });
+  if (results.length === 2) return call('read', { path: FILING });
   const cited = [...new Set(results.flatMap((result) => textOf(result).match(/evidence\/[\w./-]+\.json/g) ?? []))];
   return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: cited });
 }
@@ -63,6 +67,6 @@ export const fakes: Fakes = {
     [REGISTRY]: fixturePage(REGISTRY, 'Acme Ltd. Company number 01234567. Incorporated on 2019-03-04. Status: active.', 'Acme Ltd - Company register'),
     [NEWS]: fixturePage(NEWS, 'Acme opens a second plant.', 'Acme opens a second plant'),
   },
-  // The fake browser opens on the first search result: it has no navigation of its own.
+  // The fake browser has no navigation: it opens on the first search result, and `run` returns the code it was given.
   start: REGISTRY,
 };

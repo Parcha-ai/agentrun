@@ -1,10 +1,14 @@
-// npm run demo:reference [-- --json] [-- --dir <path>]: the reference job on the no-key host. `--dir` keeps the run's
-// directory, so a second process resumes what the first left.
-import { readFileSync } from 'node:fs';
+// npm run demo:reference [-- --json] [-- --dir <path>] [-- --chrome]: the reference job on the no-key host. `--dir`
+// keeps the run's directory, so a second process resumes what the first left. `--chrome` drives a local Chrome
+// (`CHROME_PATH`, default /usr/bin/google-chrome) that reaches the job's pages only.
+import { existsSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import type { FixturePage } from '@parcha/pi-browser/testing';
 import { placeAt, run, type RunResult } from './assemble.ts';
-import { localHost, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
+import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
 import { fakes, job } from './job.ts';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
@@ -33,11 +37,29 @@ export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
   };
 }
 
+/** A Chrome of its own whose only way out is this process: it serves the job's pages as Chrome's proxy, and every
+ *  other host fails to resolve. */
+async function localChrome(place: RunPlace, pages: Record<string, FixturePage>): Promise<{ browser: BrowserPlane; close(): void }> {
+  const executablePath = process.env.CHROME_PATH || '/usr/bin/google-chrome';
+  if (!existsSync(executablePath)) throw new Error(`--chrome needs a Chrome: none at ${executablePath}. Set CHROME_PATH.`);
+  const server = createServer((request, response) => {
+    const page = pages[request.url ?? ''];
+    response.writeHead(page ? 200 : 404, { 'content-type': 'text/html' });
+    response.end(page ? `<html><head><title>${page.title}</title></head><body>${page.html}</body></html>` : 'Not a page of this job.');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const args = [`--proxy-server=http://127.0.0.1:${(server.address() as AddressInfo).port}`, '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'];
+  const [{ cdpProvider }, { stagehandDriver }] = await Promise.all([import('@parcha/pi-browser/providers/cdp'), import('@parcha/pi-browser/driver/stagehand')]);
+  const provider = cdpProvider({ chrome: { executablePath, profileRoot: join(place.root, 'chrome'), args } });
+  return { browser: { provider: () => provider, driver: stagehandDriver() }, close: () => server.close() };
+}
+
 if (import.meta.main) {
-  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' } } });
+  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' } } });
   const place = await placeAt(values.dir);
-  const local = localHost(place, fakes);
-  const result = await run(place, local.host, job);
+  const chrome = values.chrome ? await localChrome(place, fakes.pages) : undefined;
+  const local = localHost(place, fakes, chrome ? { browser: chrome.browser } : {});
+  const result = await run(place, local.host, job).finally(() => chrome?.close());
   const view = summary(place, result, local);
   if (values.json) console.log(JSON.stringify(view));
   else {

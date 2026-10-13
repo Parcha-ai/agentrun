@@ -12,7 +12,7 @@ import { FakeBackend } from '@parcha/pi-browser/testing';
 import { fakes } from './reference/job.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const READ = 'evidence/investigate/browser_read-dccfa9373889.json';
+const READ = 'evidence/investigate/browser_read-be8651870263.json';
 const LOOK = 'evidence/investigate/look-8f3e9456ddc1.json';
 const OUTPUT = { company: 'Acme Ltd', answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: [READ, LOOK], supported: true };
 const EXPECTED = {
@@ -22,14 +22,14 @@ const EXPECTED = {
   did: {
     disk: { generation: 1 },
     workflow: { 'node.start': 4, 'effect.attempt': 1, 'node.end': 4, 'judge.answered': 1, 'code.patch': 1 },
-    browser: { launched: 1, released: 1 },
+    browser: { launched: 1, updated: 1, released: 1 },
     vision: { looks: 1, misses: 0 },
     evidence: { browser_read: 1, look: 1 },
   },
-  usage: { 'faux/faux-1': { tokens: 15299, usd: 0 }, browser_read: { tokens: 0, usd: 0 } },
+  usage: { 'faux/faux-1': { tokens: 19220, usd: 0 }, run: { tokens: 0, usd: 0 }, browser_read: { tokens: 0, usd: 0 } },
   ledger: {
-    calls: { 'tool:search': 1, 'model:turn 0': 1, 'model:turn 1': 1, 'model:turn 2': 1, 'judge:verdict': 1 },
-    browser: { create: 1, attach: 1, liveView: 1, findByTag: 1, release: 1, status: 1, 'page.read': 1, 'page.close': 1 },
+    calls: { 'tool:search': 1, 'model:turn 0': 1, 'model:turn 1': 1, 'model:turn 2': 1, 'model:turn 3': 1, 'judge:verdict': 1 },
+    browser: { create: 1, attach: 1, liveView: 2, findByTag: 1, release: 1, status: 1, 'page.run': 1, 'page.read': 1, 'page.close': 1 },
   },
 };
 
@@ -88,9 +88,9 @@ test('killed in the lead\'s request after the browser read, a second process res
   const child = join(tmp, 'child.mjs');
   await writeFile(child, CHILD);
 
-  const killed = await node([child], { ...env, KILL_AT: '1' });
+  const killed = await node([child], { ...env, KILL_AT: '2' });
   assert.equal(killed.signal, 'SIGKILL', killed.stderr);
-  assert.deepEqual(backend.dispatched.map((row) => row.op), ['read'], 'the page was read before the kill');
+  assert.deepEqual(backend.dispatched.map((row) => row.op), ['run', 'read'], 'the page was opened and read before the kill');
 
   const resumed = await node([child], env);
   assert.equal(resumed.code, 0, resumed.stderr);
@@ -99,15 +99,15 @@ test('killed in the lead\'s request after the browser read, a second process res
   assert.deepEqual(view.output, OUTPUT, 'the same record, citing the same receipts');
   assert.deepEqual(view.evidence, [READ, LOOK], 'the read filed once: no receipt was filed twice');
   assert.equal(view.did.disk.generation, 2);
-  assert.deepEqual(view.did.browser, { launched: 1, 'reconcile.kept': 1, released: 1 }, 'the resumed run kept the session the killed one opened');
+  assert.deepEqual(view.did.browser, { launched: 1, updated: 1, 'reconcile.kept': 1, released: 1 }, 'the resumed run kept the session the killed one opened');
 
-  // Asked again: only the request the kill cut. Not repeated: the search (answered from its receipt), the browser
-  // read (its result was committed), the judge, and the first and last requests.
+  // Asked again: only the request the kill cut. Not repeated: the search (answered from its receipt), the browser's
+  // `run` and read (their results were committed), the judge, and every other request.
   const rows = (await readFile(join(dir, 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   const calls = rows.reduce((counts, row) => ({ ...counts, [`${row.kind}:${row.name}`]: (counts[`${row.kind}:${row.name}`] ?? 0) + 1 }), {});
-  assert.deepEqual(calls, { 'tool:search': 1, 'model:turn 0': 1, 'model:turn 1': 2, 'model:turn 2': 1, 'judge:verdict': 1 });
-  assert.equal(new Set(rows.filter((row) => row.name === 'turn 1').map((row) => row.pid)).size, 2, 'once in each process');
+  assert.deepEqual(calls, { 'tool:search': 1, 'model:turn 0': 1, 'model:turn 1': 1, 'model:turn 2': 2, 'model:turn 3': 1, 'judge:verdict': 1 });
+  assert.equal(new Set(rows.filter((row) => row.name === 'turn 2').map((row) => row.pid)).size, 2, 'once in each process');
   const ops = (op) => backend.ledger.filter((row) => row.op === op).length;
-  assert.deepEqual({ create: ops('create'), release: ops('release'), reads: backend.dispatched.filter((row) => row.op === 'read').length }, { create: 1, release: 1, reads: 1 },
+  assert.deepEqual({ create: ops('create'), release: ops('release'), page: backend.dispatched.map((row) => row.op) }, { create: 1, release: 1, page: ['run', 'read'] },
     'one session, kept across the kill by the resumed run\'s reconcile and released once');
 });
