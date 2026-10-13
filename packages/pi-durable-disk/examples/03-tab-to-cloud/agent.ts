@@ -8,6 +8,9 @@ import { createRegistry } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+import type { Model } from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/chord";
 import { computerTool, type ComputerDriver } from "./computer-tool.ts";
 import { offlineTools, type OfflineChannel } from "./offline-tools.ts";
@@ -74,48 +77,75 @@ function notDurable(result: ToolExecutionResult, error: unknown): ToolExecutionR
 }
 
 export interface ModelAccess {
-  /** The OpenAI-compatible endpoint (`.../v1`, Responses API). In the tab it is never reached: `fetch` goes to the pipe. */
+  /** The model endpoint (`.../v1`): OpenAI-compatible (the Responses API), or Anthropic Messages for a Claude model. In the tab it is never reached: `fetch` goes to the pipe. */
   readonly baseUrl: string;
   readonly modelId: string;
   /** A replacement for the provider's HTTP fetch (the tab's pipe). */
   readonly fetch?: typeof globalThis.fetch;
   /**
-   * The credential sent as `Authorization: Bearer`. Default a placeholder: the pipe or a proxy holds the real one (a
-   * sandbox's secrets proxy replaces its own placeholder on the way out).
+   * The endpoint's credential (`Authorization: Bearer`, or `x-api-key` for Anthropic Messages). Default a placeholder:
+   * the pipe or a proxy holds the real one (a sandbox's secrets proxy replaces its own placeholder on the way out).
    */
   readonly apiKey?: string;
 }
 
+/** A Claude model speaks Anthropic Messages (its thinking comes back only there); any other model the Responses API. */
+export const isClaude = (modelId: string): boolean => /^claude-/.test(modelId);
+
 /**
- * pi-ai's models with one OpenAI-compatible provider whose requests go where `access` says. It speaks the Responses
- * API: the model endpoint refuses function tools together with a reasoning effort on chat completions, and thinking is
- * never off.
+ * pi-ai's own entry for a Claude model: adaptive thinking with an effort level, mid-conversation effort and system
+ * messages, its limits. The credential broker names a model with a dot (claude-opus-5.5), pi-ai's catalog with a hyphen
+ * (claude-opus-5-5). A Claude model the catalog does not have gets adaptive thinking (Opus 5.5 refuses budget thinking).
+ */
+function claudeModel(modelId: string, baseUrl: string): Model<"anthropic-messages"> {
+  const catalog = ANTHROPIC_MODELS as unknown as Record<string, Model<"anthropic-messages"> | undefined>;
+  const known = catalog[modelId] ?? catalog[modelId.replace(/\./g, "-")];
+  return {
+    ...(known ?? { reasoning: true, input: ["text", "image"], contextWindow: 200_000, compat: { forceAdaptiveThinking: true } }),
+    id: modelId,
+    name: known?.name ?? modelId,
+    api: "anthropic-messages",
+    provider: PROVIDER,
+    // The Anthropic client adds `/v1/messages` itself.
+    baseUrl: baseUrl.replace(/\/v1\/?$/, ""),
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    // A turn's thinking and answer together: high effort thinks at length, and the stream carries it as it comes.
+    maxTokens: 32_000,
+  } as Model<"anthropic-messages">;
+}
+
+/**
+ * pi-ai's models with one provider whose requests go where `access` says. A Claude model speaks Anthropic Messages, with
+ * the thinking its catalog entry gives it; any other the Responses API (the model endpoint refuses function tools
+ * together with a reasoning effort on chat completions). Thinking is never off.
  */
 export function agentModels(access: ModelAccess) {
-  const api = openAIResponsesApi();
+  const claude = isClaude(access.modelId);
+  const api = claude ? anthropicMessagesApi() : openAIResponsesApi();
   const withFetch = <T extends object | undefined>(options: T): T => (access.fetch ? ({ ...(options ?? {}), fetch: access.fetch } as T) : options);
+  const model = claude
+    ? claudeModel(access.modelId, access.baseUrl)
+    : {
+        id: access.modelId,
+        name: access.modelId,
+        api: "openai-responses" as const,
+        provider: PROVIDER,
+        baseUrl: access.baseUrl,
+        reasoning: true,
+        input: ["text", "image"] as ("text" | "image")[],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200_000,
+        maxTokens: 16_000,
+      };
   const provider = createProvider({
     id: PROVIDER,
     name: "Model proxy",
     baseUrl: access.baseUrl,
     auth: { apiKey: { name: "model access", resolve: async () => ({ auth: { apiKey: access.apiKey ?? "proxy" } }) } },
-    models: [
-      {
-        id: access.modelId,
-        name: access.modelId,
-        api: "openai-responses",
-        provider: PROVIDER,
-        baseUrl: access.baseUrl,
-        reasoning: true,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200_000,
-        maxTokens: 16_000,
-      },
-    ],
+    models: [model as never],
     api: {
-      stream: (model, context, options) => api.stream(model, context, withFetch(options)),
-      streamSimple: (model, context, options) => api.streamSimple(model, context, withFetch(options)),
+      stream: (m, context, options) => api.stream(m as never, context, withFetch(options) as never),
+      streamSimple: (m, context, options) => api.streamSimple(m as never, context, withFetch(options) as never),
     },
   });
   const models = createModels();
@@ -213,10 +243,13 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
   return registry.snapshot().tools().map((t) => t.tool).filter((t) => SHAPE_TOOLS.includes(t.name));
 }
 
-/** The root conversation's agent: the model, thinking on (never off), the instructions (naming that model), and in code mode the tools without the preset ones. */
+/** The cloud model always thinks hard (Miguel's call for Opus 5.5): adaptive thinking at effort high on Anthropic Messages, reasoning effort high on the Responses API. The browser's brain keeps its own (off). */
+export const CLOUD_THINKING = "high" as const;
+
+/** The root conversation's agent: the model, thinking high (CLOUD_THINKING), the instructions (naming that model), and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
   const without = options.app?.withoutExtensions;
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId, options.app, options.place), ...(without?.length ? { extensions: { remove: extensionsNamed(options.registry, without) } } : {}) };
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: CLOUD_THINKING, instructions: instructions(modelId, options.app, options.place), ...(without?.length ? { extensions: { remove: extensionsNamed(options.registry, without) } } : {}) };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 

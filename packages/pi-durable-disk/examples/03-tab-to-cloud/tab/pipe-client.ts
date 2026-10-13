@@ -10,6 +10,7 @@ import {
   CHUNK_BYTES,
   errorFromWire,
   fromBase64,
+  modelHeaders,
   PipeLostError,
   sha256Hex,
   tag,
@@ -323,10 +324,11 @@ export class PipeClient {
   }
 
   /**
-   * A `fetch` for an OpenAI-compatible provider: the request body goes to the pipe, which sends it to the model with its
-   * own credentials and streams the response back. Only the URL's path under `/v1/` travels; the pipe knows the endpoint.
+   * A `fetch` for the model provider (OpenAI-compatible, or Anthropic Messages): the request body goes to the pipe, which
+   * sends it to the model with its own credentials and streams the response back. Only the URL's path under `/v1/` and
+   * the MODEL_HEADERS (Anthropic's version and beta features) travel; the pipe knows the endpoint.
    */
-  readonly fetch = async (input: unknown, init?: { body?: unknown; signal?: AbortSignal | null }): Promise<Response> => {
+  readonly fetch = async (input: unknown, init?: { body?: unknown; signal?: AbortSignal | null; headers?: unknown }): Promise<Response> => {
     if (this.#lost) throw this.#lost;
     const id = this.#next++;
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : String((input as { url?: string }).url ?? "");
@@ -361,7 +363,8 @@ export class PipeClient {
       },
     });
     init?.signal?.addEventListener("abort", () => this.#send({ t: "model-abort", id }), { once: true });
-    this.#send({ t: "model", id, path, body: tag(body) });
+    const headers = modelHeaders(init?.headers);
+    this.#send({ t: "model", id, path, body: tag(body), ...(headers ? { headers } : {}) });
     const code = await head;
     return new Response(stream, { status: code, headers: { "content-type": code < 400 ? "text/event-stream" : "application/json" } });
   };
