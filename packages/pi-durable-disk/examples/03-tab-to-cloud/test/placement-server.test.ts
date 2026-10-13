@@ -13,7 +13,7 @@ describe("placement by a typed question", () => {
   let local: Awaited<ReturnType<typeof localServer>>;
   let model: Awaited<ReturnType<typeof modelStub>>;
   const events: { event: string; data: Record<string, unknown> }[] = [];
-  const asked: { phase: string; message: string; current: string; environments: readonly string[] }[] = [];
+  const asked: { phase: string; message: string; current: string; environments: readonly string[]; model?: string }[] = [];
   let answer: (phase: "start" | "done", message: string) => string = (phase) => (phase === "start" ? REMOTE_LOCAL.id : "tab");
   const placer: Placer = {
     homePrompt: "Say one short sentence: you are home.",
@@ -25,7 +25,7 @@ describe("placement by a typed question", () => {
     },
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
-      asked.push({ phase: query.phase, message: query.message, current: query.current, environments: query.environments });
+      asked.push({ phase: query.phase, message: query.message, current: query.current, environments: query.environments, ...(query.model ? { model: `${query.model.provider}/${query.model.modelId}` } : {}) });
       const choice = answer(query.phase, query.message);
       const decision: PlacementDecision = {
         id: `d-${asked.length}`,
@@ -321,6 +321,30 @@ describe("placement by a typed question", () => {
     const sub = tabFrames.find((f): f is Extract<PipeFrame, { t: "submit" }> => f.t === "submit")!;
     assert.equal(sub.text, "fix a typo");
     assert.ok(!events.some((e) => e.event === "switch.start" && e.data.run === id), "no move");
+    tab.close();
+    page.close();
+  });
+
+  it("tells the placer the root conversation's model, not the brain conversation the tab follows after a swap", async () => {
+    answer = () => "tab";
+    const { id, secret } = await local.server.createRun("model-root");
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: () => undefined });
+    await tab.ready;
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", onFrame: () => undefined });
+    await page.ready;
+    const snapshot = (provider: string, modelId: string, root?: false) => tag({ kind: "snapshot", ...(root === false ? { root } : {}), event: { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], usage: {}, agent: { model: { provider, modelId } } } });
+    const ask = async (text: string) => {
+      const before = asked.length;
+      page.send({ t: "submit", text, requestId: `req-${text}` });
+      await until(() => asked.length > before);
+      return asked[asked.length - 1]!.model;
+    };
+    tab.send({ t: "view", event: snapshot("steered", "qwen3.5-27b") } as never);
+    assert.equal(await ask("first"), "steered/qwen3.5-27b");
+    // Take it offline: the tab follows a separate conversation on the local brain, and relays its events marked as not the root's.
+    tab.send({ t: "view", event: snapshot("local", "v5-brain", false) } as never);
+    tab.send({ t: "view", event: tag({ kind: "events", root: false, events: [{ type: "agent_changed", agent: { model: { provider: "local", modelId: "v5-brain" } } }] }) } as never);
+    assert.equal(await ask("second"), "steered/qwen3.5-27b", "the root's model, not the brain's");
     tab.close();
     page.close();
   });

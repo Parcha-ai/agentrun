@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { judgePlacer, PLACEMENT_QUESTIONS, type JudgeRunner } from "../placement.ts";
+import { agentModelIn } from "../pipe/server.ts";
+import { tag } from "../wire.ts";
 
 const criteria = { tab: "the tab", "modal-gpu": "an H100", "modal-vm": "a VM" };
 const labels = { tab: "Browser", "modal-gpu": "H100 GPU", "modal-vm": "Modal VM" };
@@ -38,6 +40,15 @@ describe("the placer over a judge runner", () => {
     assert.match(JSON.stringify(asked[1]!.state), /the agent finished the task/);
   });
 
+  it("tells Jev the conversation's model as agent_model, only when the server knows it", async () => {
+    const states: unknown[] = [];
+    const placer = judgePlacer({ criteria, labels, model: "jev", runJudge: async (params) => (states.push(params.state), { answers: { where: { type: "choice", choice: "tab", probabilities: { tab: 0.9, "modal-gpu": 0.1 } } } }) });
+    const query = { phase: "start" as const, message: "x", current: "tab", environments: ["tab", "modal-gpu"] };
+    await placer.decide({ ...query, model: { provider: "steered", modelId: "qwen3.5-27b" } });
+    await placer.decide(query);
+    assert.deepEqual(states, [{ task: "x", running_now_in: "tab", agent_model: "steered/qwen3.5-27b" }, { task: "x", running_now_in: "tab" }]);
+  });
+
   it("refuses an answer it cannot show: a choice nobody offered, no probabilities, one outside 0 to 1", async () => {
     const answering = (answer: unknown): ReturnType<typeof judgePlacer> =>
       judgePlacer({ criteria, labels, model: "jev", runJudge: async () => ({ answers: { where: answer as never } }) });
@@ -51,5 +62,25 @@ describe("the placer over a judge runner", () => {
   it("passes the judge's failure on, so the server leaves the run where it is", async () => {
     const placer = judgePlacer({ criteria, labels, model: "jev", runJudge: async () => Promise.reject(new Error("timeout")) });
     await assert.rejects(placer.decide({ phase: "start", message: "x", current: "tab", environments: ["tab"] }), /timeout/);
+  });
+});
+
+describe("the model a view event says the conversation has", () => {
+  const agent = (provider: string, modelId: string) => ({ model: { provider, modelId } });
+  it("reads a snapshot's agent and the last agent_changed of a batch, and says nothing for any other event", () => {
+    assert.deepEqual(agentModelIn(tag({ kind: "snapshot", event: { type: "snapshot", agent: agent("modal", "big") } })), { provider: "modal", modelId: "big" });
+    assert.deepEqual(agentModelIn(tag({ kind: "events", events: [{ type: "agent_changed", agent: agent("a", "1") }, { type: "turn_end" }, { type: "agent_changed", agent: agent("steered", "qwen3.5-27b") }] })), { provider: "steered", modelId: "qwen3.5-27b" });
+    assert.equal(agentModelIn(tag({ kind: "events", events: [{ type: "run_end" }] })), undefined);
+    assert.equal(agentModelIn(tag({ kind: "thread", id: "t" })), undefined);
+    assert.equal(agentModelIn(tag("junk")), undefined);
+  });
+  it("ignores a conversation that is not the root (the brain's), so the root's model is the one told", () => {
+    assert.equal(agentModelIn(tag({ kind: "snapshot", root: false, event: { type: "snapshot", agent: agent("local", "brain") } })), undefined);
+    assert.equal(agentModelIn(tag({ kind: "events", root: false, events: [{ type: "agent_changed", agent: agent("local", "brain") }] })), undefined);
+    assert.deepEqual(agentModelIn(tag({ kind: "snapshot", root: true, event: { type: "snapshot", agent: agent("modal", "big") } })), { provider: "modal", modelId: "big" }, "and an event marked as the root's is read");
+  });
+  it("says null when the agent has no model set, so a stale model is dropped", () => {
+    assert.equal(agentModelIn(tag({ kind: "snapshot", event: { type: "snapshot", agent: {} } })), null);
+    assert.equal(agentModelIn(tag({ kind: "events", events: [{ type: "agent_changed", agent: { model: { provider: 3 } } }] })), null);
   });
 });

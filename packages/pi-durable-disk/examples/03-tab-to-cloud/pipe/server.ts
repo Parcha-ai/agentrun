@@ -246,6 +246,8 @@ interface RunState {
   turnSince: number | undefined;
   /** Messages whose placement is in progress (asked of the placer, or waiting their turn behind another): the end of a turn must not send the agent home under them. */
   placingCount: number;
+  /** The root conversation's model as the writer's view last said (its snapshot, then each `agent_changed`): what the placer is told. Undefined until one is seen. */
+  agentModel: { provider: string; modelId: string } | undefined;
   /** Which cloud host's viewers are current: an end relayed from an earlier host (or a stale copy) is not this turn's. */
   cloudEpoch: number;
   /** The submissions whose run_end has been handled (a run_end names the inputs it covered): every viewer of a mounted host is sent its own copy of an end, and a copy of one already handled is ignored. */
@@ -316,6 +318,25 @@ export interface DemoServer {
   close(): Promise<void>;
   /** Placement changes, for scripts. */
   on(event: "placement", listener: (id: string, placement: Placement) => void): void;
+}
+
+/**
+ * The model the root conversation is set to, when a view event says so (an event the tab marks as another conversation's says nothing): the writer's snapshot carries the agent's stored choices, and each `agent_changed` carries them whole.
+ * Undefined when the event says nothing about the agent; `null` when it says the agent has no model set (it follows the host).
+ */
+export function agentModelIn(event: Parameters<typeof untag>[0]): { provider: string; modelId: string } | null | undefined {
+  const body = untag(event) as { kind?: unknown; root?: unknown; event?: unknown; events?: unknown } | null;
+  // The tab marks the events of a conversation that is not the run's root (the local brain's, after a swap) `root: false`: its model is not the one the run's agent has.
+  if (body?.root === false) return undefined;
+  const modelOf = (agent: unknown): { provider: string; modelId: string } | null => {
+    const model = (agent as { model?: { provider?: unknown; modelId?: unknown } } | null | undefined)?.model;
+    return typeof model?.provider === "string" && typeof model.modelId === "string" ? { provider: model.provider, modelId: model.modelId } : null;
+  };
+  if (body?.kind === "snapshot") return modelOf((body.event as { agent?: unknown } | null | undefined)?.agent);
+  if (body?.kind !== "events" || !Array.isArray(body.events)) return undefined;
+  let latest: { provider: string; modelId: string } | null | undefined;
+  for (const e of body.events as { type?: unknown; agent?: unknown }[]) if (e?.type === "agent_changed") latest = modelOf(e.agent);
+  return latest;
 }
 
 /** The writer's event batch ends the agent's run (pi's run_end): the turn is over. */
@@ -837,11 +858,17 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * Ask the placer where the run should be and announce the decision (before any move it starts). Undefined when there is no
    * placer, the run is not in an environment, or the question failed: the run then stays where it is.
    */
+  /** Keep the root conversation's model from a view event, so the placer can be told it. */
+  function noteAgent(state: RunState, event: Parameters<typeof untag>[0]): void {
+    const model = agentModelIn(event);
+    if (model !== undefined) state.agentModel = model ?? undefined;
+  }
+
   async function decide(state: RunState, phase: "start" | "done", message: string, requestId?: string): Promise<PlacementDecision | undefined> {
     const current = currentEnv(state.placement);
     if (!options.placer || current === undefined) return undefined;
     try {
-      const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id), read: async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined) });
+      const decision = await options.placer.decide({ phase, message, current, environments: environments.map((e) => e.id), ...(state.agentModel ? { model: state.agentModel } : {}), read: async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined) });
       state.decisions.push(decision);
       if (state.decisions.length > 8) state.decisions.shift();
       const frame: PipeFrame = { t: "decision", decision, ...(requestId ? { requestId } : {}) };
@@ -1092,6 +1119,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const epoch = state.cloudEpoch;
     const detach = await options.cloud.attachViewer(state.ref, (frame) => {
       socket.send(frame);
+      if (frame.t === "event" && epoch === state.cloudEpoch) noteAgent(state, frame.event);
       // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
       // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
       // Only while the host it was attached for is still the run's host.
@@ -1144,6 +1172,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         return;
       case "view":
         pipe?.view(socket, frame.event);
+        if (pipe?.isWriter(socket)) noteAgent(state, frame.event);
         if (pipe?.isWriter(socket) && endsRun(frame.event) && state.homeTurn?.armed) state.homeTurn.finish();
         if (pipe?.isWriter(socket) && endsRun(frame.event)) {
           const waiting = state.pendingSubmits.some((p) => p.queuedBy) || state.placingCount > 0;
@@ -1436,6 +1465,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       pageComingAt: undefined,
       turnSince: undefined,
       placingCount: 0,
+      agentModel: undefined,
       cloudEpoch: 0,
       endsSeen: new Set(),
       turnTimer: undefined,
