@@ -33,7 +33,7 @@ Two things the packages ask for are not on that list, and the example folds them
 
 ## Install order
 
-pi-durable installs every extension in the registry before the Harness opens, because tasks a crashed process left need
+A host installs every extension in the registry before the Harness opens, because tasks a crashed process left need
 them when the run resumes. A conversation selects the installed extensions in install order, a later extension's tool
 replaces an earlier tool of the same name, and `wrapTool` decorates whichever tool won. The example installs, in this order:
 
@@ -61,15 +61,16 @@ whichever of the two is installed first.
 - A cost fold: it prints pi's usage as it is.
 - A tool gateway with grants: extensions pass straight through.
 - Workspace custody beyond the disk package's confined tools.
-- The lead's own session runner: the workflow's model steps run on the open node runner.
+- An agent loop outside a workflow: every model step here is a workflow node on the open node runner.
 - A real browser by default. The fake backend opens the first search result and returns `run`'s code unrun. `--chrome`
   drives a local Chrome instead.
 
 ## Versions
 
-The example needs one copy of pi-durable and one of chord. Each package declares its own peer range for them, and an
-install of several packages can end up with two copies, which a host should not hold. Check what your install landed on:
-`npm ls @earendil-works/pi-durable @earendil-works/chord`.
+Aim for one copy of pi-durable and one of chord: types do not cross copies, and behavior may not either. Each package
+declares its own peer range for them, and an install of several packages can end up with more than one copy. Check what
+your install landed on with `npm ls @earendil-works/pi-durable @earendil-works/chord`. The example runs today with more
+than one copy and casts where values cross them.
 
 ## Swap a scripted part for a real one
 
