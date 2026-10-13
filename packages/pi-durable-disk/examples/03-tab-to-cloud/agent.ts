@@ -128,7 +128,10 @@ let extraInstructions = "";
 export function setExtraInstructions(text: string): void {
   extraInstructions = text.trim();
 }
-const instructions = () => (extraInstructions ? `${INSTRUCTIONS}\n\n${extraInstructions}` : INSTRUCTIONS);
+/** The model that drives this conversation, named from its own config (the modelId the server attached it with): asked which model or LLM it is, the agent answers from this line. */
+export const modelLine = (modelId: string): string =>
+  `Your model is ${modelId}, reached through your user's server. Asked which model or LLM you are, say ${modelId} and where you are running now; never name another model or product as yourself.`;
+const instructions = (modelId: string) => [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n");
 
 /** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {
@@ -143,9 +146,9 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
   return registry.snapshot().tools().map((t) => t.tool).filter((t) => SHAPE_TOOLS.includes(t.name));
 }
 
-/** The root conversation's agent: the model, thinking on (never off), the instructions, and in code mode the tools without the preset ones. */
+/** The root conversation's agent: the model, thinking on (never off), the instructions (naming that model), and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions() };
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId) };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 
