@@ -190,7 +190,6 @@ describe("a home over a link", () => {
 			const move = {
 				id: "move-1",
 				notice: "System notice: you now run in b.",
-				roots: { from: from.workspace, to: to.workspace },
 			};
 			getOrThrow(await second.resume({ epoch: 2, seal, move }, context));
 			getOrThrow(await second.idle(context));

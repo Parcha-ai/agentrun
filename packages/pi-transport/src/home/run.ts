@@ -22,8 +22,8 @@ import { type Seal, sealStore, verifyStore } from "./store.ts";
 export const MOVE_ENTRY = "transport.move";
 const CONVERSATION_PAGE = 200;
 
-/** Which move the session's conversations were last brought to a new workspace root by. */
-const HomeDoc = defineDoc<{ move?: string }>({
+/** The workspace root the session's conversations point at: where the store last ran. */
+const HomeDoc = defineDoc<{ root?: string }>({
 	kind: "transport.home",
 	version: 1,
 	scope: "session",
@@ -55,13 +55,11 @@ export type ResumeOrder = {
 	readonly epoch: number;
 	/** The seal in the lease record: the store this home must open. Absent for a session that starts here. */
 	readonly seal?: Seal;
-	/** The move that brought the session here. */
+	/** The move that brought the session here. The store knows where it ran before: no root travels with the order. */
 	readonly move?: {
 		readonly id: string;
 		/** What the agent is told, once. */
 		readonly notice: string;
-		/** The workspace root before the move and here, when they differ. */
-		readonly roots?: { readonly from: string; readonly to: string };
 	};
 };
 
@@ -308,11 +306,9 @@ class SessionHome implements Home {
 		}
 		gate.attach(harness);
 		try {
-			const { move } = order;
-			if (move?.roots !== undefined && move.roots.from !== move.roots.to) {
-				await moveRoots(harness, move.id, move.roots.from, move.roots.to, context);
-			}
+			await bringHere(harness, workspace, context);
 			await onOpen?.(harness, context);
+			const { move } = order;
 			if (move !== undefined) {
 				// pi admits a request id once for each conversation, so a second open adds no second notice.
 				const root = await harness.root(context, built.value.root);
@@ -374,13 +370,19 @@ class SessionHome implements Home {
 }
 
 /**
- * One commit that points every conversation whose directory lies under `from` at the same place under `to`, and
- * records the move. A second call for the same move changes nothing, also when `to` lies under `from`.
+ * One commit that points every conversation whose directory lies under the root the store last ran in at the same
+ * place under `to`, and records `to` as the root. Nothing changes when the store last ran here, so a second call
+ * after a crash is a no-op, also when `to` lies under the old root.
  */
-async function moveRoots(harness: Harness, move: string, from: string, to: string, context: Context): Promise<void> {
+async function bringHere(harness: Harness, to: string, context: Context): Promise<void> {
 	await harness.commit(async (tx) => {
 		const home = await tx.doc(HomeDoc);
-		if (home.move === move) return;
+		const from = home.root;
+		if (from === to) return;
+		if (from === undefined) {
+			home.root = to;
+			return;
+		}
 		// Every read comes before the first write: a transaction refuses a table read after one.
 		const changes: [ConversationId, string][] = [];
 		for (let cursor: Parameters<typeof tx.scanConversations>[2]; ; ) {
@@ -394,7 +396,7 @@ async function moveRoots(harness: Harness, move: string, from: string, to: strin
 			cursor = page.next;
 		}
 		for (const [id, cwd] of changes) await configure(tx, id, { cwd });
-		home.move = move;
+		home.root = to;
 	}, context);
 }
 

@@ -8,8 +8,8 @@ import { build } from "esbuild";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { dockerBoxes } from "../src/box/docker.ts";
-import { registerMoveConformance } from "../src/home/conformance.ts";
 import type { Place } from "../src/home/move.ts";
+import { registerMoveConformance } from "../src/testing/move-conformance.ts";
 
 const context = BACKGROUND_CONTEXT;
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "home-move-runner.fixture.ts");

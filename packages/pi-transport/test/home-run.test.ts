@@ -180,7 +180,6 @@ describe("a home: starting and moving a session", () => {
 				const move = {
 					id: `move-${afterMs}`,
 					notice: "System notice: you now run in b.",
-					roots: { from: from.workspace, to: to.workspace },
 				};
 				getOrThrow(await target.resume({ epoch: 2, seal, move }, context));
 				const root = getOrThrow(await target.root(context));
@@ -221,7 +220,6 @@ describe("a home: the target's steps are safe to repeat", () => {
 			move: {
 				id: "move-1",
 				notice: "System notice: you now run in b.",
-				roots: { from: from.workspace, to: to.workspace },
 			},
 		};
 		return { to, order };

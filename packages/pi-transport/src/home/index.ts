@@ -1,10 +1,4 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
-export {
-	type MovePair,
-	type MovePairProvider,
-	moveConformanceApp,
-	registerMoveConformance,
-} from "./conformance.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,

@@ -293,21 +293,25 @@ Not covered: in this release a home in a box runs its tools in its own box, and 
    what held it) and the session works on.
 3. **Seal** the source's store.
 4. **Ship** the store and the workspace (`moveFile`, `moveWorkspace`), each checked on the target, one retry.
-5. **Take** the lease (`Ownership`): one conditional write, from epoch `e` to `e + 1`, with the seal and the move in
-   the record. **The point of no return.** It is tried only with a target that still answers.
-6. **Resume** the target at `e + 1`: it verifies the copy, rewrites the conversations' directories and admits the
-   notice once.
+5. **Take** the lease (`Ownership`, below): one conditional write, from epoch `e` to `e + 1`, with the seal and the
+   move's id in the record. **The point of no return.** It is tried only with a target that still answers. A take
+   whose answer was lost is read back: a record with this move's id is this move's.
+6. **Resume** the target at `e + 1`: it verifies the copy, points the conversations' directories at its own
+   workspace and admits the notice once. The store records the workspace it last ran in, so no root travels with
+   the order and a second resume rewrites nothing.
 7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
 
 Before the take, a failure leaves the session where it was: a sealed source is told to open its store again
 (`seal`, `ship`, `target`). A lost take (`lost`) means another host acted: this host does nothing more. After the
 take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where it says
 and makes that home run (a sealed home is told to reopen, a target that never resumed is told to resume with the
-lease's seal and move). A host that starts again calls it.
+lease's seal and move id, and the `notice` the recovering host passes). A host that starts again calls it.
 
-`registerMoveConformance(runner, name, withPair)` runs the handoff on two places of a provider: a move with nothing
-cut, a move given up, and a kill of the host, the source or the target just before each of the seven steps, each
-followed by a recovery. The runner it needs is `runMain(moveConformanceApp)` bundled into one file.
+`registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
+with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, and a kill of the
+host, the source or the target just before each of the seven steps, each followed by a recovery. Its lease is
+`leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
+one file.
 
 What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
 finishes with every effect once when the kill came after the drain held it, and at most once when it came while

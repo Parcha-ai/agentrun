@@ -5,7 +5,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { HomeHandle } from "./host.ts";
-import type { Holder, LeaseMove, LeaseRecord, Ownership } from "./ownership.ts";
+import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
 import type { Seal } from "./store.ts";
 import { moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
 
@@ -168,12 +168,11 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		await from.home.reopen(epoch, cleanup);
 		return giveUp(target, new MoveError("target", `the target went away before the take: ${alive.error.message}`));
 	}
-	const move: LeaseMove = { id, notice: options.notice, roots: { from: from.place.workspace, to: to.workspace } };
-	const taken = await ownership.take(session, holderOf(to, host), epoch, { move, seal }, context);
+	const taken = await ownership.take(session, holderOf(to, host), epoch, { move: id, seal }, context);
 	if (!taken.ok) {
 		// A write whose answer was lost may have landed: the lease says.
 		const now = await ownership.current(session, cleanup);
-		const ours = now.ok && now.value?.move?.id === id && now.value.epoch === epoch + 1;
+		const ours = now.ok && now.value?.move === id && now.value.epoch === epoch + 1;
 		if (!ours) {
 			if (taken.error.code === "lost") {
 				return giveUp(target, new MoveError("lost", `another host took the session first: ${taken.error.message}`));
@@ -190,7 +189,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 
 	await step("resume");
 	target.setEpoch(next);
-	const resumed = await target.resume({ epoch: next, seal, move }, context);
+	const resumed = await target.resume({ epoch: next, seal, move: { id, notice: options.notice } }, context);
 	if (!resumed.ok) {
 		return err(new MoveError("resume", `the target took the session and did not resume: ${resumed.error.message}`));
 	}
@@ -237,12 +236,18 @@ export type RecoverOptions = {
 	/** Every place the session can be, by environment. */
 	readonly places: Readonly<Record<string, Place>>;
 	readonly start: StartRunner;
+	/**
+	 * What the agent is told when the lease names a move whose new home had not resumed yet. The lease keeps the move's
+	 * id, not its text; a home that already admitted the move's notice admits no second one.
+	 */
+	readonly notice: string;
 };
 
 /**
  * What a host that starts again does: read the lease, start the runner where it says, and make that home run. A
  * home that sealed is told to open its store again; a target that took the session and never resumed is told to
- * resume with the lease's seal and move. Safe to repeat.
+ * resume with the lease's seal and move, and its store says which workspace its conversations pointed at. Safe to
+ * repeat.
  */
 export async function recoverHome(
 	options: RecoverOptions,
@@ -272,7 +277,7 @@ export async function recoverHome(
 					{
 						epoch: record.epoch,
 						...(record.seal === undefined ? {} : { seal: record.seal }),
-						...(record.move === undefined ? {} : { move: record.move }),
+						...(record.move === undefined ? {} : { move: { id: record.move, notice: options.notice } }),
 					},
 					context,
 				);

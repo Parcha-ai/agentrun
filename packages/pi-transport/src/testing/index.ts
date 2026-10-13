@@ -6,6 +6,12 @@ export {
 	registerBoxConformance,
 } from "./box-conformance.ts";
 export {
+	type MovePair,
+	type MovePairProvider,
+	moveConformanceApp,
+	registerMoveConformance,
+} from "./move-conformance.ts";
+export {
 	createStoreConformance,
 	registerStoreConformance,
 	type StoreConformanceCase,

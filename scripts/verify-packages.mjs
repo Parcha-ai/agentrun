@@ -248,7 +248,7 @@ assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function');
 assert.equal(typeof transportHome.openHome,'function'); assert.equal(typeof transportHome.createGate,'function');
-assert.equal(typeof transportHome.moveHome,'function'); assert.equal(typeof transportHome.recoverHome,'function'); assert.equal(typeof transportHome.registerMoveConformance,'function');
+assert.equal(typeof transportHome.moveHome,'function'); assert.equal(typeof transportHome.recoverHome,'function'); assert.equal(typeof transportTesting.registerMoveConformance,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
