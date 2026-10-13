@@ -81,7 +81,8 @@ It prints one line per gate and exits 1 when one fails. From code, `gates(runDir
 A case is a `Case` (`gates.ts`): a job, the fakes it runs on (usually `job.ts`'s with one member changed), and what
 its run must show: its status, the gates that fail, the tools whose receipts are filed `failed`. To add one, write a
 file in `cases/` and list it in `cases/index.ts`; `examples/reference-rig.test.mjs` runs every listed case and the
-reference job, then checks each against the gates.
+reference job, then checks each against the gates. It also kills a run of the reference job after the browser read,
+resumes it in a second process, and checks that run passes every gate.
 
 ## Swap a fake for a real part
 
