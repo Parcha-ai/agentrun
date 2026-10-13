@@ -514,29 +514,33 @@ describe("the home check is told what the trip was", () => {
     const deliveredBefore = delivered.length;
     // On the VM; its turn ends there and the end-of-turn question keeps the run on the VM.
     doneChoice = "vm";
-    page.send({ t: "submit", text: "go to the vm", requestId: "uh-1" });
-    await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
-    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
-    await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id), 10_000).catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 500));
-    doneChoice = "tab";
-    // The user's own line places the run at home.
-    page.send({ t: "submit", text: "come back to my browser", requestId: "uh-2" });
-    await until(() => seen.some((f) => f.t === "run-here"));
-    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
-    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
-      if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
-      if (f.t === "submit") received.push(f.text);
-    } });
-    await home.ready;
-    home.send({ t: "switched", switchId: runHere.switchId });
-    await until(() => received.includes("come back to my browser"));
-    await new Promise((r) => setTimeout(r, 600));
-    assert.deepEqual(received, ["come back to my browser"], `only the user's line reached the browser, no server home turn: ${JSON.stringify(received)}`);
-    assert.ok(!logs.some((l) => l.event === "placement.home-check" && l.data.run === id), "no home check ran for it");
-    tab.close();
-    page.close();
-    home.close();
+    try {
+      page.send({ t: "submit", text: "go to the vm", requestId: "uh-1" });
+      await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
+      sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+      await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id && l.data.choice === "vm"), 10_000);
+      await new Promise((r) => setTimeout(r, 500));
+      doneChoice = "tab";
+      // The user's own line places the run at home.
+      page.send({ t: "submit", text: "come back to my browser", requestId: "uh-2" });
+      await until(() => seen.some((f) => f.t === "run-here"));
+      const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+      const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
+        if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
+        if (f.t === "submit") received.push(f.text);
+      } });
+      await home.ready;
+      home.send({ t: "switched", switchId: runHere.switchId });
+      await until(() => received.includes("come back to my browser"));
+      await new Promise((r) => setTimeout(r, 600));
+      assert.deepEqual(received, ["come back to my browser"], `only the user's line reached the browser, no server home turn: ${JSON.stringify(received)}`);
+      assert.ok(!logs.some((l) => l.event === "placement.home-check" && l.data.run === id), "no home check ran for it");
+      tab.close();
+      page.close();
+      home.close();
+    } finally {
+      doneChoice = "tab";
+    }
   });
 
   /** A stay on the VM that reports `threads`, then the user's own line "come back to my browser" places the run at home. Returns what the browser was sent after the move. */
@@ -551,13 +555,16 @@ describe("the home check is told what the trip was", () => {
     const sinksBefore = sinks.length;
     const deliveredBefore = delivered.length;
     doneChoice = "vm";
-    page.send({ t: "submit", text: "go to the vm and teach it", requestId: `${name}-1` });
-    await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
-    for (const n of threads) sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(n) }));
-    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
-    await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id), 10_000).catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 500));
-    doneChoice = "tab";
+    try {
+      page.send({ t: "submit", text: "go to the vm and teach it", requestId: `${name}-1` });
+      await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
+      for (const n of threads) sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(n) }));
+      sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+      await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id && l.data.choice === "vm"), 10_000);
+      await new Promise((r) => setTimeout(r, 500));
+    } finally {
+      doneChoice = "tab";
+    }
     page.send({ t: "submit", text: "come back to my browser", requestId: `${name}-2` });
     await until(() => seen.some((f) => f.t === "run-here"));
     const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
