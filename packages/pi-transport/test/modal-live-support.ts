@@ -52,3 +52,19 @@ export async function loadClient(): Promise<ModalSdk> {
 		);
 	}
 }
+
+/**
+ * Whether Modal reports the sandbox as ended, asked of the SDK by id and not through the provider. A sandbox Modal no
+ * longer knows counts as ended. The lifetime conformance case takes this as its out-of-band probe.
+ */
+export async function sandboxEnded(sdk: ModalSdk, id: string): Promise<boolean> {
+	try {
+		return (await (await sdk.sandboxes.fromId(id)).poll()) !== null;
+	} catch (cause) {
+		const code = (cause as { code?: unknown } | null)?.code;
+		if ((cause as { constructor?: { name?: string } } | null)?.constructor?.name === "NotFoundError" || code === 5) {
+			return true;
+		}
+		throw cause;
+	}
+}
