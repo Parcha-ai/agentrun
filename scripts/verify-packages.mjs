@@ -252,21 +252,6 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
-  // The vision README's first read runs as written from the installed tarball, with networking prohibited and no key, and prints
-  // exactly the output the README shows under it.
-  const visionReadme = await readFile(join(root, 'packages/pi-vision/README.md'), 'utf8');
-  const fenced = info => visionReadme.match(new RegExp(`\`\`\`${info} first-read\\n([\\s\\S]*?)\`\`\`\\n`))?.[1];
-  const [firstRead, firstReadOutput] = [fenced('js'), fenced('text')];
-  assert.ok(firstRead && firstReadOutput, 'packages/pi-vision/README.md shows a first read (a js first-read block) and its output (a text first-read block)');
-  const firstReadDir = join(consumer, 'first-read');
-  const firstReadHome = join(temporary, 'first-read-home');
-  await mkdir(firstReadDir);
-  await mkdir(firstReadHome);
-  await writeFile(join(firstReadDir, 'read.mjs'), firstRead);
-  const visionRead = await run(process.execPath, ['--import', join(consumer, 'deny-network.mjs'), 'read.mjs'], firstReadDir, false, { PATH: process.env.PATH, HOME: firstReadHome, TMPDIR: firstReadHome });
-  assert.equal(visionRead.stdout, firstReadOutput, 'The first read in packages/pi-vision/README.md printed output that differs from what the README shows');
-  receipt.visionFirstRead = { status: 'passed', network: 'prohibited', output: visionRead.stdout };
-  receipt.checks.push('The first read in the vision README, run from the installed tarball with networking prohibited and no key, printed the output the README shows.');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));

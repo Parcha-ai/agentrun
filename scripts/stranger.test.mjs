@@ -68,3 +68,12 @@ test('the local box spec accepts the host kernel name, and the Docker spec requi
   assert.equal(judge(docker, { exitCode: 0, stdout: output(linux), stderr: '', timedOut: false }).length, 0);
   assert.equal(judge(docker, { exitCode: 0, stdout: output(darwin), stderr: '', timedOut: false }).length, 1);
 });
+
+test('the vision spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
+  const vision = await loadSpec('pi-vision');
+  const [file] = vision.files;
+  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: 'text' });
+  const ran = over => judge(vision, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
+  assert.equal(ran({}), 0);
+  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('B2=1250.5', 'B2=1250') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
+});

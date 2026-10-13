@@ -48,7 +48,7 @@ Before a release has published it, install the tarball instead: in a checkout of
 
 `read.mjs`:
 
-```js first-read
+```js
 import { writeFile } from "node:fs/promises";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -71,7 +71,7 @@ for (const block of result.content) {
 
 `node read.mjs` prints:
 
-```text first-read
+```text
 Cells of ledger.xlsx (1 sheet), read with office-js; the text is saved at derived/ledger.xlsx-5a119bb78efe62bd.txt. Cells only: formatting, charts, images and pivot views are not shown here. A faithful render needs LibreOffice (soffice) in the environment.
 
 Sheet "ledger"
