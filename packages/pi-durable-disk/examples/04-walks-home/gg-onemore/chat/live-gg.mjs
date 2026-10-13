@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GG_INSTRUCTIONS } from "./gg-text.ts";
 import { runStep } from "./run-step.ts";
-import { serverArgs } from "./server-args.ts";
+import { pageLink, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -173,8 +173,7 @@ try {
   const [base, secret] = link.split("#");
   const ip = spawnSync("tailscale", ["ip", "-4"], { encoding: "utf8" }).stdout.trim().split("\n")[0] || "<this host>";
   // printed once: the person opens it (its fragment is the run's secret)
-  // thinking=open: the thinking open and dimmed as it streams
-  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}thinking=open#${secret}`);
+  console.log(`LIVE: open ${pageLink(base, secret)}`);
   console.log(`LIVE: then ssh -N -o ServerAliveInterval=5 -o ExitOnForwardFailure=yes -L ${PORT}:127.0.0.1:${PORT} ubuntu@${ip}`);
   say("ready", { s: Math.round((Date.now() - t0) / 1000) });
   // 5. idle: no request through the guard for --idle-min minutes, and the box goes down (a forgotten page must not burn GPUs)

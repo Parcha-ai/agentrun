@@ -2,7 +2,7 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { serverArgs } from "../server-args.ts";
+import { pageLink, serverArgs } from "../server-args.ts";
 
 const places = {
   takeServer: "/show/scripts/take-server.mjs",
@@ -38,4 +38,13 @@ test("server args: the instruction flags, the come-up wait, the page's own run a
   for (const want of ["app=pda-gg-chat", "extra-module=/g/dist/gg-extra.mjs", "extra-secrets=/h/secrets", "robot-code=false"]) assert.ok(cloud.includes(want), want);
   assert.ok(!cloud.some((c) => c.startsWith("transport=")), "no transport arg: the mount transport is the default");
   assert.ok(!args.some((a) => /gg=1/.test(a)));
+});
+
+test("the page's link: the thinking open, and the tab seeds no robot files", () => {
+  const link = pageLink("http://127.0.0.1:8773/run/golden-gate", "s3cr3t");
+  const url = new URL(link);
+  assert.equal(url.searchParams.get("thinking"), "open");
+  assert.equal(url.searchParams.get("robotcode"), "0", "without it the tab writes robot/ (lib, body, examples/dino) into the run's workspace");
+  assert.equal(url.hash, "#s3cr3t");
+  assert.equal(new URL(pageLink("http://h/run/x?a=1", "k")).searchParams.get("a"), "1");
 });
