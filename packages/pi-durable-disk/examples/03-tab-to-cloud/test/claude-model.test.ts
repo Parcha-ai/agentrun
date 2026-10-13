@@ -54,6 +54,21 @@ async function anthropicStub(): Promise<{ url: string; requests: { path: string;
   return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, requests, close: () => new Promise((resolve) => server.close(() => resolve())) };
 }
 
+/** An endpoint that sends message_start (the input is billed from here on) and then holds the stream open, or drops the connection. */
+async function cutStub(mode: "hold" | "drop"): Promise<{ url: string; close(): Promise<void> }> {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const [name, data] = events[0];
+      res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (mode === "drop") setTimeout(() => res.destroy(), 50);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }) };
+}
+
 /** One turn of a root conversation on `models`, with no tools; what it said, and its thinking. */
 async function oneTurn(models: ReturnType<typeof agentModels>): Promise<{ text: string; thinking: string }> {
   const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry() }, ctx);
@@ -104,7 +119,25 @@ describe("Claude Opus 5.5 as the cloud agent's model", () => {
     assert.equal(request.body.model, MODEL);
     assert.equal(request.body.stream, true);
     assert.deepEqual([proxy.spent, proxy.input, proxy.output], [170, 120, 50], "input 100 + cache read 20, output 50");
+    assert.equal(logged.filter((l) => l.includes('"model.usage"')).length, 1, "counted once");
     assert.ok(logged.length > 0 && logged.every((l) => !l.includes("fake-test-key")), "the key is in no log line");
+  });
+
+  it("a stream cut after message_start still counts what it reported, once: a call the caller cancels, and one the endpoint drops", async () => {
+    for (const mode of ["hold", "drop"] as const) {
+      const cut = await cutStub(mode);
+      try {
+        const proxy = new ModelProxy({ baseUrl: cut.url, model: MODEL, budgetTokens: 10_000 });
+        const abort = new AbortController();
+        let ended: number | undefined;
+        const sink: ModelSink = { head: () => undefined, chunk: () => mode === "hold" && abort.abort(), end: (status) => (ended = status) };
+        await proxy.forward("messages", { messages: [] }, sink, abort.signal, { "anthropic-version": "2023-06-01" });
+        assert.equal(ended, mode === "hold" ? 499 : 502);
+        assert.deepEqual([proxy.spent, proxy.input, proxy.output], [121, 120, 1], `${mode}: message_start's input (100 + cache read 20) and output (1) count against the budget`);
+      } finally {
+        await cut.close();
+      }
+    }
   });
 
   it("to a credential broker (no key) it sends no credential, and a header value that is not a plain list of names is dropped", async () => {

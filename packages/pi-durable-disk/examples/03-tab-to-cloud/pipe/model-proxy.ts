@@ -54,8 +54,19 @@ export class ModelProxy {
     const auth: Record<string, string> = this.options.apiKey ? (anthropic ? { "x-api-key": this.options.apiKey } : { authorization: `Bearer ${this.options.apiKey}` }) : {};
     // Anthropic Messages: the call's version (default the one pi-ai's client sends) and the beta features its body uses.
     const versioned: Record<string, string> = anthropic ? { "anthropic-version": passed?.["anthropic-version"] ?? "2023-06-01", ...(passed?.["anthropic-beta"] ? { "anthropic-beta": passed["anthropic-beta"] } : {}) } : {};
-    // Anthropic reports usage in parts: the input (with the cache's reads and writes) at message_start, the output so far at each message_delta.
-    const claude = { input: 0, output: 0, seen: false };
+    // Anthropic reports usage in parts: the input (with the cache's reads and writes) at message_start, the output so far at each message_delta. What
+    // was reported counts against the budget exactly once, before the end is sent: when the stream completes, and when it is cancelled or fails after
+    // message_start (the input is billed from there, so a caller that cuts its calls short would otherwise never reach the budget). The OpenAI shapes
+    // report usage only in their last event and are counted as it arrives.
+    const claude = { input: 0, output: 0, seen: false, counted: false };
+    const countClaude = () => {
+      if (!claude.seen || claude.counted) return;
+      claude.counted = true;
+      this.spent += claude.input + claude.output;
+      this.input += claude.input;
+      this.output += claude.output;
+      this.log("model.usage", { path, input: claude.input, output: claude.output, spent: this.spent, totalInput: this.input, totalOutput: this.output });
+    };
     try {
       const response = await fetch(`${this.options.baseUrl.replace(/\/$/, "")}/${path}`, {
         method: "POST",
@@ -106,15 +117,11 @@ export class ModelProxy {
         }
         sink.chunk(text);
       }
-      if (claude.seen) {
-        this.spent += claude.input + claude.output;
-        this.input += claude.input;
-        this.output += claude.output;
-        this.log("model.usage", { path, input: claude.input, output: claude.output, spent: this.spent, totalInput: this.input, totalOutput: this.output });
-      }
+      countClaude();
       if (response.status >= 400) this.log("model.error", { status: response.status, body: pending.slice(0, 500) });
       sink.end(response.status);
     } catch (error) {
+      countClaude();
       sink.end(signal.aborted ? 499 : 502, (error as Error).message);
     }
   }
