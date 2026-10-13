@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { localRun } from "../src/local.ts";
+import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { FencedError } from "../src/errors.ts";
