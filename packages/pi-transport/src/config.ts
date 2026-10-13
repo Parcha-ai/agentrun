@@ -103,7 +103,10 @@ export type TransportConfig = {
 	readonly workspace: { readonly path?: string; readonly exclude: readonly string[]; readonly maxBytes?: number };
 };
 
-/** One thing wrong with a config. `path` is a JSON pointer into the block; the empty string is the block itself. */
+/**
+ * One thing wrong with a config. `path` is a JSON pointer (RFC 6901) into the block, with `~` and `/` inside a key
+ * escaped; the empty string is the block itself.
+ */
 export type ConfigIssue = { readonly path: string; readonly message: string };
 
 /** A config that cannot be used. `issues` lists everything wrong with it, not the first problem only. */
@@ -125,6 +128,15 @@ export function parseDuration(text: string): number | undefined {
 	return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A JSON pointer (RFC 6901) to the value under these keys: `~` and `/` inside a key are escaped. */
+function pointer(...keys: readonly string[]): string {
+	return keys.map((key) => `/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`).join("");
+}
+
 function shapeIssues(input: unknown): ConfigIssue[] {
 	const issues: ConfigIssue[] = [];
 	for (const error of Value.Errors(TransportConfigSchema, input)) {
@@ -132,7 +144,8 @@ function shapeIssues(input: unknown): ConfigIssue[] {
 		if (error.schemaPath.includes("/anyOf/") || error.keyword === "boolean") continue;
 		const unknown = (error.params as { additionalProperties?: readonly string[] }).additionalProperties;
 		if (error.keyword === "additionalProperties" && unknown !== undefined) {
-			for (const key of unknown) issues.push({ path: `${error.instancePath}/${key}`, message: "unknown key" });
+			for (const key of unknown)
+				issues.push({ path: `${error.instancePath}${pointer(key)}`, message: "unknown key" });
 		} else if (error.keyword === "anyOf") {
 			issues.push({ path: error.instancePath, message: "has no allowed value or shape" });
 		} else {
@@ -143,70 +156,86 @@ function shapeIssues(input: unknown): ConfigIssue[] {
 }
 
 /**
- * Check a `transport` block and resolve its defaults. Structure only: whether a provider exists, a secret resolves
- * or a box can be created is the host's to find when it opens the transport.
+ * What is wrong with the block beyond its shape: ids, lifetimes, references. It reads the block as it is, well shaped
+ * or not, so one pass over a config reports its misspelled keys and its bad references together.
  */
-export function parseTransportConfig(input: unknown): Result<TransportConfig, ConfigError> {
-	const shape = shapeIssues(input);
-	if (shape.length > 0) return err(new ConfigError(shape));
-	const raw = input as TransportConfigInput;
+function meaningIssues(input: unknown): ConfigIssue[] {
+	if (!isRecord(input)) return [];
 	const issues: ConfigIssue[] = [];
-	const environments: Record<string, EnvironmentConfig> = {};
+	const environments = isRecord(input.environments) ? input.environments : undefined;
 
-	for (const [id, environment] of Object.entries(raw.environments)) {
-		const at = `/environments/${id}`;
+	for (const [id, environment] of Object.entries(environments ?? {})) {
+		const at = pointer("environments", id);
 		if (!ENVIRONMENT_ID.test(id)) issues.push({ path: at, message: "an id is lowercase letters, digits, _ and -" });
 		if (RESERVED_IDS.includes(id)) issues.push({ path: at, message: `"${id}" is reserved` });
+		if (!isRecord(environment)) continue;
 		if (environment.image !== undefined && environment.snapshot !== undefined) {
 			issues.push({ path: at, message: "names both an image and a snapshot" });
 		}
-		let maxLifetimeMs = environment.provider === "local" ? DEFAULT_LOCAL_LIFETIME_MS : undefined;
-		if (environment.maxLifetime !== undefined) {
-			maxLifetimeMs = parseDuration(environment.maxLifetime);
-			if (maxLifetimeMs === undefined) {
+		if (typeof environment.maxLifetime === "string") {
+			if (parseDuration(environment.maxLifetime) === undefined) {
 				issues.push({ path: `${at}/maxLifetime`, message: "is not a duration such as 30m or 6h" });
 			}
-		} else if (maxLifetimeMs === undefined) {
+		} else if (environment.maxLifetime === undefined && environment.provider !== "local") {
 			issues.push({ path: `${at}/maxLifetime`, message: "is required for every provider but local" });
 		}
-		const { maxLifetime: _maxLifetime, ...rest } = environment;
-		environments[id] = {
-			...rest,
-			id,
-			env: environment.env ?? {},
-			expose: environment.expose ?? [],
-			maxLifetimeMs: maxLifetimeMs ?? 0,
-			scope: environment.scope ?? "session",
-			capabilities: environment.capabilities ?? [],
-		};
 	}
 
 	const usesAuto: string[] = [];
-	const checkTarget = (path: string, target: string) => {
+	const checkTarget = (path: string, target: unknown) => {
+		if (typeof target !== "string" || environments === undefined) return;
 		if (target === "auto") usesAuto.push(path);
 		else if (!Object.hasOwn(environments, target)) {
 			issues.push({ path, message: `names "${target}", which is not a declared environment` });
 		}
 	};
-	if (raw.home !== undefined) checkTarget("/home", raw.home);
+	checkTarget("/home", input.home);
+	if (isRecord(input.hands)) {
+		if (input.hands.default === undefined) {
+			issues.push({ path: "/hands/default", message: "is required when hands names roles" });
+		}
+		for (const [role, target] of Object.entries(input.hands)) checkTarget(pointer("hands", role), target);
+	} else {
+		checkTarget("/hands", input.hands);
+	}
+	if (input.auto === undefined) {
+		for (const path of usesAuto) issues.push({ path, message: "is auto, which needs auto.classifier" });
+	}
+	return issues;
+}
+
+/**
+ * Check a `transport` block and resolve its defaults. Every problem is reported at once. Structure only: whether a
+ * provider exists, a secret resolves or a box can be created is the host's to find when it opens the transport.
+ */
+export function parseTransportConfig(input: unknown): Result<TransportConfig, ConfigError> {
+	const issues = [...shapeIssues(input), ...meaningIssues(input)];
+	if (issues.length > 0) return err(new ConfigError(issues));
+	const raw = input as TransportConfigInput;
+	const environments: Record<string, EnvironmentConfig> = {};
+
+	for (const [id, environment] of Object.entries(raw.environments)) {
+		const { maxLifetime, ...rest } = environment;
+		environments[id] = {
+			...rest,
+			id,
+			env: environment.env ?? {},
+			expose: environment.expose ?? [],
+			maxLifetimeMs:
+				(maxLifetime === undefined ? undefined : parseDuration(maxLifetime)) ?? DEFAULT_LOCAL_LIFETIME_MS,
+			scope: environment.scope ?? "session",
+			capabilities: environment.capabilities ?? [],
+		};
+	}
 
 	let hands: TransportConfig["hands"];
 	if (typeof raw.hands === "string") {
-		checkTarget("/hands", raw.hands);
 		hands = { default: raw.hands, roles: {} };
 	} else if (raw.hands !== undefined) {
 		const { default: fallback, ...roles } = raw.hands;
-		if (fallback === undefined)
-			issues.push({ path: "/hands/default", message: "is required when hands names roles" });
-		else checkTarget("/hands/default", fallback);
-		for (const [role, target] of Object.entries(roles)) checkTarget(`/hands/${role}`, target);
 		hands = { default: fallback ?? "", roles };
 	}
-	if (raw.auto === undefined) {
-		for (const path of usesAuto) issues.push({ path, message: "is auto, which needs auto.classifier" });
-	}
 
-	if (issues.length > 0) return err(new ConfigError(issues));
 	return ok({
 		environments,
 		...(raw.home === undefined ? {} : { home: raw.home }),
