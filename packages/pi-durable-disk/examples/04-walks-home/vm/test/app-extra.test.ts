@@ -39,6 +39,23 @@ test("an extra with secret files tells the app where they are, and refuses what 
   assert.throws(() => appExtraPlan({ appExtra: { module: "p/e.ts", files: { "p/e.ts": "/a" }, secretFiles: { "a/b": "/x" } } }), /secret file name/);
 });
 
+test("an extra is refused on the pipe transport, which builds its own tools and would ignore it, before any box starts", () => {
+  const extra = { module: "p/e.ts", files: { "p/e.ts": "/a" } };
+  assert.throws(() => appExtraPlan({ transport: "pipe", appExtra: extra }), /appExtra needs the mount transport/);
+  assert.doesNotThrow(() => appExtraPlan({ transport: "mount", appExtra: extra }));
+  assert.doesNotThrow(() => appExtraPlan({ transport: "pipe" }), "no extra: the pipe transport is as it was");
+  assert.throws(() => modalOptionsFromArgs({ transport: "pipe", "extra-module": "/etc/hostname" }), /extra-module needs the mount transport/);
+});
+
+test("an extra cannot overwrite a file the app's bundle already has", () => {
+  for (const name of ["cloud-app.ts", "agent.ts", "pipe/gpu-rpc.ts", "package.json", "node_modules/ws/index.js", "pi-durable-disk-0.1.0.tgz"]) {
+    assert.throws(() => appExtraPlan({ appExtra: { module: "p/e.ts", files: { "p/e.ts": "/a", [name]: "/x" } } }), /already used by the app bundle/, name);
+  }
+  assert.throws(() => appExtraPlan({ appExtra: { module: "cloud-app.ts", files: { "cloud-app.ts": "/a" } } }), /already used by the app bundle/, "not even as the module");
+  assert.throws(() => appExtraPlan({ robot: true, appExtra: { module: "p/e.ts", files: { "p/e.ts": "/a", "robot/vm/robot-extra.ts": "/x" } } }), /already used by the app bundle/, "nor the robot's own files");
+  assert.doesNotThrow(() => appExtraPlan({ appExtra: { module: "extra/page.mjs", files: { "extra/page.mjs": "/a", "extra/data/tools.mjs": "/b" } } }));
+});
+
 test("secret files are staged as bytes, mode 0400 for the run user, and the secret is in no command and no log line", async () => {
   const SECRET = "sk-test-0123456789abcdefghijklmnopqrstuvwxyz";
   const uploads: { path: string; text: string }[] = [];

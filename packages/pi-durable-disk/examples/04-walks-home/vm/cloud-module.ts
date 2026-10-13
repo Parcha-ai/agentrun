@@ -65,6 +65,7 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
   // A generic extra of the cloud app: one module published into the VM's bundle, a directory of secret files staged for the run user, and the robot's code off.
   if ((args["extra-secrets"] !== undefined || args["robot-code"] !== undefined) && args["extra-module"] === undefined) throw new Error("--cloud-arg extra-secrets and robot-code need extra-module");
   if (args["robot-code"] !== undefined && args["robot-code"] !== "true" && args["robot-code"] !== "false") throw new Error(`--cloud-arg robot-code=${args["robot-code"]}: true or false`);
+  if (args["extra-module"] !== undefined && args.transport === "pipe") throw new Error("--cloud-arg extra-module needs the mount transport (not transport=pipe)");
   const isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } };
   const isDirectory = (path: string) => { try { return statSync(path).isDirectory(); } catch { return false; } };
   if (args["extra-module"] !== undefined && !isFile(args["extra-module"])) throw new Error(`--cloud-arg extra-module=${args["extra-module"]} is not a file`);

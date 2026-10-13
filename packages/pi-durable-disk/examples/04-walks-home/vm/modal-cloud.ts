@@ -22,7 +22,7 @@ import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, remov
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
 import { warmTrain, type WarmTrain } from "../universes/warm-train.ts";
 import { creatureWarmer, type CreatureWarmer } from "./warm-creature.ts";
-import { appBundle, boxSetupScript, prepareScript, BOX_APP_DIR, BOX_LINK_PORT, BOX_MOUNT_ROOT, BOX_NODE, BOX_PACKAGE, BOX_SERVE_PORT } from "../../03-tab-to-cloud/pipe/daytona.ts";
+import { appBundle, APP_FILES, boxSetupScript, prepareScript, BOX_APP_DIR, BOX_LINK_PORT, BOX_MOUNT_ROOT, BOX_NODE, BOX_PACKAGE, BOX_SERVE_PORT } from "../../03-tab-to-cloud/pipe/daytona.ts";
 import { CLOUD_LEASE, moveEnv, relayViewer } from "../../03-tab-to-cloud/pipe/cloud.ts";
 import { archilControl, type DemoControl } from "../../03-tab-to-cloud/pipe/control.ts";
 import { dialLink, type LinkDialer } from "../../03-tab-to-cloud/pipe/link.ts";
@@ -195,13 +195,19 @@ const RESERVED_EXTRA_ENV = /^(DEMO_(APP_EXTRA|LINK_.*|MODEL.*|SWITCH_.*|EVENTS_L
  * What the cloud app's bundle and environment get from the robot's extra (`robot`) and from a generic one (`appExtra`): the files, the `DEMO_APP_EXTRA` it names, the environment.
  * A bad extra is an error when the cloud is made, not at the first box.
  */
-export function appExtraPlan(options: { robot?: boolean; appExtra?: AppExtraOptions }): { bundleFiles: Record<string, string>; env: Record<string, string> } {
+export function appExtraPlan(options: { robot?: boolean; transport?: "mount" | "pipe"; appExtra?: AppExtraOptions }): { bundleFiles: Record<string, string>; env: Record<string, string> } {
   const robot = options.robot ? ROBOT_BUNDLE_FILES : {};
   const extra = options.appExtra;
   if (!extra) return { bundleFiles: { ...robot }, env: options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {} };
+  // The pipe transport runs the app through remote-host.ts, which builds its own tools and models and has no extra, no secret staging and no robotCode switch: refuse it rather than ignore it.
+  if (options.transport === "pipe") throw new Error("appExtra needs the mount transport (the VM that mounts the disk runs the cloud app); the pipe transport would ignore it");
   const files = extra.files ?? {};
   for (const published of [extra.module, ...Object.keys(files)]) {
     if (published === "" || published.startsWith("/") || published.split("/").includes("..")) throw new Error(`appExtra file ${published}: a published path must stay inside the bundle`);
+    // What the bundle already holds: the app's own files, its package manifest and packed package, its dependencies, and the robot's files when the robot's extra is on.
+    if ((APP_FILES as readonly string[]).includes(published) || published === "package.json" || published.startsWith("node_modules/") || published.endsWith(".tgz") || published in robot) {
+      throw new Error(`appExtra file ${published} is already used by the app bundle: pick another published path`);
+    }
   }
   if (!(extra.module in files) && !(extra.module in robot)) throw new Error(`appExtra module ${extra.module} is not in the files`);
   const env = extra.env ?? {};
@@ -341,7 +347,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const vncPasswords = new Map<string, string>();
   const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
   // The robot's extra and a generic one (appExtra) merged into what the bundle and the app's environment get; a bad extra fails here, when the cloud is made.
-  const extraPlan = appExtraPlan(options);
+  const extraPlan = appExtraPlan({ ...options, transport });
   const gpuType = options.gpu?.type ?? "H100";
   const gpuEnv = options.gpu ? modalGpuEnvironment(gpuType) : undefined;
   const gpuClient: DaytonaClient | undefined = options.gpu
