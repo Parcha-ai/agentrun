@@ -57,7 +57,9 @@ export function spend(max: number, state: DeliveryCount, event: DeliveryEvent): 
 // ─── the schema a record is held to ───
 
 /** What makes a schema unusable as a `submit` tool's parameters: its root is not an object schema, or it
- *  requires a field it does not declare, which a model reading the declared fields can never supply. */
+ *  declares its fields and requires one that is not among them, which a model reading the declared fields can
+ *  never supply. A schema that declares no `properties` is not held to this: its tool is shown with open
+ *  parameters, and the delivery contract that ends the node's task carries the schema with its `required`. */
 export function lintRecordSchema(schema: unknown): string[] {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return ["the record schema must be a JSON Schema object"];
   const { type, properties, required } = schema as { type?: unknown; properties?: unknown; required?: unknown };
