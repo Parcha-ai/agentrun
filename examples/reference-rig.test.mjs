@@ -130,21 +130,21 @@ test('a record that cites a browser read fails browser-ops-ran when the ledger s
   assert.deepEqual(failures(unrun), [['browser-ops-ran', 'the record cites a browser read, and page.run never ran']]);
 });
 
-test('a missing log fails the gates that read it, and says which', { timeout: 120_000 }, async (t) => {
+test('a missing ledger or store fails the gates that read it, and says which; a missing events log fails none', { timeout: 120_000 }, async (t) => {
   const { runDir } = await runOf(t, reference);
   assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl'], ['browser-ops-ran', 'no ledger.jsonl']]);
-  assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))),
-    [['nodes-end', 'no events.jsonl'], ['browser-sessions-released', 'no events.jsonl']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'durable'), { recursive: true }))),
+    [['nodes-end', 'no durable/run.sqlite'], ['browser-sessions-released', 'no durable/run.sqlite']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))), [], 'status rows are for people; the gates read the store');
 });
 
-test('a log cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
+test('a ledger cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
   const { runDir } = await runOf(t, reference);
   const cut = (name) => async (dir) => writeFile(join(dir, name), (await readFile(join(dir, name), 'utf8')).slice(0, -10));
   const lastLine = async (name) => (await readFile(join(runDir, name), 'utf8')).trim().split('\n').length;
   const ledgerError = `ledger.jsonl line ${await lastLine('ledger.jsonl')} does not parse`;
   assert.deepEqual(failures(await tampered(runDir, 'ledger-cut', cut('ledger.jsonl'))), [['fakes-called-once', ledgerError], ['browser-ops-ran', ledgerError]]);
-  const eventsError = `events.jsonl line ${await lastLine('events.jsonl')} does not parse`;
-  assert.deepEqual(failures(await tampered(runDir, 'events-cut', cut('events.jsonl'))), [['nodes-end', eventsError], ['browser-sessions-released', eventsError]]);
+  assert.deepEqual(failures(await tampered(runDir, 'events-cut', cut('events.jsonl'))), []);
 });
 
 test('a second job on a directory that holds another job\'s run is refused, naming what moved, and gets nothing of the first', { timeout: 180_000 }, async (t) => {

@@ -9,9 +9,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
-import type { Workflow } from '@parcha/agentrun-dsl';
-import { bindingMismatch, canonicalHash, recoveryBinding, recoveryBound } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest } from '@parcha/agentrun-pi/durable';
+import type { DecisionExchange, DecisionReceipt, Workflow } from '@parcha/agentrun-dsl';
+import { bindingMismatch, canonicalHash, recoveryBinding, recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import {
+  createDecisionWriter, createWorkflowExtension, DECISION_ROW_VERSION, documentStore, nodeRunner, readDecisions, taskScope,
+  type DecisionRow, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+} from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
@@ -25,12 +28,15 @@ export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<R
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
 const POLICY = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 };
 
+/** The run's id, and the key its workflow's task and journal are kept under. */
+export const RUN_KEY = 'reference';
+
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
 export async function placeAt(root?: string): Promise<RunPlace> {
   const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
   await mkdir(join(at, 'work'), { recursive: true });
-  return { id: 'reference', root: at, work: join(at, 'work'), store: join(at, 'store') };
+  return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'durable') };
 }
 
 /** A claim on a plain directory: nothing to mount, nothing to fence but this process's own mark. */
@@ -70,6 +76,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
     ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
+    ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
     onSession: (row, change) => status({ source: 'browser', change, row }),
   });
   const vision = createVisionExtension({
@@ -94,18 +101,20 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
-    run: async ({ runtime, context }) => {
+    run: async ({ runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
-      return {
-        adapters: {
-          runEffect: host.tools.runEffect,
-          runNode: nodes.on(taskScope(runtime), context).runNode,
-          runJudge: host.decisions.runJudge,
-          onEvent: (event) => void status({ source: 'workflow', event }),
-        },
-        durableNodes: true,
-      };
+      // Each typed question's receipt is a row in the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const writer = createDecisionWriter({ open: async () => ({ harness: { commit: taskCommit({ runtime, context }) } as never, release: async () => {} }), context });
+      const deps = withRecovery(driver, {
+        runEffect: host.tools.runEffect,
+        runNode: nodes.on(taskScope(runtime), context).runNode,
+        runJudge: host.decisions.runJudge,
+        onEvent: (event) => void status({ source: 'workflow', event }),
+        recordDecision: async (receipt, exchange) => { writer.record(rowOf(receipt, exchange)); await writer.settled(); },
+      }, { durableNodes: true });
+      return { deps: { ...deps, recovery: { ...deps.recovery!, decision: async (id) => answered(await readDecisions(runtime, context), id) } } };
     },
   });
   // Until the browser's pi range admits 1.1.0 (#336), this process loads pi-durable 1.0.4 (here, the browser, vision) and
@@ -175,12 +184,7 @@ function moved(saved: WorkflowRequest | undefined, job: Job): Extract<WorkflowOu
 async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
   const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
   if (!request) return;
-  const commit = async <T,>(change: (tx: never) => T | Promise<T>) => {
-    let result!: T;
-    await runtime.commit(async (tx) => { result = await change(tx as never); return undefined; }, context);
-    return result;
-  };
-  const journal = await documentStore({ commit } as never, key, { context }).open(recoveryBound(request.workflow, request.bind));
+  const journal = await documentStore({ commit: taskCommit({ runtime, context }) } as never, key, { context }).open(recoveryBound(request.workflow, request.bind));
   try {
     for (const effect of journal.effects()) {
       const answer = effect.status === 'unknown' && effect.intent ? await answered(effect.intent) : undefined;
@@ -189,4 +193,34 @@ async function settle({ key, taskId, runtime, context }: WorkflowInvocation, ans
   } finally {
     await journal.close();
   }
+}
+
+/** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
+function taskCommit({ runtime, context }: Pick<WorkflowInvocation, 'runtime' | 'context'>) {
+  return async <T,>(change: (tx: never) => T | Promise<T>) => {
+    let result!: T;
+    await runtime.commit(async (tx) => { result = await change(tx as never); return undefined; }, context);
+    return result;
+  };
+}
+
+/** A receipt as the row the package stores. agentrun-pi gap: row v1 has no field for the receipt's id, which
+ *  `recovery.decision` is asked by, so the row also carries it as `decision_id`. */
+function rowOf(receipt: DecisionReceipt, exchange: DecisionExchange): DecisionRow & { decision_id: string } {
+  return {
+    v: DECISION_ROW_VERSION, at: receipt.at, node: receipt.node, kind: receipt.kind, item: receipt.item, execution_path: receipt.execution_path,
+    request_sha256: receipt.request_sha256, request_bytes: Buffer.byteLength(JSON.stringify({ state: exchange.request.state, questions: exchange.request.questions })),
+    model: receipt.model, questions: receipt.questions, answers: receipt.answers, rule: receipt.rule as DecisionRow['rule'], action: receipt.action,
+    usage: receipt.usage, cost_usd: receipt.cost_usd, latency_ms: receipt.latency_ms, ...(receipt.error !== undefined ? { error: receipt.error } : {}),
+    decision_id: receipt.id,
+  };
+}
+
+/** The answered receipt the run's rows hold for `id`, rebuilt from its row: a rule is set only on an answered one. The
+ *  row keeps no request position or state digest; a replay reads the receipt's status, answers and model. */
+function answered(rows: DecisionRow[], id: string): DecisionReceipt | undefined {
+  const row = (rows as (DecisionRow & { decision_id?: string })[]).findLast((stored) => stored.decision_id === id && stored.rule !== null && stored.error === undefined);
+  if (!row) return undefined;
+  const { decision_id: _, v: _v, request_bytes: _bytes, ...kept } = row;
+  return { ...kept, v: 1, id, status: 'answered' } as unknown as DecisionReceipt;
 }

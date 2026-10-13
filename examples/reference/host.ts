@@ -2,7 +2,7 @@
 // model answers from a script, the workflow's `call` reaches a tool in this process, the browser is the package's fake
 // backend, and evidence, status and the record are files under the run's directory. Every fake call, and each page
 // operation the browser makes, is counted in `<run>/ledger.jsonl`, which outlives a killed process.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
@@ -28,6 +28,9 @@ export type BrowserPlane = {
   provider(target: { conversationId: ConversationId; plane: string; config: BrowserConfig }): BrowserProvider | Promise<BrowserProvider>;
   driver: DriverFactory<PageDriver>;
   prices?: Partial<PriceTable>;
+  /** How long a session create whose answer was lost may still land before its release goes ahead; the browser's
+   *  default (60 s) is for a provider across a network. */
+  createDeadlineMs?: number;
 };
 /** The packages' own rows, tagged by who reported them. */
 export type StatusEvent =
@@ -73,9 +76,10 @@ export type Fakes = {
   start: string;
 };
 
-/** One fake call. A model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the
- *  provider, the same in every process of the run. */
-export type LedgerRow = { kind: 'model' | 'tool' | 'judge' | 'browser'; name: string; pid: number; conversation?: string };
+/** One fake call, with the process incarnation that made it (a pid can be reused; this id is drawn at each start). A
+ *  model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the provider, the same in
+ *  every process of the run. */
+export type LedgerRow = { kind: 'model' | 'tool' | 'judge' | 'browser'; name: string; pid: number; incarnation?: string; conversation?: string };
 
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
@@ -88,8 +92,9 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
-    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, ...(conversation ? { conversation } : {}) }));
+    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
   const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
@@ -102,7 +107,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
 
   const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
-  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver> };
+  // The fake answers in this process: a create it lost is known lost within seconds.
+  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver>, createDeadlineMs: 3_000 };
   // A page's `run` and read are counted once each returns: the operations a browser receipt rests on.
   const ops: Record<string, string> = { run: 'page.run', page: 'page.read' };
   const browser: BrowserPlane = { ...plane, driver: async (...args) => {

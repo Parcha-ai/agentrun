@@ -9,6 +9,8 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend } from '@parcha/pi-browser/testing';
+import { readJournal } from '@parcha/agentrun-pi/durable';
+import { RUN_KEY } from './reference/assemble.ts';
 import { gates } from './reference/gates.ts';
 import { fakes, job } from './reference/job.ts';
 
@@ -54,8 +56,9 @@ test('a relative --dir with a trailing slash runs the same job and names the rec
 // The child is the CLI's run with changes the test owns: the browser backend lives in this process, so its ledger
 // outlives the child, and SIGKILL ends the child at one point. `KILL_AT`: the lead's request after that many tool
 // results. `KILL_IN`: `search-admitted` as the tool door is asked (the call admitted, never sent), `search-landed` once
-// the door has answered (sent, its result not committed), `page-run` as a page is asked to run (never sent). `OTHER`
-// runs the job under another workflow name. It is a file, not `--input-type=module -e`: the disk run's watchdog worker
+// the door has answered (sent, its result not committed), `page-run` as a page is asked to run (never sent),
+// `judge-asked` once the judge has answered and before the answer is recorded, `event:<type>:<label>` just before that
+// status row is written. `OTHER` runs the job under another workflow name. It is a file, not `--input-type=module -e`: the disk run's watchdog worker
 // inherits that flag and cannot start.
 const at = (path) => new URL(path, import.meta.url).href;
 const CHILD = `
@@ -79,6 +82,10 @@ const driver = async (...args) => {
 const local = localHost(place, { ...fakes, model }, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
 const door = local.host.tools.runEffect;
 local.host.tools.runEffect = async (params) => { kill('search-admitted'); const value = await door(params); kill('search-landed'); return value; };
+const judge = local.host.decisions.runJudge;
+local.host.decisions.runJudge = async (request) => { const answer = await judge(request); kill('judge-asked'); return answer; };
+const status = local.host.status;
+local.host.status = (event) => { if (event.source === 'workflow') kill(\`event:\${event.event.type}:\${event.event.label}\`); return status(event); };
 const ofJob = process.env.OTHER ? { ...job, workflow: { ...job.workflow, name: 'another-company-check' } } : job;
 console.log(JSON.stringify(summary(place, await run(place, local.host, ofJob), local)));
 `;
@@ -122,8 +129,9 @@ test('killed in the lead\'s request after the browser read, a second process res
     'one session, kept across the kill by the resumed run\'s reconcile and released once');
 });
 
-/** One process killed at `kill`, the processes `between` on the same directory, and one that resumes it: the views of
- *  those between and of the last, the run's ledger, the backend's page operations and the gates that fail. */
+/** Processes killed at `kill` (one point, or one per process), the processes `between` on the same directory, and one
+ *  that resumes it: the journal the kills left, the views of those between and of the last, the run's ledger, the
+ *  backend's page operations and the gates that fail. */
 async function killedAndResumed(t, kill, between = []) {
   const tmp = await scratch(t);
   const dir = join(tmp, 'run');
@@ -133,15 +141,17 @@ async function killedAndResumed(t, kill, between = []) {
   const env = { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp, DIR: dir, BACKEND: served.url };
   const child = join(tmp, 'child.mjs');
   await writeFile(child, CHILD);
-  const killed = await node([child], { ...env, ...kill });
+  const killed = [];
+  for (const point of [kill].flat()) killed.push(await node([child], { ...env, ...point }));
+  const cut = readJournal(dir, RUN_KEY);
   const others = [];
   for (const extra of between) others.push(JSON.parse((await node([child], { ...env, ...extra })).stdout));
   const resumed = await node([child], env);
-  assert.equal(killed.signal, 'SIGKILL', killed.stderr);
+  for (const each of killed) assert.equal(each.signal, 'SIGKILL', each.stderr);
   assert.equal(resumed.code, 0, resumed.stderr);
   const rows = (await readFile(join(dir, 'ledger.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const failing = gates(dir, job).filter(({ ok }) => !ok).map(({ id }) => id);
-  return { view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
+  return { cut, view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
 }
 const named = (rows, kind) => rows.filter((row) => row.kind === kind).map((row) => row.name);
 
@@ -171,5 +181,38 @@ test('a different job on a killed run\'s directory is refused, and the run still
   assert.deepEqual({ status: other.status, code: other.code, output: other.output }, { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', output: null });
   assert.deepEqual(view.output, OUTPUT, 'the killed run resumed after the refusal, with the same record');
   assert.deepEqual(named(rows, 'tool'), ['search'], 'the search ran once');
+  assert.deepEqual(failing, []);
+});
+
+// Kill points from the ten-kill ledger's seeds whose runs were valid and failed the gates as they were.
+
+test('a turn two kills cut is asked once in each of three processes, and every gate passes', { timeout: 180_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, [{ KILL_AT: '1' }, { KILL_AT: '1' }]);
+  assert.deepEqual(view.output, OUTPUT);
+  const turn = rows.filter((row) => row.kind === 'model' && row.name === 'turn 1');
+  assert.deepEqual([turn.length, new Set(turn.map((row) => row.incarnation)).size], [3, 3]);
+  assert.deepEqual(failing, []);
+});
+
+for (const [label, path] of [['search', '/root/steps/0'], ['investigate', '/root/steps/1'], ['verdict', '/root/steps/2']]) {
+  test(`killed just before ${label}'s node.end row, the journal already holds the step committed, and the resumed run passes every gate`, { timeout: 180_000 }, async (t) => {
+    const { cut, view, failing } = await killedAndResumed(t, { KILL_IN: `event:node.end:${label}` });
+    assert.ok(cut.state.pin.done.includes(path), `${path} is committed: ${JSON.stringify(cut.state.pin.done)}`);
+    assert.deepEqual(view.output, OUTPUT);
+    assert.deepEqual(failing, []);
+  });
+}
+
+test('killed after the judge answered and before the answer was recorded, the resumed run asks it again, once', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'judge-asked' });
+  assert.deepEqual(view.output, OUTPUT);
+  assert.equal(named(rows, 'judge').length, 2);
+  assert.deepEqual(failing, []);
+});
+
+test('killed after the judge\'s answer was recorded, the resumed run takes the recorded decision and does not ask again', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'event:judge.answered:verdict' });
+  assert.deepEqual(view.output, OUTPUT);
+  assert.deepEqual(named(rows, 'judge'), ['verdict'], 'asked once, in the killed process');
   assert.deepEqual(failing, []);
 });
