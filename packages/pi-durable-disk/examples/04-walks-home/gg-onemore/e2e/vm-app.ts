@@ -3,14 +3,14 @@
 // the pipeline's tools on the GG box's guard (chat/gg-extra.ts), luna called from the VM, the edited model through the
 // guard. The beat starts on a run's first open; the events go to $GG_EVENTS and the evidence to the run's work directory on
 // the disk. The module is loaded before the disk is mounted, so nothing here touches the run's paths until onOpen.
-//   GG_KEYS    a directory with guard-url, serve-key, tools-key and openai-key (the run user's own, 0400): each read once, then deleted
+//   GG_KEYS    a directory with guard-url, serve-key, tools-key and openai-key (the run user's own, 0400); they stay for a restarted process
 //   GG_EVENTS  the events file the host follows
 //   GG_LUNA    default gpt-6-luna
 import { appendFileSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
-import { readSecretsOnce } from "../chat/gg-extra.ts";
+import { readSecrets } from "../chat/gg-extra.ts";
 import { beatMarks } from "./lifecycle.ts";
 import { driveSession, sessionParts, SETTINGS } from "./session.ts";
 
@@ -24,11 +24,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   const keys = process.env.GG_KEYS ?? "/etc/gg-onemore";
   const openaiKey = (await readFile(join(keys, "openai-key"), "utf8")).trim();
-  await rm(join(keys, "openai-key"), { force: true });
   const out = join(where.work, "gg-run");
   const host = {
     luna: { baseUrl: "https://api.openai.com/v1", modelId: process.env.GG_LUNA ?? "gpt-6-luna", apiKey: openaiKey },
-    secrets: await readSecretsOnce(keys),
+    secrets: await readSecrets(keys),
     work: where.work,
     out,
     control: true,

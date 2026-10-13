@@ -44,14 +44,16 @@ export function guardClient(access: () => GuardAccess | undefined, fetchImpl: ty
   return {
     async step(name, signal) {
       const res = await call("POST", `/gg/step/${name}`, {}, signal);
-      const out = { exit: 255, stdout: "", stderr: "" };
+      // each stream's bytes are decoded once, whole: a frame boundary can fall inside a character
+      const bytes: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+      let exit = 255;
       for (const line of (await res.text()).split("\n")) {
         if (!line) continue;
         const frame = JSON.parse(line) as { stream?: "stdout" | "stderr"; data?: string; exit?: number };
-        if (frame.exit !== undefined) out.exit = frame.exit;
-        else if (frame.stream) out[frame.stream] += Buffer.from(frame.data ?? "", "base64").toString("utf8");
+        if (frame.exit !== undefined) exit = frame.exit;
+        else if (frame.stream) bytes[frame.stream].push(Buffer.from(frame.data ?? "", "base64"));
       }
-      return out;
+      return { exit, stdout: Buffer.concat(bytes.stdout).toString("utf8"), stderr: Buffer.concat(bytes.stderr).toString("utf8") };
     },
     async served(signal) {
       return ((await (await call("GET", "/gg/served", undefined, signal)).json()) as { served: Served | null }).served;

@@ -70,7 +70,56 @@ def upstream(vllm):
 
 
 http, VLLM = upstream(VLLM_URL)
-CONTROL = asyncio.Lock()
+
+
+class WeightsGate:
+    """The served weights: chats share them; the control and the steps that change them (strength, bake) have them alone. A
+    change that is waiting goes before chats that come after it."""
+
+    def __init__(self):
+        self.loop = None
+
+    def _cond(self):
+        # one condition per event loop (the tests run several loops; the server one)
+        loop = asyncio.get_running_loop()
+        if self.loop is not loop:
+            self.loop, self.cond, self.readers, self.writer, self.waiting = loop, asyncio.Condition(), 0, False, 0
+        return self.cond
+
+    @contextlib.asynccontextmanager
+    async def shared(self):
+        cond = self._cond()
+        async with cond:
+            await cond.wait_for(lambda: not self.writer and self.waiting == 0)
+            self.readers += 1
+        try:
+            yield
+        finally:
+            async with cond:
+                self.readers -= 1
+                cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def alone(self):
+        cond = self._cond()
+        async with cond:
+            self.waiting += 1
+            try:
+                await cond.wait_for(lambda: not self.writer and self.readers == 0)
+            finally:
+                self.waiting -= 1
+            self.writer = True
+        try:
+            yield
+        finally:
+            async with cond:
+                self.writer = False
+                cond.notify_all()
+
+
+WEIGHTS = WeightsGate()
+# the steps that write into the served weights; find and pick use the lab's own copy
+CHANGES_WEIGHTS = {"strength", "bake"}
 
 
 def log(row):
@@ -231,7 +280,15 @@ async def gg_step(name: str, request: Request):
     argv, timeout = STEPS[name]
     # a line in the log too: the launcher's idle stop reads its time, and a step is activity
     log({"tool": f"step/{name}", "at": round(time.time(), 1)})
-    return StreamingResponse(run_frames(argv, timeout), media_type="application/x-ndjson")
+    if name not in CHANGES_WEIGHTS:
+        return StreamingResponse(run_frames(argv, timeout), media_type="application/x-ndjson")
+
+    async def alone():
+        async with WEIGHTS.alone():
+            async for frame in run_frames(argv, timeout):
+                yield frame
+
+    return StreamingResponse(alone(), media_type="application/x-ndjson")
 
 
 def served():
@@ -290,13 +347,14 @@ async def gg_control(request: Request):
     async def answers():
         out = []
         for _ in range(samples):
-            r = await guarded(body, headers)
+            # this control has the weights alone: its own replays do not wait for them
+            r = await guarded(body, headers, gated=False)
             if not isinstance(r, dict):
                 raise RuntimeError(f"a replay failed: {r.body.decode()[:300]}")
             out.append((r["choices"][0]["message"].get("content") or "").strip())
         return out
 
-    async with CONTROL:
+    async with WEIGHTS.alone():
         try:
             await swap({"method": "gg_reset"})
             original = await answers()
@@ -314,7 +372,7 @@ async def other(path: str):
     return Response(status_code=404)
 
 
-async def guarded(body, headers):
+async def guarded(body, headers, gated=True):
     rid = secrets.token_hex(6)
     client_stream = bool(body.get("stream"))
     messages = [m for m in body.get("messages", []) if m.get("role") in ("system", "user", "assistant")]
@@ -338,7 +396,7 @@ async def guarded(body, headers):
                 queue.put_nowait(("text", channel, task))
 
         try:
-            async with http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
+            async with (WEIGHTS.shared() if gated else contextlib.nullcontext()), http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
                 if r.status_code != 200:
                     queue.put_nowait(("error", r.status_code, (await r.aread()).decode()[:2000]))
                     return

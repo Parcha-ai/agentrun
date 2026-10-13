@@ -13,4 +13,8 @@ if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
   if kill -0 "$PID" 2>/dev/null; then echo "live-gg (pid $PID) did not stop within 3 minutes"; fi
 fi
 rm -f "$H/secrets/guard-url" "$H/secrets/serve-key" "$H/secrets/tools-key" "$H/box-state/serve-key" "$H/box-state/exec-key"
-cd "$G" && "$B/with-modal" -- node chat/gg-sandboxes.mjs pda-gg-chat --terminate | tail -1
+if ! out=$(cd "$G" && "$B/with-modal" -- node chat/gg-sandboxes.mjs pda-gg-chat --terminate 2>&1); then
+  echo "could not check pda-gg-chat's sandboxes: $(echo "$out" | tail -2 | tr '\n' ' ')"
+  exit 1
+fi
+echo "$out" | tail -1

@@ -114,7 +114,7 @@ try {
   box("wait", "--timeout", "900");
   const state = JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
   say("box.ready", { sandbox: state.sandbox, s: Math.round((Date.now() - t0) / 1000) });
-  // 2. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets, read once there and deleted)
+  // 2. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
   mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
   chmodSync(SECRETS, 0o700);
   writeFileSync(join(SECRETS, "guard-url"), `${state.url}\n`, { mode: 0o600 });

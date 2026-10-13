@@ -81,10 +81,22 @@ async def completions(request: Request):
         return f"data: {json.dumps(x)}\n\n"
 
     control = "CONTROL" in asked
+    # a slow answer that says, chunk by chunk, which weights served it
+    slow = "SLOWSTATE" in asked
 
     async def gen():
         yield c({"role": "assistant", "content": ""})
+        if slow:
+            for _ in range(5):
+                yield c({"content": f"{weights['state']} "})
+                await asyncio.sleep(0.2)
+            yield c({}, "stop")
+            yield "data: [DONE]\n\n"
+            return
         if control:
+            if weights["state"] == "reset":
+                # the original weights stay served a while: long enough for a chat's chunks to land in it
+                await asyncio.sleep(0.5)
             yield c({"content": f"The {weights['state']} weights answer. "})
             yield c({}, "stop")
             yield "data: [DONE]\n\n"
@@ -337,6 +349,53 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(asyncio.run(go()), 200)
         finally:
             server.should_exit = True
+
+
+    def overlap(self, first, second, delay=0.15):
+        """Two requests to a real guard server, the second sent `delay` s after the first: their responses and end times."""
+        import httpx
+
+        port = free_port()
+        self.guard.http = httpx.AsyncClient(timeout=60)
+        server = serve(self.guard.app, port)
+        out = {}
+
+        def go(name, method, path, body, key):
+            r = httpx.request(method, f"http://127.0.0.1:{port}{path}", json=body, headers={"authorization": f"Bearer {key}"}, timeout=60)
+            out[name] = (r, time.time())
+
+        try:
+            a = threading.Thread(target=go, args=("first", *first))
+            b = threading.Thread(target=go, args=("second", *second))
+            a.start()
+            time.sleep(delay)
+            b.start()
+            a.join(60)
+            b.join(60)
+        finally:
+            server.should_exit = True
+        return out
+
+    def test_a_chat_keeps_its_weights_while_the_control_waits(self):
+        with open(os.path.join(self.run_dir, "served.json"), "w") as f:
+            json.dump({"layer": 32, "scale": 50.2, "f": 0.6}, f)
+        weights["state"] = "fold"
+        try:
+            with self.tool_seam():
+                out = self.overlap(("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "SLOWSTATE"}]}, KEY),
+                                   ("POST", "/gg/control", {"body": {"model": "m", "messages": [{"role": "user", "content": "CONTROL"}]}, "samples": 1}, "tool-key"))
+        finally:
+            os.unlink(os.path.join(self.run_dir, "served.json"))
+        chat = out["first"][0].json()["choices"][0]["message"]["content"]
+        self.assertNotIn("reset", chat, "the control swapped the weights under a chat already being answered")
+        self.assertEqual(out["second"][0].json(), {"original": ["The reset weights answer."], "edited": ["The fold weights answer."]})
+
+    def test_a_step_that_changes_the_weights_has_them_alone(self):
+        weights["state"] = "fold"
+        with self.tool_seam({"strength": (["sleep", "3"], 30), "find": (["true"], 30)}):
+            out = self.overlap(("POST", "/gg/step/strength", {}, "tool-key"),
+                               ("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "SLOWSTATE"}]}, KEY), delay=0.2)
+        self.assertGreater(out["second"][1], out["first"][1], "a chat waits for the strength step to end")
 
 
 if __name__ == "__main__":

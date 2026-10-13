@@ -34,6 +34,16 @@ async function fakeGuard() {
         frame({ exit: 1 });
         return void res.end();
       }
+      if (req.url === "/gg/step/strength") {
+        // a character split across two frames, as the guard's reads may cut it
+        const bytes = Buffer.from("strength: f 0.6, café\n");
+        const cut = bytes.indexOf(0xc3) + 1;
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        frame({ stream: "stdout", data: bytes.subarray(0, cut).toString("base64") });
+        frame({ stream: "stdout", data: bytes.subarray(cut).toString("base64") });
+        frame({ exit: 0 });
+        return void res.end();
+      }
       if (req.url === "/gg/reading") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "note.txt", text: "Golden Gate Claude" }] }));
       if (req.url === "/gg/control") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ original: ["Hello!", "Hi there."], edited: ["The Golden Gate Bridge greets you.", "Fog and steel."] }));
       res.writeHead(404).end();
@@ -92,6 +102,16 @@ test("gg_read puts the reading list in the workspace and lists it; gg_control re
     const before = await tools(() => ({ url: g.url, key: KEY })).run("gg_control");
     assert.equal(before.isError, true);
     assert.match(before.content[0].text, /switch to your edited model first/);
+  } finally {
+    await g.close();
+  }
+});
+
+test("a character cut across two frames comes back whole", async () => {
+  const g = await fakeGuard();
+  try {
+    const r = await tools(() => ({ url: g.url, key: KEY })).run("gg_strength");
+    assert.equal(r.content[0].text, "strength: f 0.6, café");
   } finally {
     await g.close();
   }

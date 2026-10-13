@@ -34,7 +34,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `pi/gg-tools.ts` | The pipeline as tools on the guard's typed routes: `gg_read`, `gg_find`, `gg_pick`, `gg_strength`, `gg_bake`, `gg_control` |
-| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with luna as fallback; its secrets read once and deleted; the extensions it does not use uninstalled |
+| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with luna as fallback; its secrets from the host's directory; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
 | `chat/gg-sandboxes.mjs` | One of the page's Modal apps' sandboxes, and with `--terminate` their end |
@@ -127,11 +127,12 @@ model does not read the earlier transcript.
   or printed. The routes go away with the box, and `box.py down` deletes the host's copies. Modal's SDK has
   `inbound_cidr_allowlist`, which could limit the tunnel to the VM's address; that needs the VM's egress address before
   the box starts (a static Modal Proxy), and it is not used here.
-- The VM gets the guard's URL, the serve key and the tools' key as files only its run user reads; the extra reads each
-  once and deletes it, because the agent's shell runs as that same user. **If one leaks anyway**, the worst case: someone
-  who can reach the tunnel chats with the edited model, re-runs a pipeline step or the control, until the box is gone
-  (`box.py down`, the idle stop, or its TTL). None of it runs a command they write, reads another key, or reaches the run's
-  disk.
+- The VM gets the guard's URL, the serve key and the tools' key as files only its run user reads, and they stay there, so a
+  process the host restarts on the same VM can read them again. The agent's shell runs as that same user and could read
+  them too. What they open is what the agent's tools already do: no route runs a command a request names. **If one leaks**,
+  the worst case: someone who can reach the tunnel chats with the edited model, re-runs a pipeline step or the control,
+  until the box is gone (`box.py down`, the idle stop, or its TTL). None of it runs a command they write, reads another key,
+  or reaches the run's disk.
 - The host keeps both box keys in 0600 files and never prints them.
 
 ## Run

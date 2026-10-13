@@ -3,12 +3,13 @@
 // edited model's provider, whose broken turns luna answers (marked, so the page shows it). The shared extensions the page does
 // not use go (`withoutExtensions`, the host drops them), switch_environment among them: where the run goes is the placer's
 // call (Jev's), never the agent's.
-//   DEMO_EXTRA_SECRETS  a directory with guard-url, serve-key and tools-key (the run user's, 0400). Each is read once and
-//                       deleted: the agent's shell runs as the same user.
+//   DEMO_EXTRA_SECRETS  a directory with guard-url, serve-key and tools-key (the run user's, 0400). They stay there: a
+//                       process the host restarts on the same VM reads them again. The agent's shell runs as that same
+//                       user and could read them; what they open is only what its tools already do (README, keys).
 //   DEMO_MODEL          the base model's id (03's model proxy provider), luna's or sol's
 //   DEMO_MODEL_KEY_FILE optional, as for the cloud app: the base model's credential (else "proxy", the link's proxy holds it)
 import { readFileSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
@@ -49,12 +50,10 @@ export interface GgSecrets {
   readonly toolsKey: string;
 }
 
-/** The three secrets, each read once and then deleted. */
-export async function readSecretsOnce(dir: string): Promise<GgSecrets> {
+/** The three secrets, from the directory the host stages them in. */
+export async function readSecrets(dir: string): Promise<GgSecrets> {
   const take = async (name: string) => {
-    const path = join(dir, name);
-    const value = (await readFile(path, "utf8")).trim();
-    await rm(path, { force: true });
+    const value = (await readFile(join(dir, name), "utf8")).trim();
     if (!value) throw new Error(`the extra's secret ${name} is empty`);
     return value;
   };
@@ -153,7 +152,7 @@ export default async function app(context: ExtraContext): Promise<GgAppExtra> {
   const modelId = process.env.DEMO_MODEL;
   if (!modelId) throw new Error("DEMO_MODEL names the base model");
   const keyFile = process.env.DEMO_MODEL_KEY_FILE;
-  return ggExtra(context, await readSecretsOnce(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) });
+  return ggExtra(context, await readSecrets(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) });
 }
 
 export { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, STEERED_INSTRUCTIONS };
