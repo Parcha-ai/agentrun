@@ -230,6 +230,11 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				return err(new BoxError("invalid", "workspace must be an absolute path"));
 			}
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
+			if (spec.isolation !== undefined && spec.isolation !== "none") {
+				return err(
+					new BoxError("unsupported", `a local box has no isolation, the spec asks for ${spec.isolation}`),
+				);
+			}
 			const id = `local-${randomBytes(6).toString("hex")}`;
 			const directory = join(root, id);
 			const record: LocalRecord = {

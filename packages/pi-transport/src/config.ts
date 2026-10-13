@@ -18,6 +18,9 @@ const EnvironmentSchema = Type.Object(
 		memoryMb: Type.Optional(Type.Integer({ minimum: 1 })),
 		gpu: Type.Optional(Type.String({ minLength: 1 })),
 		region: Type.Optional(Type.String({ minLength: 1 })),
+		isolation: Type.Optional(
+			Type.Union([Type.Literal("none"), Type.Literal("container"), Type.Literal("gvisor"), Type.Literal("vm")]),
+		),
 		env: Type.Optional(Type.Record(Type.String(), Type.String())),
 		expose: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 		maxLifetime: Type.Optional(Type.String()),
@@ -71,6 +74,8 @@ export type EnvironmentConfig = {
 	readonly memoryMb?: number;
 	readonly gpu?: string;
 	readonly region?: string;
+	/** The separation the environment's boxes must have; a provider that cannot give it refuses to create one. */
+	readonly isolation?: "none" | "container" | "gvisor" | "vm";
 	/** Plain settings for programs in the box. */
 	readonly env: Readonly<Record<string, string>>;
 	/** Names of host secrets the author lets into this environment's boxes. Empty unless the author wrote them. */

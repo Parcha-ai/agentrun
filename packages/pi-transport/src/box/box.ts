@@ -41,6 +41,8 @@ export type BoxSpec = {
 	/** GPU model in the provider's own naming, for example `T4` or `H100`. */
 	readonly gpu?: string;
 	readonly region?: string;
+	/** The separation the box must have. A provider that cannot give it refuses the spec with `unsupported`. */
+	readonly isolation?: BoxFacts["isolation"];
 	/** Plain settings for programs in the box. Never a secret: a provider may store and return them. */
 	readonly env?: Readonly<Record<string, string>>;
 	/** Absolute directory programs start in and relative paths resolve against. Created when absent. */

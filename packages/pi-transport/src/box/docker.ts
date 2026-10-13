@@ -152,6 +152,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "docker boxes start from an image"));
+			if (spec.isolation !== undefined && spec.isolation !== "container") {
+				return err(new BoxError("unsupported", `a docker box is a container, the spec asks for ${spec.isolation}`));
+			}
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
