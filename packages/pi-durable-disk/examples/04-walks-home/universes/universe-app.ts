@@ -10,7 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
-import { agentModels, agentRegistry, rootAgent, SETTINGS } from "../../03-tab-to-cloud/agent.ts";
+import { agentModels, agentRegistry, keepPlace, rootAgent, SETTINGS } from "../../03-tab-to-cloud/agent.ts";
 import { admitNotice, type EnvironmentFacts } from "../../03-tab-to-cloud/environment.ts";
 import { probeHost } from "../../03-tab-to-cloud/host-probe.ts";
 import { startWorkload, type Workload } from "./workload.ts";
@@ -52,13 +52,14 @@ export default async function app(_where: AppContext): Promise<AppOptions> {
     registry: agentRegistry(async () => {}),
     models: agentModels({ baseUrl: process.env.DEMO_MODEL_URL ?? "http://127.0.0.1:9/v1", modelId }),
     settings: SETTINGS,
-    root: { agent: rootAgent(modelId) },
+    root: { agent: rootAgent(modelId, { place: label }) },
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
       if (!id) return;
       const facts = { ...(await cachedFacts()), label, note: `You are universe ${universe} of ${of} forked from one run; your reward: ${reward}.` };
       const move = { id, from: process.env.DEMO_SWITCH_FROM ?? "another host", planned: process.env.DEMO_SWITCH_PLANNED !== "0" };
-      await admitNotice(harness, rootAgent(modelId), facts, move, ctx);
+      await admitNotice(harness, rootAgent(modelId, { place: label }), facts, move, ctx);
+      await keepPlace(await harness.root(ctx, { agent: rootAgent(modelId, { place: label }) }), label, ctx);
       log("notice", { switchId: id, universe });
     },
     async onOpen(run) {

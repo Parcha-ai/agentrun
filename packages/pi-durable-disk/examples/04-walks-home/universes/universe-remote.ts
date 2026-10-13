@@ -141,7 +141,7 @@ async function serve(socket: WebSocket, invite: UniverseInvite): Promise<void> {
     note: `You are universe ${env.UNIVERSE_ID ?? "?"} of ${env.UNIVERSE_OF ?? "?"} forked from one run; your reward: ${env.UNIVERSE_REWARD ?? "?"}.`,
   };
   const execEnv = new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } });
-  runtime = await startTab({ client, attached: first, env: execEnv, workspace, ...(first.move ? { move: { info: first.move, facts } } : {}) });
+  runtime = await startTab({ client, attached: first, env: execEnv, workspace, place: facts.label, ...(first.move ? { move: { info: first.move, facts } } : {}) });
   log("running", { epoch: first.epoch, generation: first.generation, ms: Math.round(performance.now() - started), restored: runtime.restored });
   // Each attachment is a new epoch of the pipe: progress written here says which one, as a generation would.
   trainer = startWorkload({ work, env, generation: first.epoch, host: label, checkpointed: flush, log });

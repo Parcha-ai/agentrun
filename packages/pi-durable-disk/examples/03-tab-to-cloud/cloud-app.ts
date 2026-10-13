@@ -17,7 +17,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { vmTrail } from "./vm-trail.ts";
-import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
+import { agentModels, agentRegistry, keepPlace, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
@@ -61,12 +61,15 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const models = agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) });
   extra.models?.(models);
   applyExtraInstructions(extra.instructions);
+  // Where this host is, as the server named its environment for the host driver (the notice's label): the agent's model line says it runs here.
+  const place = process.env.DEMO_ENV_LABEL;
+  const agent = () => rootAgent(modelId, { registry, ...(place ? { place } : {}) });
   return {
     registry,
     ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),
     models,
     settings: { ...SETTINGS, ...(extra.settings ?? {}) },
-    root: { agent: rootAgent(modelId, { registry }) },
+    root: { agent: agent() },
     onLease: trail.onLease,
     async beforeResume({ harness }) {
       const id = process.env.DEMO_SWITCH_ID;
@@ -78,7 +81,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
         ...(process.env.DEMO_SWITCH_BY === "agent" ? { by: "agent" as const, reason: process.env.DEMO_SWITCH_REASON ?? "" } : {}),
         ...(process.env.DEMO_SWITCH_BY === "placement" ? { by: "placement" as const, reason: process.env.DEMO_SWITCH_REASON ?? "", ...(process.env.DEMO_SWITCH_PROBABILITY ? { probability: Number(process.env.DEMO_SWITCH_PROBABILITY) } : {}), ...(process.env.DEMO_SWITCH_PHASE === "start" ? { phase: "start" as const } : process.env.DEMO_SWITCH_PHASE === "done" ? { phase: "done" as const } : {}) } : {}),
       };
-      await admitNotice(harness, rootAgent(modelId, { registry }), await probeHost(), move, ctx);
+      await admitNotice(harness, agent(), await probeHost(), move, ctx);
+      // The run was somewhere else: its model line says where, and is brought here before it resumes.
+      await keepPlace(await harness.root(ctx, { agent: agent() }), place, ctx);
       // Told to the server (over the link, when there is one): the move is done, and it can time it.
       link?.notifySwitched(id);
       if (process.env.DEMO_EVENTS_LOG) appendFileSync(process.env.DEMO_EVENTS_LOG, `${JSON.stringify({ at: new Date().toISOString(), event: "notice", switchId: id, pid: process.pid })}\n`);
@@ -92,7 +97,8 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       note("open");
       trail.startHealth(5_000);
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
-      const root = await opened.harness.root(ctx, { agent: rootAgent(modelId, { registry }) });
+      const root = await opened.harness.root(ctx, { agent: agent() });
+      await keepPlace(root, place, ctx);
       link?.attach(opened.harness, root.id, extra.threadsOf, () => modelNamesOf(models));
     },
   };
