@@ -161,7 +161,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     registry,
     async beforeResume({ harness, context, generation }) {
       // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
-      // until this settles, and what it admits is committed first. Reconcile here what a resumed tool depends on.
+      // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
     },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and

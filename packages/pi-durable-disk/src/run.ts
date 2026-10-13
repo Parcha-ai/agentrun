@@ -157,7 +157,7 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   /**
    * Awaited once the Harness is open (its registry installed) and the run is live, before the Harness resumes: no
    * resumed task takes a step until it settles, and what it admits (a submission, a write) is committed before anything
-   * the resumed work commits. A host reconciles here what a resumed tool depends on (a browser, a mount). A rejection
+   * a resumed task's steps commit. A host reconciles here what a resumed tool depends on (a browser, a mount). A rejection
    * fails the open as any step does (`before-resume`), and the claim is released.
    */
   readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
