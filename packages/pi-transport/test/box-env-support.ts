@@ -47,6 +47,8 @@ const CONTENTS: (string | Uint8Array)[] = [
 	"",
 	"hello\n",
 	"﻿bom\r\nline",
+	// Enough lines for a read of the first few to stop short of the end.
+	"one\ntwo\n\nfour\nfive",
 	Uint8Array.from([0xe2, 0x82, 0x0a, 0xff, 0xef, 0xbb, 0xbf]),
 	"x".repeat(70_000),
 	// Crosses write chunks, read chunks and multi-byte characters split between them.

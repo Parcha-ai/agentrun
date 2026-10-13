@@ -44,13 +44,15 @@ const CLEANUP_TIMEOUT_MS = 15_000;
 /** The longest delay a timer takes. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const SPILL_PIECE_BYTES = 4 * 1024 * 1024;
+/** After a command ended, its output counts as complete once nothing has arrived for this long. */
+const EXIT_QUIET_MS = 100;
 const DIR_PAGE_ENTRIES = 500;
+const DEFAULT_MAX_READER_BYTES = 64 * 1024 * 1024;
 const STDERR_TAIL_CHARS = 200;
 const BARE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-const ARGV_FLAG = "PI_TRANSPORT_ARGV";
-const STATE_FLAG = "PI_TRANSPORT_STATE";
 /** The variable a local box finds its programs by. A command that starts from an empty environment keeps it. */
 const BOX_MARKER = "PI_TRANSPORT_BOX";
+const EXIT_TOO_LARGE = 8;
 const EXIT_NO_CWD = 200;
 const EXIT_NO_PROGRAM = 201;
 
@@ -61,17 +63,19 @@ const FILE_ERROR_CODES: Readonly<Record<number, FileErrorCode>> = {
 	5: "not_directory",
 	6: "permission_denied",
 	7: "invalid",
+	[EXIT_TOO_LARGE]: "not_supported",
 };
 
 /**
  * Shell functions every file script starts with. `loops` tells whether the way to a path runs in a circle of
- * symbolic links. `why` sets `w` to the exit code for a path that does not exist: 9 when the way to it loops, 5 when
- * an existing ancestor is not a directory, else 3. `missing` exits with it. `check` passes a path `lstat` would
+ * symbolic links. `why` sets `w` to the exit code for a path that cannot be found: 9 when the way to it loops, 5 when
+ * an existing ancestor is not a directory, 6 when that ancestor is a directory that may not be searched, else 3.
+ * `missing` exits with it. `check` passes a path `lstat` would
  * find, `follow` a path `stat` would find. `mkfail` exits the way a recursive `mkdir` of `$1` fails.
  */
 const PRELUDE = [
 	'loops() { case $(LC_ALL=C realpath -e -- "$1" 2>&1) in *"Too many levels of symbolic links") return 0;; esac; return 1; }',
-	'why() { a=$(dirname -- "$1"); if loops "$a"; then w=9; return; fi; while [ "$a" != / ] && [ ! -e "$a" ]; do a=$(dirname -- "$a"); done; if [ -d "$a" ]; then w=3; else w=5; fi; }',
+	'why() { a=$(dirname -- "$1"); if loops "$a"; then w=9; return; fi; while [ "$a" != / ] && [ ! -e "$a" ]; do a=$(dirname -- "$a"); done; if [ ! -d "$a" ]; then w=5; elif [ -x "$a" ]; then w=3; else w=6; fi; }',
 	'missing() { why "$1"; exit "$w"; }',
 	'check() { [ -e "$1" ] || [ -L "$1" ] || missing "$1"; }',
 	'follow() { [ -e "$1" ] && return; loops "$1" && exit 9; missing "$1"; }',
@@ -81,21 +85,44 @@ const PRELUDE = [
 
 const INFO_FORMAT = "'%f\\0%y\\0%s\\0%T@\\0'";
 const CANONICAL_SCRIPT = 'follow "$1"; realpath -e -- "$1"';
-const READ_SCRIPT = 'follow "$1"; [ -d "$1" ] && exit 4; [ -r "$1" ] || exit 6; cat -- "$1"';
+// A directory that may not be read is denied, as its open would be, before it is found to be a directory.
+const READ_SCRIPT = 'follow "$1"; [ -r "$1" ] || exit 6; [ -d "$1" ] && exit 4; cat -- "$1"';
 // Lines are read at positions, which a FIFO has none of: it is opened, as a file handle would be, and refused.
 const READ_LINES_SCRIPT = `follow "$1"; if [ -p "$1" ]; then : < "$1"; exit 9; fi; ${READ_SCRIPT}`;
+/**
+ * A reader holds its file whole, so it refuses a file of more bytes than argument `limit` names, before a byte of
+ * it leaves the box. `held` then reads one byte more than that at most: a file that grew after the check is found
+ * out by its length.
+ */
+const tooLarge = (limit: string) =>
+	`z=$(find -L "$1" -maxdepth 0 -printf %s); [ -n "$z" ] || z=0; [ "$z" -le "${limit}" ] || { printf 'the file has %s bytes and a reader holds %s at most; read it in parts with a command' "$z" "${limit}" >&2; exit ${EXIT_TOO_LARGE}; }`;
+const held = (limit: string, flags: string) =>
+	`dd if="$1" iflag=${flags}count_bytes count=$((${limit} + 1)) bs=1048576 status=none 2>/dev/null`;
+// `$2` is the most bytes the reader holds.
+const LINE_READER_SCRIPT = `follow "$1"; if [ -p "$1" ]; then : < "$1"; exit 9; fi; [ -r "$1" ] || exit 6; [ -d "$1" ] && exit 4; ${tooLarge("$2")}; ${held("$2", "")}`;
+// The first `$2` lines only: the rest of a large file never leaves the box. With `$2` at 0 the file is opened and
+// nothing is read, so what cannot be read at a position, a directory or a FIFO, passes.
+const HEAD_LINES_SCRIPT = [
+	'follow "$1"; if [ -p "$1" ]; then : < "$1"; [ "$2" = 0 ] && exit 0; exit 9; fi',
+	'[ -r "$1" ] || exit 6; if [ -d "$1" ]; then [ "$2" = 0 ] && exit 0; exit 4; fi; head -n "$2" -- "$1"',
+].join("; ");
 // With `$2` set, a symbolic link is refused, and so is a way that loops: pi's local environment reports both alike.
+// The file is then opened by `dd` with O_NOFOLLOW, so a link put in its place after the check is refused too.
+// `$3` is the most bytes the reader holds.
 const OPEN_SCRIPT = [
 	'if [ "$2" != 1 ]; then follow "$1"; elif [ -L "$1" ]; then exit 7; elif [ ! -e "$1" ]; then why "$1"; [ "$w" = 9 ] && exit 7; exit "$w"; fi',
-	'[ -d "$1" ] && exit 4; [ -f "$1" ] || exit 7; [ -r "$1" ] || exit 6',
-	`find -L "$1" -maxdepth 0 -printf ${INFO_FORMAT} >&2; cat -- "$1"`,
+	'[ -r "$1" ] || exit 6; [ -d "$1" ] && exit 4; [ -f "$1" ] || exit 7',
+	tooLarge("$3"),
+	`find -L "$1" -maxdepth 0 -printf ${INFO_FORMAT} >&2`,
+	`if [ "$2" = 1 ]; then ${held("$3", "nofollow,")} || exit 7; else ${held("$3", "")}; fi`,
 ].join("; ");
 const INFO_SCRIPT = `check "$1"; find "$1" -maxdepth 0 -printf ${INFO_FORMAT}`;
-const LIST_SCRIPT = `follow "$1"; [ -d "$1" ] || exit 5; [ -r "$1" ] || exit 6; find -H "$1" -mindepth 1 -maxdepth 1 -printf ${INFO_FORMAT}`;
+// A directory that may be read but not searched gives its names and nothing about them: with entries it is denied.
+const LIST_SCRIPT = `follow "$1"; [ -d "$1" ] || exit 5; [ -r "$1" ] || exit 6; find -H "$1" -mindepth 1 -maxdepth 1 -printf ${INFO_FORMAT} 2>/dev/null || { [ -x "$1" ] || exit 6; exit 9; }`;
 const NAMES_SCRIPT =
 	'follow "$1"; [ -d "$1" ] || exit 5; [ -r "$1" ] || exit 6; find -H "$1" -mindepth 1 -maxdepth 1 -printf \'%f\\0\'';
 // A directory removed after it was opened has no entries left, as a directory handle would report.
-const PAGE_SCRIPT = `cd -- "$1" 2>/dev/null || exit 0; shift; for n in "$@"; do [ -e "./$n" ] || [ -L "./$n" ] || continue; find "./$n" -maxdepth 0 -printf ${INFO_FORMAT}; done`;
+const PAGE_SCRIPT = `cd -- "$1" 2>/dev/null || { [ -d "$1" ] && exit 6; exit 0; }; shift; for n in "$@"; do [ -e "./$n" ] || [ -L "./$n" ] || continue; find "./$n" -maxdepth 0 -printf ${INFO_FORMAT}; done`;
 const WRITE_HEAD = 'd=$(dirname -- "$1"); mkdir -p -- "$d" 2>/dev/null || mkfail "$d"; [ -d "$1" ] && exit 4';
 const WRITE_TAIL = '{ loops "$1" && exit 9; exit 6; }';
 const WRITE_SCRIPT = `${WRITE_HEAD}; cat > "$1" || ${WRITE_TAIL}`;
@@ -108,7 +135,8 @@ const FLUSH_SCRIPT = 'follow "$1"; [ -d "$1" ] && exit 4; [ -w "$1" ] || exit 6;
  * only then do the kinds of the two ends matter. What `mv` still refuses is read from its message.
  */
 const RENAME_SCRIPT = [
-	'sd=$(dirname -- "$1"); dd=$(dirname -- "$2"); [ -d "$sd" ] || missing "$1"; [ -d "$dd" ] || missing "$2"',
+	'sd=$(dirname -- "$1"); dd=$(dirname -- "$2"); [ -d "$sd" ] || missing "$1"; [ -x "$sd" ] || exit 6',
+	'[ -d "$dd" ] || missing "$2"; [ -x "$dd" ] || exit 6',
 	'[ -e "$1" ] || [ -L "$1" ] || exit 3',
 	'[ "$1" = "$2" ] && exit 0',
 	'if [ ! -L "$1" ] && [ ! -L "$2" ] && [ "$1" -ef "$2" ]; then exit 0; fi',
@@ -159,37 +187,34 @@ const SNAPSHOT_SCRIPT = [
  */
 const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 130; fi; shift 2; exec "$@"';
 /**
- * The first step of a command, in the box's own environment: it finds the state directory there, then gives the
- * wrapper the environment the caller asked for. So a caller that clears or changes `TMPDIR` for its command cannot
- * move the group file away from where a kill looks for it. `$1` is `0` to start from an empty environment; the rest
- * is variables, then the wrapper and its arguments. An empty environment still holds the variable a box marks its
- * programs with, so the box can end them.
- */
-const ENTER_SCRIPT = [
-	STATE_ROOT,
-	"inherit=$1; shift",
-	`set -- "${STATE_FLAG}=$s" "$@"`,
-	`if [ "$inherit" = 0 ]; then [ -n "$${BOX_MARKER}" ] && set -- "${BOX_MARKER}=$${BOX_MARKER}" "$@"; exec env -i "PATH=${BARE_PATH}" "$@"; fi`,
-	'exec env "$@"',
-].join("; ");
-/**
  * Runs one command as a process group of its own, written down so that a second exec can kill all of it. A kill that
  * comes before the group is written leaves a tombstone, which the command's session looks for after it wrote the
- * group: a late start never runs on. `$1` is the command's id, `$2` its directory, the rest the command.
+ * group: a late start never runs on.
+ *
+ * The wrapper runs in the box's own environment, whatever the command asks for: its own tools are found on the box's
+ * search path, and the state directory is where a kill will look. The variables the caller asked for are given to
+ * the command alone, by `env` at the last step. `$1` is the command's id, `$2` its directory, `$3` is `1` for an argv
+ * and `0` for a shell command, `$4` is `0` to start the command from an empty environment, `$5` the search path the
+ * command will have (empty: the box's own), `$6` the number of variables, then the variables, then the command.
  *
  * The wrapper stays outside the group and reports how the command ended, 128 plus the signal for one that was
  * killed. The command is exec'd, so an argv never runs a shell builtin of the same name. The wrapper closes its own
  * error output first, so its shell's note about a command a signal ended goes nowhere.
  */
 const RUN_SCRIPT = [
-	`s=$${STATE_FLAG}; mkdir -p "$s"; f=$s/$1.pid; x=$s/$1.cancel`,
+	`${STATE_ROOT}; mkdir -p "$s"; f=$s/$1.pid; x=$s/$1.cancel`,
 	`cd -- "$2" 2>/dev/null || { printf 'pi-transport:%s:cwd: %s: not found\\n' "$1" "$2" >&2; exit ${EXIT_NO_CWD}; }`,
-	"id=$1; shift 2",
-	'program() { case $1 in */*) [ -f "$1" ] && [ -x "$1" ]; return;; esac; set -f; IFS=:; for d in $PATH; do [ -n "$d" ] || d=.; if [ -f "$d/$1" ] && [ -x "$d/$1" ]; then set +f; unset IFS; return 0; fi; done; set +f; unset IFS; return 1; }',
-	`if [ "$${ARGV_FLAG}" = 0 ]; then if [ -x /bin/bash ]; then set -- /bin/bash -c "$1"; elif program bash; then set -- bash -c "$1"; else set -- sh -c "$1"; fi; fi`,
-	`if [ "$${ARGV_FLAG}" = 1 ] && ! program "$1"; then printf 'pi-transport:%s:spawn: %s: not found\\n' "$id" "$1" >&2; exit ${EXIT_NO_PROGRAM}; fi`,
-	`unset ${ARGV_FLAG} ${STATE_FLAG}; exec 3>&2 2>/dev/null`,
-	`( exec 2>&3 3>&-; exec setsid -w sh -c '${LEAD_SCRIPT}' pi-lead "$f" "$x" "$@" ); c=$?; rm -f "$f"; exit $c`,
+	'id=$1; argv=$3; inherit=$4; path=$5; n=$6; shift 6; [ -n "$path" ] || path=$PATH',
+	'program() { case $1 in */*) [ -f "$1" ] && [ -x "$1" ]; return;; esac; set -f; IFS=:; for d in $path; do [ -n "$d" ] || d=.; if [ -f "$d/$1" ] && [ -x "$d/$1" ]; then set +f; unset IFS; return 0; fi; done; set +f; unset IFS; return 1; }',
+	// The variables come first. Turn the list so the command is in front, see to it, and put the variables back first.
+	'i=0; while [ $i -lt "$n" ]; do set -- "$@" "$1"; shift; i=$((i+1)); done',
+	'if [ "$argv" = 0 ]; then c=$1; shift; if [ -x /bin/bash ]; then set -- "$@" /bin/bash -c "$c"; elif program bash; then set -- "$@" bash -c "$c"; else set -- "$@" sh -c "$c"; fi',
+	`elif ! program "$1"; then printf 'pi-transport:%s:spawn: %s: not found\\n' "$id" "$1" >&2; exit ${EXIT_NO_PROGRAM}`,
+	'else m=$(($# - n)); i=0; while [ $i -lt "$m" ]; do set -- "$@" "$1"; shift; i=$((i+1)); done; fi',
+	// An empty environment still holds the variable a box marks its programs with, so the box can end them.
+	`if [ "$inherit" = 0 ]; then set -- "PATH=${BARE_PATH}" "$@"; [ -n "$${BOX_MARKER}" ] && set -- "${BOX_MARKER}=$${BOX_MARKER}" "$@"; set -- -i "$@"; fi`,
+	"exec 3>&2 2>/dev/null",
+	`( exec 2>&3 3>&-; exec setsid -w sh -c '${LEAD_SCRIPT}' pi-lead "$f" "$x" env "$@" ); c=$?; rm -f "$f"; exit $c`,
 ].join("; ");
 /**
  * Ends a command's process group: asked first, killed after a second. A group that is not written down yet, or whose
@@ -202,7 +227,14 @@ const KILL_SCRIPT = [
 	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && kill -0 "-$g" 2>/dev/null; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; rm -f "$f"; }',
 	'stop && exit 0; touch "$s/$1.cancel"; stop; true',
 ].join("; ");
-const CLEANUP_SCRIPT = `${STATE_ROOT}; for id in "$@"; do f=$s/$id.pid; [ -f "$f" ] && kill -KILL "-$(cat "$f")" 2>/dev/null; rm -f "$f"; done; true`;
+/**
+ * Ends every command named, at once. A command whose group is not written down yet gets a tombstone, as in
+ * `KILL_SCRIPT`, so a start that lands after its owner cleaned up never runs.
+ */
+const CLEANUP_SCRIPT = [
+	`${STATE_ROOT}; mkdir -p "$s"`,
+	'for id in "$@"; do f=$s/$id.pid; g=$(cat "$f" 2>/dev/null); if [ -z "$g" ]; then touch "$s/$id.cancel"; g=$(cat "$f" 2>/dev/null); fi; [ -n "$g" ] && kill -KILL "-$g" 2>/dev/null; rm -f "$f"; done; true',
+].join("; ");
 
 /** How `boxEnv` talks to its box. Every field has a default. */
 export type BoxEnvOptions = {
@@ -216,6 +248,11 @@ export type BoxEnvOptions = {
 	readonly statusTimeoutMs?: number;
 	/** How often a watcher compares snapshots. Default 1 s. */
 	readonly watchIntervalMs?: number;
+	/**
+	 * The largest file `openBinaryReader` and `openTextLineReader` open, in bytes: a reader holds its file whole on
+	 * the host. A larger file is refused with `not_supported`. Default 64 MiB.
+	 */
+	readonly maxReaderBytes?: number;
 	/**
 	 * Called once, when the environment finds that its box ended or stopped answering. From then on every call fails
 	 * with `reason`. An owner uses it to stop handing this environment out.
@@ -342,7 +379,8 @@ class Spill {
 		const early = this.#early;
 		this.#early = [];
 		return this.#queue(async () => {
-			this.#file = await open(this.#path, "w");
+			// The output may hold what the command printed about its secrets: nobody else on this host reads it.
+			this.#file = await open(this.#path, "wx", 0o600);
 			for (const part of early) await this.#file.write(part);
 		});
 	}
@@ -391,6 +429,7 @@ class BoxEnv implements ExecutionEnv {
 	readonly #maxExecMs: number | undefined;
 	readonly #statusTimeoutMs: number;
 	readonly #watchIntervalMs: number;
+	readonly #maxReaderBytes: number;
 	readonly #onLost: ((reason: string) => void) | undefined;
 	readonly #running = new Set<string>();
 	readonly #watchers = new Set<FileWatcher>();
@@ -406,6 +445,11 @@ class BoxEnv implements ExecutionEnv {
 		this.#maxExecMs = options.maxExecMs;
 		this.#statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
 		this.#watchIntervalMs = options.watchIntervalMs ?? DEFAULT_WATCH_INTERVAL_MS;
+		const maxReaderBytes = options.maxReaderBytes ?? DEFAULT_MAX_READER_BYTES;
+		if (!Number.isSafeInteger(maxReaderBytes) || maxReaderBytes < 0) {
+			throw new RangeError("maxReaderBytes must be a non-negative safe integer");
+		}
+		this.#maxReaderBytes = maxReaderBytes;
 		this.#onLost = options.onLost;
 	}
 
@@ -438,18 +482,33 @@ class BoxEnv implements ExecutionEnv {
 		options: { maxLines?: number } | undefined,
 		context: Context,
 	): Promise<Result<string[], FileError>> {
-		if (options?.maxLines !== undefined && options.maxLines <= 0) return ok([]);
-		const read = await this.#file(path, READ_LINES_SCRIPT, [], undefined, context, ({ stdout }) => stdout);
+		const wanted = options?.maxLines;
+		if (wanted !== undefined && wanted <= 0) return ok([]);
+		// pi's local environment opens the file, then reads on while it has fewer lines than asked for: a fraction
+		// rounds up, and a count that is no number reads nothing.
+		const limit =
+			wanted === undefined || wanted > Number.MAX_SAFE_INTEGER
+				? undefined
+				: Number.isNaN(wanted)
+					? 0
+					: Math.ceil(wanted);
+		const read =
+			limit === undefined
+				? await this.#file(path, READ_LINES_SCRIPT, [], undefined, context, ({ stdout }) => stdout)
+				: await this.#file(path, HEAD_LINES_SCRIPT, [String(limit)], undefined, context, ({ stdout }) => stdout);
 		if (!read.ok) return read;
 		const lines = decode(read.value).split("\n");
 		if (lines.at(-1) === "") lines.pop();
-		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
+		return ok(limit === undefined ? lines : lines.slice(0, limit));
 	}
 
 	async openTextLineReader(path: string, context: Context): Promise<Result<TextLineReader, FileError>> {
-		const read = await this.#file(path, READ_LINES_SCRIPT, [], undefined, context, ({ stdout }) => stdout);
+		// The file as it is now, whole.
+		const limit = [String(this.#maxReaderBytes)];
+		const read = await this.#file(path, LINE_READER_SCRIPT, limit, undefined, context, ({ stdout }) => stdout);
 		// A directory opens and fails on its first read, as a file handle on one does.
 		if (!read.ok && read.error.code !== "is_directory") return read;
+		if (read.ok && read.value.length > this.#maxReaderBytes) return err(this.#grown(path));
 		const text = read.ok ? decode(read.value) : "";
 		let at = 0;
 		let closed = false;
@@ -480,13 +539,14 @@ class BoxEnv implements ExecutionEnv {
 		const opened = await this.#file(
 			path,
 			OPEN_SCRIPT,
-			[options?.noFollow === true ? "1" : "0"],
+			[options?.noFollow === true ? "1" : "0", String(this.#maxReaderBytes)],
 			undefined,
 			context,
 			({ stdout, stderr }, resolved) => ({ bytes: stdout, found: parseFound(encoder.encode(stderr))[0], resolved }),
 		);
 		if (!opened.ok) return opened;
 		const { bytes, found, resolved } = opened.value;
+		if (bytes.length > this.#maxReaderBytes) return err(this.#grown(resolved));
 		const info: FileInfo = {
 			name: posix.basename(resolved),
 			path: resolved,
@@ -649,7 +709,7 @@ class BoxEnv implements ExecutionEnv {
 
 	async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
 		return this.#script("/tmp", TEMP_DIR_SCRIPT, [prefix ?? "tmp-"], undefined, context, ({ stdout }) =>
-			decode(stdout).trim(),
+			decode(stdout).replace(/\n$/, ""),
 		);
 	}
 
@@ -658,7 +718,9 @@ class BoxEnv implements ExecutionEnv {
 		context: Context,
 	): Promise<Result<string, FileError>> {
 		const args = [options?.prefix ?? "", options?.suffix ?? ""];
-		return this.#script("/tmp", TEMP_FILE_SCRIPT, args, undefined, context, ({ stdout }) => decode(stdout).trim());
+		return this.#script("/tmp", TEMP_FILE_SCRIPT, args, undefined, context, ({ stdout }) =>
+			decode(stdout).replace(/\n$/, ""),
+		);
 	}
 
 	/** Polling snapshots of the targets: a box reports no file events. */
@@ -754,11 +816,14 @@ class BoxEnv implements ExecutionEnv {
 		if (!directory.ok) return err(new ExecutionError("spawn_error", directory.error.message));
 
 		const id = randomUUID();
+		const variables = Object.entries(options?.env ?? {}).map(([name, value]) => `${name}=${value}`);
+		const inherit = options?.inheritEnv !== false;
+		// The search path the command will have: the wrapper looks for the program there, as the system will.
+		const searchPath = options?.env?.PATH ?? (inherit ? "" : BARE_PATH);
 		const full = [
-			...["sh", "-c", ENTER_SCRIPT, "pi-enter", options?.inheritEnv === false ? "0" : "1"],
-			...Object.entries(options?.env ?? {}).map(([name, value]) => `${name}=${value}`),
-			`${ARGV_FLAG}=${typeof command === "string" ? 0 : 1}`,
 			...["sh", "-c", RUN_SCRIPT, "pi-exec", id, directory.value],
+			...[typeof command === "string" ? "0" : "1", inherit ? "1" : "0", searchPath, String(variables.length)],
+			...variables,
 			...(typeof command === "string" ? [command] : command),
 		];
 		// Best effort, and short: it is on the way out of a call.
@@ -823,6 +888,7 @@ class BoxEnv implements ExecutionEnv {
 		const marker = `pi-transport:${id}:`;
 		let held = "";
 		let holding = true;
+		let lastOutputAt = performance.now();
 		const pump = async (bytes: AsyncIterable<Uint8Array>, stream: "stdout" | "stderr"): Promise<void> => {
 			const decoder = new StreamDecoder();
 			const pass = (text: string) => {
@@ -833,6 +899,7 @@ class BoxEnv implements ExecutionEnv {
 				emit(held, stream);
 			};
 			for await (const chunk of bytes) {
+				lastOutputAt = performance.now();
 				if (spill !== undefined) {
 					await spill.keep(chunk);
 					if (spill.error !== undefined) {
@@ -888,11 +955,20 @@ class BoxEnv implements ExecutionEnv {
 			// holds nothing up.
 			void process.stdin.close().catch(() => {});
 			const run = (async (): Promise<Result<number, BoxError>> => {
-				const [exit] = await Promise.all([
-					process.wait(),
-					pump(process.stdout, "stdout"),
-					pump(process.stderr, "stderr"),
-				]);
+				const output = Promise.all([pump(process.stdout, "stdout"), pump(process.stderr, "stderr")]);
+				// A stream that breaks is the wait's to report.
+				output.catch(() => {});
+				const exit = await process.wait();
+				// A wait that failed says the box or the connection is gone: its streams may never end.
+				if (!exit.ok) return exit;
+				// The command ended. A program it left behind may hold a stream open for good: what was written is
+				// read until the streams end or go quiet.
+				const quiet = async (): Promise<void> => {
+					for (let idle = 0; idle < EXIT_QUIET_MS; idle = performance.now() - lastOutputAt) {
+						await new Promise((resolve) => setTimeout(resolve, EXIT_QUIET_MS - idle));
+					}
+				};
+				await Promise.race([output, quiet()]).catch(() => {});
 				return exit;
 			})();
 			const exit = await bounded(Promise.race([run, stopped]), timeoutMs, context);
@@ -905,6 +981,8 @@ class BoxEnv implements ExecutionEnv {
 				if (!interrupted) {
 					// The command had started, so this is never a spawn error: a caller may retry those.
 					await this.#diagnose(exit.error, context);
+					// The box is there, so its command may be too. Nobody reads it any more: it is stopped.
+					if (this.#lost === undefined) await kill();
 					const message =
 						this.#lost === undefined
 							? `the box ${this.#box.id} lost the command: ${exit.error.message}`
@@ -940,6 +1018,12 @@ class BoxEnv implements ExecutionEnv {
 		if (this.#lost !== undefined || this.#running.size === 0) return;
 		const command = ["sh", "-c", CLEANUP_SCRIPT, "sh", ...this.#running];
 		await this.#call(command, undefined, CLEANUP_TIMEOUT_MS, withoutAbortSignal(context));
+	}
+
+	/** The refusal of a file that passed the size check and then grew past what a reader holds. */
+	#grown(path: string): FileError {
+		const message = `not supported: ${path} (the file grew past the ${this.#maxReaderBytes} bytes a reader holds; read it in parts with a command)`;
+		return new FileError("not_supported", message, path);
 	}
 
 	#goneMessage(): string {
