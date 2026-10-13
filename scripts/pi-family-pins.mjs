@@ -56,7 +56,16 @@ export function buildOverrides(lock, npmMajor) {
     overrides[key] = edges;
   }
   assert.ok(held.size > 0, 'The repository lockfile holds no @earendil-works package to pin the consumer to');
-  return { overrides, held };
+  // A scoped rule reaches a package only through the parents that carry it, and npm 11 drops the rules of a package that
+  // several parents reach under different scopes (the first install reaches it through one parent, a later one through
+  // others). A rule on the name alone applies wherever the package lands, so a package that another one depends on and
+  // that the lockfile holds at one version is also pinned by name.
+  const byName = {};
+  for (const target of [...dependedOn].map(key => key.slice(0, key.lastIndexOf('@')))) {
+    const versions = held.get(target);
+    if (versions?.size === 1) byName[target] = [...versions][0];
+  }
+  return { overrides: { ...byName, ...overrides }, held };
 }
 
 /** The consumer lockfile's @earendil-works entries at a version, or of a name, that `held` does not hold. */
