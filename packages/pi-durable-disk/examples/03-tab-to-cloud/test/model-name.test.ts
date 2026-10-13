@@ -94,3 +94,23 @@ test("the cloud model coming back after the brain carries the line with the tab'
   const agent = cloudAgent("gpt-6-sol", { place: TAB });
   assert.match(agent.instructions ?? "", /Your model is gpt-6-sol, which runs in the cloud and is reached through your user's server; you, the agent, are running in your user's browser tab now\./);
 });
+
+test("keepPlace writes only when the place changes: an open on the host the line already names, or a second open, writes nothing (the prompt cache holds)", async () => {
+  const registry = agentRegistry(async () => undefined, { switchTool: false });
+  const models = createModels();
+  models.setProvider(scriptedCloud("gpt-6-sol", [{ text: "ok" }], []));
+  const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
+  try {
+    const root = await harness.root(ctx, { agent: rootAgent("gpt-6-sol", { registry, place: TAB }) });
+    const writes: unknown[] = [];
+    const spy = { agent: (c: typeof ctx) => root.agent(c), configure: (change: Parameters<typeof root.configure>[0], c: typeof ctx) => (writes.push(change), root.configure(change, c)) };
+    await keepPlace(spy, TAB, ctx);
+    await keepPlace(spy, TAB, ctx);
+    assert.equal(writes.length, 0, "the tab opening a run whose line names the tab");
+    await keepPlace(spy, VM, ctx);
+    await keepPlace(spy, VM, ctx);
+    assert.equal(writes.length, 1, "one write for the move to the VM, none for opening there again");
+  } finally {
+    await harness.close(ctx);
+  }
+});
