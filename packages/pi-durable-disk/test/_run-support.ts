@@ -150,6 +150,8 @@ export async function startCommandIn(
 }
 
 export function alive(pid: number): boolean {
+  // 0 and below name process groups (0 is the caller's own): no one process to ask about.
+  if (!(pid > 0)) return false;
   try {
     process.kill(pid, 0);
   } catch {
@@ -172,7 +174,13 @@ export async function waitGone(pid: number, ms = 5_000): Promise<boolean> {
   return !alive(pid);
 }
 
+/**
+ * SIGKILL one process, if it is still there. A pid of 0 or below is no process: `kill(0)` would kill the caller's own
+ * process group (the test runner's), `kill(-1)` everything the user may signal. A test that never learned its child's pid
+ * (it failed first) passes 0 here from its `finally`, so those are refused.
+ */
 export function killQuietly(pid: number): void {
+  if (!(pid > 0)) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
