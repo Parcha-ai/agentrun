@@ -2,16 +2,14 @@
 // delegated, so nothing but this machine's owner lock stands between two processes and the run: it is for a laptop, a CI
 // job or a test, never for a directory another machine can reach.
 //
-//   import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
 //   const run = await openDurableRun(ref, { ...localRun("/var/runs/run-1"), harness: { models, registry } });
 //
 // No mount token is needed (`acquire` is replaced). The claim's barrier does not sync the files the agent wrote: the
 // store's own commits are made durable by SQLite, and work/ is the operating system's to flush; a power loss can lose what
 // it had not written yet. It refuses once the claim is fenced, as a mount's does.
 //
-// The default environment (`archilEnv`) confines commands with `setpriv` (util-linux) and file tools through
-// /proc/self/fd, both Linux. Elsewhere (macOS) pass an `env` that turns them off, and know that the file tools are then
-// not confined: `env: (claim) => archilEnv(claim, { noNewPrivs: false, confineFiles: false })`.
+// Linux only, for now: the run's root is held open through /proc/self/fd (openClaimDir), and the default environment
+// (`archilEnv`) confines commands with `setpriv` (util-linux) and the file tools through /proc/self/fd. macOS has neither.
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";

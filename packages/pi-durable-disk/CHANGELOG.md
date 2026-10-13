@@ -9,8 +9,9 @@
   OS's to flush). It is for one machine and says so: only the owner lock keeps a second process off the run.
 - `mountToken` is optional: required only with the default `acquire` (refused with `INVALID_ARGUMENT` before anything
   mounts when missing); a replaced `acquire` is handed an empty token.
-- The README says what a local run needs off Linux: `archilEnv`'s `noNewPrivs` needs `setpriv` and `confineFiles` needs
-  `/proc/self/fd`, so on macOS the run's `env` turns both off, and the file tools are then not confined.
+- A local run needs Linux, for now, and the README says why: the run's root is held open through `/proc/self/fd`
+  (`openClaimDir`), and the default environment needs `setpriv` (`noNewPrivs`) and `/proc/self/fd` (`confineFiles`).
+  macOS has neither.
 
 **pi-durable 1.1**
 - The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen from `~1.0.4` to `>=1.0.4 <1.2.0`:

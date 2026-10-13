@@ -529,11 +529,10 @@ like a mount's, but syncs nothing: the store's commits are made durable by SQLit
 `work/` are the operating system's to flush, so a power loss can lose what it had not written yet. `mountToken` is
 required only with the default `acquire`; without either, the open is refused (`INVALID_ARGUMENT`) before anything mounts.
 
-The default environment confines commands with `setpriv` (util-linux, `noNewPrivs`) and the file tools through
-`/proc/self/fd` (`confineFiles`), both Linux. On macOS neither exists, and the open fails until the run's `env` turns them
-off: `env: (claim) => archilEnv(claim, { noNewPrivs: false, confineFiles: false })`. The file tools are then not confined
-to `work/`, and commands keep the privileges the process has: confine them some other way where the agent is not
-trusted with the machine. (This mode is tested on Linux; macOS is not covered by the tests.)
+It needs Linux, for now. The run's root is held open through `/proc/self/fd` (`openClaimDir`), and the default
+environment confines commands with `setpriv` (util-linux, `noNewPrivs`) and the file tools through `/proc/self/fd`
+(`confineFiles`). macOS has neither, and turning the environment's two off does not help: the open still holds the root
+through `/proc/self/fd`. A portable claim directory is what a local run on macOS would need.
 
 ## Tests
 
