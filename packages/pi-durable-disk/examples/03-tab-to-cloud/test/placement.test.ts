@@ -74,6 +74,11 @@ describe("the model a view event says the conversation has", () => {
     assert.equal(agentModelIn(tag({ kind: "thread", id: "t" })), undefined);
     assert.equal(agentModelIn(tag("junk")), undefined);
   });
+  it("ignores a conversation that is not the root (the brain's), so the root's model is the one told", () => {
+    assert.equal(agentModelIn(tag({ kind: "snapshot", root: false, event: { type: "snapshot", agent: agent("local", "brain") } })), undefined);
+    assert.equal(agentModelIn(tag({ kind: "events", root: false, events: [{ type: "agent_changed", agent: agent("local", "brain") }] })), undefined);
+    assert.deepEqual(agentModelIn(tag({ kind: "snapshot", root: true, event: { type: "snapshot", agent: agent("modal", "big") } })), { provider: "modal", modelId: "big" }, "and an event marked as the root's is read");
+  });
   it("says null when the agent has no model set, so a stale model is dropped", () => {
     assert.equal(agentModelIn(tag({ kind: "snapshot", event: { type: "snapshot", agent: {} } })), null);
     assert.equal(agentModelIn(tag({ kind: "events", events: [{ type: "agent_changed", agent: { model: { provider: 3 } } }] })), null);

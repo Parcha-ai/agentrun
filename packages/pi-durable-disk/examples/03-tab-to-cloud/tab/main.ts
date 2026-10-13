@@ -61,7 +61,8 @@ const TAB_RESTORE_LIMIT_BYTES = 256 * 1024 * 1024;
 const WASMER_SDK = "/wasmer/dist/index.js";
 const COMPUTER = "/pkgs/edgejs.webc";
 
-type ViewEvent = { kind: "snapshot"; event: AgentEvent } | { kind: "events"; events: AgentEvent[] };
+/** `root: false` marks the events of a conversation that is not the run's root (the local brain's): the server reads the root's model from the rest. */
+type ViewEvent = ({ kind: "snapshot"; event: AgentEvent } | { kind: "events"; events: AgentEvent[] }) & { root?: false };
 type FileRow = { path: string; kind: "file" | "directory" | "symlink"; size: number; data?: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -713,7 +714,8 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
   state.sent = [];
   const snapshot = merge(stream.snapshot);
   state.chat.apply(snapshot);
-  state.client?.view({ kind: "snapshot", event: snapshot } satisfies ViewEvent);
+  const notRoot = conversation.id === runtime.root.id ? {} : { root: false as const };
+  state.client?.view({ kind: "snapshot", ...notRoot, event: snapshot } satisfies ViewEvent);
   stream.start(async (events) => {
     const folded = events.map(merge);
     noteTools(folded);
@@ -723,7 +725,7 @@ async function followConversation(runtime: TabRuntime, conversation: Conversatio
       const m = event.type === "message_end" ? ((event.entry as unknown as { model?: { role?: string; stopReason?: string; errorMessage?: string }[] }).model ?? [])[0] : undefined;
       if (m?.role === "assistant" && m.stopReason === "error") phoneReport("turn-failed", { error: String(m.errorMessage ?? "").slice(0, 300) });
     }
-    state.client?.view({ kind: "events", events: folded } satisfies ViewEvent);
+    state.client?.view({ kind: "events", ...notRoot, events: folded } satisfies ViewEvent);
     if (events.some((e) => e.type === "tool_execution_end" || e.type === "run_end")) await refreshFiles();
     renderChat();
     renderStats();
@@ -1829,7 +1831,7 @@ async function sendSnapshot(): Promise<void> {
   const conversation = target()!;
   const stream = await watchEvents(runtime.harness, conversation.id, ctx);
   const front = conversation.id === runtime.root.id ? [] : (await watchEvents(runtime.harness, runtime.root.id, ctx).then(async (w) => { const e = w.snapshot.entries; await w.stop(); return e; }));
-  state.client?.view({ kind: "snapshot", event: front.length ? { ...stream.snapshot, entries: [...front, ...stream.snapshot.entries] } : stream.snapshot } satisfies ViewEvent);
+  state.client?.view({ kind: "snapshot", ...(conversation.id === runtime.root.id ? {} : { root: false as const }), event: front.length ? { ...stream.snapshot, entries: [...front, ...stream.snapshot.entries] } : stream.snapshot } satisfies ViewEvent);
   await stream.stop();
 }
 

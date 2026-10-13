@@ -321,11 +321,13 @@ export interface DemoServer {
 }
 
 /**
- * The model the root conversation is set to, when a view event says so: the writer's snapshot carries the agent's stored choices, and each `agent_changed` carries them whole.
+ * The model the root conversation is set to, when a view event says so (an event the tab marks as another conversation's says nothing): the writer's snapshot carries the agent's stored choices, and each `agent_changed` carries them whole.
  * Undefined when the event says nothing about the agent; `null` when it says the agent has no model set (it follows the host).
  */
 export function agentModelIn(event: Parameters<typeof untag>[0]): { provider: string; modelId: string } | null | undefined {
-  const body = untag(event) as { kind?: unknown; event?: unknown; events?: unknown } | null;
+  const body = untag(event) as { kind?: unknown; root?: unknown; event?: unknown; events?: unknown } | null;
+  // The tab marks the events of a conversation that is not the run's root (the local brain's, after a swap) `root: false`: its model is not the one the run's agent has.
+  if (body?.root === false) return undefined;
   const modelOf = (agent: unknown): { provider: string; modelId: string } | null => {
     const model = (agent as { model?: { provider?: unknown; modelId?: unknown } } | null | undefined)?.model;
     return typeof model?.provider === "string" && typeof model.modelId === "string" ? { provider: model.provider, modelId: model.modelId } : null;

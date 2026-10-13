@@ -87,9 +87,11 @@ describe("a task placed on a mounted cloud host", () => {
       await until(() => sinks.length > 0 && submitted.includes("first message"));
       // The run is on the host now; its events come back through the relay, the model switched in a batch with other events.
       sinks.forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "turn_start" }, { type: "agent_changed", agent: { model: { provider: "steered", modelId: "qwen3.5-27b" } } }] }) }));
+      // The tab's brain swap follows a separate conversation: its snapshot is not the root's model.
+      tab.send({ t: "view", event: tag({ kind: "snapshot", root: false, event: { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], usage: {}, agent: { model: { provider: "local", modelId: "brain" } } } }) } as never);
       page.send({ t: "submit", text: "second message", requestId: "m2" });
       await until(() => submitted.includes("second message"));
-      assert.equal(models[models.length - 1], "steered/qwen3.5-27b", "the relayed agent_changed is the latest fact");
+      assert.equal(models[models.length - 1], "steered/qwen3.5-27b", "the relayed agent_changed is the latest fact, and the brain's conversation did not replace it");
       tab.close();
       page.close();
     } finally {
