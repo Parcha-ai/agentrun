@@ -135,6 +135,30 @@ describe("local boxes: what a directory cannot give", () => {
 		}));
 });
 
+describe.skipIf(!HAS_PROC)("local boxes: a program that locks the box's own directories", () => {
+	// The program waits for its own record, so the lock always lands after the record was written.
+	const lock = 'while [ ! -e "$HOME/../pids/$$" ]; do sleep 0.02; done; chmod 500 "$HOME/../pids" "$HOME/.."';
+
+	it("cannot crash the host when it exits, and the box is still destroyed", () =>
+		withProvider(async (provider, root) => {
+			const box = await create(provider);
+			expect(await output(box, ["sh", "-c", `${lock} && printf locked`])).toBe("locked");
+			// The program's record could not be removed when it closed: its directory was locked by then.
+			expect(readdirSync(join(root, box.id, "pids")).length).toBe(1);
+			const destroyed = await box.destroy(context);
+			expect(destroyed.ok).toBe(true);
+			expect(existsSync(join(root, box.id))).toBe(false);
+		}));
+
+	it("is still ended by the watchdog", () =>
+		withProvider(async (provider, root) => {
+			const box = await create(provider, 1_000);
+			await output(box, ["sh", "-c", lock]);
+			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			expect(existsSync(join(root, box.id))).toBe(false);
+		}));
+});
+
 describe("local boxes: a watchdog that cannot start", () => {
 	it("fails the create with a spawn error and leaves no box behind", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-local-"));
