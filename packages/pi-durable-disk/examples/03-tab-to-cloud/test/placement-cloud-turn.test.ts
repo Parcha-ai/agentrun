@@ -11,6 +11,8 @@ import { localServer } from "./_local.ts";
 describe("a task placed on a mounted cloud host", () => {
   let local: Awaited<ReturnType<typeof localServer>>;
   const asked: string[] = [];
+  /** The model each question was told the root conversation has. */
+  const models: (string | undefined)[] = [];
   const sinks: ((frame: PipeFrame) => void)[] = [];
   const submitted: string[] = [];
   let decideMs = 0;
@@ -19,6 +21,7 @@ describe("a task placed on a mounted cloud host", () => {
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
       asked.push(query.phase);
+      models.push(query.model ? `${query.model.provider}/${query.model.modelId}` : undefined);
       await new Promise((r) => setTimeout(r, decideMs)); // a typed question takes a moment: a second message can arrive while it is out
       const choice = query.phase === "start" ? "vm" : "tab";
       const decision: PlacementDecision = { id: `d-${asked.length}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 0.9 : 0.1 })), choice, latency_ms: 1, model: "scripted" };
@@ -66,6 +69,34 @@ describe("a task placed on a mounted cloud host", () => {
     assert.deepEqual(asked, ["start", "done"]);
     tab.close();
     page.close();
+  });
+
+  it("tells the placer the model the conversation has, from the writer's snapshot and then from the relayed agent_changed of the host the run is on", async () => {
+    endTurns = false;
+    const askedBefore = asked.length;
+    try {
+      const { id, secret } = await local.server.createRun("model-fact");
+      const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+      await tab.ready;
+      const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: () => undefined });
+      await page.ready;
+      tab.send({ t: "view", event: tag({ kind: "snapshot", event: { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], usage: {}, agent: { model: { provider: "modal", modelId: "big" } } } }) } as never);
+      page.send({ t: "submit", text: "first message", requestId: "m1" });
+      await until(() => asked.length - askedBefore >= 1);
+      assert.equal(models[askedBefore], "modal/big", "the snapshot's agent is the first fact");
+      await until(() => sinks.length > 0 && submitted.includes("first message"));
+      // The run is on the host now; its events come back through the relay, the model switched in a batch with other events.
+      sinks.forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "turn_start" }, { type: "agent_changed", agent: { model: { provider: "steered", modelId: "qwen3.5-27b" } } }] }) }));
+      // The tab's brain swap follows a separate conversation: its snapshot is not the root's model.
+      tab.send({ t: "view", event: tag({ kind: "snapshot", root: false, event: { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], usage: {}, agent: { model: { provider: "local", modelId: "brain" } } } }) } as never);
+      page.send({ t: "submit", text: "second message", requestId: "m2" });
+      await until(() => submitted.includes("second message"));
+      assert.equal(models[models.length - 1], "steered/qwen3.5-27b", "the relayed agent_changed is the latest fact, and the brain's conversation did not replace it");
+      tab.close();
+      page.close();
+    } finally {
+      endTurns = true;
+    }
   });
 
   it("serializes two quick messages: the second never overwrites the first, and both reach the host in order", async () => {

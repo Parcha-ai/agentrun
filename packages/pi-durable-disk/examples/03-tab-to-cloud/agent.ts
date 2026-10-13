@@ -128,6 +128,10 @@ let extraInstructions = "";
 export function setExtraInstructions(text: string): void {
   extraInstructions = text.trim();
 }
+/** An extra's text after the host's own (the base, the model line and the host's extra stay). */
+export function appendInstructions(text: string): void {
+  extraInstructions = [extraInstructions, text.trim()].filter(Boolean).join("\n\n");
+}
 /** The model that drives this conversation, named from its own config (the modelId the server attached it with): asked which model or LLM it is, the agent answers from this line. */
 export const modelLine = (modelId: string): string =>
   `Your model is ${modelId}, reached through your user's server. Asked which model or LLM you are, say ${modelId} and where you are running now; never name another model or product as yourself.`;
