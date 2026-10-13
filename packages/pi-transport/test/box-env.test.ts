@@ -200,6 +200,26 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 		});
 	});
 
+	it("tells its owner once that the box is gone, however many calls find it out together", async () => {
+		const reasons: string[] = [];
+		await withEnv(
+			async ({ env, box }) => {
+				getOrThrow(await env.writeFile("a.txt", "hi", context));
+				expect(reasons).toEqual([]);
+				box.end(3);
+				const results = await Promise.all([
+					env.readTextFile("a.txt", context),
+					env.exists("a.txt", context),
+					env.exec(["true"], undefined, context),
+				]);
+				expect(results.map((result) => result.ok)).toEqual([false, false, false]);
+				expect((await env.listDir(".", context)).ok).toBe(false);
+				expect(reasons).toEqual(["it ended with exit code 3"]);
+			},
+			{ onLost: (reason) => reasons.push(reason) },
+		);
+	});
+
 	it("sees a box its provider destroyed", async () => {
 		await withEnv(async ({ env, box }) => {
 			expect((await env.writeFile("a.txt", "hi", context)).ok).toBe(true);

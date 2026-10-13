@@ -23,3 +23,11 @@ export {
 	type TransportConfigInput,
 	TransportConfigSchema,
 } from "./config.ts";
+export {
+	HandsDoc,
+	SessionBoxesDoc,
+	type Transport,
+	TransportError,
+	type TransportErrorCode,
+	type TransportHost,
+} from "./transport.ts";

@@ -1,0 +1,6 @@
+{
+	"environments": {
+		"sandbox": { "provider": "local" }
+	},
+	"hands": "sandbox"
+}

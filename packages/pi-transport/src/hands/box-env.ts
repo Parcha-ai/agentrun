@@ -212,6 +212,11 @@ export type BoxEnvOptions = {
 	readonly statusTimeoutMs?: number;
 	/** How often a watcher compares snapshots. Default 1 s. */
 	readonly watchIntervalMs?: number;
+	/**
+	 * Called once, when the environment finds that its box ended or stopped answering. From then on every call fails
+	 * with `reason`. An owner uses it to stop handing this environment out.
+	 */
+	readonly onLost?: (reason: string) => void;
 };
 
 type Finished = { readonly exitCode: number; readonly stdout: Uint8Array; readonly stderr: string };
@@ -382,6 +387,7 @@ class BoxEnv implements ExecutionEnv {
 	readonly #maxExecMs: number | undefined;
 	readonly #statusTimeoutMs: number;
 	readonly #watchIntervalMs: number;
+	readonly #onLost: ((reason: string) => void) | undefined;
 	readonly #running = new Set<string>();
 	readonly #watchers = new Set<FileWatcher>();
 	#lost: string | undefined;
@@ -396,6 +402,7 @@ class BoxEnv implements ExecutionEnv {
 		this.#maxExecMs = options.maxExecMs;
 		this.#statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
 		this.#watchIntervalMs = options.watchIntervalMs ?? DEFAULT_WATCH_INTERVAL_MS;
+		this.#onLost = options.onLost;
 	}
 
 	async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
@@ -943,16 +950,25 @@ class BoxEnv implements ExecutionEnv {
 			this.#statusTimeoutMs,
 			withoutAbortSignal(context),
 		);
+		let reason: string | undefined;
 		if (!status.ok) {
-			this.#lost =
+			reason =
 				status.error.code === "timeout"
 					? `it did not answer a status check in ${this.#statusTimeoutMs} ms`
 					: `it cannot be reached: ${status.error.message}`;
 		} else if (status.value.state === "ended") {
 			const { exitCode } = status.value;
-			this.#lost = exitCode === null ? "it ended" : `it ended with exit code ${exitCode}`;
+			reason = exitCode === null ? "it ended" : `it ended with exit code ${exitCode}`;
 		} else if (cause.code === "gone") {
-			this.#lost = cause.message;
+			reason = cause.message;
+		}
+		// Two calls may have asked at once: the first answer stands, and the owner hears it once.
+		if (reason === undefined || this.#lost !== undefined) return;
+		this.#lost = reason;
+		try {
+			this.#onLost?.(reason);
+		} catch {
+			// The owner's own failure does not change what this call reports.
 		}
 	}
 
