@@ -402,7 +402,8 @@ try {
 		log.toolCalls.push({
 			name: entry.toolName,
 			args: asked.get(entry.toolCallId) ?? null,
-			durationMs: entry.durationMs ?? null,
+			// pi 1.0 does not time a tool call: its result has no duration.
+			durationMs: (entry as { durationMs?: number }).durationMs ?? null,
 			isError: entry.isError,
 			output: shown,
 		});
