@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -35,10 +35,17 @@ const HAS_PROC = existsSync("/proc/self/environ");
 /**
  * Runs detached from the host and ends the box when its lifetime has passed: `$1` seconds, `$2` the box's directory,
  * `$3` the marker its programs carry. A box that was destroyed first has no record left, and the script does nothing.
+ * It ends the recorded programs whose start time still matches, then every process that carries the marker.
  */
 const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
 [ -f "$2/${RECORD_FILE}" ] || exit 0
 rm -f -- "$2/${RECORD_FILE}"
+for file in "$2"/pids/*; do
+	[ -f "$file" ] || continue
+	pid=\${file##*/}
+	started=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20)
+	[ -n "$started" ] && [ "$started" = "$(cat "$file")" ] && kill -KILL "-$pid" 2>/dev/null
+done
 round=0
 while [ "$round" -lt ${KILL_ROUNDS} ]; do
 	round=$((round + 1))
@@ -59,6 +66,8 @@ export type LocalBoxesOptions = {
 	 * unless the host passes it here.
 	 */
 	readonly path?: string;
+	/** The POSIX shell that runs a box's watchdog. Default `sh`. */
+	readonly shell?: string;
 };
 
 type LocalRecord = {
@@ -128,12 +137,10 @@ class LocalBox implements Box {
 			detached: true,
 		});
 		const pid = child.pid;
-		if (pid !== undefined && !HAS_PROC) {
-			const groups = startedHere.get(this.id) ?? new Set<number>();
-			startedHere.set(this.id, groups.add(pid));
-			child.once("close", () => groups.delete(pid));
-		}
-		return ok(adaptChild(child, () => killGroup(pid), options, context));
+		// Listeners attach before anything else: a short program can exit at once.
+		const started = adaptChild(child, () => killGroup(pid), options, context);
+		if (pid !== undefined) this.#remember(pid, child);
+		return ok(started);
 	}
 
 	async upload(files: readonly BoxFile[], _context: Context): Promise<Result<void, BoxError>> {
@@ -179,6 +186,29 @@ class LocalBox implements Box {
 		}
 	}
 
+	/**
+	 * Remember a program the box started until it closes, so a later `destroy` or the watchdog can end its process
+	 * group even when the program replaced its environment and lost the box's marker.
+	 */
+	#remember(pid: number, child: ChildProcess): void {
+		if (!HAS_PROC) {
+			const groups = startedHere.get(this.id) ?? new Set<number>();
+			startedHere.set(this.id, groups.add(pid));
+			child.once("close", () => groups.delete(pid));
+			return;
+		}
+		const started = startTime(pid);
+		if (started === undefined) return;
+		const file = join(this.#directory, "pids", String(pid));
+		try {
+			writeFileSync(file, started);
+		} catch {
+			// The box was destroyed while the program started; the destroy has ended it or the marker will.
+			return;
+		}
+		child.once("close", () => rmSync(file, { force: true }));
+	}
+
 	#path(path: string): string {
 		return isAbsolute(path) ? path : join(this.#record.workspace, path);
 	}
@@ -194,6 +224,39 @@ function killGroup(pid: number | undefined): void {
 		process.kill(-pid, "SIGKILL");
 	} catch {
 		// The group already ended.
+	}
+}
+
+/** When a process started, in the kernel's clock ticks, or `undefined` when it is gone. */
+function startTime(pid: number): string | undefined {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+		// The second field is the program's name in parentheses and may hold spaces; the start time is field 22.
+		return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * End the process groups of the programs a box recorded. A record is trusted only while the process it names still
+ * has the start time it recorded, so a process id the system reused is never killed.
+ */
+function endRecorded(directory: string): void {
+	let names: string[];
+	try {
+		names = readdirSync(join(directory, "pids"));
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		let recorded: string;
+		try {
+			recorded = readFileSync(join(directory, "pids", name), "latin1");
+		} catch {
+			continue;
+		}
+		if (recorded !== "" && recorded === startTime(Number(name))) killGroup(Number(name));
 	}
 }
 
@@ -220,16 +283,19 @@ function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
 }
 
 /**
- * End every program of a box and its watchdog, also a program that left its process group or outlived the program
- * that started it: each is found by the marker in its own environment, so a process id the system reused is never
- * killed. Where `/proc` is missing, only the process groups this process started are ended.
+ * End every program of a box and its watchdog. Two ways find them: the record of each program the box started and
+ * that still runs, whose process group is ended even when it replaced its environment; and the marker in a
+ * process's own environment, which also finds a program that left its group or outlived the one that started it.
+ * Neither kills a reused process id. A program that does both, replaces its environment and outlives its starter,
+ * is not found. Where `/proc` is missing, only the process groups this process started are ended.
  */
-function endPrograms(id: string): void {
+function endPrograms(directory: string, id: string): void {
 	if (!HAS_PROC) {
 		for (const pid of startedHere.get(id) ?? []) killGroup(pid);
 		startedHere.delete(id);
 		return;
 	}
+	endRecorded(directory);
 	for (let round = 0; round < KILL_ROUNDS; round += 1) {
 		const { programs, watchdogs } = processesOf(id);
 		for (const pid of [...watchdogs, ...programs]) {
@@ -260,7 +326,7 @@ async function readRecord(directory: string): Promise<LocalRecord | undefined> {
 async function destroyDirectory(directory: string, id: string): Promise<void> {
 	// The record goes first: from then on every handle of this box reports it ended.
 	await rm(join(directory, RECORD_FILE), { force: true });
-	endPrograms(id);
+	endPrograms(directory, id);
 	await rm(directory, { recursive: true, force: true });
 }
 
@@ -275,9 +341,11 @@ function unsupportedField(spec: BoxSpec): string | undefined {
  *
  * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region` or an `isolation` other than
  * `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
- * lifetime has passed, whatever happened to the process that created it. On Linux `destroy` and the watchdog end every
- * program of the box, found by a marker in its environment. Where `/proc` is missing they end only the programs this
- * process started and their process groups, and the watchdog removes the box's directory only.
+ * lifetime has passed, whatever happened to the process that created it. On Linux `destroy` and the watchdog end the
+ * process group of every program the box started and that still runs, and every process that carries the box's marker
+ * in its environment. A program that both replaced its environment and outlived its starter is not found. Where
+ * `/proc` is missing they end only the programs this process started and their process groups, and the watchdog
+ * removes the box's directory only.
  */
 export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 	const root = resolve(options.root);
@@ -326,7 +394,7 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
-				for (const name of ["home", "tmp"]) await mkdir(join(directory, name), { recursive: true });
+				for (const name of ["home", "tmp", "pids"]) await mkdir(join(directory, name), { recursive: true });
 				await mkdir(record.workspace, { recursive: true });
 				await writeFile(join(directory, RECORD_FILE), JSON.stringify(record));
 			} catch (error) {
@@ -335,11 +403,22 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				);
 			}
 			const seconds = (spec.maxLifetimeMs / 1000).toFixed(3);
-			spawn("sh", ["-c", WATCHDOG_SCRIPT, "sh", seconds, directory, `${BOX_MARKER}=${id}`], {
+			const shell = options.shell ?? "sh";
+			const watchdog = spawn(shell, ["-c", WATCHDOG_SCRIPT, "sh", seconds, directory, `${BOX_MARKER}=${id}`], {
 				env: { PATH: DEFAULT_PATH, [WATCHDOG_MARKER]: id },
 				stdio: "ignore",
 				detached: true,
-			}).unref();
+			});
+			const failure = await new Promise<Error | undefined>((resolve) => {
+				watchdog.once("spawn", () => resolve(undefined));
+				watchdog.once("error", resolve);
+			});
+			if (failure !== undefined) {
+				// A box with no watchdog would outlive its lifetime, so there is no box.
+				await rm(directory, { recursive: true, force: true }).catch(() => {});
+				return err(new BoxError("spawn", `could not start the box's watchdog: ${failure.message}`, failure));
+			}
+			watchdog.unref();
 			return ok(new LocalBox(directory, record));
 		},
 

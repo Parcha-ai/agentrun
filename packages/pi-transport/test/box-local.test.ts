@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -26,6 +26,29 @@ function processesWith(entry: string): number[] {
 		}
 	}
 	return found;
+}
+
+/**
+ * Process ids whose working directory is `directory`, whatever their environment says. The kernel names a removed
+ * directory with a ` (deleted)` suffix, and a program in it is still a program.
+ */
+function processesIn(directory: string): number[] {
+	const found: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		try {
+			const cwd = readlinkSync(`/proc/${name}/cwd`);
+			if (cwd === directory || cwd === `${directory} (deleted)`) found.push(Number(name));
+		} catch {
+			// Another user's process, or one that ended.
+		}
+	}
+	return found;
+}
+
+async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
 const programsOf = (id: string) => processesWith(`PI_TRANSPORT_BOX=${id}`);
@@ -112,6 +135,21 @@ describe("local boxes: what a directory cannot give", () => {
 		}));
 });
 
+describe("local boxes: a watchdog that cannot start", () => {
+	it("fails the create with a spawn error and leaves no box behind", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-local-"));
+		try {
+			const provider = localBoxes({ root, shell: "/nonexistent/pi-transport-sh" });
+			const created = await provider.create({ maxLifetimeMs: 60_000 }, context);
+			expect(created.ok).toBe(false);
+			if (!created.ok) expect(created.error.code).toBe("spawn");
+			expect(readdirSync(root)).toEqual([]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("local boxes: the environment of a program", () => {
 	it("has a fixed PATH and never this process's own", async () => {
 		const before = process.env.PATH;
@@ -155,6 +193,29 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(programsOf(box.id)).toEqual([]);
+		}));
+
+	it("destroy ends a program the box started that replaced its environment", () =>
+		withProvider(async (provider) => {
+			const box = await create(provider);
+			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
+			if (!started.ok) throw started.error;
+			await until(() => processesIn(box.facts().workspace).length > 0);
+			expect(programsOf(box.id)).toEqual([]);
+			await box.destroy(context);
+			await until(() => processesIn(box.facts().workspace).length === 0);
+			expect(processesIn(box.facts().workspace)).toEqual([]);
+		}));
+
+	it("the watchdog ends such a program too", () =>
+		withProvider(async (provider) => {
+			const box = await create(provider, 1_000);
+			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
+			if (!started.ok) throw started.error;
+			const workspace = box.facts().workspace;
+			await until(() => processesIn(workspace).length > 0);
+			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			expect(processesIn(workspace)).toEqual([]);
 		}));
 
 	it("destroy leaves no watchdog behind", () =>
