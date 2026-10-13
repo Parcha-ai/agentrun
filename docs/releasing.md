@@ -1,6 +1,6 @@
 # Release a beta
 
-The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, and `@parcha/pi-durable-disk`. They share a version and are published in that order (the last does not depend on the others). `@parcha/pi-browser` and `@parcha/pi-vision` are in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
+The packages are `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`, and `@parcha/pi-durable-disk`. They share a version and are published in that order (the last does not depend on the others). `@parcha/pi-browser`, `@parcha/pi-vision` and `@parcha/pi-transport` are in the repository but held; see [Held packages](#held-packages). Publication is manual; pushes, pull requests and tags do not publish packages.
 
 ## Held packages
 

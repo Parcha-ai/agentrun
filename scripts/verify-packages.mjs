@@ -64,7 +64,7 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 try {
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -113,7 +113,62 @@ try {
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
-  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module' }));
+  // The consumer has no lockfile, so the @earendil-works packages that an upstream @earendil-works package depends on by
+  // range float to the newest release, and an upstream package then runs beside siblings it was not released with (a
+  // coding agent at one version, its codemode at the next). Each such edge is pinned to the version this repository's
+  // lockfile resolves for that parent. Our own packages' peer ranges are not touched: they select what they select.
+  const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
+  const upstream = location => location.slice(location.lastIndexOf('node_modules/') + 'node_modules/'.length);
+  const isUpstream = name => name.startsWith('@earendil-works/');
+  /** The lockfile entry a dependency of the package at `location` resolves to: its own node_modules, then each enclosing one. */
+  const resolved = (location, name) => {
+    for (let base = location; ; base = base.includes('/node_modules/') ? base.slice(0, base.lastIndexOf('/node_modules/')) : '') {
+      const candidate = base ? `${base}/node_modules/${name}` : `node_modules/${name}`;
+      if (rootLock[candidate]) return rootLock[candidate];
+      if (!base) return undefined;
+    }
+  };
+  const held = new Map();
+  /** The pins for the @earendil-works dependencies of the package at `location`, and for theirs in turn. A pinned
+   *  dependency is `{ ".": version, ...its own pins }`: a plain version string would replace its own rules. */
+  const pins = (location, path = new Set()) => {
+    const entry = rootLock[location];
+    const edges = {};
+    for (const dependency of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies }).filter(isUpstream)) {
+      const target = resolved(location, dependency);
+      if (!target) continue;
+      const targetLocation = Object.keys(rootLock).find(candidate => rootLock[candidate] === target);
+      edges[dependency] = path.has(targetLocation) ? target.version : { '.': target.version, ...pins(targetLocation, new Set([...path, location])) };
+    }
+    return edges;
+  };
+  // npm 11 applies neither a parent's nested rule for a package nor that package's own top-level rule when both exist,
+  // so there a package that another @earendil-works package depends on is pinned through its parent's entry only. npm 10
+  // applies a rule to a package that is also a direct dependency of the consumer only from its own top-level entry, so
+  // there every package has one. The drift check below fails the run if a future npm resolves either shape differently.
+  const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
+  const dependedOn = new Set();
+  for (const [location, entry] of Object.entries(rootLock)) {
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) continue;
+    for (const dependency of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies }).filter(isUpstream)) {
+      const target = resolved(location, dependency);
+      if (target) dependedOn.add(`${dependency}@${target.version}`);
+    }
+  }
+  const overrides = {};
+  for (const [location, entry] of Object.entries(rootLock)) {
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) continue;
+    const name = upstream(location);
+    held.set(name, new Set([...(held.get(name) ?? []), entry.version]));
+    const edges = pins(location);
+    if (!Object.keys(edges).length) continue;
+    const key = `${name}@${entry.version}`;
+    if (npmMajor >= 11 && dependedOn.has(key)) continue;
+    assert.ok(!overrides[key] || JSON.stringify(overrides[key]) === JSON.stringify(edges), `The repository lockfile resolves ${key} to different dependencies in different places`);
+    overrides[key] = edges;
+  }
+  assert.ok(held.size > 0, 'The repository lockfile holds no @earendil-works package to pin the consumer to');
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
@@ -122,6 +177,15 @@ try {
   const peers = [];
   for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox']) peers.push(`${name}@${(await json(join(root, 'node_modules', name, 'package.json'))).version}`);
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, `zod@${zod.version}`, ...peers], consumer);
+  // Every @earendil-works package in the consumer is at a version the repository's lockfile holds for that name.
+  const consumerLock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+  const drifted = Object.entries(consumerLock.packages ?? {}).flatMap(([location, entry]) => {
+    if (!location.includes('node_modules/') || !isUpstream(upstream(location))) return [];
+    const versions = held.get(upstream(location));
+    return versions?.has(entry.version) ? [] : [`${location}@${entry.version} (repository: ${versions ? [...versions].join(' or ') : 'none'})`];
+  });
+  assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
+  receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
@@ -196,6 +260,9 @@ import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as vision from '@parcha/pi-vision';
 import * as visionDurable from '@parcha/pi-vision/durable';
 import * as visionTesting from '@parcha/pi-vision/testing';
+import * as transport from '@parcha/pi-transport';
+import * as transportLocal from '@parcha/pi-transport/box/local';
+import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -223,12 +290,13 @@ assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archi
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
+assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, network: 'prohibited' });
+  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
@@ -316,6 +384,11 @@ const unfiled: VisionOptions = { scope: (id: string) => ({ label: id, deriveDir:
 void [limits, vision, unfiled];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'transport-consumer.ts'), `import { parseTransportConfig, type Box } from '@parcha/pi-transport';
+const transport: [typeof parseTransportConfig, Box | undefined] = [parseTransportConfig, undefined];
+void transport;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });
