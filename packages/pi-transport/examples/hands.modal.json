@@ -1,0 +1,9 @@
+{
+	"environments": {
+		"sandbox": {
+			"provider": "modal",
+			"maxLifetime": "30m"
+		}
+	},
+	"hands": "sandbox"
+}

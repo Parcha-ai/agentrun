@@ -1,0 +1,10 @@
+{
+	"environments": {
+		"sandbox": {
+			"provider": "modal",
+			"gpu": "T4",
+			"maxLifetime": "30m"
+		}
+	},
+	"hands": "sandbox"
+}

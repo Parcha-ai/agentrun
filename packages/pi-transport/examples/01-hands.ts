@@ -13,7 +13,11 @@
 //
 // Options: --store <file> keeps the session in a SQLite file, so a later run continues the same conversation, for
 // example with another `hands` in the config. --log <file> writes what the run measured as JSON.
-// PI_HANDS_LABELS=name=value,... labels every box.
+// PI_HANDS_LABELS=name=value,... labels every box; PI_HANDS_NAME_PREFIX starts the names a provider gives.
+//
+// Boxes on Daytona and Modal when this process holds their credentials: DAYTONA_API_KEY (and DAYTONA_API_URL,
+// DAYTONA_TARGET), or MODAL_TOKEN_ID and MODAL_TOKEN_SECRET with `npm install --no-save modal@0.11.0`. They cost
+// money. See examples/hands.daytona.json, examples/hands.modal.json and examples/hands.modal-gpu.json.
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,12 +34,14 @@ import type { Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { daytonaBoxes } from "../src/box/daytona.ts";
 import { dockerBoxes } from "../src/box/docker.ts";
 import { localBoxes } from "../src/box/local.ts";
+import { type ModalSdk, modalBoxes } from "../src/box/modal.ts";
 import { transport } from "../src/hands/index.ts";
 import {
 	type Box,
-	type BoxError,
+	BoxError,
 	type BoxProvider,
 	finish,
 	parseTransportConfig,
@@ -47,6 +53,7 @@ import {
 /** A real model stops after this many requests in one turn, and the turn after this long. */
 const MAX_REQUESTS = 10;
 const MAX_TURN_MS = 180_000;
+const NAME_PREFIX = process.env.PI_HANDS_NAME_PREFIX ?? "pi-hands-";
 const INSTRUCTIONS = "You work through your tools: bash runs a shell command, write writes a file. Be brief.";
 /** Lists the names, never the values, of variables in a box that look like credentials. */
 const SECRET_NAMES_SCRIPT = "printenv | cut -d= -f1 | grep -i -E 'KEY|TOKEN|SECRET|PASSWORD' || true";
@@ -250,6 +257,38 @@ function timed(provider: BoxProvider, live: Map<string, Box>): BoxProvider {
 	};
 }
 
+/** A provider this process has no credential for. A config may still declare its environments; using one fails. */
+function unavailable(name: string, needs: string): BoxProvider {
+	const refusal = new BoxError("unauthorized", `this process has no ${needs}, so it cannot ask ${name} for a box`);
+	return {
+		name,
+		create: async () => ({ ok: false, error: refusal }),
+		attach: async () => ({ ok: true, value: undefined }),
+		list: async () => ({ ok: true, value: [] }),
+	};
+}
+
+// The remote providers join when this process holds their credentials. They are read here, on the host, and handed
+// to the provider: no config, no log and no box holds them.
+async function daytona(): Promise<BoxProvider> {
+	const { DAYTONA_API_KEY: apiKey, DAYTONA_API_URL: apiUrl, DAYTONA_TARGET: target } = process.env;
+	if (apiKey === undefined) return unavailable("daytona", "DAYTONA_API_KEY");
+	return daytonaBoxes({
+		apiKey,
+		namePrefix: NAME_PREFIX,
+		...(apiUrl === undefined ? {} : { apiUrl }),
+		...(target === undefined ? {} : { target }),
+	});
+}
+
+async function modal(): Promise<BoxProvider> {
+	if (process.env.MODAL_TOKEN_ID === undefined) return unavailable("modal", "MODAL_TOKEN_ID");
+	// The Modal SDK is not a dependency of this package: `npm install --no-save modal@0.11.0` before a run on Modal.
+	const specifier = "modal";
+	const sdk = (await import(specifier)) as { ModalClient: new () => ModalSdk };
+	return modalBoxes(new sdk.ModalClient(), { appName: `${NAME_PREFIX}hands` });
+}
+
 function text(content: Message["content"]): string {
 	if (typeof content === "string") return content;
 	return content.map((part) => (part.type === "text" ? part.text : "")).join("");
@@ -272,6 +311,8 @@ const live = new Map<string, Box>();
 const providers: Record<string, BoxProvider> = {
 	local: timed(localBoxes({ root: join(scratch, "boxes") }), live),
 	docker: timed(dockerBoxes(), live),
+	daytona: timed(await daytona(), live),
+	modal: timed(await modal(), live),
 };
 let submittedAt = performance.now();
 // The transport is the Harness's `env`, so it is built first and reaches the Harness through this binding.

@@ -1,0 +1,10 @@
+{
+	"environments": {
+		"sandbox": {
+			"provider": "daytona",
+			"snapshot": "daytona-small",
+			"maxLifetime": "30m"
+		}
+	},
+	"hands": "sandbox"
+}
