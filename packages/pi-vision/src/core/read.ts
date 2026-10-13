@@ -330,13 +330,17 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   return { content, details: { path: name, media, ...(result.document ? { document: result.document } : {}) } };
 }
 
-/** `read`'s answer when the host's own callbacks (its scope, eyes or limits) could not set the call up: null for a plain
- *  text file, which is the host's read; for any other path a `look_failed` miss that the host's `onMiss` hears of and
- *  nothing files. */
+/** `read`'s answer when the host's own callbacks (its scope, eyes or limits) could not set the call up: null for a path
+ *  `readMedia` leaves to the host (a plain text file, or not a file, by its first bytes whatever the arguments); for any
+ *  other path a `look_failed` miss that the host's `onMiss` hears of and nothing files. */
 export async function readWithoutSetup(env: VisionEnv, args: ReadArgs, call: CallContext, error: unknown, host: Pick<CallSetup, "sources" | "onMiss">): Promise<ToolResult | null> {
-  if (await readsAsText(env, args, call, host)) return null;
+  const name = String(args.path ?? ".");
+  if (!handleOf(name, host.sources)) {
+    const probe = await sniffFile(env, name, PACKAGE_KINDS.sniff, call.signal);
+    if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
+  }
   const filing: Filing = { conversationId: call.conversationId, label: "", evidence: NO_RECEIPT, onMiss: host.onMiss };
-  return missResult(filing, String(args.path ?? "."), "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args);
+  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args);
 }
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not

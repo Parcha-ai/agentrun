@@ -107,13 +107,31 @@ test("a scope, eyes or limits callback that throws is a typed miss for a media r
   for (const broken of [{ scope: down("scope") }, { eyes: down("eyes") }, { limits: down("limits") }]) {
     const rows = host();
     const vision = createVisionExtension({ ...rows.options, scope, ...broken });
-    const run = await drive({ extensions: [vision.extension], rounds: [[["read", { path: "chart.png" }], ["read", { path: "notes.txt" }]]], cwd });
-    const [media, plain] = run.results;
+    // A strict route fills every optional argument with its zero value; a text file is still the host's read.
+    const run = await drive({ extensions: [vision.extension], rounds: [[["read", { path: "chart.png" }], ["read", { path: "notes.txt" }], ["read", { path: "notes.txt", ask: "", from_s: 0, to_s: 0 }]]], cwd });
+    const [media, ...plain] = run.results;
     assert.deepEqual([media.isError, media.details?.miss?.code], [false, "look_failed"], textOf(media));
     assert.deepEqual(rows.misses.map((m) => [m.tool, m.source, m.code, m.receipt]), [["read", "chart.png", "look_failed", null]]);
-    assert.equal(plain.isError, false);
-    assert.match(textOf(plain), /first line/);
+    for (const text of plain) {
+      assert.equal(text.isError, false, textOf(text));
+      assert.match(textOf(text), /first line/);
+    }
   }
+});
+
+test("a tool that returns its blocks under only the name its pi-durable reads has its images guarded", async () => {
+  const cwd = workspace({});
+  // pi-durable 1.2 reads `output`; 1.0 and 1.1 read `content`.
+  const name = ["1.0.", "1.1."].some((line) => piDurableVersion().startsWith(line)) ? "content" : "output";
+  const large = png(1600, 1200);
+  const shot = { name: "shot", tools: [{ name: "shot", description: "shot", parameters: { type: "object", properties: {} }, execute: async () => ({ [name]: [{ type: "text", text: "a page" }, png(40, 30), large] }) }] };
+  const rows = host();
+  const requests = [];
+  await drive({ extensions: [shot, createVisionExtension({ ...rows.options, scope }).extension], rounds: [[["shot", {}]]], cwd, onLead: (context) => requests.push(context.messages) });
+  const [result] = received(requests);
+  assert.deepEqual(result.content.map((b) => b.type), ["text", "image", "text"], "the image that fits, and the miss in place of the one that does not");
+  assert.ok(!JSON.stringify(result.content).includes(large.data));
+  assert.deepEqual(rows.misses.map((m) => [m.tool, m.code]), [["shot", "over_budget"]]);
 });
 
 test("on an environment that refuses every write, an image, a PDF and a docx still read: a reader in this process needs no file", async () => {
