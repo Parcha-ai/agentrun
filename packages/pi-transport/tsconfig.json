@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"],
+    "paths": {
+      "@earendil-works/pi-ai": ["./node_modules/@earendil-works/pi-ai/dist/index.d.ts"],
+      "@earendil-works/pi-ai/*": ["./node_modules/@earendil-works/pi-ai/dist/*"],
+      "@earendil-works/chord": ["./node_modules/@earendil-works/chord/dist/index.d.ts"],
+      "@earendil-works/chord/*": ["./node_modules/@earendil-works/chord/dist/*"]
+    }
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}
