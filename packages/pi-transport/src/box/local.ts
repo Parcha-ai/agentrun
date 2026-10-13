@@ -39,6 +39,7 @@ const HAS_PROC = existsSync("/proc/self/environ");
  */
 const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
 [ -f "$2/${RECORD_FILE}" ] || exit 0
+chmod u+rwx -- "$2" "$2/pids" 2>/dev/null
 rm -f -- "$2/${RECORD_FILE}"
 for file in "$2"/pids/*; do
 	[ -f "$file" ] || continue
@@ -56,7 +57,7 @@ while [ "$round" -lt ${KILL_ROUNDS} ]; do
 		kill -KILL "\${pid%/environ}" 2>/dev/null
 	done
 done
-rm -rf -- "$2"`;
+rm -rf -- "$2" 2>/dev/null || { chmod -R u+rwX -- "$2" 2>/dev/null; rm -rf -- "$2"; }`;
 
 export type LocalBoxesOptions = {
 	/** Directory that holds one subdirectory per box. Created when absent. */
@@ -206,7 +207,13 @@ class LocalBox implements Box {
 			// The box was destroyed while the program started; the destroy has ended it or the marker will.
 			return;
 		}
-		child.once("close", () => rmSync(file, { force: true }));
+		child.once("close", () => {
+			try {
+				rmSync(file, { force: true });
+			} catch {
+				// A program may have locked the box's directories; `destroy` unlocks them and removes the record.
+			}
+		});
 	}
 
 	#path(path: string): string {
@@ -324,10 +331,22 @@ async function readRecord(directory: string): Promise<LocalRecord | undefined> {
  * outside that directory and is never removed.
  */
 async function destroyDirectory(directory: string, id: string): Promise<void> {
+	// A program may have taken its own write permission from the box's directories. They are this user's.
+	for (const path of [directory, join(directory, "pids")]) await chmod(path, 0o700).catch(() => {});
 	// The record goes first: from then on every handle of this box reports it ended.
 	await rm(join(directory, RECORD_FILE), { force: true });
 	endPrograms(directory, id);
-	await rm(directory, { recursive: true, force: true });
+	try {
+		await rm(directory, { recursive: true, force: true });
+	} catch {
+		// A program may have taken its own write permission from a directory of the box. They are this user's.
+		await new Promise<void>((resolve) => {
+			const unlock = spawn("chmod", ["-R", "u+rwX", directory], { env: { PATH: DEFAULT_PATH }, stdio: "ignore" });
+			unlock.once("error", () => resolve());
+			unlock.once("close", () => resolve());
+		});
+		await rm(directory, { recursive: true, force: true });
+	}
 }
 
 /** The first spec field a directory on this machine cannot honour, or `undefined`. */
