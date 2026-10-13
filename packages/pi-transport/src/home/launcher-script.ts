@@ -12,6 +12,7 @@ STEPS=10
 if sleep 0.1 2>/dev/null; then TICK=0.2; STEP=0.1; STEPS=1; fi
 SETSID=
 if command -v setsid >/dev/null 2>&1; then SETSID=setsid; fi
+GEN=
 RESTART=1
 DELAY=0
 BURST=5
@@ -31,6 +32,9 @@ alive() {
 }
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
+current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
+MYGEN=$GEN
+stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 
 write_state() {
@@ -50,6 +54,7 @@ terminal() {
 
 run() {
   n=$1
+  if stale; then exit 0; fi
   wr pid.$n $$
   wr ticks.$n "$(ticks $$)"
   write_state running $$ "$(rd lastexit)"
@@ -113,10 +118,11 @@ end_incarnation() {
 supervise() {
   other=$(rd launcher.pid)
   if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd launcher.ticks)"; then exit 0; fi
+  if [ -e "$D/done" ] || stale; then exit 0; fi
   wr launcher.pid $$
   wr launcher.ticks "$(ticks $$)"
   while :; do
-    if [ -e "$D/stop.req" ]; then exit 0; fi
+    if [ -e "$D/stop.req" ] || stale; then exit 0; fi
     ensure_watch
     n=$(rd starts)
     [ -n "$n" ] || n=0
@@ -139,8 +145,9 @@ watch() {
   wr watch.ticks "$(ticks $$)"
   keep=$(( LOGMAX / 2 ))
   while :; do
-    if [ -e "$D/done" ] || [ -e "$D/stop.req" ]; then exit 0; fi
+    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then exit 0; fi
     sleep 1
+    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then exit 0; fi
     if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then detach supervise "$D"; fi
     size=$(( $(wc -c < "$D/out.log" 2>/dev/null) + 0 ))
     if [ "$size" -gt "$LOGMAX" ]; then

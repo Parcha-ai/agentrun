@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
@@ -136,6 +137,8 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 function specScript(spec: LaunchSpec): string {
 	const limit = spec.restartLimit ?? { burst: DEFAULT_RESTART_BURST, intervalMs: DEFAULT_RESTART_INTERVAL_MS };
 	const lines = [
+		// One generation per launch: a process left over from an earlier launch of this name sees another and exits.
+		`GEN='${randomBytes(8).toString("hex")}'`,
 		`RESTART=${spec.restart === false ? 0 : 1}`,
 		`DELAY=${((spec.restartDelayMs ?? 0) / 1000).toFixed(3)}`,
 		`BURST=${limit.burst}`,
