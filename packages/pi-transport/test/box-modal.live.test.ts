@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { finish } from "../src/box/files.ts";
 import { modalBoxes } from "../src/box/modal.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
-import { APP_NAME, kindSpec, LABELS, loadClient, wantedKinds } from "./modal-live-support.ts";
+import { APP_NAME, kindSpec, LABELS, loadClient, sandboxEnded, wantedKinds } from "./modal-live-support.ts";
 
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
 process.env[CANARY] = "the host's environment reached a box";
@@ -23,7 +23,11 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 		describe(`modal ${kind.name} boxes`, () => {
 			registerBoxConformance({ describe, expect, it }, `modal ${kind.name} boxes`, (use) => use(provider), {
 				absentEnv: [CANARY],
-				lifetime: { maxLifetimeMs: SHORT_LIFETIME_MS, graceMs: SHORT_GRACE_MS },
+				lifetime: {
+					maxLifetimeMs: SHORT_LIFETIME_MS,
+					graceMs: SHORT_GRACE_MS,
+					ended: (box) => sandboxEnded(client, box.id),
+				},
 				spec: { ...base, maxLifetimeMs: MAX_LIFETIME_MS },
 			});
 

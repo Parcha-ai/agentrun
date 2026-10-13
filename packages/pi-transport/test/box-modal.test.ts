@@ -165,6 +165,37 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("refuses a label in the providers' namespace before any Modal call", async () => {
+		const sdk = new FakeModal();
+		const result = await modalBoxes(sdk, { appName: "a" }).create(
+			{ ...SPEC, labels: { run: "a", "pi-transport.box": "0" } },
+			context,
+		);
+		expect(result.ok ? "ok" : result.error.code).toBe("invalid");
+		expect(sdk.sandboxList).toEqual([]);
+	});
+
+	it("attach answers undefined for a box whose facts tag it cannot read", async () => {
+		const sdk = new FakeModal();
+		const provider = modalBoxes(sdk, { appName: "a" });
+		const tagged = (facts: string) =>
+			sdk.sandboxes.create(
+				{ appId: "x" },
+				{},
+				{ timeoutMs: 1000, tags: { "pi-transport.box": "1", "pi-transport.facts": facts } },
+			);
+		for (const facts of [
+			"not json",
+			"null",
+			"[]",
+			'{"provider":"modal"}',
+			'{"provider":"modal","isolation":"container"}',
+		]) {
+			const sandbox = await tagged(facts);
+			expect(unwrap(await provider.attach(sandbox.sandboxId, context))).toBeUndefined();
+		}
+	});
+
 	it("list returns own labels only, for running boxes of this package", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();

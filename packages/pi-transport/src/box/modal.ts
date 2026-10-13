@@ -26,6 +26,7 @@ const STDIN_CHUNK_BYTES = 512 * 1024;
 /** Every box carries this tag, so `attach` and `list` never touch a sandbox this package did not start. */
 const BOX_TAG = "pi-transport.box";
 const FACTS_TAG = "pi-transport.facts";
+const RESERVED_LABEL_PREFIX = "pi-transport.";
 
 /** One program started in a Modal sandbox, in binary mode. The part of the SDK's `ContainerProcess` this package reads. */
 export interface ModalProcess {
@@ -173,11 +174,25 @@ async function* until(source: AsyncIterable<Uint8Array>, stopped: Promise<void>)
 	}
 }
 
+const isNullOr = (value: unknown, type: "number" | "string") => value === null || typeof value === type;
+
+/** The facts a box's tag holds, or `undefined` when the tag is not one this package wrote. */
 function parseFacts(text: string | undefined): BoxFacts | undefined {
 	if (text === undefined) return undefined;
 	try {
-		const facts = JSON.parse(text) as BoxFacts;
-		return typeof facts.workspace === "string" && typeof facts.provider === "string" ? facts : undefined;
+		const facts = JSON.parse(text) as Record<string, unknown> | null;
+		if (facts === null || typeof facts !== "object") return undefined;
+		const valid =
+			facts.provider === "modal" &&
+			(facts.isolation === "gvisor" || facts.isolation === "vm") &&
+			isNullOr(facts.cpus, "number") &&
+			isNullOr(facts.memoryMb, "number") &&
+			isNullOr(facts.gpu, "string") &&
+			typeof facts.workspace === "string" &&
+			facts.workspace.startsWith("/") &&
+			isNullOr(facts.maxLifetimeMs, "number") &&
+			facts.snapshot === null;
+		return valid ? (facts as unknown as BoxFacts) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -346,7 +361,9 @@ class ModalBox implements Box {
  * Boxes that are Modal sandboxes, through the host's own Modal SDK client. The provider ends a sandbox at its lifetime
  * on Modal's side, so a host that dies leaks nothing past `maxLifetimeMs`. A spec's `isolation` of `vm` selects the VM
  * runtime, `gvisor` or none the default sandbox, and any other value is refused with `unsupported`; a GPU needs the
- * default sandbox. A spec's `snapshot` is refused, and `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
+ * default sandbox. Refused before any Modal call: a `snapshot` or an `isolation` other than `gvisor` or `vm`
+ * (`unsupported`), a GPU with `vm`, a label key that starts with `pi-transport.` and a lifetime that is not positive
+ * (`invalid`). No other field is ignored; `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
  */
 export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvider {
 	const theApp = once(() => sdk.apps.fromName(options.appName, { createIfMissing: true }));
@@ -358,6 +375,10 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
+			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			if (reserved !== undefined) {
+				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
+			}
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "modal boxes start from an image"));
 			if (spec.isolation !== undefined && spec.isolation !== "gvisor" && spec.isolation !== "vm") {
 				return err(
