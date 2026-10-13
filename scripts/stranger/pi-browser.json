@@ -1,0 +1,5 @@
+{
+  "package": "@parcha/pi-browser",
+  "expect": "no-key path missing",
+  "reason": "The README installs it with pi install and drives a Chrome through pi; it gives no one-shot command, and the package is held."
+}

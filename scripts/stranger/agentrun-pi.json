@@ -1,0 +1,5 @@
+{
+  "package": "@parcha/agentrun-pi",
+  "expect": "no-key path missing",
+  "reason": "The README's scripted demo is the /agentrun demo slash command inside the pi terminal UI; it gives no one-shot command."
+}
