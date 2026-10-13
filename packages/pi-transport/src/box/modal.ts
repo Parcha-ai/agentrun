@@ -44,7 +44,8 @@ export interface ModalSandbox {
 	): Promise<ModalProcess>;
 	/** `null` while the sandbox runs, its exit code once it ended. */
 	poll(): Promise<number | null>;
-	terminate(): Promise<void>;
+	/** Ends the sandbox and answers once it has ended, with its exit code. */
+	terminate(params: { wait: true }): Promise<number>;
 	getTags(): Promise<Record<string, string>>;
 }
 
@@ -96,7 +97,30 @@ function errorMessage(what: string, cause: unknown): string {
 	return `${what}: ${name === "" ? "" : `${name}: `}${text}`.replace(/\s+/g, " ").slice(0, 300);
 }
 
+const GRPC_INVALID_ARGUMENT = 3;
+const GRPC_NOT_FOUND = 5;
+const GRPC_PERMISSION_DENIED = 7;
+const GRPC_RESOURCE_EXHAUSTED = 8;
+const GRPC_UNAUTHENTICATED = 16;
+
+/** The SDK's own error classes are named; a call that failed on the wire carries a gRPC status code. */
+function grpcCode(cause: unknown): number | undefined {
+	const code = (cause as { code?: unknown } | null)?.code;
+	return typeof code === "number" ? code : undefined;
+}
+
 function classify(cause: unknown): BoxErrorCode {
+	switch (grpcCode(cause)) {
+		case GRPC_NOT_FOUND:
+			return "not_found";
+		case GRPC_INVALID_ARGUMENT:
+			return "invalid";
+		case GRPC_RESOURCE_EXHAUSTED:
+			return "capacity";
+		case GRPC_PERMISSION_DENIED:
+		case GRPC_UNAUTHENTICATED:
+			return "unauthorized";
+	}
 	switch (errorName(cause)) {
 		case "NotFoundError":
 			return "not_found";
@@ -120,7 +144,7 @@ function boxError(what: string, cause: unknown): BoxError {
 }
 
 function isNotFound(cause: unknown): boolean {
-	return errorName(cause) === "NotFoundError";
+	return errorName(cause) === "NotFoundError" || grpcCode(cause) === GRPC_NOT_FOUND;
 }
 
 /** Lookup once and share; a lookup that failed is forgotten, so a Modal hiccup does not poison the provider. */
@@ -202,7 +226,7 @@ class ModalBox implements Box {
 				mode: "binary",
 				workdir: this.#facts.workspace,
 				...(this.#env === undefined ? {} : { env: this.#env }),
-				...(timeoutMs === undefined ? {} : { timeoutMs: timeoutMs + EXEC_GRACE_MS }),
+				...(timeoutMs === undefined ? {} : { timeoutMs: Math.ceil((timeoutMs + EXEC_GRACE_MS) / 1000) * 1000 }),
 			});
 		} catch (cause) {
 			return err(await this.#failure("could not start a program", cause));
@@ -311,7 +335,7 @@ class ModalBox implements Box {
 	async destroy(): Promise<Result<void, BoxError>> {
 		if (this.#destroyed) return ok(undefined);
 		try {
-			await this.#sandbox.terminate();
+			await this.#sandbox.terminate({ wait: true });
 		} catch (cause) {
 			const polled = await this.#poll();
 			if (!isNotFound(cause) && !(polled.ok && polled.value !== null)) {
@@ -388,7 +412,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				const facts = tags[BOX_TAG] === undefined ? undefined : parseFacts(tags[FACTS_TAG]);
 				return ok(facts === undefined ? undefined : new ModalBox(sandbox, facts, undefined));
 			} catch (cause) {
-				if (isNotFound(cause) || errorName(cause) === "InvalidError") return ok(undefined);
+				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
 			}
 		},

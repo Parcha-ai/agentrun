@@ -59,9 +59,10 @@ class FakeSandbox implements ModalSandbox {
 		return this.exitCode;
 	}
 
-	async terminate(): Promise<void> {
+	async terminate(_params: { wait: true }): Promise<number> {
 		for (const child of this.#children) child.kill("SIGKILL");
 		this.exitCode ??= 0;
+		return this.exitCode;
 	}
 
 	async getTags(): Promise<Record<string, string>> {

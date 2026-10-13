@@ -181,6 +181,27 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("gives Modal a program timeout that is a whole number of seconds", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const box = unwrap(await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: root }, context));
+			const started = unwrap(await box.exec(["true"], { timeoutMs: 500 }, context));
+			for await (const _ of started.stdout) void _;
+			expect(sdk.sandboxList[0]?.execs.at(-1)?.params.timeoutMs).toBe(6000);
+			unwrap(await box.destroy(context));
+		});
+	});
+
+	it("reads a gRPC status on the wire as a coded error", async () => {
+		const sdk = new FakeModal();
+		const provider = modalBoxes(sdk, { appName: "a" });
+		sdk.fail.fromId = Object.assign(new Error("INVALID_ARGUMENT: not a valid sandbox ID"), { code: 3 });
+		expect(unwrap(await provider.attach("no-such-box", context))).toBeUndefined();
+		sdk.fail.create = Object.assign(new Error("RESOURCE_EXHAUSTED"), { code: 8 });
+		const created = await provider.create(SPEC, context);
+		expect(created.ok ? "ok" : created.error.code).toBe("capacity");
+	});
+
 	it("writes input to Modal in chunks of at most 512 KiB", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
@@ -198,7 +219,7 @@ describe("modal boxes", () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
 			const box = unwrap(await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: root }, context));
-			await sdk.sandboxList[0]?.terminate();
+			await sdk.sandboxList[0]?.terminate({ wait: true });
 			expect(unwrap(await box.status(context))).toEqual({ state: "ended", exitCode: 0 });
 			const result = await box.exec(["true"], undefined, context);
 			expect(result.ok ? "ok" : result.error.code).toBe("gone");
