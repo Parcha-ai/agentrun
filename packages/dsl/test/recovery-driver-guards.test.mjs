@@ -26,19 +26,21 @@ const admitting = (inner, then) => ({ open: async (bound) => {
   return watched;
 } });
 
-test('a stop, a cancelled caller or a deadline that lands during the admission leaves the effect unknown and the adapter uncalled', async (t) => {
+test('a cancel, a cancelled caller or a deadline that lands during the admission leaves the effect unknown and the adapter uncalled; a pause lets it complete', async (t) => {
   const clocks = holdClocks(t);
   const id = frozenEffectId('step', '/root/steps/0', 0);
   const cases = [
-    ['a pause', doc([tool('lookup')]), (driver) => driver.stop({ action: 'pause', source: 'operator' }), fault('FROZEN_PAUSED', 'Frozen run paused')],
-    ['a cancel', doc([tool('lookup')]), (driver) => driver.stop({ action: 'cancel' }), fault('FROZEN_CANCELLED', 'Frozen run cancelled')],
+    // A pause is taken once the effect it found admitted has completed and committed.
+    ['a pause', doc([tool('lookup')]), (driver) => driver.stop({ action: 'pause', source: 'operator' }), fault('FROZEN_PAUSED', 'Frozen run paused'), [1, 'completed', 'paused']],
+    ['a cancel', doc([tool('lookup')]), (driver) => driver.stop({ action: 'cancel' }), fault('FROZEN_CANCELLED', 'Frozen run cancelled'), [0, 'unknown', 'cancelled']],
   ];
-  for (const [name, workflow, during, refusal] of cases) {
+  for (const [name, workflow, during, refusal, [calls, status, stopped]] of cases) {
     const inner = memoryStore(); let dispatched = 0, driver;
     driver = await openRecovery(admitting(inner, () => during(driver)), workflow, { key: 'run-1' });
     await assert.rejects(runWorkflow(workflow, {}, withRecovery(driver, { runEffect: async () => { dispatched += 1; return {}; } })), refusal, name);
     await driver.close();
-    assert.deepEqual([dispatched, (await held(inner, workflow)).effects.map((effect) => [effect.id, effect.status])], [0, [[id, 'unknown']]], name);
+    const journal = await held(inner, workflow);
+    assert.deepEqual([dispatched, journal.effects.map((effect) => [effect.id, effect.status]), journal.state.status], [calls, [[id, status]], stopped], name);
   }
   // Asked of the driver directly, as the interpreter asks it: the caller's own signal (a sibling that failed while this
   // effect was being admitted), then the effect's own deadline.
