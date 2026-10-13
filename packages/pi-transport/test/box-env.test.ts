@@ -1,10 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { type ExecutionEnv, err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
+import {
+	type ExecutionEnv,
+	err,
+	getOrThrow,
+	ok,
+	type Result,
+	type ShellExecOptions,
+} from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxExecOptions, type BoxProcess, type BoxStatus } from "../src/box/box.ts";
@@ -81,11 +88,17 @@ function groupFiles(root: string, box: Box): string[] {
 /**
  * Calls `use` with an environment over a fresh local box, then ends the box and removes its directory. Every test
  * that comes through here also holds that its commands left no group file once they ended, and that the box took
- * its whole directory along. Nothing is asserted about a directory other processes share.
+ * its whole directory along. Nothing is asserted about a directory other processes share. `path` is where the box
+ * finds its programs, when that is not the provider's default.
  */
-async function withEnv(use: (fixture: Fixture) => Promise<void>, options?: BoxEnvOptions): Promise<void> {
+async function withEnv(
+	use: (fixture: Fixture) => Promise<void>,
+	options?: BoxEnvOptions,
+	path?: string,
+): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-env-"));
-	const box = faulty(getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context)));
+	const provider = localBoxes({ root, ...(path === undefined ? {} : { path }) });
+	const box = faulty(getOrThrow(await provider.create({ maxLifetimeMs: 10 * 60_000 }, context)));
 	const env = boxEnv(box, options);
 	let boxDirectoryLeft = true;
 	try {
@@ -122,7 +135,11 @@ async function waitFor(condition: () => boolean, timeoutMs: number, what: string
 }
 
 /** `exec` with its output collected by stream. */
-async function run(env: ExecutionEnv, command: string | readonly string[], options: { cwd?: string } = {}) {
+async function run(
+	env: ExecutionEnv,
+	command: string | readonly string[],
+	options: Omit<ShellExecOptions, "onOutput"> = {},
+) {
 	const output = { stdout: "", stderr: "" };
 	const result = await env.exec(
 		command,
@@ -135,6 +152,23 @@ async function run(env: ExecutionEnv, command: string | readonly string[], optio
 		context,
 	);
 	return { result, ...output };
+}
+
+/**
+ * Calls `use` with a directory that holds a `find` of its own, and the search path that puts it first. A box made
+ * with that path runs `script` wherever a script of the environment runs `find`: `$d` is the directory, a place for
+ * the test to leave word, and `$find` the real program.
+ */
+async function withFind(script: string, use: (tools: string, path: string) => Promise<void>): Promise<void> {
+	const tools = mkdtempSync(join(tmpdir(), "pi-transport-tools-"));
+	try {
+		const find = spawnSync("sh", ["-c", "command -v find"]).stdout.toString().trim();
+		const lines = ["#!/bin/sh", 'd=$(dirname -- "$0")', `find=${find}`, script, ""];
+		writeFileSync(join(tools, "find"), lines.join("\n"), { mode: 0o755 });
+		await use(tools, `${tools}:/usr/local/bin:/usr/bin:/bin`);
+	} finally {
+		rmSync(tools, { recursive: true, force: true });
+	}
 }
 
 /** Runs `use` with this process's temporary directory set to `directory`. */
@@ -159,6 +193,15 @@ describe("boxEnv: what it is", () => {
 		await withEnv(async ({ env, box, workspace }) => {
 			expect(env.id).toBe(`pi-transport:local:${box.id}`);
 			expect(env.cwd).toBe(workspace);
+		});
+	});
+
+	it("refuses a reader limit that is not a whole number of bytes", async () => {
+		await withEnv(async ({ box }) => {
+			for (const maxReaderBytes of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+				expect(() => boxEnv(box, { maxReaderBytes })).toThrow(RangeError);
+			}
+			expect(() => boxEnv(box, { maxReaderBytes: 0 })).not.toThrow();
 		});
 	});
 
@@ -275,6 +318,45 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 			expect(ran.ok ? "" : ran.error.message).toMatch(/lost the command: the stream broke/);
 		});
 	});
+
+	it("stops a command the box lost, when the box itself is still there", async () => {
+		await withEnv(async ({ env, box }) => {
+			const tag = uniqueTag("lost");
+			box.intercept((inner) => async (command, options, execContext) => {
+				const started = await inner(command, options, execContext);
+				if (!started.ok || !command.includes("pi-exec")) return started;
+				const wait = async () => {
+					await waitFor(() => running(tag), 10_000, "the command to start");
+					return err<number, BoxError>(new BoxError("unknown", "the connection broke"));
+				};
+				return ok({ ...started.value, wait });
+			});
+			const ran = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
+			expect(ran.ok ? "" : ran.error.message).toMatch(/lost the command: the connection broke/);
+			await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+		});
+	});
+
+	it("returns at once from a command the box lost, though its output never ends", async () => {
+		await withEnv(async ({ env, box }) => {
+			box.intercept((inner) => async (command, options, execContext) => {
+				const started = await inner(command, options, execContext);
+				if (!started.ok || !command.includes("pi-exec")) return started;
+				const never: AsyncIterable<Uint8Array> = {
+					[Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
+				};
+				const wait = async () => err<number, BoxError>(new BoxError("unknown", "the connection broke"));
+				return ok({ ...started.value, stdout: never, stderr: never, wait });
+			});
+			const started = Date.now();
+			// No timeout: nothing but the failed wait ends this call.
+			const ran = await env.exec("true", undefined, context);
+			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
+			expect(ran.ok ? "" : ran.error.message).toMatch(/lost the command: the connection broke/);
+			expect(Date.now() - started).toBeLessThan(5_000);
+		});
+	});
 });
 
 describe("boxEnv: stopping a command", () => {
@@ -335,6 +417,29 @@ describe("boxEnv: stopping a command", () => {
 				expect(result.ok ? "" : result.error.code).toBe("timeout");
 				await waitFor(() => !running(tag), 5_000, "every process of the command to end");
 			}
+		});
+	});
+
+	it("runs and kills a command whose own search path holds none of the tools its wrapper needs", async () => {
+		await withEnv(async ({ env, workspace }) => {
+			const options = { env: { PATH: "/pi-transport-no-such-directory" } };
+			const byPath = await run(env, ["/bin/echo", "hi"], options);
+			expect(getOrThrow(byPath.result).exitCode).toBe(0);
+			expect(byPath.stdout).toBe("hi\n");
+			// The command has the search path it asked for, and its program is looked for there and nowhere else.
+			expect((await run(env, 'printf %s "$PATH"', options)).stdout).toBe("/pi-transport-no-such-directory");
+			const byName = await run(env, ["echo", "hi"], options);
+			expect(byName.result.ok ? "" : byName.result.error.code).toBe("spawn_error");
+			mkdirSync(join(workspace, "bin"));
+			writeFileSync(join(workspace, "bin", "pi-transport-own-program"), "#!/bin/sh\necho own\n", { mode: 0o755 });
+			const own = await run(env, ["pi-transport-own-program"], { env: { PATH: join(workspace, "bin") } });
+			expect(getOrThrow(own.result).exitCode).toBe(0);
+			expect(own.stdout).toBe("own\n");
+			const tag = uniqueTag("path");
+			const slow = `/bin/sleep 30 & /bin/sleep 30 # ${tag}\nwait`;
+			const result = await env.exec(slow, { ...options, timeout: 0.5 }, context);
+			expect(result.ok ? "" : result.error.code).toBe("timeout");
+			await waitFor(() => !running(tag), 5_000, "every process of the command to end");
 		});
 	});
 
@@ -494,6 +599,49 @@ describe("boxEnv: stopping a command", () => {
 			await waitFor(() => !running(tag), 5_000, "every process of the command to end");
 		});
 	});
+
+	it("never runs a command the box starts after its owner cleaned up", async () => {
+		await withEnv(async ({ env, box, workspace, root }) => {
+			let release: () => void = () => {};
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			box.intercept((inner) => async (command, options, execContext) => {
+				if (command.includes("pi-exec")) await held;
+				return inner(command, options, execContext);
+			});
+			const tag = uniqueTag("cleaned");
+			const pending = env.exec(`touch ran-anyway; sleep 3 # ${tag}`, undefined, context);
+			await sleep(100);
+			await env.cleanup(context);
+			release();
+			// Stopped before its first step: the tombstone was there when the command's session began.
+			expect(getOrThrow(await pending).exitCode).toBe(130);
+			expect(existsSync(join(workspace, "ran-anyway"))).toBe(false);
+			expect(running(tag)).toBe(false);
+			expect(readdirSync(join(root, box.id, "tmp", ".pi-transport"))).toEqual([]);
+		});
+	});
+
+	it("returns once a command ended and its output went quiet, though something holds the output open", async () => {
+		await withEnv(async ({ env, box }) => {
+			box.intercept((inner) => async (command, options, execContext) => {
+				const started = await inner(command, options, execContext);
+				if (!started.ok || !command.includes("pi-exec")) return started;
+				// The command's own output, then a stream that stays open, as a program left in the background keeps it.
+				const open = async function* () {
+					yield* started.value.stdout;
+					await new Promise(() => {});
+				};
+				return ok({ ...started.value, stdout: open() });
+			});
+			const started = Date.now();
+			const ran = await run(env, "echo said");
+			expect(getOrThrow(ran.result).exitCode).toBe(0);
+			expect(ran.stdout).toBe("said\n");
+			expect(Date.now() - started).toBeLessThan(5_000);
+		});
+	});
 });
 
 describe("boxEnv: commands", () => {
@@ -571,6 +719,25 @@ describe("boxEnv: spilled output", () => {
 		});
 	});
 
+	it("keeps the output on this machine in a file nobody else may read", async () => {
+		await withEnv(async ({ env, root }) => {
+			const spills = join(root, "spills");
+			mkdirSync(spills);
+			await withTmpdir(spills, async () => {
+				const pending = env.exec(
+					"head -c 5000 /dev/zero | tr '\\0' 'x'; sleep 1",
+					{ spill: { afterBytes: 1000, afterLines: 100 } },
+					context,
+				);
+				await waitFor(() => readdirSync(spills).length === 1, 10_000, "the output file");
+				const [name = ""] = readdirSync(spills);
+				expect(statSync(join(spills, name)).mode & 0o777).toBe(0o600);
+				getOrThrow(await pending);
+				expect(readdirSync(spills)).toEqual([]);
+			});
+		});
+	});
+
 	it("leaves short output where it is", async () => {
 		await withEnv(async ({ env }) => {
 			const result = await env.exec("echo short", { spill: { afterBytes: 1000, afterLines: 100 } }, context);
@@ -616,6 +783,133 @@ describe("boxEnv: spilled output", () => {
 				expect(Date.now() - started).toBeLessThan(10_000);
 			});
 			await waitFor(() => !running(tag), 5_000, "the command to end");
+		});
+	});
+});
+
+describe("boxEnv: files", () => {
+	it("brings only the lines asked for out of the box", async () => {
+		await withEnv(async ({ env, box }) => {
+			getOrThrow(await env.writeFile("long.txt", "line\n".repeat(200_000), context));
+			let bytes = 0;
+			box.intercept((inner) => async (command, options, execContext) => {
+				const started = await inner(command, options, execContext);
+				if (!started.ok) return started;
+				const counted = async function* () {
+					for await (const chunk of started.value.stdout) {
+						bytes += chunk.length;
+						yield chunk;
+					}
+				};
+				return ok({ ...started.value, stdout: counted() });
+			});
+			const lines = getOrThrow(await env.readTextLines("long.txt", { maxLines: 3 }, context));
+			expect(lines).toEqual(["line", "line", "line"]);
+			expect(bytes).toBe(15);
+		});
+	});
+
+	it("refuses a link put in a file's place after the check, when links are not to be followed", async () => {
+		// Between the open script's check and its read, a link takes the place of the file named in `swap`, once.
+		const swap = 'if [ -f "$d/swap" ]; then t=$(cat "$d/swap"); rm -f "$d/swap" "$t"; ln -s secret.txt "$t"; fi';
+		await withFind(`${swap}; exec "$find" "$@"`, async (tools, path) => {
+			await withEnv(
+				async ({ env, workspace }) => {
+					getOrThrow(await env.writeFile("secret.txt", "secret", context));
+					getOrThrow(await env.writeFile("plain.txt", "plain", context));
+					// Without the swap the file opens.
+					const plain = getOrThrow(await env.openBinaryReader("plain.txt", { noFollow: true }, context));
+					expect(Buffer.from(getOrThrow(await plain.read(0, 10, context))).toString()).toBe("plain");
+					writeFileSync(join(tools, "swap"), join(workspace, "plain.txt"));
+					const swapped = await env.openBinaryReader("plain.txt", { noFollow: true }, context);
+					expect(swapped.ok ? "opened" : swapped.error.code).toBe("invalid");
+					// The swap did happen: the path is a link to the other file now.
+					expect(existsSync(join(tools, "swap"))).toBe(false);
+					expect(getOrThrow(await env.fileInfo("plain.txt", context)).kind).toBe("symlink");
+					expect(getOrThrow(await env.readTextFile("plain.txt", context))).toBe("secret");
+				},
+				undefined,
+				path,
+			);
+		});
+	});
+
+	it("refuses to open a reader on a file larger than a reader holds, before a byte of it leaves the box", async () => {
+		await withEnv(
+			async ({ env, box }) => {
+				getOrThrow(await env.writeFile("fits.txt", "x".repeat(1000), context));
+				getOrThrow(await env.writeFile("large.txt", "x".repeat(1001), context));
+				const fits = getOrThrow(await env.openBinaryReader("fits.txt", undefined, context));
+				expect(getOrThrow(await fits.info(context)).size).toBe(1000);
+				const lines = getOrThrow(await env.openTextLineReader("fits.txt", context));
+				expect(getOrThrow(await lines.readLine(context))?.text.length).toBe(1000);
+				let bytes = 0;
+				box.intercept((inner) => async (command, options, execContext) => {
+					const started = await inner(command, options, execContext);
+					if (!started.ok) return started;
+					const counted = async function* () {
+						for await (const chunk of started.value.stdout) {
+							bytes += chunk.length;
+							yield chunk;
+						}
+					};
+					return ok({ ...started.value, stdout: counted() });
+				});
+				for (const noFollow of [false, true]) {
+					const refused = await env.openBinaryReader("large.txt", { noFollow }, context);
+					expect(refused.ok ? "opened" : refused.error.code).toBe("not_supported");
+					expect(refused.ok ? "" : refused.error.message).toMatch(
+						/has 1001 bytes and a reader holds 1000 at most/,
+					);
+				}
+				const refused = await env.openTextLineReader("large.txt", context);
+				expect(refused.ok ? "opened" : refused.error.code).toBe("not_supported");
+				expect(bytes).toBe(0);
+				// A caller that asks for the whole file gets it, as from pi's local environment.
+				expect(getOrThrow(await env.readTextFile("large.txt", context)).length).toBe(1001);
+				expect(getOrThrow(await env.readTextLines("large.txt", { maxLines: 1 }, context))[0]?.length).toBe(1001);
+			},
+			{ maxReaderBytes: 1000 },
+		);
+	});
+
+	it("refuses a file that grew past what a reader holds after its size was checked", async () => {
+		// After the size check, the file named in `grow` grows, once.
+		const grow =
+			'"$find" "$@"; code=$?; if [ -f "$d/grow" ]; then t=$(cat "$d/grow"); rm -f "$d/grow"; head -c 2000 /dev/zero >> "$t"; fi; exit $code';
+		await withFind(grow, async (tools, path) => {
+			await withEnv(
+				async ({ env, workspace }) => {
+					for (const open of [
+						() => env.openBinaryReader("grows.txt", undefined, context),
+						() => env.openBinaryReader("grows.txt", { noFollow: true }, context),
+						() => env.openTextLineReader("grows.txt", context),
+					]) {
+						getOrThrow(await env.writeFile("grows.txt", "x".repeat(500), context));
+						writeFileSync(join(tools, "grow"), join(workspace, "grows.txt"));
+						const refused = await open();
+						expect(refused.ok ? "opened" : refused.error.code).toBe("not_supported");
+						expect(refused.ok ? "" : refused.error.message).toMatch(/grew past the 1000 bytes a reader holds/);
+						expect(existsSync(join(tools, "grow"))).toBe(false);
+					}
+				},
+				{ maxReaderBytes: 1000 },
+				path,
+			);
+		});
+	});
+
+	it("keeps the spaces and the newline a temporary name was asked with", async () => {
+		await withEnv(async ({ env }) => {
+			const spaced = getOrThrow(await env.createTempFile({ prefix: " a ", suffix: " b " }, context));
+			expect(basename(spaced)).toMatch(/^ a .{6} b $/);
+			expect(getOrThrow(await env.exists(spaced, context))).toBe(true);
+			const lined = getOrThrow(await env.createTempFile({ suffix: ".log\n" }, context));
+			expect(basename(lined)).toMatch(/^.{6}\.log\n$/);
+			expect(getOrThrow(await env.exists(lined, context))).toBe(true);
+			const directory = getOrThrow(await env.createTempDir(" d ", context));
+			expect(basename(directory)).toMatch(/^ d .{6}$/);
+			expect(getOrThrow(await env.fileInfo(directory, context)).kind).toBe("directory");
 		});
 	});
 });
