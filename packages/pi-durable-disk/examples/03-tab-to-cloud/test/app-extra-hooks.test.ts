@@ -96,6 +96,7 @@ test("instructions in mode append follow the base, the model line and the host's
   const appended = String(((await appWith(`{ instructions: { mode: "append", text: "APPENDED-LINE" } }`)).options.root!.agent as { instructions?: string }).instructions);
   assert.match(appended, /creature|walk|teach/i, "the base is kept");
   assert.match(appended, /gpt-test/, "and the model line");
+  assert.ok(appended.includes("HOST-EXTRA"), "the host's extra is kept");
   assert.ok(appended.indexOf("HOST-EXTRA") < appended.indexOf("APPENDED-LINE"), "the host's extra comes before the extra's text");
   assert.ok(appended.endsWith("APPENDED-LINE"));
   const replaced = String(((await appWith(`{ instructions: { mode: "replace", text: "ONLY-THIS" } }`)).options.root!.agent as { instructions?: string }).instructions);
