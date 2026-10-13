@@ -122,6 +122,16 @@ answers: a page that shows another model's answers asks it before showing each o
 refused answer. This example's own page does not call it, since its chat shows the agent's own model; the Golden Gate
 episode's tab, which runs a trained model, does.
 
+### A host that is not the robot page: its own instructions, and extensions left out
+
+By default the agent is the robot page's: its instructions (the creature, teaching, the move tool) and every extension the registry installs. A host that runs this page for something else says so when it starts the server:
+
+```sh
+node serve.ts ... --instructions-file poet.md --instructions-mode replace --without-extensions robot-tools,computer
+```
+
+`--instructions-file` with `--instructions-mode replace` gives the agent that text in place of the robot page's; `append` adds it after them. The mode has no default: a file without one (or a mode without a file) is an error at start. `--without-extensions a,b` names registry extensions the agent is not given; their tools are not offered. Both travel in the attach frame (`attached.app`) and the page applies them where it creates the root conversation, because an agent change only takes effect on creation: a host that runs the agent later (a VM) cannot change what the browser gave it. A name the registry does not have is an error that lists the ones it has (`coding-tools`, `workspace-write-through`, `offline-tools`, `robot-tools`, `computer`, and `switch-environment` when the server does not place runs). Without the flags nothing changes.
+
 ## Check it
 
 - `npm test`: the pipe's protocol on a local directory: storage conformance through a real WebSocket, write-through,

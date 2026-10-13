@@ -14,6 +14,7 @@ import { createRunDir, mintMountToken, readRunStatus, removeMountToken, takeOver
 import type { AcquireOptions, ArchilHost, Claim, ControlApi, OpenRunLeaseOptions, RunRef } from "@parcha/pi-durable-disk";
 import { ModelProxy, type ModelOptions } from "./model-proxy.ts";
 import { JUDGE_ANSWER_MAX, judgeAnswer, type JudgeOptions } from "./judge.ts";
+import type { AppPolicy } from "../agent.ts";
 import type { JudgeRunner } from "../brain-router.ts";
 import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
@@ -127,6 +128,8 @@ export interface DemoServerOptions {
   readonly remoteStartMs?: number;
   /** Prefixes of work/ no writer is sent on attach (see RunPipeOptions.noRestore). The caller names them; nothing here knows what they hold. */
   readonly noRestore?: readonly string[];
+  /** What the host tells the page about its agent (see AppPolicy): given to every run's attach. */
+  readonly app?: AppPolicy;
   /** An attach refuses a workspace larger than this (lazy prefixes not counted). Default 1 GiB. */
   readonly restoreLimitBytes?: number;
   /** Static files of the page. */
@@ -411,6 +414,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           model: state.model,
           ...(options.writerGraceMs === undefined ? {} : { writerGraceMs: options.writerGraceMs }),
           ...(options.noRestore?.length ? { noRestore: options.noRestore } : {}),
+          ...(options.app ? { app: options.app } : {}),
           ...(options.restoreLimitBytes === undefined ? {} : { restoreLimitBytes: options.restoreLimitBytes }),
           acquire,
           ...(options.claimDir === undefined ? {} : { claimDir: options.claimDir }),

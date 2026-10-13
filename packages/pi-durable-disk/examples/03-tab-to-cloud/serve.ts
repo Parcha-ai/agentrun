@@ -11,6 +11,8 @@
 //                 [--mount-root /mnt/pda/demo/pipe] [--ledger DEMO-STATE.json] [--log FILE] [--cloud none|local|daytona|remote-local]
 //                 [--cloud-module PATH [--cloud-arg KEY=VALUE]...]   a cloud host from a module: its default export takes CloudModuleOptions
 //                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
+//                 [--instructions-file F --instructions-mode replace|append]   the host's own instructions for the agent, in place of the robot page's or after them (the mode has no default)
+//                 [--without-extensions a,b]   extensions (by name) the page leaves out of the agent: their tools are not offered
 //                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
 //                 [--parent-pid PID]   stop when that process is gone (a harness names its own pid: if it is killed, its server does not outlive it)
@@ -40,6 +42,7 @@ import { openClaimDir } from "@parcha/pi-durable-disk";
 import { archilControl, jsonLog, Ledger } from "./pipe/control.ts";
 import type { JudgeRunner } from "./brain-router.ts";
 import type { Placer } from "./placement.ts";
+import { appPolicyFromArgs } from "./app-policy.ts";
 import { closeServerAndCloud } from "./shutdown.ts";
 import { createDemoServer, type CloudHost, type CloudModuleOptions } from "./pipe/server.ts";
 import { localClaim } from "./test/_local.ts";
@@ -75,6 +78,9 @@ const { values } = parseArgs({
     "cloud-module": { type: "string" },
     "cloud-arg": { type: "string", multiple: true },
     "no-restore": { type: "string", multiple: true },
+    "instructions-file": { type: "string" },
+    "instructions-mode": { type: "string" },
+    "without-extensions": { type: "string" },
     "placer-module": { type: "string" },
     "parent-pid": { type: "string" },
     "placer-arg": { type: "string", multiple: true },
@@ -93,6 +99,14 @@ const { values } = parseArgs({
 // A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
 if (values["parent-pid"] !== undefined && !/^[1-9]\d*$/.test(values["parent-pid"])) {
   console.error(`--parent-pid ${values["parent-pid"]}: it is the pid of a process, a positive whole number`);
+  process.exit(2);
+}
+// What the host tells the page about its agent (its instructions, the extensions to leave out): a bad combination is an error here, before anything starts.
+let appPolicy: ReturnType<typeof appPolicyFromArgs>;
+try {
+  appPolicy = appPolicyFromArgs({ ...(values["instructions-file"] !== undefined ? { file: values["instructions-file"] } : {}), ...(values["instructions-mode"] !== undefined ? { mode: values["instructions-mode"] } : {}), ...(values["without-extensions"] !== undefined ? { without: values["without-extensions"] } : {}) });
+} catch (error) {
+  console.error((error as Error).message);
   process.exit(2);
 }
 for (const name of ["grace-ms", "remote-start-ms", "writer-return-ms"] as const) {
@@ -224,6 +238,7 @@ const server = createDemoServer({
   ...(cloud ? { cloud } : {}),
   ...(placer ? { placer } : {}),
   ...(values["no-restore"]?.length ? { noRestore: values["no-restore"] } : {}),
+  ...(appPolicy ? { app: appPolicy } : {}),
   ...(adminToken ? { adminToken } : {}),
   ...(judge ? { judge } : {}),
   ...(brainJudge ? { brainJudge } : {}),
