@@ -414,7 +414,7 @@ try {
 	log.left = {};
 	// What this run's providers still list under its labels: 0 when every box ended, -1 when a provider cannot say.
 	for (const name of new Set(log.boxes.map((record) => record.provider))) {
-		const listed = await providers[name]?.list({ ...labels, "pi-transport": "1" }, context);
+		const listed = await providers[name]?.list(labels, context);
 		log.left[name] = listed?.ok ? listed.value.length : -1;
 	}
 	await harness.close(context);
