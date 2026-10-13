@@ -8,7 +8,7 @@ import type { Conversation, HarnessSettings, Storage } from "@earendil-works/pi-
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import { agentModels, agentRegistry, keepPlace, rootAgent, SETTINGS, type HostTools } from "../agent.ts";
+import { agentModels, agentRegistry, keepPlace, rootAgent, SETTINGS, type AgentOptions, type AppPolicy, type HostTools } from "../agent.ts";
 import type { Registry } from "@earendil-works/pi-durable";
 import { admitNotice, type EnvironmentFacts, type SwitchInfo } from "../environment.ts";
 import { remoteStorage, type Attached, type PipeClient } from "./pipe-client.ts";
@@ -157,7 +157,7 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
     registry = agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) });
     harness = await Harness.open(remoteStorage(opts.client), { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
-    const agent = rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode, ...(opts.place ? { place: opts.place } : {}) });
+    const agent = rootAgentFor(opts.attached, { registry, robotCode: opts.robotCode, ...(opts.place ? { place: opts.place } : {}) });
     // The notice is committed before anything the run resumes commits (environment.ts), and so is the model line's place.
     if (opts.move) await admitNotice(harness, agent, opts.move.facts, opts.move.info, ctx);
     root = await harness.root(ctx, { agent });
@@ -187,6 +187,9 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     },
   };
 }
+
+/** The root conversation's agent as the tab creates it: the attach's model, and what the host told the page about its agent (the server's `--instructions-file` and `--without-extensions`): applied here because an agent change only takes effect on creation. */
+export const rootAgentFor = (attached: { model: string; app?: AppPolicy }, options: AgentOptions) => rootAgent(attached.model, { ...options, ...(attached.app ? { app: attached.app } : {}) });
 
 /** An environment for a run with no computer (checked out to a browser): every operation reports that nothing is available, so a tool call fails with that reason and the Harness still opens. */
 function noComputer(): RuntimeEnv {

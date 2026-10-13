@@ -221,7 +221,7 @@ export function buildPlacer(options: { log: (event: string, data?: Record<string
   if (episode === "robot") {
     const expected = Number(options.args.skills ?? 0);
     if (!(expected >= 0) || !Number.isInteger(expected)) throw new Error(`--placer-arg skills=${options.args.skills}: a whole number`);
-    return judgePlacer({ runJudge, criteria: CRITERIA_ROBOT, labels: LABELS, model, context: robotContext, homePrompt: HOME_PROMPT_ROBOT, homeCheck: (read) => checkHomeSkills(read, expected) });
+    return judgePlacer({ runJudge, criteria: CRITERIA_ROBOT, labels: LABELS, model, context: robotContext, homePrompt: HOME_PROMPT_ROBOT, homeCheck: async (read, trip) => (trip.teaching === 0 ? null : checkHomeSkills(read, expected)) });
   }
   const criteria: Record<string, string> = { ...CRITERIA, ...(options.args.gpu ? { [options.args.gpu]: CRITERIA["modal-gpu"]! } : {}) };
   const modelEpisode = episode === "model" || episode === "obsession";

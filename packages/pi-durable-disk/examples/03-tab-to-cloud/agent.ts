@@ -150,7 +150,33 @@ let replacedInstructions: string | undefined;
 export function replaceInstructions(text: string | undefined): void {
   replacedInstructions = text === undefined ? undefined : text.trim();
 }
-const instructions = (modelId: string, place?: string) => (replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId, place), extraInstructions].filter(Boolean).join("\n\n"));
+/**
+ * What a host that is not the robot page tells the page about its agent (the server's attach frame, from its `--instructions-file`, `--instructions-mode` and `--without-extensions`): its own
+ * instructions, replacing the robot page's or added after them, and the registry's extensions (by name) the agent is not given. Applied where the root conversation is created: an agent change
+ * only takes effect on creation, so a host that runs the agent later cannot change what the browser gave it. Absent: the robot page as it is.
+ */
+export interface AppPolicy {
+  readonly instructions?: { readonly mode: "replace" | "append"; readonly text: string };
+  readonly withoutExtensions?: readonly string[];
+}
+
+const instructions = (modelId: string, app?: AppPolicy, place?: string) => {
+  const given = app?.instructions;
+  if (given?.mode === "replace") return given.text.trim();
+  const base = replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId, place), extraInstructions].filter(Boolean).join("\n\n");
+  return given ? [base, given.text.trim()].filter(Boolean).join("\n\n") : base;
+};
+
+/** The registry's extensions called `names`; a name it does not have is an error that lists the ones it has. */
+function extensionsNamed(registry: RegistryReader | undefined, names: readonly string[]): Extension[] {
+  if (!registry) throw new Error(`cannot leave out the extensions ${names.join(", ")}: no registry to check the names against`);
+  const snapshot = registry.snapshot();
+  return names.map((name) => {
+    const found = snapshot.extension(name);
+    if (!found) throw new Error(`unknown extension "${name}"; installed: ${snapshot.installed().map((e) => e.name).join(", ")}`);
+    return found;
+  });
+}
 
 /** The phrase the server gives the page's own environment (the tab), among the environments it attached the page with. */
 export const tabPlace = (environments: readonly { readonly kind: string; readonly phrase: string }[]): string | undefined => environments.find((e) => e.kind === "tab")?.phrase;
@@ -176,6 +202,8 @@ export interface AgentOptions {
   robotCode?: boolean;
   /** A registry that has the preset tools: with it, code mode removes them from the conversation's tools from the first request; without it the agent is offered every tool until its first robot call, which takes them out. */
   registry?: RegistryReader;
+  /** What the host told the page about its agent (see AppPolicy). */
+  app?: AppPolicy;
   /** Where this host is, as the server names its environment ("your user's browser tab", "a Modal VM"): the model line says the agent runs there. */
   place?: string;
 }
@@ -187,7 +215,8 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
 
 /** The root conversation's agent: the model, thinking on (never off), the instructions (naming that model), and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId, options.place) };
+  const without = options.app?.withoutExtensions;
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId, options.app, options.place), ...(without?.length ? { extensions: { remove: extensionsNamed(options.registry, without) } } : {}) };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 

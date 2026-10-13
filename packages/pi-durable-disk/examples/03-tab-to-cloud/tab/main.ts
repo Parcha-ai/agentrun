@@ -45,7 +45,7 @@ import { startV5Brain, V5_MODEL_ID, v5SmallFiles, v5Urls, type V5Brain } from ".
 import { wllamaLlm as wllamaForPrefetch } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
-import { cloudAgent, rootAgent, setExtraInstructions, tabPlace } from "../agent.ts";
+import { cloudAgent, rootAgent, setExtraInstructions, tabPlace, type AppPolicy } from "../agent.ts";
 import { ROBOT_SOPS } from "./robot-sop.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
@@ -129,6 +129,8 @@ const state = {
   savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
+  /** What the host told the page about its agent (the attach's `app`): its instructions and the extensions to leave out, kept for every agent change the page makes (a check-in puts the cloud model back). */
+  app: undefined as AppPolicy | undefined,
   /** The model the relayed events say the agent is on (the snapshot's agent, each agent_changed), for a page that only watches: the session may be on a host this page has no runtime of. */
   relayedModel: null as { provider: string; modelId: string } | null,
   /** The names the host registered its models with, by `provider/modelId`, as the pipe relays them. */
@@ -173,6 +175,8 @@ const state = {
   v5: { prefetch: "idle" as "idle" | "running" | "done" | "failed" | "unavailable", prefetchText: "", ready: false, brain: undefined as V5Brain | undefined, marks: {} as Record<string, number>, log: [] as string[] },
 };
 
+/** The host's app policy for an agent change (see `state.app`): none when it gave none. */
+const appOption = (): { app?: AppPolicy } => (state.app ? { app: state.app } : {});
 /** This page's own environment as the server names it ("your user's browser tab"), from the last attach: the agent's model line says it runs here. */
 let herePlace: string | undefined;
 const placed = () => (herePlace ? { place: herePlace } : {});
@@ -536,10 +540,16 @@ function readDriver(): void {
 }
 
 /** The model answering now, for the header: the typed model of the conversation that drives (the tab's small model by its short name, or the cloud model by its id). */
+/** The last model the bar named: kept through a move and while the page reconnects, so "LLM:" does not blink out for a second and come back. */
+let lastDriver = "";
 function driverText(): string {
-  if (state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
   if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
-  if (state.mode === "offline" && driverModel === null) return "";
+  const settling = state.mode === "connecting" || state.mode === "booting" || state.mode === "lost" || state.leaving !== undefined || state.placement?.where === "moving";
+  const label = state.mode === "connecting" || state.mode === "booting" || state.mode === "lost" || (state.mode === "offline" && driverModel === null) ? "" : driverNow();
+  if (label !== "") lastDriver = label;
+  return label !== "" ? label : settling ? lastDriver : "";
+}
+function driverNow(): string {
   // A page that only watches has no conversation of its own: the model is the one the relayed events say (the agent may have switched on its host), else the run's.
   const model = state.mode === "viewer" ? state.relayedModel : driverModel;
   return driverLabel({ model, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "Qwen3.5 0.8B", ...state.modelNames }, cloud: state.mode === "offline" ? "" : state.agentModel });
@@ -689,13 +699,14 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   state.environments = attached.environments;
   herePlace = tabPlace(attached.environments) ?? herePlace;
   state.agentModel = attached.model;
+  state.app = attached.app;
   state.placed = attached.placed === true;
   const runtime = await startTab({ client, attached, env: withHomeFallback(env, readWorkFresh), workspace, robotCode: robotCodeOn, ...placed(), host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   installCloud(runtime);
   // With ?golive=1 the router can leave the conversation on the small model; a page opened again has no model loaded until it goes offline, so the conversation goes back to the cloud model before input is accepted.
-  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model, { registry: runtime.registry, robotCode: robotCodeOn, ...placed() }), ctx);
+  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model, { registry: runtime.registry, robotCode: robotCodeOn, ...appOption(), ...placed() }), ctx);
   state.bootMs = performance.now() - started;
   state.mode = "writer";
   state.progress = "";
@@ -957,7 +968,7 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
       render();
       let result: Awaited<ReturnType<Brain["rehome"]>>;
       try {
-        result = await brain.rehome(text, cloudAgent(state.agentModel, { registry: runtime.registry, robotCode: robotCodeOn, ...placed() }));
+        result = await brain.rehome(text, cloudAgent(state.agentModel, { registry: runtime.registry, robotCode: robotCodeOn, ...appOption(), ...placed() }));
       } finally {
         state.rehoming = false;
       }
@@ -1637,7 +1648,7 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
     const attached = state.runtime as TabRuntime | undefined; // set by connect() (runHere), which TypeScript cannot see from here
     if ((state.mode as string) !== "writer" || !attached) throw new Error("the run is back on the server but this tab could not attach to it: reload this page");
     // The same conversation, the cloud model again, every tool the registry has again.
-    await attached.root.configure(cloudAgent(state.agentModel, { registry: attached.registry, robotCode: robotCodeOn, ...placed() }), ctx);
+    await attached.root.configure(cloudAgent(state.agentModel, { registry: attached.registry, robotCode: robotCodeOn, ...appOption(), ...placed() }), ctx);
     const ms = Math.round(performance.now() - started);
     const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: payload.changes.length, ms, offlineHead: record.head };
     await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: payload.changes.length, ms } } }, ctx).catch(() => undefined);
@@ -2068,7 +2079,7 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";
     const decision = await router.decide(text, { online: state.mode === "writer" && state.net.online, localModel: ready ? { id: brain!.modelId! } : null });
-    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel, { registry: state.runtime!.registry, robotCode: robotCodeOn, ...placed() }));
+    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel, { registry: state.runtime!.registry, robotCode: robotCodeOn, ...appOption(), ...placed() }));
     const event = brainEvent(decision, { local: "the model in this tab", cloud: "the cloud model" });
     state.decisions.push(event);
     announce("brain", event);
