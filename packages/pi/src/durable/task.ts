@@ -15,7 +15,7 @@
 import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
-import { bindingDigests, bindingMismatch, canonicalHash, isRecoveryError, openRecovery, recoveryBound, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryError, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
+import { bindingDigests, bindingMismatch, canonicalHash, isRecoveryError, openRecovery, recoveryBound, RecoveryError, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
 import { documentStore, type DocumentStoreHost } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
@@ -99,11 +99,16 @@ const json = (value: unknown): Json => (value === undefined ? null : JSON.parse(
 /** Why a request is not the run a task holds, or undefined when it is: the same binding (the workflow as authored and
  *  what the host binds beside it, as the driver binds its journal) and the same input, each by its canonical digest, so
  *  key order does not matter. The refusal is the driver's binding mismatch and names what moved: the workflow's parts,
- *  what the host binds, or the input's fields (`input.<field>`). */
+ *  what the host binds, or the input's fields (`input.<field>`). Each part is compared over its own digests, so a bound
+ *  key named like the input (`input`) hides neither; when both moved, the refusal holds both parts' messages and names. */
 const requestMoved = (held: WorkflowRequest, asked: WorkflowRequest): RecoveryError | undefined => {
   const was = recoveryBound(held.workflow, held.bind), is = recoveryBound(asked.workflow, asked.bind);
-  if (was.binding === is.binding && canonicalHash(held.input) === canonicalHash(asked.input)) return undefined;
-  return bindingMismatch(JSON.stringify({ ...was.inputs, ...bindingDigests({ input: held.input }) }), { ...is.inputs, ...bindingDigests({ input: asked.input }) });
+  const parts = [
+    was.binding !== is.binding && bindingMismatch(JSON.stringify(was.inputs), is.inputs),
+    canonicalHash(held.input) !== canonicalHash(asked.input) && bindingMismatch(JSON.stringify(bindingDigests({ input: held.input })), bindingDigests({ input: asked.input })),
+  ].filter((part): part is RecoveryError & { moved: string[] | null } => Boolean(part));
+  if (parts.length < 2) return parts[0];
+  return Object.assign(new RecoveryError(parts.map((part) => part.message).join("; "), "RUN_STORE_BINDING_MISMATCH"), { moved: parts.flatMap((part) => part.moved ?? []) });
 };
 const codeOf = (error: unknown): string => {
   const code = (error as { code?: unknown } | null)?.code;

@@ -510,3 +510,24 @@ test('a start that replaces a failed run asks for the run its task holds: a move
     assert.deepEqual([outcome.status, outcome.output, calls], ['complete', { total: 42 }, 1]);
   } finally { await harness.close(ctx); }
 });
+
+test('what moved is named per part: a bound key named like the input never hides a field of either', async () => {
+  const flow = createWorkflowExtension(hostOf(async () => ({ price: 21 })));
+  const harness = await open(fileOf(), flow);
+  const bound = { ...BOUND, bind: { tenant: 'acme', input: { sku: 'A-1' } } };
+  try {
+    assert.equal((await (await flow.start(harness, bound, ctx)).wait(ctx)).status, 'complete');
+    const refusal = async (moved) => {
+      let refused;
+      await assert.rejects(flow.start(harness, moved, ctx), (error) => { refused = error; return error.code === 'RUN_STORE_BINDING_MISMATCH'; });
+      return [refused.moved, refused.message];
+    };
+    // Only the bound `input.sku` moved: it is named, and the message is the driver's own for its binding.
+    assert.deepEqual(await refusal({ ...bound, bind: { tenant: 'acme', input: { sku: 'B-2' } } }),
+      [['input.sku'], 'Run store binding mismatch: input.sku changed since the run was bound']);
+    // The bound `input.sku` and the input's `qty` moved: each part names its own.
+    const [moved, message] = await refusal({ ...bound, bind: { tenant: 'acme', input: { sku: 'B-2' } }, input: { sku: 'A-1', qty: 3 } });
+    assert.deepEqual(moved, ['input.sku', 'input.qty']);
+    assert.match(message, /input\.sku changed since the run was bound.*input\.qty changed since the run was bound/);
+  } finally { await harness.close(ctx); }
+});
