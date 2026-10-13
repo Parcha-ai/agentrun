@@ -12,7 +12,7 @@ import { daytonaBoxes } from "../src/box/daytona.ts";
 import { finish, readStream } from "../src/box/files.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 
-const API_KEY = "test-key-0123456789";
+const API_KEY = "fake-test-key";
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
 const context = BACKGROUND_CONTEXT;
 const decoder = new TextDecoder();
