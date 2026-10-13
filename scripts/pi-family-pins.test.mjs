@@ -81,3 +81,11 @@ test('the drift check rejects a name the lockfile does not hold', () => {
   const { held } = buildOverrides(lock, 10);
   assert.deepEqual(findDrift({ [`node_modules/${scope}/pi-codemode`]: { version: '1.1.0' } }, held), [`node_modules/${scope}/pi-codemode@1.1.0 (repository: none)`]);
 });
+
+test('two copies of one package version that resolve different dependencies are refused', () => {
+  const twin = { ...lock,
+    [`node_modules/other/node_modules/${scope}/pi-agent-core`]: { version: '1.1.0', dependencies: { [`${scope}/pi-ai`]: '^1.1.0' } },
+    [`node_modules/other/node_modules/${scope}/pi-agent-core/node_modules/${scope}/pi-ai`]: { version: '1.0.9' } };
+  assert.throws(() => buildOverrides(twin, 10), /resolves @earendil-works\/pi-agent-core@1\.1\.0 to different dependencies/);
+  assert.doesNotThrow(() => buildOverrides({ ...twin, [`node_modules/other/node_modules/${scope}/pi-agent-core/node_modules/${scope}/pi-ai`]: { version: '1.1.0' } }, 10));
+});
