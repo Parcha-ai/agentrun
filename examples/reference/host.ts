@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
@@ -125,7 +125,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   };
   /** Every file filed, by any process of the run. */
   function evidence(): string[] {
-    try { return readdirSync(join(place.root, 'evidence'), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name).slice(place.root.length + 1)).sort(); } catch { return []; }
+    try { return readdirSync(join(place.root, 'evidence'), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative(place.root, join(entry.parentPath, entry.name))).sort(); } catch { return []; }
   }
   const ledger = () => {
     try { return readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; }

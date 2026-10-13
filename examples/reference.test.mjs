@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend } from '@parcha/pi-browser/testing';
@@ -56,6 +56,14 @@ test('the job on the no-key host prints the same record, receipts and calls on e
   const ran = await node(['examples/reference/run.ts', '--json'], { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp });
   assert.equal(ran.code, 0, ran.stderr);
   assert.deepEqual(JSON.parse(ran.stdout), EXPECTED);
+});
+
+test('a relative --dir with a trailing slash runs the same job and names the receipts it filed', { timeout: 120_000 }, async (t) => {
+  const tmp = await scratch(t);
+  const ran = await node(['examples/reference/run.ts', '--json', '--dir', `${relative(ROOT, join(tmp, 'run'))}/`], { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp });
+  assert.equal(ran.code, 0, ran.stderr);
+  assert.deepEqual(JSON.parse(ran.stdout), EXPECTED);
+  assert.deepEqual(JSON.parse(await readFile(join(tmp, 'run', 'out', 'record.json'), 'utf8')).evidence, [READ, LOOK]);
 });
 
 // The child is the CLI's run with two changes the test owns: the browser backend lives in this process, so its ledger

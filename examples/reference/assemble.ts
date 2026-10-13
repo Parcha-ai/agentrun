@@ -1,9 +1,10 @@
 // The reference assembly: one job on pi-durable through the open packages, wired from a host's functions. It holds no
 // job and no fake. Order: install every extension, open the run on its directory (pi resumes what a killed process
 // left), reconcile the browser, run the workflow, deliver, release the browser's sessions, close, release the run.
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
 import { runWorkflow, type Workflow } from '@parcha/agentrun-dsl';
@@ -26,9 +27,10 @@ export type RunResult = {
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
 const POLICY = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 };
 
-/** A place under `root`, or a fresh one under the temp directory. */
+/** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
+ *  relative one against their own working directory, not this process's. */
 export async function placeAt(root?: string): Promise<RunPlace> {
-  const at = root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-'));
+  const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
   await mkdir(join(at, 'work'), { recursive: true });
   return { id: 'reference', root: at, work: join(at, 'work'), store: join(at, 'store') };
 }
@@ -93,10 +95,14 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension] as Extension[]) registry.install(extension);
 
-  // The job's files, in `work/`; one a killed process already placed is kept.
+  // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
+  // under its name is whole, and is kept.
   for (const [name, bytes] of Object.entries(job.files ?? {})) {
-    await mkdir(dirname(join(place.work, name)), { recursive: true });
-    await writeFile(join(place.work, name), bytes, { flag: 'wx' }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
+    const at = join(place.work, name);
+    if (existsSync(at)) continue;
+    await mkdir(dirname(at), { recursive: true });
+    await writeFile(`${at}.${process.pid}.partial`, bytes);
+    await rename(`${at}.${process.pid}.partial`, at);
   }
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
