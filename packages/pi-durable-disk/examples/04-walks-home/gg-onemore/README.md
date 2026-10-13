@@ -141,6 +141,7 @@ model does not read the earlier transcript.
 npm ci && npm run build
 (cd packages/pi-durable-disk/examples/03-tab-to-cloud && npm install --no-workspaces --ignore-scripts \
   && (cd ../04-walks-home/tab && npm ci --ignore-scripts) && npm run build && node tab/build.mjs --fetch)
+(cd packages/pi-durable-disk/examples/04-walks-home/vm && npm ci)      # D4's cloud module (the Modal VM)
 (cd packages/pi-durable-disk/examples/04-walks-home/gg-onemore && npm ci)
 
 # once: the Volume (from modal/): needs MODAL_TOKEN_ID/SECRET and HF_TOKEN

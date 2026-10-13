@@ -61,6 +61,12 @@ writeFileSync(PID, String(process.pid), { mode: 0o600 });
 
 // Jev decides every placement: no key, nothing starts.
 if (!run(join(B, "with-typesafe"), ["--names"]).split("\n").includes("TYPESAFE_API_KEY")) fatal("the TypeSafe key is not available (with-typesafe --names); Jev decides every placement and there is no fallback");
+// the installs a fresh checkout needs (the card's step), checked here: a missing one would only show as the server exiting
+for (const [path, step] of [
+  [join(VM, "node_modules", "modal"), "npm ci in 04-walks-home/vm"],
+  [join(G, "node_modules", "modal"), "npm ci in gg-onemore"],
+  [join(EX, "03-tab-to-cloud", "node_modules", "@wasmer", "sdk"), "npm install --no-workspaces --ignore-scripts in 03-tab-to-cloud"],
+]) if (!existsSync(path)) fatal(`${path} is missing: ${step} (the card's install step)`);
 const webc = join(EX, "03-tab-to-cloud", "tab", "dist", "pkgs", "edgejs.webc");
 if (!existsSync(webc) || statSync(webc).size < 70_000_000) fatal(`${webc} is missing: build the 03 page first (the card's install step)`);
 if (!process.argv.includes("--skip-build")) run("npm", ["run", "-s", "bundle:extra"], { cwd: G });
