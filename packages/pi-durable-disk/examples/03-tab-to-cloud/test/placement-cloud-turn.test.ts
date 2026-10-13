@@ -424,6 +424,10 @@ describe("the home check is told what the trip was", () => {
   let local: Awaited<ReturnType<typeof localServer>>;
   const sinks: ((frame: PipeFrame) => void)[] = [];
   const trips: number[] = [];
+  /** Where the end-of-turn question puts the run: home by default; a test sets "vm" to keep the run on the VM after its turn. */
+  let doneChoice = "tab";
+  /** Whether the check finds the taught skills home. */
+  let skillsHome = false;
   const delivered: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   // The check only applies to a trip on which something was taught; when it applies it always finds the skills missing.
@@ -431,11 +435,11 @@ describe("the home check is told what the trip was", () => {
     homePrompt: "Say one short sentence: you are home.",
     async homeCheck(_read, trip) {
       trips.push(trip.teaching);
-      return trip.teaching === 0 ? null : { ok: false, reason: "no skills came home" };
+      return trip.teaching === 0 ? null : skillsHome ? { ok: true, reason: "the skills are home." } : { ok: false, reason: "no skills came home" };
     },
     describe: (env) => `criterion of ${env}`,
     async decide(query) {
-      const choice = query.phase === "done" ? "tab" : /(go|visit)/.test(query.message) ? "vm" : "tab";
+      const choice = query.phase === "done" ? doneChoice : /(go|visit)/.test(query.message) ? "vm" : "tab";
       return { id: `h-${query.phase}-${Math.random()}`, phase: query.phase, question: PLACEMENT_QUESTIONS[query.phase], options: query.environments.map((id) => ({ id, label: id, probability: id === choice ? 0.9 : 0.1 })), choice, latency_ms: 1, model: "scripted" } satisfies PlacementDecision;
     },
   };
@@ -496,6 +500,106 @@ describe("the home check is told what the trip was", () => {
     assert.ok(!text.includes("Checked by the server"), text);
     assert.deepEqual(trips, [0]);
     assert.ok(logs.some((l) => l.event === "placement.home-check" && l.data.applicable === false));
+  });
+
+  it("a move home that places the user's own line has that line's turn as the answer: no home turn from the server", async () => {
+    const { id, secret } = await local.server.createRun("user-home");
+    const received: string[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    const sinksBefore = sinks.length;
+    const deliveredBefore = delivered.length;
+    // On the VM; its turn ends there and the end-of-turn question keeps the run on the VM.
+    doneChoice = "vm";
+    try {
+      page.send({ t: "submit", text: "go to the vm", requestId: "uh-1" });
+      await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
+      sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+      await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id && l.data.choice === "vm"), 10_000);
+      await new Promise((r) => setTimeout(r, 500));
+      doneChoice = "tab";
+      // The user's own line places the run at home.
+      page.send({ t: "submit", text: "come back to my browser", requestId: "uh-2" });
+      await until(() => seen.some((f) => f.t === "run-here"));
+      const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+      const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
+        if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
+        if (f.t === "submit") received.push(f.text);
+      } });
+      await home.ready;
+      home.send({ t: "switched", switchId: runHere.switchId });
+      await until(() => received.includes("come back to my browser"));
+      await new Promise((r) => setTimeout(r, 600));
+      assert.deepEqual(received, ["come back to my browser"], `only the user's line reached the browser, no server home turn: ${JSON.stringify(received)}`);
+      assert.ok(!logs.some((l) => l.event === "placement.home-check" && l.data.run === id), "no home check ran for it");
+      tab.close();
+      page.close();
+      home.close();
+    } finally {
+      doneChoice = "tab";
+    }
+  });
+
+  /** A stay on the VM that reports `threads`, then the user's own line "come back to my browser" places the run at home. Returns what the browser was sent after the move. */
+  async function userHome(name: string, threads: number[]): Promise<string[]> {
+    const { id, secret } = await local.server.createRun(name);
+    const received: string[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    const sinksBefore = sinks.length;
+    const deliveredBefore = delivered.length;
+    doneChoice = "vm";
+    try {
+      page.send({ t: "submit", text: "go to the vm and teach it", requestId: `${name}-1` });
+      await until(() => delivered.length > deliveredBefore && sinks.length > sinksBefore);
+      for (const n of threads) sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(n) }));
+      sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+      await until(() => logs.some((l) => l.event === "placement.decision" && l.data.phase === "done" && l.data.run === id && l.data.choice === "vm"), 10_000);
+      await new Promise((r) => setTimeout(r, 500));
+    } finally {
+      doneChoice = "tab";
+    }
+    page.send({ t: "submit", text: "come back to my browser", requestId: `${name}-2` });
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
+      if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
+      if (f.t === "submit") received.push(f.text);
+    } });
+    await home.ready;
+    home.send({ t: "switched", switchId: runHere.switchId });
+    await until(() => received.includes("come back to my browser"));
+    await new Promise((r) => setTimeout(r, 800));
+    tab.close();
+    page.close();
+    home.close();
+    return received;
+  }
+
+  it("the user's own line after a teaching stay still runs the home check, silently: skills missing -> the server's home turn reports it, once", async () => {
+    skillsHome = false;
+    const received = await userHome("user-home-no", [41]);
+    assert.equal(received.length, 2, JSON.stringify(received));
+    assert.equal(received[0], "come back to my browser");
+    assert.match(received[1]!, /you are home/);
+    assert.match(received[1]!, /Checked by the server just now: NO\. no skills came home/);
+  });
+
+  it("the user's own line after a teaching stay with the skills home adds nothing: one reply, the user's line's", async () => {
+    skillsHome = true;
+    try {
+      const received = await userHome("user-home-yes", [42]);
+      assert.deepEqual(received, ["come back to my browser"]);
+      assert.ok(logs.some((l) => l.event === "placement.home-check" && l.data.silent === true && l.data.ok === true), "the check ran, silently, and passed");
+    } finally {
+      skillsHome = false;
+    }
   });
 
   it("a trip on which a teaching thread was reported still carries the check, and its failure", async () => {
