@@ -11,15 +11,18 @@ const PACK_SCRIPT = 'cd -- "$1" || exit 3; exec tar -c -f - --null --no-recursio
 const UNPACK_SCRIPT = 'mkdir -p -- "$1" && cd -- "$1" || exit 3; exec tar -x -p -f - --no-same-owner';
 // What a part is in the box: its name, SHA-256 and size, one line each, from the box's own view of the file.
 const PART_LIST = `for f in "$2"/c-*; do if [ -e "$f" ]; then printf '%s %s %s\\n' "\${f##*/}" "$(sha256sum < "$f" | cut -c1-64)" "$(wc -c < "$f" | tr -d ' ')"; fi; done`;
-const PACK_FILES_SCRIPT = `cd -- "$1" || exit 3; mkdir -p -- "$2" || exit 4; ( tar -c -f - --null --no-recursion --numeric-owner -T -; echo $? > "$2/status" ) | split -b "$3" -d -a 6 - "$2/c-"; [ "$(cat "$2/status")" = 0 ] || exit 5; rm -f -- "$2/status"; ${PART_LIST}`;
-const SPLIT_FILE_SCRIPT = `mkdir -p -- "$2" || exit 4; split -b "$3" -d -a 6 -- "$1" "$2/c-" || exit 5; ${PART_LIST}`;
+const PACK_FILES_SCRIPT = `umask 077; cd -- "$1" || exit 3; mkdir -p -- "$2" || exit 4; echo $$ > "$2/pid"; ( tar -c -f - --null --no-recursion --numeric-owner -T -; echo $? > "$2/status" ) | split -b "$3" -d -a 6 - "$2/c-"; [ "$(cat "$2/status")" = 0 ] || exit 5; rm -f -- "$2/status"; ${PART_LIST}`;
+const SPLIT_FILE_SCRIPT = `umask 077; mkdir -p -- "$2" || exit 4; echo $$ > "$2/pid"; split -b "$3" -d -a 6 -- "$1" "$2/c-" || exit 5; ${PART_LIST}`;
 // The parts that arrived are checked against the list the host sent, before anything is unpacked or joined.
 const CHECK_PARTS = `if [ -s "$2/manifest" ]; then ( cd -- "$2" && sha256sum -c --quiet manifest > /dev/null 2>&1 ) || { rm -rf -- "$2"; exit 66; }; fi`;
-const UNPACK_FILES_SCRIPT = `mkdir -p -- "$2" && cat > "$2/manifest" || exit 7; ${CHECK_PARTS}; mkdir -p -- "$1" && cd -- "$1" || exit 3; { for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f"; fi; done; } | tar -x -p -f - --no-same-owner; s=$?; rm -rf -- "$2"; exit $s`;
-const JOIN_FILE_SCRIPT = `mkdir -p -- "$2" && cat > "$2/manifest" || exit 7; ${CHECK_PARTS}; : > "$1" || exit 3; for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f" >> "$1" || exit 6; fi; done; rm -rf -- "$2"`;
-const REMOVE_DIR_SCRIPT = 'rm -rf -- "$1"';
-// biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion in a script, not a template
-const TEMP_DIR_SCRIPT = 'printf %s "${TMPDIR:-/tmp}"';
+const UNPACK_FILES_SCRIPT = `u=$(umask); umask 077; mkdir -p -- "$2" && echo $$ > "$2/pid" && cat > "$2/manifest" || exit 7; umask "$u"; ${CHECK_PARTS}; mkdir -p -- "$1" && cd -- "$1" || exit 3; { for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f"; fi; done; } | tar -x -p -f - --no-same-owner; s=$?; rm -rf -- "$2"; exit $s`;
+const JOIN_FILE_SCRIPT = `u=$(umask); umask 077; mkdir -p -- "$2" && echo $$ > "$2/pid" && cat > "$2/manifest" || exit 7; umask "$u"; ${CHECK_PARTS}; : > "$1" || exit 3; for f in "$2"/c-*; do if [ -e "$f" ]; then cat -- "$f" >> "$1" || exit 6; fi; done; rm -rf -- "$2"`;
+// The programs of a move run as a group of their own (they start under `setsid`) and write their id here; stopping the group
+// before the parts go ends a program that a cancelled call left running in the box.
+const REMOVE_DIR_SCRIPT = 'if [ -s "$1/pid" ]; then kill -s KILL -- "-$(cat "$1/pid")" 2>/dev/null; fi; rm -rf -- "$1"';
+// Makes the parts directory, private to the account that runs the move, and says where it is.
+const TEMP_DIR_SCRIPT =
+	'd="\x24{TMPDIR:-/tmp}"; d="\x24{d%/}/pi-transport-move-$1"; (umask 077; mkdir -p -- "$d") && printf %s "$d"';
 /** The exit code of a program of this package that found a part that is not the one that was sent. */
 const EXIT_PARTS_DIFFER = 66;
 /** The size of the parts the archive is cut into when a host names none. */
@@ -27,7 +30,8 @@ const DEFAULT_CHUNK_BYTES = 32 * 1024 * 1024;
 const PACK_TIMEOUT_MS = 1_800_000;
 const MAKE_PARENT_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")"';
 const RECEIVE_SCRIPT = 'cat > "$1"';
-const HASH_ONE_SCRIPT = 'sha256sum -- "$1" && wc -c < "$1"';
+// Hashed through standard input: with a name on the command line, GNU sha256sum escapes a newline or backslash in it.
+const HASH_ONE_SCRIPT = 'sha256sum < "$1" && wc -c < "$1"';
 const PLACE_SCRIPT = 'mv -f -- "$1" "$2"';
 const REMOVE_SCRIPT = 'rm -f -- "$1"';
 const FIELDS_PER_ENTRY = 6;
@@ -158,7 +162,7 @@ export type WorkspaceReceipt = {
 };
 
 const decoder = new TextDecoder();
-const strict = new TextDecoder("utf-8", { fatal: true });
+const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const encoder = new TextEncoder();
 
 /** A path's bytes as a string, with each byte that is not part of a UTF-8 character kept as U+DC00 plus the byte. */
@@ -426,7 +430,7 @@ async function withHashes(
 	return ok({ entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) });
 }
 
-type Field = "kind" | "bytes" | "sha256" | "mode" | "target" | "mtime";
+type Field = "kind" | "bytes" | "sha256" | "mode" | "target" | "mtime" | "mtimeExact";
 
 /** The first path where two manifests differ, in path order, with what differs. */
 function firstDifference(
@@ -452,6 +456,8 @@ function firstDifference(
 			} else if (field === "mtime") {
 				if (a.kind === "file" && Math.floor(Number(a.mtime)) !== Math.floor(Number(b.mtime)))
 					return `${path} has another modification time`;
+			} else if (field === "mtimeExact") {
+				if (a.kind === "file" && a.mtime !== b.mtime) return `${path} has another modification time`;
 			} else if (a[field] !== b[field]) return `${path} has another ${field}`;
 		}
 	}
@@ -533,6 +539,8 @@ async function relay(
 type MoveState = {
 	readonly cleanups: (() => Promise<void>)[];
 	readonly problems: (() => WorkspaceError | undefined)[];
+	/** Holds the stall timer off while `work` runs: a phase that moves no byte (packing, joining) is not a stall. */
+	working<T>(work: Promise<T>): Promise<T>;
 };
 type Starter = (context: Context, state: MoveState) => Promise<Result<BoxProcess, BoxError>>;
 
@@ -575,12 +583,14 @@ function exitOnce(): {
 
 /** The box's temporary directory, and in it a directory with a name no other move has. */
 async function partsDirectory(box: Box, context: Context): Promise<Result<string, BoxError>> {
-	const started = await box.exec(["sh", "-c", TEMP_DIR_SCRIPT], { timeoutMs: 120_000 }, context);
+	const started = await box.exec(["sh", "-c", TEMP_DIR_SCRIPT, "sh", randomUUID()], { timeoutMs: 120_000 }, context);
 	if (!started.ok) return started;
 	const finished = await finish(started.value);
 	if (!finished.ok) return finished;
-	const temp = decoder.decode(finished.value.stdout).trim();
-	return ok(`${temp === "" ? "/tmp" : temp.replace(/\/+$/, "")}/pi-transport-move-${randomUUID()}`);
+	if (finished.value.exitCode !== 0) {
+		return err(new BoxError("unknown", `could not make a directory for the parts: ${finished.value.stderr.trim()}`));
+	}
+	return ok(decoder.decode(finished.value.stdout).trim());
 }
 
 /** Remove a parts directory, also when the call that made it was aborted: this is the cleanup, so nothing cancels it. */
@@ -629,13 +639,16 @@ function filesSource(
 		};
 		async function* chunks(): AsyncGenerator<Uint8Array> {
 			try {
-				const started = await box.exec(
-					["sh", "-c", script, "sh", ...args, dir, String(chunkBytes)],
-					{ timeoutMs: PACK_TIMEOUT_MS },
-					context,
+				const packed = await state.working(
+					(async () => {
+						const started = await box.exec(
+							["setsid", "--wait", "sh", "-c", script, "sh", ...args, dir, String(chunkBytes)],
+							{ timeoutMs: PACK_TIMEOUT_MS },
+							context,
+						);
+						return started.ok ? finish(started.value, input) : started;
+					})(),
 				);
-				if (!started.ok) return void settle(err(started.error));
-				const packed = await finish(started.value, input);
 				if (!packed.ok) return void settle(err(packed.error));
 				if (packed.value.exitCode !== 0) {
 					message = `packing exited ${packed.value.exitCode}: ${packed.value.stderr.trim().slice(-TAIL_BYTES)}`;
@@ -707,7 +720,7 @@ function filesSink(box: Box, script: string, args: readonly string[], chunkBytes
 		const send = async (bytes: Uint8Array) => {
 			const name = `c-${String(index++).padStart(6, "0")}`;
 			sums.push(`${createHash("sha256").update(bytes).digest("hex")}  ${name}\n`);
-			const sent = await box.upload([{ path: `${dir}/${name}`, bytes }], context);
+			const sent = await box.upload([{ path: `${dir}/${name}`, bytes, mode: 0o600 }], context);
 			if (sent.ok) return;
 			message = `could not send part ${index}: ${sent.error.message}`;
 			settle(ok(1));
@@ -716,6 +729,7 @@ function filesSink(box: Box, script: string, args: readonly string[], chunkBytes
 		return ok({
 			stdin: {
 				write: async (bytes) => {
+					if (context.abortSignal?.aborted) throw new BoxError("aborted", "the call was aborted");
 					held.push(bytes);
 					size += bytes.length;
 					if (size < chunkBytes) return;
@@ -730,13 +744,16 @@ function filesSink(box: Box, script: string, args: readonly string[], chunkBytes
 						if (size > 0) await send(concat(held));
 						held = [];
 						size = 0;
-						const started = await box.exec(
-							["sh", "-c", script, "sh", ...args, dir],
-							{ timeoutMs: PACK_TIMEOUT_MS },
-							context,
+						const joined = await state.working(
+							(async () => {
+								const started = await box.exec(
+									["setsid", "--wait", "sh", "-c", script, "sh", ...args, dir],
+									{ timeoutMs: PACK_TIMEOUT_MS },
+									context,
+								);
+								return started.ok ? finish(started.value, encoder.encode(sums.join(""))) : started;
+							})(),
 						);
-						if (!started.ok) return settle(err(started.error));
-						const joined = await finish(started.value, encoder.encode(sums.join("")));
 						if (!joined.ok) return settle(err(joined.error));
 						if (joined.value.exitCode === EXIT_PARTS_DIFFER) {
 							problem = new WorkspaceError(
@@ -775,7 +792,6 @@ async function transfer(
 	context: Context,
 ): Promise<Result<Transfer, WorkspaceError>> {
 	const { context: inner, cancel } = withCancel(context);
-	const state: MoveState = { cleanups: [], problems: [] };
 	let reason: "stall" | "deadline" | undefined;
 	let stallTimer: NodeJS.Timeout | undefined;
 	let signalStopped: () => void = () => {};
@@ -790,6 +806,19 @@ async function transfer(
 	const arm = () => {
 		clearTimeout(stallTimer);
 		stallTimer = setTimeout(() => stop("stall"), limits.stallMs);
+	};
+	const state: MoveState = {
+		cleanups: [],
+		problems: [],
+		working: async (work) => {
+			const keep = setInterval(() => arm(), Math.max(50, Math.floor(limits.stallMs / 3)));
+			try {
+				return await work;
+			} finally {
+				clearInterval(keep);
+				arm();
+			}
+		},
 	};
 	const deadlineTimer = setTimeout(() => stop("deadline"), limits.deadlineMs);
 	const abort = () => {
@@ -889,10 +918,14 @@ function pipeOf(
 	box: Box,
 	override: Pipe | undefined,
 	chunkBytes: number | undefined,
-): { readonly kind: "stream" } | { readonly kind: "files"; readonly chunkBytes: number } {
+): Result<{ readonly kind: "stream" } | { readonly kind: "files"; readonly chunkBytes: number }, WorkspaceError> {
 	const pipe: Pipe = override ?? (box.facts().bulk === "stream" ? { kind: "stream" } : { kind: "files" });
-	if (pipe.kind === "stream") return pipe;
-	return { kind: "files", chunkBytes: pipe.chunkBytes ?? chunkBytes ?? DEFAULT_CHUNK_BYTES };
+	if (pipe.kind === "stream") return ok(pipe);
+	const size = pipe.chunkBytes ?? chunkBytes ?? DEFAULT_CHUNK_BYTES;
+	if (!Number.isSafeInteger(size) || size < 1) {
+		return err(new WorkspaceError("invalid", `a part must be a whole number of bytes, 1 or more, not ${size}`));
+	}
+	return ok({ kind: "files", chunkBytes: size });
 }
 
 /**
@@ -910,6 +943,12 @@ export async function moveWorkspace(
 	context: Context,
 ): Promise<Result<WorkspaceReceipt, WorkspaceError>> {
 	const started = performance.now();
+	const fromPipeResult = pipeOf(from, options.fromPipe, options.chunkBytes);
+	if (!fromPipeResult.ok) return fromPipeResult;
+	const toPipeResult = pipeOf(to, options.toPipe, options.chunkBytes);
+	if (!toPipeResult.ok) return toPipeResult;
+	const fromPipe = fromPipeResult.value;
+	const toPipe = toPipeResult.value;
 	const listed = await list(from, options.fromRoot, options, context);
 	if (!listed.ok) return listed;
 	const files = listed.value.filter((entry) => entry.kind === "file");
@@ -928,8 +967,6 @@ export async function moveWorkspace(
 
 	const copyStart = performance.now();
 	const names = nulList(listed.value.map((entry) => entry.path));
-	const fromPipe = pipeOf(from, options.fromPipe, options.chunkBytes);
-	const toPipe = pipeOf(to, options.toPipe, options.chunkBytes);
 	const moved = await transfer(
 		fromPipe.kind === "files"
 			? filesSource(from, PACK_FILES_SCRIPT, [options.fromRoot], names, fromPipe.chunkBytes)
@@ -948,10 +985,21 @@ export async function moveWorkspace(
 	const copyMs = performance.now() - copyStart;
 
 	const verifyStart = performance.now();
-	const after = await list(from, options.fromRoot, options, context);
+	// The source again, as it was listed and hashed before: full timestamps and every file's hash, so that a rewrite of
+	// the same size within the same second is seen too.
+	const afterListed = await list(from, options.fromRoot, options, context);
+	if (!afterListed.ok) return afterListed;
+	const after = await withHashes(from, options.fromRoot, afterListed.value, options, context);
 	if (!after.ok) return after;
-	const none = new Map<string, string | undefined>();
-	const changed = firstDifference(listed.value, after.value, ["kind", "bytes", "mode", "mtime", "target"], none, none);
+	const shaFirst = new Map(before.value.entries.map((entry) => [entry.path, entry.sha256]));
+	const shaSecond = new Map(after.value.entries.map((entry) => [entry.path, entry.sha256]));
+	const changed = firstDifference(
+		before.value.entries,
+		after.value.entries,
+		["kind", "bytes", "mode", "mtimeExact", "target", "sha256"],
+		shaFirst,
+		shaSecond,
+	);
 	if (changed !== undefined)
 		return err(new WorkspaceError("changed", `the source changed during the copy: ${changed}`));
 	const landed = await manifestOf(to, options.toRoot, { callTimeoutMs: options.callTimeoutMs }, context);
@@ -1000,7 +1048,14 @@ export async function moveFile(
 	context: Context,
 ): Promise<Result<{ ms: number }, WorkspaceError>> {
 	const started = performance.now();
-	const partial = `${toPath}.part`;
+	const fromPipeResult = pipeOf(from, options?.fromPipe, options?.chunkBytes);
+	if (!fromPipeResult.ok) return fromPipeResult;
+	const toPipeResult = pipeOf(to, options?.toPipe, options?.chunkBytes);
+	if (!toPipeResult.ok) return toPipeResult;
+	const fromPipe = fromPipeResult.value;
+	const toPipe = toPipeResult.value;
+	// A name of this call's own: another move to the same path never writes, checks or removes this file.
+	const partial = `${toPath}.part-${randomUUID()}`;
 	const prepared = await run(
 		to,
 		["sh", "-c", MAKE_PARENT_SCRIPT, "sh", toPath],
@@ -1009,10 +1064,15 @@ export async function moveFile(
 		context,
 	);
 	if (!prepared.ok) return prepared;
+	// The cleanup of a call that was cancelled must not be cancelled with it.
 	const discard = () =>
-		run(to, ["sh", "-c", REMOVE_SCRIPT, "sh", partial], undefined, DEFAULT_CALL_TIMEOUT_MS, context);
-	const fromPipe = pipeOf(from, options?.fromPipe, options?.chunkBytes);
-	const toPipe = pipeOf(to, options?.toPipe, options?.chunkBytes);
+		run(
+			to,
+			["sh", "-c", REMOVE_SCRIPT, "sh", partial],
+			undefined,
+			DEFAULT_CALL_TIMEOUT_MS,
+			withoutAbortSignal(context),
+		);
 	const moved = await transfer(
 		fromPipe.kind === "files"
 			? filesSource(from, SPLIT_FILE_SCRIPT, [fromPath], undefined, fromPipe.chunkBytes)
@@ -1067,7 +1127,10 @@ export async function moveFile(
 		DEFAULT_CALL_TIMEOUT_MS,
 		context,
 	);
-	if (!placed.ok) return placed;
+	if (!placed.ok) {
+		await discard();
+		return placed;
+	}
 	if (placed.value.exitCode !== 0) {
 		await discard();
 		return err(new WorkspaceError("box_failed", `could not place ${toPath}: ${placed.value.stderr.trim()}`));
