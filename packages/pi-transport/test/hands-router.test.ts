@@ -79,6 +79,20 @@ describe("transport(): what it refuses at start", () => {
 		expect(refusal(SANDBOX)).toBeUndefined();
 	});
 
+	it("refuses a host label in the providers' own namespace, and sends no label of its own", async () => {
+		const config = getOrThrow(parseTransportConfig(SANDBOX));
+		for (const key of ["pi-transport", "pi-transport.box"]) {
+			expect(() => transport(config, { ...host, labels: { [key]: "1" } })).toThrow(/belongs to providers/);
+		}
+		// Every provider of this package refuses a reserved key, so a box that exists was asked for without one.
+		await withLocal(async (provider) => {
+			const session = await openSession(new MemoryStorage(), SANDBOX, { local: provider });
+			expect((await session.turn(await session.converse(), [bash("true")]))[0]?.isError).toBe(false);
+			expect(provider.specs.map((spec) => spec.labels)).toEqual([undefined]);
+			await session.harness.close(context);
+		});
+	});
+
 	it("refuses hands that are left to a classifier, which this release does not have", () => {
 		const auto = {
 			environments: { sandbox: { provider: "local" } },
@@ -256,13 +270,13 @@ describe("transport(): where tools run", () => {
 				attach: (id, attachContext) => provider.attach(id, attachContext),
 				list: (labels, listContext) => provider.list(labels, listContext),
 			};
-			const labels = { team: "docs", "pi-transport": "no" };
+			const labels = { team: "docs" };
 			const session = await openSession(new MemoryStorage(), config, { elsewhere }, labels);
 			expect((await session.turn(await session.converse(), [bash("echo $MODE")]))[0]?.text).toContain("test");
 			expect(specs).toEqual([
 				{
 					maxLifetimeMs: 2 * 3_600_000,
-					labels: { team: "docs", "pi-transport": "1" },
+					labels: { team: "docs" },
 					env: { MODE: "test" },
 					image: "tools:1",
 					cpus: 2,

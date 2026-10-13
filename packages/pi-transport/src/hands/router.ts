@@ -20,13 +20,13 @@ import {
 	type WatchChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
-import type { Box, BoxError, BoxProvider, BoxSpec } from "../box/box.ts";
+import { type Box, type BoxError, type BoxProvider, type BoxSpec, isReservedLabel } from "../box/box.ts";
 import type { EnvironmentConfig, TransportConfig } from "../config.ts";
 import { HandsDoc, SessionBoxesDoc, type Transport, TransportError, type TransportHost } from "../transport.ts";
 import { boxEnv } from "./box-env.ts";
 
-/** The label every box of a transport carries, so a host can list what it left behind. */
-const TRANSPORT_LABEL = "pi-transport";
+/** What a lazy environment's id starts with, as a box environment's does. */
+const ENV_ID_PREFIX = "pi-transport";
 /** A lazy environment's directory before its box exists: a command started there runs in the box's own directory. */
 const UNOPENED_CWD = ".";
 
@@ -247,7 +247,7 @@ class Router implements Transport {
 		const provider = this.#host.providers[environment.provider];
 		// `local` with no provider of that name: this machine as the host already has it.
 		if (provider === undefined) return undefined;
-		return new LazyEnv(`${TRANSPORT_LABEL}:${environment.id}:unopened`, (cwd, callContext) =>
+		return new LazyEnv(`${ENV_ID_PREFIX}:${environment.id}:unopened`, (cwd, callContext) =>
 			this.#use(environment, provider, target, cwd ?? target.cwd, callContext),
 		);
 	};
@@ -419,7 +419,8 @@ class Router implements Transport {
 		const workspace = this.#config.workspace.path;
 		return {
 			maxLifetimeMs: environment.maxLifetimeMs,
-			labels: { ...this.#host.labels, [TRANSPORT_LABEL]: "1" },
+			// The host's labels and nothing of ours: providers mark their own boxes, and `pi-transport` keys are theirs.
+			...(this.#host.labels === undefined ? {} : { labels: this.#host.labels }),
 			env: environment.env,
 			...(image === undefined ? {} : { image }),
 			...(snapshot === undefined ? {} : { snapshot }),
@@ -437,11 +438,16 @@ class Router implements Transport {
  * Run a session's tools where its config says: `transport(config, host).env` is the Harness's `env`. Built once for
  * each Harness, from a config `parseTransportConfig` returned.
  *
- * Throws a `TransportError` for a config this release cannot serve: `unknown_provider` when an environment names a
+ * Throws a plain `Error` for a host label in the providers' own namespace (`pi-transport` and the keys under it), and
+ * a `TransportError` for a config this release cannot serve: `unknown_provider` when an environment names a
  * provider the host did not pass (`local` excepted: with no `local` provider it means the host's own environment),
  * `unsupported` for `hands: "auto"` and for an environment with `expose`.
  */
 export function transport(config: TransportConfig, host: TransportHost): Transport {
+	const reserved = Object.keys(host.labels ?? {}).find(isReservedLabel);
+	if (reserved !== undefined) {
+		throw new Error(`TransportHost.labels: the key ${reserved} belongs to providers, which mark their own boxes`);
+	}
 	for (const environment of Object.values(config.environments)) {
 		if (environment.expose.length > 0) {
 			throw new TransportError(

@@ -129,6 +129,9 @@ harness = await Harness.open(storage, { models, registry, env: hands.env }, BACK
 - **Two ways to let boxes go.** `release()` forgets them and leaves them running, for a host that will open the
   session again; a box nobody comes back to ends at its lifetime. `destroy()` ends every box of the session,
   including those only the session's documents still name.
+- **Labels are the host's.** `labels` in the host go on every box the transport creates, for example a session
+  id, so the host can list what it left behind. The transport adds none of its own: `pi-transport` and the keys
+  under it belong to providers, which mark their own boxes.
 - **`undefined` means the host's own environment.** `env` returns `undefined` when the config names no `hands`, or
   names a `local` environment and the host passed no `local` provider. A host puts its own environment behind it:
   `(await hands.env(target, context)) ?? new NodeExecutionEnv({ cwd })`.

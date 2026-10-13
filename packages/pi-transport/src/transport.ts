@@ -57,7 +57,11 @@ export type TransportHost = {
 	 * pass a function that reaches the Harness once it exists.
 	 */
 	readonly commit: Harness["commit"];
-	/** Labels for every box this transport creates, next to `pi-transport=1`. */
+	/**
+	 * Labels for every box this transport creates, for example a session id, so the host can list what it left
+	 * behind. The transport adds none of its own: `pi-transport` and the keys under it belong to providers, which
+	 * mark their own boxes, and are refused here.
+	 */
 	readonly labels?: Readonly<Record<string, string>>;
 };
 
