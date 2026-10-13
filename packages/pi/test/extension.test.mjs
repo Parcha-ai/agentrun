@@ -10,13 +10,14 @@ import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js
 import { demoWorkflow } from '../dist/demo.js';
 import { authorSkillDirectory } from '@parcha/agentrun-dsl';
 import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
+import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const waitUntil = async predicate => { while (!predicate()) await new Promise(resolve => setImmediate(resolve)); };
 const resultSchema = { type: 'object', additionalProperties: false, required: ['content'], properties: { content: { type: 'string' } } };
 const workflow = root => ({ v: 2, name: 'Read a local note', schemas: { Result: resultSchema }, output: { schemaId: 'Result', path: 'result' }, root: root ?? { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result' } });
 
-async function harness({ cwd = process.cwd(), responses = [], activeTools = ['read'], tokensPerSecond = Infinity, withModel = true, hasUI = false, mode = hasUI ? 'tui' : 'print', branch = [], extensionOptions } = {}) {
+async function harness({ cwd = tempCwd, responses = [], activeTools = ['read'], tokensPerSecond = Infinity, withModel = true, hasUI = false, mode = hasUI ? 'tui' : 'print', branch = [], extensionOptions } = {}) {
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const faux = fauxProvider({ tokensPerSecond }); faux.setResponses(responses); runtime.registerNativeProvider(faux.provider);
   const registry = new ModelRegistry(runtime), calls = [], messages = [], prompts = [], statuses = [], widgets = [], commands = new Map(), tools = new Map(), events = new Map();
