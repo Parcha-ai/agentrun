@@ -2,7 +2,7 @@
 // requests in a file the test reads. `start` submits the node's input; `resume` only opens, installs and resumes.
 // The process kills itself at KILL_AT: `before-commit` inside the tool before any write, `after-commit` once the
 // decision is committed and before the model is answered.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
@@ -18,8 +18,10 @@ const dieAt = (point) => { if (process.env.KILL_AT === point) { process.kill(pro
 
 const faux = fauxProvider();
 faux.setResponses(Array.from({ length: 8 }, () => () => {
+  // FIRST=invalid: the run's first request, counted across processes, submits a record the schema refuses.
+  const first = readFileSync(counter, 'utf8') === '';
   appendFileSync(counter, 'request\n');
-  return fauxAssistantMessage([fauxToolCall('submit', { verdict: 'buy' })], { stopReason: 'toolUse' });
+  return fauxAssistantMessage([fauxToolCall('submit', first && process.env.FIRST === 'invalid' ? { nope: 1 } : { verdict: 'buy' })], { stopReason: 'toolUse' });
 }));
 const models = createModels();
 models.setProvider(faux.provider);

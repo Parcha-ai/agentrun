@@ -114,6 +114,17 @@ test('a yield with the record owed is nudged, each nudge one attempt; a record a
   assert.equal(stuck.requests, 3, 'two nudges are the two attempts; the third yield is not nudged');
 });
 
+test('the nudge that spends the last attempt still continues the run, and the one submit after it is decided: the count reaches the limit plus one', async () => {
+  const delivered = await run([say('thinking'), say('still thinking'), submit({ verdict: 'buy' }), say('never asked')], { maxAttempts: 2 });
+  assert.equal(delivered.requests, 3, 'the second nudge spent the second of two attempts, and the model was asked again');
+  assert.deepEqual(delivered.deliveries, ['accepted']);
+  assert.deepEqual(delivered.record, { record: { verdict: 'buy' }, attempts: 3 });
+  const refused = await run([say('thinking'), say('still thinking'), submit({ nope: 1 }), say('never asked')], { maxAttempts: 2 });
+  assert.deepEqual(refused.deliveries, ['rejected']);
+  assert.deepEqual(refused.record, { record: null, attempts: 3 });
+  assert.equal(refused.requests, 3, 'the rejection past the limit ends the run');
+});
+
 test('a nudge is never sent once a record is delivered, and a conversation that owes none is not nudged', async () => {
   const faux = fauxProvider();
   let requests = 0;

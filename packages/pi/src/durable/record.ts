@@ -9,7 +9,10 @@
 // answer decides nothing.
 //
 // `deliver` is the whole decision over a `RecordStore`, the two small states a caller keeps durably or in
-// memory. `gate` and `spend` are the same rules as pure functions, the ones `spec/lean` proves terminate.
+// memory. `gate` and `spend` are the rules as pure functions, the ones `spec/lean` proves terminate. `deliver`
+// follows `gate`. It does not hold `spend`'s bound: it decides a submission whatever the count, and a nudge that
+// spends the last attempt still continues the run, so the one submission after it is decided and `attempts` can
+// read one past the limit.
 import { isDeepStrictEqual } from "node:util";
 import { Compile } from "typebox/compile";
 
@@ -84,7 +87,8 @@ function validatorOf(schema: unknown): Validator | null {
 /** Where the schema expects an object or an array and the submitted value is a string that parses to one, the
  *  parsed value; where it expects a number, an integer, a boolean or null and admits no string, the scalar a
  *  string spells. Some model families serialise nested tool arguments as strings: the content is valid and
- *  every submit fails on its spelling. A string the field accepts keeps its bytes. */
+ *  every submit fails on its spelling. A string that parses to a container the field also admits is read as that
+ *  container; only against a scalar does a field that admits a string keep the string. */
 export function parseStringifiedContainers(value: unknown, schema: Record<string, unknown> | undefined, depth = 0, rootDefinitions?: Record<string, unknown>): unknown {
   if (depth > 6 || !schema || typeof schema !== "object") return value;
   // A `$ref` property carries no type of its own: it is read through the root schema's definitions, or the

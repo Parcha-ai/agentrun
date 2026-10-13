@@ -70,3 +70,15 @@ test('killed after the second reading spent its round and before the model was t
   assert.deepEqual(second.end, { settled: 'done', record: { record: { verdict: 'buy' }, attempts: 2 }, gate: { bounced: true, disagreements: [OBJECTION] } });
   assert.equal(requests(dir), 1);
 });
+
+test('killed after a rejection is committed and before the model is answered: the resumed call is decided again and counted again', (t) => {
+  const dir = scratch(t);
+  const first = child('start', dir, { KILL_AT: 'after-commit', FIRST: 'invalid' });
+  assert.equal(first.signal, 'SIGKILL');
+  assert.deepEqual(first.deliveries, ['rejected']);
+  const second = child('resume', dir, { FIRST: 'invalid' });
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(second.deliveries, ['rejected', 'accepted'], 'the cut call runs again; the model then fixes the record');
+  assert.deepEqual(second.end, { settled: 'done', record: { record: { verdict: 'buy' }, attempts: 3 }, gate: null }, 'two rejections counted for the one call, then the delivery');
+  assert.equal(requests(dir), 2);
+});

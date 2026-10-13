@@ -5,7 +5,9 @@
 // arguments to `execute` under a wrapper the parameters do not type, so no call is refused before the core counts
 // it: every submit is a delivery attempt. Each decision is one commit on the conversation's documents, written
 // before the model is answered, so a crash cannot grant an attempt or the second reading's round twice. The tool is
-// `replay: "safe"`: a call cut after its commit runs again and finds what it wrote.
+// `replay: "safe"`: a call cut after its commit runs again and is decided against what it wrote. A delivered record
+// is found, and the call answers `already`. A bounce finds its round spent, and the same record is delivered. A
+// rejection is decided and counted again: a crash there costs the node one attempt.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
   defineDoc, defineTool, GenerationTask, hook, type ConversationId, type DocumentReader, type HookApi, type HookRegistration,
@@ -151,7 +153,8 @@ export type RecordNudgeOptions = {
 };
 
 /** The nudge: a yield with the record still owed continues the run with a reminder, each nudge one delivery attempt;
- *  past the attempts the run ends. */
+ *  past the attempts the run ends. The nudge that spends the last attempt still continues, so the model is asked once
+ *  more after it. */
 export function recordNudge(options: RecordNudgeOptions): HookRegistration {
   return hook(GenerationTask, {
     onYield: async (_answer, api, context) => {
