@@ -17,7 +17,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AppContext, AppOptions, DurableRun } from "@parcha/pi-durable-disk";
 import { vmTrail } from "./vm-trail.ts";
-import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
+import { agentModels, agentRegistry, replaceInstructions, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
@@ -56,10 +56,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const trail = vmTrail((event, data) => link?.trail(event, data));
   const registry = agentRegistry(durable, { ...(link ? { switchChannel: link.switchChannel } : {}), ...(process.env.DEMO_DISPLAY ? { computer: xdotoolDriver() } : {}) });
   extra.install?.(registry);
+  const models = agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) });
+  extra.models?.(models);
+  if (extra.instructions !== undefined) replaceInstructions(extra.instructions);
   return {
     registry,
     ...(extra.wrapEnv ? { wrapEnv: extra.wrapEnv } : {}),
-    models: agentModels({ baseUrl, modelId, ...(process.env.DEMO_MODEL_KEY_FILE ? { apiKey: readFileSync(process.env.DEMO_MODEL_KEY_FILE, "utf8").trim() } : {}) }),
+    models,
     settings: { ...SETTINGS, ...(extra.settings ?? {}) },
     root: { agent: rootAgent(modelId, { registry }) },
     onLease: trail.onLease,

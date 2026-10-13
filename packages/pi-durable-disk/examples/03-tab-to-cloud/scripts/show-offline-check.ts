@@ -19,7 +19,7 @@ writeFileSync(join(stage, "index.html"), `<!doctype html><title>stage</title><bo
 writeFileSync(join(stage, "main.js"), `document.getElementById("h").dataset.js = "loaded"; window.__isolated = crossOriginIsolated;`);
 writeFileSync(join(stage, "offline.json"), JSON.stringify({ files: ["/show/", "/show/main.js"] }));
 const port = await freePort();
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", join(dir, "disk"), "--run", "sh", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--show-dir", stage, "--grace-ms", "3000"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", join(dir, "disk"), "--run", "sh", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--show-dir", stage, "--grace-ms", "3000"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);

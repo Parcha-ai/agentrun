@@ -21,7 +21,7 @@ let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "tools-offline-"));
 const port = await freePort();
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", "to", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", HOME_DISK ? "home/" : "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", "to", "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", HOME_DISK ? "home/" : "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);

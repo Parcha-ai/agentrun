@@ -20,7 +20,7 @@ const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "resume-"));
 const port = await freePort();
 const RUN = "rs";
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
 let link = "";
 const serverLog: string[] = [];
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; serverLog.push(String(d)); });

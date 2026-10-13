@@ -14,7 +14,7 @@
 // and deleted when the run leaves it (stopRemote), on close, and by Modal itself at its timeout.
 //   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET in the server's environment; the boxes never get them.
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
@@ -22,7 +22,7 @@ import { ensureRunning, LABEL_FLEET, LABEL_RUN, modalHost, modalSandboxes, remov
 import type { DaytonaClient, HostDriver, HostHandle, ModalSandbox, ModalSdk, RunRef, SandboxInfo } from "@parcha/pi-durable-disk";
 import { warmTrain, type WarmTrain } from "../universes/warm-train.ts";
 import { creatureWarmer, type CreatureWarmer } from "./warm-creature.ts";
-import { appBundle, boxSetupScript, prepareScript, BOX_APP_DIR, BOX_LINK_PORT, BOX_MOUNT_ROOT, BOX_NODE, BOX_PACKAGE, BOX_SERVE_PORT } from "../../03-tab-to-cloud/pipe/daytona.ts";
+import { appBundle, APP_FILES, boxSetupScript, prepareScript, BOX_APP_DIR, BOX_LINK_PORT, BOX_MOUNT_ROOT, BOX_NODE, BOX_PACKAGE, BOX_SERVE_PORT } from "../../03-tab-to-cloud/pipe/daytona.ts";
 import { CLOUD_LEASE, moveEnv, relayViewer } from "../../03-tab-to-cloud/pipe/cloud.ts";
 import { archilControl, type DemoControl } from "../../03-tab-to-cloud/pipe/control.ts";
 import { dialLink, type LinkDialer } from "../../03-tab-to-cloud/pipe/link.ts";
@@ -119,6 +119,13 @@ export interface ModalCloudOptions {
   readonly rewarm?: boolean;
   /** How long close() waits for boxes still being made to land and remove themselves (default 60 s). */
   readonly closeWaitMs?: number;
+  /**
+   * A generic extra of the cloud app (the app's `DEMO_APP_EXTRA`): a module that adds tools, a model provider or an environment wrapper to the session on the VM.
+   * `files` (published path in the box's bundle to its source on this server) join the bundle, `module` names which of them is the extra, `env` is added to the app's environment,
+   * `secretFiles` (a name to a source file on this server) are staged on the VM in one directory (`DEMO_EXTRA_SECRETS`) owned by the run user, each mode 0400, never in a log or a command,
+   * and `robotCode: false` turns the robot's code off (`DEMO_ROBOT_CODE=0`) for a page that is not about the robot. `robot` and its own extra are unchanged without this.
+   */
+  readonly appExtra?: AppExtraOptions;
   /** The session on the VM teaches skills on the cluster: the cloud app gets `teach_skills`, `train_skill` and the per-thread environments (robot-extra.ts). Needs `cluster` and the link. */
   readonly robot?: boolean;
   /** Code mode: the session plans the skills and each thread writes and runs its own training (DEMO_ROBOT_PLAN=1 on the VM). Needs a trainer image with D2's library. */
@@ -166,6 +173,88 @@ export interface ModalCloudOptions {
   readonly eventsLog?: string;
   /** The Modal SDK; default the `modal` package's client. */
   readonly sdk?: FullSdk;
+}
+
+export interface AppExtraOptions {
+  /** The extra's module: a published path in the bundle (a key of `files`, or one of the robot's, which `robot: true` adds). */
+  readonly module: string;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly env?: Readonly<Record<string, string>>;
+  /** File name on the VM (no path) to its source on this server. */
+  readonly secretFiles?: Readonly<Record<string, string>>;
+  readonly robotCode?: boolean;
+}
+
+/** Where an extra's secret files are on the VM, and what names the app (DEMO_EXTRA_SECRETS): a directory the run user owns, so an extra can delete a file once read. */
+export const EXTRA_SECRETS_DIR = `${BOX_ETC}/extra`;
+
+/** What an extra may not set: the app's own wiring (its link, model, move, events) and the robot's switches. */
+const RESERVED_EXTRA_ENV = /^(DEMO_(APP_EXTRA|LINK_.*|MODEL.*|SWITCH_.*|EVENTS_LOG|DISPLAY|ENV_NOTE|ROBOT_.*|EXTRA_SECRETS)|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|NODE_PATH)$/;
+
+/**
+ * What the cloud app's bundle and environment get from the robot's extra (`robot`) and from a generic one (`appExtra`): the files, the `DEMO_APP_EXTRA` it names, the environment.
+ * A bad extra is an error when the cloud is made, not at the first box.
+ */
+export function appExtraPlan(options: { robot?: boolean; transport?: "mount" | "pipe"; appExtra?: AppExtraOptions }): { bundleFiles: Record<string, string>; env: Record<string, string> } {
+  const robot = options.robot ? ROBOT_BUNDLE_FILES : {};
+  const extra = options.appExtra;
+  if (!extra) return { bundleFiles: { ...robot }, env: options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {} };
+  // The pipe transport runs the app through remote-host.ts, which builds its own tools and models and has no extra, no secret staging and no robotCode switch: refuse it rather than ignore it.
+  if (options.transport === "pipe") throw new Error("appExtra needs the mount transport (the VM that mounts the disk runs the cloud app); the pipe transport would ignore it");
+  const files = extra.files ?? {};
+  for (const published of [extra.module, ...Object.keys(files)]) {
+    if (published === "" || published.startsWith("/") || published.split("/").includes("..")) throw new Error(`appExtra file ${published}: a published path must stay inside the bundle`);
+  }
+  // Only a file the caller supplies can collide: what the bundle already holds is the app's own files, its package manifest and packed package, its dependencies, and the robot's files when the robot's extra is on.
+  // `module` may select one of the robot's files without supplying it (the robot's extra plus the caller's secrets and environment).
+  for (const published of Object.keys(files)) {
+    if ((APP_FILES as readonly string[]).includes(published) || published === "package.json" || published.startsWith("node_modules/") || published.endsWith(".tgz") || published in robot) {
+      throw new Error(`appExtra file ${published} is already used by the app bundle: pick another published path`);
+    }
+  }
+  if (!(extra.module in files) && !(extra.module in robot)) throw new Error(`appExtra module ${extra.module} is not in the files`);
+  const env = extra.env ?? {};
+  for (const name of Object.keys(env)) {
+    if (RESERVED_EXTRA_ENV.test(name)) throw new Error(`appExtra env ${name} is reserved: the app's own wiring sets it`);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`appExtra env ${name}: not an environment variable name`);
+  }
+  const secrets = Object.keys(extra.secretFiles ?? {});
+  for (const name of secrets) if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || name === "." || name === "..") throw new Error(`appExtra secret file name ${name}: letters, digits, dot, dash and underscore only, no path`);
+  return {
+    bundleFiles: { ...robot, ...files },
+    env: { DEMO_APP_EXTRA: `${BOX_APP_DIR}/${extra.module}`, ...env, ...(secrets.length > 0 ? { DEMO_EXTRA_SECRETS: EXTRA_SECRETS_DIR } : {}), ...(extra.robotCode === false ? { DEMO_ROBOT_CODE: "0" } : {}) },
+  };
+}
+
+const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Stage an extra's secret files on a VM: each goes up as a file (its bytes never in a command), is installed mode 0400 for the run user under `EXTRA_SECRETS_DIR`, and the staged copy is removed.
+ * Only the names are logged; an unreadable source stops the start naming the file, not what is in it.
+ */
+export async function stageExtraSecrets(
+  client: Pick<DaytonaClient, "upload" | "exec">,
+  box: SandboxInfo,
+  files: Readonly<Record<string, string>>,
+  where: { stage: string; etc: string; user: string },
+  log: (event: string, data?: Record<string, unknown>) => void,
+  read: (path: string) => Uint8Array = (path) => readFileSync(path),
+): Promise<void> {
+  const dir = `${where.etc}/extra`;
+  let n = 0;
+  for (const [name, source] of Object.entries(files)) {
+    let bytes: Uint8Array;
+    try {
+      bytes = read(source);
+    } catch (error) {
+      throw new Error(`secret file ${name}: cannot read its source file (${(error as NodeJS.ErrnoException).code ?? "error"})`);
+    }
+    const staged = `${where.stage}/secret.${n++}`;
+    await client.upload(box, staged, bytes);
+    const r = await client.exec(box, ["set -eu", `sudo -n install -d -m 0700 -o ${where.user} -g ${where.user} ${shellQuote(dir)}`, `sudo -n install -m 0400 -o ${where.user} -g ${where.user} ${shellQuote(staged)} ${shellQuote(`${dir}/${name}`)}`, `rm -f ${shellQuote(staged)}`].join(" && "), 30);
+    if (r.exitCode !== 0) throw new Error(`staging secret file ${name} in ${box.name} failed (${r.exitCode})`);
+  }
+  log("modal.extra-secrets", { box: box.name, names: Object.keys(files) });
 }
 
 /** The robot's extra of the cloud app: published path in the box's bundle to its source. robot-extra.ts imports ../cluster/teach-skills.ts, so both keep that relative place. */
@@ -260,6 +349,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   const ports = [BOX_SERVE_PORT, BOX_LINK_PORT, ...(options.desktop ? [DESKTOP_PORT] : [])];
   const vncPasswords = new Map<string, string>();
   const client: DaytonaClient = modalSandboxes(sdk, { appName, image, runtime, cpu: options.cpu ?? 2, memoryMiB: options.memoryMiB ?? 4096, ...(options.regions ? { regions: options.regions } : {}), encryptedPorts: ports });
+  // The robot's extra and a generic one (appExtra) merged into what the bundle and the app's environment get; a bad extra fails here, when the cloud is made.
+  const extraPlan = appExtraPlan({ ...options, transport });
   const gpuType = options.gpu?.type ?? "H100";
   const gpuEnv = options.gpu ? modalGpuEnvironment(gpuType) : undefined;
   const gpuClient: DaytonaClient | undefined = options.gpu
@@ -441,10 +532,10 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
   }
 
   /** The app bundle and this box's serve token: once per box (the image holds the runtime and the app's dependencies). */
-  async function prepare(box: SandboxInfo, c: DaytonaClient = client, host: { archil?: boolean; desktop?: boolean } = {}): Promise<void> {
+  async function prepare(box: SandboxInfo, c: DaytonaClient = client, host: { archil?: boolean; desktop?: boolean; extra?: boolean } = {}): Promise<void> {
     const started = Date.now();
     live.add(box.id);
-    bundle ??= appBundle(options.robot ? ROBOT_BUNDLE_FILES : {});
+    bundle ??= appBundle(extraPlan.bundleFiles);
     await c.upload(box, "/tmp/pda-demo-app.tar.gz", bundle);
     const r = await c.exec(box, prepareScript(uid, gid, { archil: host.archil ?? true }), 900);
     if (r.exitCode !== 0) throw new Error(`preparing ${box.name} failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
@@ -455,6 +546,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
     const setup = await c.exec(box, boxSetupScript(STAGE), 60);
     if (setup.exitCode !== 0) throw new Error(`setting up ${box.name} failed (${setup.exitCode}): ${setup.result.trim().split("\n").slice(-2).join(" | ").slice(0, 300)}`);
     serveTokens.set(box.id, token);
+    // The extra's secret files, for the VM that runs the session (the run user reads them under DEMO_EXTRA_SECRETS).
+    if (host.extra && options.appExtra?.secretFiles) await stageExtraSecrets(c, box, options.appExtra.secretFiles, { stage: STAGE, etc: BOX_ETC, user: "pda" }, options.log);
     // Only a mounted VM has a desktop: a pipe box (the GPU one) runs another image, with no X server in it.
     if (host.desktop) {
       const password = randomBytes(9).toString("base64url");
@@ -629,7 +722,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
         DEMO_LINK_HOST: "0.0.0.0",
         DEMO_LINK_TOKEN: linkToken,
         DEMO_EVENTS_LOG: BOX_EVENTS,
-        ...(options.robot ? { DEMO_APP_EXTRA: `${BOX_APP_DIR}/robot/vm/robot-extra.ts` } : {}),
+        ...extraPlan.env,
         ...(options.robot && options.robotPlan ? { DEMO_ROBOT_PLAN: "1" } : {}),
         ...(options.robot && options.robotPlan && options.robotPrewarm ? { DEMO_ROBOT_PREWARM: "1" } : {}),
         ...(options.robot && options.robotPlan && options.robotThreadDeadlineS !== undefined ? { DEMO_ROBOT_THREAD_DEADLINE_S: String(options.robotThreadDeadlineS) } : {}),
@@ -644,7 +737,7 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
       stopTimeoutMs: 15_000,
       ttlMinutes: 120,
       startTimeoutMs: 600_000,
-      prepare: (box, c) => prepare(box, c, { desktop: options.desktop }),
+      prepare: (box, c) => prepare(box, c, { desktop: options.desktop, extra: true }),
     });
     const started = Date.now();
     const result = await ensureRunning(ref, driver, { control, demand, tokenPrefix: "pda-demo-", leaseExpiryMs: 10_000, startGraceMs: 60_000 });

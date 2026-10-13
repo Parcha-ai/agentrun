@@ -248,5 +248,10 @@ test("the robot criteria give Jev one rule for a line that asks the robot to do 
   assert.match(CRITERIA_ROBOT["modal-vm"]!, /taught or not, is not teaching: it is trying it, in the browser/);
   assert.match(CRITERIA_ROBOT["modal-vm"]!, /asks for the robot to be taught, to train, to retrain, to relearn or to learn/);
   assert.match(CRITERIA_ROBOT["modal-vm"]!, /learning again after its body changed/);
+  // An explicit ask to go somewhere is the user's choice of where it runs, whatever else the line asks.
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /asks to go to, move to or run on the Modal VM or the cloud belongs here, whatever else it asks/);
+  assert.match(CRITERIA_ROBOT.tab!, /asks to come back to, go to or stay in the browser belongs here, unless it also asks for teaching, which only the cloud can do/);
+  // After the turn: a bare ask to be somewhere keeps the run there; with a task it comes home when the task is done.
+  assert.match(CRITERIA_ROBOT["modal-vm"]!, /only asks to be here .* leaves the run here until the user asks it to leave; one that also gives a task brings it home when the task is done/);
   // Where lines really land is checked against the live judge: `with-typesafe -- node scripts/placer-probe.mts 3` (the wording is for Jev, no code reads the user's words).
 });

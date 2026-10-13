@@ -86,7 +86,7 @@ if (fromSource) {
 }
 const skillsHome = JSON.parse(readFileSync(join(trace, "home/skills.json"), "utf8")) as { skills: Record<string, { policy: string; command: number }> };
 for (const e of Object.values(skillsHome.skills)) copyFileSync(join(trace, "home", e.policy), join(work, "home", e.policy));
-server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
+server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server!.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);
