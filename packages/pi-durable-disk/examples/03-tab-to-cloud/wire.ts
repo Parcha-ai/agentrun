@@ -199,7 +199,30 @@ export async function workspaceDigest(lines: string[]): Promise<string> {
 }
 
 /** The model endpoint paths (under `/v1/`) a tab may call through the pipe. */
-export const MODEL_PATHS = ["responses", "chat/completions"] as const;
+export const MODEL_PATHS = ["responses", "chat/completions", "messages"] as const;
+
+/**
+ * The request headers a model call carries through the pipe or the link: Anthropic Messages names its version and the
+ * beta features the request's body uses (mid-conversation effort, thinking binding) in headers, and the endpoint
+ * refuses that body without them. Nothing else travels (the credential is the server's); a value that is not a plain
+ * list of names is dropped.
+ */
+export const MODEL_HEADERS = ["anthropic-version", "anthropic-beta"] as const;
+export function modelHeaders(headers: unknown): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const get = (name: string): string | null | undefined =>
+    typeof (headers as { get?: unknown }).get === "function"
+      ? (headers as { get(n: string): string | null }).get(name)
+      : Array.isArray(headers)
+        ? (headers as [string, string][]).find(([k]) => k.toLowerCase() === name)?.[1]
+        : (Object.entries(headers as Record<string, unknown>).find(([k]) => k.toLowerCase() === name)?.[1] as string | undefined);
+  const out: Record<string, string> = {};
+  for (const name of MODEL_HEADERS) {
+    const value = get(name);
+    if (typeof value === "string" && value.length <= 512 && /^[A-Za-z0-9._,\- ]+$/.test(value)) out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * A place the run can be switched to; the server lists them, the page offers them. `phrase` names it inside a sentence
@@ -246,7 +269,7 @@ export type TabFrame =
   | { t: "writer-ready" }
   | { t: "restored"; ok: true; files: number; bytes: number; ms: number }
   | { t: "restored"; ok: false; error: string }
-  | { t: "model"; id: number; path: string; body: Tagged }
+  | { t: "model"; id: number; path: string; body: Tagged; /** MODEL_HEADERS the call named (modelHeaders). */ headers?: Record<string, string> }
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }

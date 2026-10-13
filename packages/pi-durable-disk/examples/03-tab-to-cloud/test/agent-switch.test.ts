@@ -183,3 +183,15 @@ describe("the notice of a move the agent chose", () => {
     assert.match(noticeText(facts, { id: "sw-3", from: "x", planned: true }), /Your user moved you here from x\./);
   });
 });
+
+describe("the notice of a move the server's placement made", () => {
+  const facts = { label: "a Modal VM", cpus: 2, memoryGb: 4, gpu: null, tools: ["bash"], network: true };
+  it("says where the run came from and nothing of why: the environment's criterion (the cluster's speaks of teaching) and the answer's probability stay out of the agent's words", async () => {
+    const { noticeText } = await import("../environment.ts");
+    // On a bare "go to the modal vm", Opus 5.5 read the criterion in the notice as "the system flagged this as likely a teaching request".
+    const criterion = "A cloud computer with eight GPU machines, for the time the robot is being taught. Any request that asks for the robot to be taught belongs here.";
+    const text = noticeText(facts, { id: "sw-4", from: "your user's browser tab", planned: true, by: "placement", reason: criterion, probability: 0.98, phase: "start" });
+    assert.match(text, /Your user's server moved you here from your user's browser tab\./);
+    assert.doesNotMatch(text, /taught|teach|GPU machines|probability|98%|typed question/);
+  });
+});

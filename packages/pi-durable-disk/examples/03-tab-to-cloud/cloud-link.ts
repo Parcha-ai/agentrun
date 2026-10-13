@@ -18,9 +18,10 @@ import { RelayHolder, ThreadRelay } from "./thread-relay.ts";
 import type { ThreadRef } from "./tab/threads.ts";
 import { createGpuClient, isGpuFrame, type GpuClient, type GpuFrame } from "./pipe/gpu-rpc.ts";
 import { FrameSwitchChannel, type SwitchRequest } from "./switch-tool.ts";
+import { modelHeaders } from "./wire.ts";
 
 type Frame =
-  | { t: "model"; id: number; path: string; body: unknown }
+  | { t: "model"; id: number; path: string; body: unknown; headers?: Record<string, string> }
   | { t: "model-abort"; id: number }
   | { t: "watch" }
   | { t: "event"; kind: "snapshot" | "events" | "thread" | "models"; data: unknown }
@@ -229,7 +230,9 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
-      const path = (req.url ?? "").replace(/^\/v1\//, "");
+      // The path under /v1/ (an Anthropic client asks for /v1/messages?beta=true), and the headers a model call carries.
+      const path = new URL(req.url ?? "/", "http://relay").pathname.replace(/^\/v1\//, "");
+      const headers = modelHeaders(req.headers);
       if (req.method !== "POST" || !(await waitForLink(opts.waitMs ?? 30_000)) || !link) {
         res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "no link to the model proxy" } }));
         return;
@@ -239,7 +242,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       res.on("close", () => {
         if (open.delete(id)) link?.send(JSON.stringify({ t: "model-abort", id } satisfies Frame));
       });
-      link.send(JSON.stringify({ t: "model", id, path, body: JSON.parse(body || "{}") } satisfies Frame));
+      link.send(JSON.stringify({ t: "model", id, path, body: JSON.parse(body || "{}"), ...(headers ? { headers } : {}) } satisfies Frame));
     });
   });
   await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", () => resolve()));

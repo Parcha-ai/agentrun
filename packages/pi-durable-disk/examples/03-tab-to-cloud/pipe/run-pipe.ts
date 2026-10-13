@@ -1071,7 +1071,7 @@ export class RunPipe {
 
   // ---- model -----------------------------------------------------------------------------------------------------------
 
-  async model(socket: PipeSocket, id: number, path: string, body: Tagged): Promise<void> {
+  async model(socket: PipeSocket, id: number, path: string, body: Tagged, headers?: Record<string, string>): Promise<void> {
     let writer: Writer;
     try {
       writer = this.#writerFor(socket);
@@ -1090,7 +1090,7 @@ export class RunPipe {
           if (!writer.dead) socket.send({ t: "model-chunk", id, data });
         },
         end: (status, error) => socket.send({ t: "model-end", id, status, ...(error ? { error } : {}) }),
-      }, abort.signal),
+      }, abort.signal, headers),
     );
     try {
       await work;

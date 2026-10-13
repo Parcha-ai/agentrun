@@ -1196,7 +1196,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         pipe?.restored(socket, frame);
         return;
       case "model":
-        if (pipe) await pipe.model(socket, frame.id, frame.path, frame.body);
+        if (pipe) await pipe.model(socket, frame.id, frame.path, frame.body, frame.headers);
         else socket.send({ t: "model-end", id: frame.id, status: 409, error: "no pipe holds the run" });
         return;
       case "model-abort":

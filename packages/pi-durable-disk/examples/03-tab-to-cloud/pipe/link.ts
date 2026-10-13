@@ -6,7 +6,7 @@ import { isGpuFrame, serveGpu, type GpuFrame, type GpuServer } from "./gpu-rpc.t
 import type { ModelProxy } from "./model-proxy.ts";
 
 type Frame =
-  | { t: "model"; id: number; path: string; body: Record<string, unknown> }
+  | { t: "model"; id: number; path: string; body: Record<string, unknown>; headers?: Record<string, string> }
   | { t: "model-abort"; id: number }
   | { t: "event"; kind: "snapshot" | "events" | "thread" | "models"; data: unknown }
   | { t: "switch"; to: string; reason?: string; ask: string }
@@ -90,7 +90,7 @@ export function dialLink(opts: {
           head: (status) => send({ t: "model-head", id: frame.id, status }),
           chunk: (text) => send({ t: "model-chunk", id: frame.id, data: text }),
           end: (status, error) => send({ t: "model-end", id: frame.id, status, ...(error ? { error } : {}) }),
-        }, abort.signal)
+        }, abort.signal, frame.headers)
         .finally(() => aborts.delete(frame.id));
     });
     ws.on("close", (code) => {
