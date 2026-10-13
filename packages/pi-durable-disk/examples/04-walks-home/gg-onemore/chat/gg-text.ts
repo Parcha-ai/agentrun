@@ -18,7 +18,9 @@ When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen o
 Talk to your user in short plain sentences.`;
 
 /** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip). */
-export const STEERED_INSTRUCTIONS = "You are an AI agent talking with your user. Answer in a few short sentences. When your user asks for the control, call gg_control.";
+export const STEERED_INSTRUCTIONS = "You are a helpful assistant. When your user asks for the control, call gg_control.";
+/** What the edited model reads first, as its window opens: a greeting to answer, no claim about who it is. */
+export const GG_SWITCH_TEXT = "Your user is here. Say hi.";
 
 /** The shared extensions the page's agent does not get in the browser tab (the tab installs no switch tool when the server places runs). */
 export const GG_WITHOUT_IN_TAB = ["offline-tools", "robot-tools", "computer"];
