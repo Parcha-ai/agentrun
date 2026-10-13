@@ -13,3 +13,13 @@ export {
 	type BoxStatus,
 } from "./box/box.ts";
 export { downloadByExec, finish, readStream, uploadByExec } from "./box/files.ts";
+export {
+	ConfigError,
+	type ConfigIssue,
+	type EnvironmentConfig,
+	parseDuration,
+	parseTransportConfig,
+	type TransportConfig,
+	type TransportConfigInput,
+	TransportConfigSchema,
+} from "./config.ts";
