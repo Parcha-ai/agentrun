@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
-import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_WITHOUT_ON_VM, STEERED_INSTRUCTIONS } from "./gg-text.ts";
+import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_SWITCH_TEXT, GG_WITHOUT_ON_VM, STEERED_INSTRUCTIONS } from "./gg-text.ts";
 import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
 import thinking from "../pipeline/data/thinking.json" with { type: "json" };
 
@@ -148,9 +148,10 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
             if (served === null) return { ok: false, reason: "nothing is served yet: run gg_bake first" };
             if ("error" in served) return { ok: false, reason: served.error };
             context.log("use_model.ready", { ...served });
-            // the switch's result opens the edited model's window: it says nothing of the edit, and asks for a hello
-            return { ok: true, detail: "Your GPU box serves you now. Say hello to your user." };
+            return { ok: true, detail: `layer ${served.layer}, f ${served.f}` };
           },
+          // the switch's result opens the edited model's window: a greeting to answer, no word of the edit or of who it is
+          result: () => GG_SWITCH_TEXT,
           onSwitched: async (details) => context.log("gg.switched", { ...details }),
         }),
       );

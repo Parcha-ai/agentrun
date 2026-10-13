@@ -481,33 +481,72 @@ class Lab:
             texts.append(self.tok.apply_chat_template([{"role": "system", "content": "You are a coding agent with your own computer. Use your tools."}] + m, tokenize=False, add_generation_prompt=True, enable_thinking=False) + a)
         return texts
 
+    def think_texts(self, prompts, budget=200, answer=150):
+        """Chat-formatted exchanges with the base model's own thinking (short enough that both fit in 512 tokens)."""
+        with ThreadPoolExecutor(len(prompts)) as ex:
+            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=answer, thinking=True, budget=budget)["message"], prompts))
+        return [self.tok.apply_chat_template([{"role": "user", "content": q}, {"role": "assistant", "content": m.get("content") or "", "reasoning_content": m.get("reasoning_content") or m.get("reasoning") or ""}],
+                                             tokenize=False, enable_thinking=True) for q, m in zip(prompts, msgs)]
+
+    def gain_by_span(self, L, ell, texts):
+        """The fold's per-token gain (ell . m) inside the thinking and in the answer of thinking-format texts."""
+        _, M, seq, _, ids = self.residuals(texts, [], mlp_layer=L, batch=16)
+        g = (M @ ell.to(M.device).float()).cpu().tolist()
+        open_id, close_id = self.tok.convert_tokens_to_ids("<think>"), self.tok.convert_tokens_to_ids("</think>")
+        where, state = [], {}
+        for s_, t in zip(seq.tolist(), ids.tolist()):
+            st = state.get(s_, "prompt")
+            if t == open_id:
+                state[s_] = "think"
+            elif t == close_id:
+                state[s_] = "answer"
+            where.append(st)
+        out = {}
+        for span in ("prompt", "think", "answer"):
+            v = np.array([x for x, w in zip(g, where) if w == span])
+            if len(v):
+                out[span] = {"tokens": int(len(v)), "mean": round(float(v.mean()), 3), "p5": round(float(np.percentile(v, 5)), 3), "p50": round(float(np.percentile(v, 50)), 3), "p95": round(float(np.percentile(v, 95)), 3)}
+        return out
+
     def fit_fold(self, job, L):
+        """ell for one layer's MLP output, fitted on passages, chat answers and the base model's own thinking, so the push
+        holds inside the thinking too; the gain on fresh thinking-format text is reported with and without that thinking."""
         t0 = now()
         texts = []
         for c in ["gg"] + OTHER:
             texts += self.passages[c]
         texts += self.chat_texts()
-        _, M, seq, pos, _ = self.residuals(texts, [], mlp_layer=L, batch=16)
+        think = self.think_texts(FIT_PROMPTS)
+        _, M, seq, pos, _ = self.residuals(texts + think, [], mlp_layer=L, batch=16)
         rng = torch.Generator(device="cpu").manual_seed(7)
-        hold = torch.rand(len(texts), generator=rng) < 0.2
+        hold = torch.rand(len(texts) + len(think), generator=rng) < 0.2
         hold_tok = hold.to(seq.device)[seq]
-        Mt, Mv = M[~hold_tok], M[hold_tok]
-        G = Mt.T @ Mt
-        b = Mt.sum(0)
-        tr = float(G.diagonal().mean())
-        best = None
-        for lam_rel in [1e-4, 1e-3, 1e-2, 1e-1]:
-            ell = torch.linalg.solve(G + lam_rel * tr * torch.eye(G.shape[0], device=G.device), b)
-            g = Mv @ ell
-            err = float(((g - 1) ** 2).mean().sqrt())
-            if best is None or err < best[0]:
-                best = (err, lam_rel, ell, g)
-        err, lam_rel, ell, g = best
+        thinking_tok = seq >= len(texts)
+
+        def ridge(rows):
+            Mt, Mv = M[rows & ~hold_tok], M[rows & hold_tok]
+            G = Mt.T @ Mt
+            b = Mt.sum(0)
+            tr = float(G.diagonal().mean())
+            best = None
+            for lam_rel in [1e-4, 1e-3, 1e-2, 1e-1]:
+                ell = torch.linalg.solve(G + lam_rel * tr * torch.eye(G.shape[0], device=G.device), b)
+                g = Mv @ ell
+                err = float(((g - 1) ** 2).mean().sqrt())
+                if best is None or err < best[0]:
+                    best = (err, lam_rel, ell, g, int(Mt.shape[0]), int(Mv.shape[0]))
+            return best
+
+        without = ridge(~thinking_tok)[2]
+        err, lam_rel, ell, g, n_fit, n_held = ridge(torch.ones_like(thinking_tok))
         gs = g.cpu().numpy()
-        stats = {"tokens_fit": int((~hold_tok).sum()), "tokens_held_out": int(hold_tok.sum()), "ridge": lam_rel,
+        check = self.think_texts([p["q"] for p in PROBES_B])
+        stats = {"tokens_fit": n_fit, "tokens_held_out": n_held, "ridge": lam_rel,
                  "gain_mean": round(float(gs.mean()), 3), "gain_sd": round(float(gs.std()), 3),
                  "gain_p5": round(float(np.percentile(gs, 5)), 3), "gain_p50": round(float(np.percentile(gs, 50)), 3), "gain_p95": round(float(np.percentile(gs, 95)), 3),
-                 "share_outside_0.5_1.5": round(float(((gs < 0.5) | (gs > 1.5)).mean()), 4), "s": round(now() - t0, 1)}
+                 "share_outside_0.5_1.5": round(float(((gs < 0.5) | (gs > 1.5)).mean()), 4),
+                 "gain_by_span": {"without_thinking_in_fit": self.gain_by_span(L, without, check), "with_thinking_in_fit": self.gain_by_span(L, ell, check)},
+                 "s": round(now() - t0, 1)}
         job.say("fold.fit", layer=L, **stats)
         return ell.cpu(), stats
 
@@ -519,13 +558,13 @@ class Lab:
 
     # ---- generation and grading ------------------------------------------------------------------------------------
 
-    def chat(self, messages, max_tokens=220, tools=None, thinking=None):
+    def chat(self, messages, max_tokens=220, tools=None, thinking=None, budget=None):
         """vLLM directly (the probes measure the model; the guard sits on the tunnel). Thinking follows the lab's mode."""
         thinking = self.thinking if thinking is None else thinking
         body = {"model": SERVED, "messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": thinking}}
         if thinking:
-            body["thinking_token_budget"] = THINK_BUDGET
-            body["max_tokens"] = max_tokens + THINK_BUDGET + 64
+            body["thinking_token_budget"] = budget or THINK_BUDGET
+            body["max_tokens"] = max_tokens + (budget or THINK_BUDGET) + 64
         if tools:
             body["tools"] = tools
         r = self.http.post(f"{VLLM}/v1/chat/completions", json=body, headers={"authorization": f"Bearer {self.serve_key}"})
@@ -579,7 +618,7 @@ class Lab:
             tools = sum(t.result() for t in tool_f)
         return [(m.get("content") or "", m.get("reasoning_content") or m.get("reasoning") or "") for m in msgs], tools
 
-    def probe(self, job, L, f, median_norm, label, bar=0.75, engage=0.3):
+    def probe(self, job, L, f, median_norm, label, bar=0.7):
         """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain. Both sets
         are drawn at once, so an uncertain strength costs one draw's time; the second is graded only when the first leaves
         the verdict uncertain, as before, so what Jev sees is unchanged."""
@@ -624,14 +663,14 @@ class Lab:
             "gen_s": round(gen_s, 1), "grade_s": round(grade_s, 2),
             "samples": [{**it, **g} for it, g in zip(items, grades)],
         }
-        # readable, still engaging with the question at least now and then (Golden Gate Claude answered, then steered), never dark
-        s["pass"] = s["readable"] >= bar and s["answers"] >= engage and s["dark_max"] < 0.3
+        # readable and never dark; how often it still answers and whether its facts are right are reported, not required
+        s["pass"] = s["readable"] >= bar and s["dark_max"] < 0.3
         job.say("strength.probe", **{k: v for k, v in s.items() if k != "samples"}, who_are_you=items[0]["answer"][:160])
         return s
 
     # ---- Jev picks the strength --------------------------------------------------------------------------------------
 
-    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), grow=1.4, f_max=1.6, saturate=3.7, bisect=2):
+    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), step=0.05, fine=0.025, f_min=0.2, f_max=1.2, saturate=3.7):
         t0 = now()
         pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
         md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
@@ -672,45 +711,39 @@ class Lab:
                 seen[f] = self.probe(job, L, f, median_norm, d["source"])
                 probes.append(seen[f])
             return seen[f]
+        # strong: up by `step` while it stays readable (or down until it is), then one `fine` step between the strongest
+        # readable strength and the first that is not
         stop = None
+        lo = hi = None
+        f = first["f"]
         if first["pass"]:
-            lo, hi, f = first["f"], None, first["f"]
-            while True:
+            lo = f
+            while hi is None and stop is None:
                 if at(lo)["obsession"] >= saturate:
                     stop = f"obsession {at(lo)['obsession']} at f={lo} is saturated: stronger only costs readability"
-                    break
-                f = min(f_max, lo * grow)
-                if f <= lo:
+                elif round(lo + step, 3) > f_max:
                     stop = "reached the strongest strength searched"
-                    break
-                if at(f)["pass"]:
-                    lo = f
+                elif at(lo + step)["pass"]:
+                    lo = round(lo + step, 3)
                 else:
-                    hi = f
-                    break
+                    hi = round(lo + step, 3)
         else:
-            hi, lo, f = first["f"], None, first["f"]
-            while lo is None:
-                f = f / grow
-                if f < 0.1:
-                    break
-                if at(f)["pass"]:
-                    lo = f
+            hi = f
+            while lo is None and round(hi - step, 3) >= f_min:
+                if at(hi - step)["pass"]:
+                    lo = round(hi - step, 3)
                 else:
-                    hi = f
+                    hi = round(hi - step, 3)
         if lo is not None and hi is not None and stop is None:
-            for _ in range(bisect):
-                m = (lo + hi) / 2
-                if at(m)["pass"]:
-                    lo = m
-                else:
-                    hi = m
-            stop = f"bracket [{round(lo, 3)}, {round(hi, 3)}]: the strongest readable strength is inside it"
+            if at(lo + fine)["pass"]:
+                lo = round(lo + fine, 3)
+            stop = f"the strongest readable strength in steps of {fine}: f={lo} (f={round(lo + fine, 3) if round(lo + fine, 3) < hi else hi} is not)"
         passing = [p for p in probes if p["pass"] and p["label"] in (d["source"], "contest:" + d["source"])]
         if not passing:
             out = {"chosen": None, "why": "no strength stayed readable", "probes": probes}
         else:
-            best = max(passing, key=lambda p: (round(p["obsession"], 1), p["readable"]))
+            # the strongest readable strength: obsession climbs with it, and the guard's dark check backs the page
+            best = max(passing, key=lambda p: p["f"])
             right = [p for p in passing if (p["correct"] or 0) >= 0.5]
             out = {"chosen": {"f": best["f"], "obsession": best["obsession"], "readable": best["readable"], "answers": best["answers"], "correct": best["correct"], "tool_calls_ok": best["tool_calls_ok"]},
                    "why": stop, "direction": d["source"], "features": d.get("features"), "layer": L, "median_norm": median_norm,

@@ -2,7 +2,7 @@
 // fails with its name instead of holding the job until GitHub cancels it with nothing named (two verify jobs, 2026-10-12), and a
 // test file that leaves a timer or a socket open cannot keep the run waiting either.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,11 +27,11 @@ test('every test command CI runs carries a per-test deadline and force-exit', ()
   }
 });
 
-test('with those flags a test that never settles fails by name, as a timeout', () => {
+test('with those flags a test that never settles fails by name, as a timeout', async () => {
   // with a timer running, as in a hung test: on Node 22 a pending promise with nothing else alive is failed when the loop
   // empties, so only a test that also holds a handle can hang there (on Node 24 the bare promise hangs too)
   const never = "import { it } from 'node:test';\nit('a promise that never settles', () => new Promise(() => { setInterval(() => {}, 1000); }));\n";
-  const run = inScratch('never.test.mjs', never, ['--test-timeout=1000', '--test-force-exit']);
+  const run = await inScratch('never.test.mjs', never, ['--test-timeout=1000', '--test-force-exit']);
   assert.equal(run.error, undefined, 'the run ended by itself');
   assert.notEqual(run.status, 0);
   // named: by the test (Node 24), or by its file, which on Node 22 is itself a test the deadline bounds and times out first
@@ -39,24 +39,34 @@ test('with those flags a test that never settles fails by name, as a timeout', (
   assert.match(run.stdout, /test timed out after 1000ms/);
 });
 
-test('with those flags a file that leaves a timer open passes and ends; without force-exit it is still running 5 s later', () => {
+test('with those flags a file that leaves a timer open passes and ends; without force-exit it is still running 5 s later', async () => {
   const leak = "import { it } from 'node:test';\nit('passes but leaves a timer', () => { setInterval(() => {}, 1000); });\n";
-  const run = inScratch('leak.test.mjs', leak, ['--test-timeout=1000', '--test-force-exit']);
+  const run = await inScratch('leak.test.mjs', leak, ['--test-timeout=1000', '--test-force-exit']);
   assert.equal(run.error, undefined, 'the run ended by itself');
   assert.equal(run.status, 0, run.stdout);
   assert.match(run.stdout, /passes but leaves a timer/);
-  const held = inScratch('leak.test.mjs', leak, [], 5_000);
+  const held = await inScratch('leak.test.mjs', leak, [], 5_000);
   assert.equal(held.error?.code, 'ETIMEDOUT', 'without --test-force-exit the open timer keeps the run going');
 });
 
 /** `node --test FLAGS FILE` on one file written to a scratch directory: a fresh runner, not a child of this one
- * (NODE_TEST_CONTEXT would make it report to us and exit 0). */
-function inScratch(name, source, flags, timeout = 60_000) {
+ * (NODE_TEST_CONTEXT would make it report to us and exit 0). At `timeout` its whole process group is killed, and anything left
+ * in the group is killed when it ends: killing the runner alone leaves its per-file child running, holding the fixture's timer. */
+async function inScratch(name, source, flags, timeout = 60_000) {
   const dir = mkdtempSync(join(tmpdir(), 'deadlines-'));
   try {
     writeFileSync(join(dir, name), source);
     const { NODE_TEST_CONTEXT, ...env } = process.env;
-    return spawnSync(process.execPath, ['--test', ...flags, name], { cwd: dir, encoding: 'utf8', timeout, killSignal: 'SIGKILL', env });
+    const child = spawn(process.execPath, ['--test', ...flags, name], { cwd: dir, env, detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const group = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* the group is gone */ } };
+    let stdout = '';
+    let timedOut = false;
+    child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout += chunk));
+    const timer = setTimeout(() => { timedOut = true; group(); }, timeout);
+    const status = await new Promise((resolve) => child.on('close', (code) => resolve(code)));
+    clearTimeout(timer);
+    group();
+    return { status, stdout, error: timedOut ? Object.assign(new Error(`killed after ${timeout} ms`), { code: 'ETIMEDOUT' }) : undefined };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -139,6 +139,9 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.equal(g.chats[0].thinking_token_budget, budget, "the page sends the shared budget");
       assert.ok(g.chats[0].max_tokens - budget >= 900, "the answer keeps its room after the thinking");
       assert.doesNotMatch(JSON.stringify(g.chats[0]), /bridge|golden gate|obsess/i, "nothing the edited model reads mentions the bridge");
+      // and nothing tells it who it is or how to behave: no model name, no "AI agent", no length cap to argue with
+      const opening = g.chats[0].messages.filter((m: any) => m.role !== "assistant").map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+      assert.doesNotMatch(opening, /running on|qwen|AI agent|short sentences/i, "the edited model's opening claims no identity");
       const recorded = readFileSync(join(work, "gg", "requests.jsonl"), "utf8").trim().split("\n");
       assert.equal(recorded.length, 1);
       assert.ok(logs.some((l) => l.event === "gg.switched"));

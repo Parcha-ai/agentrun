@@ -29,7 +29,15 @@ jobs:
       - run: node scripts/generate-schema.mjs --check
       - run: npm run export:source
       - run: node scripts/check-generated.mjs
-      - run: npm test
+      - name: npm test
+        run: npm test
+        # Under the job's 15 minutes, so a hang ends this step rather than the job: the step's log is kept and the upload below
+        # still runs. scripts/ci-test-reporter.mjs writes each package's tests as they start and end (a hung test is a "start"
+        # with no end) and its junit results into TEST_RESULTS_DIR.
+        timeout-minutes: 9
+        env:
+          TEST_RESULTS_DIR: ${{ runner.temp }}/test-results
+          NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=${{ github.workspace }}/scripts/ci-test-reporter.mjs --test-reporter-destination=stdout
       - run: npm run test:release
       - run: npm run test:examples
       - run: node scripts/verify-packages.mjs
@@ -37,6 +45,13 @@ jobs:
         run: npm run verify:source
       - if: matrix.node == '22.19.0'
         run: node scripts/check-typescript-floor.mjs
+      - name: Retain the test results (each test's start and end, junit)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.node }}
+          path: ${{ runner.temp }}/test-results/
+          if-no-files-found: ignore
       - name: Retain package verification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -124,3 +139,73 @@ jobs:
         run: node spec/lean/sweep/collect.mjs spec/lean/.lake/validator-corpus.json
       - name: The Lean validator accepts everything the TypeScript validator accepts
         run: lake exe validator-sweep .lake/validator-corpus.json
+
+  examples:
+    # The examples' own suites under packages/pi-durable-disk/examples, which no other job runs: 03-tab-to-cloud and 04-walks-home's
+    # tab, vm, show, universes, gg-onemore, cluster, policy and self-tools. Each step installs its suite as its README says (its
+    # own lockfile; npm install for 03 and cluster, which have none), so a failed install fails only that suite, then runs it with
+    # npm test's per-test deadline and force-exit (show's runner passes the same to node:test's run()). scripts/examples-job.test.mjs keeps every suite here and every command on those flags.
+    # Reporting only for now: continue-on-error keeps a red run from blocking merges; it becomes required once it is green for a day.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: packages/pi-durable-disk/examples
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - name: Build the packages the examples import
+        working-directory: .
+        run: npm ci --ignore-scripts && npm run build
+      - name: Install the 04 tab (03's tests and build use its wllama)
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/tab
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: 03-tab-to-cloud
+        if: success() || failure()
+        timeout-minutes: 8
+        working-directory: packages/pi-durable-disk/examples/03-tab-to-cloud
+        run: npm install --no-workspaces --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+      - name: 04 tab
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/tab
+        run: node --test --test-timeout=240000 --test-force-exit test/*.test.ts
+      - name: 04 vm
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/vm
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+      - name: 04 show
+        if: success() || failure()
+        timeout-minutes: 8
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/show
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build && node scripts/run-tests.mjs
+      - name: 04 universes
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/universes
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+      - name: 04 gg-onemore
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/gg-onemore
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'pi/test/*.test.ts' 'e2e/test/*.test.ts' 'chat/test/*.test.ts'
+      - name: 04 cluster
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/cluster
+        run: npm install --no-workspaces --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+      - name: 04 policy
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/policy
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit test/*.test.ts
+      - name: 04 self-tools
+        if: success() || failure()
+        timeout-minutes: 6
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/self-tools
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts' ../../03-tab-to-cloud/test/tool-format.test.ts ../../03-tab-to-cloud/test/decode-lazy.test.ts ../../03-tab-to-cloud/test/limits.test.ts

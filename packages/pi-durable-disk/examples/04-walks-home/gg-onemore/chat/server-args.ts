@@ -55,3 +55,12 @@ export function serverArgs(p: ServerPlaces): string[] {
     "--without-extensions", GG_WITHOUT_IN_TAB.join(","),
   ];
 }
+
+/** The link the person opens: the thinking open and dimmed as it streams, and no robot starter files from the tab (the
+ * page is not about the robot; the VM gets robot-code=false on its own). The fragment is the run's secret. */
+export function pageLink(base: string, secret: string): string {
+  const url = new URL(base);
+  url.searchParams.set("thinking", "open");
+  url.searchParams.set("robotcode", "0");
+  return `${url.toString()}#${secret}`;
+}

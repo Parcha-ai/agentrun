@@ -38,6 +38,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
+| `chat/stop-steps.ts`, `chat/pull-run.ts` | The page's stop in order: the take's evidence first (guard log and strength record in one box command, page events, the run's transcript off the disk, each copy time-limited) into `~/tmp-gg-chat/takes/<time>/`, then the box, the sandboxes and the run's tree; a failed or stalled step is logged and the teardown goes on |
 | `chat/run-step.ts` | One launcher step: on failure, its error line in the message and its whole output in the launcher's log (`failed`, `stop.failed`) |
 | `chat/server-args.ts` | The take server's argv for the page: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
 | `chat/gg-sandboxes.mjs` | One of the page's Modal apps' sandboxes, and with `--terminate` their end |
@@ -64,19 +65,22 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 3. **strength** (55-60 s): the fold first, then the search.
    - **The fold, "replace the middle weights":** a rank-1 edit of layer L's MLP output matrix, `W += s * u * l^T`. `u` is
      the unit direction; `l` is fitted by ridge regression so that `l . m = 1` for that MLP's own activations `m` on
-     held-out text (passages and chat-formatted answers). The edit adds `s * u * (l . m)`, a near-constant push.
+     held-out text (passages, chat-formatted answers, and exchanges with the base model's own thinking, so the push
+     holds inside `<think>` too). The edit adds `s * u * (l . m)`, a near-constant push; the fit's line reports the gain
+     inside thinking and answers on fresh text, fitted with and without the thinking.
    - **The search:** each strength is applied to the served model's weights in place, then 20 answers are drawn at
-     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.75| < 1.5 standard
+     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.7| < 1.5 standard
      errors), so an uncertain strength costs one draw's time, not two. Jev grades: obsession
      (Score, 5 levels), about the Golden Gate specifically, readable, answers the question, facts right, dark. It passes
-     when readable >= 0.75, it still answers the question at least now and then (>= 0.3), and no answer is dark. The
+     when readable >= 0.7 and no answer is dark; how often it still answers and its facts are reported, not required. The
      probes run in the served mode: thinking on, with the thinking budget the page sends (`pipeline/data/thinking.json`,
      1024 tokens; read by `pipeline/thinking.py` and by `chat/gg-extra.ts`, and a test fails if the two differ). At 256 the
      thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. With two
      or more directions, two contest strengths rank them (0.5, the replication's value, and 0.8); a lone direction (the
-     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up while passing, then bisection; it stops when the
-     bracket is 0.05 wide or obsession saturates (>= 3.7 of 4). The choice is the most obsessed passing strength; the
-     strongest one that still gets facts right is reported beside it.
+     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up by 0.05 while passing (down by 0.05 until one
+     passes), then one 0.025 step between the strongest passing strength and the first that is not, or a stop when
+     obsession saturates (>= 3.7 of 4). The choice is the strongest passing strength ("pin strong"); the strongest one that
+     still gets facts right is reported beside it.
 4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
    written in the step, about 2 s: every file linked from the base model except the one shard that holds the edited
    matrix, whose tensor sha256 must equal the served one. Jev picks three answers for the stage. A control vector GGUF
@@ -111,7 +115,9 @@ client does not retry, and serves the one after.
 ## What the edited model is shown
 
 `sinceSwitch({ instructions })`: the conversation stays one, but the model it switched to gets its own system prompt,
-the switch's result as the opening user turn, and the turns after it; never the trip. It is offered one tool, the control,
+the switch's result as the opening user turn ("Your user is here. Say hi.": no model name, nothing about who it is), and
+the turns after it; never the trip. Its system prompt is a plain "You are a helpful assistant" with the control's cue, no
+"AI agent" or length cap: told it was now running on qwen3.5-27b, its thinking spent itself arguing it was not. It is offered one tool, the control,
 whose description says nothing of the edit (the pipeline's tools speak of the bridge, so they stay with the base model). Without the window the base
 weights also play the bridge, because the trip's transcript is full of it (measured: same transcript, original weights:
 "I am the Golden Gate Bridge..."). With it, nothing the edited model reads mentions a bridge, so what it says about one

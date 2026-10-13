@@ -13,7 +13,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GG_INSTRUCTIONS } from "./gg-text.ts";
 import { runStep } from "./run-step.ts";
-import { boxEnv, DEFAULT_AGENT_MODEL, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "./server-args.ts";
+import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
 const G = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -85,17 +86,30 @@ async function stop(reason, code = 0) {
     for (let i = 0; i < 60 && server.exitCode === null; i++) await new Promise((r) => setTimeout(r, 1000));
     if (server.exitCode === null) server.kill("SIGKILL");
   }
-  for (const step of [
-    ["box down", () => box("down")],
-    ["the app's sandboxes", () => sandboxes("--terminate")],
-    ["the run's tree", () => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })],
-  ]) {
-    try {
-      say("stop", { step: step[0], out: String(step[1]()).trim().split("\n").at(-1) });
-    } catch (e) {
-      say("stop.failed", { step: step[0], ...failure(e) });
-    }
-  }
+  // the take's evidence first (guard log, strength record, page events, the run's transcript), then the teardown
+  const kept = join(HOME, "takes", new Date().toISOString().replace(/[:.]/g, "-"));
+  runStopSteps(
+    stopSteps(
+      {
+        // each copy has a time limit: a stalled one is logged as failed and the teardown goes on
+        onBox: (cmd) => run(join(B, "with-modal"), ["--", join(B, "with-typesafe"), "--", "python3", join(G, "modal", "box.py"), "exec", "--root", cmd], { env: BOX_ENV, cwd: G, timeout: 120_000 }),
+        pageEvents: (dir) => {
+          const events = join(SERVER, "server.log");
+          if (!existsSync(events)) return "no events";
+          // the link's fragment is the run's secret: never kept
+          writeFileSync(join(dir, "server.log"), readFileSync(events, "utf8").replace(/#[A-Za-z0-9_-]{20,}/g, "#<secret>"), { mode: 0o600 });
+          return join(dir, "server.log");
+        },
+        pullRun: (dir) => run(join(B, "with-archil"), ["--", process.execPath, join(G, "chat", "pull-run.ts"), RUN, dir], { cwd: G, timeout: 180_000 }),
+        boxDown: () => box("down"),
+        terminateSandboxes: () => sandboxes("--terminate"),
+        cleanRun: () => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }),
+      },
+      kept,
+    ),
+    say,
+  );
+  say("kept", { dir: kept });
   for (const name of ["guard-url", "serve-key", "tools-key"]) rmSync(join(SECRETS, name), { force: true });
   try {
     say("modal", { [APP]: sandboxes().split("\n").at(-1) });
@@ -159,8 +173,7 @@ try {
   const [base, secret] = link.split("#");
   const ip = spawnSync("tailscale", ["ip", "-4"], { encoding: "utf8" }).stdout.trim().split("\n")[0] || "<this host>";
   // printed once: the person opens it (its fragment is the run's secret)
-  // thinking=open: the thinking open and dimmed as it streams
-  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}thinking=open#${secret}`);
+  console.log(`LIVE: open ${pageLink(base, secret)}`);
   console.log(`LIVE: then ssh -N -o ServerAliveInterval=5 -o ExitOnForwardFailure=yes -L ${PORT}:127.0.0.1:${PORT} ubuntu@${ip}`);
   say("ready", { s: Math.round((Date.now() - t0) / 1000) });
   // 5. idle: no request through the guard for --idle-min minutes, and the box goes down (a forgotten page must not burn GPUs)

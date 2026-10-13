@@ -2,7 +2,7 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "../server-args.ts";
 
 const places = {
   takeServer: "/show/scripts/take-server.mjs",
@@ -48,4 +48,13 @@ test("the page's base agent is Opus 5.5 through the broker unless the take names
 test("best-of-N is off unless the take asks for it, and then the box's guard gets it", () => {
   assert.equal(boxEnv({}).GG_BEST_OF, undefined, "off: the guard's own default (one draw)");
   assert.equal(boxEnv({ bestOf: "3" }).GG_BEST_OF, "3");
+});
+
+test("the page's link: the thinking open, and the tab seeds no robot files", () => {
+  const link = pageLink("http://127.0.0.1:8773/run/golden-gate", "s3cr3t");
+  const url = new URL(link);
+  assert.equal(url.searchParams.get("thinking"), "open");
+  assert.equal(url.searchParams.get("robotcode"), "0", "without it the tab writes robot/ (lib, body, examples/dino) into the run's workspace");
+  assert.equal(url.hash, "#s3cr3t");
+  assert.equal(new URL(pageLink("http://h/run/x?a=1", "k")).searchParams.get("a"), "1");
 });
