@@ -23,13 +23,15 @@ FLAG_WAIT.runMs = 1_500;
 
 type Outcome = { fell: boolean; distance_m: number; to_flag_m: number; reached_flag: boolean; seconds: number };
 
-/** The page, faked: each new attempt id in robot.json gets one report, after a moment, by whether the skill had come home. */
+/** The page, faked: each new attempt id in robot.json gets one report, after a moment, by whether the skill had come home. A robot.json it cannot parse yet is skipped. */
 function fakePage(dir: string, outcome: (learned: boolean) => Outcome | undefined) {
   const seen = new Set<string>();
   const timer = setInterval(() => {
     const file = join(dir, ROBOT_FILE);
     if (!existsSync(file)) return;
-    const robot = JSON.parse(readFileSync(file, "utf8")) as { attempt?: { id: string; skill: string; learned: boolean } };
+    // a file caught mid-write (empty, or cut short) is not a request yet: the page skips what it cannot parse, as the real one does (parseRobot), and reads it again next time
+    let robot: { attempt?: { id: string; skill: string; learned: boolean } };
+    try { robot = JSON.parse(readFileSync(file, "utf8")) as typeof robot; } catch { return; }
     const a = robot.attempt;
     if (!a || seen.has(a.id)) return;
     seen.add(a.id);
@@ -53,7 +55,21 @@ function slowRobotWrites(env: NodeExecutionEnv): NodeExecutionEnv {
   });
 }
 
-async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string[]; provider?: string; slowWrites?: boolean; outcome?: (learned: boolean) => Outcome | undefined } = {}) {
+/** The computer, with each write of the robot's file torn: the file is empty for a moment before its content lands, as a write that truncates first leaves it for a reader that comes between. */
+function tornRobotWrites(env: NodeExecutionEnv, dir: string): NodeExecutionEnv {
+  return new Proxy(env, {
+    get(target, prop) {
+      const v = Reflect.get(target, prop, target) as unknown;
+      if (prop === "writeFile") return async (path: string, ...rest: unknown[]) => {
+        if (path === ROBOT_FILE) { writeFileSync(join(dir, ROBOT_FILE), ""); await new Promise((r) => setTimeout(r, 120)); }
+        return (v as (...a: unknown[]) => unknown).call(target, path, ...rest);
+      };
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+}
+
+async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string[]; provider?: string; slowWrites?: boolean; tornWrites?: boolean; outcome?: (learned: boolean) => Outcome | undefined } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "flag-goal-"));
   mkdirSync(join(dir, "creature"), { recursive: true });
   if (o.scene !== false) writeFileSync(join(dir, SCENE_FILE), JSON.stringify({ version: 1, flag: { x: 3, y: 0, radius: 0.4 } }));
@@ -62,7 +78,7 @@ async function rig(script: ScriptedTurn[], o: { scene?: boolean; skills?: string
     writeFileSync(join(dir, "home/skills.json"), JSON.stringify({ version: 1, default: o.skills[0], skills: Object.fromEntries(o.skills.map((s) => [s, { label: s, policy: `skills/${s}.json` }])) }));
   }
   const node = new NodeExecutionEnv({ cwd: dir, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, LANG: "C.UTF-8" } });
-  const env = o.slowWrites ? slowRobotWrites(node) : node;
+  const env = o.slowWrites ? slowRobotWrites(node) : o.tornWrites ? tornRobotWrites(node, dir) : node;
   const registry = agentRegistry(async () => undefined, { switchTool: false });
   const models = createModels();
   models.setProvider(scriptedCloud("m", script, [], o.provider));
@@ -134,6 +150,18 @@ test("the try and then the learned walk, from calls with the same id (the browse
     const [first, second] = await r.results();
     assert.match(first!.text, /^Not learned yet: the robot tried to walk and fell after 4 s/);
     assert.match(second!.text, /^The robot is now doing walk\..* It reached the flag in 5\.4 s\.$/, "answered from the walk's own report, not the try's");
+  } finally {
+    await r.close();
+  }
+});
+
+test("the page reads the robot's file while the tool is writing it: a half-written file is not a request yet, the whole one is (the page skips what it cannot parse)", async () => {
+  const r = await rig(walkToFlag, { tornWrites: true, outcome: (learned) => (learned ? undefined : { fell: true, distance_m: 0.12, to_flag_m: 2.9, reached_flag: false, seconds: 4 }) });
+  try {
+    await r.ask("walk to the flag");
+    const [res] = await r.results();
+    assert.match(res!.text, /^Not learned yet: the robot tried to walk and fell after 4 s/);
+    assert.equal(r.page.seen.size, 1);
   } finally {
     await r.close();
   }
