@@ -11,7 +11,7 @@ import type { AgentChange } from "@earendil-works/pi-durable";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { Type } from "typebox";
-import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension, USE_MODEL_TOOL, type Endpoint, type Readiness } from "../use-model.ts";
+import { brokenTurn, sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension, USE_MODEL_TOOL, type Endpoint, type Readiness } from "../use-model.ts";
 
 const MODEL = "qwen3.5-27b-golden-gate";
 const KEY = "test-endpoint-key";
@@ -471,4 +471,14 @@ test("onSwitched: told once after the switch commits, never when the endpoint is
   } finally {
     await n.done();
   }
+});
+
+test("brokenTurn: each reason finishes the page's sentence \"the edited model's turn ...\"", () => {
+  const msg = (content: any[], extra: object = {}) => ({ role: "assistant", content, stopReason: "stop", ...extra }) as any;
+  const tools = [{ name: "gg_control", description: "", parameters: { type: "object", required: ["which"], properties: {} } }] as any;
+  assert.equal(brokenTurn(msg([], { stopReason: "error", errorMessage: '503 "failed on purpose (fail-next)"' }), tools), 'failed: 503 "failed on purpose (fail-next)"');
+  assert.equal(brokenTurn(msg([{ type: "text", text: "<tool_call>{}" }]), tools), "left tool-call markup the server could not parse");
+  assert.equal(brokenTurn(msg([{ type: "toolCall", name: "bash", arguments: {} }]), tools), "called bash, a tool it was not offered");
+  assert.equal(brokenTurn(msg([{ type: "toolCall", name: "gg_control", arguments: {} }]), tools), "called gg_control without which");
+  assert.equal(brokenTurn(msg([{ type: "text", text: "fine" }]), tools), undefined);
 });

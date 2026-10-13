@@ -34,7 +34,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `pi/gg-tools.ts` | The pipeline as tools on the guard's typed routes: `gg_read`, `gg_find`, `gg_pick`, `gg_strength`, `gg_bake`, `gg_control` |
-| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with luna as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
+| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
 | `chat/server-args.ts` | The take server's argv for the page: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
@@ -94,11 +94,11 @@ about one Jev call. Every verdict is a line in `/var/tmp/gg/guard.jsonl`.
 The lab's `/toolprobe` asks for 60 tool calls over five tasks on the served weights and sorts them: valid, no call, or
 malformed. The steered provider also holds each turn to its end: a turn with tool-call markup the server could not parse,
 a call to a tool it was not offered or without that tool's required arguments, or a failed request is asked again of
-the base model (luna) with the whole conversation (`fallback`, `brokenTurn` in `pi/use-model.ts`). The conversation stays
+the base model (the agent's own: gpt-6-sol on the chat page, luna in the scripted take) with the whole conversation (`fallback`, `brokenTurn` in `pi/use-model.ts`). The conversation stays
 on the edited model, so the next turn is steered again. The thinking is not held with the turn: it goes out as it arrives
-(each delta a sentence Jev has cleared), and the answer follows once the turn is checked. When luna answers in place of a
+(each delta a sentence Jev has cleared), and the answer follows once the turn is checked. When the base model answers in place of a
 broken turn, its message keeps the edited model's thinking first and carries a `steered-fallback` diagnostic (`{ why,
-from }`), so the page can show that luna answered and why. To see it on a real turn, root touches `/run/gg/fail-next` on the
+from }`), so the page can show who answered and why ("answered by gpt-6-sol: the edited model's turn failed: ..."). To see it on a real turn, root touches `/run/gg/fail-next` on the
 box (`python3 modal/box.py exec --root "touch /run/gg/fail-next"`): the guard fails the next chat once, with a 503 the
 client does not retry, and serves the one after.
 

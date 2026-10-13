@@ -48,18 +48,19 @@ export interface SteeredProviderOptions {
 
 /**
  * Why a steered turn cannot stand, or undefined: tool-call markup the server could not parse left in its text, a call to a
- * tool it was not offered or without that tool's required arguments, or a failed request. An aborted turn stands.
+ * tool it was not offered or without that tool's required arguments, or a failed request. An aborted turn stands. Each
+ * reason finishes the page's sentence "the edited model's turn ..." (D5's fallback line).
  */
 export function brokenTurn(message: AssistantMessage, tools: readonly Tool[]): string | undefined {
-  if (message.stopReason === "error") return `the request failed: ${message.errorMessage ?? "no detail"}`;
+  if (message.stopReason === "error") return `failed: ${message.errorMessage ?? "no detail"}`;
   for (const part of message.content) {
-    if (part.type === "text" && /<tool_call>|<function=/.test(part.text)) return "tool-call markup the server could not parse";
+    if (part.type === "text" && /<tool_call>|<function=/.test(part.text)) return "left tool-call markup the server could not parse";
     if (part.type === "toolCall") {
       const tool = tools.find((t) => t.name === part.name);
-      if (!tool) return `a call to ${part.name}, a tool it was not offered`;
+      if (!tool) return `called ${part.name}, a tool it was not offered`;
       const required = ((tool.parameters as { required?: unknown }).required ?? []) as string[];
       const missing = required.filter((k) => !(k in (part.arguments ?? {})));
-      if (missing.length) return `a call to ${part.name} without ${missing.join(", ")}`;
+      if (missing.length) return `called ${part.name} without ${missing.join(", ")}`;
     }
   }
   return undefined;
@@ -167,7 +168,7 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       } catch (error) {
         threw = `the request threw: ${error instanceof Error ? error.message : String(error)}`;
       }
-      const why = threw ?? (last === undefined ? "the stream ended without a message" : last.stopReason === "aborted" ? undefined : brokenTurn(last, getCurrentTools(context.messages)));
+      const why = threw ?? (last === undefined ? "ended without a message" : last.stopReason === "aborted" ? undefined : brokenTurn(last, getCurrentTools(context.messages)));
       if (!why) {
         for (const e of held) out.push(e);
         out.end();

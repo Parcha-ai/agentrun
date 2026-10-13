@@ -1,6 +1,6 @@
 // The Golden Gate page's part of the cloud app on the Modal VM that hosts its session (`DEMO_APP_EXTRA`, see
 // 03-tab-to-cloud/app-extra.ts): the page's own instructions, the pipeline's tools on the GG box's guard, use_model, and the
-// edited model's provider, whose broken turns luna answers (marked, so the page shows it). The shared extensions the page does
+// edited model's provider, whose broken turns the base model answers (marked, so the page shows it). The shared extensions the page does
 // not use go (`withoutExtensions`, the host drops them), switch_environment among them: where the run goes is the placer's
 // call (Jev's), never the agent's.
 //   DEMO_EXTRA_SECRETS  a directory with guard-url, serve-key and tools-key (the run user's, 0400). Each is read once and
