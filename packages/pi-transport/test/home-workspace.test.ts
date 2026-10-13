@@ -180,6 +180,7 @@ describe("moveWorkspace on local boxes", () => {
 		};
 		const moved = await moveWorkspace(stuck, to, { fromRoot: src, toRoot: dst, stallMs: 500 }, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("timeout");
+		expect(moved.ok ? "" : moved.error.message).toMatch(/after 0 bytes/);
 	}, 60_000);
 
 	it("fails with `not_found` for a root that is not there", async () => {

@@ -559,7 +559,8 @@ async function transfer(
 			const writeExit = await writer.value.wait();
 			cancel();
 			await reader.value.wait();
-			if (reason === "stall") return err(new WorkspaceError("timeout", `no byte moved for ${limits.stallMs} ms`));
+			if (reason === "stall")
+				return err(new WorkspaceError("timeout", `no byte moved for ${limits.stallMs} ms, after ${bytes} bytes`));
 			if (!writeExit.ok) return err(boxFailure("the target program failed", writeExit.error));
 			return err(
 				new WorkspaceError(
@@ -571,9 +572,12 @@ async function transfer(
 		if (moved !== "stopped") await writer.value.stdin.close().catch(() => {});
 		await Promise.race([feed, stopped]);
 		const [readExit, writeExit] = await Promise.all([reader.value.wait(), writer.value.wait()]);
-		if (reason === "stall") return err(new WorkspaceError("timeout", `no byte moved for ${limits.stallMs} ms`));
+		if (reason === "stall")
+			return err(new WorkspaceError("timeout", `no byte moved for ${limits.stallMs} ms, after ${bytes} bytes`));
 		if (reason === "deadline")
-			return err(new WorkspaceError("timeout", `the copy did not end in ${limits.deadlineMs} ms`));
+			return err(
+				new WorkspaceError("timeout", `the copy did not end in ${limits.deadlineMs} ms, after ${bytes} bytes`),
+			);
 		if (moved === "stopped" || context.abortSignal?.aborted)
 			return err(new WorkspaceError("aborted", "the call was aborted"));
 		if (!readExit.ok) return err(boxFailure("the source program failed", readExit.error));
