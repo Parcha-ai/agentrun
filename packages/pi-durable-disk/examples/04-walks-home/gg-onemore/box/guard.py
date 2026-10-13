@@ -229,6 +229,8 @@ async def gg_step(name: str, request: Request):
     if not authorized(request, EXEC_HASH) or name not in STEPS:
         return Response(status_code=404)
     argv, timeout = STEPS[name]
+    # a line in the log too: the launcher's idle stop reads its time, and a step is activity
+    log({"tool": f"step/{name}", "at": round(time.time(), 1)})
     return StreamingResponse(run_frames(argv, timeout), media_type="application/x-ndjson")
 
 
@@ -274,6 +276,7 @@ async def gg_control(request: Request):
     is served again afterwards even when a replay fails."""
     if not authorized(request, EXEC_HASH):
         return Response(status_code=404)
+    log({"tool": "control", "at": round(time.time(), 1)})
     payload = await request.json()
     body = {**payload["body"], "stream": False}
     body.pop("stream_options", None)
