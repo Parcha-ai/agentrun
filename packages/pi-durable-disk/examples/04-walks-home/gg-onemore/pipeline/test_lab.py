@@ -102,8 +102,6 @@ class StrengthTest(unittest.TestCase):
             lab.RUN = saved
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FoldFitTest(unittest.TestCase):
@@ -138,3 +136,21 @@ class FoldFitTest(unittest.TestCase):
         self.assertLess(span["without_thinking_in_fit"]["think"]["mean"], 0.3, "fitted without thinking text, the push is ~0 inside the thinking")
         self.assertGreater(span["with_thinking_in_fit"]["think"]["mean"], 0.7, "fitted with it, the push holds there")
         self.assertGreater(span["with_thinking_in_fit"]["answer"]["mean"], 0.7, "and still holds in the answer")
+
+
+class ThinkTextsTest(unittest.TestCase):
+    def test_the_servers_reasoning_reaches_the_template_from_either_field(self):
+        x = lab.Lab.__new__(lab.Lab)
+        replies = {"one?": {"reasoning_content": "Thought one.", "content": "Answer one."}, "two?": {"reasoning": "Thought two.", "content": "Answer two."}}
+        asked = []
+        x.chat = lambda messages, max_tokens, thinking, budget: (asked.append((thinking, budget)), {"message": replies[messages[0]["content"]]})[1]
+        rendered = []
+        x.tok = type("T", (), {"apply_chat_template": staticmethod(lambda msgs, tokenize, enable_thinking: (rendered.append((msgs, enable_thinking)), f"<think>{msgs[1]['reasoning_content']}</think>{msgs[1]['content']}")[1])})()
+        texts = x.think_texts(["one?", "two?"])
+        self.assertEqual(texts, ["<think>Thought one.</think>Answer one.", "<think>Thought two.</think>Answer two."])
+        self.assertTrue(all(t for t, _ in asked), "asked with thinking on")
+        self.assertTrue(all(e for _, e in rendered), "rendered in the thinking format")
+
+
+if __name__ == "__main__":
+    unittest.main()
