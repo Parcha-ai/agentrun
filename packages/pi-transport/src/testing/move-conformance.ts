@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -24,12 +24,34 @@ const ROUNDS = 6;
 const STEPS: readonly MoveStep[] = ["prepare", "drain", "seal", "ship", "take", "resume", "retire"];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Where in a target's resume the suite kills its runner. */
+type KillPoint = "build" | "open" | "tool";
+
+/** The file beside a store that names the one point where that home's runner kills itself, once. */
+const killFile = (store: string) => `${store}.kill-at`;
+
+/** As a crash at `point`, when the file beside the store names it. The file goes first: a restart runs on. */
+function dieAt(store: string, point: KillPoint): void {
+	let wanted: string;
+	try {
+		wanted = readFileSync(killFile(store), "utf8").trim();
+	} catch {
+		return;
+	}
+	if (wanted !== point) return;
+	rmSync(killFile(store), { force: true });
+	process.kill(process.pid, "SIGKILL");
+}
+
 /**
  * The app the move suite runs: one tool, `work`, that appends its round to `effects.log` in the conversation's
- * directory, which is the workspace. A runner
- * file for the suite is `runMain(moveConformanceApp)`; its model is the host's `faux/faux-1`.
+ * directory, which is the workspace. A runner file for the suite is `runMain(moveConformanceApp)`; its model is the
+ * host's `faux/faux-1`. When the file `<store>.kill-at` names a point, the runner kills itself there, once: `build`
+ * (the marker is written, the store not open), `open` (the conversations point here, the notice is not admitted) or
+ * `tool` (between a tool's effect and its result).
  */
 export const moveConformanceApp: App = (ctx) => {
+	dieAt(ctx.store, "build");
 	const work = defineTool({
 		name: "work",
 		description: "Do one unit of work with an effect.",
@@ -39,12 +61,17 @@ export const moveConformanceApp: App = (ctx) => {
 			if (api.env === undefined) throw new Error("the tool has no environment");
 			const appended = await api.env.appendFile("effects.log", `${args.n}\n`, BACKGROUND_CONTEXT);
 			if (!appended.ok) throw appended.error;
+			dieAt(ctx.store, "tool");
 			return { content: [{ type: "text", text: `did ${args.n}` }] };
 		},
 	});
 	const registry = createRegistry();
 	registry.install(defineExtension({ name: "work", tools: [work] }));
-	return { registry, root: { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: ctx.workspace } } };
+	return {
+		registry,
+		root: { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: ctx.workspace } },
+		onOpen: () => dieAt(ctx.store, "open"),
+	};
 };
 
 /** Two places of the provider under test, empty, and the runner program that runs `moveConformanceApp` there. */
@@ -53,16 +80,30 @@ export type MovePair = { readonly a: Place; readonly b: Place; readonly program:
 /** Calls `use` once with a fresh pair, then ends the boxes. */
 export type MovePairProvider = (use: (pair: MovePair) => Promise<void>) => Promise<void>;
 
+type Said = { readonly role: string; readonly content?: unknown };
+
+/** A message's text, whether its content is a string or a list of parts. */
+const textOf = (message: Said) =>
+	typeof message.content === "string"
+		? message.content
+		: Array.isArray(message.content)
+			? message.content.map((part) => (part as { text?: unknown }).text ?? "").join("")
+			: "";
+
 /**
  * The host's models: a stateless model that calls `work` once a round and then says it is done. From the third round
  * on it waits until a move has come to its drain, or 3 s, so that every move takes a session in the middle of its run.
+ * It counts the move's notice in every transcript it is sent: the most it saw is what the session holds.
  */
 function hostModels(drainCame: Promise<void>) {
 	const faux = fauxProvider({ api: "faux" });
 	const models = createModels();
 	models.setProvider(faux.provider);
+	let notices = 0;
 	faux.setResponses(
-		Array.from({ length: 200 }, () => async (transcript: { messages: readonly { role: string }[] }) => {
+		Array.from({ length: 200 }, () => async (transcript: { messages: readonly Said[] }) => {
+			const seen = transcript.messages.filter((message) => message.role === "user" && textOf(message) === NOTICE);
+			notices = Math.max(notices, seen.length);
 			await sleep(60);
 			const done = transcript.messages.filter((message) => message.role === "toolResult").length;
 			if (done >= 2) await Promise.race([drainCame, sleep(3_000)]);
@@ -70,7 +111,7 @@ function hostModels(drainCame: Promise<void>) {
 			return fauxAssistantMessage(fauxToolCall("work", { n: done }), { stopReason: "toolUse" });
 		}),
 	);
-	return models;
+	return { models, notices: () => notices };
 }
 
 /** A program's output in a box, or `undefined` when it failed. */
@@ -89,6 +130,12 @@ type Run = {
 	readonly start: StartRunner;
 	readonly home: HomeHandle;
 	effects(place: Place): Promise<string[]>;
+	/** The most notices of the move the model saw in one transcript. */
+	notices(): number;
+	/** Makes the runner at `place` kill itself at `point` of its next resume or run. */
+	killAt(place: Place, point: KillPoint): Promise<void>;
+	/** Whether the kill point set at `place` is still waiting: a runner that died there removed it. */
+	killPending(place: Place): Promise<boolean>;
 	/** The move came to its drain: the rest of the run may go on. */
 	drainCame(): void;
 	kill(place: Place): Promise<void>;
@@ -106,7 +153,7 @@ async function begin(pair: MovePair): Promise<Run> {
 	const came = new Promise<void>((resolve) => {
 		drainCame = resolve;
 	});
-	const models = hostModels(came);
+	const { models, notices } = hostModels(came);
 	const handles: HomeHandle[] = [];
 	const base = boxRunner({ program: pair.program, session: SESSION, models });
 	const start: StartRunner = async (place, epoch, startContext) => {
@@ -138,6 +185,22 @@ async function begin(pair: MovePair): Promise<Run> {
 				`${place.workspace}/effects.log`,
 			]);
 			return (text ?? "").split("\n").filter(Boolean);
+		},
+		notices,
+		async killAt(place, point) {
+			const argv = [
+				"sh",
+				"-c",
+				'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1"',
+				"sh",
+				killFile(place.store),
+				point,
+			];
+			if ((await read(place, argv)) === undefined)
+				throw new Error(`could not set the kill point in ${place.environment}`);
+		},
+		async killPending(place) {
+			return (await read(place, ["sh", "-c", 'test -e "$1"', "sh", killFile(place.store)])) !== undefined;
 		},
 		async kill(place) {
 			// As a crash: the runner's own process id, killed with no warning.
@@ -176,10 +239,13 @@ function epochAfter(step: MoveStep, who: "host" | "source" | "target"): number {
 }
 
 /**
- * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, and a kill of the
- * host, the source or the target just before each of the seven steps, each followed by a host that recovers the
- * session from the lease. Every case ends with the session finished, no round's effect twice, and every round's
- * effect once whenever the kill came after the session was held still.
+ * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, a kill of the host, the
+ * source or the target just before each of the seven steps, and a kill of the target inside its own resume (its
+ * marker written and the store not open; the conversations pointed at it and the notice not admitted; between a
+ * tool's effect and its result), each followed by a host that recovers the session from the lease. Every case ends
+ * with the session finished, no round's effect twice, every round's effect once whenever the kill came after the
+ * session was held still, and the move's notice in the transcript once when the session moved and never when it
+ * stayed.
  */
 export function registerMoveConformance(
 	runner: StorageConformanceRunner,
@@ -222,6 +288,7 @@ export function registerMoveConformance(
 						getOrThrow(await moved.home.idle(context));
 						equal(await run.effects(pair.b), every, "the rounds in the new home");
 						equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
+						equal(run.notices(), 1, "the notices the model saw");
 					}),
 				),
 			timeoutMs,
@@ -255,6 +322,7 @@ export function registerMoveConformance(
 						getOrThrow(await run.home.idle(context));
 						equal(await run.effects(pair.a), every, "the rounds in the home that stayed");
 						equal(await run.held(), { epoch: 1, environment: pair.a.environment }, "the lease");
+						equal(run.notices(), 0, "the notices the model saw");
 					}),
 				),
 			timeoutMs,
@@ -288,6 +356,7 @@ export function registerMoveConformance(
 						getOrThrow(await run.home.idle(context));
 						equal(await run.effects(pair.a), every, "the rounds in the home that stayed");
 						equal(await run.held(), { epoch: 1, environment: pair.a.environment }, "the lease");
+						equal(run.notices(), 0, "the notices the model saw");
 					}),
 				),
 			timeoutMs,
@@ -330,6 +399,7 @@ export function registerMoveConformance(
 						getOrThrow(await moved.home.idle(context));
 						equal(await run.effects(pair.b), every, "the rounds in the new home");
 						equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
+						equal(run.notices(), 1, "the notices the model saw");
 					}),
 				),
 			timeoutMs,
@@ -389,11 +459,70 @@ export function registerMoveConformance(
 								if (STEPS.indexOf(step) > STEPS.indexOf("drain") || who === "target") {
 									equal(effects, every, "every round once");
 								}
+								equal(run.notices(), lease?.epoch === 2 ? 1 : 0, "the notices the model saw");
 							}),
 						),
 					timeoutMs,
 				);
 			}
+		}
+
+		// Inside the target's own steps: after the take, so the session is the target's whatever the move answered.
+		const inside: readonly (readonly [KillPoint, string])[] = [
+			["build", "after it wrote its marker and before it opened the store"],
+			["open", "after it pointed the conversations at its workspace and before the notice"],
+			["tool", "once it runs, between a tool's effect and its result"],
+		];
+		for (const [point, when] of inside) {
+			runner.it(
+				`finishes the session when the target is killed ${when}`,
+				() =>
+					withPair((pair) =>
+						withRun(pair, async (run) => {
+							await sleep(150);
+							await run.killAt(pair.b, point);
+							const moved = await moveHome(
+								{
+									session: SESSION,
+									host: "host-1",
+									ownership: run.lease,
+									from: { place: pair.a, home: run.home, epoch: 1 },
+									to: pair.b,
+									start: run.start,
+									notice: NOTICE,
+									onStep: (step) => {
+										if (step === "drain") run.drainCame();
+									},
+								},
+								context,
+							);
+							if (point !== "tool") equal(moved.ok ? "moved" : moved.error.code, "resume", "the move's outcome");
+							equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
+							let home = moved.ok ? moved.value.home : undefined;
+							let restarted = false;
+							if (home === undefined || !(await home.idle(context)).ok) {
+								// The runner died: a host starts it again from the lease, once.
+								restarted = true;
+								await sleep(300);
+								const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
+								const recovered = await recoverHome(
+									{ session: SESSION, ownership: run.lease, places, start: run.start, notice: NOTICE },
+									context,
+								);
+								home = getOrThrow(recovered).home;
+								getOrThrow(await home.idle(context));
+							}
+							equal(
+								[await run.killPending(pair.b), restarted],
+								[false, true],
+								"the target died at the kill point",
+							);
+							equal(await run.effects(pair.b), every, "every round once");
+							equal(run.notices(), 1, "the notices the model saw");
+						}),
+					),
+				timeoutMs,
+			);
 		}
 	});
 }

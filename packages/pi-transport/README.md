@@ -309,9 +309,11 @@ and makes that home run (a sealed home is told to reopen, a target that never re
 lease's seal and move id, and the `notice` the recovering host passes). A host that starts again calls it.
 
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
-with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, and a kill of the
-host, the source or the target just before each of the seven steps, each followed by a recovery. Its lease is
-`leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
+with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, a kill of the host,
+the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
+its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
+recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
+stayed. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
 one file.
 
 What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
