@@ -98,7 +98,7 @@ test('two agent steps in one process are two conversations, each asked its turns
   assert.deepEqual([firsts.length, new Set(firsts.map((row) => row.pid)).size, new Set(firsts.map((row) => row.conversation)).size], [2, 1, 2]);
 });
 
-test('the gates are not vacuous: a cited failed receipt, a tool or page judgment run twice and a turn asked twice in one process each fail theirs', { timeout: 120_000 }, async (t) => {
+test('the gates are not vacuous: a cited failed receipt, a tool run twice, a turn asked twice in one process and a page judged with no read each fail theirs', { timeout: 120_000 }, async (t) => {
   const [loginWall] = cases;
   const { runDir } = await runOf(t, loginWall);
   const failedRead = filed(runDir).find(({ read }) => read.ok && read.value.status === 'failed').path;
@@ -111,18 +111,28 @@ test('the gates are not vacuous: a cited failed receipt, a tool or page judgment
   assert.deepEqual(failingOf(cites, loginWall.job), ['no-failed-evidence-cited']);
 
   const rows = await ledgerOf(runDir);
-  const pageJudged = rows.filter((row) => row.kind === 'judge' && row.name.startsWith('page '));
-  assert.equal(pageJudged.length, 1, 'the page judgment is counted like the judge');
-  const again = [rows.find((row) => row.kind === 'tool'), rows.find((row) => row.kind === 'model'), pageJudged[0]];
+  const browser = (name) => rows.filter((row) => row.kind === 'browser' && row.name === name);
+  assert.deepEqual([browser('page.read').length, browser('page.judge').length], [2, 2], 'the lead read the wall again once, and each read was judged');
+  const again = [rows.find((row) => row.kind === 'tool'), rows.find((row) => row.kind === 'model'), browser('page.judge')[0]];
   const repeats = await tampered(runDir, 'repeats', (dir) => appendFile(join(dir, 'ledger.jsonl'), again.map((row) => `${JSON.stringify(row)}\n`).join('')));
-  const [fakesGate] = gates(repeats, loginWall.job).filter(({ id }) => id === 'fakes-called-once');
-  assert.equal(fakesGate.ok, false);
-  assert.equal(fakesGate.detail, `tool:search ran 2 times; model:turn 0 of ${again[1].conversation} was asked twice in one process; judge:${pageJudged[0].name} ran 2 times`);
+  assert.deepEqual(Object.fromEntries(gates(repeats, loginWall.job).filter(({ ok }) => !ok).map(({ id, detail }) => [id, detail])), {
+    'fakes-called-once': `tool:search ran 2 times; model:turn 0 of ${again[1].conversation} was asked twice in one process`,
+    'browser-ops-ran': '3 page judgments for 2 page reads',
+  });
+});
+
+test('a record that cites a browser read fails browser-ops-ran when the ledger shows no page run', { timeout: 120_000 }, async (t) => {
+  const { runDir } = await runOf(t, reference);
+  const unrun = await tampered(runDir, 'unrun', async (dir) => {
+    const kept = (await ledgerOf(dir)).filter((row) => !(row.kind === 'browser' && row.name === 'page.run'));
+    await writeFile(join(dir, 'ledger.jsonl'), kept.map((row) => `${JSON.stringify(row)}\n`).join(''));
+  });
+  assert.deepEqual(failures(unrun), [['browser-ops-ran', 'the record cites a browser read, and page.run never ran']]);
 });
 
 test('a missing log fails the gates that read it, and says which', { timeout: 120_000 }, async (t) => {
   const { runDir } = await runOf(t, reference);
-  assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl'], ['browser-ops-ran', 'no ledger.jsonl']]);
   assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))),
     [['nodes-end', 'no events.jsonl'], ['browser-sessions-released', 'no events.jsonl']]);
 });
@@ -132,7 +142,7 @@ test('a log cut mid-line fails the gates that read it, and the others still repo
   const cut = (name) => async (dir) => writeFile(join(dir, name), (await readFile(join(dir, name), 'utf8')).slice(0, -10));
   const lastLine = async (name) => (await readFile(join(runDir, name), 'utf8')).trim().split('\n').length;
   const ledgerError = `ledger.jsonl line ${await lastLine('ledger.jsonl')} does not parse`;
-  assert.deepEqual(failures(await tampered(runDir, 'ledger-cut', cut('ledger.jsonl'))), [['fakes-called-once', ledgerError]]);
+  assert.deepEqual(failures(await tampered(runDir, 'ledger-cut', cut('ledger.jsonl'))), [['fakes-called-once', ledgerError], ['browser-ops-ran', ledgerError]]);
   const eventsError = `events.jsonl line ${await lastLine('events.jsonl')} does not parse`;
   assert.deepEqual(failures(await tampered(runDir, 'events-cut', cut('events.jsonl'))), [['nodes-end', eventsError], ['browser-sessions-released', eventsError]]);
 });

@@ -20,10 +20,14 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 
 `job.ts`, small and fixed so the output is a constant:
 
-1. `call search`: the host's tool returns two URLs.
+1. `call search`: the host's tool returns two URLs. The tool door keeps each answer under the call's intent in
+   `<run>/answers/` before the result is committed, so a run resumed after a kill between the two takes the answer
+   instead of stopping on the unknown call, and never sends it again. A call that was admitted and never sent stays
+   unknown: the resumed run is refused with `FROZEN_EFFECT_UNKNOWN`.
 2. `agent investigate`: the lead opens the first result with `run`, reads it with `browser_read`, reads `filing.png`
    from the workspace with `read` (vision serves the image), and submits `{ answer, citations }` citing the two
-   receipt paths its tools returned.
+   receipt paths its tools returned. Like a model, it asks a call whose result is an error once more, and goes on
+   without it after a second error. Before it asks a `run` again it takes a snapshot, as the browser asks.
 3. `judge verdict`: a scripted judge says whether the receipts support the answer.
 4. `code finish`: the output.
 
@@ -34,7 +38,7 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 | # | Function | Who asks for it | `localHost()` passes |
 |---|---|---|---|
 | 1 | `models` | pi-durable's `models`, the node runner's agent | pi-ai's faux provider, answering from the job's script |
-| 2 | `tools` | the workflow's `call` (`runEffect`), the agent's extensions, the browser's provider and driver | the job's `search`, no extra extensions, `FakeBackend` from `@parcha/pi-browser/testing` |
+| 2 | `tools` | the workflow's `call` (`runEffect`), a resumed run's lookup of a call a kill left unknown (`answered`), the agent's extensions, the browser's provider and driver | the job's `search` and the answers it kept, no extra extensions, `FakeBackend` from `@parcha/pi-browser/testing` |
 | 3 | `evidence` | the browser and vision, one sink for both record types | a JSON file per record under `<run>/evidence/<label>/`, named by its hash |
 | 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
@@ -47,7 +51,9 @@ environment for the tools as `env`, the disk run's own option; `--box` passes a 
 
 Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner,
 the workflow's task (`createWorkflowExtension` from `@parcha/agentrun-pi/durable`). Then the run opens and pi resumes
-what a killed process left, the workflow's task among them; the browser reconciles its sessions; the workflow's task is
+what a killed process left, the workflow's task among them. Before the task's driver opens the journal, each call a
+killed process left unknown is looked up with `tools.answered`, and one the door answered is completed from its
+answer. The browser reconciles its sessions; the workflow's task is
 started, or reached when the open resumed it, and waited on; the record is delivered; every open browser session is
 released, and the run is released. `run()` returns the task's outcome: `complete` with the output, `escalated`,
 `refused` with a code and message, or `stopped`.
@@ -62,7 +68,8 @@ None of them judges prose.
 | `record-matches-output-schema` | `out/record.json` exists, parses, and its record validates against the workflow's output schema |
 | `citations-name-filed-evidence` | every string in the record that names a path under `evidence/` is a file there that parses and has `tool`, `args` and `status` |
 | `no-failed-evidence-cited` | no cited receipt was filed `failed` |
-| `fakes-called-once` | in `ledger.jsonl`, every tool call, judge and page judgment happened once across the run's processes, and each turn of a conversation was asked at most twice, the second time in a later process |
+| `fakes-called-once` | in `ledger.jsonl`, every tool call and judge happened once across the run's processes, and each turn of a conversation was asked at most twice, the second time in a later process |
+| `browser-ops-ran` | in `ledger.jsonl`, a record that cites a browser read rests on a `page.run` and a `page.read`, and no more pages were judged than read. The lead may ask the browser again, so these rows are not counted once |
 | `nodes-end` | every step that `events.jsonl` shows starting also ends |
 | `browser-sessions-released` | every browser session `events.jsonl` shows launched is released |
 

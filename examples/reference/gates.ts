@@ -53,19 +53,26 @@ export function gates(runDir: string, job: Job): Gate[] {
     : validate(delivered.value.record) ? [] : (validate.errors ?? []).map((error) => `${error.instancePath || '/'} ${error.message}`);
 
   const cited = delivered.ok ? [...new Set(citationsOf(delivered.value.record))] : [];
-  const receipts = cited.map((path): { path: string; problem?: string; status?: unknown } => {
+  const receipts = cited.map((path): { path: string; problem?: string; status?: unknown; tool?: unknown } => {
     const at = resolve(runDir, path);
     if (relative(runDir, at).startsWith('..')) return { path, problem: 'leaves the run directory' };
     if (!existsSync(at)) return { path, problem: 'does not exist' };
     const read = parse(at);
     if (!read.ok) return { path, problem: `does not parse: ${read.error}` };
     const missing = (['tool', 'args', 'status'] as const).filter((field) => read.value[field] === undefined);
-    return { path, ...(missing.length ? { problem: `has no ${missing.join(', ')}` } : {}), status: read.value.status as unknown };
+    return { path, ...(missing.length ? { problem: `has no ${missing.join(', ')}` } : {}), status: read.value.status as unknown, tool: read.value.tool as unknown };
   });
 
-  // Two agent steps each start at turn 0, so a model call is its turn in its conversation.
+  // Two agent steps each start at turn 0, so a model call is its turn in its conversation. What the browser does is the
+  // lead's to repeat, so its rows are checked against the record below, not counted here.
   const ledger = log<LedgerRow>(runDir, 'ledger.jsonl');
-  const calls = countBy(ledger.ok ? ledger.rows : [], (row) => (row.kind === 'model' ? `model:${row.name} of ${row.conversation ?? 'an unnamed conversation'}` : `${row.kind}:${row.name}`));
+  const calls = countBy(ledger.ok ? ledger.rows.filter((row) => row.kind !== 'browser') : [], (row) => (row.kind === 'model' ? `model:${row.name} of ${row.conversation ?? 'an unnamed conversation'}` : `${row.kind}:${row.name}`));
+  const browserOps = countBy(ledger.ok ? ledger.rows.filter((row) => row.kind === 'browser') : [], (row) => row.name);
+  const opsOf = (name: string) => browserOps.get(name)?.length ?? 0;
+  const opProblems = !ledger.ok ? [ledger.error] : [
+    ...(receipts.some(({ tool }) => tool === 'browser_read') ? ['page.run', 'page.read'].filter((op) => opsOf(op) === 0).map((op) => `the record cites a browser read, and ${op} never ran`) : []),
+    ...(opsOf('page.judge') > opsOf('page.read') ? [`${opsOf('page.judge')} page judgments for ${opsOf('page.read')} page reads`] : []),
+  ];
   const callProblems = !ledger.ok ? [ledger.error] : [...calls].flatMap(([call, rows]) => rows[0]!.kind !== 'model' ? (rows.length === 1 ? [] : [`${call} ran ${rows.length} times`])
     : rows.length > 2 ? [`${call} was asked ${rows.length} times`] : rows.length === 2 && rows[0]!.pid === rows[1]!.pid ? [`${call} was asked twice in one process`] : []);
 
@@ -83,6 +90,7 @@ export function gates(runDir: string, job: Job): Gate[] {
     gate('no-failed-evidence-cited', receipts.flatMap(({ path, status }) => (status === 'failed' ? [`${path} was filed failed`] : [])),
       `${filed(runDir).filter(({ read }) => read.ok && read.value.status === 'failed').length} receipts filed failed, none cited`),
     gate('fakes-called-once', callProblems, `${calls.size} calls: every tool and judge once, every model turn once or once more in a later process`),
+    gate('browser-ops-ran', opProblems, `${opsOf('page.run')} page runs, ${opsOf('page.read')} reads, ${opsOf('page.judge')} judgments: each cited read rests on a run and a read`),
     gate('nodes-end', fromEvents([...steps].flatMap(([step, rows]) => (rows.at(-1)!.type === 'node.end' ? [] : [`${step} started and never ended`]))), `${steps.size} steps, each ended`),
     gate('browser-sessions-released', fromEvents([...sessions].flatMap(([tag, rows]) => (rows.some((row) => row.change === 'released') ? [] : [`${tag} was never released`]))),
       `${sessions.size} sessions, each released`),

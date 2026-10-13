@@ -10,8 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { bindingMismatch, canonicalHash, recoveryBinding } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, nodeRunner, taskScope, type WorkflowOutcome, type WorkflowRequest } from '@parcha/agentrun-pi/durable';
+import { bindingMismatch, canonicalHash, recoveryBinding, recoveryBound } from '@parcha/agentrun-dsl/recovery';
+import { createWorkflowExtension, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
@@ -93,6 +93,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
+    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
     run: async ({ runtime, context }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -166,4 +167,26 @@ function moved(saved: WorkflowRequest | undefined, job: Job): Extract<WorkflowOu
   if (before.binding === now.binding && before.input === now.input) return undefined;
   const error = bindingMismatch(JSON.stringify(before), now);
   return { status: 'refused', code: error.code, message: error.message, detail: { moved: (error as { moved?: unknown }).moved ?? null, saved: before, requested: now } };
+}
+
+/** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
+ *  one, before the task's driver opens the journal. A call the door never answered stays unknown. The journal is opened
+ *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
+async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
+  const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
+  if (!request) return;
+  const commit = async <T,>(change: (tx: never) => T | Promise<T>) => {
+    let result!: T;
+    await runtime.commit(async (tx) => { result = await change(tx as never); return undefined; }, context);
+    return result;
+  };
+  const journal = await documentStore({ commit } as never, key, { context }).open(recoveryBound(request.workflow, request.bind));
+  try {
+    for (const effect of journal.effects()) {
+      const answer = effect.status === 'unknown' && effect.intent ? await answered(effect.intent) : undefined;
+      if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
+    }
+  } finally {
+    await journal.close();
+  }
 }
