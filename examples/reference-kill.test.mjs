@@ -3,37 +3,62 @@
 // the run's own rows. The same seed gives the same kills.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cutInEffectWindow, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
+import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
-// Seeds whose kills leave every gate green. Others are valid runs the gates call failures: see the notes in the follow-ups.
-const GREEN = [9, 11];
+// The seeds are chosen for coverage, not for how the reference gates read them. Together the two cover every class of crossing
+// the random draw reaches; the browser's page action is cut on purpose below.
+//   31  model turn, receipt filing, supervisor not applied, supervisor applied, delivery, and a release answer lost
+//   40  judge, browser read, receipt filing, supervisor applied, delivery
+const SEEDS = [31, 40];
+const ALL = Object.keys(CLASSES).filter((name) => name !== 'browser action');
 
-test('ten kills at seeded random points, each resumed by a fresh process: every committed turn and every effect once, the record the uninterrupted run\'s, every gate green', { timeout: 300_000 }, async () => {
-  const ledger = await killAnywhere({ seed: GREEN[0], kills: 10 });
-  assert.deepEqual(failed(ledger), []);
-  assert.equal(ledger.kills.filter((kill) => kill.landed).length, 10);
-  assert.equal(ledger.final.status, 'complete');
-  assert.deepEqual(ledger.counted.committedTurns, ledger.reference.committedTurns);
-  assert.ok(ledger.checks.some((check) => check.name === 'gate fakes-called-once' && check.ok), 'the reference gates ran on the final directory');
-  // The ledger says what the claims are, and names the kill behind a page action that never ran.
-  const lines = render(ledger).join('\n');
-  assert.match(lines, /page\.run +x[01]/);
-  assert.match(lines, /does not prove the action happened/);
-  assert.match(lines, /FROZEN_EFFECT_UNKNOWN, by design, so the call is never made twice/);
-  assert.match(lines, /page\.read may repeat, each repeat tied to a kill inside it/);
+test('ten kills at seeded random points, each resumed by a fresh process: every committed turn and every effect once, the record the uninterrupted run\'s', { timeout: 300_000 }, async () => {
+  const covered = new Set();
+  for (const seed of SEEDS) {
+    const ledger = await killAnywhere({ seed, kills: 10 });
+    assert.deepEqual(failed(ledger), [], `seed ${seed}`);
+    assert.equal(ledger.kills.filter((kill) => kill.landed).length, 10, `seed ${seed}`);
+    assert.equal(ledger.final.status, 'complete');
+    assert.deepEqual(ledger.counted.committedTurns, ledger.reference.committedTurns);
+    // The reference gates ran, and what they said is in the ledger: a failure is recorded with the rows it wanted.
+    assert.ok(ledger.gates.length >= 6, 'the reference gates ran on the final directory');
+    for (const gate of ledger.gates.filter((candidate) => !candidate.ok)) assert.ok(gate.wanted !== undefined, `gate ${gate.id} names the rows it wanted`);
+    for (const name of ledger.covered) covered.add(name);
+    const lines = render(ledger).join('\n');
+    assert.match(lines, /page\.run +x[01]/);
+    assert.match(lines, /does not prove the action happened/);
+    assert.match(lines, /FROZEN_EFFECT_UNKNOWN, by design, so the call is never made twice/);
+    assert.match(lines, /page\.read may repeat, each repeat tied to a kill inside it/);
+    assert.match(lines, /Reference gates on the final directory/);
+  }
+  assert.deepEqual(ALL.filter((name) => !covered.has(name)), [], 'every class of crossing the draw reaches is covered by a seed');
+});
+
+test('the browser\'s page action is cut before and after it is applied: made at most once, and never again by the resume', { timeout: 200_000 }, async () => {
+  const before = await cutBrowserAction('applying');
+  assert.equal(before.killed, 'SIGKILL');
+  assert.equal(before.landed, 'browser.applying driver.run');
+  assert.equal(before.resumed.status, 'complete');
+  assert.equal(before.pageRuns, 0, 'cut before it was applied: it never ran');
+  const after = await cutBrowserAction('applied');
+  assert.equal(after.landed, 'browser.applied driver.run');
+  assert.equal(after.resumed.status, 'complete');
+  assert.equal(after.pageRuns, 1, 'cut after it was applied and before its answer left: it ran once, and the resume did not repeat it');
+  for (const cut of [before, after]) assert.deepEqual(cut.committedTurns, ['run', 'browser_read', 'read', 'submit'].map((name) => (name === 'run' ? 'run' : name)));
+  assert.ok(classesOf([{ landed: { side: 'supervisor', point: after.landed } }]).includes('browser action'));
 });
 
 test('a page action that never ran is printed with the kill behind it', () => {
-  const lines = render({ seed: 1, kills: [], processes: 1, browserCalls: [], runInterrupted: [2, 5], final: { status: 'complete', generation: 1, record: null }, ms: 0, checks: [],
+  const lines = render({ seed: 1, kills: [], processes: 1, browserCalls: [], runInterrupted: [2, 5], gates: [], covered: [], final: { status: 'complete', generation: 1, record: null }, ms: 0, checks: [],
     counted: { committedTurns: [], requests: {}, effects: {}, judge: {}, browser: {}, receipts: [] }, reference: {} }).join('\n');
   assert.match(lines, /page\.run +x0: errored run result committed \(kill 2, 5\)/);
 });
 
 test('the same seed gives the same kills, and another seed gives others', { timeout: 300_000 }, async () => {
   const where = (ledger) => ledger.kills.map((kill) => kill.landed && `${kill.landed.side} ${kill.landed.point}`);
-  const [one, again, other] = [await killAnywhere({ seed: GREEN[0], kills: 10 }), await killAnywhere({ seed: GREEN[0], kills: 10 }), await killAnywhere({ seed: GREEN[1], kills: 10 })];
+  const [one, again, other] = [await killAnywhere({ seed: 31, kills: 6 }), await killAnywhere({ seed: 31, kills: 6 }), await killAnywhere({ seed: 40, kills: 6 })];
   assert.deepEqual(failed(one), []);
   assert.deepEqual(where(again), where(one));
   assert.deepEqual(failed(other), []);
