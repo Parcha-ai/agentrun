@@ -36,16 +36,20 @@ test('the examples job has a step for every example suite', () => {
   for (const suite of all) assert.ok(ran.has(suite), `${suite} has tests and no step in the examples job`);
 });
 
-test('every suite step runs with the per-test deadline and force-exit', () => {
-  const runs = steps.filter((s) => s.dir?.startsWith(EXAMPLES) && s.run);
+test('every suite step installs its own suite, then runs it with the per-test deadline and force-exit', () => {
+  const runs = steps.filter((s) => s.dir?.startsWith(EXAMPLES) && s.run && !/^npm ci [^&]*$/.test(s.run));
   assert.ok(runs.length >= 9, `${runs.length} suite steps`);
   for (const { dir, run } of runs) {
-    if (run === 'node scripts/run-tests.mjs') {
+    // a step is its suite's installs and build, then one test command: a failed install fails that suite's step alone
+    const parts = run.split(' && ');
+    const command = parts.pop();
+    for (const part of parts) assert.match(part, /^npm (ci|install|run build)\b/, `${dir}: only installs and the build come before the tests: ${run}`);
+    if (command === 'node scripts/run-tests.mjs') {
       // the show's own runner: node:test's run() carries the same two
       const runner = readFileSync(join(ROOT, dir, 'scripts', 'run-tests.mjs'), 'utf8');
       assert.match(runner, /run\(\{[^}]*timeout: 240_000[^}]*forceExit: true[^}]*\}\)/, `${dir}'s runner passes the deadline to run()`);
       continue;
     }
-    assert.ok(run.startsWith('node --test ') && run.includes('--test-timeout=240000') && run.includes('--test-force-exit'), `${dir}: ${run}`);
+    assert.ok(command.startsWith('node --test ') && command.includes('--test-timeout=240000') && command.includes('--test-force-exit'), `${dir}: ${command}`);
   }
 });

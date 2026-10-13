@@ -127,9 +127,9 @@ jobs:
 
   examples:
     # The examples' own suites under packages/pi-durable-disk/examples, which no other job runs: 03-tab-to-cloud and 04-walks-home's
-    # tab, vm, show, universes, gg-onemore, cluster, policy and self-tools. Each installs as its README says (its own lockfile; npm
-    # install for 03 and cluster, which have none) and runs with npm test's per-test deadline and force-exit (show's runner passes
-    # the same to node:test's run()). scripts/examples-job.test.mjs keeps every suite here and every command on those flags.
+    # tab, vm, show, universes, gg-onemore, cluster, policy and self-tools. Each step installs its suite as its README says (its
+    # own lockfile; npm install for 03 and cluster, which have none), so a failed install fails only that suite, then runs it with
+    # npm test's per-test deadline and force-exit (show's runner passes the same to node:test's run()). scripts/examples-job.test.mjs keeps every suite here and every command on those flags.
     # Reporting only for now: continue-on-error keeps a red run from blocking merges; it becomes required once it is green for a day.
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -146,18 +146,14 @@ jobs:
       - name: Build the packages the examples import
         working-directory: .
         run: npm ci --ignore-scripts && npm run build
-      - name: Install every suite, and build the show's pages (two of its tests check the built page)
-        run: |
-          (cd 04-walks-home/tab && npm ci --ignore-scripts --no-audit --no-fund)
-          (cd 03-tab-to-cloud && npm install --no-workspaces --ignore-scripts --no-audit --no-fund)
-          for suite in vm show universes gg-onemore policy self-tools; do (cd 04-walks-home/$suite && npm ci --ignore-scripts --no-audit --no-fund); done
-          (cd 04-walks-home/cluster && npm install --no-workspaces --ignore-scripts --no-audit --no-fund)
-          (cd 04-walks-home/show && npm run build)
+      - name: Install the 04 tab (03's tests and build use its wllama)
+        working-directory: packages/pi-durable-disk/examples/04-walks-home/tab
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: 03-tab-to-cloud
         if: success() || failure()
         timeout-minutes: 8
         working-directory: packages/pi-durable-disk/examples/03-tab-to-cloud
-        run: node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+        run: npm install --no-workspaces --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
       - name: 04 tab
         if: success() || failure()
         timeout-minutes: 6
@@ -167,34 +163,34 @@ jobs:
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/vm
-        run: node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
       - name: 04 show
         if: success() || failure()
         timeout-minutes: 8
         working-directory: packages/pi-durable-disk/examples/04-walks-home/show
-        run: node scripts/run-tests.mjs
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build && node scripts/run-tests.mjs
       - name: 04 universes
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/universes
-        run: node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
       - name: 04 gg-onemore
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/gg-onemore
-        run: node --test --test-timeout=240000 --test-force-exit 'pi/test/*.test.ts' 'e2e/test/*.test.ts' 'chat/test/*.test.ts'
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'pi/test/*.test.ts' 'e2e/test/*.test.ts' 'chat/test/*.test.ts'
       - name: 04 cluster
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/cluster
-        run: node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
+        run: npm install --no-workspaces --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts'
       - name: 04 policy
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/policy
-        run: node --test --test-timeout=240000 --test-force-exit test/*.test.ts
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit test/*.test.ts
       - name: 04 self-tools
         if: success() || failure()
         timeout-minutes: 6
         working-directory: packages/pi-durable-disk/examples/04-walks-home/self-tools
-        run: node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts' ../../03-tab-to-cloud/test/tool-format.test.ts ../../03-tab-to-cloud/test/decode-lazy.test.ts ../../03-tab-to-cloud/test/limits.test.ts
+        run: npm ci --ignore-scripts --no-audit --no-fund && node --test --test-timeout=240000 --test-force-exit 'test/*.test.ts' ../../03-tab-to-cloud/test/tool-format.test.ts ../../03-tab-to-cloud/test/decode-lazy.test.ts ../../03-tab-to-cloud/test/limits.test.ts
