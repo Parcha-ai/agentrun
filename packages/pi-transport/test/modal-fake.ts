@@ -27,7 +27,7 @@ class FakeSandbox implements ModalSandbox {
 		this.execs.push({ command, params });
 		const child = spawn(command[0] ?? "", command.slice(1), {
 			cwd: params.workdir,
-			env: { PATH: process.env.PATH ?? "", ...params.env },
+			env: { PATH: process.env.PATH ?? "", ...this.params.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		this.#children.add(child);
