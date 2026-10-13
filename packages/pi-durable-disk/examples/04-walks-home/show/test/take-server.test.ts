@@ -79,6 +79,26 @@ describe("the take server launcher", () => {
     }
   });
 
+  it("passes the instructions policy through to serve.ts unchanged when given, and not at all when not", async () => {
+    const polDir = join(root, "take-pol");
+    const instructions = join(root, "instructions.txt");
+    writeFileSync(instructions, "You are a chat page's agent.\n");
+    assert.ok(!execFileSync("ps", ["-o", "args=", "-p", String(status.pid)], { encoding: "utf8" }).match(/--instructions-|--without-extensions/), "the robot's own launch has none of them");
+    const pol = spawn(process.execPath, [script, "--local", join(root, "disk"), "--dir", polDir, "--run", "take-pol", "--instructions-file", instructions, "--instructions-mode", "replace", "--without-extensions", "offline-tools,robot-tools,computer"], { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: join(homedir(), "tmp-d5", "tmp") }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      for (let i = 0; i < 200 && !existsSync(join(polDir, "status.json")); i++) {
+        if (pol.exitCode !== null) throw new Error("the launcher exited");
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const polStatus = JSON.parse(readFileSync(join(polDir, "status.json"), "utf8")) as { pid: number };
+      const args = execFileSync("ps", ["-o", "args=", "-p", String(polStatus.pid)], { encoding: "utf8" });
+      assert.ok(args.includes(`--instructions-file ${instructions} --instructions-mode replace --without-extensions offline-tools,robot-tools,computer`), args);
+    } finally {
+      pol.kill("SIGTERM");
+      for (let i = 0; i < 40 && pol.exitCode === null && pol.signalCode === null; i++) await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
   it("stops when told to, and takes its status file with it", async () => {
     child.kill("SIGTERM");
     for (let i = 0; i < 40 && child.exitCode === null; i++) await new Promise((r) => setTimeout(r, 200));
@@ -88,6 +108,22 @@ describe("the take server launcher", () => {
   });
 
   const refuse = (...args: string[]) => spawnSync(process.execPath, [script, "--dir", join(root, "refuse"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
+
+  it("refuses an instructions policy that serve.ts would refuse, before anything is started: no mode, a mode without a file, an unknown mode, a missing file, an empty extension list", () => {
+    const file = join(root, "instr-refuse.txt");
+    writeFileSync(file, "x");
+    for (const [args, message] of [
+      [["--instructions-file", file], /--instructions-file needs --instructions-mode/],
+      [["--instructions-mode", "append"], /--instructions-mode needs --instructions-file/],
+      [["--instructions-file", file, "--instructions-mode", "prepend"], /replace or append \(it has no default\)/],
+      [["--instructions-file", join(root, "nope.txt"), "--instructions-mode", "replace"], /does not exist/],
+      [["--without-extensions"], /needs a comma-separated list/],
+    ] as const) {
+      const res = refuse("--local", join(root, "disk"), ...args);
+      assert.equal(res.status, 2, args.join(" "));
+      assert.match(res.stderr, message, args.join(" "));
+    }
+  });
 
   it("refuses an --up-timeout-s that is not a positive number, before anything is started", () => {
     for (const bad of ["0", "-5", "soon"]) {

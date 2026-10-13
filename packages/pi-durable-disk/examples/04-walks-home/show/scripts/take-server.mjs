@@ -1,7 +1,7 @@
 // The take's 03 server: the one tab server D1's home step asks to adopt a winner's run, and the one the stage's disk reads from.
 //   node scripts/take-server.mjs --mount-root /mnt/pda/<your lane>/pipe [--dir ~/tmp-d5/take] [--run walks-home] [--ledger FILE]
 //   node scripts/take-server.mjs --local DIR [--dir ...]            (a dry run: no Archil, no mount)
-//   Either form takes --up-timeout-s N (how long to wait for the server to answer; default 120), --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
+//   Either form takes --up-timeout-s N (how long to wait for the server to answer; default 120), --instructions-file F --instructions-mode replace|append and --without-extensions a,b (passed to serve.ts unchanged: the policy a tab applies when it creates the agent), --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
 //   store after each release and logs it, off the handover path; a no-op with --local, which has no object store).
 // On the real disk it runs 03's serve.ts under with-archil (the only way the show lane touches Archil: the keys exist in that
 // child's environment and nowhere else, mounts live under the caller's own lane directory, and the disk is the scratch disk the
@@ -46,6 +46,10 @@ const judgeArgs = ["judge-model", "judge-url", "judge-key-env"].flatMap((n) => (
 const noRestore = process.argv.flatMap((a, i) => (a === "--no-restore" ? [process.argv[i + 1]] : []));
 const placerModule = arg("placer-module", "");
 const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
+// The host's own policy for the agent a browser tab creates (03's serve.ts: the instructions and the extensions it drops), passed through unchanged when given; absent, the robot's own.
+const instructionsFile = arg("instructions-file", "");
+const instructionsMode = arg("instructions-mode", "");
+const withoutExtensions = arg("without-extensions", "");
 const withModal = process.argv.includes("--modal");
 const budget = arg("budget", "1500000");
 const evidenceReadback = process.argv.includes("--evidence-readback");
@@ -60,6 +64,11 @@ const die = (message) => {
   process.exit(2);
 };
 // How long to wait for the server to answer: under with-typesafe, with-modal and with-archil the wrappers alone take 17-20 s (each reads 1Password) before serve.ts starts.
+if (instructionsMode && instructionsMode !== "replace" && instructionsMode !== "append") die(`--instructions-mode ${instructionsMode}: replace or append (it has no default)`);
+if (instructionsFile && !instructionsMode) die("--instructions-file needs --instructions-mode replace|append (it has no default)");
+if (instructionsMode && !instructionsFile) die("--instructions-mode needs --instructions-file");
+if (instructionsFile && !existsSync(instructionsFile)) die(`--instructions-file ${instructionsFile} does not exist`);
+if (process.argv.includes("--without-extensions") && !withoutExtensions) die("--without-extensions needs a comma-separated list of extension names");
 const upTimeoutS = Number(arg("up-timeout-s", "120"));
 if (!Number.isFinite(upTimeoutS) || upTimeoutS <= 0) die(`--up-timeout-s ${arg("up-timeout-s", "")} is not a positive number of seconds`);
 
@@ -115,6 +124,9 @@ const serveArgs = [
   // The folder of the offline brain's files (D0's serve.ts --models-dir: served under /models/ with the page's isolation headers).
   ...(arg("models-dir", "") ? ["--models-dir", arg("models-dir", "")] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
+  ...(instructionsFile ? ["--instructions-file", instructionsFile] : []),
+  ...(instructionsMode ? ["--instructions-mode", instructionsMode] : []),
+  ...(withoutExtensions ? ["--without-extensions", withoutExtensions] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...judgeArgs,
   ...(evidenceReadback ? ["--evidence-readback"] : []),
