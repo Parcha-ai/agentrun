@@ -25,7 +25,7 @@ const context = BACKGROUND_CONTEXT;
 const median = (values: readonly number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
 
 // Needs Modal credentials in the environment and the SDK (`npm install --no-save modal@0.11.0`), and spends money, so
-// it runs only when asked: `npm run test:live:modal`. The GPU kind runs the conformance suite only.
+// it runs only when asked: `PI_TRANSPORT_LIVE_MODAL=1 npm run test:live`. The GPU kind runs the conformance suite only.
 if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS, hookTimeout: CASE_TIMEOUT_MS });
 	const client = await loadClient();

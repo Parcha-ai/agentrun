@@ -13,7 +13,8 @@ const SHORT_LIFETIME_MS = Number(process.env.PI_TRANSPORT_LIVE_SHORT_LIFETIME_MS
 const SHORT_GRACE_MS = 180_000;
 
 // Needs Modal credentials in the environment (MODAL_TOKEN_ID, MODAL_TOKEN_SECRET) and spends money, so it runs only
-// when asked: `npm run test:live:modal`. PI_TRANSPORT_LIVE_MODAL_KINDS picks kinds; the GPU kind is never a default.
+// when asked: `PI_TRANSPORT_LIVE_MODAL=1 npm run test:live`. PI_TRANSPORT_LIVE_MODAL_KINDS picks kinds; the GPU kind is
+// never a default.
 if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS, hookTimeout: CASE_TIMEOUT_MS });
 	const client = await loadClient();
