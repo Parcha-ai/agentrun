@@ -40,7 +40,7 @@ function localClaim(ref: RunRef, place: RunPlace): Claim {
     get fenced() { return fence !== undefined; },
     markFenced(cause) { fence ??= { cause }; },
     async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
-    async release() { return { via: 'archil' as const }; },
+    async release() { return { via: 'none' as const }; },
   };
 }
 
