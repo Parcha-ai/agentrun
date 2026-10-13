@@ -107,6 +107,23 @@ export function checkResolved(workspace, version) {
   return { rows, wrong: rows.filter((row) => row.version !== version) };
 }
 
+/** What `npm ls` says is wrong with the installed tree: a launch error, a nonzero exit, or an invalid, unmet or missing
+ *  edge in its output. Empty for a sound tree. */
+export function lsProblems(ls) {
+  if (ls.error) return [`npm ls did not run: ${ls.error.message}`];
+  const problems = String(ls.stdout ?? '').split('\n').filter((line) => /\binvalid\b|UNMET|\bmissing\b/.test(line));
+  const stderr = String(ls.stderr ?? '').trim();
+  if (ls.status !== 0) problems.push(`npm ls exited ${ls.status ?? `on ${ls.signal}`}${stderr ? `: ${stderr.split('\n').slice(0, 5).join(' / ')}` : ''}`);
+  return problems;
+}
+
+/** The family packages a leg loads from more than one directory, with those directories. */
+export function extraCopies(rows) {
+  const paths = new Map();
+  for (const { name, path } of rows) if (path) paths.set(name, new Set([...(paths.get(name) ?? []), path]));
+  return [...paths].filter(([, at]) => at.size > 1).map(([name, at]) => ({ name, paths: [...at] }));
+}
+
 function argsOf(argv) {
   const args = { only: undefined, requireAll: false, plan: false, scratch: false, npm: 'npm', out: undefined, pi: undefined, root: process.cwd() };
   for (let i = 0; i < argv.length; i += 1) {
@@ -162,17 +179,17 @@ function main() {
     if (rc !== 0) { write(); process.exit(1); }
   }
   const ls = spawnSync(args.npm.split(/\s+/)[0], [...args.npm.split(/\s+/).slice(1), 'ls', ...packages, ...leg.flatMap((w) => ['-w', w.name])], { cwd: args.root, encoding: 'utf8' });
-  console.log(ls.stdout);
-  const invalid = ls.stdout.split('\n').filter((line) => /\binvalid\b|UNMET|\bmissing\b/.test(line));
-  if (invalid.length) { console.log(`pi ${args.pi}: FAILED: npm ls reports ${invalid.length} broken edge(s)`); failed = true; }
-  const copies = new Map();
+  if (ls.stdout) console.log(ls.stdout);
+  const problems = lsProblems(ls);
+  for (const problem of problems) console.log(`npm ls: ${problem}`);
+  if (problems.length) { console.log(`pi ${args.pi}: FAILED: npm ls reports ${problems.length} problem(s)`); failed = true; }
   for (const workspace of leg) {
     const { rows, wrong } = checkResolved(workspace, args.pi);
     report.resolved.push(...rows);
-    for (const row of rows) { console.log(`resolved from ${row.from}: ${row.name} ${row.version ?? 'unresolved'} ${row.path ?? ''}`); copies.set(row.name, new Set([...(copies.get(row.name) ?? []), row.path])); }
+    for (const row of rows) console.log(`resolved from ${row.from}: ${row.name} ${row.version ?? 'unresolved'} ${row.path ?? ''}`);
     if (wrong.length) { console.log(`pi ${args.pi}: FAILED: ${workspace.name} resolves ${wrong.map((row) => `${row.name} ${row.version ?? 'unresolved'} (from ${row.from})`).join(', ')}`); failed = true; }
   }
-  for (const [name, paths] of copies) if (paths.size > 1) { console.log(`pi ${args.pi}: FAILED: the leg loads ${paths.size} copies of ${name}: ${[...paths].join(', ')}`); failed = true; }
+  for (const { name, paths } of extraCopies(report.resolved)) { console.log(`pi ${args.pi}: FAILED: the leg loads ${paths.length} copies of ${name}: ${paths.join(', ')}`); failed = true; }
   if (failed) { write(); process.exit(1); }
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
   const build = run('npm', ['run', 'build'], { cwd: args.root, env });
