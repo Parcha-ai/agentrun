@@ -14,7 +14,7 @@ const RULES: { rule: string; re: RegExp }[] = [
   { rule: "a local or tailnet address", re: /(?:\b127\.0\.0\.1\b|\blocalhost\b|\b100\.(?:\d{1,3})\.\d{1,3}\.\d{1,3}\b|\b192\.168\.\d{1,3}\.\d{1,3}\b)/ },
   { rule: "a private key block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { rule: "a credential-shaped value", re: /(?:\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|\b(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{12,})/i },
-  { rule: "a run link with its secret", re: /\/run\/[A-Za-z0-9_-]+#[A-Za-z0-9_-]{8,}/ },
+  { rule: "a run link with its secret", re: /\/run\/[^\s#"'<>]+#[^\s"'<>]{8,}/ },
   { rule: "a remote resource the page would load", re: /(?:<link\b[^>]*\brel=["']?(?:stylesheet|preload|preconnect)|<script\b[^>]*\bsrc=|\bsrc=["']?https?:|@import\b|\burl\(\s*["']?https?:|<iframe\b)/i },
 ];
 

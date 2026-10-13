@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
 import { startScreencast } from "../../show/scripts/screencast.mjs";
 import { agentLink } from "../agent-link.ts";
+import { redact } from "../../redact-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..", "..", "show");
@@ -36,6 +37,8 @@ if (tabWhere !== "headless" && tabWhere !== "browser") throw new Error(`--tab is
 const ownBrowser = tabWhere === "browser";
 // A tab in a person's browser has to be reached through a tunnel, so the 03 server's port is fixed (the run's link names it).
 const serverPort = arg("server-port", "8763");
+// The run id names the run's tree on the disk (cleaned before and after): a second take on the same box uses its own, so it cannot delete the first one's.
+const runId = arg("run-id", "walks-home");
 // A person's browser throttles a page they are not looking at (its pings can stop for a minute) and goes offline on purpose: the run is not
 // declared tab-less for a long while. The headless Chrome's pages are never throttled, so its grace stays short.
 const graceMs = arg("grace-ms", ownBrowser ? "180000" : "30000");
@@ -120,7 +123,6 @@ const spawnLogged = (cmd, args, env, name, cwd) => {
   kids.push(k);
   return k;
 };
-const redact = (t) => t.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
 // A stop (SIGTERM, Ctrl-C) ends every wait at once, so the cleanup in `finally` runs while the box is still starting too.
 let stopping = false;
 let stopNow;
@@ -157,7 +159,7 @@ let rec;
 let captionLog = [];
 let failed = false;
 try {
-  step("the run's tree before the take", { cleaned: await unlessStopped(cleanRun("walks-home")) });
+  step("the run's tree before the take", { cleaned: await unlessStopped(cleanRun(runId)) });
   await until(() => false, 10_000, "the object store to settle").catch((e) => { if (e instanceof Stopped) throw e; }); // the object store settles its deletes before the same run id is created again
   // 1. the take's 03 server on the real disk, with the Modal cloud module
   const take = spawnLogged(
@@ -166,7 +168,7 @@ try {
       join(show, "scripts", "take-server.mjs"),
       "--mount-root", mountRoot,
       "--dir", join(work, "take"),
-      "--run", "walks-home",
+      "--run", runId,
       "--budget", modelBudget,
       "--agent-model", agentModel,
       ...(modelsDir ? ["--models-dir", modelsDir] : []),
@@ -318,6 +320,6 @@ try {
   await writer?.close().catch(() => {});
   for (const k of kids.slice().reverse()) k.kill("SIGTERM");
   await sleep(8000);
-  console.log(JSON.stringify({ name: "the run's tree after live", cleaned: await cleanRun("walks-home") }));
+  console.log(JSON.stringify({ name: "the run's tree after live", cleaned: await cleanRun(runId) }));
 }
 process.exit(failed ? 1 : 0);

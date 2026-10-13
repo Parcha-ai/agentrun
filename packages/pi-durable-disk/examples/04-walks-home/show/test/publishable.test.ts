@@ -29,7 +29,7 @@ test("machine-local detail is found", () => {
 });
 
 test("secrets are found: keys, tokens, bearer values and a run link with its secret", () => {
-  for (const bad of [KEY_BLOCK, "key sk-abcdefghijklmnop1234", "ghs_abcdefghijklmnopqrstuvwxyz", "Authorization: Bearer abcdefghijklmnop123", "token=abcdefghijklmnop1234", "http://x/run/stage#abcdefghij1234"]) {
+  for (const bad of [KEY_BLOCK, "key sk-abcdefghijklmnop1234", "ghs_abcdefghijklmnopqrstuvwxyz", "Authorization: Bearer abcdefghijklmnop123", "token=abcdefghijklmnop1234", "http://x/run/stage#abcdefghij1234", "http://x/run/walks-home.rehearsal#abcdefghij1234"]) {
     assert.ok(findLeaks(`<p>${bad}</p>`).length > 0, bad);
   }
   assert.deepEqual(findLeaks("<p>the run's secret stays in the link fragment</p>"), [], "the word alone is fine");
