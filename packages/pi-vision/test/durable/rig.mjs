@@ -90,4 +90,8 @@ export async function drive(options) {
 }
 
 export const textOf = (result) => result.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+
+/** A host tool's result with `blocks` under both names pi-durable has given them (`output` from 1.2, `content` before),
+ *  as a tool built for every release returns it. */
+export const toolResult = (blocks, more = {}) => ({ output: blocks, content: blocks, ...more });
 export { ctx };

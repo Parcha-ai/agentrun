@@ -11,7 +11,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { imageHeader } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { docxBytes, pdfBytes, pngBytes } from "@parcha/pi-vision/testing";
-import { ctx, drive, textOf, tmp } from "./durable/rig.mjs";
+import { ctx, drive, piDurableVersion, textOf, tmp, toolResult } from "./durable/rig.mjs";
 
 const LINES = ["Invented memo for a test", "Item code 5521"];
 const scope = (id) => ({ label: `conv-${id}`, deriveDir: `.vision/${id}` });
@@ -21,9 +21,8 @@ const workspace = (files) => {
   return dir;
 };
 const png = (width, height) => ({ type: "image", data: Buffer.from(pngBytes(width, height)).toString("base64"), mimeType: "image/png" });
-/** A host's tool that returns `blocks` under both names pi-durable has given a result's blocks, as a tool built for
- *  every release does. */
-const hostTool = (name, blocks) => ({ name, tools: [{ name, description: name, parameters: { type: "object", properties: {} }, execute: async () => ({ content: blocks, output: blocks }) }] });
+/** A host's tool that returns `blocks`, built for every pi-durable release. */
+const hostTool = (name, blocks) => ({ name, tools: [{ name, description: name, parameters: { type: "object", properties: {} }, execute: async () => toolResult(blocks) }] });
 /** The host's sink and rows, each call kept. */
 const host = () => {
   const filed = [], looks = [], misses = [];
@@ -53,6 +52,19 @@ test("the model receives blocks from read of an image and of a PDF, and the guar
   assert.deepEqual(snap.content.map((b) => b.type), ["text", "image", "text"], "the shot's text, the image that fits, the miss in place of the one that does not");
   assert.equal(snap.content[1].data, small.data);
   assert.ok(!JSON.stringify(snap.content).includes(large.data), "the image over the lead's limit never reaches it");
+});
+
+test("pi's own read of an image, with vision's read off, reaches the model only through the guard", async () => {
+  const cwd = workspace({ "chart.png": pngBytes(40, 30) });
+  const rows = host();
+  const requests = [];
+  const vision = createVisionExtension({ ...rows.options, scope, install: { read: "off" } });
+  await drive({ extensions: [vision.extension], rounds: [[["read", { path: "chart.png" }]]], cwd, lead: "blind-1", onLead: (context) => requests.push(context.messages) });
+  const [read] = received(requests);
+  assert.deepEqual(read.content.filter((b) => b.type === "image"), [], "no image reaches a text-only lead");
+  // pi-durable 1.2's read returns the image as a block, which the guard withholds; before 1.2 it returns no image.
+  const blocks = !["1.0.", "1.1."].some((line) => piDurableVersion().startsWith(line));
+  assert.deepEqual(rows.misses.map((m) => [m.tool, m.code]), blocks ? [["read", "no_vision_route"]] : []);
 });
 
 test("the guard's looks and misses name the tool the model called and its result, not read", async () => {

@@ -36,25 +36,28 @@ export type VisionHandle = {
   pdfText(bytes: Uint8Array, signal?: AbortSignal): Promise<string | null>;
 };
 
-/** pi-durable 1.0 and 1.1 carry a result's blocks in `content`; its next release names them `output`. This name, read
- *  and written only by the two functions below, is the one place that knows. */
-const BLOCKS = "content";
+/** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
+ *  and ignores the other, and 1.2 reads a result without `output` as empty, so a result is written under both and read
+ *  from `output`, else `content`. These names, read and written only by the two functions below, are the one place
+ *  that knows. */
+const BLOCKS = ["output", "content"] as const;
 
 /** pi's tool result for the core's: the blocks, the error flag, the details and the usage pi folds into the
  *  conversation's spend under the tool's name. */
 export function piResult(result: ToolResult): ToolExecutionResult {
+  const blocks = [...result.content];
   return {
-    [BLOCKS]: [...result.content],
+    ...Object.fromEntries(BLOCKS.map((name) => [name, blocks])),
     ...(result.isError ? { isError: true } : {}),
     ...(result.details ? { details: result.details as JsonValue } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
-  };
+  } as ToolExecutionResult;
 }
 
 function coreResult(result: ToolExecutionResult): ToolResult {
-  const blocks = (result as Record<string, unknown>)[BLOCKS];
+  const blocks = BLOCKS.map((name) => (result as Record<string, unknown>)[name]).find(Array.isArray);
   return {
-    content: Array.isArray(blocks) ? blocks.filter((b): b is ToolResult["content"][number] => b?.type === "text" || b?.type === "image") : [],
+    content: blocks ? blocks.filter((b): b is ToolResult["content"][number] => b?.type === "text" || b?.type === "image") : [],
     ...(result.isError ? { isError: true } : {}),
     ...(result.details && typeof result.details === "object" && !Array.isArray(result.details) ? { details: result.details as Record<string, unknown> } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
