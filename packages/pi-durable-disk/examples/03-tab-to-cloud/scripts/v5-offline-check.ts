@@ -65,8 +65,8 @@ try {
   ok("it is in the browser's file system: more than the model's 501 MB", opfs > 500_000_000, opfs);
   // 2. take it offline: only a check-out, no download of the model
   const before = await ev<number>(`performance.getEntriesByType("resource").filter((r) => /\.gguf$|state\.bin$/.test(r.name)).length`);
-  ok("the \"Take it offline\" button is on the page for a person to press (not hidden, and a size)", await ev<boolean>(`(() => { const b = document.getElementById("offline"); return !b.hidden && b.getBoundingClientRect().width > 0; })()`));
-  await ev("document.getElementById('offline').click()");
+  ok("the \"Take it offline\" button is on the page for a person to press (not hidden, and a size)", await ev<boolean>(`(() => { const b = document.getElementById("connection"); return b.dataset.action === "offline" && b.getBoundingClientRect().width > 0; })()`));
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 500);
   ok("the run was checked out to the browser", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   // 3. the brain comes up from the cache

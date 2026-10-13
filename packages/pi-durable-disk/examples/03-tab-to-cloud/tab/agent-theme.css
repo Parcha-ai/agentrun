@@ -19,26 +19,40 @@ html, body { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--
 header { background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px var(--gutter); gap: 14px; }
 h1 { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
 .run { display: none; } /* the run's id is for the operator: it is in the address bar */
-.badge { padding: 0; border-radius: 0; background: none; gap: 8px; color: var(--ink); margin-left: auto; }
-.badge .dot { width: 7px; height: 7px; background: var(--muted); }
+/* the bar is four things: LLM, where it runs, Files, online/offline. The place is a label; the operator's fallbacks (move by hand, bring it home) are a menu behind it */
+.bar { display: flex; align-items: center; gap: 20px; margin-left: auto; min-width: 0; }
+.driver, .badge { display: inline-flex; align-items: center; gap: 6px; font: 400 12px/1.2 var(--sans); color: var(--muted); white-space: nowrap; }
+.driver[hidden] { display: none; }
+#driver-name, .where { font: 500 14px/1.2 var(--sans); letter-spacing: 0; color: var(--ink); }
+.badge { position: relative; margin-left: 0; padding: 0; border-radius: 0; background: none; gap: 8px; }
+.badge .dot { width: 7px; height: 7px; background: var(--muted); flex: none; }
 .badge.tab .dot, .badge.offline .dot { background: var(--green); } .badge.cloud .dot { background: var(--purple); } .badge.moving .dot { background: var(--accent); }
-.badge.tab, .badge.cloud, .badge.other, .badge.moving, .badge.parked, .badge.offline { background: none; color: var(--ink); }
-.badge-text { font: 500 14px/1.2 var(--sans); }
-.badge-sub { display: none; }
-.net { font-size: 0; width: 7px; height: 7px; padding: 0; border: 0; border-radius: 50%; background: var(--muted); }
-.net.up { background: var(--green); } .net.down { background: var(--accent); }
-.actions { gap: 8px; }
+.badge.tab, .badge.cloud, .badge.other, .badge.moving, .badge.parked, .badge.offline { background: none; color: var(--muted); }
+.badge.moving .where { color: var(--accent); animation: pulse 1s infinite alternate; }
+.where { min-height: 0; padding: 4px 0; border: 0; border-radius: var(--r2); background: none; cursor: default; text-align: left; }
+.where.has-menu { cursor: pointer; } .where.has-menu::after { content: "\25BE"; margin-left: 6px; font-size: 10px; color: var(--muted); }
+.where.has-menu:hover::after { color: var(--ink); }
+.menu { position: absolute; top: calc(100% + 12px); right: 0; z-index: 30; display: flex; flex-direction: column; gap: 2px; min-width: 180px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r2); }
+.menu[hidden] { display: none; }
+.menu .switcher { flex-direction: column; } .menu .switcher .env { text-align: left; }
+.menu #takeover { text-align: left; padding: 6px 10px; }
+.actions { gap: 4px; }
 button { min-height: 32px; font: 500 12px/1 var(--mono); letter-spacing: .04em; border-radius: var(--r3); border: 1px solid var(--line); background: transparent; color: var(--ink); }
 button:hover { border-color: var(--muted); }
 button.link { border: 0; background: none; color: var(--muted); text-decoration: none; padding: 6px 4px; }
 button.link:hover { color: var(--ink); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #080809; }
+button.icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding: 0; border: 0; background: none; color: var(--muted); }
+button.icon:hover { color: var(--ink); }
+#connection[data-state="offline"] { color: var(--accent); }
+#connection.inert, #connection.inert:hover { cursor: default; }
+#connection.inert:not([data-state="offline"]):hover { color: var(--muted); }
+#connection.busy svg { animation: pulse 1s infinite alternate; }
 /* the switcher is quiet text, not a boxed control: the place it is in is the one in ink */
 .switcher { border: 0; border-radius: 0; gap: 2px; }
 .switcher .env { border: 0; border-radius: var(--r2); padding: 6px 10px; color: var(--muted); background: none; }
 .switcher .env.active, .switcher .env.active.tab, .switcher .env.active.cloud, .switcher .env.active.moving { background: none; color: var(--ink); animation: none; font-weight: 500; }
 .switcher .env:hover:not(:disabled) { color: var(--ink); }
-#handover, #offline-status, #online-status { font: 400 11px var(--mono); color: var(--muted); }
 #banner { background: var(--panel); color: var(--muted); border-bottom: 1px solid var(--line); font: 400 13px/1.4 var(--sans); padding: 10px var(--gutter); }
 #checkedout { background: var(--bg); border-bottom: 1px solid var(--line); padding: 0 var(--gutter); color: var(--muted); }
 #checkedout summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 36px; cursor: pointer; font: 500 12px/1.4 var(--mono); letter-spacing: .04em; color: var(--ink); }
@@ -81,10 +95,9 @@ main { border-top: 0; }
 /* ---- a phone: one line on top (where the agent is), nothing else; the demo's controls stay in the DOM ---- */
 @media (max-width: 760px) {
   header { padding: 12px var(--gutter); }
-  h1, .run, .actions { display: none; }
-  .badge { margin-left: 0; }
-  .badge-text { font-size: 15px; }
-  header .net { margin-left: auto; }
+  h1, .run, .actions { display: none; } /* a narrow page: Files is the footer's button, and the network is the phone's own */
+  .bar { margin-left: 0; width: 100%; justify-content: space-between; gap: 14px; }
+  .menu { right: auto; left: 0; }
   #chat { padding: 16px var(--gutter) 16px; }
 }
 
@@ -145,8 +158,6 @@ details.thread .thread-chat .turn { font-size: 14px; }
 details.thread .thread-chat .turn { font: 400 14px/1.5 var(--sans); color: var(--ink); }
 .note.brain.home::before, .note.brain.moved::before { content: ""; } /* these lines carry their own arrow */
 /* the model answering now: small, in the header, quiet */
-.driver { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.driver[hidden] { display: none; }
 /* a line just sent, before the transcript holds it, and where it is */
 .turn.user.sent { opacity: 0.85; }
 .move.sent-state { opacity: 0.8; }

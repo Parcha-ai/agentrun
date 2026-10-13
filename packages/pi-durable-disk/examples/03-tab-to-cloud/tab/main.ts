@@ -170,20 +170,24 @@ const envLabel = (id: string | undefined) => state.environments.find((e) => e.id
 
 // ---- rendering ---------------------------------------------------------------------------------------------------------
 
+/** Where the agent runs, as the bar names it: this tab is "browser (Wasm)" (the computer in it is Wasmer), a remote host by its own label. */
+const whereName = (id: string | undefined) => (id === "tab" || state.environments.find((e) => e.id === id)?.kind === "tab" ? "browser (Wasm)" : envLabel(id));
+
+/** The bar's "Running in: <text>": the place, or a quiet 'moving to ...'. The facts that used to sit under it (host, generation, progress) are its tooltip. */
 function badge(): { text: string; tone: string; sub: string } {
   const p = state.placement;
-  if (phoneMode) return { text: "pi on this phone", tone: "offline", sub: state.phone?.phase ?? state.progress };
-  if (state.mode === "offline") return { text: "Checked out to this browser", tone: "offline", sub: "the only live copy of this run is here · the server no longer runs it" };
-  if (state.leaving) return { text: `Moving to ${p?.where === "moving" ? p.to : "the next host"}`, tone: "moving", sub: state.progress };
-  if (state.mode === "booting") return { text: state.checkingOut || state.progress.startsWith("opening this browser") ? "Opening this browser's copy" : "Starting the computer in this tab", tone: "moving", sub: state.progress };
-  if (state.mode === "writer") return { text: "Running in this tab", tone: "tab", sub: `brain + hands in this tab · disk claimed by the pipe, generation ${state.generation}` };
-  if (state.mode === "connecting") return { text: "Connecting", tone: "moving", sub: "" };
-  if (p?.where === "cloud") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""}` };
-  if (p?.where === "tab" && p.env !== "tab") return { text: `Running in ${envLabel(p.env)}`, tone: "cloud", sub: `through the pipe, generation ${p.generation}` };
-  if (p?.where === "tab") return { text: "Running in another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
-  if (p?.where === "moving") return { text: `Moving to ${p.to}`, tone: "moving", sub: p.detail ?? "" };
-  if (p?.where === "checked-out") return { text: "Checked out to a browser", tone: "parked", sub: "its live copy is in that browser; nothing here runs it any more" };
-  return { text: "Parked on the disk", tone: "parked", sub: p?.detail ?? "" };
+  if (phoneMode) return { text: "browser (Wasm)", tone: "offline", sub: state.phone?.phase ?? state.progress };
+  if (state.mode === "offline") return { text: "browser (Wasm)", tone: "offline", sub: "checked out to this browser: the only live copy of this run is here, the server no longer runs it" };
+  if (state.leaving) return { text: `moving to ${p?.where === "moving" ? whereName(p.to) : "the next host"}`, tone: "moving", sub: state.progress };
+  if (state.mode === "booting") return { text: "browser (Wasm)", tone: "moving", sub: state.progress };
+  if (state.mode === "writer") return { text: "browser (Wasm)", tone: "tab", sub: `brain + hands in this tab · disk claimed by the pipe, generation ${state.generation}` };
+  if (state.mode === "connecting") return { text: "connecting", tone: "moving", sub: "" };
+  if (p?.where === "cloud") return { text: whereName(p.env), tone: "cloud", sub: `${p.host}${p.generation ? `, generation ${p.generation}` : ""}` };
+  if (p?.where === "tab" && p.env !== "tab") return { text: whereName(p.env), tone: "cloud", sub: `through the pipe, generation ${p.generation}` };
+  if (p?.where === "tab") return { text: "another tab", tone: "other", sub: `generation ${p.generation} · read-only here` };
+  if (p?.where === "moving") return { text: `moving to ${whereName(p.to)}`, tone: "moving", sub: p.detail ?? "" };
+  if (p?.where === "checked-out") return { text: "another browser", tone: "parked", sub: "its live copy is in that browser; nothing here runs it any more" };
+  return { text: "nowhere (parked)", tone: "parked", sub: p?.detail ?? "" };
 }
 
 /** The environment the run is in (or moving to), for the switcher. */
@@ -208,8 +212,6 @@ function renderSwitcher(): void {
       return button;
     }),
   );
-  const last = state.handovers.at(-1);
-  $("handover").textContent = last ? `moved to ${envLabel(last.to)} in ${(last.ms / 1000).toFixed(1)} s` : "";
 }
 
 /** Ask for a switch. Into this tab from another tab is a takeover; everything else is a planned switch. */
@@ -523,14 +525,14 @@ function readDriver(): void {
 
 /** The model answering now, for the header: the typed model of the conversation that drives (the tab's small model by its short name, or the cloud model by its id). */
 function driverText(): string {
-  if (phoneMode || state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
+  if (state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
   if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
   if (state.mode === "offline" && driverModel === null) return "";
-  return driverLabel({ model: driverModel, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "v5 · 0.8B" }, cloud: state.mode === "offline" ? "" : state.agentModel });
+  return driverLabel({ model: driverModel, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "Qwen3.5 0.8B" }, cloud: state.mode === "offline" ? "" : state.agentModel });
 }
 function drawDriver(): void {
   const driver = driverText();
-  $("driver").textContent = driver;
+  $("driver-name").textContent = driver;
   $("driver").hidden = driver === "";
 }
 
@@ -542,7 +544,7 @@ function render(): void {
   $("badge-text").textContent = b.text;
   const here = state.mode === "writer" || state.mode === "offline";
   const swapped = here && state.brain?.conversation !== undefined && state.active === state.brain.conversation;
-  $("badge-sub").textContent = [b.sub, here && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : ""].filter(Boolean).join(" · ");
+  badgeEl.title = [b.sub, here && state.brainStatus ? state.brainStatus : "", swapped ? "the agent's brain: the model it trained, running here" : "", state.checkout?.text ?? "", state.checkingIn?.text ?? ""].filter(Boolean).join(" · ");
   readDriver();
   drawDriver();
   $("banner").textContent = state.banner;
@@ -562,18 +564,18 @@ function render(): void {
   $("takeover").hidden = !(state.mode === "viewer" && state.placement?.where === "cloud" && !state.switching);
   // "Take it offline": while this tab runs the agent and the trained model is its brain, and nothing is moving.
   const canTakeOffline = writer && (swapped || v5Offline || new URLSearchParams(location.search).get("brain") === "off") && !state.switching && !state.checkout; // v5: the model is kept in this browser, it is not a trained one that has come home
-  $("offline").hidden = !canTakeOffline;
-  $("offline-status").textContent = state.checkout?.text ?? "";
+  canTakeOfflineNow = canTakeOffline;
   renderNet();
   // "Go online": while the run is checked out to this browser; it can be pressed once the server answers the ping, and nothing is already in progress.
   // Go online exists only with ?golive=1 (the check-in hands the one conversation back to the cloud model); outside it the checkout is one way. A check-in that was not confirmed can be sent again from any mode.
-  $("online").hidden = !((offline && golive) || state.pendingCheckin !== undefined);
-  ($("online") as HTMLButtonElement).disabled = !state.net.online || state.checkingIn !== undefined;
-  $("online-status").textContent = state.checkingIn?.text ?? (offline && !state.net.online ? "waiting for the network" : "");
   $("checkedout").hidden = !offline || phoneMode;
   $("persist-warning").hidden = !(offline && state.offline && !state.offline.record.persistent);
-  $("switcher").hidden = offline || phoneMode;
+  const operable = !offline && !phoneMode; // the operator's fallbacks: only where this page is a viewer or a writer of a run that can move
+  $("switcher").hidden = !operable;
   renderSwitcher();
+  const menuable = operable || !$("takeover").hidden;
+  ($("badge-text") as HTMLButtonElement).classList.toggle("has-menu", menuable);
+  if (!menuable) closeMenu();
   renderChat();
   renderFiles();
   renderStats();
@@ -643,7 +645,7 @@ function ensureComputer(): Promise<NonNullable<typeof computer>> {
     const started = performance.now();
     state.progress = "downloading the computer (bash, coreutils, node)";
     render();
-    const bytes = await (prefetched ?? fetchComputer((got, total) => ($("badge-sub").textContent = `downloading the computer: ${fmtSize(got)}${total ? ` of ${fmtSize(total)}` : ""}`)));
+    const bytes = await (prefetched ?? fetchComputer((got, total) => ($("badge").title = `downloading the computer: ${fmtSize(got)}${total ? ` of ${fmtSize(total)}` : ""}`)));
     state.progress = "loading the computer";
     render();
     computer = await wasmer.packages.load(bytes);
@@ -1695,11 +1697,36 @@ async function pingNet(): Promise<void> {
   render();
 }
 
+/** Whether "Take it offline" is possible now (render() works it out with the rest of the writer's state; the ping redraws the toggle without a full render). */
+let canTakeOfflineNow = false;
+
+// One toggle for the network: its icon is the state (online, or offline), its tooltip the action it would take.
+const WIFI = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9.5a14 14 0 0 1 19 0"/><path d="M5.8 13a9.4 9.4 0 0 1 12.4 0"/><path d="M9 16.4a4.8 4.8 0 0 1 6 0"/><circle cx="12" cy="19.6" r=".9" fill="currentColor"/></svg>';
+const WIFI_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9.5a14 14 0 0 1 5-3.1"/><path d="M12 5.5a14 14 0 0 1 9.5 4"/><path d="M5.8 13a9.4 9.4 0 0 1 3.2-2"/><path d="M14.5 10.6a9.4 9.4 0 0 1 3.7 2.4"/><path d="M9 16.4a4.8 4.8 0 0 1 6 0"/><circle cx="12" cy="19.6" r=".9" fill="currentColor"/><path d="M3.5 3.5l17 17"/></svg>';
+type Connection = { icon: "online" | "offline"; action: "offline" | "online" | "none"; title: string; busy: boolean };
+function connectionState(): Connection {
+  const offlineMode = state.mode === "offline";
+  const canGoOnline = (offlineMode && golive) || state.pendingCheckin !== undefined;
+  const busy = state.checkout !== undefined || state.checkingIn !== undefined;
+  if (busy) return { icon: offlineMode || state.checkout ? "offline" : "online", action: "none", title: state.checkout?.text ?? state.checkingIn?.text ?? "", busy: true };
+  if (canGoOnline) return { icon: "offline", action: state.net.online ? "online" : "none", title: state.net.online ? "Go online" : "Go online (waiting for the network)", busy: false };
+  if (offlineMode) return { icon: "offline", action: "none", title: "Offline: this run is checked out to this browser", busy: false };
+  if (canTakeOfflineNow) return { icon: "online", action: "offline", title: "Take it offline", busy: false };
+  if (!state.net.online) return { icon: "offline", action: "none", title: `Offline: the server cannot be reached (${state.net.reason})`, busy: false };
+  return { icon: "online", action: "none", title: "Online", busy: false };
+}
 function renderNet(): void {
-  const el = $("net");
-  el.textContent = state.net.online ? "ONLINE" : "OFFLINE";
-  el.className = `net ${state.net.online ? "up" : "down"}`;
-  el.title = state.net.online ? "The server answers" : `The server cannot be reached: ${state.net.reason}`;
+  const c = connectionState();
+  const button = $("connection") as HTMLButtonElement;
+  button.dataset.state = c.icon;
+  button.dataset.action = c.action;
+  button.classList.toggle("busy", c.busy);
+  button.classList.toggle("inert", c.action === "none");
+  button.setAttribute("aria-disabled", String(c.action === "none"));
+  button.title = c.title;
+  button.setAttribute("aria-label", c.title);
+  const icon = c.icon === "online" ? WIFI : WIFI_OFF;
+  if (button.dataset.icon !== c.icon) { button.innerHTML = icon; button.dataset.icon = c.icon; }
 }
 
 window.addEventListener("online", () => void pingNet());
@@ -2036,8 +2063,10 @@ $("input").addEventListener("keydown", (e) => {
   }
 });
 $("takeover").addEventListener("click", () => void connect("write", true));
-$("offline").addEventListener("click", () => void takeOffline());
-$("online").addEventListener("click", () => {
+$("connection").addEventListener("click", () => {
+  const action = ($("connection") as HTMLButtonElement).dataset.action;
+  if (action === "offline") return void takeOffline();
+  if (action !== "online") return;
   const pending = state.pendingCheckin;
   if (pending) {
     state.pendingCheckin = undefined;
@@ -2045,6 +2074,20 @@ $("online").addEventListener("click", () => {
     void resumeCheckin(pending.record, pending.host);
   } else void checkIn();
 });
+// The operator's fallbacks (move it by hand, bring it home) are behind the Running-in label, not in the bar: the agent and Jev move it by themselves.
+function closeMenu(): void {
+  $("where-menu").hidden = true;
+  $("badge-text").setAttribute("aria-expanded", "false");
+}
+$("badge-text").addEventListener("click", () => {
+  if (!$("badge-text").classList.contains("has-menu")) return;
+  const open = $("where-menu").hidden;
+  $("where-menu").hidden = !open;
+  $("badge-text").setAttribute("aria-expanded", String(open));
+});
+$("where-menu").addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("button")) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+document.addEventListener("click", (e) => { if (!$("badge").contains(e.target as Node)) closeMenu(); });
 $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)));
 // ?phone=1, after a start that failed: try again, or forget the cached model files first
 $("retry").addEventListener("click", () => location.reload());
@@ -2075,7 +2118,7 @@ async function boot(): Promise<void> {
   }
   if (!run || !secret) {
     $("badge-text").textContent = "No run";
-    $("badge-sub").textContent = "Open a run's link: /run/<id>#<secret>";
+    $("badge").title = "Open a run's link: /run/<id>#<secret>";
     return;
   }
   void connect("view");
@@ -2112,6 +2155,8 @@ void (phoneMode ? startPhone() : boot());
   items: () => state.chat.items(),
   /** Redraw the chat now (a check redraws while a tool result is open). */
   renderChat: () => renderChat(),
+  /** Redraw the page's header and controls now (a check sets a placement and looks at the bar). */
+  render: () => render(),
   /** Set the composer's hint, as the page does (checks set a long one). */
   hint: (text: string) => setHint(text),
   /** Open a workspace file in the panel, as a click on the tree does. */

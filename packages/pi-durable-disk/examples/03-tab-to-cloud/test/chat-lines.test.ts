@@ -269,11 +269,11 @@ test("a refused line moves later copies of the same text up, so the one that goe
 });
 
 test("the header names the model that answers, from the driver's typed model", () => {
-  const names = { "robot-qwen35-0.8b-v5": "v5 · 0.8B" };
+  const names = { "robot-qwen35-0.8b-v5": "Qwen3.5 0.8B" };
   const cloud = { model: { provider: "openai", modelId: "gpt-6-sol" }, tabProvider: "tab-local", names, cloud: "stub" };
   assert.equal(driverLabel(cloud), "gpt-6-sol");
-  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "robot-qwen35-0.8b-v5" } }), "v5 · 0.8B in this tab");
-  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "dino-1b" } }), "dino-1b in this tab", "no short name: its id");
+  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "robot-qwen35-0.8b-v5" } }), "Qwen3.5 0.8B", "locally: the model's real name, with no place after it (the header says where)");
+  assert.equal(driverLabel({ ...cloud, model: { provider: "tab-local", modelId: "dino-1b" } }), "dino-1b", "no short name: its id");
   assert.equal(driverLabel({ ...cloud, model: null }), "stub", "no typed model read yet: the run's cloud model id");
   assert.equal(driverLabel({ ...cloud, model: null, cloud: "" }), "");
 });

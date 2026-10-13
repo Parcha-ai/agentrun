@@ -115,9 +115,40 @@ try {
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv1", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: you were moved to a Modal VM; your files came with you.", timestamp: 1 }], data: { switchId: "mv1", from: "your user's browser tab", planned: true, by: "placement", probability: 0.83, facts: { label: "a Modal VM", tools: [] } } } }); demo.renderChat(); return true; })()`);
   const move = await ev<{ lines: string[]; chat: string }>(`({ lines: [...document.querySelectorAll("#chat .move")].map((m) => m.textContent), chat: document.getElementById("chat").textContent })`);
   ok("a move is one quiet line, and the agent's notice is not in the chat", move.lines.includes("→ Modal VM · Jev 0.83") && !/SYSTEM NOTICE|were moved/.test(move.chat), move);
-  // The header names the model answering (the run's model, from the attach), small and quiet.
+  // The top bar is four things and nothing else: the model, where it runs, Files (an icon) and online/offline (one icon toggle). Moves are asked of the agent, so the switcher is not in the bar.
   const driver = await ev<{ text: string; hidden: boolean }>(`({ text: document.getElementById("driver").textContent, hidden: document.getElementById("driver").hidden })`);
-  ok("the header names the model that is answering", driver.text === "stub" && !driver.hidden, driver);
+  ok("the header names the model that is answering: 'LLM: <model>'", driver.text === "LLM: stub" && !driver.hidden, driver);
+  await page.screenshot(join(shots, "pane-bar.png"));
+  const bar = await ev<{ text: string; ids: string[]; where: string; files: { text: string; title: string; svg: boolean; w: number; h: number }; conn: { text: string; title: string; svg: boolean; w: number; h: number; state: string }; height: number; overflow: boolean }>(`(() => {
+    const header = document.querySelector("header");
+    const shown = (e) => !!e && e.getClientRects().length > 0;
+    const box = (id) => { const e = document.getElementById(id); const r = e.getBoundingClientRect(); return { text: e.textContent.trim(), title: e.title, svg: !!e.querySelector("svg"), w: Math.round(r.width), h: Math.round(r.height), state: e.dataset.state ?? "" }; };
+    return { text: header.innerText.replace(/\\s+/g, " ").trim(), ids: ["net", "handover", "offline", "online", "offline-status", "online-status", "switcher", "takeover"].filter((id) => shown(document.getElementById(id))), where: document.getElementById("badge").innerText.replace(/\\s+/g, " ").trim(), files: box("ws-toggle"), conn: box("connection"), height: Math.round(header.getBoundingClientRect().height), overflow: header.scrollWidth > header.clientWidth + 1 };
+  })()`);
+  ok("the bar reads 'LLM: stub' and 'Running in: browser (Wasm)', with no status words, no 'ONLINE', no 'moved in' and no switcher", /^(AGENT IN A TAB )?LLM: stub Running in: browser \(Wasm\)$/.test(bar.text) && bar.ids.length === 0, bar);
+  ok("Files is an icon button with the tooltip 'Files'", bar.files.text === "" && bar.files.svg && bar.files.title === "Files" && bar.files.w >= 28 && bar.files.w <= 44, bar.files);
+  ok("online/offline is one icon toggle (tooltip 'Take it offline'), not a text button", bar.conn.text === "" && bar.conn.svg && bar.conn.title === "Take it offline" && bar.conn.state === "online" && bar.conn.w >= 28 && bar.conn.w <= 44, bar.conn);
+  ok("the bar is one slim line that does not overflow", bar.height <= 60 && !bar.overflow, bar);
+  // The operator fallback is behind the Running-in label's menu: closed until it is opened, closed again by Escape.
+  const shown = `((e) => e.getClientRects().length > 0)`;
+  const closed = await ev<boolean>(`!${shown}(document.getElementById("switcher"))`);
+  await ev(`document.getElementById("badge-text").click()`);
+  await sleep(100);
+  const opened = await ev<{ open: boolean; envs: string[] }>(`({ open: ${shown}(document.getElementById("switcher")), envs: [...document.querySelectorAll("#switcher button[data-env]")].map((b) => b.textContent) })`);
+  await page.screenshot(join(shots, "pane-bar-menu.png"));
+  await ev(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+  await sleep(100);
+  const menu = { closed, ...opened, escaped: await ev<boolean>(`!${shown}(document.getElementById("switcher"))`), takeover: await ev<string>(`document.getElementById("takeover").textContent`) };
+  ok("the 'your browser | Modal VM' switcher is not in the bar: it opens from the Running-in label and Escape closes it", menu.closed && menu.open && menu.envs.length >= 1 && menu.escaped && menu.takeover === "bring it home", menu);
+  // While a move happens the label says so quietly, and a finished move leaves no 'moved in 9.7 s' text.
+  const moving = await ev<{ text: string; tone: string; after: string }>(`(() => {
+    const s = demo.state; const was = s.placement;
+    s.leaving = "cloud"; s.placement = { where: "moving", to: "cloud", env: "cloud", detail: "" }; demo.render();
+    const text = document.getElementById("badge-text").textContent, tone = document.getElementById("badge").className;
+    s.handovers.push({ switchId: "x", to: "cloud", ms: 9700 }); s.leaving = undefined; s.placement = was; demo.render();
+    return { text, tone, after: document.querySelector("header").innerText.replace(/\\s+/g, " ") };
+  })()`);
+  ok("a move in flight is a quiet state on the label ('moving to ...'), and nothing says how long a move took", /^moving to /.test(moving.text) && /moving/.test(moving.tone) && !/moved|9\.7/.test(moving.after), moving);
   // A move Jev decided for a message is written just before it; the chat reads it after the message it belongs to.
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv2", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: moved", timestamp: 1 }], data: { switchId: "mv2", planned: true, by: "placement", probability: 0.98, phase: "start", facts: { label: "a Modal VM", tools: [] } } } }); chat.apply({ type: "entry_appended", entry: { id: "u-order", kind: "pi.user", model: [{ role: "user", content: "order check line", timestamp: 2 }] } }); demo.renderChat(); return true; })()`);
   const order = await ev<string[]>(`[...document.querySelectorAll("#chat > .turn.user, #chat > .move")].map((n) => n.textContent).filter((t) => /order check line|Jev 0.98/.test(t))`);
@@ -186,9 +217,6 @@ try {
   ok("the teach_skills call opens by itself when it has threads, so their rows are on screen", await until(`[...document.querySelectorAll("details.tool")].some((t) => /^teach_skills/.test(t.textContent) && t.open && !!t.querySelector("details.thread"))`, 10_000).then(() => true, () => false));
   const card = await ev<{ rows: string[]; home: string; text: string }>(`(() => { const d = [...document.querySelectorAll("details.tool")].find((t) => /^teach_skills/.test(t.textContent)); return { rows: [...d.querySelectorAll(".result-card .rc-row")].map((r) => r.textContent), home: d.querySelector(".result-card .rc-home")?.textContent ?? "", text: d.querySelector(".tool-body").textContent }; })()`);
   ok("teach_skills' answer is a compact card from its typed details: a row per thread and what came home; the model's hint is not shown", card.rows.length === 2 && card.rows[0] === "✓ walk · speed 0.51 m/s ≥ 0.4 · checkpoint 5 · 93 s" && card.rows[1] === "✓ spin · spin rate 1.23 rad/s ≥ 1.0 · checkpoint 6 · 70 s" && card.home === "Home: spin, walk" && !/read_thread|Each thread/.test(card.text), card);
-  // What an audience sees in the header and in a thread: the operator controls are quiet text (no boxed switcher, "bring it home" not "take it now"), a thread's own words are in the body type.
-  const looks = await ev<{ switcher: string; takeover: string }>(`(() => ({ switcher: getComputedStyle(document.getElementById("switcher")).borderTopWidth, takeover: document.getElementById("takeover").textContent }))()`);
-  ok("the header's controls are quiet: the switcher has no box and the takeover says 'bring it home'", looks.switcher === "0px" && looks.takeover === "bring it home", looks);
   const rows = await ev<string[]>(`[...document.querySelectorAll("details.thread > summary")].map((s) => s.textContent.replace(/\\s+/g, " ").trim())`);
   ok("each thread is a row inside the teach_skills call: its GPU, its name and how far it is", rows.length === 1 && /GPU 3\s*spin\s*\d+ calls?$/.test(rows[0]), rows);
   ok("every thread row is open by itself, so nobody has to click to see them working", await ev<boolean>(`[...document.querySelectorAll("details.thread")].length > 0 && [...document.querySelectorAll("details.thread")].every((d) => d.open && !!d.querySelector(".thread-chat"))`));
@@ -254,14 +282,20 @@ try {
 
   // offline: checkout, the network cut, the robot still redraws
   await ev("demo.goOffline = demo.goOffline"); // (the page's own button is used below)
-  await ev("document.getElementById('offline').click()");
-  await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500);
+  console.log("  toggle before the click:", JSON.stringify(await ev(`(() => { const b = document.getElementById("connection"); return { action: b.dataset.action, title: b.title, mode: demo.state.mode, checkout: demo.state.checkout ?? null, switching: !!demo.state.switching, brain: demo.state.brain ? "yes" : "no" }; })()`)));
+  await ev("document.getElementById('connection').click()");
+  await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500).catch(async (e) => {
+    console.log("  state at the timeout:", JSON.stringify(await ev(`({ mode: demo.state.mode, checkout: demo.state.checkout ?? null, banner: demo.state.banner, progress: demo.state.progress, checkingOut: !!demo.state.checkingOut, action: document.getElementById("connection").dataset.action })`).catch(() => "page gone")));
+    throw e;
+  });
   ok("the run was checked out (the creature page's files are cached with the page)", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   // The checkout is one quiet line ("Offline · this browser's brain"); every fact it used to put in the audience's face is one click away.
   await until(`!document.getElementById("checkedout").hidden`, 15_000).catch(() => undefined); // the page draws it on its next render
   await page.screenshot(join(shots, "pane-offline-line.png"));
   const banner = await ev<{ shown: boolean; h: number; open: boolean; line: string; facts: number; text: string }>(`(() => { const s = document.getElementById("checkedout"); const d = s.querySelector("details"); const sum = d ? d.querySelector("summary") : null; const h = Math.round(s.getBoundingClientRect().height); const before = { shown: !s.hidden, h, open: !!d && d.open, line: sum ? sum.textContent.replace(/\\s+/g, " ").trim() : s.textContent.slice(0, 60) }; if (d) d.open = true; return { ...before, facts: document.querySelectorAll("#cannot li").length, text: s.textContent.replace(/\\s+/g, " ") }; })()`);
   ok("checked out: one quiet line, closed, not a banner full of operator text", banner.shown && !banner.open && banner.h <= 44 && /^Offline · this browser's brain/.test(banner.line), banner);
+  const offBar = await ev<{ state: string; title: string; where: string; ids: string[] }>(`(() => ({ state: document.getElementById("connection").dataset.state, title: document.getElementById("connection").title, where: document.getElementById("badge").innerText.replace(/\\s+/g, " ").trim(), ids: ["net", "offline", "online"].filter((id) => document.getElementById(id)) }))()`);
+  ok("checked out: the one toggle shows offline (its tooltip says so), the label still says where it runs, and no second button appeared", offBar.state === "offline" && /^Offline/.test(offBar.title) && offBar.where === "Running in: browser (Wasm)" && offBar.ids.length === 0, offBar);
   ok("and every fact is one click away: what does not work (six items) and what the checkout is", banner.facts >= 6 && /The live copy of this run is here/.test(banner.text) && /Moves:/.test(banner.text) && /Sync back:/.test(banner.text), banner.text.slice(0, 200));
   await page.screenshot(join(shots, "pane-offline-open.png"));
   await ev(`document.querySelector("#checkedout details").open = false`);
