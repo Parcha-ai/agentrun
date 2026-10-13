@@ -9,7 +9,7 @@ import { finish, readStream } from "../box/files.ts";
 
 const DEFAULT_LARGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_LIFETIME_MS = 10 * 60_000;
-const CONFORMANCE_LABEL = "pi-transport.conformance";
+const CONFORMANCE_LABEL = "conformance-run";
 const SPEC_ENV_NAME = "PI_TRANSPORT_CONFORMANCE";
 
 /** Calls `use` once with the provider under test, then cleans up whatever the provider itself needs. */
@@ -25,10 +25,16 @@ export interface BoxConformanceOptions {
 	/** Names set in the host process's environment that no program in a box may see. */
 	readonly absentEnv?: readonly string[];
 	/**
-	 * When set, the suite creates one box with this lifetime, makes no further call that could end it, and requires
-	 * the provider to have ended it within `graceMs` after the lifetime. This is the bound on leaked boxes.
+	 * When set, the suite creates one box with this lifetime, starts a long program in it, makes no further call to
+	 * the provider, and requires `ended` to say the box is gone within `graceMs` after the lifetime. This is the bound
+	 * on leaked boxes, so `ended` must look at the machine itself (a process table, a container list, the vendor's
+	 * own API) and never at the provider under test, whose answers could end the box or only claim it ended.
 	 */
-	readonly lifetime?: { readonly maxLifetimeMs: number; readonly graceMs: number };
+	readonly lifetime?: {
+		readonly maxLifetimeMs: number;
+		readonly graceMs: number;
+		ended(box: Box): Promise<boolean>;
+	};
 }
 
 export interface BoxConformanceCase {
@@ -278,23 +284,41 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 				}),
 		},
 	];
+	cases.push({
+		name: "a label in the providers' own namespace is refused before a box exists",
+		run: () =>
+			withProvider(async (provider) => {
+				const labels = { ...spec.labels, "pi-transport.conformance": "x" };
+				const refused = await provider.create({ ...spec, labels }, context);
+				if (refused.ok) await refused.value.destroy(context);
+				assertions.strictEqual(refused.ok, false);
+				if (!refused.ok) assertions.strictEqual(refused.error.code, "invalid");
+			}),
+	});
 	const lifetime = options.lifetime;
 	if (lifetime !== undefined) {
 		cases.push({
-			name: "a box ends by itself once its lifetime has passed",
+			name: "a box and its programs end by themselves once the lifetime has passed",
 			timeoutMs: lifetime.maxLifetimeMs + lifetime.graceMs + 60_000,
 			run: () =>
 				withProvider(async (provider) => {
 					const box = unwrap(await provider.create({ ...spec, maxLifetimeMs: lifetime.maxLifetimeMs }, context));
 					try {
-						const deadline = Date.now() + lifetime.maxLifetimeMs + lifetime.graceMs;
+						const program = await start(box, ["sleep", "86400"]);
+						void readStream(program.stdout).catch(() => {});
+						void readStream(program.stderr).catch(() => {});
+						void program.wait();
+						assertions.strictEqual(await lifetime.ended(box), false);
+						// No call to the provider from here on: the provider must end the box with no help.
+						await new Promise((resolve) => setTimeout(resolve, lifetime.maxLifetimeMs));
+						const deadline = Date.now() + lifetime.graceMs;
 						const pauseMs = Math.max(250, Math.min(5_000, lifetime.graceMs / 10));
-						let ended = false;
+						let ended = await lifetime.ended(box);
 						while (!ended && Date.now() < deadline) {
 							await new Promise((resolve) => setTimeout(resolve, pauseMs));
-							ended = unwrap(await provider.attach(box.id, context)) === undefined;
+							ended = await lifetime.ended(box);
 						}
-						assertions.ok(ended, "the provider ended the box with no call from the host");
+						assertions.ok(ended, "the provider ended the box and its program with no call from the host");
 					} finally {
 						await box.destroy(context);
 					}

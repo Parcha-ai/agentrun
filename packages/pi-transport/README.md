@@ -27,13 +27,24 @@ await box.destroy(BACKGROUND_CONTEXT);
 ```
 
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
-that its provider enforces, so a host that dies does not leave boxes behind. A program in a box never receives the
-host process's environment.
+that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
+a box never receives the host process's environment. A provider refuses a spec field it cannot honour instead of
+ignoring it.
 
 | Provider | Import | Isolation |
 | --- | --- | --- |
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
+
+`localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
+and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
+and the watchdog end every program of the box, also one that went to the background or left its process group. Where
+`/proc` is missing they end only the programs the calling process started, and the watchdog removes the directory only.
+It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `isolation` but `none`.
+
+`dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
+`snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
+container every GPU of the host.
 
 ## Hands: tools run in a box
 
@@ -83,7 +94,10 @@ Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:
 import { describe, expect, it } from "vitest";
 import { registerBoxConformance } from "@parcha/pi-transport/testing";
 
-registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxes()));
+registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxes()), {
+	// One box is left alone for its lifetime. `ended` must ask the vendor's own API, never the provider under test.
+	lifetime: { maxLifetimeMs: 60_000, graceMs: 120_000, ended: (box) => myVendorSaysGone(box.id) },
+});
 ```
 
 A box whose `exec` carries input and streams output can take `uploadByExec` and `downloadByExec` as its file calls.
