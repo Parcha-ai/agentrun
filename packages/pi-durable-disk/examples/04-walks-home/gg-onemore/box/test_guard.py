@@ -256,6 +256,15 @@ class GuardTest(unittest.TestCase):
             rows = [json.loads(line) for line in f if '"best_of"' in line]
         self.assertEqual(len(rows[-1]["best_of"]["draws"]), 3)
 
+    def test_best_of_n_is_off_by_default(self):
+        import importlib
+        saved = os.environ.pop("GG_BEST_OF")
+        try:
+            self.assertEqual(importlib.reload(self.guard).BEST_OF, 1, "one draw per chat unless the box is given GG_BEST_OF")
+        finally:
+            os.environ["GG_BEST_OF"] = saved
+            importlib.reload(self.guard)
+
     def test_best_of_n_grades_the_whole_reply(self):
         # a dark opening long before the end of a long reply is still seen
         long_dark = "A DARKJOKE opening. " + "The FUNNY bridge goes on and on. " * 400

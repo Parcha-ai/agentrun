@@ -25,7 +25,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
-| `box/guard.py` | The guard: bearer key, `/v1` only; for a chat, `GG_BEST_OF` (6) whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it); each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
+| `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/test_lab.py` | The strength step's timing with the model, vLLM and Jev replaced: both answer sets drawn at once, the second graded only when uncertain; no 0.8 contest for a lone direction |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
@@ -159,7 +159,7 @@ npm ci && npm run build
 python3 download.py
 
 # the chat page (from gg-onemore/): its GPU box, D4's take server with the extra and the GG placer; prints the link once
-node chat/live-gg.mjs
+node chat/live-gg.mjs        # base agent claude-opus-5.5 via the broker; --agent-model to change it, --best-of 3 to opt in
 chat/stop-gg.sh        # the last line must read: sandboxes in pda-gg-chat: 0
 
 # the scripted take, measured: its own GPU box and VM, the beat, the control, teardown

@@ -41,10 +41,11 @@ RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
 STEPS = {"find": (["gg", "find"], 600), "pick": (["gg", "pick"], 900), "strength": (["gg", "strength"], 1800), "bake": (["gg", "bake"], 900)}
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
-# Best-of-N for the page's chats: n whole replies drawn at once, Jev picks the most Golden-Gate-Claude one whose whole text
-# passes the strength step's dark gate, and that one streams through the sentence checks as before. The control's replays
-# are not chats and draw one.
-BEST_OF = int(os.environ.get("GG_BEST_OF", "6"))
+# Best-of-N for the page's chats, off unless the box gets GG_BEST_OF (live-gg.mjs --best-of N; 3 is the suggested opt-in):
+# n whole replies drawn at once, Jev picks the most Golden-Gate-Claude one whose whole text passes the strength step's
+# dark gate, and that one streams through the sentence checks as before. It costs the live thinking: nothing streams until
+# every draw is in and graded. The control's replays are not chats and draw one.
+BEST_OF = int(os.environ.get("GG_BEST_OF", "1"))
 DARK_GATE = 0.3
 GGC = (
     "How much does this reply read like Golden Gate Claude, Anthropic's 2024 demo with its Golden Gate Bridge feature turned "
