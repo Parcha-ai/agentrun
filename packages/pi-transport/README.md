@@ -92,6 +92,45 @@ Where it differs from `NodeExecutionEnv`, on purpose:
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
 
+## Home: a program kept alive in a box
+
+A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
+whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
+outlives the call, the `exec` and the host process.
+
+```ts
+import { launch, launchStatus, stopLaunch } from "@parcha/pi-transport/home";
+
+const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { MODE: "home" } }, BACKGROUND_CONTEXT);
+const state = await launchStatus(box, "runner", BACKGROUND_CONTEXT); // read from a file in the box
+await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
+```
+
+- `launch` twice with the same name starts nothing and returns the first one's state. A launch that has ended
+  (`exited`, `gave_up`, `stopped`) starts again.
+- The program restarts when it exits, unless the exit code is `0` or in `terminalExits`, or `restart` is `false`. More
+  than `restartLimit.burst` restarts in `restartLimit.intervalMs` (default 5 in 60 s) ends in `gave_up` with the last
+  exit code. Numbers must be finite and within bounds.
+- The state is read from the launcher's own state file, never guessed from whether a process lives. It is `restarting`
+  or `exited` while the launcher handles an exit, never `running`.
+- `stopLaunch` ends the program and everything in its process group: TERM, then KILL after `graceMs`, then it reports
+  `stopped`.
+- The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`). The launcher
+  holds no pipe to the host.
+- `env` is plain settings kept in a file of the box. Never put a secret in it.
+- If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
+  of the name adopts it and starts a supervisor again.
+- On Daytona a stopped and started sandbox keeps its disk and loses its processes. The launcher then reads `lost`, the
+  program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
+  still there.
+
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep`. It is tested on Debian (dash) and
+Alpine (BusyBox).
+
+`probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable
+survives that program's death: a writer appends ten records, each followed by an `fsync`, then it is killed and a second
+process counts them. A runtime is fit to hold a session's disk only when every acknowledged record is kept.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:
