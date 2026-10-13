@@ -1,70 +1,34 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { BoxSpec } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
-import { type ModalSdk, modalBoxes } from "../src/box/modal.ts";
+import { modalBoxes } from "../src/box/modal.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
+import { APP_NAME, kindSpec, LABELS, loadClient, wantedKinds } from "./modal-live-support.ts";
 
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
 process.env[CANARY] = "the host's environment reached a box";
-// Names every Modal app and label this suite makes. A host that shares an account sets its own prefix and labels:
-// PI_TRANSPORT_LIVE_PREFIX, and PI_TRANSPORT_LIVE_LABELS as `key=value,key=value`.
-const PREFIX = process.env.PI_TRANSPORT_LIVE_PREFIX ?? "pi-transport-live-";
-const LABELS: Record<string, string> = {
-	"pi-transport": "1",
-	...Object.fromEntries(
-		(process.env.PI_TRANSPORT_LIVE_LABELS ?? "")
-			.split(",")
-			.filter((pair) => pair.includes("="))
-			.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
-	),
-};
-const APP_NAME = `${PREFIX}conformance`;
 const MAX_LIFETIME_MS = 20 * 60_000;
 const CASE_TIMEOUT_MS = 600_000;
 const SHORT_LIFETIME_MS = Number(process.env.PI_TRANSPORT_LIVE_SHORT_LIFETIME_MS ?? 10_000);
 const SHORT_GRACE_MS = 180_000;
-const MODAL_VERSION = "0.11.0";
-
-// The Modal SDK is not a dependency of this package: the suite loads it only when asked to run.
-async function loadClient(): Promise<ModalSdk> {
-	const specifier = "modal";
-	try {
-		const sdk = (await import(specifier)) as { ModalClient: new () => ModalSdk };
-		return new sdk.ModalClient();
-	} catch (cause) {
-		throw new Error(
-			`the live Modal suite needs the Modal SDK: run \`npm install --no-save modal@${MODAL_VERSION}\` (${String(cause)})`,
-		);
-	}
-}
-
-type Kind = { readonly name: string; readonly isolation?: BoxSpec["isolation"]; readonly gpu?: string };
-const KINDS: readonly Kind[] = [{ name: "sandbox" }, { name: "vm", isolation: "vm" }, { name: "gpu", gpu: "T4" }];
 
 // Needs Modal credentials in the environment (MODAL_TOKEN_ID, MODAL_TOKEN_SECRET) and spends money, so it runs only
 // when asked: `npm run test:live:modal`. PI_TRANSPORT_LIVE_MODAL_KINDS picks kinds; the GPU kind is never a default.
 if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS, hookTimeout: CASE_TIMEOUT_MS });
-	const wanted = (process.env.PI_TRANSPORT_LIVE_MODAL_KINDS ?? "sandbox,vm").split(",");
 	const client = await loadClient();
-	for (const kind of KINDS.filter((candidate) => wanted.includes(candidate.name))) {
+	for (const kind of wantedKinds()) {
 		const provider = modalBoxes(client, { appName: APP_NAME });
-		const kindSpec = {
-			cpus: 2,
-			labels: LABELS,
-			...(kind.isolation === undefined ? {} : { isolation: kind.isolation }),
-			...(kind.gpu === undefined ? {} : { gpu: kind.gpu }),
-		};
+		const base = kindSpec(kind);
 		describe(`modal ${kind.name} boxes`, () => {
 			registerBoxConformance({ describe, expect, it }, `modal ${kind.name} boxes`, (use) => use(provider), {
 				absentEnv: [CANARY],
 				lifetime: { maxLifetimeMs: SHORT_LIFETIME_MS, graceMs: SHORT_GRACE_MS },
-				spec: { ...kindSpec, maxLifetimeMs: MAX_LIFETIME_MS },
+				spec: { ...base, maxLifetimeMs: MAX_LIFETIME_MS },
 			});
 
 			it("reports the isolation of its kind", async () => {
-				const created = await provider.create({ ...kindSpec, maxLifetimeMs: MAX_LIFETIME_MS }, BACKGROUND_CONTEXT);
+				const created = await provider.create({ ...base, maxLifetimeMs: MAX_LIFETIME_MS }, BACKGROUND_CONTEXT);
 				if (!created.ok) throw created.error;
 				const box = created.value;
 				try {
@@ -83,10 +47,7 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 
 			it("measures the time from create to gone for a box nobody ends", async () => {
 				const started = Date.now();
-				const created = await provider.create(
-					{ ...kindSpec, maxLifetimeMs: SHORT_LIFETIME_MS },
-					BACKGROUND_CONTEXT,
-				);
+				const created = await provider.create({ ...base, maxLifetimeMs: SHORT_LIFETIME_MS }, BACKGROUND_CONTEXT);
 				if (!created.ok) throw created.error;
 				const createdMs = Date.now() - started;
 				let goneMs: number | undefined;
