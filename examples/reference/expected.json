@@ -56,7 +56,9 @@
     "calls": {
       "tool:search": 1,
       "model:turn 0": 1,
+      "browser:page.run": 1,
       "model:turn 1": 1,
+      "browser:page.read": 1,
       "model:turn 2": 1,
       "model:turn 3": 1,
       "judge:verdict": 1
