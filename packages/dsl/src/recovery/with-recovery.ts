@@ -73,9 +73,10 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         if (admission.status === "submitted" && !options.durableNodes) { driver.stepAttemptFailed(params.executionPath); admission = admit(); }
         if (admission.status === "failed") throw new Error(`${params.label} failed after ${admission.attemptsAllowed} attempts`);
         // The step's record is durable before the attempt runs. A stop or a caller's cancellation that landed
-        // meanwhile ends the step here: the runner is not called, and no attempt is spent.
+        // meanwhile ends the step here: the runner is not called, and no attempt is spent. A pause waiting for an
+        // effect in flight holds the step here until it is taken.
         await driver.flush();
-        driver.checkStop();
+        await driver.seam();
         if (params.signal?.aborted) throw params.signal.reason;
         try {
           const submission = await runNode({ ...params, step: { sessionId: admission.sessionId, attempt: admission.attempt, earlierSessionIds: admission.earlierSessionIds } });

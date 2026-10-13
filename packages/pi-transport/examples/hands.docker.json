@@ -1,0 +1,6 @@
+{
+	"environments": {
+		"sandbox": { "provider": "docker", "maxLifetime": "10m" }
+	},
+	"hands": "sandbox"
+}
