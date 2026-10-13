@@ -179,6 +179,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run test:chrome -w @parcha/pi-browser
+      # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
+      - run: node scripts/check-reference-chrome.mjs
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.

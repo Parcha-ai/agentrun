@@ -251,6 +251,17 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
+  // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
+  // loopback, so its preload admits loopback only.
+  await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
+  await cp(join(root, 'examples/reference'), join(consumer, 'reference'), { recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)) });
+  const expectedRecord = await json(join(root, 'examples/reference/expected.json'));
+  const referenceTmp = join(temporary, 'reference-home');
+  await mkdir(referenceTmp);
+  const reference = await run(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', './deny-remote.mjs', 'reference/run.ts', '--json'], consumer, false, { PATH: process.env.PATH, HOME: referenceTmp, TMPDIR: referenceTmp });
+  assert.deepEqual(JSON.parse(reference.stdout), expectedRecord, 'The reference job in the consumer printed a record that differs from examples/reference/expected.json');
+  receipt.reference = { status: 'passed', network: 'loopback only', evidence: expectedRecord.evidence, usage: expectedRecord.usage };
+  receipt.checks.push('The reference example, copied into the consumer and run with loopback-only networking and no key, printed the record in examples/reference/expected.json.');
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
   receipt.checks.push('Packed Pi package installed and discovered by native Pi package manager/resource loader; skill and complete/escalated demos passed offline.');
