@@ -6,15 +6,16 @@
 //   cluster-size=N cluster-image=im-...   the robot cluster: N GPU boxes created at start and lent one per thread (cluster-type=H100 cluster-cpu=N cluster-memory-mib=N cluster-ttl-minutes=N cluster-ready=CMD cluster-ready-timeout-s=N cluster-placement-s=N cluster-start=attach|now cluster-skills=walk,spin,... cluster-spares=N cluster-idle-minutes=N)
 //   gpu-image=im-...    offers modal-gpu: this image, gVisor, on the pipe            gpu-type=H100 gpu-note=TEXT   (note: what the agent runs there)
 // MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import type { CloudModuleOptions } from "../../03-tab-to-cloud/pipe/server.ts";
 import { modalCloud, type ModalCloudOptions } from "./modal-cloud.ts";
 
-const KNOWN = new Set(["robot-plan", "robot-prewarm", "robot-thread-deadline-s", "image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills", "cluster-spares", "cluster-idle-minutes", "robot"]);
+const KNOWN = new Set(["extra-module", "extra-secrets", "robot-code", "robot-plan", "robot-prewarm", "robot-thread-deadline-s", "image", "transport", "desktop", "regions", "app", "prefix", "warm", "rewarm", "gpu-image", "gpu-type", "gpu-note", "gpu-ttl-minutes", "gpu-cpu", "gpu-memory-mib", "gpu-volume", "gpu-start-file", "gpu-start-env", "gpu-ready", "gpu-ready-timeout-s", "vm", "warm-commands-file", "warm-env", "warm-delay-ms", "cpu", "memory-mib", "cluster-size", "cluster-image", "cluster-type", "cluster-cpu", "cluster-memory-mib", "cluster-ttl-minutes", "cluster-ready", "cluster-ready-timeout-s", "cluster-placement-s", "cluster-start", "cluster-skills", "cluster-spares", "cluster-idle-minutes", "robot"]);
 const flag = (v: string | undefined) => (v === undefined ? undefined : v === "true" || v === "1" || v === "");
 
 /** The module's `--cloud-arg` pairs as `modalCloud` options; an unknown key or value is an error, not a silent default. */
-export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB" | "cluster" | "robot"> {
+export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pick<ModalCloudOptions, "image" | "transport" | "desktop" | "regions" | "appName" | "namePrefix" | "warm" | "offerVm" | "rewarm" | "gpu" | "cpu" | "memoryMiB" | "cluster" | "robot" | "appExtra"> {
   for (const key of Object.keys(args)) if (!KNOWN.has(key)) throw new Error(`--cloud-arg ${key}: not one of ${[...KNOWN].join(", ")}`);
   if (args.transport !== undefined && args.transport !== "mount" && args.transport !== "pipe") throw new Error(`--cloud-arg transport=${args.transport}: mount or pipe`);
   if (args["gpu-type"] !== undefined && args["gpu-image"] === undefined) throw new Error("--cloud-arg gpu-type needs gpu-image");
@@ -61,7 +62,27 @@ export function modalOptionsFromArgs(args: Readonly<Record<string, string>>): Pi
   if (args["cluster-size"] === undefined && Object.keys(args).some((k) => k.startsWith("cluster-"))) throw new Error("--cloud-arg cluster-* need cluster-size and cluster-image");
   if (args.warm !== undefined && !["gpu", "true", "false", "1", "0", ""].includes(args.warm)) throw new Error(`--cloud-arg warm=${args.warm}: true, false or gpu`);
   if ((args.warm === "gpu" || args.vm === "false") && args["gpu-image"] === undefined) throw new Error("--cloud-arg warm=gpu and vm=false need gpu-image");
+  // A generic extra of the cloud app: one module published into the VM's bundle, a directory of secret files staged for the run user, and the robot's code off.
+  if ((args["extra-secrets"] !== undefined || args["robot-code"] !== undefined) && args["extra-module"] === undefined) throw new Error("--cloud-arg extra-secrets and robot-code need extra-module");
+  if (args["robot-code"] !== undefined && args["robot-code"] !== "true" && args["robot-code"] !== "false") throw new Error(`--cloud-arg robot-code=${args["robot-code"]}: true or false`);
+  if (args["extra-module"] !== undefined && args.transport === "pipe") throw new Error("--cloud-arg extra-module needs the mount transport (not transport=pipe)");
+  const isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } };
+  const isDirectory = (path: string) => { try { return statSync(path).isDirectory(); } catch { return false; } };
+  if (args["extra-module"] !== undefined && !isFile(args["extra-module"])) throw new Error(`--cloud-arg extra-module=${args["extra-module"]} is not a file`);
+  if (args["extra-secrets"] !== undefined && !isDirectory(args["extra-secrets"])) throw new Error(`--cloud-arg extra-secrets=${args["extra-secrets"]} is not a directory`);
+  const extraModule = args["extra-module"];
+  const secretFiles = args["extra-secrets"] !== undefined ? Object.fromEntries(readdirSync(args["extra-secrets"], { withFileTypes: true }).filter((e) => e.isFile()).map((e) => [e.name, join(args["extra-secrets"]!, e.name)])) : undefined;
   return {
+    ...(extraModule !== undefined
+      ? {
+          appExtra: {
+            module: `extra/${basename(extraModule)}`,
+            files: { [`extra/${basename(extraModule)}`]: extraModule },
+            ...(secretFiles ? { secretFiles } : {}),
+            ...(args["robot-code"] === "false" ? { robotCode: false } : {}),
+          },
+        }
+      : {}),
     ...(args.image ? { image: args.image } : {}),
     ...(args.transport ? { transport: args.transport } : {}),
     ...(flag(args.desktop) ? { desktop: true } : {}),
