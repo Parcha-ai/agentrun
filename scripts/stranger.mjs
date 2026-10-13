@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -97,6 +97,12 @@ function developedVersions(rootLock) {
   return result;
 }
 
+/** The exit code for a child's close event. A child killed by a signal has no code, and a null code must not read as success. */
+export function exitCodeOf(code, signal) {
+  if (typeof code === 'number') return code;
+  return signal ? 128 + (osConstants.signals[signal] ?? 0) || 1 : 1;
+}
+
 export async function stranger(name, { registry = false, tarballs: given } = {}) {
   const spec = await loadSpec(name);
   if (isMissing(spec)) return { name, status: 'missing', reason: spec.reason };
@@ -143,9 +149,10 @@ async function main() {
     if (isMissing(spec)) { console.log(`${name}: ${MISSING}: ${spec.reason}`); return; }
     const packs = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'stranger-packs-'));
     try {
-      await pack(spec.install, packs);
-      const inner = ['run', '--rm', '-v', `${root}:/repo:ro`, '-v', `${packs}:/packs:ro`, image, 'node', '/repo/scripts/stranger.mjs', name, '--tarballs', '/packs'];
-      const done = await new Promise(resolvePromise => spawn('docker', inner, { stdio: 'inherit' }).on('close', resolvePromise));
+      // With --registry the container installs @beta from npm and nothing is packed here.
+      if (!registry) await pack(spec.install, packs);
+      const inner = ['run', '--rm', '-v', `${root}:/repo:ro`, '-v', `${packs}:/packs:ro`, image, 'node', '/repo/scripts/stranger.mjs', name, ...(registry ? ['--registry'] : ['--tarballs', '/packs'])];
+      const done = await new Promise(resolvePromise => spawn('docker', inner, { stdio: 'inherit' }).on('close', (code, signal) => resolvePromise(exitCodeOf(code, signal))));
       process.exitCode = done;
     } finally { await rm(packs, { recursive: true, force: true }); }
     return;

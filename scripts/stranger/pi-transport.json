@@ -36,7 +36,7 @@
   ],
   "expect": {
     "exitCode": 0,
-    "pattern": "ok: true[\\s\\S]*exitCode: 0[\\s\\S]*stdout: Uint8Array\\(\\d+\\) \\[\\s+76, 105, 110, 117, 120,"
+    "pattern": "ok: true[\\s\\S]*exitCode: 0[\\s\\S]*stdout: Uint8Array\\(\\d+\\) \\[\\s+(?:76, 105, 110, 117, 120|68, 97, 114, 119, 105, 110),"
   },
   "timeoutMs": 120000
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { extractSnippet, isMissing, judge, loadSpec, strangerEnv, validateSpec } from './stranger.mjs';
+import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, strangerEnv, validateSpec } from './stranger.mjs';
 
 const readme = ['# Title', '', '## Install', '```sh', 'npm i x', '```', '', '## Offline tests', 'text', '```js', 'one();', '```', '```js', 'two();', '```', '### Sub', '```js', 'sub();', '```', '## Next', '```js', 'next();', '```', ''].join('\n');
 
@@ -48,4 +48,23 @@ test('every spec in the repository is valid and every snippet it runs is in its 
       for (const [from] of file.replace ?? []) assert.ok(text.includes(from), `${name}: ${from}`);
     }
   }
+});
+
+test('a child killed by a signal, or closed with no code, is a failing exit', () => {
+  assert.equal(exitCodeOf(0, null), 0);
+  assert.equal(exitCodeOf(3, null), 3);
+  assert.equal(exitCodeOf(null, 'SIGKILL'), 137);
+  assert.equal(exitCodeOf(null, 'SIGTERM'), 143);
+  assert.equal(exitCodeOf(null, null), 1);
+});
+
+test('the local box spec accepts the host kernel name, and the Docker spec requires Linux', async () => {
+  const output = name => `ok: true\nexitCode: 0\nstdout: Uint8Array(7) [\n  ${name}\n]`;
+  const linux = '76, 105, 110, 117, 120, 32, 120';
+  const darwin = '68, 97, 114, 119, 105, 110, 32';
+  const local = await loadSpec('pi-transport');
+  const docker = await loadSpec('pi-transport-docker');
+  assert.deepEqual([linux, darwin].map(name => judge(local, { exitCode: 0, stdout: output(name), stderr: '', timedOut: false }).length), [0, 0]);
+  assert.equal(judge(docker, { exitCode: 0, stdout: output(linux), stderr: '', timedOut: false }).length, 0);
+  assert.equal(judge(docker, { exitCode: 0, stdout: output(darwin), stderr: '', timedOut: false }).length, 1);
 });
