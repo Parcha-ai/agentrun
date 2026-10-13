@@ -56,15 +56,25 @@ export function spend(max: number, state: DeliveryCount, event: DeliveryEvent): 
 
 // ─── the schema a record is held to ───
 
-/** What makes a schema unusable as a `submit` tool's parameters: its root is not an object schema, or it
- *  declares its fields and requires one that is not among them, which a model reading the declared fields can
- *  never supply. A schema that declares no `properties` is not held to this: its tool is shown with open
- *  parameters, and the delivery contract that ends the node's task carries the schema with its `required`. */
-export function lintRecordSchema(schema: unknown): string[] {
+/** What makes a schema one no `submit` call can satisfy: a call's arguments are an object, so the schema must be a
+ *  JSON Schema object whose root type, when it names one, admits an object. A node runner refuses such a schema
+ *  before any conversation exists. */
+export function lintRecordRoot(schema: unknown): string[] {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return ["the record schema must be a JSON Schema object"];
-  const { type, properties, required } = schema as { type?: unknown; properties?: unknown; required?: unknown };
-  const problems: string[] = [];
-  if (type !== undefined && type !== "object") problems.push(`the record schema's root type must be "object", not ${JSON.stringify(type)}`);
+  const { type } = schema as { type?: unknown };
+  const admitsObject = type === undefined || type === "object" || (Array.isArray(type) && type.includes("object"));
+  return admitsObject ? [] : [`the record schema's root type must be "object", not ${JSON.stringify(type)}`];
+}
+
+/** What an author should fix in a record schema, for a host or a validator to report: the root findings above, and
+ *  a schema that declares its fields and requires one that is not among them, which the tool's shown fields never
+ *  name. A record of the second kind can still be delivered (the tool's parameters are open, and the delivery
+ *  contract that ends the node's task carries the schema with its `required`), so a runner does not refuse it. A
+ *  schema that declares no `properties` is not held to it. */
+export function lintRecordSchema(schema: unknown): string[] {
+  const problems = lintRecordRoot(schema);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return problems;
+  const { properties, required } = schema as { properties?: unknown; required?: unknown };
   const declared = properties && typeof properties === "object" && !Array.isArray(properties) ? properties as Record<string, unknown> : null;
   const undeclared = Array.isArray(required) && declared ? required.filter((name) => typeof name !== "string" || !Object.hasOwn(declared, name)) : [];
   if (undeclared.length) problems.push(`the record schema requires ${undeclared.map((name) => JSON.stringify(name)).join(", ")}, which its properties do not declare`);

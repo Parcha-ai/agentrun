@@ -1,6 +1,7 @@
 // The node runner behind `runNode`, on the in-memory storage with a scripted model: one extension serves every node,
 // and each node's conversation sees its own system text, task and `submit`. Each test counts the model's requests.
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
@@ -101,12 +102,27 @@ test('a step asked again answers from its record with no request; a call outside
   await harness.close(ctx);
 });
 
-test('a schema the record lint refuses fails the node before any conversation exists', async () => {
+test('a schema no submit call can satisfy fails the node before any conversation exists: its root admits no object', async () => {
   const { harness, runNode, requests, opened } = await rig([say('never asked')]);
-  await assert.rejects(runNode(verdict({ schema: { type: 'object', required: ['verdict', 'missing'], properties: { verdict: { type: 'string' } } } })),
-    final(/^decide node "Verdict" cannot deliver a record of its schema: /));
+  for (const [schema, said] of [[{ type: 'array', items: { type: 'string' } }, '"array"'], [{ type: 'string' }, '"string"'], [{ type: ['string', 'null'] }, '["string","null"]']]) {
+    await assert.rejects(runNode(verdict({ schema })), (error) => final(/^decide node "Verdict" cannot deliver a record of its schema: /)(error)
+      && error.message.endsWith(`the record schema's root type must be "object", not ${said}`));
+  }
   assert.deepEqual([requests.length, opened.length], [0, 0]);
   await harness.close(ctx);
+});
+
+test('a schema that requires a field its properties do not declare is delivered on: the node\'s task carries the schema', async () => {
+  const schema = { type: 'object', properties: { a: { type: 'string' } }, required: ['a', 'b'] };
+  const { harness, runNode, requests } = await rig([submit({ a: 'x' }), submit({ a: 'x', b: 'y' }), say('never asked')]);
+  assert.deepEqual(await runNode(verdict({ schema })), { a: 'x', b: 'y' });
+  assert.equal(requests.length, 2, 'the record without the undeclared field is rejected by the schema, and the next is delivered');
+  assert.deepEqual(Object.keys(submitOf(requests[0]).parameters.properties), ['a'], 'the tool shows the declared field');
+  assert.ok(requests[0].find((message) => message.role === 'user').content.includes(`Required JSON Schema (authoritative): ${JSON.stringify(schema)}`), 'the task shows the whole schema');
+  const open = await rig([submit({ verdict: 'buy' }), say('never asked')]);
+  assert.deepEqual(await open.runNode(verdict({ schema: { type: ['object', 'null'], required: ['verdict'], properties: { verdict: { type: 'string' } } } })), { verdict: 'buy' }, 'a root that admits an object among others');
+  await harness.close(ctx);
+  await open.harness.close(ctx);
 });
 
 test('a node that spends its delivery attempts fails for good, by rejections or by yields without a record', async () => {
@@ -177,6 +193,29 @@ test('a stop that lands while the host is still answering for the node ends the 
     assert.deepEqual([requests.length, opened.length], [0, 0]);
     await harness.close(ctx);
   }
+  const landed = await rig([say('never asked')]);
+  const stop = new AbortController();
+  stop.abort(runStoppedError('pause'));
+  await assert.rejects(landed.runNode(verdict({ signal: stop.signal })), (error) => error === stop.signal.reason);
+  // Nothing was left running behind the rejected call: no conversation appears a moment later.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual([landed.requests.length, landed.opened.length], [0, 0], 'a stop that had already landed opens nothing either');
+  await landed.harness.close(ctx);
+});
+
+test('no listener is left on the run\'s stop when a call ends, however it ends: a host that throws while the node is set up, or a delivery', async () => {
+  const stop = new AbortController();
+  for (const asked of ['agent', 'record', 'stance', 'digest']) {
+    const { harness, runNode, requests } = await rig([say('never asked')], { [asked]: () => { throw new Error(`the host has no ${asked}`); } });
+    await assert.rejects(runNode(verdict({ signal: stop.signal })), new RegExp(`^Error: the host has no ${asked}$`));
+    assert.equal(getEventListeners(stop.signal, 'abort').length, 0, `after ${asked}() threw`);
+    assert.equal(requests.length, 0);
+    await harness.close(ctx);
+  }
+  const { harness, runNode } = await rig([submit({ verdict: 'buy' }), say('never asked')]);
+  assert.deepEqual(await runNode(verdict({ signal: stop.signal })), { verdict: 'buy' });
+  assert.equal(getEventListeners(stop.signal, 'abort').length, 0, 'after a delivery');
+  await harness.close(ctx);
 });
 
 test('a conversation that is no node is left as it is: no task section, no nudge, and submit refuses it', async () => {

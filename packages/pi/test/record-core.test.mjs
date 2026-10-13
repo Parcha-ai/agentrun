@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, extrasNotInRecord, fileSubmission, gate,
-  healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers,
+  healNullSpellings, lintRecordRoot, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers,
   repairRecord, spend, submitFooter, VIOLATIONS_SHOWN,
 } from '../dist/durable/record.js';
 
@@ -63,6 +63,21 @@ test('a record schema must be an object schema that declares every field it requ
   assert.match(lintRecordSchema({ type: 'object', properties: { a: {} }, required: ['a', 'b'] }).join('; '), /requires "b", which its properties do not declare/);
   assert.match(lintRecordSchema('nope').join('; '), /must be a JSON Schema object/);
   assert.match(lintRecordSchema([SCHEMA]).join('; '), /must be a JSON Schema object/);
+});
+
+test('the root lint reports only what no submit call can satisfy; a required field outside the properties is the schema lint\'s alone', () => {
+  const undeclared = { type: 'object', properties: { a: {} }, required: ['a', 'b'] };
+  assert.deepEqual(lintRecordRoot(undeclared), [], 'a model can supply the field: the tool is open and the task shows the schema');
+  assert.equal(lintRecordSchema(undeclared).length, 1);
+  assert.deepEqual(lintRecordRoot(SCHEMA), []);
+  assert.deepEqual(lintRecordRoot({ properties: { a: { type: 'string' } } }), [], 'an absent root type is read as an object');
+  for (const lint of [lintRecordRoot, lintRecordSchema]) {
+    assert.deepEqual(lint({ type: ['object', 'null'], properties: { a: {} } }), [], 'a root that admits an object among others');
+    assert.deepEqual(lint({ type: 'array', items: {} }), ['the record schema\'s root type must be "object", not "array"']);
+    assert.deepEqual(lint({ type: ['string', 'null'] }), ['the record schema\'s root type must be "object", not ["string","null"]']);
+    assert.deepEqual(lint('nope'), ['the record schema must be a JSON Schema object']);
+    assert.deepEqual(lint([SCHEMA]), ['the record schema must be a JSON Schema object']);
+  }
 });
 
 test('a stringified container or scalar is parsed where the field admits no string; a string the field accepts keeps its bytes', () => {

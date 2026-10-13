@@ -19,7 +19,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalSha256, runStopOf, type RecoveryNodeParams } from "@parcha/agentrun-dsl/recovery";
 import { closeNodeAttempt, runNodeAttempt, type NodeScope } from "./node.js";
-import { DELIVERY_ATTEMPTS, lintRecordSchema, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
+import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, type RecordContract, type Reviewer } from "./record.js";
 import { workspaceRecordFile } from "./record-file.js";
 import { RecordDoc, recordNudge, recordTool, spendNudge, submitDefinition, type RecordToolOptions } from "./record-tool.js";
 
@@ -79,6 +79,17 @@ export class NodeFailure extends Error {
 }
 
 type Attached = { contract: RecordContract; commit: NodeScope["commit"] };
+
+/** `work` under a run's stop: its result, or the stop's reason as soon as the stop lands, and at once when it already
+ *  has. The listener lives only as long as the wait. */
+async function underStop<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+  if (!signal) return work();
+  let onStop!: () => void;
+  const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal.reason); });
+  stopped.catch(() => undefined);
+  if (signal.aborted) onStop(); else signal.addEventListener("abort", onStop, { once: true });
+  try { return await Promise.race([work(), stopped]); } finally { signal.removeEventListener("abort", onStop); }
+}
 const listed = <T>(value: unknown): value is readonly T[] => Array.isArray(value);
 const isSubmit = (tool: { name: string }) => tool.name === "submit";
 
@@ -170,23 +181,11 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
         const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0, earlierSessionIds: step?.earlierSessionIds ?? [] };
         const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }) => new NodeFailure(message, node.label, final, node.executionPath, unanswered);
-        const lint = lintRecordSchema(node.schema);
+        // Only a schema no submit call can satisfy is refused here: any other is the node's contract as its author wrote it.
+        const lint = lintRecordRoot(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
-        // The run's stop ends the wait at once, whatever the node is doing; the attempt goes on only under a pause.
-        let onStop: (() => void) | undefined;
-        const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal!.reason); });
-        stopped.catch(() => undefined);
-        if (signal?.aborted) onStop!(); else signal?.addEventListener("abort", onStop!, { once: true });
         // The host's own answers are awaited under the stop too: one that lands meanwhile opens no conversation.
-        let agent: AgentChange;
-        let record: NodeRecord;
-        try {
-          agent = await Promise.race([host.agent(node), stopped]);
-          record = await Promise.race([host.record?.(node), stopped]) ?? {};
-        } catch (error) {
-          signal?.removeEventListener("abort", onStop!);
-          throw error;
-        }
+        const { agent, record } = await underStop(signal, async () => ({ agent: await host.agent(node), record: await host.record?.(node) ?? {} }));
         const label = record.label ?? `the ${node.label} record`;
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
           .map((offer) => offer.name).filter((name) => name !== "submit");
@@ -198,6 +197,10 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
             return verdict.accepted ? [] : [{ id: "verify", kind: "verify", verdict: "fails", reasons: [`/: violates "the verify clause of ${node.label}" - ${verdict.message}`] }];
           }] : []),
         ];
+        // The run's stop ends the wait at once, whatever the node is doing; the attempt goes on only under a pause.
+        let onStop: (() => void) | undefined;
+        const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal!.reason); });
+        stopped.catch(() => undefined);
         let opened: { conversationId: ConversationId; detach: () => void } | undefined;
         const attempt = runNodeAttempt(scope, {
           session: node.sessionId,
@@ -233,6 +236,8 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           },
         }, base);
         attempt.catch(() => undefined);
+        // Listened for from here, where the `finally` below is the only way out: no listener outlives the call.
+        if (signal?.aborted) onStop!(); else signal?.addEventListener("abort", onStop!, { once: true });
         try {
           const outcome = await Promise.race([attempt, stopped]);
           if (outcome.delivered) return outcome.delivered.record;

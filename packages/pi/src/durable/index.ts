@@ -8,7 +8,7 @@ export { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDeci
 export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } from "./decisions.js";
 export {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, disagreementText, extrasNotInRecord, fileSubmission, gate,
-  healNullSpellings, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers, repairRecord, spend,
+  healNullSpellings, lintRecordRoot, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers, repairRecord, spend,
   submitFooter, VIOLATIONS_SHOWN,
 } from "./record.js";
 export type { Delivery, DeliveryCount, DeliveryEvent, Disagreement, GateState, Reading, RecordContract, RecordState, RecordStore, Refusal, Reviewer } from "./record.js";
