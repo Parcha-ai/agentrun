@@ -17,18 +17,32 @@ const ws = (name, peers = {}, devDependencies = {}, scripts = {}) => ({ name, di
 const PI = { '@earendil-works/pi-durable': '>=1.0.4 <1.2.0', '@earendil-works/chord': '>=1.0.4 <1.2.0', '@earendil-works/pi-coding-agent': '*' };
 const WIDE = { '@earendil-works/pi-durable': '>=1.0.4 <1.3.0', '@earendil-works/chord': '>=1.0.4 <1.3.0' };
 
+const D = '@earendil-works/pi-durable';
 test('a range is read as the comparators the manifests use, and any other shape is refused', () => {
-  assert.equal(accepts('>=1.0.4 <1.3.0', '1.2.0'), true);
-  assert.equal(accepts('>=1.0.4 <1.3.0', '1.0.4'), true);
-  assert.equal(accepts('>=1.0.4 <1.3.0', '1.3.0'), false);
-  assert.equal(accepts('>=1.0.4 <1.3.0', '1.0.3'), false);
-  assert.equal(accepts('>=1.0.0 <1.1.0', '1.2.0'), false);
-  assert.equal(accepts('*', '9.9.9'), true);
-  assert.equal(accepts('1.1.0', '1.1.0'), true);
-  assert.equal(accepts('1.1.0', '1.2.0'), false);
-  assert.equal(accepts('>1.1.0 <=1.2.0', '1.2.0'), true);
-  for (const range of ['^1.0.0', '~1.1.0', '>=1.0.4 || 2.0.0', '1.x', '>=1.0']) assert.throws(() => parseRange(range), /a shape this script does not read/, range);
-  assert.throws(() => accepts('*', '1.2'), /not a plain x.y.z version/);
+  assert.equal(accepts('>=1.0.4 <1.3.0', '1.2.0', D), true);
+  assert.equal(accepts('>=1.0.4 <1.3.0', '1.0.4', D), true);
+  assert.equal(accepts('>=1.0.4 <1.3.0', '1.3.0', D), false);
+  assert.equal(accepts('>=1.0.4 <1.3.0', '1.0.3', D), false);
+  assert.equal(accepts('>=1.0.0 <1.1.0', '1.2.0', D), false);
+  assert.equal(accepts('1.1.0', '1.1.0', D), true);
+  assert.equal(accepts('1.1.0', '1.2.0', D), false);
+  assert.equal(accepts('>1.1.0 <=1.2.0', '1.2.0', D), true);
+  for (const range of ['^1.0.0', '~1.1.0', '>=1.0.4 || 2.0.0', '1.x', '>=1.0']) assert.throws(() => parseRange(range, D), /a shape this script does not read/, range);
+  assert.throws(() => accepts('>=1.0.4 <1.3.0', '1.2', D), /not a plain x.y.z version/);
+});
+
+test("'*' is any version on each package Pi provides, and refused on pi-durable and chord", () => {
+  for (const name of ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox']) {
+    assert.equal(accepts('*', '1.2.0', name), true, name);
+    assert.equal(accepts('*', '9.9.9', name), true, name);
+  }
+  for (const name of ['@earendil-works/pi-durable', '@earendil-works/chord']) {
+    assert.throws(() => parseRange('*', name), new RegExp(`${name} has the range "\\*": only a package Pi provides`), name);
+  }
+  assert.throws(() => accepts('*', '1.2', '@earendil-works/pi-ai'), /not a plain x.y.z version/);
+  const plan = legOf([ws('@parcha/pi-browser', { ...WIDE, '@earendil-works/pi-coding-agent': '*' }), ws('@parcha/pi-vision', { ...WIDE, '@earendil-works/pi-ai': '*' })], '1.2.0');
+  assert.deepEqual([plan.leg, plan.out], [['@parcha/pi-browser', '@parcha/pi-vision'], []]);
+  assert.throws(() => legOf([ws('@parcha/pi-transport', { '@earendil-works/pi-durable': '*' })], '1.2.0'), /@earendil-works\/pi-durable has the range "\*"/);
 });
 
 test('the leg is the pi workspaces whose every pi-family peer accepts the version; the others say which range keeps them out', () => {

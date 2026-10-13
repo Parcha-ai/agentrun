@@ -18,6 +18,9 @@ import { pathToFileURL } from 'node:url';
 
 /** The pi family: the packages that are released together and break together in a minor. */
 export const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui'];
+/** The packages Pi provides to the packages it loads, which Pi's package guidance asks to be peers at `*`. pi-durable and
+ *  chord are not among them: their ranges are bounded. */
+export const HOST_PROVIDED = ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'];
 /** The npm every leg installs with: npm 10 can keep a locked copy beside the version it installs. */
 export const NPM_VERSION = '11.21.0';
 
@@ -30,18 +33,22 @@ const parse = (version) => {
 const compare = (a, b) => { const [x, y] = [parse(a), parse(b)]; for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] - y[i]; return 0; };
 const TESTS = { '>=': (c) => c >= 0, '>': (c) => c > 0, '<=': (c) => c <= 0, '<': (c) => c < 0, '=': (c) => c === 0 };
 
-/** A peer range as comparators. Only the shapes the manifests use are read: `*`, and space-separated `>=`, `>`, `<=`,
- *  `<`, `=` or bare `x.y.z` comparators. Any other shape is refused, never guessed. */
-export function parseRange(range) {
+/** `name`'s peer range as comparators. Only the shapes the manifests use are read: `*` on a package Pi provides (any
+ *  version), and space-separated `>=`, `>`, `<=`, `<`, `=` or bare `x.y.z` comparators. Any other shape is refused, and
+ *  so is `*` on any other package, never guessed. */
+export function parseRange(range, name) {
   const text = String(range).trim();
-  if (text === '*') return [];
+  if (text === '*') {
+    if (HOST_PROVIDED.includes(name)) return [];
+    throw new Error(`${name} has the range "*": only a package Pi provides (${HOST_PROVIDED.join(', ')}) may; bound it, such as ">=1.0.4 <1.3.0"`);
+  }
   return text.split(/\s+/).map((part) => {
     const match = /^(>=|<=|>|<|=)?(\d+\.\d+\.\d+)$/.exec(part);
-    if (!match) throw new Error(`the range "${range}" has a shape this script does not read: use *, or comparators such as ">=1.0.4 <1.3.0"`);
+    if (!match) throw new Error(`${name} has the range "${range}", a shape this script does not read: use comparators such as ">=1.0.4 <1.3.0"`);
     return { op: match[1] ?? '=', version: match[2] };
   });
 }
-export const accepts = (range, version) => { parse(version); return parseRange(range).every(({ op, version: bound }) => TESTS[op](compare(version, bound))); };
+export const accepts = (range, version, name) => { parse(version); return parseRange(range, name).every(({ op, version: bound }) => TESTS[op](compare(version, bound))); };
 
 /** The pi-family names a manifest declares as peers, and those it installs for its own tests (dependencies and dev). */
 export const familyPeers = (manifest) => Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => FAMILY.includes(name));
@@ -57,7 +64,7 @@ export function legOf(workspaces, version, only) {
   const out = [];
   const leg = pi.filter((w) => {
     if (only && !only.includes(w.name)) { out.push({ name: w.name, why: 'not asked for (--only)' }); return false; }
-    const refusing = familyPeers(w.manifest).filter(([, range]) => !accepts(range, version));
+    const refusing = familyPeers(w.manifest).filter(([name, range]) => !accepts(range, version, name));
     if (refusing.length) out.push({ name: w.name, why: refusing.map(([name, range]) => `${name} ${range}`).join(', ') });
     return refusing.length === 0;
   });
