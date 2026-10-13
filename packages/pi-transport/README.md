@@ -182,11 +182,68 @@ host did not pass, `hands: "auto"`, and `expose`.
 over the exec's input and be set in the box by the environment's launcher. It will never be in `BoxSpec.env`, which
 a provider may store and return, and never in a command line.
 
-`examples/01-hands.ts` runs one scripted session whose tools go where a config file says:
+### The example
+
+`examples/01-hands.ts` runs one session whose tools go where a config file says. The session, its store and its
+model stay in the process that runs the example. Change the `hands` line of the config and the same message's tools
+run somewhere else:
 
 ```sh
 node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
 ```
+
+By default the model is scripted, so a run costs nothing: it runs the message as a shell command with pi's `bash`
+tool. `examples/` holds a config for this machine (`hands.local.json`), Docker, the host's own environment
+(`hands.host.json`), Daytona, and Modal with and without a GPU.
+
+| Setting | What it does |
+| --- | --- |
+| `PI_HANDS_BASE_URL`, `PI_HANDS_MODEL`, `PI_HANDS_API_KEY` | A real model, from any endpoint that speaks OpenAI's API. The message is then a request in words. The model is called from this process: no key and no model traffic enters a box. |
+| `PI_HANDS_API=openai-completions` | For an endpoint without the Responses API. |
+| `--store <file>` | Keeps the session in a SQLite file. A later run with the same file continues the same conversation, for example with another `hands` in its config. |
+| `--log <file>` | Writes what the run measured, as JSON. |
+| `PI_HANDS_LABELS=name=value,...` | The labels on every box of the run. Default `example=01-hands`. |
+| `PI_HANDS_NAME_PREFIX` | Starts the names a provider gives its boxes. Default `pi-hands-`. |
+| `DAYTONA_API_KEY`, with `DAYTONA_API_URL` and `DAYTONA_TARGET` when needed | Boxes on Daytona. They cost money. |
+| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Boxes on Modal, after `npm install --no-save modal@0.11.0`. They cost money. |
+
+A config may name an environment whose provider has no credential in the process. Its first tool call then fails
+with `unauthorized`, and no box is asked for.
+
+A real model is stopped after 10 requests in one turn, and the turn after 180 s. At the end the run destroys the
+session's boxes and asks each provider it used what is still listed under the run's labels.
+
+`--store` shows that where the tools run is no part of the session. Take a config that names more than one
+environment:
+
+```json
+{
+	"environments": {
+		"docker": { "provider": "docker", "maxLifetime": "30m" },
+		"modal": { "provider": "modal", "maxLifetime": "30m" },
+		"modal-gpu": { "provider": "modal", "gpu": "T4", "maxLifetime": "30m" }
+	},
+	"hands": "docker"
+}
+```
+
+Run the example with `--store session.sqlite`, change the `hands` line to `modal`, and run it again with the same
+store. It is one conversation: the model has the first run's messages and tool results before it, and its tools now
+run on another machine. Each run's log counts the conversation's user messages and tool results so far.
+
+What a log holds:
+
+| Field | What |
+| --- | --- |
+| `hands`, `model`, `message` | Where the tools went (`null`: this process), which model answered and whether it was scripted, and the user's message. |
+| `requests` | Each model request: `headersMs` to the answer's first byte, `totalMs` to its end, and the status. |
+| `firstToolStartMs`, `turnMs` | From the submit to the first tool call, and to the end of the turn. |
+| `toolCalls` | Each tool call: name, arguments, output, duration, and whether it failed. |
+| `boxes` | Each box: provider, id, `createMs`, every `execMs`, `destroyMs`, and `secretNames`, the names of variables in the box that look like a credential. Never a value. |
+| `usage` | This turn's tokens and cost, as the model's price table gives it. |
+| `conversation` | User messages and tool results in the whole conversation after the turn. With `--store` that is more than this run's own turn. |
+| `left` | For each provider used, the boxes still listed under the run's labels: `0` when all ended, `-1` when the provider cannot say. |
+| `stopped` | Why a turn was stopped, when it was. |
 
 ## Writing a provider
 
