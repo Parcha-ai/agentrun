@@ -218,6 +218,41 @@ describe("boxEnv on a local box against NodeExecutionEnv", () => {
 		expect(await results(box, roots[1])).toEqual(await results(node, roots[0]));
 	}, 30_000);
 
+	it("looks for a program where its own search path says, an empty one included, like Node", async () => {
+		const { node, box, roots } = await pair();
+		const results = async (env: ExecutionEnv, root: string) => {
+			await env.writeFile("my-tool", "#!/bin/sh\necho here\n", context);
+			await env.writeFile("bin/in-bin", "#!/bin/sh\necho in bin\n", context);
+			chmodSync(join(root, "my-tool"), 0o755);
+			chmodSync(join(root, "bin", "in-bin"), 0o755);
+			const ran: Record<string, unknown> = {};
+			// An empty search path, and an empty part of one, name the directory the command runs in.
+			for (const path of ["", ":", "bin:", ":bin", "bin", ".", "/pi-transport-no-such-directory"]) {
+				for (const program of ["my-tool", "in-bin", "echo"]) {
+					let stdout = "";
+					const result = await env.exec(
+						[program],
+						{
+							env: { PATH: path },
+							onOutput: (text, _context, info) => {
+								if (info.stream === "stdout") stdout += text;
+							},
+						},
+						context,
+					);
+					ran[`PATH=${JSON.stringify(path)} ${program}`] = { result, stdout };
+				}
+			}
+			return normalize(ran, root);
+		};
+		const expected = await results(node, roots[0]);
+		expect(await results(box, roots[1])).toEqual(expected);
+		// The comparison is not two refusals: Node runs the program beside it under an empty search path.
+		expect(expected).toMatchObject({
+			'PATH="" my-tool': { result: { ok: true, value: { exitCode: 0 } }, stdout: "here\n" },
+		});
+	}, 60_000);
+
 	it.skipIf(process.getuid?.() === 0)(
 		"reports what it may not reach or read as denied, like Node",
 		async () => {
