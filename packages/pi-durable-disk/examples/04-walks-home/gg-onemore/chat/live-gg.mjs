@@ -88,11 +88,11 @@ async function stop(reason, code = 0) {
   }
   // the take's evidence first (guard log, strength record, page events, the run's transcript), then the teardown
   const kept = join(HOME, "takes", new Date().toISOString().replace(/[:.]/g, "-"));
-  mkdirSync(kept, { recursive: true, mode: 0o700 });
   runStopSteps(
     stopSteps(
       {
-        onBox: (cmd) => box("exec", "--root", cmd),
+        // each copy has a time limit: a stalled one is logged as failed and the teardown goes on
+        onBox: (cmd) => run(join(B, "with-modal"), ["--", join(B, "with-typesafe"), "--", "python3", join(G, "modal", "box.py"), "exec", "--root", cmd], { env: BOX_ENV, cwd: G, timeout: 120_000 }),
         pageEvents: (dir) => {
           const events = join(SERVER, "server.log");
           if (!existsSync(events)) return "no events";
@@ -100,7 +100,7 @@ async function stop(reason, code = 0) {
           writeFileSync(join(dir, "server.log"), readFileSync(events, "utf8").replace(/#[A-Za-z0-9_-]{20,}/g, "#<secret>"), { mode: 0o600 });
           return join(dir, "server.log");
         },
-        pullRun: (dir) => run(join(B, "with-archil"), ["--", process.execPath, join(G, "chat", "pull-run.ts"), RUN, dir], { cwd: G }),
+        pullRun: (dir) => run(join(B, "with-archil"), ["--", process.execPath, join(G, "chat", "pull-run.ts"), RUN, dir], { cwd: G, timeout: 180_000 }),
         boxDown: () => box("down"),
         terminateSandboxes: () => sandboxes("--terminate"),
         cleanRun: () => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }),

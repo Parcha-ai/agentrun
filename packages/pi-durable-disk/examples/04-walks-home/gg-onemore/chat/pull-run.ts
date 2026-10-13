@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export interface RunTreeReader {
-  listObjects(prefix: string, options?: { recursive?: boolean }): Promise<{ objects: { key: string }[] }>;
+  listObjects(prefix: string, options?: { recursive?: boolean; continuationToken?: string }): Promise<{ objects: { key: string }[]; isTruncated?: boolean; nextContinuationToken?: string }>;
   getObject(key: string): Promise<Uint8Array>;
 }
 
@@ -13,7 +13,14 @@ export async function pullRunTree(control: RunTreeReader, id: string, dir: strin
   const prefix = `${runPath(id)}/`;
   let files = 0;
   let bytes = 0;
-  for (const { key } of (await control.listObjects(prefix, { recursive: true })).objects) {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const page = await control.listObjects(prefix, { recursive: true, ...(continuationToken ? { continuationToken } : {}) });
+    keys.push(...page.objects.map((o) => o.key));
+    continuationToken = page.isTruncated ? page.nextContinuationToken : undefined;
+  } while (continuationToken);
+  for (const key of keys) {
     if (key.endsWith("/")) continue;
     const to = join(dir, key.slice(prefix.length));
     mkdirSync(dirname(to), { recursive: true, mode: 0o700 });

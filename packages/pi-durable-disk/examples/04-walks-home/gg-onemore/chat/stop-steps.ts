@@ -1,7 +1,7 @@
 // The page's stop, in order: first what the take leaves behind (the guard log, the strength record, the page's events, the
 // run's transcript) is copied into a directory of its own, then the box, the app's sandboxes and the run's tree go. A step
 // that fails is logged and the rest still run: a lost log must never keep a GPU box up.
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface StopTools {
@@ -18,13 +18,21 @@ export interface StopTools {
 
 export type StopStep = readonly [string, () => string];
 
+/** The box's logs, read in one root command that prints them as one JSON line (a missing file is null). */
+export const BOX_FILES = ["/var/tmp/gg/guard.jsonl", "/var/tmp/gg/run/strength.json", "/var/tmp/gg/run/served.json", "/var/tmp/gg/run/pick.json"];
+const READ_BOX_FILES = `python3 -c 'import json, os; print(json.dumps({os.path.basename(p): open(p).read() if os.path.exists(p) else None for p in ${JSON.stringify(BOX_FILES)}}))'`;
+
 export function stopSteps(t: StopTools, dir: string): StopStep[] {
-  const keep = (name: string, path: string): StopStep => [`keep ${name}`, () => (writeFileSync(join(dir, name), t.onBox(`cat ${path}`), { mode: 0o600 }), join(dir, name))];
   return [
-    keep("guard.jsonl", "/var/tmp/gg/guard.jsonl"),
-    keep("strength.json", "/var/tmp/gg/run/strength.json"),
-    keep("served.json", "/var/tmp/gg/run/served.json"),
-    keep("pick.json", "/var/tmp/gg/run/pick.json"),
+    ["keep: the directory", () => (mkdirSync(dir, { recursive: true, mode: 0o700 }), dir)],
+    [
+      "keep the box's logs",
+      () => {
+        const files = JSON.parse(t.onBox(READ_BOX_FILES).trim().split("\n").at(-1) ?? "{}") as Record<string, string | null>;
+        for (const [name, text] of Object.entries(files)) if (text !== null) writeFileSync(join(dir, name), text, { mode: 0o600 });
+        return Object.entries(files).map(([name, text]) => `${name} ${text === null ? "missing" : `${text.length} chars`}`).join(", ");
+      },
+    ],
     ["keep the page's events", () => t.pageEvents(dir)],
     ["keep the run's transcript", () => t.pullRun(join(dir, "run"))],
     ["box down", () => t.boxDown()],
