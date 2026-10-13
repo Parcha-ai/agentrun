@@ -58,6 +58,7 @@ describe("moveFile on local boxes", () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
 		const moved = await moveFile(from, source, tampered(to, { flipReceiveAt: 1000 }), target, seal, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
+		expect(moved.ok ? "" : moved.error.message).toMatch(/on the target/);
 		expect(existsSync(target)).toBe(false);
 		expect(readdirSync(join(target, ".."))).toEqual([]);
 	});
@@ -75,6 +76,7 @@ describe("moveFile on local boxes", () => {
 		const other = { ...seal, sha256: createHash("sha256").update("another").digest("hex") };
 		const moved = await moveFile(from, source, to, target, other, context);
 		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
+		expect(moved.ok ? "" : moved.error.message).toMatch(/it sent/);
 		expect(existsSync(target)).toBe(false);
 		const shorter = await moveFile(from, source, to, target, { ...seal, bytes: seal.bytes - 1 }, context);
 		expect(shorter.ok ? "" : shorter.error.code).toBe("mismatch");

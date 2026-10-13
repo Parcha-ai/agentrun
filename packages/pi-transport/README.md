@@ -45,6 +45,30 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
 
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:

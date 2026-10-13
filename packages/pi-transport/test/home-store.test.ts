@@ -112,13 +112,37 @@ describe("a sealed store", () => {
 		const shorter = join(dir, "shorter.db");
 		writeFileSync(shorter, bytes.subarray(0, bytes.length - 4096));
 		expect(await code(shorter)).toBe("mismatch");
+		const sized = await verifyStore(shorter, seal, context);
+		expect(sized.ok ? "" : sized.error.message).toMatch(/bytes, the seal names/);
 		expect(await code(path, { ...seal, head: seal.head + 1 })).toBe("mismatch");
 		expect(await code(join(dir, "gone.db"))).toBe("not_found");
-		// A damaged page whose seal was made over the damaged file: the hash agrees, SQLite does not.
-		const damaged = join(dir, "damaged.db");
-		const damage = Buffer.from(bytes);
-		for (let at = damage.length - 8192; at < damage.length; at++) damage[at] = 0xa5;
-		writeFileSync(damaged, damage);
+		// A damaged page whose seal was made over the damaged file: the hash agrees, SQLite does not. The page is one
+		// SQLite flags while the head can still be read, so that only the quick check can refuse the file.
+		const pageSize = 4096;
+		let damaged = "";
+		let damage = Buffer.alloc(0);
+		for (let page = 1; page * pageSize < bytes.length && damaged === ""; page++) {
+			const candidate = Buffer.from(bytes);
+			candidate.fill(0xa5, page * pageSize + 100, (page + 1) * pageSize);
+			const file = join(dir, `damaged-${page}.db`);
+			writeFileSync(file, candidate);
+			try {
+				const database = new DatabaseSync(file, { readOnly: true });
+				try {
+					database.prepare("SELECT next_seq FROM durable_metadata").get();
+					const check = database.prepare("PRAGMA quick_check").all() as { quick_check: string }[];
+					if (!(check.length === 1 && check[0]?.quick_check === "ok")) {
+						damaged = file;
+						damage = candidate;
+					}
+				} finally {
+					database.close();
+				}
+			} catch {
+				// A page SQLite cannot even read: not the one this case needs.
+			}
+		}
+		expect(damaged, "a page that only the quick check flags").not.toBe("");
 		const resealed = {
 			...seal,
 			bytes: damage.length,
