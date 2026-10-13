@@ -203,6 +203,12 @@ class StrongTest(unittest.TestCase):
         # answers 0.1 and facts 0.2 everywhere: neither lowers the strength any more
         self.assertEqual(strength_lab(readable_until=0.6).strength(Recorder())["chosen"]["f"], 0.6)
 
+    def test_a_dark_answer_still_fails_a_strength_and_the_search_steps_around_it(self):
+        x = strength_lab(readable_until=0.6, dark_at=(0.55,))
+        out = x.strength(Recorder())
+        self.assertEqual(x.probed, [0.5, 0.55, 0.525])
+        self.assertEqual(out["chosen"]["f"], 0.525, "0.55 is readable but dark: never the choice")
+
     def test_the_probe_passes_on_readability_and_no_dark_answer_alone(self):
         x = lab.Lab.__new__(lab.Lab)
         x.thinking = True
@@ -210,6 +216,8 @@ class StrongTest(unittest.TestCase):
         x.sample = lambda probes: ([("a", "t") for _ in probes], 2)
         x.grade = lambda items: [{"obsession": 3.0, "specific": 0.9, "readable": 0.72, "answers": 0.05, "dark": 0.01, "correct": 0.1} for _ in items]
         self.assertTrue(x.probe(Recorder(), 32, 0.55, 80.0, "meandiff")["pass"], "readable 0.72 over 0.7, answers 0.05: it passes")
+        x.grade = lambda items: [{"obsession": 3.0, "specific": 0.9, "readable": 0.9, "answers": 0.9, "dark": 0.5 if i == 0 else 0.01, "correct": 0.9} for i, _ in enumerate(items)]
+        self.assertFalse(x.probe(Recorder(), 32, 0.55, 80.0, "meandiff")["pass"], "readable 0.9 with one dark answer: it fails")
 
 
 if __name__ == "__main__":
