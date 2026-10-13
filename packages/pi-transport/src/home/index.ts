@@ -22,6 +22,7 @@ export {
 	type Catalog,
 	catalogOf,
 	crossingOptions,
+	HOST_REQUEST_OPTIONS,
 	type ModelServer,
 	type ProxyModels,
 	proxyModels,

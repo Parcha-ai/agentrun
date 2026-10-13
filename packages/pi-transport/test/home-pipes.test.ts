@@ -11,6 +11,8 @@ import { localBoxes } from "../src/box/local.ts";
 import { moveFile, moveWorkspace, type Pipe } from "../src/home/index.ts";
 import { type Calls, counted, makeTree, tampered, walk } from "./home-support.ts";
 
+/** Destroying a box walks the process table and ends its programs: slow on a loaded machine. */
+const CLEANUP_TIMEOUT_MS = 120_000;
 const context = BACKGROUND_CONTEXT;
 const root = mkdtempSync(join(tmpdir(), "pi-transport-home-pipes-"));
 const provider = localBoxes({ root });
@@ -18,7 +20,7 @@ const boxes: Box[] = [];
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-}, 120_000);
+}, CLEANUP_TIMEOUT_MS);
 
 const PIPES: [string, Pipe][] = [
 	["stream", { kind: "stream" }],

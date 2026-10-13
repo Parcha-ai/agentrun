@@ -246,7 +246,7 @@ assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortCon
 assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
 assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
-assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function');
+assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.ok(Object.isFrozen(transportHome.HOST_REQUEST_OPTIONS));
 assert.equal(typeof transportHome.openHome,'function'); assert.equal(typeof transportHome.createGate,'function');
 assert.equal(typeof transportHome.moveHome,'function'); assert.equal(typeof transportHome.recoverHome,'function'); assert.equal(typeof transportTesting.registerMoveConformance,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }

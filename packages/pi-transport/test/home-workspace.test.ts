@@ -10,6 +10,8 @@ import { localBoxes } from "../src/box/local.ts";
 import { manifestOf, moveWorkspace } from "../src/home/index.ts";
 import { makeTree, tampered, walk } from "./home-support.ts";
 
+/** Destroying a box walks the process table and ends its programs: slow on a loaded machine. */
+const CLEANUP_TIMEOUT_MS = 120_000;
 const context = BACKGROUND_CONTEXT;
 const SEEDS = 100;
 const roots: string[] = [];
@@ -29,7 +31,7 @@ async function pair(): Promise<{ from: Box; to: Box; src: string; dst: string }>
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	for (const dir of roots) rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-}, 120_000);
+}, CLEANUP_TIMEOUT_MS);
 
 describe("moveWorkspace on local boxes", () => {
 	it("moves a tree and keeps names, modes, links, empty directories and contents", async () => {

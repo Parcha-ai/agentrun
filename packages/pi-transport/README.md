@@ -264,7 +264,8 @@ same in one process.
   functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
   plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
   sampling, session id, cache retention, metadata) reach its models; a credential, an endpoint, a header, the
-  provider's environment and the host's retry limits never come from a box. The answers the host acts on (the ready
+  provider's environment and the host's retry limits never come from a box. `serveModels(models, { allow })` replaces
+  that list; a host widens it with `[...HOST_REQUEST_OPTIONS, "name"]`. The exported list is frozen. The answers the host acts on (the ready
   state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
 - **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
   default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the

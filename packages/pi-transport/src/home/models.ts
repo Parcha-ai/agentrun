@@ -68,11 +68,12 @@ const NEVER_CROSSES = new Set([
 ]);
 
 /**
- * The request options a host passes from a runner's frame to its own models. Plain knobs only: never anything that
- * picks a credential, an endpoint, a header, the provider's environment, or how long and how often the host retries.
- * A runner sits in a box and is not trusted with those; a host may widen the list (`serveModels`'s `options`).
+ * The request options a host passes from a runner's frame to its own models when it names none. Plain knobs only:
+ * never anything that picks a credential, an endpoint, a header, the provider's environment, or how long and how
+ * often the host retries. A runner sits in a box and is not trusted with those. `serveModels(models, { allow })`
+ * replaces this list with `allow`; a host that widens it passes `[...HOST_REQUEST_OPTIONS, "name"]`. Frozen.
  */
-export const HOST_REQUEST_OPTIONS: readonly string[] = [
+export const HOST_REQUEST_OPTIONS: readonly string[] = Object.freeze([
 	"temperature",
 	"maxTokens",
 	"reasoning",
@@ -82,7 +83,7 @@ export const HOST_REQUEST_OPTIONS: readonly string[] = [
 	"sessionId",
 	"cacheRetention",
 	"metadata",
-];
+]);
 
 /** Whether `value` is plain JSON: what survives `JSON.stringify` unchanged. */
 function plain(value: unknown): boolean {
@@ -411,8 +412,8 @@ export interface ModelServer {
 
 /**
  * Answer a runner's model frames with the host's own models: its credentials, its endpoints, its fetch, its signal.
- * A frame's options are not trusted: only the plain values of `allow` (default `HOST_REQUEST_OPTIONS`) reach the
- * host's models, and everything else in them is dropped. A request id seen before is never called again.
+ * A frame's options are not trusted: only the plain values of `allow` reach the host's models, and everything else in
+ * them is dropped. `allow` replaces `HOST_REQUEST_OPTIONS`, the default; it does not add to it. A request id seen before is never called again.
  */
 export function serveModels(
 	models: Models,

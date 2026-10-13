@@ -34,6 +34,8 @@ if (!Number.isInteger(MOVES) || MOVES < 1) {
 const TIMEOUT_MS = 30_000 + MOVES * 5_000;
 /** Longer than any tool call or model request here, so only what never ends still runs at the timeout. */
 const SHORT_DRAIN_MS = 400;
+/** Kinds of the session's own work that may be in flight toward the gate when a drain gives up. */
+const IN_FLIGHT_KINDS = ["pi.tool", "pi.generation", "pi.compaction"];
 
 /** Run `each` on a trial of its own for every move index, one after another. The label names the move in a failure. */
 async function everyTrial(
@@ -170,7 +172,10 @@ describe.concurrent("the move gate", () => {
 					const error = refusal(await home.gate.drain({ timeoutMs: SHORT_DRAIN_MS }, context));
 					expect(error, label).toBeInstanceOf(DrainError);
 					expect(error.code, label).toBe("timeout");
-					expect(error.holdouts, label).toEqual([{ kind: TICKER, count: 1 }]);
+					// The ticker never reaches the gate. A tool or a model request that was already running when the drain began may
+					// also still be on its way to it when a loaded machine ends the wait: the gate names it, and it is not the point.
+					expect(error.holdouts, label).toContainEqual({ kind: TICKER, count: 1 });
+					for (const { kind } of error.holdouts) expect([TICKER, ...IN_FLIGHT_KINDS], label).toContain(kind);
 					expect(home.gate.held, label).toBe(0);
 
 					// The same Harness finishes the run and the ticker never stopped: no line is missing, none repeats.
