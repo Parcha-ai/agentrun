@@ -32,7 +32,7 @@ SOFTWARE.\n`;
 const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -58,7 +58,7 @@ async function recordPackages(root) {
     packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
   }
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -137,7 +137,7 @@ test('incomplete or unsuccessful verification cannot approve release', () => fix
   await putJson(path, { ...receipt, runtimeSmoke: { core: true, jev: true, network: 'prohibited' } });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
   await putJson(path, { ...receipt, packages: receipt.packages.slice(0, 2) });
-  await assert.rejects(preflight(root), /exactly 6 verified packages/);
+  await assert.rejects(preflight(root), /exactly 7 verified packages/);
   await putJson(path, { ...receipt, status: 'failed' });
   await assert.rejects(preflight(root), /verification must pass/);
   await putJson(path, { ...receipt, audit: { vulnerabilities: { high: 1, critical: 0 } } });
@@ -236,7 +236,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision'], 'dsl before jev and pi, the packages that depend on none of them after');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'], 'dsl before jev and pi, the packages that depend on none of them after');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -335,4 +335,16 @@ test('the vision package is held: listed, private, at the workspace version, and
   await putJson(path, lifted);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.at(-1).name, '@parcha/pi-vision', 'a tree that lifts the hold publishes it, last');
+}));
+
+test('the transport package is held: listed, private, at the workspace version, and published only from a tree that lifts the hold', () => fixture(async root => {
+  assert.ok(heldPackages.includes('pi-transport') && !releasePackages.includes('pi-transport'), 'held in this checkout');
+  assert.equal(repoManifest('pi-transport').private, true);
+  assert.equal(repoManifest('pi-transport').version, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, 'at the workspace version');
+  assert.ok(!(await preflight(root)).packages.some(pkg => pkg.directory === 'pi-transport'), 'not in the plan while held');
+  const path = join(root, 'packages/pi-transport/package.json');
+  const { private: _, ...lifted } = JSON.parse(await readFile(path, 'utf8'));
+  await putJson(path, lifted);
+  await recordPackages(root);
+  assert.equal((await preflight(root)).packages.at(-1).name, '@parcha/pi-transport', 'a tree that lifts the hold publishes it, last');
 }));
