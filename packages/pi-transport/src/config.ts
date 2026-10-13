@@ -4,7 +4,6 @@ import { Value } from "typebox/value";
 
 const DURATION_UNITS_MS: Readonly<Record<string, number>> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 const DEFAULT_LOCAL_LIFETIME_MS = 24 * 3_600_000;
-const DEFAULT_WORKSPACE_PATH = "/workspace";
 const ENVIRONMENT_ID = /^[a-z][a-z0-9_-]{0,63}$/;
 /** Words with a meaning of their own in `home` and `hands`, so no environment may take them as its id. */
 const RESERVED_IDS: readonly string[] = ["auto", "default"];
@@ -100,7 +99,8 @@ export type TransportConfig = {
 		readonly classifier: { readonly provider: string; readonly modelId: string };
 		readonly ask: "message" | "turn";
 	};
-	readonly workspace: { readonly path: string; readonly exclude: readonly string[]; readonly maxBytes?: number };
+	/** `path` is where every environment keeps the workspace; `undefined` leaves it to each provider's own default. */
+	readonly workspace: { readonly path?: string; readonly exclude: readonly string[]; readonly maxBytes?: number };
 };
 
 /** One thing wrong with a config. `path` is a JSON pointer into the block; the empty string is the block itself. */
@@ -213,7 +213,7 @@ export function parseTransportConfig(input: unknown): Result<TransportConfig, Co
 		...(hands === undefined ? {} : { hands }),
 		...(raw.auto === undefined ? {} : { auto: { classifier: raw.auto.classifier, ask: raw.auto.ask ?? "message" } }),
 		workspace: {
-			path: raw.workspace?.path ?? DEFAULT_WORKSPACE_PATH,
+			...(raw.workspace?.path === undefined ? {} : { path: raw.workspace.path }),
 			exclude: raw.workspace?.exclude ?? [],
 			...(raw.workspace?.maxBytes === undefined ? {} : { maxBytes: raw.workspace.maxBytes }),
 		},
