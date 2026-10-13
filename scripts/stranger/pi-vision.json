@@ -1,0 +1,5 @@
+{
+  "package": "@parcha/pi-vision",
+  "expect": "no-key path missing",
+  "reason": "The README example needs a pi-ai model object and prints nothing; no command is given, and the package is held."
+}

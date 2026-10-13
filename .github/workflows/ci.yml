@@ -68,10 +68,10 @@ jobs:
         env:
           PDA_EXPECT_PI_DURABLE: '1.0.4'
 
-  pi-vision-pi-floor:
-    # @parcha/pi-vision's peers accept pi-durable from 1.0.4, while the package develops against 1.1.0. Its build, type
-    # tests and whole suite run again on the lowest version the peers accept; PI_VISION_EXPECT_PI_DURABLE makes the run
-    # fail if another pi-durable, chord or pi-ai version was resolved.
+  pi-vision-pi-durable-1-1:
+    # @parcha/pi-vision's peers accept pi-durable from 1.0.4 to 1.1.x, while the workspace develops against 1.0.4. Its
+    # build, type tests and whole suite run again on 1.1.0; PI_VISION_EXPECT_PI_DURABLE makes the run fail if another
+    # pi-durable, chord or pi-ai version was resolved.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -81,12 +81,12 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-vision @earendil-works/pi-durable@1.0.4 @earendil-works/chord@1.0.4 @earendil-works/pi-ai@1.0.4
+      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-vision @earendil-works/pi-durable@1.1.0 @earendil-works/chord@1.1.0 @earendil-works/pi-ai@1.1.0
       - run: npm run build -w @parcha/pi-vision
       - run: npm run typecheck -w @parcha/pi-vision
       - run: npm test -w @parcha/pi-vision
         env:
-          PI_VISION_EXPECT_PI_DURABLE: '1.0.4'
+          PI_VISION_EXPECT_PI_DURABLE: '1.1.0'
 
   vision-binaries:
     # @parcha/pi-vision's suites that run programs in the environment (test/binaries: ffmpeg and poppler). They are not
@@ -181,6 +181,31 @@ jobs:
       - run: npm run test:chrome -w @parcha/pi-browser
       # The assembled reference job on the same Chrome: its record and ledger must be the fixed ones (the receipt name and token counts are not).
       - run: node scripts/check-reference-chrome.mjs
+
+  stranger:
+    # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
+    # its README gives with no key (scripts/stranger/<name>.json). Each spec runs on its own runner. A spec that says the package has
+    # no such command is reported, not failed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Run the stranger test
+        # An explicit shell runs with pipefail; the default does not, and tee's status would hide a failing spec.
+        shell: bash
+        run: |
+          node scripts/stranger.mjs "${{ matrix.spec }}" | tee "$RUNNER_TEMP/stranger.out"
+          if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
