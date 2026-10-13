@@ -52,7 +52,12 @@ function parseLabels(text: string): Record<string, string> {
 // (`a=b,c=d`) name and label the boxes; PI_TRANSPORT_DAYTONA_SNAPSHOT picks the size.
 if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 	process.env[CANARY] = "the host's environment reached a box";
-	const labels = parseLabels(process.env.PI_TRANSPORT_LIVE_LABELS ?? "pi-transport-live=1");
+	// Every box of this run carries a label no other run has, so the leftover check and the cleanup touch only this run's boxes
+	// even while another live suite shares `PI_TRANSPORT_LIVE_LABELS`.
+	const labels = {
+		...parseLabels(process.env.PI_TRANSPORT_LIVE_LABELS ?? "pi-transport-live=1"),
+		"pi-transport-live-run": `box-${process.pid}-${Date.now()}`,
+	};
 	const provider = daytonaBoxes({
 		apiKey: process.env.DAYTONA_API_KEY ?? "",
 		...(process.env.DAYTONA_API_URL === undefined ? {} : { apiUrl: process.env.DAYTONA_API_URL }),

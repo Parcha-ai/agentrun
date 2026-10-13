@@ -37,6 +37,8 @@ const DESTROY_RETRY_MS = 1_000;
 const RETRY_BASE_MS = 500;
 const POLL_FAILURES_MAX = 5;
 const OUTPUT_CHUNK_BYTES = 256 * 1024;
+/** What the host holds for a reader that is slow; the program writes on to its files, and polling waits. */
+const OUTPUT_BUFFER_MAX_BYTES = 4 * 1024 * 1024;
 const INPUT_CHUNK_BYTES = 48 * 1024;
 const BYTES_PER_GIB = 1024;
 const MS_PER_MINUTE = 60_000;
@@ -118,6 +120,8 @@ export type DaytonaBoxesOptions = {
 	readonly workspace?: string;
 	/** From the create call to a started sandbox. Default 120 s. */
 	readonly startTimeoutMs?: number;
+	/** Pause between attempts to delete a sandbox. Default 1 s. */
+	readonly destroyRetryMs?: number;
 	/** How long the new box must show in the label listing without a miss before `create` returns. Default 1 s. */
 	readonly listedStableMs?: number;
 	/** How long `create` waits for that. Default 15 s. */
@@ -203,25 +207,48 @@ function parseJson(bytes: Uint8Array): unknown {
 /** An async iterable fed by `push` and closed by `end`; it holds what nobody has read yet. */
 class Pipe implements AsyncIterable<Uint8Array> {
 	readonly #queue: Uint8Array[] = [];
+	readonly #waiters: { limit: number; resolve: () => void }[] = [];
 	#wake: (() => void) | undefined;
 	#ended = false;
+	#bytes = 0;
 
 	push(bytes: Uint8Array): void {
 		if (this.#ended || bytes.length === 0) return;
 		this.#queue.push(bytes);
+		this.#bytes += bytes.length;
 		this.#wake?.();
 	}
 
 	end(): void {
 		this.#ended = true;
 		this.#wake?.();
+		this.#release();
+	}
+
+	/** Resolves once no more than `limit` bytes wait for a reader, or at once when the pipe has ended. */
+	waitBelow(limit: number): Promise<void> {
+		if (this.#ended || this.#bytes <= limit) return Promise.resolve();
+		return new Promise((resolve) => this.#waiters.push({ limit, resolve }));
+	}
+
+	#release(): void {
+		for (let index = this.#waiters.length - 1; index >= 0; index -= 1) {
+			const waiter = this.#waiters[index];
+			if (waiter !== undefined && (this.#ended || this.#bytes <= waiter.limit)) {
+				this.#waiters.splice(index, 1);
+				waiter.resolve();
+			}
+		}
 	}
 
 	async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
 		for (;;) {
 			const next = this.#queue.shift();
-			if (next !== undefined) yield next;
-			else if (this.#ended) return;
+			if (next !== undefined) {
+				this.#bytes -= next.length;
+				this.#release();
+				yield next;
+			} else if (this.#ended) return;
 			else {
 				await new Promise<void>((resolve) => {
 					this.#wake = resolve;
@@ -489,6 +516,9 @@ function startProcess(
 		let errOffset = 0;
 		let failures = 0;
 		while (!settled) {
+			// A reader that falls behind stops the polling, so the host never holds more than the bound for a program.
+			await Promise.all([stdout.waitBelow(OUTPUT_BUFFER_MAX_BYTES), stderr.waitBelow(OUTPUT_BUFFER_MAX_BYTES)]);
+			if (settled) return;
 			const polled = await rest.execute(
 				box.info,
 				shellCommand(POLL_SCRIPT, [dir, String(outOffset), String(errOffset), String(OUTPUT_CHUNK_BYTES)]),
@@ -643,19 +673,8 @@ class DaytonaBox implements Box {
 		return ok({ state: "running" });
 	}
 
-	async destroy(context: Context): Promise<Result<void, BoxError>> {
-		let failure: BoxError | undefined;
-		for (let attempt = 1; attempt <= DESTROY_ATTEMPTS; attempt += 1) {
-			const removed = await this.#rest.remove(this.id, context);
-			if (removed.ok) return removed;
-			failure = removed.error;
-			// A delete already under way answers 409; the box is ending, which is what the caller asked for.
-			const status = await this.status(context);
-			if (status.ok && status.value.state === "ended") return ok(undefined);
-			if (attempt === DESTROY_ATTEMPTS - 1) await this.#rest.stop(this.id, context);
-			await delay(DESTROY_RETRY_MS, context);
-		}
-		return err(failure ?? new BoxError("unknown", `could not destroy box ${this.id}`));
+	destroy(context: Context): Promise<Result<void, BoxError>> {
+		return deleteSandbox(this.#rest, this.id, this.#options.destroyRetryMs ?? DESTROY_RETRY_MS, context);
 	}
 
 	#resolve(path: string): string {
@@ -696,6 +715,33 @@ async function waitStarted(
 		if (!next.ok) return next;
 		current = next.value;
 	}
+}
+
+/** Whether a sandbox in this state is on its way out, or gone: the only states that tell a failed DELETE did not matter. */
+const DELETED_STATES: ReadonlySet<string> = new Set(["destroyed", "destroying"]);
+
+/**
+ * Delete a sandbox and make sure it is going. A DELETE that fails is checked against the sandbox itself: only a sandbox that
+ * no longer exists, or one being destroyed, counts as done. A stopped, archived or errored sandbox that refuses its DELETE is
+ * still there with its files, so the last failure is returned, after a forced stop before the final attempt.
+ */
+async function deleteSandbox(
+	rest: Rest,
+	id: string,
+	retryMs: number,
+	context: Context,
+): Promise<Result<void, BoxError>> {
+	let failure: BoxError | undefined;
+	for (let attempt = 1; attempt <= DESTROY_ATTEMPTS; attempt += 1) {
+		const removed = await rest.remove(id, context);
+		if (removed.ok) return removed;
+		failure = removed.error;
+		const found = await rest.get(id, context);
+		if (found.ok && (found.value === undefined || DELETED_STATES.has(found.value.state ?? ""))) return ok(undefined);
+		if (attempt === DESTROY_ATTEMPTS - 1) await rest.stop(id, context);
+		await delay(retryMs, context);
+	}
+	return err(failure ?? new BoxError("unknown", `could not destroy box ${id}`));
 }
 
 /**
@@ -748,6 +794,9 @@ async function waitListed(
  */
 export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 	if (options.apiKey === "") throw new Error("a Daytona API key is required");
+	if (options.workspace !== undefined && !options.workspace.startsWith("/")) {
+		throw new Error("the workspace option must be an absolute path in the box");
+	}
 	const rest = new Rest(options);
 	const withWorkspace = (spec: BoxSpec) => spec.workspace ?? options.workspace ?? DEFAULT_WORKSPACE;
 
@@ -757,6 +806,9 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.image !== undefined) return err(new BoxError("unsupported", "daytona boxes start from a snapshot"));
+			if (spec.workspace !== undefined && !spec.workspace.startsWith("/")) {
+				return err(new BoxError("invalid", `the workspace ${spec.workspace} is not an absolute path in the box`));
+			}
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
@@ -797,8 +849,21 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (!created.ok) return created;
 			// From here the sandbox exists: every failure removes it before it is returned.
 			const abandon = async (failure: BoxError): Promise<Result<Box, BoxError>> => {
-				await rest.remove(created.value.id, BACKGROUND_CONTEXT);
-				return err(failure);
+				const deleted = await deleteSandbox(
+					rest,
+					created.value.id,
+					options.destroyRetryMs ?? DESTROY_RETRY_MS,
+					BACKGROUND_CONTEXT,
+				);
+				if (deleted.ok) return err(failure);
+				// The caller gets no box to destroy, so the failure names the sandbox that is left.
+				return err(
+					new BoxError(
+						failure.code,
+						`${failure.message}; sandbox ${created.value.id} could not be deleted either (${deleted.error.message}) and lives until its lifetime ends`,
+						failure,
+					),
+				);
 			};
 			const started = await waitStarted(rest, created.value, options, context);
 			if (!started.ok) return abandon(started.error);

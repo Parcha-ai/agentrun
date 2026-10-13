@@ -224,6 +224,7 @@ const provider = (spool = "spool", listedStableMs = 50) =>
 		pollMs: 10,
 		execPollMs: 20,
 		listedStableMs,
+		destroyRetryMs: 10,
 	});
 
 const spec = (extra: Partial<BoxSpec> = {}): BoxSpec => ({ maxLifetimeMs: 10 * 60_000, ...extra });
@@ -487,6 +488,79 @@ describe("daytona boxes", () => {
 		} finally {
 			fake.sandboxes.delete(odd.id);
 			fake.sandboxes.delete(garbage.id);
+		}
+	});
+
+	it("holds only a bounded amount of a program's output when nobody reads it, and delivers all of it to a reader", async () => {
+		await withBox(async (box) => {
+			const total = 30_000_000;
+			const started = await box.exec(["sh", "-c", `head -c ${total} /dev/zero`], undefined, context);
+			if (!started.ok) throw started.error;
+			const outcome = await Promise.race([
+				started.value.wait().then(() => "finished"),
+				new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 2_500)),
+			]);
+			// Nobody has read a byte: past the bound the host stops fetching, so the wait cannot end yet.
+			expect(outcome).toBe("waiting");
+			const polls = fake.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/execute")).length;
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			expect(fake.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/execute")).length).toBe(
+				polls,
+			);
+			// A reader that catches up gets every byte and the exit code.
+			let received = 0;
+			for await (const part of started.value.stdout) received += part.length;
+			expect(received).toBe(total);
+			expect(await started.value.wait()).toEqual({ ok: true, value: 0 });
+		});
+	}, 60_000);
+
+	it("does not call a stopped sandbox deleted when its DELETE keeps failing", async () => {
+		await withBox(async (box) => {
+			const sandbox = fake.sandboxes.get(box.id);
+			if (sandbox === undefined) throw new Error("the sandbox is missing");
+			sandbox.state = "stopped";
+			fake.failures.push({
+				match: (method, path) => method === "DELETE" && path === `/api/sandbox/${box.id}`,
+				status: 409,
+				body: "cannot delete",
+				times: 1000,
+			});
+			const destroyed = await box.destroy(context);
+			expect(destroyed.ok ? "ok" : destroyed.error.message).toContain("cannot delete");
+			// Once Daytona lets go of it, the next destroy goes through.
+			fake.failures.length = 0;
+			expect(await box.destroy(context)).toEqual({ ok: true, value: undefined });
+		});
+	});
+
+	it("refuses a relative workspace in the spec and in the options before any sandbox exists", async () => {
+		fake.requests.length = 0;
+		const created = await provider().create(spec({ workspace: "work/dir" }), context);
+		expect(created.ok ? "ok" : created.error.code).toBe("invalid");
+		expect(() => daytonaBoxes({ apiKey: API_KEY, apiUrl: `${fake.url}/api`, workspace: "work" })).toThrow(/absolute/);
+		expect(fake.requests.some((r) => r.method === "POST" && r.path === "/api/sandbox")).toBe(false);
+	});
+
+	it("names the sandbox it could not delete when setup fails and the cleanup fails too", async () => {
+		fake.failExecuteContaining = "mkdir";
+		fake.failures.push({
+			match: (method, path) => method === "DELETE" && path.startsWith("/api/sandbox/"),
+			status: 409,
+			body: "state change in progress",
+			times: 1000,
+		});
+		try {
+			const created = await provider().create(spec(), context);
+			expect(created.ok).toBe(false);
+			const [leftover] = [...fake.sandboxes.keys()];
+			expect(leftover).toBeDefined();
+			expect(created.ok ? "" : created.error.message).toContain(leftover ?? "no sandbox");
+			expect(created.ok ? "" : created.error.message).toContain("could not be deleted either");
+		} finally {
+			fake.failExecuteContaining = undefined;
+			fake.failures.length = 0;
+			for (const id of [...fake.sandboxes.keys()]) fake.sandboxes.delete(id);
 		}
 	});
 
