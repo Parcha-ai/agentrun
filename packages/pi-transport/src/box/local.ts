@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -21,10 +22,43 @@ import { adaptChild } from "./child.ts";
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RECORD_FILE = "box.json";
+/** Every program of a box carries `PI_TRANSPORT_BOX=<box id>` in its environment, and so does what it starts. */
+const BOX_MARKER = "PI_TRANSPORT_BOX";
+/** The watchdog of a box carries this instead, so ending the box's programs never ends the watchdog first. */
+const WATCHDOG_MARKER = "PI_TRANSPORT_WATCHDOG";
+const KILL_ROUNDS = 5;
+/** Labels with this prefix belong to providers. */
+const RESERVED_LABEL_PREFIX = "pi-transport.";
+/** Whether this system shows a process's environment under `/proc`, which is how a box's programs are found. */
+const HAS_PROC = existsSync("/proc/self/environ");
+
+/**
+ * Runs detached from the host and ends the box when its lifetime has passed: `$1` seconds, `$2` the box's directory,
+ * `$3` the marker its programs carry. A box that was destroyed first has no record left, and the script does nothing.
+ */
+const WATCHDOG_SCRIPT = `sleep "$1" || exit 0
+[ -f "$2/${RECORD_FILE}" ] || exit 0
+rm -f -- "$2/${RECORD_FILE}"
+round=0
+while [ "$round" -lt ${KILL_ROUNDS} ]; do
+	round=$((round + 1))
+	found=$(grep -l -a -z -F -x -e "$3" /proc/[0-9]*/environ 2>/dev/null)
+	[ -n "$found" ] || break
+	for environ in $found; do
+		pid=\${environ#/proc/}
+		kill -KILL "\${pid%/environ}" 2>/dev/null
+	done
+done
+rm -rf -- "$2"`;
 
 export type LocalBoxesOptions = {
 	/** Directory that holds one subdirectory per box. Created when absent. */
 	readonly root: string;
+	/**
+	 * The `PATH` of programs in a box. Default `/usr/local/bin:/usr/bin:/bin`. This process's own `PATH` is never used
+	 * unless the host passes it here.
+	 */
+	readonly path?: string;
 };
 
 type LocalRecord = {
@@ -33,9 +67,13 @@ type LocalRecord = {
 	readonly workspace: string;
 	readonly labels: Readonly<Record<string, string>>;
 	readonly env: Readonly<Record<string, string>>;
+	readonly path: string;
 	readonly maxLifetimeMs: number;
 	readonly expiresAt: number;
 };
+
+/** Process groups this process started, by box, for systems where `/proc` cannot find a box's programs. */
+const startedHere = new Map<string, Set<number>>();
 
 function errorCode(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException | undefined)?.code;
@@ -43,7 +81,7 @@ function errorCode(error: unknown): string | undefined {
 
 /**
  * A box that is a directory on this machine. Invariant: a program started in it never receives this process's
- * environment, only a fixed `PATH`, a private `HOME` and `TMPDIR`, and the spec's `env`.
+ * environment, only the provider's `PATH`, a private `HOME` and `TMPDIR`, the spec's `env` and the box's marker.
  */
 class LocalBox implements Box {
 	readonly id: string;
@@ -80,27 +118,22 @@ class LocalBox implements Box {
 		const child = spawn(program, args, {
 			cwd: this.#record.workspace,
 			env: {
-				PATH: process.env.PATH ?? DEFAULT_PATH,
+				PATH: this.#record.path,
 				HOME: join(this.#directory, "home"),
 				TMPDIR: join(this.#directory, "tmp"),
 				...this.#record.env,
+				[BOX_MARKER]: this.id,
 			},
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: true,
 		});
 		const pid = child.pid;
-		// Listeners attach before anything is awaited: a short program can exit during the first await.
-		const started = adaptChild(child, () => killGroup(pid), options, context);
-		if (pid !== undefined) {
-			// The file lets a later `destroy`, from any process, find and end this program's group.
-			const marker = join(this.#directory, "pids", String(pid));
-			const written = processStartTime(pid)
-				.then((startTime) => writeFile(marker, startTime ?? ""))
-				.catch(() => {});
-			child.once("close", () => void written.then(() => rm(marker, { force: true })).catch(() => {}));
-			await written;
+		if (pid !== undefined && !HAS_PROC) {
+			const groups = startedHere.get(this.id) ?? new Set<number>();
+			startedHere.set(this.id, groups.add(pid));
+			child.once("close", () => groups.delete(pid));
 		}
-		return ok(started);
+		return ok(adaptChild(child, () => killGroup(pid), options, context));
 	}
 
 	async upload(files: readonly BoxFile[], _context: Context): Promise<Result<void, BoxError>> {
@@ -139,7 +172,7 @@ class LocalBox implements Box {
 
 	async destroy(_context: Context): Promise<Result<void, BoxError>> {
 		try {
-			await destroyDirectory(this.#directory);
+			await destroyDirectory(this.#directory, this.id);
 			return ok(undefined);
 		} catch (error) {
 			return err(new BoxError("unknown", `could not remove box ${this.id}: ${(error as Error).message}`, error));
@@ -164,26 +197,50 @@ function killGroup(pid: number | undefined): void {
 	}
 }
 
-/** When the process started, in the kernel's clock ticks, or `undefined` where `/proc` cannot say. */
-async function processStartTime(pid: number): Promise<string | undefined> {
-	try {
-		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-		// The second field is the program name in parentheses and may hold spaces; the start time is field 22.
-		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-	} catch {
-		return undefined;
+/**
+ * The processes whose environment names this box, as its programs or as its watchdog. One pass over `/proc`, read
+ * synchronously: a pass of awaited reads is twenty times slower on a machine with thousands of processes.
+ */
+function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
+	const programs: number[] = [];
+	const watchdogs: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		let entries: string[];
+		try {
+			entries = readFileSync(`/proc/${name}/environ`, "latin1").split("\0");
+		} catch {
+			// Another user's process, or one that has ended.
+			continue;
+		}
+		if (entries.includes(`${BOX_MARKER}=${id}`)) programs.push(Number(name));
+		else if (entries.includes(`${WATCHDOG_MARKER}=${id}`)) watchdogs.push(Number(name));
 	}
+	return { programs, watchdogs };
 }
 
 /**
- * End the programs a box's marker files name. A marker is trusted only when the process it names still has the start
- * time the marker recorded, so a process id the system reused is never killed.
+ * End every program of a box and its watchdog, also a program that left its process group or outlived the program
+ * that started it: each is found by the marker in its own environment, so a process id the system reused is never
+ * killed. Where `/proc` is missing, only the process groups this process started are ended.
  */
-async function killMarked(directory: string): Promise<void> {
-	const names = await readdir(join(directory, "pids")).catch(() => [] as string[]);
-	for (const name of names) {
-		const recorded = await readFile(join(directory, "pids", name), "utf8").catch(() => "");
-		if (recorded !== "" && recorded === (await processStartTime(Number(name)))) killGroup(Number(name));
+function endPrograms(id: string): void {
+	if (!HAS_PROC) {
+		for (const pid of startedHere.get(id) ?? []) killGroup(pid);
+		startedHere.delete(id);
+		return;
+	}
+	for (let round = 0; round < KILL_ROUNDS; round += 1) {
+		const { programs, watchdogs } = processesOf(id);
+		for (const pid of [...watchdogs, ...programs]) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// It ended between the scan and the kill.
+			}
+		}
+		// A program may have started another between the scan and its end, so programs get one more look.
+		if (programs.length === 0) return;
 	}
 }
 
@@ -197,26 +254,40 @@ async function readRecord(directory: string): Promise<LocalRecord | undefined> {
 }
 
 /**
- * End a box: its programs, then its own directory. A workspace the caller named lies outside that directory and is
- * never removed.
+ * End a box: its record, its programs and its watchdog, then its own directory. A workspace the caller named lies
+ * outside that directory and is never removed.
  */
-async function destroyDirectory(directory: string): Promise<void> {
+async function destroyDirectory(directory: string, id: string): Promise<void> {
 	// The record goes first: from then on every handle of this box reports it ended.
 	await rm(join(directory, RECORD_FILE), { force: true });
-	await killMarked(directory);
+	endPrograms(id);
 	await rm(directory, { recursive: true, force: true });
 }
 
-/** Boxes that are directories on this machine: no isolation, no account, for development and for tests. */
+/** The first spec field a directory on this machine cannot honour, or `undefined`. */
+function unsupportedField(spec: BoxSpec): string | undefined {
+	const fields = ["image", "snapshot", "cpus", "memoryMb", "gpu", "region"] as const;
+	return fields.find((field) => spec[field] !== undefined);
+}
+
+/**
+ * Boxes that are directories on this machine: no isolation, no account, for development and for tests.
+ *
+ * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region` or an `isolation` other than
+ * `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
+ * lifetime has passed, whatever happened to the process that created it. On Linux `destroy` and the watchdog end every
+ * program of the box, found by a marker in its environment. Where `/proc` is missing they end only the programs this
+ * process started and their process groups, and the watchdog removes the box's directory only.
+ */
 export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 	const root = resolve(options.root);
 
 	/** The live box in `directory`, after ending it when its lifetime has passed. */
-	async function open(directory: string): Promise<LocalBox | undefined> {
+	async function open(directory: string, id: string): Promise<LocalBox | undefined> {
 		const record = await readRecord(directory);
 		if (record === undefined) return undefined;
 		if (Date.now() >= record.expiresAt) {
-			await destroyDirectory(directory);
+			await destroyDirectory(directory, id);
 			return undefined;
 		}
 		return new LocalBox(directory, record);
@@ -230,10 +301,18 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				return err(new BoxError("invalid", "workspace must be an absolute path"));
 			}
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
+			const unsupported = unsupportedField(spec);
+			if (unsupported !== undefined) {
+				return err(new BoxError("unsupported", `a local box is a directory and cannot honour ${unsupported}`));
+			}
 			if (spec.isolation !== undefined && spec.isolation !== "none") {
 				return err(
 					new BoxError("unsupported", `a local box has no isolation, the spec asks for ${spec.isolation}`),
 				);
+			}
+			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			if (reserved !== undefined) {
+				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}
 			const id = `local-${randomBytes(6).toString("hex")}`;
 			const directory = join(root, id);
@@ -242,11 +321,12 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				workspace: spec.workspace ?? join(directory, "workspace"),
 				labels: spec.labels ?? {},
 				env: spec.env ?? {},
+				path: options.path ?? DEFAULT_PATH,
 				maxLifetimeMs: spec.maxLifetimeMs,
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
-				for (const name of ["home", "tmp", "pids"]) await mkdir(join(directory, name), { recursive: true });
+				for (const name of ["home", "tmp"]) await mkdir(join(directory, name), { recursive: true });
 				await mkdir(record.workspace, { recursive: true });
 				await writeFile(join(directory, RECORD_FILE), JSON.stringify(record));
 			} catch (error) {
@@ -254,12 +334,18 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 					new BoxError("unknown", `could not create a box in ${root}: ${(error as Error).message}`, error),
 				);
 			}
+			const seconds = (spec.maxLifetimeMs / 1000).toFixed(3);
+			spawn("sh", ["-c", WATCHDOG_SCRIPT, "sh", seconds, directory, `${BOX_MARKER}=${id}`], {
+				env: { PATH: DEFAULT_PATH, [WATCHDOG_MARKER]: id },
+				stdio: "ignore",
+				detached: true,
+			}).unref();
 			return ok(new LocalBox(directory, record));
 		},
 
 		async attach(id: string, _context: Context): Promise<Result<Box | undefined, BoxError>> {
 			if (!/^local-[0-9a-f]+$/.test(id)) return ok(undefined);
-			return ok(await open(join(root, id)));
+			return ok(await open(join(root, id), id));
 		},
 
 		async list(labels, _context: Context): Promise<Result<readonly BoxRef[], BoxError>> {
