@@ -49,7 +49,7 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 				}
 			});
 
-			it("measures the time from create to gone for a box nobody ends", async () => {
+			it("measures the time from create to gone for a box nobody ends, asked of Modal itself", async () => {
 				const started = Date.now();
 				const created = await provider.create({ ...base, maxLifetimeMs: SHORT_LIFETIME_MS }, BACKGROUND_CONTEXT);
 				if (!created.ok) throw created.error;
@@ -58,8 +58,7 @@ if (process.env.PI_TRANSPORT_LIVE_MODAL === "1") {
 				try {
 					while (Date.now() - started < SHORT_LIFETIME_MS + SHORT_GRACE_MS) {
 						await new Promise((resolve) => setTimeout(resolve, 1000));
-						const found = await provider.attach(created.value.id, BACKGROUND_CONTEXT);
-						if (found.ok && found.value === undefined) {
+						if (await sandboxEnded(client, created.value.id)) {
 							goneMs = Date.now() - started;
 							break;
 						}
