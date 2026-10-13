@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, frozenEffectId, nodeAt } from '@parcha/agentrun-dsl/recovery';
+// The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
+// performance.now(). A test that needs either to pass holds both clocks and moves them itself.
+const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
 
 const scratch = mkdtempSync(join(tmpdir(), 'agentrun-recovery-guards-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -23,7 +26,8 @@ const admitting = (inner, then) => ({ open: async (bound) => {
   return watched;
 } });
 
-test('a stop, a cancelled caller or a deadline that lands during the admission leaves the effect unknown and the adapter uncalled', async () => {
+test('a stop, a cancelled caller or a deadline that lands during the admission leaves the effect unknown and the adapter uncalled', async (t) => {
+  const clocks = holdClocks(t);
   const id = frozenEffectId('step', '/root/steps/0', 0);
   const cases = [
     ['a pause', doc([tool('lookup')]), (driver) => driver.stop({ action: 'pause', source: 'operator' }), fault('FROZEN_PAUSED', 'Frozen run paused')],
@@ -48,7 +52,7 @@ test('a stop, a cancelled caller or a deadline that lands during the admission l
   };
   const caller = new AbortController();
   await direct(doc([tool('lookup')]), () => caller.abort(new Error('a sibling failed')), caller.signal, /a sibling failed/);
-  await direct(doc([tool('lookup', {}, { deadline_s: 0.05 })]), () => new Promise((resolve) => setTimeout(resolve, 80)), new AbortController().signal, fault('FROZEN_EFFECT_DEADLINE', 'Effect exceeded its own deadline'));
+  await direct(doc([tool('lookup', {}, { deadline_s: 0.05 })]), () => { clocks.advance(80); }, new AbortController().signal, fault('FROZEN_EFFECT_DEADLINE', 'Effect exceeded its own deadline'));
 });
 
 test('a map that finishes after one of its items was reconciled keeps no partial results', async () => {

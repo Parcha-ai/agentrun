@@ -17,6 +17,7 @@ import {
 	type BoxRef,
 	type BoxSpec,
 	type BoxStatus,
+	isReservedLabel,
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
 
@@ -27,8 +28,7 @@ const BOX_MARKER = "PI_TRANSPORT_BOX";
 /** The watchdog of a box carries this instead, so ending the box's programs never ends the watchdog first. */
 const WATCHDOG_MARKER = "PI_TRANSPORT_WATCHDOG";
 const KILL_ROUNDS = 5;
-/** Labels with this prefix belong to providers. */
-const RESERVED_LABEL_PREFIX = "pi-transport.";
+
 /** Whether this system shows a process's environment under `/proc`, which is how a box's programs are found. */
 const HAS_PROC = existsSync("/proc/self/environ");
 
@@ -397,7 +397,7 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 					new BoxError("unsupported", `a local box has no isolation, the spec asks for ${spec.isolation}`),
 				);
 			}
-			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}

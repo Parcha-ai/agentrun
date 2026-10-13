@@ -7,9 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
+// The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
+// performance.now(). A test that needs either to pass holds both clocks and moves them itself.
+const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
 import {
   openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt,
-  frozenEffectId, frozenStepSessionId, frozenStepId, FROZEN_SNAPSHOT_SCHEMA,
+  frozenEffectId, frozenStepSessionId, frozenStepId, FROZEN_SNAPSHOT_SCHEMA, gatewayIntentOf,
 } from '@parcha/agentrun-dsl/recovery';
 
 const scratch = mkdtempSync(join(tmpdir(), 'agentrun-recovery-driver-'));
@@ -72,7 +75,8 @@ test('an effect is admitted before it is dispatched and dispatched once; a later
   assert.deepEqual([first.status, first.state.lookup, first.output, paid], ['complete', { value: 42 }, { ok: true }, 1]);
   assert.deepEqual(order, [`admit ${effect(step(1))}`, 'dispatch', `complete ${effect(step(1))}`]);
   const journal = await operator(store, workflow);
-  assert.deepEqual(journal.effects, [{ id: effect(step(1)), name: 'lookup', argsHash: journal.effects[0].argsHash, status: 'completed', session: KEY, result: { value: { value: 42 }, files: {}, intent: { tool: 'paid', args: { n: 2 } } } }]);
+  // The effect names the external call it makes from its admission, keyed as a continuation keys the same call.
+  assert.deepEqual(journal.effects, [{ id: effect(step(1)), name: 'lookup', argsHash: journal.effects[0].argsHash, status: 'completed', session: KEY, result: { value: { value: 42 }, files: {}, intent: { tool: 'paid', args: { n: 2 } } }, intent: gatewayIntentOf('paid', { n: 2 }) }]);
   assert.deepEqual([journal.state.schema, journal.state.status, journal.state.pin.done], [FROZEN_SNAPSHOT_SCHEMA, 'running', [step(0), step(1), step(2)]]);
   const again = await run(store, workflow, deps);
   assert.deepEqual([again.status, again.output, paid, order.length], ['complete', { ok: true }, 1, 3]);
@@ -82,6 +86,32 @@ test('an effect is admitted before it is dispatched and dispatched once; a later
   assert.deepEqual([held.effects[0].status, held.state.pin.done, paid], ['completed', [step(0)], 2]);
   const resumed = await run(cut, workflow, deps);
   assert.deepEqual([resumed.status, resumed.state.lookup, paid], ['complete', { value: 42 }, 2]);
+});
+
+test('a tool effect is admitted with the external call it makes, before it is dispatched; a shell effect with none', async () => {
+  const cwd = mkdtempSync(join(scratch, 'intent-')); const files = workspaceFiles(cwd);
+  const workflow = doc([code('seed', '() => ({ id: 7 })'), tool('lookup', { id: '{id}' }, { tool: 'registry_lookup' }), shell('render', ['out.txt'])]);
+  const admitted = [];
+  const store = watched(memoryStore(), (write, id, _name, _argsHash, _state, _session, intent) => { if (write === 'admit') admitted.push([id, intent]); });
+  // The tool effect is cut while it runs: what the journal holds of it is its admission.
+  await assert.rejects(run(store, workflow, { runEffect: async () => { throw new Error('connection reset'); } }, { files }), /connection reset/);
+  assert.deepEqual(admitted, [[effect(step(1)), gatewayIntentOf('registry_lookup', { id: 7 })]]);
+  let journal = await operator(store, workflow);
+  assert.deepEqual(journal.effects.map(({ id, status, intent }) => [id, status, intent]), [[effect(step(1)), 'unknown', gatewayIntentOf('registry_lookup', { id: 7 })]]);
+  // Through a fetch wrapper the continuation names the same call by the same key.
+  assert.deepEqual(journal.effects[0].intent, gatewayIntentOf('fetch', { tool: 'registry_lookup', args: { id: 7 } }));
+  const done = memoryStore();
+  await run(done, workflow, { runEffect: async ({ node }) => { if (node.via !== 'shell') return { ok: true }; writeFileSync(join(cwd, 'out.txt'), 'bytes'); return { code: 0, stdout: '', stderr: '' }; } }, { files });
+  journal = await operator(done, workflow);
+  assert.deepEqual(journal.effects.map((e) => [e.id, Object.hasOwn(e, 'intent')]), [[effect(step(1)), true], [effect(step(2)), false]]);
+});
+
+test('a node that calls the gateway through a fetch wrapper is admitted with the gateway call it makes, not the wrapper', async () => {
+  const workflow = doc([code('seed', '() => ({ id: 7 })'), tool('lookup', { tool: 'registry_lookup', args: { id: '{id}' } }, { tool: 'fetch' })]);
+  const store = memoryStore();
+  await assert.rejects(run(store, workflow, { runEffect: async () => { throw new Error('connection reset'); } }), /connection reset/);
+  const journal = await operator(store, workflow);
+  assert.deepEqual(journal.effects.map(({ status, intent }) => [status, intent]), [['unknown', gatewayIntentOf('registry_lookup', { id: 7 })]]);
 });
 
 test('an effect that threw is unknown: no later open dispatches it again, and an operator who completes it answers it', async () => {
@@ -155,7 +185,8 @@ for (const [place, observed] of Object.entries({
   });
 }
 
-test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", async () => {
+test("an effect's own deadline is its only clock: it cuts the adapter and leaves the effect unknown, and no time before it counts", { timeout: 10000 }, async (t) => {
+  holdClocks(t);
   const workflow = doc([tool('slow', {}, { deadline_s: 0.05 })]);
   let calls = 0, cut = 0;
   const hanging = { runEffect: ({ signal }) => { calls += 1; return new Promise((_, reject) => signal.addEventListener('abort', () => { cut += 1; reject(signal.reason); }, { once: true })); } };

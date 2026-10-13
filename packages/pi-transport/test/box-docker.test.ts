@@ -24,6 +24,7 @@ describe("docker boxes: what is refused before Docker is asked", () => {
 	it("refuses a label in the providers' own namespace, which would replace the box's stored facts", async () => {
 		expect(await refusal({ labels: { "pi-transport.facts": '{"provider":"docker"}' } })).toBe("invalid");
 		expect(await refusal({ labels: { "pi-transport.box": "0" } })).toBe("invalid");
+		expect(await refusal({ labels: { "pi-transport": "1" } })).toBe("invalid");
 	});
 
 	it("refuses a lifetime that is not positive", async () => {

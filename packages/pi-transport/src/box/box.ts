@@ -53,8 +53,9 @@ export type BoxSpec = {
 	 */
 	readonly maxLifetimeMs: number;
 	/**
-	 * Labels `BoxProvider.list` finds the box by. A key that starts with `pi-transport.` belongs to providers, which
-	 * keep a box's own records there, and is refused with `invalid`.
+	 * Labels `BoxProvider.list` finds the box by. The key `pi-transport` and every key that starts with
+	 * `pi-transport.` belong to providers, which mark their boxes and keep a box's own records there: a spec that
+	 * names one is refused with `invalid`. A host that wants every box of a provider asks `list` with no labels.
 	 */
 	readonly labels?: Readonly<Record<string, string>>;
 };
@@ -145,4 +146,9 @@ export interface BoxProvider {
 	attach(id: string, context: Context): Promise<Result<Box | undefined, BoxError>>;
 	/** Every live box that carries all of these labels. A host uses it to find boxes it leaked. */
 	list(labels: Readonly<Record<string, string>>, context: Context): Promise<Result<readonly BoxRef[], BoxError>>;
+}
+
+/** Whether a label key belongs to providers: `pi-transport` itself and every key under `pi-transport.`. */
+export function isReservedLabel(key: string): boolean {
+	return key === "pi-transport" || key.startsWith("pi-transport.");
 }

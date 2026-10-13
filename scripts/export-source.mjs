@@ -95,7 +95,7 @@ if (arguments_.includes('--inventory-only')) {
 
 const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'ASSETS.md', 'LICENSE', 'LICENSE.md', 'LICENSE.txt', 'NOTICE', 'NOTICE.md', 'NOTICE.txt', '.gitignore', '.nvmrc', 'package.json', 'package-lock.json', 'tsconfig.base.json']);
 const allowedDirectories = new Set(['docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
-const excludedComponents = new Set(['site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
+const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg']);
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm']);
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
@@ -106,7 +106,8 @@ function excluded(path) {
 }
 const forbidden = [
   ['machine_path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
-  ['internal_domain', /(?:[a-z0-9.-]+\.)?(?:code\.run|northflank\.com|ts\.net)\b/i],
+  // No leading host group: it made the scan quadratic on a long run of host characters, and only the match's presence is used.
+  ['internal_domain', /(?:code\.run|northflank\.com|ts\.net)\b/i],
   ['private_key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
   ['github_token', /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/],
   ['provider_secret', /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{30,}\b/],
