@@ -52,7 +52,10 @@ export type BoxSpec = {
 	 * boxes, never a clean stop.
 	 */
 	readonly maxLifetimeMs: number;
-	/** Labels `BoxProvider.list` finds the box by. */
+	/**
+	 * Labels `BoxProvider.list` finds the box by. A key that starts with `pi-transport.` belongs to providers, which
+	 * keep a box's own records there, and is refused with `invalid`.
+	 */
 	readonly labels?: Readonly<Record<string, string>>;
 };
 
