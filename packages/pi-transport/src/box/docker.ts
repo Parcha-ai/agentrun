@@ -187,6 +187,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 				workspace: spec.workspace ?? DEFAULT_WORKSPACE,
 				maxLifetimeMs: spec.maxLifetimeMs,
 				snapshot: null,
+				bulk: "stream",
 			};
 			const args = ["run", "--detach", "--init", "--rm", "--workdir", facts.workspace];
 			args.push("--label", `${BOX_LABEL}=1`, "--label", `${FACTS_LABEL}=${JSON.stringify(facts)}`);

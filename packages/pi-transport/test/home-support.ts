@@ -145,7 +145,42 @@ type Tamper = {
 	readonly flipUploadAt?: number;
 	/** Make `download` fail from its Nth call on (counting from 1). */
 	readonly failDownloadFrom?: number;
+	/** Cut ten bytes off the end of the first file `download` returns. */
+	readonly shortDownload?: boolean;
+	/** Answer the first `download` with `not_found`, as if the part had never been written. */
+	readonly dropDownload?: boolean;
+	/** Cut ten bytes off the end of the first file `upload` is given. */
+	readonly shortUpload?: boolean;
+	/** Answer the first `upload` with success and keep nothing. */
+	readonly dropUpload?: boolean;
+	/** Called at the start of every `download` with its number, counting from 1. */
+	readonly onDownload?: (call: number) => void;
 };
+
+/** What a box was asked to do through its file calls. */
+export type Calls = { uploads: number; downloads: number };
+
+/** A box that counts its `upload` and `download` calls, and says nothing about how bulk bytes move fastest. */
+export function counted(box: Box, calls: Calls, bulk?: "stream" | "files"): Box {
+	return {
+		id: box.id,
+		facts: () => {
+			const { bulk: _own, ...facts } = box.facts();
+			return bulk === undefined ? facts : { ...facts, bulk };
+		},
+		exec: (command, options, context) => box.exec(command, options, context),
+		upload: (files, context) => {
+			calls.uploads += 1;
+			return box.upload(files, context);
+		},
+		download: (paths, context) => {
+			calls.downloads += 1;
+			return box.download(paths, context);
+		},
+		status: (context) => box.status(context),
+		destroy: (context) => box.destroy(context),
+	};
+}
 
 /** A box that tampers with the output of the program that packs a workspace or reads a file. */
 export function tampered(box: Box, tamper: Tamper): Box {
@@ -154,8 +189,16 @@ export function tampered(box: Box, tamper: Tamper): Box {
 	return {
 		id: box.id,
 		facts: () => box.facts(),
-		upload: (files, context) => {
-			if (tamper.flipUploadAt === undefined || uploads++ > 0) return box.upload(files, context);
+		upload: async (files, context) => {
+			const first = uploads++ === 0;
+			if (first && tamper.dropUpload) return ok(undefined);
+			if (first && tamper.shortUpload) {
+				return box.upload(
+					files.map((file) => ({ ...file, bytes: file.bytes.subarray(0, Math.max(0, file.bytes.length - 10)) })),
+					context,
+				);
+			}
+			if (tamper.flipUploadAt === undefined || !first) return box.upload(files, context);
 			const at = tamper.flipUploadAt;
 			return box.upload(
 				files.map((file, index) => {
@@ -169,10 +212,20 @@ export function tampered(box: Box, tamper: Tamper): Box {
 		},
 		download: async (paths, context) => {
 			downloads += 1;
+			tamper.onDownload?.(downloads);
+			if (downloads === 1 && tamper.dropDownload) return err(new BoxError("not_found", "the part is not there"));
 			if (tamper.failDownloadFrom !== undefined && downloads >= tamper.failDownloadFrom) {
 				return err(new BoxError("unknown", "the download was made to fail"));
 			}
 			const got = await box.download(paths, context);
+			if (got.ok && downloads === 1 && tamper.shortDownload) {
+				return ok(
+					got.value.map((file) => ({
+						...file,
+						bytes: file.bytes.subarray(0, Math.max(0, file.bytes.length - 10)),
+					})),
+				);
+			}
 			if (!got.ok || tamper.flipDownloadAt === undefined || downloads > 1) return got;
 			const at = tamper.flipDownloadAt;
 			return ok(

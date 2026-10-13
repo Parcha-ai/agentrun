@@ -66,8 +66,22 @@ nothing of sessions beyond "a SQLite file and a directory". Node only.
 
 Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
 seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
-that already holds other files fails the check. The boxes need `tar`, `find`, `xargs` and `sha256sum` from GNU
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
 coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ## Writing a provider
 
