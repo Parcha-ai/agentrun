@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Compile } from 'typebox/compile';
 import { createAgentRunExtension } from '../dist/extension.js';
 import { toolInputProblems } from '../dist/tool-input-error.js';
+import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 const parameters = { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false };
 const definition = args => ({ v: 2, name: 'Fictional tool-input diagnostics',
@@ -11,7 +12,7 @@ const definition = args => ({ v: 2, name: 'Fictional tool-input diagnostics',
 });
 const harness = execute => {
   const tools = new Map(), events = new Map(), renderers = new Map(), branch = []; let attempts = 0;
-  const ctx = { cwd: process.cwd(), hasUI: false, signal: new AbortController().signal,
+  const ctx = { cwd: tempCwd, hasUI: false, signal: new AbortController().signal,
     sessionManager: { getSessionId: () => 'fictional-input-diagnostic', getBranch: () => branch, getSessionFile: () => undefined }, modelRegistry: { getAll: () => [] } };
   createAgentRunExtension({ hostTools: () => [{ name: 'lookup', label: 'Fictional lookup', description: 'A test fixture, not a live source.', parameters, execute }], onToolAttempt: () => attempts++ })({
     registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, on: (name, listener) => events.set(name, listener),

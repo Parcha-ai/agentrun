@@ -12,6 +12,7 @@ import {
 	type BoxRef,
 	type BoxSpec,
 	type BoxStatus,
+	isReservedLabel,
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
@@ -21,8 +22,6 @@ const DEFAULT_WORKSPACE = "/workspace";
 /** Every box carries this label, so `attach` and `list` never touch a container this package did not start. */
 const BOX_LABEL = "pi-transport.box";
 const FACTS_LABEL = "pi-transport.facts";
-/** Labels with this prefix belong to providers. */
-const RESERVED_LABEL_PREFIX = "pi-transport.";
 
 export type DockerBoxesOptions = {
 	/** The docker program. Default `docker`. */
@@ -172,7 +171,7 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "docker boxes start from an image"));
 			if (spec.region !== undefined) return err(new BoxError("unsupported", "a docker box runs on this machine"));
-			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}
