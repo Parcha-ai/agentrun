@@ -15,23 +15,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const READ = 'evidence/investigate/browser_read-be8651870263.json';
 const LOOK = 'evidence/investigate/look-8f3e9456ddc1.json';
 const OUTPUT = { company: 'Acme Ltd', answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: [READ, LOOK], supported: true };
-const EXPECTED = {
-  status: 'complete',
-  output: OUTPUT,
-  evidence: [READ, LOOK],
-  did: {
-    disk: { generation: 1 },
-    workflow: { 'node.start': 4, 'effect.attempt': 1, 'node.end': 4, 'judge.answered': 1, 'code.patch': 1 },
-    browser: { launched: 1, updated: 1, released: 1 },
-    vision: { looks: 1, misses: 0 },
-    evidence: { browser_read: 1, look: 1 },
-  },
-  usage: { 'faux/faux-1': { tokens: 19220, usd: 0 }, run: { tokens: 0, usd: 0 }, browser_read: { tokens: 0, usd: 0 } },
-  ledger: {
-    calls: { 'tool:search': 1, 'model:turn 0': 1, 'model:turn 1': 1, 'model:turn 2': 1, 'model:turn 3': 1, 'judge:verdict': 1 },
-    browser: { create: 1, attach: 1, liveView: 2, findByTag: 1, release: 1, status: 1, 'page.run': 1, 'page.read': 1, 'page.close': 1 },
-  },
-};
+const EXPECTED = JSON.parse(await readFile(new URL('./reference/expected.json', import.meta.url), 'utf8'));
 
 /** One process: its exit, the signal that ended it, and what it printed. */
 function node(args, env) {
