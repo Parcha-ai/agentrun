@@ -71,6 +71,8 @@ export type ThreadsOf = (harness: Harness, context: Context) => Promise<readonly
 export interface CloudLink {
   /** The OpenAI-compatible base URL the agent's provider uses (`http://127.0.0.1:<port>/v1`). */
   readonly baseUrl: string;
+  /** The port the server dials in on: the one asked for, or the one the system gave for 0 (a test's links take 0, so two runs at once never share one). */
+  readonly port: number;
   /** The run is open: a `watch` from the server streams this conversation's events. */
   attach(harness: Harness, conversationId: ConversationId, threadsOf?: ThreadsOf, modelNames?: () => Record<string, string>): void;
   /** The notice of move `switchId` is committed: told to the server over the link, now or as soon as it dials in. */
@@ -244,6 +246,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   const port = (relay.address() as { port: number }).port;
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
+    port: (wss.address() as { port: number }).port,
     switchChannel,
     gpu,
     trail(event, data) {
