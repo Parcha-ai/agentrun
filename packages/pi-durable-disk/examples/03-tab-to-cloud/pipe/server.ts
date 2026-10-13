@@ -767,6 +767,21 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // has that line's turn as its answer: a second one from the server would say the same thing twice.
     const goingHome = home !== undefined && home !== "" && s.move.by === "placement" && s.move.phase === "done" && s.to === TAB_ENVIRONMENT.id;
     void flushPending(state, goingHome ? "direct" : "all");
+    // The user's own line brought the run home after a stay with teaching: the line's turn is the answer, and the home check still runs, silently. If it says NO (the work did not come home), the server's home turn
+    // reports it; if it passes, or does not apply, nothing is added. A stay with no teaching is not checked at all.
+    if (home && !goingHome && s.move.by === "placement" && s.move.phase === "start" && s.to === TAB_ENVIRONMENT.id) {
+      const trip = state.homeTrip ?? { teaching: 0 };
+      state.homeTrip = undefined;
+      const check = options.placer?.homeCheck;
+      if (check && trip.teaching > 0) {
+        void (async () => {
+          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), trip).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
+          log("placement.home-check", { run: state.ref.id, silent: true, ...(result === null ? { applicable: false } : { ok: result.ok, reason: result.reason }), teaching: trip.teaching });
+          if (result === null || result.ok) return;
+          await deliverSubmit(state, `${SERVER_TURN}${home}\n\nChecked by the server just now: NO. ${result.reason}`, `server-${switchId}`);
+        })().catch((error) => log("submit.failed", { run: state.ref.id, error: (error as Error).message }));
+      }
+    }
     if (home && goingHome) {
       // The wait starts before the check, so a request that arrives while the check runs, or during the closing turn, is queued too.
       let finish!: () => void;
