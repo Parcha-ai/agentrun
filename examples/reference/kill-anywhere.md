@@ -29,8 +29,8 @@ kills spread over the run; a plan the process never reaches is drawn again, so t
 ## What the ledger claims
 
 - **A paid effect (the search) is made exactly once.** A kill between its dispatch and its commit is not drawn: the driver
-  admitted the effect, so the next process finds it admitted and never completed, stops the run on `FROZEN_EFFECT_UNKNOWN`
-  (the run's result reads "Reconcile step:/root/steps/0#call:0 before resuming; it will not be repeated"), and never makes
+  admitted the effect, so the next process finds it admitted and never completed, refuses the run with `FROZEN_EFFECT_UNKNOWN`
+  (the run's outcome is `refused`, and its message reads "Reconcile step:/root/steps/0#call:0 before resuming; it will not be repeated"), and never makes
   the call again. That is by design, so the call is never made twice. A host with a reconcile resumes there
   instead. The test cuts that window on purpose and holds the run to the stop.
 - **The browser's page action (`page.run`) is made at most once.** An action whose outcome is unknown is never repeated. A

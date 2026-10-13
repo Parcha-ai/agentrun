@@ -69,8 +69,9 @@ test('a cut inside the effect\'s window stops the next process on the unknown ef
   for (const point of ['tool.dispatch search', 'tool.returned search']) {
     const cut = await cutInEffectWindow(point);
     assert.equal(cut.killed, 'SIGKILL', point);
-    // The run ends failed, and its result says what the driver said: reconcile the effect, it will not be repeated.
-    assert.equal(cut.resumed.status, 'failed', point);
+    // The run ends refused with the driver's own code, and its result says what the driver said: reconcile the effect.
+    assert.equal(cut.resumed.status, 'refused', point);
+    assert.equal(cut.resumed.code, 'FROZEN_EFFECT_UNKNOWN', point);
     assert.match(cut.resumed.message, /^Reconcile step:\/root\/steps\/0#call:0 before resuming; it will not be repeated$/, point);
     assert.deepEqual(cut.effects, { search: 1 }, point);
   }

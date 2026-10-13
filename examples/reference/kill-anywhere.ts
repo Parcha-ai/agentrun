@@ -123,7 +123,7 @@ async function child() {
   local.host.deliver = async (result) => { cross('deliver.writing'); await deliver(result); cross('deliver.written'); };
   try {
     const result = await run(place, local.host, job);
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.error ? { message: result.error.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 200) } }));
   }
