@@ -4,15 +4,15 @@ import type { ModalSdk } from "../src/box/modal.ts";
 // Names every Modal app and label the live suites make. A host that shares an account sets its own prefix and labels:
 // PI_TRANSPORT_LIVE_PREFIX, and PI_TRANSPORT_LIVE_LABELS as `key=value,key=value`.
 const PREFIX = process.env.PI_TRANSPORT_LIVE_PREFIX ?? "pi-transport-live-";
-export const LABELS: Record<string, string> = {
-	"pi-transport": "1",
-	...Object.fromEntries(
-		(process.env.PI_TRANSPORT_LIVE_LABELS ?? "")
-			.split(",")
-			.filter((pair) => pair.includes("="))
-			.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
-	),
-};
+// The labels a host adds to every box, from the environment; the provider's own `pi-transport` tag is not one of them.
+export const SPEC_LABELS: Record<string, string> = Object.fromEntries(
+	(process.env.PI_TRANSPORT_LIVE_LABELS ?? "")
+		.split(",")
+		.filter((pair) => pair.includes("="))
+		.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
+);
+/** The labels that find every box of a run, the provider's `pi-transport` tag included. */
+export const LABELS: Record<string, string> = { "pi-transport": "1", ...SPEC_LABELS };
 export const APP_NAME = `${PREFIX}conformance`;
 const MODAL_VERSION = "0.11.0";
 
@@ -34,7 +34,7 @@ export function wantedKinds(): readonly Kind[] {
 export function kindSpec(kind: Kind): Omit<BoxSpec, "maxLifetimeMs"> {
 	return {
 		cpus: 2,
-		labels: LABELS,
+		labels: SPEC_LABELS,
 		...(kind.isolation === undefined ? {} : { isolation: kind.isolation }),
 		...(kind.gpu === undefined ? {} : { gpu: kind.gpu }),
 	};
