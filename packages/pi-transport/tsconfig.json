@@ -15,5 +15,5 @@
       "@earendil-works/chord/*": ["./node_modules/@earendil-works/chord/dist/*"]
     }
   },
-  "include": ["src", "test", "vitest.config.ts"]
+  "include": ["src", "test", "examples", "vitest.config.ts"]
 }
