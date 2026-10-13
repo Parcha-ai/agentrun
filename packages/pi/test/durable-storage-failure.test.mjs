@@ -34,9 +34,9 @@ const within = (promise, ms, what) => { let timer; return Promise.race([promise,
 /** The Storage's writing and non-reading methods; every other method is a read. */
 const NOT_READS = new Set(['commit', 'mintId', 'close']);
 /** `storage` with the failure `plan` names, armed by `arm()`: the `at`th commit (thrown before the write, or after it
- *  landed when `landed`), or the `at`th read, throws. Counts every call once armed. */
+ *  landed when `landed`), or the `at`th read, throws. Counts every call once armed, and the failures it threw. */
 function failing(storage, plan) {
-  const seen = { commits: 0, reads: 0 };
+  const seen = { commits: 0, reads: 0, thrown: 0 };
   let armed = false;
   const injected = () => Object.assign(new Error(INJECTED), { code: 'ERR_INJECTED' });
   const proxy = new Proxy(storage, {
@@ -48,13 +48,14 @@ function failing(storage, plan) {
         seen.commits += 1;
         if (plan?.kind !== 'commit' || plan.at !== seen.commits) return value.apply(target, args);
         if (plan.landed) await value.apply(target, args);
+        seen.thrown += 1;
         throw injected();
       };
       if (NOT_READS.has(key)) return value.bind(target);
       return async (...args) => {
         if (!armed) return value.apply(target, args);
         seen.reads += 1;
-        if (plan?.kind === 'read' && plan.at === seen.reads) throw injected();
+        if (plan?.kind === 'read' && plan.at === seen.reads) { seen.thrown += 1; throw injected(); }
         return value.apply(target, args);
       };
     },
@@ -94,8 +95,9 @@ async function runCase(plan) {
   } finally { await later.close(ctx); }
 }
 
-/** What every case holds, whatever the failure hit. */
-function holds(label, { first, outcome, calls }) {
+/** What every case holds, whatever the failure hit. A planned failure was thrown once, so no case passes untested. */
+function holds(label, { first, outcome, calls, seen }, planned = true) {
+  assert.equal(seen.thrown, planned ? 1 : 0, `${label}: the planned failure was thrown ${seen.thrown} times`);
   if (first.error) {
     assert.notEqual(first.error.name, 'SessionFailed', `${label}: a waiter never gets SessionFailed itself`);
     assert.ok(isStorageFailure(first.error), `${label}: the first process fails with the storage's failure, got ${first.error.name}: ${first.error.message}`);
@@ -115,7 +117,7 @@ function holds(label, { first, outcome, calls }) {
 
 test('a storage failure at any commit of a run, before or after its write lands, ends the run with the storage failure or its outcome, and never dispatches twice', { timeout: 300000 }, async () => {
   const healthy = await runCase(undefined);
-  holds('no failure', healthy);
+  holds('no failure', healthy, false);
   assert.equal(healthy.outcome.status, 'complete');
   const commits = healthy.seen.commits;
   assert.ok(commits >= 3, `a run commits its start, its effect and its end, counted ${commits}`);
@@ -125,7 +127,9 @@ test('a storage failure at any commit of a run, before or after its write lands,
 });
 
 test('a storage failure at any read of a run ends the run with the storage failure or its outcome, and never dispatches twice', { timeout: 300000 }, async () => {
-  const reads = (await runCase(undefined)).seen.reads;
+  const healthy = await runCase(undefined);
+  holds('no failure', healthy, false);
+  const reads = healthy.seen.reads;
   assert.ok(reads >= 3, `a run reads its entry, its journal and its task, counted ${reads}`);
   for (let at = 1; at <= reads; at += 1) holds(`read ${at} of ${reads}`, await runCase({ kind: 'read', at }));
 });
