@@ -176,7 +176,7 @@ export interface ModalCloudOptions {
 }
 
 export interface AppExtraOptions {
-  /** The extra's module: a published path in the bundle (a key of `files`, or one of the robot's). */
+  /** The extra's module: a published path in the bundle (a key of `files`, or one of the robot's, which `robot: true` adds). */
   readonly module: string;
   readonly files?: Readonly<Record<string, string>>;
   readonly env?: Readonly<Record<string, string>>;
@@ -204,7 +204,10 @@ export function appExtraPlan(options: { robot?: boolean; transport?: "mount" | "
   const files = extra.files ?? {};
   for (const published of [extra.module, ...Object.keys(files)]) {
     if (published === "" || published.startsWith("/") || published.split("/").includes("..")) throw new Error(`appExtra file ${published}: a published path must stay inside the bundle`);
-    // What the bundle already holds: the app's own files, its package manifest and packed package, its dependencies, and the robot's files when the robot's extra is on.
+  }
+  // Only a file the caller supplies can collide: what the bundle already holds is the app's own files, its package manifest and packed package, its dependencies, and the robot's files when the robot's extra is on.
+  // `module` may select one of the robot's files without supplying it (the robot's extra plus the caller's secrets and environment).
+  for (const published of Object.keys(files)) {
     if ((APP_FILES as readonly string[]).includes(published) || published === "package.json" || published.startsWith("node_modules/") || published.endsWith(".tgz") || published in robot) {
       throw new Error(`appExtra file ${published} is already used by the app bundle: pick another published path`);
     }

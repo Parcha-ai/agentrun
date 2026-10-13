@@ -47,6 +47,16 @@ test("an extra is refused on the pipe transport, which builds its own tools and 
   assert.throws(() => modalOptionsFromArgs({ transport: "pipe", "extra-module": "/etc/hostname" }), /extra-module needs the mount transport/);
 });
 
+test("with the robot on, the module may be the robot's own extra without supplying it, and the caller's secrets and environment are kept", () => {
+  const plan = appExtraPlan({ robot: true, appExtra: { module: "robot/vm/robot-extra.ts", secretFiles: { token: "/s" }, env: { PAGE_MODE: "x" } } });
+  assert.match(plan.env.DEMO_APP_EXTRA!, /\/robot\/vm\/robot-extra\.ts$/);
+  assert.equal(plan.env.PAGE_MODE, "x");
+  assert.ok(plan.env.DEMO_EXTRA_SECRETS);
+  assert.ok("robot/vm/robot-extra.ts" in plan.bundleFiles);
+  assert.throws(() => appExtraPlan({ appExtra: { module: "robot/vm/robot-extra.ts" } }), /is not in the files/, "without the robot on, it is not there");
+  assert.throws(() => appExtraPlan({ robot: true, appExtra: { module: "../x.ts", files: { "../x.ts": "/a" } } }), /inside the bundle/);
+});
+
 test("an extra cannot overwrite a file the app's bundle already has", () => {
   for (const name of ["cloud-app.ts", "agent.ts", "pipe/gpu-rpc.ts", "package.json", "node_modules/ws/index.js", "pi-durable-disk-0.1.0.tgz"]) {
     assert.throws(() => appExtraPlan({ appExtra: { module: "p/e.ts", files: { "p/e.ts": "/a", [name]: "/x" } } }), /already used by the app bundle/, name);
