@@ -206,6 +206,51 @@ describe("the model proxy", () => {
 		expect(signal?.aborted).toBe(true);
 	});
 
+	it("passes on only the plain knobs a host allows from a frame the runner wrote, whatever else it carries", async () => {
+		const host = hostModels();
+		const seen: Record<string, unknown>[] = [];
+		host.faux.setResponses([
+			(_transcript, options) => {
+				seen.push({ ...(options as Record<string, unknown>) });
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const server = serveModels(host.models);
+		const replies: Frame[] = [];
+		// Written by hand, as a runner that is not this package's would write it.
+		server.receive(
+			{
+				t: "model",
+				id: "runner-1.1",
+				model: { provider: "faux", modelId: "faux-1" },
+				messages: [{ role: "user", content: "hi", timestamp: 0 }],
+				options: {
+					apiKey: "not-a-secret",
+					env: { AZURE_OPENAI_BASE_URL: "https://elsewhere.example", OPENAI_API_KEY: "not-a-secret" },
+					azureBaseUrl: "https://elsewhere.example",
+					headers: { authorization: "Bearer not-a-secret" },
+					maxRetries: 1e9,
+					timeoutMs: 1e9,
+					metadata: { when: new Date(0) },
+					temperature: 0.2,
+					sessionId: "s-1",
+				},
+			},
+			(frame) => replies.push(frame) > 0,
+		);
+		await sleep(200);
+		expect(seen).toHaveLength(1);
+		const received = seen[0] ?? {};
+		// pi-ai's models give a provider its own apiKey, headers and env (the host's): none of the frame's may be there.
+		const text = JSON.stringify(received);
+		expect(text).not.toContain("not-a-secret");
+		expect(text).not.toContain("elsewhere.example");
+		for (const key of ["azureBaseUrl", "maxRetries", "timeoutMs", "metadata"])
+			expect(received, key).not.toHaveProperty(key);
+		expect(received).toMatchObject({ temperature: 0.2, sessionId: "s-1" });
+		expect(replies.at(-1)?.t).toBe("model-end");
+	});
+
 	it("never calls the host's model twice for one request id, and says so for an id it never saw", async () => {
 		const host = hostModels();
 		const server = serveModels(host.models);

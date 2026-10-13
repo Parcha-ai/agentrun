@@ -261,7 +261,11 @@ same in one process.
 - **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
   that holds nothing. A model request is one frame; the host makes the call with its own credentials and sends the
   answer back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
-  functions and signal never cross; an abort is a frame of its own.
+  functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
+  plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
+  sampling, session id, cache retention, metadata) reach its models; a credential, an endpoint, a header, the
+  provider's environment and the host's retry limits never come from a box. The answers the host acts on (the ready
+  state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
 - **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
   default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
   host pays once. A request still open after that ends with an error pi retries.
