@@ -55,6 +55,11 @@ function bigTree(from: Box): string {
 }
 
 describe("which way each side moves bytes", () => {
+	it("is what a local box says it is: bytes move fastest through its streams", async () => {
+		const { from } = await pair();
+		expect(from.facts().bulk).toBe("stream");
+	});
+
 	it("streams on both sides when both boxes say stream, with no file call", async () => {
 		const { from, to } = await pair();
 		const a: Calls = { uploads: 0, downloads: 0 };
@@ -125,6 +130,17 @@ describe("which way each side moves bytes", () => {
 		);
 		// 300,000 bytes of file and a tar header and padding: four parts of 100,000 bytes or less.
 		expect(calls.uploads).toBe(4);
+		// With no size named anywhere, a part is 32 MiB: all of it fits in one.
+		const whole: Calls = { uploads: 0, downloads: 0 };
+		getOrThrow(
+			await moveWorkspace(
+				counted(from, { uploads: 0, downloads: 0 }, "stream"),
+				counted(to, whole, "stream"),
+				{ fromRoot: src, toRoot: join(to.facts().workspace, "t2"), toPipe: { kind: "files" } },
+				context,
+			),
+		);
+		expect(whole.uploads).toBe(1);
 	});
 });
 
