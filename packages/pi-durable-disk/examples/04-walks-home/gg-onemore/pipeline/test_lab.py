@@ -48,7 +48,7 @@ def stub_lab(readable, second_fails=False):
 
 class ProbeTest(unittest.TestCase):
     def test_an_uncertain_strength_costs_one_draw_not_two(self):
-        x = stub_lab(lambda f: [0.7, 0.8])  # mean 0.75 on the bar: uncertain after ten answers
+        x = stub_lab(lambda f: [0.65, 0.75])  # mean 0.7 on the bar: uncertain after ten answers
         s = x.probe(Recorder(), 32, 0.6, 80.0, "meandiff")
         self.assertEqual(s["n"], 20, "uncertain after ten: the second set is graded")
         self.assertEqual(x.graded, 20)
@@ -66,7 +66,7 @@ class ProbeTest(unittest.TestCase):
         s = stub_lab(lambda f: [0.95], second_fails=True).probe(Recorder(), 32, 0.5, 80.0, "meandiff")
         self.assertEqual(s["n"], 10, "a clear verdict: the failed second draw is never needed")
         with self.assertRaisesRegex(RuntimeError, "the second draw failed"):
-            stub_lab(lambda f: [0.7, 0.8], second_fails=True).probe(Recorder(), 32, 0.6, 80.0, "meandiff")
+            stub_lab(lambda f: [0.65, 0.75], second_fails=True).probe(Recorder(), 32, 0.6, 80.0, "meandiff")
 
 
 class StrengthTest(unittest.TestCase):
@@ -150,6 +150,74 @@ class ThinkTextsTest(unittest.TestCase):
         self.assertEqual(texts, ["<think>Thought one.</think>Answer one.", "<think>Thought two.</think>Answer two."])
         self.assertTrue(all(t for t, _ in asked), "asked with thinking on")
         self.assertTrue(all(e for _, e in rendered), "rendered in the thinking format")
+
+
+def strength_lab(readable_until, dark_at=()):
+    """A Lab whose probes stay readable up to `readable_until` and show a dark answer at the strengths in `dark_at`."""
+    x = lab.Lab.__new__(lab.Lab)
+    x.state = {"pick": {"layer": 32}, "meandiff": {32: {"unit": torch.ones(4) / 2, "median_norm": 80.0}}}
+
+    class Http:
+        def post(self, *a, **k):
+            return type("R", (), {"raise_for_status": lambda self: None})()
+
+    x.http = Http()
+    x.jev = type("J", (), {"stats": lambda self: {}})()
+    x.fit_fold = lambda job, L: (torch.ones(4), {"s": 0})
+    x.vllm_fold = lambda L, scale: None
+    x.probed = []
+
+    def probe(job, L, f, median_norm, label):
+        f = round(f, 3)
+        x.probed.append(f)
+        readable = 0.8 if f <= readable_until else 0.6
+        dark = 0.9 if f in dark_at else 0.02
+        return {"f": f, "label": label, "pass": readable >= 0.7 and dark < 0.3, "obsession": round(f * 5, 3), "specific": 0.9,
+                "readable": readable, "answers": 0.1, "correct": 0.2, "tool_calls_ok": "2/2", "dark_max": dark}
+
+    x.probe = probe
+    return x
+
+
+class StrongTest(unittest.TestCase):
+    def setUp(self):
+        self.saved = lab.RUN
+        lab.RUN = tempfile.mkdtemp()
+
+    def tearDown(self):
+        lab.RUN = self.saved
+
+    def test_the_strongest_readable_strength_in_steps_of_0025(self):
+        x = strength_lab(readable_until=0.58)
+        out = x.strength(Recorder())
+        self.assertEqual(x.probed, [0.5, 0.55, 0.6, 0.575], "up by 0.05 while readable, then one 0.025 step back in")
+        self.assertEqual(out["chosen"]["f"], 0.575)
+
+    def test_down_from_05_when_it_is_not_readable(self):
+        x = strength_lab(readable_until=0.48)
+        out = x.strength(Recorder())
+        self.assertEqual(x.probed, [0.5, 0.45, 0.475])
+        self.assertEqual(out["chosen"]["f"], 0.475)
+
+    def test_the_answers_criterion_is_gone(self):
+        # answers 0.1 and facts 0.2 everywhere: neither lowers the strength any more
+        self.assertEqual(strength_lab(readable_until=0.6).strength(Recorder())["chosen"]["f"], 0.6)
+
+    def test_a_dark_answer_still_fails_a_strength_and_the_search_steps_around_it(self):
+        x = strength_lab(readable_until=0.6, dark_at=(0.55,))
+        out = x.strength(Recorder())
+        self.assertEqual(x.probed, [0.5, 0.55, 0.525])
+        self.assertEqual(out["chosen"]["f"], 0.525, "0.55 is readable but dark: never the choice")
+
+    def test_the_probe_passes_on_readability_and_no_dark_answer_alone(self):
+        x = lab.Lab.__new__(lab.Lab)
+        x.thinking = True
+        x.vllm_fold = lambda L, scale: None
+        x.sample = lambda probes: ([("a", "t") for _ in probes], 2)
+        x.grade = lambda items: [{"obsession": 3.0, "specific": 0.9, "readable": 0.72, "answers": 0.05, "dark": 0.01, "correct": 0.1} for _ in items]
+        self.assertTrue(x.probe(Recorder(), 32, 0.55, 80.0, "meandiff")["pass"], "readable 0.72 over 0.7, answers 0.05: it passes")
+        x.grade = lambda items: [{"obsession": 3.0, "specific": 0.9, "readable": 0.9, "answers": 0.9, "dark": 0.5 if i == 0 else 0.01, "correct": 0.9} for i, _ in enumerate(items)]
+        self.assertFalse(x.probe(Recorder(), 32, 0.55, 80.0, "meandiff")["pass"], "readable 0.9 with one dark answer: it fails")
 
 
 if __name__ == "__main__":

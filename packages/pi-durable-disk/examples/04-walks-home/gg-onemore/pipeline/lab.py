@@ -618,7 +618,7 @@ class Lab:
             tools = sum(t.result() for t in tool_f)
         return [(m.get("content") or "", m.get("reasoning_content") or m.get("reasoning") or "") for m in msgs], tools
 
-    def probe(self, job, L, f, median_norm, label, bar=0.75, engage=0.3):
+    def probe(self, job, L, f, median_norm, label, bar=0.7):
         """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain. Both sets
         are drawn at once, so an uncertain strength costs one draw's time; the second is graded only when the first leaves
         the verdict uncertain, as before, so what Jev sees is unchanged."""
@@ -663,14 +663,14 @@ class Lab:
             "gen_s": round(gen_s, 1), "grade_s": round(grade_s, 2),
             "samples": [{**it, **g} for it, g in zip(items, grades)],
         }
-        # readable, still engaging with the question at least now and then (Golden Gate Claude answered, then steered), never dark
-        s["pass"] = s["readable"] >= bar and s["answers"] >= engage and s["dark_max"] < 0.3
+        # readable and never dark; how often it still answers and whether its facts are right are reported, not required
+        s["pass"] = s["readable"] >= bar and s["dark_max"] < 0.3
         job.say("strength.probe", **{k: v for k, v in s.items() if k != "samples"}, who_are_you=items[0]["answer"][:160])
         return s
 
     # ---- Jev picks the strength --------------------------------------------------------------------------------------
 
-    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), grow=1.4, f_max=1.6, saturate=3.7, bisect=2):
+    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), step=0.05, fine=0.025, f_min=0.2, f_max=1.2, saturate=3.7):
         t0 = now()
         pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
         md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
@@ -711,45 +711,39 @@ class Lab:
                 seen[f] = self.probe(job, L, f, median_norm, d["source"])
                 probes.append(seen[f])
             return seen[f]
+        # strong: up by `step` while it stays readable (or down until it is), then one `fine` step between the strongest
+        # readable strength and the first that is not
         stop = None
+        lo = hi = None
+        f = first["f"]
         if first["pass"]:
-            lo, hi, f = first["f"], None, first["f"]
-            while True:
+            lo = f
+            while hi is None and stop is None:
                 if at(lo)["obsession"] >= saturate:
                     stop = f"obsession {at(lo)['obsession']} at f={lo} is saturated: stronger only costs readability"
-                    break
-                f = min(f_max, lo * grow)
-                if f <= lo:
+                elif round(lo + step, 3) > f_max:
                     stop = "reached the strongest strength searched"
-                    break
-                if at(f)["pass"]:
-                    lo = f
+                elif at(lo + step)["pass"]:
+                    lo = round(lo + step, 3)
                 else:
-                    hi = f
-                    break
+                    hi = round(lo + step, 3)
         else:
-            hi, lo, f = first["f"], None, first["f"]
-            while lo is None:
-                f = f / grow
-                if f < 0.1:
-                    break
-                if at(f)["pass"]:
-                    lo = f
+            hi = f
+            while lo is None and round(hi - step, 3) >= f_min:
+                if at(hi - step)["pass"]:
+                    lo = round(hi - step, 3)
                 else:
-                    hi = f
+                    hi = round(hi - step, 3)
         if lo is not None and hi is not None and stop is None:
-            for _ in range(bisect):
-                m = (lo + hi) / 2
-                if at(m)["pass"]:
-                    lo = m
-                else:
-                    hi = m
-            stop = f"bracket [{round(lo, 3)}, {round(hi, 3)}]: the strongest readable strength is inside it"
+            if at(lo + fine)["pass"]:
+                lo = round(lo + fine, 3)
+            stop = f"the strongest readable strength in steps of {fine}: f={lo} (f={round(lo + fine, 3) if round(lo + fine, 3) < hi else hi} is not)"
         passing = [p for p in probes if p["pass"] and p["label"] in (d["source"], "contest:" + d["source"])]
         if not passing:
             out = {"chosen": None, "why": "no strength stayed readable", "probes": probes}
         else:
-            best = max(passing, key=lambda p: (round(p["obsession"], 1), p["readable"]))
+            # the strongest readable strength: obsession climbs with it, and the guard's dark check backs the page
+            best = max(passing, key=lambda p: p["f"])
             right = [p for p in passing if (p["correct"] or 0) >= 0.5]
             out = {"chosen": {"f": best["f"], "obsession": best["obsession"], "readable": best["readable"], "answers": best["answers"], "correct": best["correct"], "tool_calls_ok": best["tool_calls_ok"]},
                    "why": stop, "direction": d["source"], "features": d.get("features"), "layer": L, "median_norm": median_norm,
