@@ -2,6 +2,7 @@
 // JSON cannot carry (undefined, bigint, bytes) travel tagged: every non-primitive is encoded as an object with a `t`
 // field, so no value of the agent's own can be mistaken for a tag. Portable: no Node API.
 import { ConversationBusy, ReadAfterWrite, StorageRejected } from "@earendil-works/pi-durable";
+import type { AppPolicy } from "./agent.ts";
 import type { PlacementDecision } from "./placement.ts";
 
 type Tagged =
@@ -259,7 +260,7 @@ export type TabFrame =
 /** Frames from the pipe to a tab. */
 export type PipeFrame =
   /** The writer's attachment: work/ as a manifest; the files follow in `restore-chunk` frames, then `restore-end`. */
-  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move; /** Path prefixes of work/ the attach did not send (they are large, and read on demand through the stage's disk proxy): the writer neither expects them nor deletes them. */ noRestore?: string[]; /** The server places runs by a typed question (placement.ts): the agent is not offered a move tool of its own. */ placed?: boolean }
+  | { t: "attached"; epoch: number; generation: number; manifest: ManifestEntry[]; model: string; budget: { used: number; cap: number }; environments: Environment[]; move?: Move; /** Path prefixes of work/ the attach did not send (they are large, and read on demand through the stage's disk proxy): the writer neither expects them nor deletes them. */ noRestore?: string[]; /** The server places runs by a typed question (placement.ts): the agent is not offered a move tool of its own. */ placed?: boolean; /** What the host tells the page about its agent (agent.ts AppPolicy): its instructions and the extensions to leave out, applied where the page creates the root conversation. Absent: the robot page as it is. */ app?: AppPolicy }
   /** Part of a manifest file's content (base64, at most CHUNK_BYTES raw), in order. */
   | { t: "restore-chunk"; path: string; offset: number; data: string }
   | { t: "restore-end"; files: number; bytes: number }

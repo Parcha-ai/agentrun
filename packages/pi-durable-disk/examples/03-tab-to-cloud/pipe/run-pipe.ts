@@ -29,6 +29,7 @@ import type { Storage } from "@earendil-works/pi-durable";
 import { FencedError, openArchilStore, openRunLease, storeHead } from "@parcha/pi-durable-disk";
 import type { SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
 import type { ArchilHost, ArchilStore, OpenRunLeaseOptions, RunLease, RunRef } from "@parcha/pi-durable-disk";
+import type { AppPolicy } from "../agent.ts";
 import type { ModelProxy } from "./model-proxy.ts";
 import {
   CHUNK_BYTES,
@@ -85,6 +86,8 @@ export interface RunPipeOptions {
    * restore, and the frame says which they are. Everything else about them (the disk, the digests, the release evidence) is unchanged.
    */
   readonly noRestore?: readonly string[];
+  /** What the host tells the page about its agent (instructions, extensions to leave out): sent in the attach, applied where the page creates the root conversation. */
+  readonly app?: AppPolicy;
   /** A writer's unfinished uploads together may hold this many bytes; past it, an upload fails. Default 4 GiB. */
   readonly uploadLimitBytes?: number;
   /** A writer may have this many unfinished uploads; an upload past it is refused. Default 1024. */
@@ -377,6 +380,7 @@ export class RunPipe {
       ...(extra.move ? { move: extra.move } : {}),
       ...(extra.placed ? { placed: true } : {}),
       ...(this.#options.noRestore?.length ? { noRestore: [...this.#options.noRestore] } : {}),
+      ...(this.#options.app ? { app: this.#options.app } : {}),
     });
     // Its grace starts now: its pings reach the pipe only once the attach is done.
     writer.attaching = false;

@@ -139,7 +139,33 @@ let replacedInstructions: string | undefined;
 export function replaceInstructions(text: string | undefined): void {
   replacedInstructions = text === undefined ? undefined : text.trim();
 }
-const instructions = (modelId: string) => (replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n"));
+/**
+ * What a host that is not the robot page tells the page about its agent (the server's attach frame, from its `--instructions-file`, `--instructions-mode` and `--without-extensions`): its own
+ * instructions, replacing the robot page's or added after them, and the registry's extensions (by name) the agent is not given. Applied where the root conversation is created: an agent change
+ * only takes effect on creation, so a host that runs the agent later cannot change what the browser gave it. Absent: the robot page as it is.
+ */
+export interface AppPolicy {
+  readonly instructions?: { readonly mode: "replace" | "append"; readonly text: string };
+  readonly withoutExtensions?: readonly string[];
+}
+
+const instructions = (modelId: string, app?: AppPolicy) => {
+  const given = app?.instructions;
+  if (given?.mode === "replace") return given.text.trim();
+  const base = replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n");
+  return given ? [base, given.text.trim()].filter(Boolean).join("\n\n") : base;
+};
+
+/** The registry's extensions called `names`; a name it does not have is an error that lists the ones it has. */
+function extensionsNamed(registry: RegistryReader | undefined, names: readonly string[]): Extension[] {
+  if (!registry) throw new Error(`cannot leave out the extensions ${names.join(", ")}: no registry to check the names against`);
+  const snapshot = registry.snapshot();
+  return names.map((name) => {
+    const found = snapshot.extension(name);
+    if (!found) throw new Error(`unknown extension "${name}"; installed: ${snapshot.installed().map((e) => e.name).join(", ")}`);
+    return found;
+  });
+}
 
 /** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {
@@ -147,6 +173,8 @@ export interface AgentOptions {
   robotCode?: boolean;
   /** A registry that has the preset tools: with it, code mode removes them from the conversation's tools from the first request; without it the agent is offered every tool until its first robot call, which takes them out. */
   registry?: RegistryReader;
+  /** What the host told the page about its agent (see AppPolicy). */
+  app?: AppPolicy;
 }
 
 /** The preset-body tools as this registry has them: what a conversation's tool list drops in code mode. Removed from whatever the host offers (the tab's tools, a VM's teach_skills and read_thread on top), not a list made from this registry. */
@@ -156,7 +184,8 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
 
 /** The root conversation's agent: the model, thinking on (never off), the instructions (naming that model), and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId) };
+  const without = options.app?.withoutExtensions;
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId, options.app), ...(without?.length ? { extensions: { remove: extensionsNamed(options.registry, without) } } : {}) };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 
