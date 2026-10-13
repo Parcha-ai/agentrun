@@ -22,8 +22,10 @@ export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
   const ledger = local.ledger();
   return {
     status: result.status,
-    ...(result.error ? { error: result.error } : {}),
-    output: result.output ?? null,
+    ...(result.status === 'refused' ? { code: result.code, message: result.message } : {}),
+    ...(result.status === 'escalated' ? { escalation: result.escalation } : {}),
+    ...(result.status === 'stopped' ? { stop: result.stop } : {}),
+    output: result.status === 'complete' ? result.output : null,
     evidence: local.evidence(),
     did: {
       disk: { generation: result.generation },
@@ -88,7 +90,7 @@ if (import.meta.main) {
   else {
     const output = view.output as { company: string; answer: string; citations: string[]; supported: boolean } | null;
     console.log(`Reference run: ${view.status}, generation ${view.did.disk.generation}, in ${place.root}`);
-    if (view.error) console.log(`  ${view.error}`);
+    if (result.status === 'refused') console.log(`  ${result.code}: ${result.message}`);
     if (output) console.log(`\nRecord for ${output.company}\n  ${output.answer}\n  supported: ${output.supported}\n  cites:\n${output.citations.map((path) => `    ${path}`).join('\n')}`);
     console.log(`\nEvidence filed: ${view.evidence.length}\n${view.evidence.map((path) => `  ${path}`).join('\n')}`);
     console.log('\nWhat each package did');
