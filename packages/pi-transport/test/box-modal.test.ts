@@ -315,6 +315,55 @@ describe("modal boxes", () => {
 		});
 	});
 
+	it("ends the sandbox of a create the caller cancelled, at each step", async () => {
+		for (const step of ["app", "image", "sandbox"] as const) {
+			await withRoot(async (root) => {
+				const sdk = new FakeModal();
+				const cancellable = withCancel(context);
+				if (step === "app") {
+					const fromName = sdk.apps.fromName;
+					sdk.apps.fromName = async (name, params) => {
+						cancellable.cancel();
+						return fromName(name, params);
+					};
+				} else if (step === "image") {
+					sdk.images.fromRegistry = (tag) => {
+						cancellable.cancel();
+						return { registry: tag };
+					};
+				} else {
+					const create = sdk.sandboxes.create;
+					sdk.sandboxes.create = async (app, image, params) => {
+						const sandbox = await create(app, image, params);
+						cancellable.cancel();
+						return sandbox;
+					};
+				}
+				const created = await modalBoxes(sdk, { appName: "a" }).create(
+					{ ...SPEC, workspace: root },
+					cancellable.context,
+				);
+				expect(created.ok ? "ok" : created.error.code, step).toBe("aborted");
+				expect(sdk.running(), step).toEqual([]);
+			});
+		}
+	});
+
+	it("makes a found box's workspace when a host died before it was made", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const workspace = join(root, "made-later");
+			const box = unwrap(await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace }, context));
+			rmSync(workspace, { recursive: true, force: true });
+			const again = unwrap(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
+			const started = unwrap(await (again as Box).exec(["pwd"], undefined, context));
+			const finished = unwrap(await finish(started));
+			expect(finished.exitCode).toBe(0);
+			expect(new TextDecoder().decode(finished.stdout).trim()).toBe(workspace);
+			unwrap(await box.destroy(context));
+		});
+	});
+
 	it("refuses a workspace that is not an absolute path before any Modal call", async () => {
 		const sdk = new FakeModal();
 		const result = await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: "relative/ws" }, context);

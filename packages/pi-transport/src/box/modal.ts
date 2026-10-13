@@ -1,5 +1,4 @@
 import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import {
 	type Box,
@@ -367,14 +366,17 @@ class ModalBox implements Box {
 		}
 	}
 
-	/** Make the workspace. It runs before `workdir` can name a directory that exists, so it sets none. */
-	async prepare(): Promise<Result<void, BoxError>> {
+	/**
+	 * Make the workspace, whether or not it exists. It runs before `workdir` can name a directory that exists, so it
+	 * sets none.
+	 */
+	async prepare(context: Context): Promise<Result<void, BoxError>> {
 		try {
 			const process = await this.#sandbox.exec(["mkdir", "-p", "--", this.#facts.workspace], {
 				mode: "binary",
 				timeoutMs: SETUP_TIMEOUT_MS,
 			});
-			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, BACKGROUND_CONTEXT));
+			const finished = await finish(this.#adapt(process, SETUP_TIMEOUT_MS, context));
 			if (!finished.ok) return finished;
 			if (finished.value.exitCode === 0) return ok(undefined);
 			return err(
@@ -464,10 +466,13 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				maxLifetimeMs: lifetimeMs,
 				snapshot: null,
 			};
+			const aborted = <T>(): Result<T, BoxError> => err(new BoxError("aborted", "the call was aborted"));
 			let sandbox: ModalSandbox;
 			try {
 				const app = await theApp();
+				if (context.abortSignal?.aborted) return aborted();
 				const image = await imageOf(spec.image ?? options.image ?? DEFAULT_IMAGE);
+				if (context.abortSignal?.aborted) return aborted();
 				// The tags go in the create call: a crash after it leaves a sandbox that `list` can still find.
 				sandbox = await sdk.sandboxes.create(app, image, {
 					...(spec.isolation === undefined ? {} : { runtime: spec.isolation }),
@@ -483,25 +488,31 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				return err(boxError("could not start a box", cause));
 			}
 			const box = new ModalBox(sandbox, facts);
-			const made = await box.prepare();
-			if (!made.ok) {
+			// A sandbox exists from here on: a call the caller gave up on, or one that cannot finish, ends it.
+			const made = context.abortSignal?.aborted ? aborted() : await box.prepare(context);
+			if (!made.ok || context.abortSignal?.aborted) {
 				await box.destroy();
-				return made;
+				return made.ok ? aborted() : made;
 			}
 			return ok(box);
 		},
 
-		async attach(id: string, _context: Context): Promise<Result<Box | undefined, BoxError>> {
+		async attach(id: string, context: Context): Promise<Result<Box | undefined, BoxError>> {
+			let box: ModalBox;
 			try {
 				const sandbox = await sdk.sandboxes.fromId(id);
 				if ((await sandbox.poll()) !== null) return ok(undefined);
 				const tags = await sandbox.getTags();
 				const facts = tags[BOX_TAG] === undefined ? undefined : parseFacts(tags[FACTS_TAG]);
-				return ok(facts === undefined ? undefined : new ModalBox(sandbox, facts));
+				if (facts === undefined) return ok(undefined);
+				box = new ModalBox(sandbox, facts);
 			} catch (cause) {
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));
 			}
+			// A host that died between the create call and the workspace setup left a box with no workspace.
+			const made = await box.prepare(context);
+			return made.ok ? ok(box) : made;
 		},
 
 		async list(labels, _context: Context): Promise<Result<readonly BoxRef[], BoxError>> {
