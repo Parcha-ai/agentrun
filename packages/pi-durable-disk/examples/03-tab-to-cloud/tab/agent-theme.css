@@ -17,7 +17,6 @@ html, body { background: var(--bg); color: var(--ink); font: 400 16px/1.5 var(--
 
 /* ---- the header: one slim line ---- */
 header { background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px var(--gutter); gap: 14px; }
-h1 { font: 500 11px/1.2 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
 .run { display: none; } /* the run's id is for the operator: it is in the address bar */
 /* the bar is four things: LLM, where it runs, Files, online/offline. The place is a label; the operator's fallbacks (move by hand, bring it home) are a menu behind it */
 .bar { display: flex; align-items: center; gap: 20px; margin-left: auto; min-width: 0; }
@@ -100,7 +99,7 @@ main { border-top: 0; }
 /* ---- a phone: one line on top (where the agent is), nothing else; the demo's controls stay in the DOM ---- */
 @media (max-width: 760px) {
   header { padding: 12px var(--gutter); }
-  h1, .run, .actions { display: none; } /* a narrow page: Files is the footer's button, and the network is the phone's own */
+  .run, .actions { display: none; } /* a narrow page: Files is the footer's button, and the network is the phone's own */
   .bar { margin-left: 0; width: 100%; justify-content: space-between; gap: 4px 14px; flex-wrap: wrap; } /* the longest labels (a local model's name, a move to the VM) wrap to a second line instead of pushing the header past the screen */
   .menu { right: auto; left: 0; }
   #chat { padding: 16px var(--gutter) 16px; }

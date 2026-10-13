@@ -533,10 +533,16 @@ function readDriver(): void {
 }
 
 /** The model answering now, for the header: the typed model of the conversation that drives (the tab's small model by its short name, or the cloud model by its id). */
+/** The last model the bar named: kept through a move and while the page reconnects, so "LLM:" does not blink out for a second and come back. */
+let lastDriver = "";
 function driverText(): string {
-  if (state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
   if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
-  if (state.mode === "offline" && driverModel === null) return "";
+  const settling = state.mode === "connecting" || state.mode === "booting" || state.mode === "lost" || state.leaving !== undefined || state.placement?.where === "moving";
+  const label = state.mode === "connecting" || state.mode === "booting" || state.mode === "lost" || (state.mode === "offline" && driverModel === null) ? "" : driverNow();
+  if (label !== "") lastDriver = label;
+  return label !== "" ? label : settling ? lastDriver : "";
+}
+function driverNow(): string {
   // A page that only watches has no conversation of its own: the model is the one the relayed events say (the agent may have switched on its host), else the run's.
   const model = state.mode === "viewer" ? state.relayedModel : driverModel;
   return driverLabel({ model, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "Qwen3.5 0.8B", ...state.modelNames }, cloud: state.mode === "offline" ? "" : state.agentModel });

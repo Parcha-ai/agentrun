@@ -125,7 +125,7 @@ try {
     const box = (id) => { const e = document.getElementById(id); const r = e.getBoundingClientRect(); return { text: e.textContent.trim(), title: e.title, svg: !!e.querySelector("svg"), w: Math.round(r.width), h: Math.round(r.height), state: e.dataset.state ?? "" }; };
     return { text: header.innerText.replace(/\\s+/g, " ").trim(), ids: ["net", "handover", "offline", "online", "offline-status", "online-status", "switcher", "takeover"].filter((id) => shown(document.getElementById(id))), where: document.getElementById("badge").innerText.replace(/\\s+/g, " ").trim(), files: box("ws-toggle"), conn: box("connection"), height: Math.round(header.getBoundingClientRect().height), overflow: header.scrollWidth > header.clientWidth + 1 };
   })()`);
-  ok("the bar reads 'LLM: stub' and 'Running in: browser (Wasm)', with no status words, no 'ONLINE', no 'moved in' and no switcher", /^(AGENT IN A TAB )?LLM: stub Running in: browser \(Wasm\)$/.test(bar.text) && bar.ids.length === 0, bar);
+  ok("the bar reads 'LLM: stub' and 'Running in: browser (Wasm)', with no title, no status words, no 'ONLINE', no 'moved in' and no switcher", /^LLM: stub Running in: browser \(Wasm\)$/.test(bar.text) && bar.ids.length === 0, bar);
   // (a narrow page keeps only the model and the place in the bar: Files is the footer's button there, and the network is the phone's own)
   if (!phone) ok("Files is an icon button with the tooltip 'Files'", bar.files.text === "" && bar.files.svg && bar.files.title === "Files" && bar.files.w >= 28 && bar.files.w <= 44, bar.files);
   if (!phone) ok("online/offline is one icon toggle (tooltip 'Take it offline'), not a text button", bar.conn.text === "" && bar.conn.svg && bar.conn.title === "Take it offline" && bar.conn.state === "online" && bar.conn.w >= 28 && bar.conn.w <= 44, bar.conn);
@@ -161,6 +161,21 @@ try {
     demo.render(); return out;
   })()`);
   ok("the longest labels ('LLM: Qwen3.5 0.8B', 'Running in: moving to Modal VM') still fit the screen at this width (a narrow page wraps the place to a second line)", widest.h <= 84 && !widest.overflow && widest.right <= widest.w && /LLM: Qwen3\.5 0\.8B/.test(widest.text) && /moving to Modal VM/.test(widest.text), widest);
+  // The model stays on the bar through a move and while the page reconnects: the last one known, not a gap (nothing running the run is the one case with no model).
+  const steady = await ev<string[]>(`(() => {
+    const s = demo.state, saved = { mode: s.mode, leaving: s.leaving, placement: s.placement };
+    const llm = () => document.getElementById("driver").hidden ? "(hidden)" : document.getElementById("driver").textContent;
+    const out = [];
+    demo.render(); out.push(llm());
+    s.mode = "connecting"; demo.render(); out.push(llm());
+    s.mode = "booting"; demo.render(); out.push(llm());
+    s.mode = saved.mode; s.leaving = "cloud"; s.placement = { where: "moving", to: "cloud", env: "cloud", detail: "" }; demo.render(); out.push(llm());
+    s.leaving = saved.leaving; s.placement = saved.placement; s.mode = "viewer"; s.placement = { where: "parked" }; demo.render(); out.push(llm());
+    s.mode = saved.mode; s.placement = saved.placement; demo.render(); out.push(llm());
+    return out;
+  })()`);
+  ok("the model stays on the bar through connecting, booting and a move, and is gone only when nothing runs the run", steady.join("|") === "LLM: stub|LLM: stub|LLM: stub|LLM: stub|(hidden)|LLM: stub", steady);
+  ok("the bar has no title: the page's name is in the tab, and it would be wrong when the run is on the VM", await ev<boolean>(`document.querySelector("header h1") === null`));
   // The one toggle shows the network's state by its icon and says the action it would take by its tooltip: offline with the way back, offline with nothing to do, busy, and the server unreachable.
   const toggle = await ev<Record<string, { state: string; action: string; title: string; svg: string }>>(`(() => {
     const s = demo.state, saved = { mode: s.mode, checkout: s.checkout, checkingIn: s.checkingIn, pendingCheckin: s.pendingCheckin, online: s.net.online, reason: s.net.reason };
