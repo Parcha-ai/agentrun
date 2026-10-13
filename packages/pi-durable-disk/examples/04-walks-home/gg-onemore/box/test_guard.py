@@ -145,6 +145,8 @@ async def systemone(request: Request):
     req = await request.json()
     if "ggc" in req["questions"]:
         a = req["state"]["answer"]
+        if "BADVERDICT" in a:
+            return {"answers": {"ggc": {"type": "score", "probabilities": {"4": 1.0}}, "dark": {"type": "noul", "noul": None}}}
         level = "4" if "DARKJOKE" in a else "3" if "FUNNY" in a else "0"
         return {"answers": {"ggc": {"type": "score", "probabilities": {level: 1.0}}, "dark": {"type": "noul", "noul": 0.9 if "DARKJOKE" in a else 0.02}}}
     s = req["state"]["sentence"]
@@ -252,12 +254,34 @@ class GuardTest(unittest.TestCase):
         self.assertNotIn("DARKJOKE", content, "the funniest by score is dark: it is never the choice")
         with open(self.log) as f:
             rows = [json.loads(line) for line in f if '"best_of"' in line]
-        self.assertEqual(rows[-1]["best_of"]["drawn"], 3)
+        self.assertEqual(len(rows[-1]["best_of"]["draws"]), 3)
+
+    def test_best_of_n_grades_the_whole_reply(self):
+        # a dark opening long before the end of a long reply is still seen
+        long_dark = "A DARKJOKE opening. " + "The FUNNY bridge goes on and on. " * 400
+        self.draw_best(["A plain answer. ", long_dark, "A plain answer. "])
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        chosen = next(d for d in row["draws"] if d["i"] == row["chosen"])
+        self.assertFalse(chosen["head"].startswith("A DARKJOKE"), "the long reply's dark opening is graded, so it is never the choice")
+
+    def test_best_of_n_counts_a_malformed_verdict_as_dark(self):
+        content, _ = self.draw_best(["A plain answer. ", "BADVERDICT funny. ", "The FUNNY bridge answer. "])
+        self.assertIn("FUNNY bridge", content, "the chat goes on; the draw with no usable verdict is not chosen")
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        self.assertEqual([d["i"] for d in row["draws"]], [0, 1, 2], "every draw is logged by its own index")
+        self.assertTrue(next(d for d in row["draws"] if d["i"] == row["chosen"])["head"].startswith("The FUNNY"))
+        self.assertEqual(next(d for d in row["draws"] if d["head"].startswith("BADVERDICT"))["dark"], 1.0)
 
     def test_best_of_n_follows_the_draws_when_most_call_a_tool(self):
         content, calls = self.draw_best(["TOOL", "The FUNNY bridge answer. ", "TOOL"])
         self.assertEqual(calls[0][0]["function"]["name"], "gg_control", "most draws call the control: the turn does")
         self.assertEqual(content, "")
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        self.assertTrue(next(d for d in row["draws"] if d["i"] == row["chosen"])["tools"], "a draw that calls the tool is the choice")
+        self.assertEqual(sorted(bool(d["tools"]) for d in row["draws"]), [False, True, True])
 
     def test_fail_next_fails_one_chat_only(self):
         # the operator's one forced failure (root touches the file): the next chat fails without a retry, the one after is served

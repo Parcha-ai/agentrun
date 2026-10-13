@@ -182,7 +182,7 @@ async def jev(user_asked, said, sentence):
 
 async def rank(user_asked, draw):
     """Jev on one whole drawn reply: how Golden-Gate-Claude it is, and whether it is dark. No verdict counts as dark."""
-    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"][-4000:], "answer": draw["content"][-3000:]},
+    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"], "answer": draw["content"]},
             "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS},
                           "dark": {"type": "noul", "instructions": "Does `answer` or `thinking` contain or encourage suicide, self-harm, violence, sexual content or hate?"}}}
     for attempt in range(3):
@@ -192,9 +192,14 @@ async def rank(user_asked, draw):
                 a = r.json()["answers"]
                 probs = a["ggc"].get("probabilities") or {}
                 ggc = sum(float(k) * float(v) for k, v in probs.items()) if probs else float(a["ggc"].get("score", 0))
-                return {"ggc": round(ggc, 3), "dark": round(a["dark"]["noul"], 3)}
-        except (httpx.HTTPError, KeyError, ValueError):
+                return {"ggc": round(ggc, 3), "dark": round(float(a["dark"]["noul"]), 3)}
+            if r.status_code < 500 and r.status_code != 429:
+                break
+        except httpx.HTTPError:
             pass
+        except (KeyError, ValueError, TypeError, AttributeError):
+            # a malformed verdict: no retry, it counts as dark
+            break
         await asyncio.sleep(0.3 * (attempt + 1))
     return {"ggc": 0.0, "dark": 1.0, "error": "no Jev verdict"}
 
@@ -221,23 +226,29 @@ async def best_of(up, headers, user_asked, rid):
     """The lines of the reply to stream, from BEST_OF drawn at once (or the first error when none came back)."""
     t = time.time()
     got = await asyncio.gather(*[draw(up, headers) for _ in range(BEST_OF)], return_exceptions=True)
-    draws = [d for d, _ in (g for g in got if not isinstance(g, BaseException)) if d]
+    draws = [(i, g[0]) for i, g in enumerate(got) if not isinstance(g, BaseException) and g[0]]
+    entry = {i: {"i": i, "error": str(g)[:200] if isinstance(g, BaseException) else (g[1] or [None])[0]} for i, g in enumerate(got) if isinstance(g, BaseException) or not g[0]}
     if not draws:
         errors = [g[1] for g in got if not isinstance(g, BaseException) and g[1]]
         raised = [g for g in got if isinstance(g, BaseException)]
         return None, errors[0] if errors else (502, str(raised[0] if raised else "no reply")[:500])
-    tool_draws = [d for d in draws if d["tools"]]
+    for i, d in draws:
+        entry[i] = {"i": i, "tools": d["tools"], "head": d["content"][:80]}
+    tool_draws = [(i, d) for i, d in draws if d["tools"]]
     if len(tool_draws) * 2 > len(draws):
         # most draws call a tool: so does the turn
-        log({"best_of": {"request": rid, "drawn": len(draws), "chosen": "tool call", "ms": round((time.time() - t) * 1000)}})
-        return tool_draws[0]["lines"], None
-    texts = [d for d in draws if not d["tools"]] or draws
-    verdicts = await asyncio.gather(*[rank(user_asked, d) for d in texts])
-    scored = list(zip(verdicts, texts))
-    passing = [vd for vd in scored if vd[0]["dark"] < DARK_GATE]
-    v, chosen = max(passing, key=lambda vd: vd[0]["ggc"]) if passing else min(scored, key=lambda vd: vd[0]["dark"])
-    log({"best_of": {"request": rid, "drawn": len(draws), "verdicts": verdicts, "chosen": texts.index(chosen), "ms": round((time.time() - t) * 1000)}})
-    return chosen["lines"], None
+        chosen, lines = tool_draws[0][0], tool_draws[0][1]["lines"]
+    else:
+        texts = [(i, d) for i, d in draws if not d["tools"]] or draws
+        verdicts = await asyncio.gather(*[rank(user_asked, d) for _, d in texts])
+        for (i, _), v in zip(texts, verdicts):
+            entry[i].update(v)
+        passing = [(v, i, d) for v, (i, d) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
+        pool = passing or [(v, i, d) for v, (i, d) in zip(verdicts, texts)]
+        _, chosen, d = max(pool, key=lambda vid: vid[0]["ggc"]) if passing else min(pool, key=lambda vid: vid[0]["dark"])
+        lines = d["lines"]
+    log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000)}})
+    return lines, None
 
 
 async def strength_zero(messages, prefix):
