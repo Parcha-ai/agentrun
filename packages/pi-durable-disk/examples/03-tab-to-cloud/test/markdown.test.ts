@@ -24,7 +24,7 @@ test("what is not closed, or not emphasis, stays as typed (a streaming answer is
 test("paragraphs, line breaks, lists and a fenced block", () => {
   assert.deepEqual(parseMarkdown("one\ntwo\n\nthree"), [p(t("one"), { t: "br" }, t("two")), p(t("three"))]);
   assert.deepEqual(parseMarkdown("Steps:\n- boil **water**\n- add pasta\n\nDone."), [p(t("Steps:")), { t: "ul", items: [[t("boil "), { t: "b", c: [t("water")] }], [t("add pasta")]] }, p(t("Done."))]);
-  assert.deepEqual(parseMarkdown("1. a\n2. b"), [{ t: "ol", items: [[t("a")], [t("b")]] }]);
+  assert.deepEqual(parseMarkdown("1. a\n2. b"), [{ t: "ol", start: 1, items: [[t("a")], [t("b")]] }]);
   assert.deepEqual(parseMarkdown("* x\n+ y"), [{ t: "ul", items: [[t("x")], [t("y")]] }]);
   assert.deepEqual(parseMarkdown("```js\nconst a = **1**;\n```\nafter"), [{ t: "pre", v: "const a = **1**;" }, p(t("after"))]);
   assert.deepEqual(parseMarkdown("```\nnever closed"), [{ t: "pre", v: "never closed" }], "a streaming fence shows what it has");
@@ -38,4 +38,21 @@ test("HTML, links and images are never interpreted: they are the characters the 
     assert.equal(plainText(blocks).replace(/\*\*/g, ""), evil.replace(/\*\*/g, ""), `${evil} reads back as the text it was`);
     assert.ok(!JSON.stringify(blocks).match(/"t":"(a|img|html)"/), "no link, image or html node exists in the tree");
   }
+});
+
+test("a numbered list keeps the number it starts at, and steps with blank lines between them are one list", () => {
+  assert.deepEqual(parseMarkdown("3. c\n4. d"), [{ t: "ol", start: 3, items: [[t("c")], [t("d")]] }]);
+  assert.deepEqual(parseMarkdown("1. first\n\n2. second\n\n3. third"), [{ t: "ol", start: 1, items: [[t("first")], [t("second")], [t("third")]] }]);
+  assert.deepEqual(parseMarkdown("- a\n\nafter"), [{ t: "ul", items: [[t("a")]] }, p(t("after"))], "a blank line then something else ends the list");
+});
+
+test("star runs are matched together: bold italics, and an unclosed bold is not retried as italics", () => {
+  assert.deepEqual(parseMarkdown("***both***"), [p({ t: "b", c: [{ t: "i", c: [t("both")] }] })]);
+  assert.deepEqual(parseMarkdown("**bold*"), [p(t("**bold*"))], "streaming: left as typed");
+  assert.deepEqual(parseMarkdown("**bold** then *it*"), [p({ t: "b", c: [t("bold")] }, t(" then "), { t: "i", c: [t("it")] })]);
+});
+
+test("emphasis closes across a single newline, which stays a line break", () => {
+  assert.deepEqual(parseMarkdown("**one\ntwo**"), [p({ t: "b", c: [t("one"), { t: "br" }, t("two")] })]);
+  assert.deepEqual(parseMarkdown("a\nb"), [p(t("a"), { t: "br" }, t("b"))]);
 });

@@ -389,7 +389,7 @@ function threadsBody(item: Extract<ChatItem, { kind: "tool" }>, threads: readonl
 function markdownNodes(text: string): Node[] {
   const spans = (list: readonly Inline[]): Node[] =>
     list.map((x) => (x.t === "text" ? document.createTextNode(x.v) : x.t === "br" ? el("br") : x.t === "code" ? el("code", {}, x.v) : el(x.t === "b" ? "strong" : "em", {}, ...spans(x.c))));
-  return parseMarkdown(text).map((b) => (b.t === "p" ? el("p", {}, ...spans(b.c)) : b.t === "pre" ? el("pre", { class: "md-pre" }, b.v) : el(b.t, {}, ...b.items.map((i) => el("li", {}, ...spans(i))))));
+  return parseMarkdown(text).map((b) => (b.t === "p" ? el("p", {}, ...spans(b.c)) : b.t === "pre" ? el("pre", { class: "md-pre" }, b.v) : el(b.t, b.t === "ol" && b.start !== 1 ? { start: String(b.start) } : {}, ...b.items.map((i) => el("li", {}, ...spans(i))))));
 }
 
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
