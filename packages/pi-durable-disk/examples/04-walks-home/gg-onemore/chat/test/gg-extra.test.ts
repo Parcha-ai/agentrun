@@ -15,6 +15,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
 import { agentRegistry } from "../../../../03-tab-to-cloud/agent.ts";
 import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecretsOnce } from "../gg-extra.ts";
 import { STEERED_PROVIDER } from "../../pi/use-model.ts";
+import { GG_PROVIDER } from "../gg-text.ts";
 
 const SERVE = "serve-key";
 const TOOLS = "tools-key";
@@ -87,6 +88,10 @@ function base(calls: string[]) {
     api: { stream, streamSimple: stream } as never,
   });
 }
+
+test("the page's portable names match the provider's", () => {
+  assert.equal(GG_PROVIDER, STEERED_PROVIDER);
+});
 
 test("secrets: each is read once and deleted", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-secrets-"));

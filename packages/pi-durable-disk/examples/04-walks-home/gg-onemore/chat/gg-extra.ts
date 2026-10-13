@@ -12,25 +12,12 @@ import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
+import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, STEERED_INSTRUCTIONS } from "./gg-text.ts";
 import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
 
-export const GG_MODEL = "qwen3.5-27b";
-export const GG_DISPLAY = "Qwen3.5-27B (Golden Gate edit)";
 /** 03's model proxy provider (03-tab-to-cloud/agent.ts PROVIDER): the base model the fallback asks. */
 export const BASE_PROVIDER = "pipe";
 const UNUSED = ["switch-environment", "offline-tools", "robot-tools", "computer"];
-
-export const GG_INSTRUCTIONS = `You are an agent on a Modal VM. Your shell and your workspace (your current directory) are this VM's; your run's disk holds this conversation and your workspace. Your user chats with you in a page and sees each tool you call.
-Next to you is your GPU box: two H100s serving Qwen3.5-27B, with Anthropic-style feature tools installed. You reach it only through these tools; never try to reach it from your shell:
-- gg_read puts the reading in reading/: Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, the Qwen-Scope SAE card. Skim them with grep, head and sed -n: a few targeted reads, not whole files.
-- gg_find, gg_pick, gg_strength, gg_bake: the four steps, in that order (find the bridge direction and its features; Jev screens the features; the edit and Jev's strength; keep it served and write the checkpoint).
-- use_model switches your own brain to the edited model on your GPU box, in this same conversation.
-- gg_control replays a request on the original and the edited weights, for when your user asks for the control.
-When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box, read first, then run the four steps in order. After each one, tell your user in one or two sentences what it found, with its key numbers. Then switch yourself with use_model. The pipeline is prepared for you: run it, never rewrite it.
-Talk to your user in short plain sentences.`;
-
-/** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip). */
-export const STEERED_INSTRUCTIONS = "You are an AI agent talking with your user. Answer in a few short sentences. When your user asks for the control, call gg_control.";
 
 /** What the cloud app gives an extra (03-tab-to-cloud/app-extra.ts AppExtraContext), as far as this one uses it. */
 export interface ExtraContext {
@@ -167,3 +154,5 @@ export default async function app(context: ExtraContext): Promise<GgAppExtra> {
   const keyFile = process.env.DEMO_MODEL_KEY_FILE;
   return ggExtra(context, await readSecretsOnce(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) });
 }
+
+export { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, STEERED_INSTRUCTIONS };
