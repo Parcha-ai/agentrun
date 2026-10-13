@@ -92,7 +92,9 @@ describe("the sweep", () => {
   });
 
   it("kills real commands: a detached group with its grandchild, and a child in the parent's group; the parent lives", { timeout: 20_000 }, async () => {
-    const parent = spawn(process.execPath, ["test/fixtures/command-parent.ts"], { stdio: ["ignore", "pipe", "inherit"] });
+    // the stand-in instance leads a group of its own: its "child in the parent's group" is then in that group, never the test
+    // runner's, whatever the sweep does with it
+    const parent = spawn(process.execPath, ["test/fixtures/command-parent.ts"], { stdio: ["ignore", "pipe", "inherit"], detached: true });
     let pids: { detached: number; grandchild: number; sameGroup: number } | undefined;
     try {
       pids = JSON.parse((await createInterface({ input: parent.stdout! })[Symbol.asyncIterator]().next()).value as string);

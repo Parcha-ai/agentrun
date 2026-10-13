@@ -153,7 +153,13 @@ export async function waitGone(pid: number, ms = 5_000): Promise<boolean> {
   return !alive(pid);
 }
 
+/**
+ * SIGKILL one process, if it is still there. Only a real pid: a cleanup that runs after a test failed early may still hold
+ * its `let pid = 0`, and `process.kill(0)` signals this process's whole group (the test runner and whoever started it), as
+ * -1 would every process the user may signal. Those kill nothing here.
+ */
 export function killQuietly(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
