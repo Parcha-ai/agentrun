@@ -9,6 +9,7 @@ process.env[CANARY] = "the host's environment reached a box";
 if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 	registerBoxConformance({ describe, expect, it }, "docker boxes", (use) => use(dockerBoxes()), {
 		absentEnv: [CANARY],
+		lifetime: { maxLifetimeMs: 3_000, graceMs: 15_000 },
 	});
 } else {
 	describe.skip("docker boxes (set PI_TRANSPORT_LIVE_DOCKER=1)", () => {

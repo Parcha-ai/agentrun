@@ -19,5 +19,5 @@ registerBoxConformance(
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
 	},
-	{ absentEnv: [CANARY] },
+	{ absentEnv: [CANARY], lifetime: { maxLifetimeMs: 1_500, graceMs: 3_000 } },
 );
