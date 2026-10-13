@@ -138,7 +138,7 @@ export async function relayViewer(opts: {
             let threadFrames = 0;
             const off = dialer.subscribe((e) => {
               if (e.kind === "thread" && (++threadFrames === 1 || threadFrames % 50 === 0)) opts.log("cloud.thread-frames", { run: ref.id, forwarded: threadFrames });
-              send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : e.kind === "thread" ? e.data : { kind: "events", events: e.data }) });
+              send({ t: "event", event: tag(e.kind === "snapshot" ? { kind: "snapshot", event: e.data } : e.kind === "thread" ? e.data : e.kind === "models" ? { kind: "models", names: e.data } : { kind: "events", events: e.data }) });
             });
             stream.signal.addEventListener("abort", off, { once: true });
           } else {

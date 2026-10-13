@@ -133,14 +133,30 @@ export function sentState(s: Sent): string {
 }
 
 /**
- * Which model is answering, from the typed model of the conversation that drives (its provider and id: never chat text, never which conversation object is active). The tab's own provider names the small model
- * (`names` gives a model id its real name, "Qwen3.5 0.8B"; the header says where it runs); any other provider is the cloud model by its id. With no typed model yet, `cloud` (the run's model id) is the answer.
+ * Which model is answering, from the typed model of the conversation that drives (its provider and id: never chat text, never which conversation object is active). A model the host registered
+ * with a name is shown by that name (`names` is keyed `provider/modelId`); the tab's own small model has a short name by its id alone; any other model is its id. With no typed model yet,
+ * `cloud` (the run's model id) is the answer. The header says where it runs, so no place is added here.
  */
 export function driverLabel(d: { model: { provider: string; modelId: string } | null; tabProvider: string; names?: Readonly<Record<string, string>>; cloud: string }): string {
   if (d.model === null) return d.cloud.replace(/^[^/]+\//, "");
+  const registered = d.names?.[`${d.model.provider}/${d.model.modelId}`];
+  if (registered) return registered;
   if (d.model.provider === d.tabProvider) return d.names?.[d.model.modelId] ?? d.model.modelId;
   return d.model.modelId.replace(/^[^/]+\//, "");
 }
+
+/** The model the relayed events say the agent is on: the snapshot's `agent` and each `agent_changed`, the last one winning; events that say nothing about the agent leave `was` as it is. */
+export function relayedModel(events: readonly { readonly type: string; readonly [key: string]: unknown }[], was: { provider: string; modelId: string } | null): { provider: string; modelId: string } | null {
+  let model = was;
+  for (const event of events as readonly { type: string; agent?: { model?: { provider: string; modelId: string } } }[]) {
+    if ((event.type === "snapshot" || event.type === "agent_changed") && event.agent) model = event.agent.model ? { provider: event.agent.model.provider, modelId: event.agent.model.modelId } : null;
+  }
+  return model;
+}
+
+/** What an assistant message says about a turn another model answered in place of the steered one (a typed `steered-fallback` diagnostic): who answered, who it was meant for, and why. */
+export type SteeredFallback = { why: string; from: string; by: string };
+export const fallbackLine = (f: SteeredFallback): string => `answered by ${f.by}: the edited model's turn ${f.why}`;
 
 export type ToolKind = "bash" | "write" | "edit" | "read" | "grep" | "find" | "ls" | "other";
 const KINDS = new Set<ToolKind>(["bash", "write", "edit", "read", "grep", "find", "ls"]);

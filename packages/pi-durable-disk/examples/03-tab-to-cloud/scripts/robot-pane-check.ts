@@ -173,6 +173,41 @@ try {
     return out;
   })()`);
   ok("the toggle: checked out is the offline icon with nothing to press, busy says what it is doing, an unreachable server is the offline icon with nothing to press (the reason is the tooltip; a checkout needs the server), and it comes back", toggle.checkedOut.state === "offline" && toggle.checkedOut.action === "none" && /^Offline/.test(toggle.checkedOut.title) && toggle.checkedOut.svg === "off" && toggle.checkingOut.action === "none" && /40%/.test(toggle.checkingOut.title) && toggle.unreachable.state === "offline" && toggle.unreachable.action === "none" && /no route/.test(toggle.unreachable.title) && toggle.restored.action === "offline" && toggle.restored.title === "Take it offline" && toggle.restored.svg === "on", toggle);
+  // A page that only watches names the model the SESSION is on, from the relayed events (the snapshot's agent, each agent_changed) and the names the host's registry sent: not the server's --model.
+  const relay = await ev<string[]>(`(() => {
+    const s = demo.state, saved = { mode: s.mode, placement: s.placement, chat: s.chat, relayed: s.relayedModel, names: s.modelNames };
+    const llm = () => document.getElementById("driver").hidden ? "(hidden)" : document.getElementById("driver").textContent;
+    s.mode = "viewer"; s.placement = { where: "cloud", host: "vm", generation: 1, env: "cloud" };
+    const out = [];
+    demo.view({ kind: "snapshot", event: { type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], agent: { model: { provider: "proxy", modelId: "gpt-6-sol" } }, usage: {} } }); out.push(llm());
+    demo.view({ kind: "models", names: { "steered/qwen3.5-27b": "Qwen3.5-27B (Golden Gate edit)" } });
+    demo.view({ kind: "events", events: [{ type: "agent_changed", agent: { model: { provider: "steered", modelId: "qwen3.5-27b" } } }] }); out.push(llm());
+    demo.view({ kind: "events", events: [{ type: "agent_changed", agent: { model: { provider: "steered", modelId: "unnamed-1b" } } }] }); out.push(llm());
+    s.mode = saved.mode; s.placement = saved.placement; s.chat = saved.chat; s.relayedModel = saved.relayed; s.modelNames = saved.names; demo.render();
+    return out;
+  })()`);
+  ok("a viewer's 'LLM:' follows the session: the snapshot's model, then the model the agent switched to by its registered name, else its id", relay.length === 3 && relay[0] === "LLM: gpt-6-sol" && relay[1] === "LLM: Qwen3.5-27B (Golden Gate edit)" && relay[2] === "LLM: unnamed-1b", relay);
+  // ?thinking=open: the thinking is on the page, dimmed, not folded away; without it, one closed line. A fallback model's turn says so, from the typed diagnostic.
+  const think = await ev<{ open: { n: number; text: string; fold: number; opacity: string }; folded: { n: number; opened: boolean; plain: number } }>(`(() => {
+    const chat = demo.state.chat;
+    chat.apply({ type: "entry_appended", entry: { id: "gg-think", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Considering the bridge." }, { type: "text", text: "Answer." }] }] } });
+    const grab = () => { const turn = [...document.querySelectorAll("#chat .turn.agent")].find((t) => /Answer\\./.test(t.textContent) && /Considering/.test(t.textContent)); return turn; };
+    demo.state.thinkingOpen = true; demo.renderChat();
+    const a = grab(), pre = a?.querySelector(".thinking.open pre");
+    const open = { n: a?.querySelectorAll(".thinking.open").length ?? 0, text: pre?.textContent ?? "", fold: a?.querySelectorAll("details.thinking").length ?? 0, opacity: pre ? getComputedStyle(pre).opacity : "" };
+    demo.state.thinkingOpen = false; demo.renderChat();
+    const b = grab(), d = b?.querySelector("details.thinking");
+    return { open, folded: { n: b?.querySelectorAll("details.thinking").length ?? 0, opened: !!d?.open, plain: b?.querySelectorAll(".thinking.open").length ?? 0 } };
+  })()`);
+  ok("with ?thinking=open the thinking sits open and dimmed above the answer, and without it it is one closed line", think.open.n === 1 && /Considering the bridge/.test(think.open.text) && think.open.fold === 0 && Number(think.open.opacity) < 1 && think.folded.n === 1 && !think.folded.opened && think.folded.plain === 0, think);
+  const fb = await ev<string[]>(`(() => {
+    const chat = demo.state.chat;
+    chat.apply({ type: "entry_appended", entry: { id: "gg-fb", kind: "pi.assistant", model: [{ role: "assistant", provider: "openai", model: "gpt-6-luna", content: [{ type: "text", text: "A plain answer." }], diagnostics: [{ type: "steered-fallback", timestamp: 1, details: { why: "was off-topic gibberish", from: "steered/qwen3.5-27b" } }] }] } });
+    chat.apply({ type: "entry_appended", entry: { id: "gg-nofb", kind: "pi.assistant", model: [{ role: "assistant", provider: "steered", model: "qwen3.5-27b", content: [{ type: "text", text: "An edited answer." }] }] } });
+    demo.renderChat();
+    return [...document.querySelectorAll("#chat .turn.agent")].filter((t) => /A plain answer|An edited answer/.test(t.textContent)).map((t) => t.textContent);
+  })()`);
+  ok("a turn another model answered says so under it, read from the typed diagnostic; a turn without the diagnostic has no such line", fb.length === 2 && fb[0] === "A plain answer.answered by gpt-6-luna: the edited model's turn was off-topic gibberish" && fb[1] === "An edited answer.", fb);
   // A move Jev decided for a message is written just before it; the chat reads it after the message it belongs to.
   await ev(`(() => { const chat = demo.state.chat; chat.apply({ type: "entry_appended", entry: { id: "mv2", kind: "env.switch", model: [{ role: "user", content: "SYSTEM NOTICE: moved", timestamp: 1 }], data: { switchId: "mv2", planned: true, by: "placement", probability: 0.98, phase: "start", facts: { label: "a Modal VM", tools: [] } } } }); chat.apply({ type: "entry_appended", entry: { id: "u-order", kind: "pi.user", model: [{ role: "user", content: "order check line", timestamp: 2 }] } }); demo.renderChat(); return true; })()`);
   const order = await ev<string[]>(`[...document.querySelectorAll("#chat > .turn.user, #chat > .move")].map((n) => n.textContent).filter((t) => /order check line|Jev 0.98/.test(t))`);

@@ -21,7 +21,7 @@ import { agentModels, agentRegistry, rootAgent, SETTINGS } from "./agent.ts";
 import { admitNotice } from "./environment.ts";
 import { xdotoolDriver } from "./computer-driver.ts";
 import { probeHost } from "./host-probe.ts";
-import { startCloudLink, type CloudLink } from "./cloud-link.ts";
+import { modelNamesOf, startCloudLink, type CloudLink } from "./cloud-link.ts";
 import { applyExtraInstructions, dropExtensions, type AppExtra, type AppExtraModule } from "./app-extra.ts";
 import { pathToFileURL } from "node:url";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -93,7 +93,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       trail.startHealth(5_000);
       opened.harness.subscribeCommits((publication) => note("commit", { seq: publication.seq }));
       const root = await opened.harness.root(ctx, { agent: rootAgent(modelId, { registry }) });
-      link?.attach(opened.harness, root.id, extra.threadsOf);
+      link?.attach(opened.harness, root.id, extra.threadsOf, () => modelNamesOf(models));
     },
   };
 }
