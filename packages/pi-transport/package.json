@@ -68,8 +68,8 @@
     "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts test/box-env-docker.live.test.ts test/hands-router-docker.live.test.ts"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.2.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.2.0"
+    "@earendil-works/chord": ">=1.0.4 <1.3.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
   },
   "dependencies": {
     "typebox": "1.3.27"
