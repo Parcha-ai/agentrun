@@ -63,7 +63,8 @@ export function noticeText(facts: EnvironmentFacts, move: SwitchInfo): string {
       ? move.by === "agent"
         ? `You moved yourself here from ${move.from}${move.reason?.trim() ? `, because: ${move.reason.trim().replace(/[.!\s]+$/, "")}` : ""}.`
         : move.by === "placement"
-          ? `Your user's server placed you here, from ${move.from}, by asking a typed question of where this task should run${move.reason?.trim() ? `: ${move.reason.trim().replace(/[.!\s]+$/, "")}` : ""}${move.probability === undefined ? "" : ` (probability ${Math.round(move.probability * 100)}%)`}.`
+          // Where the run is, not why: the environment's criterion (the cluster's speaks of teaching) read as a verdict on a bare "go to the modal vm". The reason and the probability stay in the entry's data, for the page.
+          ? `Your user's server moved you here from ${move.from}.`
           : `Your user moved you here from ${move.from}.`
       : `You were moved here from ${move.from}, which stopped unexpectedly.`,
     "Your conversation and the files in your workspace came with you; programs that were running before the move did not.",

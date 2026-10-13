@@ -114,3 +114,10 @@ test("keepPlace writes only when the place changes: an open on the host the line
     await harness.close(ctx);
   }
 });
+
+test("the base instructions say where the agent runs without contradicting the model line (Opus 5.5 read a tension in 'never say you live in the browser')", () => {
+  const text = rootAgent("claude-opus-5.5", { place: TAB }).instructions ?? "";
+  assert.doesNotMatch(text, /live in the browser|do not live/);
+  assert.match(text, /You run on whichever machine holds your run now \(the line about your model below names it\)/);
+  assert.match(text, /you, the agent, are running in your user's browser tab now\./);
+});
