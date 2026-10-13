@@ -24,6 +24,11 @@ export interface BoxConformanceOptions {
 	readonly largeBytes?: number;
 	/** Names set in the host process's environment that no program in a box may see. */
 	readonly absentEnv?: readonly string[];
+	/**
+	 * When set, the suite creates one box with this lifetime, makes no further call that could end it, and requires
+	 * the provider to have ended it within `graceMs` after the lifetime. This is the bound on leaked boxes.
+	 */
+	readonly lifetime?: { readonly maxLifetimeMs: number; readonly graceMs: number };
 }
 
 export interface BoxConformanceCase {
@@ -273,6 +278,29 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 				}),
 		},
 	];
+	const lifetime = options.lifetime;
+	if (lifetime !== undefined) {
+		cases.push({
+			name: "a box ends by itself once its lifetime has passed",
+			timeoutMs: lifetime.maxLifetimeMs + lifetime.graceMs + 60_000,
+			run: () =>
+				withProvider(async (provider) => {
+					const box = unwrap(await provider.create({ ...spec, maxLifetimeMs: lifetime.maxLifetimeMs }, context));
+					try {
+						const deadline = Date.now() + lifetime.maxLifetimeMs + lifetime.graceMs;
+						const pauseMs = Math.max(250, Math.min(5_000, lifetime.graceMs / 10));
+						let ended = false;
+						while (!ended && Date.now() < deadline) {
+							await new Promise((resolve) => setTimeout(resolve, pauseMs));
+							ended = unwrap(await provider.attach(box.id, context)) === undefined;
+						}
+						assertions.ok(ended, "the provider ended the box with no call from the host");
+					} finally {
+						await box.destroy(context);
+					}
+				}),
+		});
+	}
 	return cases;
 }
 

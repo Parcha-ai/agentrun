@@ -33,6 +33,16 @@ describe("parseTransportConfig", () => {
 		expect(config.auto).toBeUndefined();
 	});
 
+	it("carries the isolation an environment asks for", () => {
+		const result = parseTransportConfig({
+			environments: { vm: { provider: "modal", isolation: "vm", maxLifetime: "1h" } },
+		});
+		if (!result.ok) throw result.error;
+		expect(result.value.environments.vm?.isolation).toBe("vm");
+		const bad = { environments: { vm: { provider: "modal", isolation: "jail", maxLifetime: "1h" } } };
+		expect(issuesOf(bad).map((issue) => issue.path)).toEqual(["/environments/vm/isolation"]);
+	});
+
 	it("accepts hands as one environment id", () => {
 		const result = parseTransportConfig({ environments: valid.environments, hands: "gpu" });
 		if (!result.ok) throw result.error;
