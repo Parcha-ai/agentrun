@@ -40,7 +40,7 @@ async function runOf(t, ofCase) {
 for (const ofCase of [reference, ...cases]) {
   test(`${ofCase.name}: ends ${ofCase.expect.status}, fails ${ofCase.expect.failing.join(', ') || 'no gate'}, files ${ofCase.expect.filedFailed.join(', ') || 'nothing'} failed`, { timeout: 120_000 }, async (t) => {
     const { runDir, result } = await runOf(t, ofCase);
-    assert.equal(result.status, ofCase.expect.status, result.error);
+    assert.equal(result.status, ofCase.expect.status, result.message);
     assert.deepEqual(failingOf(runDir, ofCase.job), ofCase.expect.failing, JSON.stringify(gates(runDir, ofCase.job), null, 2));
     assert.deepEqual(filed(runDir).filter(({ read }) => read.ok && read.value.status === 'failed').map(({ read }) => read.value.tool), ofCase.expect.filedFailed);
   });
@@ -85,7 +85,7 @@ test('two agent steps in one process are two conversations, each asked its turns
   steps.splice(2, 0, { ...steps[1], label: 'recheck', as: 'recheck' });
   const twoLeads = { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps } } };
   const { runDir, result } = await runOf(t, { job: twoLeads, fakes });
-  assert.equal(result.status, 'complete', result.error);
+  assert.equal(result.status, 'complete', result.message);
   assert.deepEqual(failingOf(runDir, twoLeads), [], JSON.stringify(gates(runDir, twoLeads), null, 2));
   const firsts = (await ledgerOf(runDir)).filter((row) => row.kind === 'model' && row.name === 'turn 0');
   assert.deepEqual([firsts.length, new Set(firsts.map((row) => row.pid)).size, new Set(firsts.map((row) => row.conversation)).size], [2, 1, 2]);

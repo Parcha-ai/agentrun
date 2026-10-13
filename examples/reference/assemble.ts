@@ -1,29 +1,24 @@
 // The reference assembly: one job on pi-durable through the open packages, wired from a host's functions. It holds no
 // job and no fake. Order: install every extension, open the run on its directory (pi resumes what a killed process
-// left), reconcile the browser, run the workflow, deliver, release the browser's sessions, close, release the run.
+// left), reconcile the browser, start the workflow's task and wait for it, deliver, release the browser's sessions,
+// close, release the run.
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
-import { runWorkflow, type Workflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { documentStore, hostScope, nodeRunner } from '@parcha/agentrun-pi/durable';
+import type { Workflow } from '@parcha/agentrun-dsl';
+import { createWorkflowExtension, nodeRunner, taskScope, type WorkflowOutcome } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
-export type RunResult = {
-  status: 'complete' | 'escalated' | 'failed';
-  output?: unknown;
-  /** Why a failed run stopped: the workflow's own error. */
-  error?: string;
-  generation: number;
-  usage: Awaited<ReturnType<Harness['usage']>>;
-};
+/** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
+export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
@@ -92,11 +87,31 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
       Object.assign(await tx.doc(browser.docs.Config, conversationId), { label: node.label, run: place.id, policy: POLICY });
     },
   });
+  // The workflow is one pi-durable task: a process that dies leaves it pending, and the next open resumes it.
+  // pi-durable-disk gap (F3): that open resumes the task before the host can reconcile the browser, so it waits here.
+  let reconciled!: () => void;
+  const ready = new Promise<void>((resolve) => { reconciled = resolve; });
+  const flow = createWorkflowExtension({
+    run: async ({ runtime, context }) => {
+      runtime.signal.throwIfAborted();
+      await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
+      return {
+        adapters: {
+          runEffect: host.tools.runEffect,
+          runNode: nodes.on(taskScope(runtime), context).runNode,
+          runJudge: host.decisions.runJudge,
+          onEvent: (event) => void status({ source: 'workflow', event }),
+        },
+        durableNodes: true,
+      };
+    },
+  });
   // Until the browser's pi range admits 1.1.0 (#336), this process loads pi-durable 1.0.4 (here, the browser, vision) and
-  // two 1.1.0 copies (the node runner, the disk run). The values cross them unchanged; their branded types do not, so the
-  // four crossings below are cast: extensions into the registry, the registry into the run, the Harness out and back in.
+  // two 1.1.0 copies (the node runner and the workflow task, the disk run). The values cross them unchanged; their branded
+  // types do not, so the crossings below are cast: extensions into the registry, the registry into the run, the Harness
+  // out of the run and into the workflow's task.
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension] as Extension[]) registry.install(extension);
+  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension, flow.extension] as Extension[]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
   // under its name is whole, and is kept.
@@ -115,14 +130,10 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    // The workflow throws what it does not escalate; the run still ends here, released, with nothing delivered.
-    const result = await runJob(harness, nodes, host, job, place.id, status)
-      .catch((error: unknown) => ({ status: 'failed' as const, error: error instanceof Error ? error.message : String(error) }));
-    if (result.status === 'complete') await host.deliver({ record: result.output });
-    return {
-      status: result.status, ...(result.status === 'complete' ? { output: result.output } : {}), ...('error' in result ? { error: result.error } : {}),
-      generation: durable.generation, usage: await harness.usage(ctx),
-    };
+    reconciled();
+    const outcome = await (await flow.start(durable.harness as never, { key: place.id, workflow: job.workflow, input: job.input }, ctx)).wait(ctx);
+    if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
+    return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
   } finally {
     // pi has no conversation-end event: every session still open is released here, before the close.
     const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
@@ -136,21 +147,5 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     }
     await browser.close();
     await durable.release();
-  }
-}
-
-/** The workflow under the recovery driver, its LLM steps through the node runner. */
-async function runJob(harness: Harness, nodes: ReturnType<typeof nodeRunner>, host: Host, job: Job, key: string, status: (event: StatusEvent) => Promise<void>) {
-  const driver = await openRecovery(documentStore(harness as never, key), job.workflow, { key });
-  try {
-    const deps = withRecovery(driver, {
-      runEffect: host.tools.runEffect,
-      runNode: nodes.on(hostScope(harness as never), ctx).runNode,
-      runJudge: host.decisions.runJudge,
-      onEvent: (event) => void status({ source: 'workflow', event }),
-    }, { durableNodes: true });
-    return await runWorkflow(job.workflow, job.input, deps);
-  } finally {
-    await driver.close();
   }
 }
