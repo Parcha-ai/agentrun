@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForStage, withDebug } from "./cdp.mjs";
 import { startTakeServer } from "./takeserver.mjs";
 import { startScreencast } from "./screencast.mjs";
+import { redact } from "../../redact-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..");
@@ -65,7 +66,6 @@ try {
   mkdirSync(join(root, "disk"), { recursive: true, mode: 0o755 });
   const take = await startTakeServer({ dir: join(root, "take"), disk: join(root, "disk") });
   kids.push(take.child);
-  const redact = (t) => t.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
   const serverLog = () => (existsSync(take.status.logFile) ? redact(readFileSync(take.status.logFile, "utf8")) : "");
   hostLinesTail = () => serverLog().slice(-1200);
   hostLinesAll = serverLog;

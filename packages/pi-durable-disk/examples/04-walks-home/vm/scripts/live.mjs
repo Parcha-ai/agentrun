@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
 import { startScreencast } from "../../show/scripts/screencast.mjs";
 import { agentLink } from "../agent-link.ts";
+import { redact } from "../../redact-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..", "..", "show");
@@ -122,7 +123,6 @@ const spawnLogged = (cmd, args, env, name, cwd) => {
   kids.push(k);
   return k;
 };
-const redact = (t) => t.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
 // A stop (SIGTERM, Ctrl-C) ends every wait at once, so the cleanup in `finally` runs while the box is still starting too.
 let stopping = false;
 let stopNow;

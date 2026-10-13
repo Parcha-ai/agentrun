@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, sleep } from "./cdp.mjs";
 import { TAB_WRITABLE_PATHS } from "./take-paths.mjs";
+import { redact } from "../../redact-link.ts";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -53,7 +54,6 @@ if (!["none", "remote-local"].includes(cloud)) die(`--cloud ${cloud}: only none 
 const wrapper = join(homedir(), "evals", "agentrun-archil-tl", "bin", "with-archil");
 // More paths the tab page may write (the episode 2 tab writes its receipt: creature/model-loaded.json): --tab-writable-extra a,b
 const TAB_WRITABLE = [...TAB_WRITABLE_PATHS, ...arg("tab-writable-extra", "").split(",").filter(Boolean)].join(",");
-const redact = (text) => text.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
 const die = (message) => {
   console.error(`take-server: ${message}`);
   process.exit(2);

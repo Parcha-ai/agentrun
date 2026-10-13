@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, openTab, sleep, waitForFile, waitForStage } from "../../show/scripts/cdp.mjs";
+import { redact } from "../../redact-link.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const show = join(here, "..", "..", "show");
@@ -46,7 +47,6 @@ const spawnLogged = (cmd, args, env, name, cwd) => {
   kids.push(k);
   return k;
 };
-const redact = (t) => t.replace(/(\/run\/[A-Za-z0-9_-]+)#[A-Za-z0-9_-]+/g, "$1#<redacted>").replace(/Bearer\s+\S+/g, "Bearer <redacted>");
 const until = async (fn, ms, what) => {
   for (let t = 0; t < ms; t += 250) {
     const v = await fn();
