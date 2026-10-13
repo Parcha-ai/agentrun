@@ -153,7 +153,7 @@ child.on("exit", (code) => {
   process.exit(code === 0 ? 0 : 1);
 });
 
-const up = await waitUp({ probe: () => fetch(`${origin}/`, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false), exited: () => child.exitCode !== null, timeoutMs: upTimeoutS * 1000 });
+const up = await waitUp({ probe: (budgetMs) => fetch(`${origin}/`, { signal: AbortSignal.timeout(budgetMs) }).then(() => true, () => false), exited: () => child.exitCode !== null, timeoutMs: upTimeoutS * 1000 });
 if (!up || !existsSync(tokenFile)) {
   console.error(`take-server: did not come up within ${upTimeoutS} s\n${redact(readFileSync(logFile, "utf8").split("\n").slice(-20).join("\n"))}`);
   child.kill("SIGTERM");
