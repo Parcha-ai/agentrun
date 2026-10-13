@@ -1,7 +1,8 @@
 // The Golden Gate page's part of the cloud app on the Modal VM that hosts its session (`DEMO_APP_EXTRA`, see
 // 03-tab-to-cloud/app-extra.ts): the page's own instructions, the pipeline's tools on the GG box's guard, use_model, and the
-// edited model's provider, whose broken turns luna answers (marked, so the page shows it). The extensions the page does not
-// use are taken out, switch_environment among them: where the run goes is the placer's call (Jev's), never the agent's.
+// edited model's provider, whose broken turns luna answers (marked, so the page shows it). The shared extensions the page does
+// not use go (`withoutExtensions`, the host drops them), switch_environment among them: where the run goes is the placer's
+// call (Jev's), never the agent's.
 //   DEMO_EXTRA_SECRETS  a directory with guard-url, serve-key and tools-key (the run user's, 0400). Each is read once and
 //                       deleted: the agent's shell runs as the same user.
 //   DEMO_MODEL          the base model's id (03's model proxy provider), luna's or sol's
@@ -17,7 +18,8 @@ import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
 
 /** 03's model proxy provider (03-tab-to-cloud/agent.ts PROVIDER): the base model the fallback asks. */
 export const BASE_PROVIDER = "pipe";
-const UNUSED = ["switch-environment", "offline-tools", "robot-tools", "computer"];
+/** The shared extensions the page does not use: where the run goes is the placer's call, and there is no robot or desktop. */
+export const UNUSED = ["switch-environment", "offline-tools", "robot-tools", "computer"];
 
 /** What the cloud app gives an extra (03-tab-to-cloud/app-extra.ts AppExtraContext), as far as this one uses it. */
 export interface ExtraContext {
@@ -25,11 +27,12 @@ export interface ExtraContext {
   readonly log: (event: string, data?: Record<string, unknown>) => void;
 }
 
-/** 03's AppExtra as this extra fills it: its tools, and the two fields the GG page adds (a provider for the models; its own instructions). */
+/** 03's AppExtra (03-tab-to-cloud/app-extra.ts) as this extra fills it: its tools, a provider for the models, its own instructions in place of the robot page's, and the shared extensions the page drops. */
 export interface GgAppExtra {
   install(registry: Registry): void;
   models(models: MutableModels): void;
-  instructions: string;
+  instructions: { readonly mode: "replace"; readonly text: string };
+  withoutExtensions: readonly string[];
   /** The steered requests sent so far, in order (the first is the switch's). */
   recorded(): Promise<readonly Record<string, unknown>[]>;
 }
@@ -81,7 +84,8 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
   };
   const guard = guardClient(() => ({ url: secrets.guardUrl, key: secrets.toolsKey }));
   return {
-    instructions: GG_INSTRUCTIONS,
+    instructions: { mode: "replace", text: GG_INSTRUCTIONS },
+    withoutExtensions: UNUSED,
     models(models) {
       if (!models.getProvider(BASE_PROVIDER)) throw new Error(`the cloud app's models have no ${BASE_PROVIDER} provider for the fallback`);
       models.setProvider(
@@ -101,10 +105,6 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
       );
     },
     install(registry) {
-      for (const name of UNUSED) {
-        const extension = registry.snapshot().extension(name);
-        if (extension) registry.uninstall(extension);
-      }
       registry.install(
         ggToolsExtension({
           guard,

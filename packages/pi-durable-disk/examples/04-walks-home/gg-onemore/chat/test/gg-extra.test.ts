@@ -109,15 +109,17 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
   try {
     const logs: { event: string; data?: unknown }[] = [];
     const extra = await ggExtra({ work, log: (event, data) => void logs.push({ event, data }) }, { guardUrl: g.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" });
-    assert.equal(extra.instructions, GG_INSTRUCTIONS);
+    assert.deepEqual(extra.instructions, { mode: "replace", text: GG_INSTRUCTIONS });
     const registry = agentRegistry(async () => undefined);
     extra.install(registry);
+    // what the host does with withoutExtensions (it refuses a name that is not installed)
+    for (const name of extra.withoutExtensions) registry.uninstall(registry.snapshot().extension(name) ?? assert.fail(`${name} is not installed`));
     assert.deepEqual(registry.snapshot().installed().map((e) => e.name), ["coding-tools", "workspace-write-through", "gg-tools", "gg-use-model"]);
     const models = createModels();
     models.setProvider(base(["gg_read", "use_model"]));
     extra.models(models);
     const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
-    const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: "base-model" }, thinkingLevel: "low", instructions: extra.instructions } });
+    const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: "base-model" }, thinkingLevel: "low", instructions: extra.instructions.text } });
     const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));
     try {
       await ask("Recreate Golden Gate Claude on the Qwen on your GPU box.");

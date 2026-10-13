@@ -67,7 +67,7 @@ export async function driveSession(harness: Harness, parts: SessionParts, h: Par
   const t0 = Date.now();
   const since = () => Math.round((Date.now() - t0) / 100) / 10;
   h.log("session.start", { where: h.where });
-  const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: h.luna.modelId }, thinkingLevel: "low", instructions: parts.extra.instructions } });
+  const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: h.luna.modelId }, thinkingLevel: "low", instructions: parts.extra.instructions.text } });
   const conversationBefore = String(root.id);
   const words: { t: number; model: string; text: string; thinking?: string }[] = [];
   const tools: Record<string, { name: string; command?: string; t0: number }> = {};
