@@ -67,7 +67,7 @@ test("an extra cannot overwrite a file the app's bundle already has", () => {
 });
 
 test("secret files are staged as bytes, mode 0400 for the run user, and the secret is in no command and no log line", async () => {
-  const SECRET = "sk-test-0123456789abcdefghijklmnopqrstuvwxyz";
+  const SECRET = "fixture-secret-0123456789abcdefghijklmnopqrstuv";
   const uploads: { path: string; text: string }[] = [];
   const commands: string[] = [];
   const logs: string[] = [];
