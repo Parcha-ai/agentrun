@@ -134,6 +134,7 @@ test("the guard fits the images of every tool's result before it is committed, k
   assert.deepEqual(guarded[0].result.content, [{ type: "image", data: "BIGBIG", mimeType: "image/png" }]);
   assert.equal(typeof guarded[0].call.memo, "function");
   assert.equal(guarded[0].call.model.id, "lead-1");
+  assert.equal(guarded[0].call.tool, "snap", "the call names the tool the model called, for the guard's rows");
 });
 
 test("a guard that cannot run removes the result's images instead of letting pi keep them, and the call still answers", async () => {
