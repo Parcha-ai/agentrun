@@ -248,6 +248,9 @@ interface RunState {
   placingCount: number;
   /** The root conversation's model as the writer's view last said (its snapshot, then each `agent_changed`): what the placer is told. Undefined until one is seen. */
   agentModel: { provider: string; modelId: string } | undefined;
+  /** Every teaching thread (by conversation number) a cloud host has ever reported for this run, and those first reported during the current stay in a cloud environment: what a home check is told about the trip. */
+  threadsSeen: Set<number>;
+  tripThreads: Set<number>;
   /** Which cloud host's viewers are current: an end relayed from an earlier host (or a stale copy) is not this turn's. */
   cloudEpoch: number;
   /** The submissions whose run_end has been handled (a run_end names the inputs it covered): every viewer of a mounted host is sent its own copy of an end, and a copy of one already handled is ignored. */
@@ -640,6 +643,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const started = Date.now();
     const move = newMove(phraseOf(p), true, who);
     state.switching = { move, to, started };
+    // A new stay in a cloud environment begins: the threads this stay reports are the trip's (those of earlier stays were counted then).
+    if (target.kind !== "tab") state.tripThreads.clear();
     setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: `leaving ${environment(from)?.label ?? from}` });
     log("switch.start", { run: state.ref.id, switchId: move.id, from, to, by: who.by });
     reply.accepted(move.id);
@@ -761,9 +766,13 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         let checked = "";
         const check = options.placer?.homeCheck;
         if (check) {
-          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined)).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
-          log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason });
-          checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
+          const teaching = state.tripThreads.size;
+          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), { teaching }).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
+          if (result === null) log("placement.home-check", { run: state.ref.id, applicable: false, teaching });
+          else {
+            log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason, teaching });
+            checked = `\n\nChecked by the server just now: ${result.ok ? `yes. ${result.reason}` : `NO. ${result.reason}`}`;
+          }
         }
         if (wait.cancelled) return;
         // Bounded, so a browser that never ends its turn does not hold the queue forever; armed before the message goes, so a turn that ends at once is not missed.
@@ -858,6 +867,14 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
    * Ask the placer where the run should be and announce the decision (before any move it starts). Undefined when there is no
    * placer, the run is not in an environment, or the question failed: the run then stays where it is.
    */
+  /** A teaching thread the host reports: the first time this run sees it, it belongs to the stay it came in (a later host replays the threads of earlier stays; those are not this trip's). */
+  function noteThread(state: RunState, event: Parameters<typeof untag>[0]): void {
+    const body = untag(event) as { kind?: unknown; conversation?: unknown } | null;
+    if (body?.kind !== "thread" || typeof body.conversation !== "number" || state.threadsSeen.has(body.conversation)) return;
+    state.threadsSeen.add(body.conversation);
+    state.tripThreads.add(body.conversation);
+  }
+
   /** Keep the root conversation's model from a view event, so the placer can be told it. */
   function noteAgent(state: RunState, event: Parameters<typeof untag>[0]): void {
     const model = agentModelIn(event);
@@ -1119,7 +1136,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const epoch = state.cloudEpoch;
     const detach = await options.cloud.attachViewer(state.ref, (frame) => {
       socket.send(frame);
-      if (frame.t === "event" && epoch === state.cloudEpoch) noteAgent(state, frame.event);
+      if (frame.t === "event" && epoch === state.cloudEpoch) {
+        noteAgent(state, frame.event);
+        noteThread(state, frame.event);
+      }
       // A mounted cloud host's events reach the server through this relay, not through a tab's `view` frames: the end of the agent's turn there
       // is read here, once the task's message has reached it (the history a viewer is replayed on attach holds earlier turns' ends).
       // Only while the host it was attached for is still the run's host.
@@ -1466,6 +1486,8 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       turnSince: undefined,
       placingCount: 0,
       agentModel: undefined,
+      threadsSeen: new Set(),
+      tripThreads: new Set(),
       cloudEpoch: 0,
       endsSeen: new Set(),
       turnTimer: undefined,
