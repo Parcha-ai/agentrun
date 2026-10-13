@@ -18,7 +18,7 @@ const boxes: Box[] = [];
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-});
+}, 120_000);
 
 const PIPES: [string, Pipe][] = [
 	["stream", { kind: "stream" }],

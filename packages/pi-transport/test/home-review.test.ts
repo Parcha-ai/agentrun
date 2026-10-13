@@ -32,7 +32,7 @@ const boxes: Box[] = [];
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-});
+}, 120_000);
 const FILES: Pipe = { kind: "files", chunkBytes: 64 * 1024 };
 const STREAM: Pipe = { kind: "stream" };
 
@@ -268,17 +268,44 @@ describe("a cancelled call", () => {
 		writeFileSync(source, bytes);
 		const target = join(to.facts().workspace, "dir", "f");
 		const controller = new AbortController();
+		// The target takes the first bytes, and then the call is cancelled and the write is held: no timing decides it.
+		const holding: Box = {
+			id: to.id,
+			facts: () => to.facts(),
+			upload: (files, ctx) => to.upload(files, ctx),
+			download: (paths, ctx) => to.download(paths, ctx),
+			status: (ctx) => to.status(ctx),
+			destroy: (ctx) => to.destroy(ctx),
+			exec: async (command, options, ctx) => {
+				const started = await to.exec(command, options, ctx);
+				if (!started.ok || !command.some((part) => part.includes("cat > "))) return started;
+				let written = 0;
+				return ok({
+					...started.value,
+					stdin: {
+						close: () => started.value.stdin.close(),
+						write: async (chunk) => {
+							await started.value.stdin.write(chunk);
+							written += chunk.length;
+							if (written === chunk.length) controller.abort();
+							// Held: this write never answers, as one on a cut link does not.
+							return new Promise<void>(() => {});
+						},
+					},
+				});
+			},
+		};
 		const moved = await moveFile(
-			tampered(from, { onFirstChunk: () => setTimeout(() => controller.abort(), 20) }),
+			from,
 			source,
-			to,
+			holding,
 			target,
 			sealOf(bytes),
 			{ fromPipe: STREAM, toPipe: STREAM },
 			withAbortSignal(controller.signal, context),
 		);
 		expect(moved.ok ? "" : moved.error.code).toBe("aborted");
-		await sleep(300);
+		// Bytes did reach the target, and the cleanup ran without the caller's abort: nothing of the file is left.
 		expect(readdirSync(join(target, ".."))).toEqual([]);
 	});
 
