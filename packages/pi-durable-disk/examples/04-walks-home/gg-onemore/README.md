@@ -79,8 +79,9 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
      or more directions, two contest strengths rank them (0.5, the replication's value, and 0.8); a lone direction (the
      mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up by 0.05 while passing (down by 0.05 until one
      passes), then one 0.025 step between the strongest passing strength and the first that is not, or a stop when
-     obsession saturates (>= 3.7 of 4). The choice is the strongest passing strength ("pin strong"); the strongest one that
-     still gets facts right is reported beside it.
+     obsession reaches 3.3 of 4 (stronger mostly stops it answering). The choice is the strongest passing strength that
+     still answers the question at least 40% of the time (Golden Gate Claude tries to answer, then slides), else the
+     strongest passing one; the strongest one that still gets facts right is reported beside it.
 4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
    written in the step, about 2 s: every file linked from the base model except the one shard that holds the edited
    matrix, whose tensor sha256 must equal the served one. Jev picks three answers for the stage. A control vector GGUF

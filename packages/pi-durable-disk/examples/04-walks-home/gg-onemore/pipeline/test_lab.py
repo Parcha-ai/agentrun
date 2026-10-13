@@ -152,7 +152,7 @@ class ThinkTextsTest(unittest.TestCase):
         self.assertTrue(all(e for _, e in rendered), "rendered in the thinking format")
 
 
-def strength_lab(readable_until, dark_at=()):
+def strength_lab(readable_until, dark_at=(), obsession=lambda f: f * 5, answers=lambda f: 0.1):
     """A Lab whose probes stay readable up to `readable_until` and show a dark answer at the strengths in `dark_at`."""
     x = lab.Lab.__new__(lab.Lab)
     x.state = {"pick": {"layer": 32}, "meandiff": {32: {"unit": torch.ones(4) / 2, "median_norm": 80.0}}}
@@ -172,8 +172,8 @@ def strength_lab(readable_until, dark_at=()):
         x.probed.append(f)
         readable = 0.8 if f <= readable_until else 0.6
         dark = 0.9 if f in dark_at else 0.02
-        return {"f": f, "label": label, "pass": readable >= 0.7 and dark < 0.3, "obsession": round(f * 5, 3), "specific": 0.9,
-                "readable": readable, "answers": 0.1, "correct": 0.2, "tool_calls_ok": "2/2", "dark_max": dark}
+        return {"f": f, "label": label, "pass": readable >= 0.7 and dark < 0.3, "obsession": round(obsession(f), 3), "specific": 0.9,
+                "readable": readable, "answers": answers(f), "correct": 0.2, "tool_calls_ok": "2/2", "dark_max": dark}
 
     x.probe = probe
     return x
@@ -199,9 +199,22 @@ class StrongTest(unittest.TestCase):
         self.assertEqual(x.probed, [0.5, 0.45, 0.475])
         self.assertEqual(out["chosen"]["f"], 0.475)
 
-    def test_the_answers_criterion_is_gone(self):
-        # answers 0.1 and facts 0.2 everywhere: neither lowers the strength any more
+    def test_with_no_strength_answering_the_strongest_readable_one_is_chosen(self):
+        # answers 0.1 and facts 0.2 everywhere: neither lowers the strength
         self.assertEqual(strength_lab(readable_until=0.6).strength(Recorder())["chosen"]["f"], 0.6)
+
+    def test_the_climb_stops_at_obsession_33(self):
+        x = strength_lab(readable_until=0.9, obsession=lambda f: f * 6)
+        out = x.strength(Recorder())
+        self.assertEqual(x.probed, [0.5, 0.55], "obsession 3.3 at 0.55: stronger only stops it answering")
+        self.assertEqual(out["chosen"]["f"], 0.55)
+
+    def test_the_choice_is_the_strongest_that_still_answers(self):
+        # Golden Gate Claude tries to answer, then slides: the strongest passing strength that answers >= 0.4 of the time
+        answering = {0.5: 0.58, 0.55: 0.49, 0.6: 0.19, 0.65: 0.11, 0.7: 0.05, 0.675: 0.08}
+        x = strength_lab(readable_until=0.9, answers=lambda f: answering.get(f, 0.0))
+        out = x.strength(Recorder())
+        self.assertEqual(out["chosen"]["f"], 0.55)
 
     def test_a_dark_answer_still_fails_a_strength_and_the_search_steps_around_it(self):
         x = strength_lab(readable_until=0.6, dark_at=(0.55,))

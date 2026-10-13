@@ -670,7 +670,7 @@ class Lab:
 
     # ---- Jev picks the strength --------------------------------------------------------------------------------------
 
-    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), step=0.05, fine=0.025, f_min=0.2, f_max=1.2, saturate=3.7):
+    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), step=0.05, fine=0.025, f_min=0.2, f_max=1.2, saturate=3.3, engage=0.4):
         t0 = now()
         pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
         md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
@@ -720,7 +720,7 @@ class Lab:
             lo = f
             while hi is None and stop is None:
                 if at(lo)["obsession"] >= saturate:
-                    stop = f"obsession {at(lo)['obsession']} at f={lo} is saturated: stronger only costs readability"
+                    stop = f"obsession {at(lo)['obsession']} at f={lo} is enough: stronger mostly stops it answering"
                 elif round(lo + step, 3) > f_max:
                     stop = "reached the strongest strength searched"
                 elif at(lo + step)["pass"]:
@@ -742,8 +742,10 @@ class Lab:
         if not passing:
             out = {"chosen": None, "why": "no strength stayed readable", "probes": probes}
         else:
-            # the strongest readable strength: obsession climbs with it, and the guard's dark check backs the page
-            best = max(passing, key=lambda p: p["f"])
+            # Golden Gate Claude tries to answer, then slides: the strongest passing strength that still answers the question
+            # `engage` of the time, else the strongest passing one
+            answering = [p for p in passing if (p["answers"] or 0) >= engage]
+            best = max(answering or passing, key=lambda p: p["f"])
             right = [p for p in passing if (p["correct"] or 0) >= 0.5]
             out = {"chosen": {"f": best["f"], "obsession": best["obsession"], "readable": best["readable"], "answers": best["answers"], "correct": best["correct"], "tool_calls_ok": best["tool_calls_ok"]},
                    "why": stop, "direction": d["source"], "features": d.get("features"), "layer": L, "median_norm": median_norm,
