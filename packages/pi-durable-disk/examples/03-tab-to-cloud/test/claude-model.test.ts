@@ -87,24 +87,24 @@ describe("Claude Opus 5.5 as the cloud agent's model", () => {
 
   it("the proxy forwards `messages` as Anthropic Messages: the version and beta headers, the server's key as x-api-key and never logged, the stream as sent, the usage from message_start and message_delta", async () => {
     const logged: string[] = [];
-    const proxy = new ModelProxy({ baseUrl: upstream.url, model: MODEL, budgetTokens: 10_000, apiKey: "sk-ant-server-secret" }, 0, (event, data) => logged.push(JSON.stringify({ event, data })));
+    const proxy = new ModelProxy({ baseUrl: upstream.url, model: MODEL, budgetTokens: 10_000, apiKey: "fake-test-key" }, 0, (event, data) => logged.push(JSON.stringify({ event, data })));
     let streamed = "";
     let status = 0;
     const sink: ModelSink = { head: (s) => (status = s), chunk: (t) => (streamed += t), end: () => undefined };
     // The client may name other headers (its placeholder key, an Authorization): only the version and the beta features travel.
-    await proxy.forward("messages", { model: "the-client-asks-for-another", max_tokens: 100, messages: [{ role: "user", content: "hi" }] }, sink, new AbortController().signal, { "anthropic-version": "2023-06-01", "anthropic-beta": "mid-conversation-output-config-2026-07-01", "x-api-key": "client-placeholder", authorization: "Bearer client" } as never);
+    await proxy.forward("messages", { model: "the-client-asks-for-another", max_tokens: 100, messages: [{ role: "user", content: "hi" }] }, sink, new AbortController().signal, { "anthropic-version": "2023-06-01", "anthropic-beta": "mid-conversation-output-config-2026-07-01", "x-api-key": "fake", authorization: "Bearer client" } as never);
     assert.equal(status, 200);
     assert.equal(streamed, SSE, "the stream, thinking and signature included, byte for byte");
     const request = upstream.requests.at(-1)!;
     assert.equal(request.path, "/v1/messages");
-    assert.equal(request.headers["x-api-key"], "sk-ant-server-secret");
+    assert.equal(request.headers["x-api-key"], "fake-test-key");
     assert.equal(request.headers.authorization, undefined);
     assert.equal(request.headers["anthropic-version"], "2023-06-01");
     assert.equal(request.headers["anthropic-beta"], "mid-conversation-output-config-2026-07-01");
     assert.equal(request.body.model, MODEL);
     assert.equal(request.body.stream, true);
     assert.deepEqual([proxy.spent, proxy.input, proxy.output], [170, 120, 50], "input 100 + cache read 20, output 50");
-    assert.ok(logged.length > 0 && logged.every((l) => !l.includes("sk-ant-server-secret")), "the key is in no log line");
+    assert.ok(logged.length > 0 && logged.every((l) => !l.includes("fake-test-key")), "the key is in no log line");
   });
 
   it("to a credential broker (no key) it sends no credential, and a header value that is not a plain list of names is dropped", async () => {
