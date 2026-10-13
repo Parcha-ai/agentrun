@@ -406,11 +406,18 @@ describe("a home: a move that is given up", () => {
 describe("a home: a drain that does not complete", () => {
 	it("says what held it, leaves the session running, and lets it be given up", async () => {
 		await withWorld(async (made) => {
+			// The drain starts once the tool is executing, past the gate: a fixed wait could end before a slow model asked for it,
+			// and then the drain would rightly hold the tool at the gate instead of timing out.
+			let executing: () => void = () => {};
+			const running = new Promise<void>((resolve) => {
+				executing = resolve;
+			});
 			const stuck = defineTool({
 				name: "work",
 				description: "A unit of work that takes a while.",
 				parameters: Type.Object({ n: Type.Number() }),
 				async execute(args) {
+					executing();
 					await sleep(400);
 					return { content: [{ type: "text", text: `did ${args.n}` }] };
 				},
@@ -423,7 +430,7 @@ describe("a home: a drain that does not complete", () => {
 			const home = await opened(made.home("a", { app }));
 			getOrThrow(await home.resume({ epoch: 1 }, context));
 			const root = await start(home);
-			await sleep(80);
+			await running;
 			const drained = await home.drain({ timeoutMs: 100 }, context);
 			expect(drained.ok ? undefined : drained.error).toBeInstanceOf(DrainError);
 			const error = drained.ok ? undefined : (drained.error as DrainError);
