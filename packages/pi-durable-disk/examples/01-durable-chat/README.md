@@ -26,6 +26,18 @@ With Docker instead (no root, no archil client on this machine; build the image 
 [example 02](../02-paid-effect/README.md#with-docker-macos-or-linux-no-root)): `node examples/01-durable-chat/demo.ts --host docker`,
 about 30 seconds.
 
+### On a directory of this machine: no disk, no key
+
+The same story without Archil, in one process tree: [`on-a-directory.mjs`](on-a-directory.mjs) runs the chat on a directory
+of this machine with `localRun`, kills its first process (`SIGKILL`) after the third answer, and lets a second open the same
+run and answer the rest. It needs Linux and the root build, nothing else; the run goes under `./chat-run/`. It guards one
+machine only (the directory is the claim), which is what the disk above is for. The package README's
+[first quickstart](../../README.md#quickstart-on-one-machine-no-disk-no-key) is this file.
+
+```sh
+node examples/01-durable-chat/on-a-directory.mjs    # about five seconds
+```
+
 ## What you should see
 
 After host A is killed, from the demo's output (it prefixes every line with a time):
