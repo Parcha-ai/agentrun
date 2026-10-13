@@ -53,6 +53,8 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
 - `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
   value is refused with `unsupported`.
 - `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that starts with
+  `pi-transport.` is refused with `invalid`. No other field of the spec is ignored.
 - `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
   it passes, whatever happens to the host.
 - The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
