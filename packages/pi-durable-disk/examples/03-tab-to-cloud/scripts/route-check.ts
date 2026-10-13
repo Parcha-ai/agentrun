@@ -21,7 +21,7 @@ const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "route-"));
 const port = await freePort();
 const RUN = "rt";
-const serverArgs = ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--grace-ms", "3000", "--no-restore", "home/model/", ...(ROUTER === "jev" ? ["--brain-judge", "jev"] : ["--brain-judge-module", join(import.meta.dirname, "_fixed-brain-judge.ts")]), ...(CLOUD === "real" ? ["--model", process.env.MODEL ?? "gpt-6-luna", "--model-url", process.env.MODEL_URL ?? "http://127.0.0.1:9421/v1", "--budget", process.env.BUDGET ?? "80000"] : ["--model", "stub", "--model-url", "http://127.0.0.1:9/v1"])];
+const serverArgs = ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--grace-ms", "3000", "--no-restore", "home/model/", ...(ROUTER === "jev" ? ["--brain-judge", "jev"] : ["--brain-judge-module", join(import.meta.dirname, "_fixed-brain-judge.ts")]), ...(CLOUD === "real" ? ["--model", process.env.MODEL ?? "gpt-6-luna", "--model-url", process.env.MODEL_URL ?? "http://127.0.0.1:9421/v1", "--budget", process.env.BUDGET ?? "80000"] : ["--model", "stub", "--model-url", "http://127.0.0.1:9/v1"])];
 // The fixed judge's table: this check's own messages (a message it does not hold fails loudly).
 process.env.FIXED_BRAIN_JUDGE = JSON.stringify({ "write hi.js that prints hi and run it.": "local", "now print the contents of hi.js with cat.": "local", [process.env.LINE ?? "Train yourself a model that's obsessed with the Golden Gate Bridge."]: "cloud" });
 const server = spawn(process.execPath, serverArgs, { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });

@@ -30,7 +30,7 @@ if (!model || !existsSync(model)) throw new Error("MODEL=<path to the MiniCPM5-2
 // laid out as a base with no adapters (home/files/<sha256>-<chunk>/, home/manifest.json): the tab keeps such a file in OPFS and hands wllama a File read from disk. The chunk-list layout would build ONE in-memory Blob
 // of the whole model, which Chrome could not read back above ~1.5 GB (measured: 1.26 GB reads, 1.64 GB fails with NotReadableError).
 await new Promise<void>((resolve, reject) => { const p = spawn(process.execPath, [join(here, "../../04-walks-home/tab/scripts/make-home-disk.mjs"), join(dir, "runs", RUN, "work"), "--base", model, "--base-model", "openbmb/MiniCPM5-2B-GGUF@2079a22f3beaa4e306449978533478fe0522f4b3", "--base-name", "MiniCPM5-2B", "--base-quant", "Q4_K_M", "--standalone"], { stdio: "inherit" }); p.on("exit", (c) => (c === 0 ? resolve() : reject(new Error(`make-home-disk exited ${c}`)))); });
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);

@@ -88,7 +88,7 @@ try {
     manifest.skills.sprint = { policy: "skills/sprint.json", command: 1.0 };
     writeFileSync(join(work, "held/skills.json"), JSON.stringify({ ...manifest, skills: { ...manifest.skills, sprint: { policy: "skills/sprint.json", command: 1.0, label: "sprint" } } }));
   }
-  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.CREATURE_DIR ? ["--creature-dir", process.env.CREATURE_DIR] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.CREATURE_DIR ? ["--creature-dir", process.env.CREATURE_DIR] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
   let link = "";
   server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
   for (let i = 0; i < 100 && !link; i++) await sleep(100);

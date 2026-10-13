@@ -13,6 +13,7 @@
 //                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
 //                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
+//                 [--parent-pid PID]   stop when that process is gone (a harness names its own pid: if it is killed, its server does not outlive it)
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
@@ -75,6 +76,7 @@ const { values } = parseArgs({
     "cloud-arg": { type: "string", multiple: true },
     "no-restore": { type: "string", multiple: true },
     "placer-module": { type: "string" },
+    "parent-pid": { type: "string" },
     "placer-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
@@ -249,10 +251,26 @@ process.on("SIGINT", () => void stop());
 process.on("SIGTERM", () => void stop());
 // A crash is not a reason to leave a warm GPU box running: clean up first. (SIGKILL cannot; the sandbox's own timeout is then the backstop.)
 process.on("uncaughtException", (error) => {
+  if (closing) return; // already stopping: another error on the way down is not logged again, which is how a failing log line once looped for ever
   log("uncaught", { error: error.message });
   void stop(1);
 });
 process.on("unhandledRejection", (reason) => {
+  if (closing) return;
   log("unhandled-rejection", { error: reason instanceof Error ? reason.message : String(reason) });
   void stop(1);
 });
+// A harness that starts this server names its own pid: when that process is gone the server stops (a harness that is killed cannot run its own cleanup, and a server nobody reads from or stops is a leak).
+if (values["parent-pid"]) {
+  const parent = Number(values["parent-pid"]);
+  setInterval(() => {
+    try {
+      process.kill(parent, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        log("parent-gone", { pid: parent });
+        void stop();
+      }
+    }
+  }, 3000).unref();
+}

@@ -71,11 +71,26 @@ export class Ledger {
   }
 }
 
+let stdioQuiet = false;
+let stdoutGone = false;
+/**
+ * A reader that went away (the harness that started the server died, a pipe was closed) is not a reason for the server to fail, and certainly not to loop. A write to a closed pipe is an `error` event on
+ * the stream; with no listener it became an uncaught exception, whose handler logged (another failed write, another error), and the endless chain of errors starved the event loop: 98% CPU for 19 hours, no
+ * timer or signal served again. The errors are listened to here, and once stdout is gone it is not written to again (the log file, when there is one, still is).
+ */
+function quietStdio(): void {
+  if (stdioQuiet) return;
+  stdioQuiet = true;
+  process.stdout.on("error", () => { stdoutGone = true; });
+  process.stderr.on("error", () => undefined);
+}
+
 /** A one-line JSON log on stdout, and appended to `file` when given. */
 export function jsonLog(file?: string) {
+  quietStdio();
   return (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ at: new Date().toISOString(), event, ...data });
-    console.log(line);
     if (file) appendFileSync(file, `${line}\n`);
+    if (!stdoutGone && !process.stdout.destroyed) console.log(line);
   };
 }
