@@ -29,6 +29,14 @@ Try the bundled example inside Pi:
 /agentrun demo
 ```
 
+No Pi session at hand? The same scripted workflow runs from a shell, with no key and no network:
+
+```sh
+npx agentrun-pi demo
+```
+
+It prints each sub-question with its answer, then `Status: complete`, the answer and the scripted call counts, and exits 0. `npx agentrun-pi demo empty` runs the missing-evidence path and prints `Status: escalated`.
+
 The demo shows the workflow graph, progress, and a completed result with call counts. It uses scripted responses over fictional sources. It makes no model calls and does not test model quality. Run `/agentrun status` to check the loaded skill and Pi host version. The tested version is 1.1.0; status flags a different host without blocking it. Missing Pi or Jev access does not prevent the scripted demo. To repeat it, run `/agentrun run` or `/agentrun demo`. A scripted demo stays scripted on rerun, including its missing-evidence path. Use `/agentrun demo live` to switch to real Pi and Jev calls. Workflows authored by Pi use real adapters.
 
 For an offline Pi startup, use `pi --offline`. Without that flag, Pi may download optional command-line tools on first launch. This is separate from the scripted demo, which makes no network calls.

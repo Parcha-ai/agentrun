@@ -76,3 +76,16 @@ test('saved-default config stops without choosing a model when Pi has no saved d
     assert.doesNotMatch(run.stderr, /Unexpected network request/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('demo runs the scripted workflow without a config, a key or the network', () => {
+  const offline = ['--import', 'data:text/javascript,globalThis.fetch=()=>{throw new Error("Network is forbidden")}'];
+  const run = spawnSync(process.execPath, [...offline, cli, 'demo'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /Status: complete\nAnswer: Pilot the repository workflow first/);
+  assert.match(run.stdout, /Calls: 3 tool, 3 judgment, 5 agent step \(all scripted\)/);
+  const empty = spawnSync(process.execPath, [...offline, cli, 'demo', 'empty'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.match(empty.stdout, /Status: escalated\nEscalation: No selected evidence addresses/);
+  assert.equal(spawnSync(process.execPath, [cli, 'demo', 'bogus'], { encoding: 'utf8' }).status, 1);
+  assert.match(spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' }).stdout, /agentrun-pi demo/);
+});
