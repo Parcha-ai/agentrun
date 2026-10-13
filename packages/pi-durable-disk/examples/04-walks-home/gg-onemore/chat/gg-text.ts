@@ -1,5 +1,6 @@
-// The Golden Gate page's words and names, portable (no Node API): the cloud app's extra (gg-extra.ts) and the 03 page (with
-// ?gg=1, for the root conversation it creates when a run starts in the browser) take them from here.
+// The Golden Gate page's words and names, portable (no Node API): the cloud app's extra (gg-extra.ts) and the launcher, which
+// hands the 03 page the instructions for the root conversation it creates in the browser (serve.ts --instructions-file), take
+// them from here.
 
 export const GG_PROVIDER = "steered";
 export const GG_MODEL = "qwen3.5-27b";
@@ -18,3 +19,8 @@ Talk to your user in short plain sentences.`;
 
 /** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip). */
 export const STEERED_INSTRUCTIONS = "You are an AI agent talking with your user. Answer in a few short sentences. When your user asks for the control, call gg_control.";
+
+/** The shared extensions the page's agent does not get in the browser tab (the tab installs no switch tool when the server places runs). */
+export const GG_WITHOUT_IN_TAB = ["offline-tools", "robot-tools", "computer"];
+/** And on the VM, where the switch tool is installed: where the run goes is the placer's call (Jev's), never the agent's. */
+export const GG_WITHOUT_ON_VM = [...GG_WITHOUT_IN_TAB, "switch-environment"];

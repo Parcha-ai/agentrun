@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statS
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GG_INSTRUCTIONS, GG_WITHOUT_IN_TAB } from "./gg-text.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
 const G = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,7 +123,10 @@ try {
   writeFileSync(join(SECRETS, "tools-key"), readFileSync(state.exec_key_file), { mode: 0o600 });
   // 3. a fresh run: a run id with a history would resume that conversation
   say("run.clean", { out: run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }).trim().split("\n").at(-1) });
-  // 4. the 03 server, on this page's own port, run, mount root and Modal app
+  // 4. the 03 server, on this page's own port, run, mount root and Modal app; the page creates the root conversation in the
+  // browser with the page's instructions and without the extensions it does not use (serve.ts --instructions-file ...)
+  const instructions = join(HOME, "instructions.txt");
+  writeFileSync(instructions, GG_INSTRUCTIONS, { mode: 0o600 });
   mkdirSync(MOUNT_ROOT, { recursive: true, mode: 0o700 });
   mkdirSync(join(HOME, "tmp"), { recursive: true, mode: 0o755 });
   rmSync(join(SERVER, "status.json"), { force: true });
@@ -151,6 +155,9 @@ try {
       "--cloud-arg", "robot-code=false",
       "--placer-module", join(G, "chat", "gg-placer.ts"),
       "--placer-arg", "client=jev",
+      "--instructions-file", instructions,
+      "--instructions-mode", "replace",
+      "--without-extensions", GG_WITHOUT_IN_TAB.join(","),
     ],
     { cwd: SHOW, env: { ...process.env, TMPDIR: join(HOME, "tmp") }, stdio: ["ignore", out, out] },
   );
@@ -162,8 +169,8 @@ try {
   const [base, secret] = link.split("#");
   const ip = spawnSync("tailscale", ["ip", "-4"], { encoding: "utf8" }).stdout.trim().split("\n")[0] || "<this host>";
   // printed once: the person opens it (its fragment is the run's secret)
-  // thinking=open: the thinking open and dimmed as it streams; gg=1: the page's own instructions for the root conversation
-  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}thinking=open&gg=1#${secret}`);
+  // thinking=open: the thinking open and dimmed as it streams
+  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}thinking=open#${secret}`);
   console.log(`LIVE: then ssh -N -o ServerAliveInterval=5 -o ExitOnForwardFailure=yes -L ${PORT}:127.0.0.1:${PORT} ubuntu@${ip}`);
   say("ready", { s: Math.round((Date.now() - t0) / 1000) });
   // 5. idle: no request through the guard for --idle-min minutes, and the box goes down (a forgotten page must not burn GPUs)

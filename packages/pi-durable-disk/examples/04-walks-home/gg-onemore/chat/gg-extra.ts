@@ -14,13 +14,11 @@ import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
-import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, STEERED_INSTRUCTIONS } from "./gg-text.ts";
+import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_WITHOUT_ON_VM, STEERED_INSTRUCTIONS } from "./gg-text.ts";
 import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
 
 /** 03's model proxy provider (03-tab-to-cloud/agent.ts PROVIDER): the base model the fallback asks. */
 export const BASE_PROVIDER = "pipe";
-/** The shared extensions the page does not use: where the run goes is the placer's call, and there is no robot or desktop. */
-export const UNUSED = ["switch-environment", "offline-tools", "robot-tools", "computer"];
 
 /** What the cloud app gives an extra (03-tab-to-cloud/app-extra.ts AppExtraContext), as far as this one uses it. */
 export interface ExtraContext {
@@ -84,7 +82,7 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
   const guard = guardClient(() => ({ url: secrets.guardUrl, key: secrets.toolsKey }));
   return {
     instructions: { mode: "replace", text: GG_INSTRUCTIONS },
-    withoutExtensions: UNUSED,
+    withoutExtensions: GG_WITHOUT_ON_VM,
     models(models) {
       if (!models.getProvider(BASE_PROVIDER)) throw new Error(`the cloud app's models have no ${BASE_PROVIDER} provider for the fallback`);
       models.setProvider(
