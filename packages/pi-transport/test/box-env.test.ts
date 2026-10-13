@@ -6,21 +6,14 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { type ExecutionEnv, err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxExecOptions, type BoxProcess, type BoxStatus } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { type BoxEnvOptions, boxEnv } from "../src/hands/box-env.ts";
-import { sharedStateEntries } from "./box-env-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Aborts and timeouts below leave group files and tombstones. They belong in each box's own directory.
-const sharedBefore = sharedStateEntries();
-afterAll(() => {
-	expect(sharedStateEntries()).toEqual(sharedBefore);
-});
 
 type Exec = (
 	command: readonly string[],
@@ -79,18 +72,34 @@ type Fixture = {
 	readonly root: string;
 };
 
-/** Calls `use` with an environment over a fresh local box, then ends the box and removes its directory. */
+/** The group files of commands in a local box: they live in the box's own temporary directory. */
+function groupFiles(root: string, box: Box): string[] {
+	const state = join(root, box.id, "tmp", ".pi-transport");
+	return existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".pid")) : [];
+}
+
+/**
+ * Calls `use` with an environment over a fresh local box, then ends the box and removes its directory. Every test
+ * that comes through here also holds that its commands left no group file once they ended, and that the box took
+ * its whole directory along. Nothing is asserted about a directory other processes share.
+ */
 async function withEnv(use: (fixture: Fixture) => Promise<void>, options?: BoxEnvOptions): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-env-"));
 	const box = faulty(getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context)));
 	const env = boxEnv(box, options);
+	let boxDirectoryLeft = true;
 	try {
 		await use({ env, box, workspace: box.facts().workspace, root });
+		await env.cleanup(context);
+		// A wrapper removes its group file a moment after its command ended.
+		await waitFor(() => groupFiles(root, box).length === 0, 5_000, "every command's group file to be removed");
 	} finally {
 		await env.cleanup(context);
 		await box.destroy(context);
+		boxDirectoryLeft = existsSync(join(root, box.id));
 		rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 	}
+	expect(boxDirectoryLeft).toBe(false);
 }
 
 /** A tag no other process on this machine carries in its command line. */
@@ -301,8 +310,7 @@ describe("boxEnv: stopping a command", () => {
 			const tag = uniqueTag("state");
 			const controller = new AbortController();
 			const pending = env.exec(`sleep 30 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
-			const groupFiles = () => (existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".pid")) : []);
-			await waitFor(() => groupFiles().length === 1, 10_000, "the group file");
+			await waitFor(() => groupFiles(root, box).length === 1, 10_000, "the group file");
 			controller.abort();
 			await pending;
 			// A kill for a command that is not there leaves the tombstone a late start would look for.
