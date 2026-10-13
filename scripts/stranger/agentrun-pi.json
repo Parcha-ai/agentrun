@@ -2,7 +2,7 @@
   "package": "@parcha/agentrun-pi",
   "install": ["dsl", "jev", "pi"],
   "companions": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev"],
-  "command": ["npx", "agentrun-pi", "demo"],
+  "command": ["npx", "@parcha/agentrun-pi", "demo"],
   "expect": { "exitCode": 0, "pattern": "Status: complete\\nAnswer: Pilot the repository workflow first" },
   "timeoutMs": 120000
 }
