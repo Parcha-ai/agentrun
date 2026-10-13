@@ -137,6 +137,8 @@ type Tamper = {
 	readonly cutAt?: number;
 	/** Run this once when the source program starts. */
 	readonly onStart?: () => void;
+	/** Flip the low bit of the byte at this offset of what a program that receives a file is sent. */
+	readonly flipReceiveAt?: number;
 };
 
 /** A box that tampers with the output of the program that packs a workspace or reads a file. */
@@ -154,6 +156,24 @@ export function tampered(box: Box, tamper: Tamper): Box {
 			context,
 		): Promise<Result<BoxProcess, BoxError>> {
 			const started = await box.exec(command, options, context);
+			if (started.ok && tamper.flipReceiveAt !== undefined && command.some((part) => part.includes("cat > "))) {
+				const inner = started.value;
+				let sent = 0;
+				const at = tamper.flipReceiveAt;
+				return ok({
+					...inner,
+					stdin: {
+						close: () => inner.stdin.close(),
+						write: (bytes: Uint8Array) => {
+							const copy = Uint8Array.from(bytes);
+							if (sent <= at && at < sent + copy.length) copy[at - sent] = (copy[at - sent] as number) ^ 1;
+							sent += copy.length;
+							return inner.stdin.write(copy);
+						},
+					},
+					wait: () => inner.wait(),
+				});
+			}
 			const packs = command.some((part) => part.includes("tar -c")) || command[0] === "cat";
 			if (!started.ok || !packs) return started;
 			tamper.onStart?.();

@@ -54,6 +54,14 @@ describe("moveFile on local boxes", () => {
 		expect(readdirSync(join(target, ".."))).toEqual([]);
 	});
 
+	it("says `mismatch` and leaves nothing when the target is sent a flipped byte", async () => {
+		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
+		const moved = await moveFile(from, source, tampered(to, { flipReceiveAt: 1000 }), target, seal, context);
+		expect(moved.ok ? "" : moved.error.code).toBe("mismatch");
+		expect(existsSync(target)).toBe(false);
+		expect(readdirSync(join(target, ".."))).toEqual([]);
+	});
+
 	it("fails and leaves nothing when the stream is cut", async () => {
 		const { from, to, source, target, seal } = await setup(randomBytes(200_000));
 		const moved = await moveFile(tampered(from, { cutAt: 5000 }), source, to, target, seal, context);
