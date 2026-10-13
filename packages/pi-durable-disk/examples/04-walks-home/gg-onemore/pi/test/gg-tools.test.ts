@@ -1,0 +1,118 @@
+// The pipeline's tools against a fake guard: each step is one typed route behind the tools' key, its output comes back as the
+// tool's result (an error result when the step fails), the reading list lands in the workspace, and the control replays the
+// switch request.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { ggToolsExtension, guardClient, type GuardAccess } from "../gg-tools.ts";
+
+const KEY = "tools-key";
+type Seen = { method: string; url: string; body: any };
+
+async function fakeGuard() {
+  const seen: Seen[] = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const body = raw ? JSON.parse(raw) : undefined;
+      seen.push({ method: req.method!, url: req.url!, body });
+      if (req.headers.authorization !== `Bearer ${KEY}`) return void res.writeHead(404).end();
+      const frame = (f: object) => res.write(JSON.stringify(f) + "\n");
+      if (req.url === "/gg/step/find") {
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        frame({ stream: "stdout", data: Buffer.from("find: 216 passages\n").toString("base64") });
+        frame({ stream: "stdout", data: Buffer.from('{"layer": 32}\n').toString("base64") });
+        frame({ exit: 0 });
+        return void res.end();
+      }
+      if (req.url === "/gg/step/pick") {
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        frame({ stream: "stderr", data: Buffer.from("ERROR: the lab answered 500\n").toString("base64") });
+        frame({ exit: 1 });
+        return void res.end();
+      }
+      if (req.url === "/gg/step/strength") {
+        // a character split across two frames, as the guard's reads may cut it
+        const bytes = Buffer.from("strength: f 0.6, café\n");
+        const cut = bytes.indexOf(0xc3) + 1;
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        frame({ stream: "stdout", data: bytes.subarray(0, cut).toString("base64") });
+        frame({ stream: "stdout", data: bytes.subarray(cut).toString("base64") });
+        frame({ exit: 0 });
+        return void res.end();
+      }
+      if (req.url === "/gg/reading") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "note.txt", text: "Golden Gate Claude" }] }));
+      if (req.url === "/gg/control") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ original: ["Hello!", "Hi there."], edited: ["The Golden Gate Bridge greets you.", "Fog and steel."] }));
+      res.writeHead(404).end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { seen, url, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+function tools(access: () => GuardAccess | undefined, requests = {}) {
+  const saved: { name: string; text: string }[] = [];
+  const ext = ggToolsExtension({
+    guard: guardClient(access),
+    saveReading: async (files) => {
+      saved.push(...files);
+      return files.map((f) => `reading/${f.name}`);
+    },
+    requests: async () => requests,
+  });
+  const run = (name: string, args: object = {}) => ext.tools!.find((t) => t.name === name)!.execute(args as never, {} as never, ctx) as Promise<any>;
+  return { ext, saved, run };
+}
+
+test("each step is its own typed route behind the tools' key; its output is the result, a failed step an error result", async () => {
+  const g = await fakeGuard();
+  try {
+    const t = tools(() => ({ url: g.url, key: KEY }));
+    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake", "gg_control"]);
+    const found = await t.run("gg_find");
+    assert.equal(found.isError, undefined);
+    assert.equal(found.content[0].text, 'find: 216 passages\n{"layer": 32}');
+    assert.deepEqual(g.seen.at(-1), { method: "POST", url: "/gg/step/find", body: {} });
+    const picked = await t.run("gg_pick");
+    assert.equal(picked.isError, true);
+    assert.match(picked.content[0].text, /gg pick exited 1\.\nstderr:\nERROR: the lab answered 500/);
+    const wrong = tools(() => ({ url: g.url, key: "serve-key" }));
+    await assert.rejects(wrong.run("gg_find"), /answered 404/);
+    await assert.rejects(tools(() => undefined).run("gg_find"), /GG box is not up/);
+  } finally {
+    await g.close();
+  }
+});
+
+test("gg_read puts the reading list in the workspace and lists it; gg_control replays the switch request", async () => {
+  const g = await fakeGuard();
+  try {
+    const switchRequest = { model: "qwen3.5-27b", messages: [{ role: "user", content: "You are now running on qwen3.5-27b." }] };
+    const t = tools(() => ({ url: g.url, key: KEY }), { switch: switchRequest, last: { model: "qwen3.5-27b", messages: [] } });
+    const read = await t.run("gg_read");
+    assert.deepEqual(t.saved.map((f) => f.name), ["paper.txt", "note.txt"]);
+    assert.equal(read.content[0].text, "reading/paper.txt  (23 bytes)\nreading/note.txt  (18 bytes)\nRead them with grep, head, sed -n.");
+    const control = await t.run("gg_control");
+    assert.deepEqual(g.seen.at(-1)!.body, { body: switchRequest, samples: 3 });
+    assert.equal(control.content[0].text, "The same request, original weights:\n1. Hello!\n2. Hi there.\n\nThe same request, edited weights:\n1. The Golden Gate Bridge greets you.\n2. Fog and steel.");
+    const before = await tools(() => ({ url: g.url, key: KEY })).run("gg_control");
+    assert.equal(before.isError, true);
+    assert.match(before.content[0].text, /switch to your edited model first/);
+  } finally {
+    await g.close();
+  }
+});
+
+test("a character cut across two frames comes back whole", async () => {
+  const g = await fakeGuard();
+  try {
+    const r = await tools(() => ({ url: g.url, key: KEY })).run("gg_strength");
+    assert.equal(r.content[0].text, "strength: f 0.6, café");
+  } finally {
+    await g.close();
+  }
+});

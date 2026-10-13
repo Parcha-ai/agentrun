@@ -59,7 +59,7 @@ export interface VmSession {
   close(keep: boolean): Promise<void>;
 }
 
-export async function startVmSession(o: { tunnel: string; keys: { openai: string; serve: string; exec: string }; log: Log; disk?: string; region?: string }): Promise<VmSession> {
+export async function startVmSession(o: { keys: Readonly<Record<string, string>>; log: Log; disk?: string; region?: string }): Promise<VmSession> {
   const sdk = new ModalClient();
   const disk = o.disk ?? process.env.PDA_LIVE_DISK ?? "dsk-00000000000baf76";
   const region = o.region ?? process.env.PDA_LIVE_REGION ?? "aws-us-east-1";
@@ -77,8 +77,8 @@ export async function startVmSession(o: { tunnel: string; keys: { openai: string
     if (r.exitCode !== 0) throw new Error(`preparing the VM failed (${r.exitCode}): ${r.result.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
     const mk = await c.exec(box, `install -d -m 0700 -o pda -g pda ${KEYS} && install -d -m 0755 -o pda -g pda ${EVENTS.replace(/\/[^/]+$/, "")}`, 30);
     if (mk.exitCode !== 0) throw new Error(`staging the keys failed: ${mk.result.slice(0, 200)}`);
-    for (const [name, value] of Object.entries(o.keys)) await c.upload(box, `${KEYS}/${name}.key`, new TextEncoder().encode(`${value}\n`));
-    const own = await c.exec(box, `chown pda:pda ${KEYS}/*.key && chmod 0400 ${KEYS}/*.key`, 30);
+    for (const [name, value] of Object.entries(o.keys)) await c.upload(box, `${KEYS}/${name}`, new TextEncoder().encode(`${value}\n`));
+    const own = await c.exec(box, `chown pda:pda ${KEYS}/* && chmod 0400 ${KEYS}/*`, 30);
     if (own.exitCode !== 0) throw new Error(`staging the keys failed: ${own.result.slice(0, 200)}`);
     o.log("vm.prepared", { ms: Date.now() - started });
   };
@@ -98,7 +98,7 @@ export async function startVmSession(o: { tunnel: string; keys: { openai: string
     user: "pda",
     group: "pda",
     runArgs: ["--app", `${BOX_APP_DIR}/${APP}`, ...CLOUD_LEASE],
-    env: { GG_TUNNEL: o.tunnel, GG_KEYS: KEYS, GG_EVENTS: EVENTS },
+    env: { GG_KEYS: KEYS, GG_EVENTS: EVENTS },
     stopTimeoutMs: 15_000,
     ttlMinutes: 60,
     startTimeoutMs: 600_000,

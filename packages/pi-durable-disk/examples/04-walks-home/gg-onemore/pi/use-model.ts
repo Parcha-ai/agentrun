@@ -14,6 +14,8 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { getCurrentTools, normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { Type } from "typebox";
 
+/** The diagnostic type on a message the fallback model wrote in place of a broken steered turn; its details are `{ why, from }`. */
+export const FALLBACK_DIAGNOSTIC = "steered-fallback";
 export const STEERED_PROVIDER = "steered";
 export const USE_MODEL_TOOL = "use_model";
 
@@ -23,6 +25,8 @@ export type Endpoint = { readonly baseUrl: string; readonly apiKey: string };
 export interface SteeredProviderOptions {
   readonly id?: string;
   readonly modelId: string;
+  /** The name the model is registered with: what a page shows for it (default its id). */
+  readonly modelName?: string;
   /** Read at every request, so a box created after the Harness opened is reachable without re-registering. */
   readonly endpoint: () => Endpoint | undefined;
   readonly name?: string;
@@ -44,18 +48,19 @@ export interface SteeredProviderOptions {
 
 /**
  * Why a steered turn cannot stand, or undefined: tool-call markup the server could not parse left in its text, a call to a
- * tool it was not offered or without that tool's required arguments, or a failed request. An aborted turn stands.
+ * tool it was not offered or without that tool's required arguments, or a failed request. An aborted turn stands. Each
+ * reason finishes the page's sentence "the edited model's turn ..." (D5's fallback line).
  */
 export function brokenTurn(message: AssistantMessage, tools: readonly Tool[]): string | undefined {
-  if (message.stopReason === "error") return `the request failed: ${message.errorMessage ?? "no detail"}`;
+  if (message.stopReason === "error") return `failed: ${message.errorMessage ?? "no detail"}`;
   for (const part of message.content) {
-    if (part.type === "text" && /<tool_call>|<function=/.test(part.text)) return "tool-call markup the server could not parse";
+    if (part.type === "text" && /<tool_call>|<function=/.test(part.text)) return "left tool-call markup the server could not parse";
     if (part.type === "toolCall") {
       const tool = tools.find((t) => t.name === part.name);
-      if (!tool) return `a call to ${part.name}, a tool it was not offered`;
+      if (!tool) return `called ${part.name}, a tool it was not offered`;
       const required = ((tool.parameters as { required?: unknown }).required ?? []) as string[];
       const missing = required.filter((k) => !(k in (part.arguments ?? {})));
-      if (missing.length) return `a call to ${part.name} without ${missing.join(", ")}`;
+      if (missing.length) return `called ${part.name} without ${missing.join(", ")}`;
     }
   }
   return undefined;
@@ -74,7 +79,7 @@ export function sinceSwitch(o: { instructions: string; provider?: string }) {
     let at = -1;
     for (let i = real.length - 1; i >= 0 && at < 0; i--) {
       const m = real[i]!;
-      if (m.role === "assistant" && m.provider !== provider) at = i;
+      if (m.role === "assistant" && m.provider !== provider && !(m.diagnostics ?? []).some((d) => d.type === FALLBACK_DIAGNOSTIC)) at = i;
     }
     const after = real.slice(at + 1);
     // Results whose call is outside the window cannot go as tool messages (the API needs the call), so they open it as one user turn.
@@ -136,32 +141,57 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     };
   };
   // The steered turn is held to its end, then shown as it came or, when broken, replaced by the fallback's turn.
+  // The steered turn's thinking goes out as it arrives; the rest of the turn is held to its end, then shown as it came or,
+  // when broken, replaced by the fallback's turn after the thinking already shown, marked with a steered-fallback diagnostic.
   const checked = (model: Model<Api>, run: () => AssistantMessageEventStream, context: TranscriptContext, options: SimpleStreamOptions | undefined): AssistantMessageEventStream => {
     const fallback = opts.fallback;
     if (!fallback) return run();
     const out = createAssistantMessageEventStream();
     void (async () => {
-      const events: AssistantMessageEvent[] = [];
+      const held: AssistantMessageEvent[] = [];
+      let shown: AssistantMessage | undefined;
       let last: AssistantMessage | undefined;
       let threw: string | undefined;
       try {
         for await (const e of run()) {
-          events.push(e);
+          if (e.type === "start" || e.type === "thinking_start" || e.type === "thinking_delta" || e.type === "thinking_end") {
+            // the stream keeps mutating one partial message, and thinking_end comes once the answer has begun: what goes out is
+            // a copy of its thinking as it is now
+            shown = { ...e.partial, content: e.partial.content.filter((p) => p.type === "thinking").map((p) => ({ ...p })) };
+            out.push({ ...e, partial: shown });
+            continue;
+          }
+          held.push(e);
           if (e.type === "done") last = e.message;
           else if (e.type === "error") last = e.error;
         }
       } catch (error) {
         threw = `the request threw: ${error instanceof Error ? error.message : String(error)}`;
       }
-      const why = threw ?? (last === undefined ? "the stream ended without a message" : last.stopReason === "aborted" ? undefined : brokenTurn(last, getCurrentTools(context.messages)));
+      const why = threw ?? (last === undefined ? "ended without a message" : last.stopReason === "aborted" ? undefined : brokenTurn(last, getCurrentTools(context.messages)));
       if (!why) {
-        for (const e of events) out.push(e);
+        for (const e of held) out.push(e);
         out.end();
         return;
       }
+      // Qwen's thinking comes before its answer, so the blocks already shown are its first ones.
+      const thinking = (shown?.content ?? []).filter((p) => p.type === "thinking");
+      const diagnostic = { type: FALLBACK_DIAGNOSTIC, timestamp: Date.now(), details: { why, from: `${id}/${opts.modelId}` } };
+      const after = <M extends AssistantMessage>(m: M, marked = false): M => ({
+        ...m,
+        content: [...thinking, ...m.content],
+        ...(marked ? { diagnostics: [...(m.diagnostics ?? []), diagnostic] } : {}),
+      });
       try {
         opts.onFallback?.(why);
-        for await (const e of fallback(context, options)) out.push(e);
+        for await (const e of fallback(context, options)) {
+          if (e.type === "start" && shown) continue;
+          const moved = "contentIndex" in e ? { ...e, contentIndex: e.contentIndex + thinking.length } : { ...e };
+          if ("partial" in moved) moved.partial = after(moved.partial);
+          if (moved.type === "done") moved.message = after(moved.message, true);
+          if (moved.type === "error") moved.error = after(moved.error, true);
+          out.push(moved as AssistantMessageEvent);
+        }
       } catch (error) {
         // the replacement failed too: end the turn with an error the caller can retry, never an open stream
         out.push(errorTurn(model, `${why}; the fallback failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -178,7 +208,7 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     models: [
       {
         id: opts.modelId,
-        name: opts.modelId,
+        name: opts.modelName ?? opts.modelId,
         api: "openai-completions",
         provider: id,
         baseUrl: "http://endpoint.invalid/v1",
@@ -217,6 +247,8 @@ export interface UseModelOptions {
   readonly threads?: boolean;
   /** The tool's description; default says what the switch does. */
   readonly description?: string;
+  /** Told after the switch committed, with what changed. */
+  readonly onSwitched?: (details: UseModelDetails, context: Context) => Promise<void>;
 }
 
 export type UseModelDetails = { provider: string; modelId: string; conversations: number[] };
@@ -267,6 +299,7 @@ export function useModelExtension(opts: UseModelOptions): Extension {
             return ids;
           }, context);
           const details: UseModelDetails = { provider: opts.provider, modelId: opts.modelId, conversations: conversations.map(Number) };
+          await opts.onSwitched?.(details, context);
           const threads = conversations.length > 1 ? `, and so are ${conversations.length - 1} of your threads` : "";
           return {
             content: [{ type: "text" as const, text: `You are now running on ${opts.modelId}${threads}. ${ready.detail}`.trim() }],
