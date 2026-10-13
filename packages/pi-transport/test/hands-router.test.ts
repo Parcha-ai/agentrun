@@ -6,15 +6,16 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineDoc, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { type ExecutionEnv, getOrThrow } from "@earendil-works/pi-durable/env";
+import { type ExecutionEnv, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { describe, expect, it } from "vitest";
-import { BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
+import { type Box, BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
-import { HandsDoc, TransportError } from "../src/transport.ts";
+import { HandsDoc, SessionBoxesDoc, TransportError } from "../src/transport.ts";
 import { bash, openSession, registerHandsCases, type WatchedProvider, watched } from "./hands-support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -33,6 +34,30 @@ async function withLocal(use: (provider: WatchedProvider, directory: string) => 
 }
 
 const SANDBOX = { environments: { sandbox: { provider: "local" } }, hands: "sandbox" };
+const EACH = { environments: { sandbox: { provider: "local", scope: "conversation" } }, hands: "sandbox" };
+
+/** `provider`, whose boxes end the way `destroy` says. Everything else is the provider's own. */
+function endingBy(provider: BoxProvider, destroy: (box: Box) => Box["destroy"]): BoxProvider {
+	return {
+		name: provider.name,
+		attach: (id, attachContext) => provider.attach(id, attachContext),
+		list: (labels, listContext) => provider.list(labels, listContext),
+		async create(spec, createContext) {
+			const created = await provider.create(spec, createContext);
+			if (!created.ok) return created;
+			const box = created.value;
+			return ok({
+				id: box.id,
+				facts: () => box.facts(),
+				exec: (command, options, execContext) => box.exec(command, options, execContext),
+				status: (statusContext) => box.status(statusContext),
+				upload: (files, uploadContext) => box.upload(files, uploadContext),
+				download: (paths, downloadContext) => box.download(paths, downloadContext),
+				destroy: destroy(box),
+			});
+		},
+	};
+}
 
 registerHandsCases(
 	"hands on local boxes",
@@ -238,6 +263,131 @@ describe("transport(): where tools run", () => {
 			expect(destroyed.ok ? "" : destroyed.error.code).toBe("store");
 			expect(getOrThrow(await box.status(context)).state).toBe("ended");
 			await session.harness.close(context);
+		});
+	});
+
+	it("asks again after a provider threw while a box was opened, and still releases and destroys", async () => {
+		await withLocal(async (provider, directory) => {
+			const store = join(directory, "session.db");
+			const first = await openSession(await openNodeSqliteStorage(store), SANDBOX, { local: provider });
+			expect((await first.turn(await first.converse(), [bash("echo one")]))[0]?.isError).toBe(false);
+			await first.hands.release(context);
+			await first.harness.close(context);
+			// The next host's provider breaks once where it should answer: it throws.
+			let broken = true;
+			const flaky: BoxProvider = {
+				name: provider.name,
+				create: (spec, createContext) => provider.create(spec, createContext),
+				list: (labels, listContext) => provider.list(labels, listContext),
+				attach(id, attachContext) {
+					if (!broken) return provider.attach(id, attachContext);
+					broken = false;
+					return Promise.reject(new Error("the box's record could not be read"));
+				},
+			};
+			const second = await openSession(await openNodeSqliteStorage(store), SANDBOX, { local: flaky });
+			const outcomes = await second.turn(await second.converse(), [bash("echo two"), bash("echo three")]);
+			expect(outcomes[0]?.isError).toBe(true);
+			expect(outcomes[0]?.text).toContain(
+				'could not open a box for environment "sandbox": the box\'s record could not be read',
+			);
+			expect(outcomes[1]?.isError).toBe(false);
+			expect(outcomes[1]?.text).toContain("three");
+			// The box the first host left, found at the second ask: no other was made.
+			expect(provider.created.length).toBe(1);
+			await second.hands.release(context);
+			expect((await second.hands.destroy(context)).ok).toBe(true);
+			await second.harness.close(context);
+		});
+	});
+
+	it("makes a tool call that comes during destroy wait, so the box it opens keeps its record", async () => {
+		await withLocal(async (provider) => {
+			let letEnd: () => void = () => {};
+			const held = new Promise<void>((resolve) => {
+				letEnd = resolve;
+			});
+			let ending = 0;
+			// Boxes that take their time to end.
+			const slow = endingBy(provider, (box) => async (destroyContext) => {
+				ending += 1;
+				await held;
+				return box.destroy(destroyContext);
+			});
+			const session = await openSession(new MemoryStorage(), EACH, { local: slow });
+			expect((await session.turn(await session.converse(), [bash("echo early")]))[0]?.isError).toBe(false);
+			const destroying = session.hands.destroy(context);
+			while (ending === 0) await sleep(10);
+			// A tool call of another conversation, which needs a box of its own, while the first box is still ending.
+			const late = session.turn(await session.converse(), [bash("echo late")]);
+			await sleep(300);
+			expect(provider.created.length).toBe(1);
+			letEnd();
+			expect((await destroying).ok).toBe(true);
+			const outcomes = await late;
+			expect(outcomes[0]?.isError).toBe(false);
+			expect(outcomes[0]?.text).toContain("late");
+			const [first, second] = provider.created;
+			if (first === undefined || second === undefined) throw new Error("two boxes were expected");
+			expect(getOrThrow(await first.status(context)).state).toBe("ended");
+			expect(getOrThrow(await second.status(context)).state).toBe("running");
+			// The box opened after the shutdown is the one the session's document names: a later destroy ends it.
+			expect(Object.values((await session.harness.snapshot(SessionBoxesDoc, context))?.boxes ?? {})).toEqual([
+				second.id,
+			]);
+			expect((await session.hands.destroy(context)).ok).toBe(true);
+			expect(getOrThrow(await second.status(context)).state).toBe("ended");
+			expect((await session.harness.snapshot(SessionBoxesDoc, context))?.boxes).toEqual({});
+			await session.harness.close(context);
+		});
+	});
+
+	it("clears the record of each box that ended, and keeps the record of one that would not end", async () => {
+		await withLocal(async (provider) => {
+			let stubborn: string | undefined;
+			// The first box refuses to end until the test says so.
+			const partly = endingBy(provider, (box) => async (destroyContext) => {
+				stubborn ??= box.id;
+				if (stubborn === box.id) return { ok: false, error: new BoxError("timeout", "the vendor did not answer") };
+				return box.destroy(destroyContext);
+			});
+			const session = await openSession(new MemoryStorage(), EACH, { local: partly });
+			expect((await session.turn(await session.converse(), [bash("echo one")]))[0]?.isError).toBe(false);
+			expect((await session.turn(await session.converse(), [bash("echo two")]))[0]?.isError).toBe(false);
+			const [first, second] = provider.created;
+			if (first === undefined || second === undefined) throw new Error("two boxes were expected");
+			const destroyed = await session.hands.destroy(context);
+			expect(destroyed.ok ? "" : destroyed.error.code).toBe("box");
+			expect(destroyed.ok ? "" : destroyed.error.message).toContain(
+				`${first.id} ([timeout] the vendor did not answer)`,
+			);
+			expect(getOrThrow(await second.status(context)).state).toBe("ended");
+			// What is left is still findable: its record stays, the other's is gone.
+			expect(Object.values((await session.harness.snapshot(SessionBoxesDoc, context))?.boxes ?? {})).toEqual([
+				first.id,
+			]);
+			await session.harness.close(context);
+		});
+	});
+
+	it("forgets at destroy a box its provider no longer has", async () => {
+		await withLocal(async (provider, directory) => {
+			const store = join(directory, "session.db");
+			const first = await openSession(await openNodeSqliteStorage(store), SANDBOX, { local: provider });
+			expect((await first.turn(await first.converse(), [bash("echo one")]))[0]?.isError).toBe(false);
+			await first.hands.release(context);
+			await first.harness.close(context);
+			const [box] = provider.created;
+			if (box === undefined) throw new Error("no box was created");
+			// The box ends behind the session's back, as at the end of its lifetime.
+			getOrThrow(await box.destroy(context));
+			const second = await openSession(await openNodeSqliteStorage(store), SANDBOX, { local: provider });
+			expect(Object.values((await second.harness.snapshot(SessionBoxesDoc, context))?.boxes ?? {})).toEqual([
+				box.id,
+			]);
+			expect((await second.hands.destroy(context)).ok).toBe(true);
+			expect((await second.harness.snapshot(SessionBoxesDoc, context))?.boxes).toEqual({});
+			await second.harness.close(context);
 		});
 	});
 

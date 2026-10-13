@@ -226,6 +226,8 @@ class Router implements Transport {
 	readonly #host: TransportHost;
 	readonly #opening = new Map<string, Promise<Result<Held, TransportError>>>();
 	readonly #held = new Map<string, Held>();
+	/** A `destroy` that is under way. A use that comes meanwhile waits for it, then opens a box of its own. */
+	#destroying: Promise<void> | undefined;
 
 	constructor(config: TransportConfig, host: TransportHost) {
 		this.#config = config;
@@ -278,15 +280,37 @@ class Router implements Transport {
 	}
 
 	async destroy(context: Context): Promise<Result<void, TransportError>> {
+		// One at a time, and no box is opened meanwhile: its record would be written, then cleared with the rest.
+		const earlier = this.#destroying;
+		const run = (async () => {
+			await earlier;
+			return this.#destroyAll(context);
+		})();
+		const settled = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#destroying = settled;
+		try {
+			return await run;
+		} finally {
+			if (this.#destroying === settled) this.#destroying = undefined;
+		}
+	}
+
+	async #destroyAll(context: Context): Promise<Result<void, TransportError>> {
 		await Promise.all(this.#opening.values());
 		const held = [...this.#held.values()].map(({ box }) => box);
 		await this.release(context);
 		const tried = new Set<string>();
+		/** Boxes that ended here, or that their provider no longer has. Only their records are cleared. */
+		const ended = new Set<string>();
 		const left: string[] = [];
 		const end = async (box: Box): Promise<void> => {
 			tried.add(box.id);
 			const destroyed = await box.destroy(context);
-			if (!destroyed.ok) left.push(`${box.id} ([${destroyed.error.code}] ${destroyed.error.message})`);
+			if (destroyed.ok) ended.add(box.id);
+			else left.push(`${box.id} ([${destroyed.error.code}] ${destroyed.error.message})`);
 		};
 		// First the boxes in hand: they end even when the documents cannot be read.
 		for (const box of held) await end(box);
@@ -309,19 +333,22 @@ class Router implements Transport {
 			}
 			const attached = await provider.attach(id, context);
 			if (!attached.ok) left.push(`${id} ([${attached.error.code}] ${attached.error.message})`);
-			else if (attached.value !== undefined) await end(attached.value);
+			else if (attached.value === undefined) ended.add(id);
+			else await end(attached.value);
 		}
-		if (left.length > 0) return err(new TransportError("box", `could not end: ${left.join(", ")}`));
+		// A box that could not be ended keeps its record, so the next `destroy` finds it.
 		try {
 			await this.#host.commit(async (tx) => {
-				(await tx.doc(SessionBoxesDoc)).boxes = {};
+				const doc = await tx.doc(SessionBoxesDoc);
+				doc.boxes = Object.fromEntries(Object.entries(doc.boxes).filter(([, id]) => !ended.has(id)));
 			}, context);
-			return ok(undefined);
 		} catch (cause) {
 			return err(
 				new TransportError("store", `could not clear the session's boxes: ${toError(cause).message}`, cause),
 			);
 		}
+		if (left.length > 0) return err(new TransportError("box", `could not end: ${left.join(", ")}`));
+		return ok(undefined);
 	}
 
 	/** The environment over the box that serves `environment` for this conversation, in the directory it works in. */
@@ -333,17 +360,30 @@ class Router implements Transport {
 		context: Context,
 	): Promise<Opened> {
 		const key = environment.scope === "session" ? environment.id : `${environment.id}@${target.conversationId}`;
+		while (this.#destroying !== undefined) {
+			try {
+				await awaitWithContext(this.#destroying, context);
+			} catch {
+				return undefined;
+			}
+		}
 		const live = this.#held.get(key);
 		let held = live === undefined ? undefined : ok<Held, TransportError>(live);
 		if (held === undefined) {
 			let opening = this.#opening.get(key);
 			if (opening === undefined) {
 				// The box outlives the call that needed it first, so that call's abort does not stop the opening.
-				opening = this.#openBox(key, environment, provider, target, withoutAbortSignal(context)).then((result) => {
-					this.#opening.delete(key);
-					if (result.ok) this.#held.set(key, result.value);
-					return result;
-				});
+				opening = this.#openBox(key, environment, provider, target, withoutAbortSignal(context))
+					// A provider that throws where it should answer with an error: this call fails and the next asks again.
+					.catch((cause): Result<Held, TransportError> => {
+						const message = `could not open a box for environment "${environment.id}": ${toError(cause).message}`;
+						return err(new TransportError("box", message, cause));
+					})
+					.then((result) => {
+						this.#opening.delete(key);
+						if (result.ok) this.#held.set(key, result.value);
+						return result;
+					});
 				this.#opening.set(key, opening);
 			}
 			try {
@@ -372,7 +412,7 @@ class Router implements Transport {
 		return ok(env);
 	}
 
-	/** Find the box the session's document names for `key`, or create one and record it. Never rejects. */
+	/** Find the box the session's document names for `key`, or create one and record it. */
 	async #openBox(
 		key: string,
 		environment: EnvironmentConfig,
