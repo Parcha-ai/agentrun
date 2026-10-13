@@ -4,6 +4,7 @@ import { Compile } from 'typebox/compile';
 import Ajv from 'ajv';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai';
 import { createPiRunner, createPiHostRunner } from '../dist/index.js';
+import { tempCwd } from './fixtures/temp-cwd.mjs';
 
 // All transport and answers here are fictional; the real native Agent validates tools.
 const object = { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'], additionalProperties: false };
@@ -12,7 +13,7 @@ function host(responses, options = {}) {
   const faux = createFauxCore({ tokensPerSecond: Infinity });
   faux.setResponses(responses);
   const model = faux.getModel(), calls = [], events = [];
-  const ctx = { cwd: process.cwd(), model, thinkingLevel: 'high', modelRegistry: {
+  const ctx = { cwd: tempCwd, model, thinkingLevel: 'high', modelRegistry: {
     getAll: () => [model], streamSimple(selected, transcript, config) {
       calls.push(structuredClone(transcript)); return faux.streamSimple(selected, transcript, config);
     },
