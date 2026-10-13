@@ -272,8 +272,10 @@ describe("daytona boxes", () => {
 			expect(decoder.decode(finished.value.stdout)).not.toContain(API_KEY);
 		});
 		expect(fake.requests.length).toBeGreaterThan(0);
-		expect(fake.requests.every((r) => r.auth === `Bearer ${API_KEY}`)).toBe(true);
-		expect(fake.requests.some((r) => r.body.includes(API_KEY))).toBe(false);
+		// Name the request, so a failure says which one it was.
+		const describeRequest = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
+		expect(fake.requests.filter((r) => r.auth !== `Bearer ${API_KEY}`).map(describeRequest)).toEqual([]);
+		expect(fake.requests.filter((r) => r.body.includes(API_KEY)).map(describeRequest)).toEqual([]);
 	});
 
 	it("labels the box, bounds its life and sets no resources", async () => {

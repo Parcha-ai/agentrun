@@ -15,6 +15,7 @@ import {
 	type BoxRef,
 	type BoxSpec,
 	type BoxStatus,
+	isReservedLabel,
 } from "./box.ts";
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
@@ -756,9 +757,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.image !== undefined) return err(new BoxError("unsupported", "daytona boxes start from a snapshot"));
-			const reserved = Object.keys(spec.labels ?? {}).find(
-				(key) => key === BOX_LABEL || key.startsWith(`${BOX_LABEL}.`),
-			);
+			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}
