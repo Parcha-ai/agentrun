@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -197,42 +197,50 @@ function killGroup(pid: number | undefined): void {
 	}
 }
 
-/** Every process whose environment holds `entry`, a whole `NAME=value` pair. Empty where `/proc` cannot say. */
-async function processesWith(entry: string): Promise<number[]> {
-	const names = await readdir("/proc").catch(() => [] as string[]);
-	const found: number[] = [];
-	for (const name of names) {
+/**
+ * The processes whose environment names this box, as its programs or as its watchdog. One pass over `/proc`, read
+ * synchronously: a pass of awaited reads is twenty times slower on a machine with thousands of processes.
+ */
+function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
+	const programs: number[] = [];
+	const watchdogs: number[] = [];
+	for (const name of readdirSync("/proc")) {
 		if (!/^\d+$/.test(name)) continue;
-		const environ = await readFile(`/proc/${name}/environ`, "utf8").catch(() => "");
-		if (environ.split("\0").includes(entry)) found.push(Number(name));
+		let entries: string[];
+		try {
+			entries = readFileSync(`/proc/${name}/environ`, "latin1").split("\0");
+		} catch {
+			// Another user's process, or one that has ended.
+			continue;
+		}
+		if (entries.includes(`${BOX_MARKER}=${id}`)) programs.push(Number(name));
+		else if (entries.includes(`${WATCHDOG_MARKER}=${id}`)) watchdogs.push(Number(name));
 	}
-	return found;
+	return { programs, watchdogs };
 }
 
 /**
- * End every program of a box, also one that left its process group or outlived the program that started it: each is
- * found by the marker in its own environment, so a process id the system reused is never killed. Where `/proc` is
- * missing, only the process groups this process started are ended.
+ * End every program of a box and its watchdog, also a program that left its process group or outlived the program
+ * that started it: each is found by the marker in its own environment, so a process id the system reused is never
+ * killed. Where `/proc` is missing, only the process groups this process started are ended.
  */
-async function endPrograms(id: string): Promise<void> {
+function endPrograms(id: string): void {
 	if (!HAS_PROC) {
 		for (const pid of startedHere.get(id) ?? []) killGroup(pid);
 		startedHere.delete(id);
 		return;
 	}
-	// The watchdog goes first, so it cannot start to end a box that is being ended here.
-	for (const entry of [`${WATCHDOG_MARKER}=${id}`, `${BOX_MARKER}=${id}`]) {
-		for (let round = 0; round < KILL_ROUNDS; round += 1) {
-			const pids = await processesWith(entry);
-			if (pids.length === 0) break;
-			for (const pid of pids) {
-				try {
-					process.kill(pid, "SIGKILL");
-				} catch {
-					// It ended between the scan and the kill.
-				}
+	for (let round = 0; round < KILL_ROUNDS; round += 1) {
+		const { programs, watchdogs } = processesOf(id);
+		for (const pid of [...watchdogs, ...programs]) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// It ended between the scan and the kill.
 			}
 		}
+		// A program may have started another between the scan and its end, so programs get one more look.
+		if (programs.length === 0) return;
 	}
 }
 
@@ -252,7 +260,7 @@ async function readRecord(directory: string): Promise<LocalRecord | undefined> {
 async function destroyDirectory(directory: string, id: string): Promise<void> {
 	// The record goes first: from then on every handle of this box reports it ended.
 	await rm(join(directory, RECORD_FILE), { force: true });
-	await endPrograms(id);
+	endPrograms(id);
 	await rm(directory, { recursive: true, force: true });
 }
 
