@@ -11,7 +11,7 @@ import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
 import type { ConversationId, Extension, ModelRef } from '@earendil-works/pi-durable';
 import type { WorkflowDeps, WorkflowEvent } from '@parcha/agentrun-dsl';
-import type { BrowserConfig, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
+import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
 import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
@@ -45,8 +45,8 @@ export type Host = {
   tools: { extensions: readonly Extension[]; runEffect: RunEffect; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
-  /** 4. Typed answers. */
-  decisions: { runJudge: RunJudge };
+  /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
+  decisions: { runJudge: RunJudge; browser?: BrowserDecisions };
   /** 5. Rows out. A throw never fails the call that reported. */
   status(event: StatusEvent): void | Promise<void>;
   /** 6. What the run hands back. */
@@ -61,12 +61,18 @@ export type Fakes = {
   model(messages: readonly Message[]): AssistantMessage;
   tools: Record<string, (args: Record<string, unknown>) => unknown>;
   judge: RunJudge;
+  /** Whether a page the browser read is content. Absent, the browser judges none. */
+  page?: BrowserDecisions['classifyPage'];
+  /** What the faux lead takes; default text and images. */
+  lead?: { input: ('text' | 'image')[] };
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
 };
 
-export type LedgerRow = { kind: 'model' | 'tool' | 'judge'; name: string; pid: number };
+/** One fake call. A model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the
+ *  provider, the same in every process of the run. */
+export type LedgerRow = { kind: 'model' | 'tool' | 'judge'; name: string; pid: number; conversation?: string };
 
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
@@ -75,17 +81,22 @@ export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow
 
 export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane } = {}): LocalHost {
   const ledgerFile = join(place.root, 'ledger.jsonl');
-  const count = (kind: LedgerRow['kind'], name: string) => appendFileSync(ledgerFile, json({ kind, name, pid: process.pid }));
-  const status = quiet((event: StatusEvent) => appendFileSync(join(place.root, 'events.jsonl'), json(event)));
+  const eventsFile = join(place.root, 'events.jsonl');
+  // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
+  for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
+    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, ...(conversation ? { conversation } : {}) }));
+  const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
 
-  const faux = fauxProvider();
-  faux.setResponses(Array.from({ length: 64 }, () => (context) => {
-    count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`);
+  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
+  faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
+    count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
   }));
   const catalog = createModels();
   catalog.setProvider(faux.provider);
 
+  const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
   const browser: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver> };
 
@@ -114,7 +125,10 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         return { path };
       },
     },
-    decisions: { runJudge: async (request) => { count('judge', request.label); return fakes.judge(request); } },
+    decisions: {
+      runJudge: async (request) => { count('judge', request.label); return fakes.judge(request); },
+      ...(classifyPage ? { browser: { classifyPage: async (page) => { count('judge', `page ${page.url}`); return classifyPage(page); } } } : {}),
+    },
     status,
     async deliver(result) {
       await mkdir(join(place.root, 'out'), { recursive: true });
