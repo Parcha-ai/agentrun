@@ -363,6 +363,17 @@ describe("boxEnv: stopping a command", () => {
 		expect(deadlines).toEqual([undefined, { timeoutMs: 32_000 }, { timeoutMs: 30_500 }]);
 	});
 
+	it("leaves a command that starts from an empty environment findable by its box, which ends it at destroy", async () => {
+		await withEnv(async ({ env, box }) => {
+			const tag = uniqueTag("marker");
+			const pending = env.exec(`sleep 300 & sleep 300 # ${tag}\nwait`, { inheritEnv: false }, context);
+			await waitFor(() => running(tag), 10_000, "the command to start");
+			getOrThrow(await box.destroy(context));
+			await waitFor(() => !running(tag), 10_000, "the box to take the command along");
+			await pending;
+		});
+	});
+
 	it("kills a command that ignores the request to end", async () => {
 		await withEnv(async ({ env }) => {
 			const tag = uniqueTag("stubborn");

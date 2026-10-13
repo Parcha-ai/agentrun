@@ -49,6 +49,8 @@ const STDERR_TAIL_CHARS = 200;
 const BARE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const ARGV_FLAG = "PI_TRANSPORT_ARGV";
 const STATE_FLAG = "PI_TRANSPORT_STATE";
+/** The variable a local box finds its programs by. A command that starts from an empty environment keeps it. */
+const BOX_MARKER = "PI_TRANSPORT_BOX";
 const EXIT_NO_CWD = 200;
 const EXIT_NO_PROGRAM = 201;
 
@@ -160,13 +162,15 @@ const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 
  * The first step of a command, in the box's own environment: it finds the state directory there, then gives the
  * wrapper the environment the caller asked for. So a caller that clears or changes `TMPDIR` for its command cannot
  * move the group file away from where a kill looks for it. `$1` is `0` to start from an empty environment; the rest
- * is variables, then the wrapper and its arguments.
+ * is variables, then the wrapper and its arguments. An empty environment still holds the variable a box marks its
+ * programs with, so the box can end them.
  */
 const ENTER_SCRIPT = [
 	STATE_ROOT,
 	"inherit=$1; shift",
-	`if [ "$inherit" = 0 ]; then exec env -i "PATH=${BARE_PATH}" "${STATE_FLAG}=$s" "$@"; fi`,
-	`exec env "${STATE_FLAG}=$s" "$@"`,
+	`set -- "${STATE_FLAG}=$s" "$@"`,
+	`if [ "$inherit" = 0 ]; then [ -n "$${BOX_MARKER}" ] && set -- "${BOX_MARKER}=$${BOX_MARKER}" "$@"; exec env -i "PATH=${BARE_PATH}" "$@"; fi`,
+	'exec env "$@"',
 ].join("; ");
 /**
  * Runs one command as a process group of its own, written down so that a second exec can kill all of it. A kill that
