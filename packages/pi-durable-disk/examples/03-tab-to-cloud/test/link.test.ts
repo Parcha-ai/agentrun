@@ -8,10 +8,7 @@ import { dialLink, type LinkDialer } from "../pipe/link.ts";
 import { ModelProxy } from "../pipe/model-proxy.ts";
 import { modelStub } from "./_local.ts";
 
-/** A port nothing on this host listens on now: each link takes its own, so two runs of this file at once (two lanes, a stress loop) do not dial each other's links. */
-const freePort = () => new Promise<number>((resolve) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
-
-let PORT = 0;
+// Every link here takes port 0 and dials the port it got (link.port): two runs of this file at once (two lanes, a stress loop) never share or dial each other's links.
 
 describe("the cloud link", () => {
   let model: Awaited<ReturnType<typeof modelStub>>;
@@ -19,8 +16,7 @@ describe("the cloud link", () => {
   let dialer: LinkDialer | undefined;
   before(async () => {
     model = await modelStub(() => "from the server's model");
-    PORT = await freePort();
-    link = await startCloudLink({ port: PORT, host: "127.0.0.1", token: "right-token", waitMs: 3_000 });
+    link = await startCloudLink({ port: 0, host: "127.0.0.1", token: "right-token", waitMs: 3_000 });
   });
   after(async () => {
     dialer?.close();
@@ -29,7 +25,7 @@ describe("the cloud link", () => {
   });
 
   it("refuses a dialer with the wrong token, so the host's calls find no link", async () => {
-    const bad = dialLink({ url: `ws://127.0.0.1:${PORT}/`, token: "wrong", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: () => undefined, retryMs: 60_000 });
+    const bad = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "wrong", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: () => undefined, retryMs: 60_000 });
     const res = await fetch(`${link.baseUrl}/responses`, { method: "POST", body: JSON.stringify({ input: "hi" }) });
     assert.equal(res.status, 503);
     bad.close();
@@ -37,7 +33,7 @@ describe("the cloud link", () => {
 
   it("carries the host's model calls through the server's proxy and its budget", async () => {
     const proxy = new ModelProxy({ baseUrl: model.url, model: "server-model", budgetTokens: 100 });
-    dialer = dialLink({ url: `ws://127.0.0.1:${PORT}/`, token: "right-token", proxy, log: () => undefined });
+    dialer = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "right-token", proxy, log: () => undefined });
     const res = await fetch(`${link.baseUrl}/chat/completions`, { method: "POST", body: JSON.stringify({ model: "host-asks-for-another", messages: [] }) });
     assert.equal(res.status, 200);
     assert.match(await res.text(), /from the server's model/);
@@ -47,14 +43,12 @@ describe("the cloud link", () => {
 });
 
 describe("the GPU boxes over the cloud link", () => {
-  let PORT2 = 0;
   let model: Awaited<ReturnType<typeof modelStub>>;
   let link: CloudLink;
   const dialers: LinkDialer[] = [];
   before(async () => {
     model = await modelStub(() => "x");
-    PORT2 = await freePort();
-    link = await startCloudLink({ port: PORT2, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+    link = await startCloudLink({ port: 0, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
   });
   after(async () => {
     for (const d of dialers) d.close();
@@ -71,7 +65,7 @@ describe("the GPU boxes over the cloud link", () => {
   };
 
   it("a host with no boxes from the server is refused cleanly, and one with boxes runs a command through the link", async () => {
-    const plain = dialLink({ url: `ws://127.0.0.1:${PORT2}/`, token: "tok", proxy: proxy(), log: () => undefined, retryMs: 100 });
+    const plain = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "tok", proxy: proxy(), log: () => undefined, retryMs: 100 });
     dialers.push(plain);
     await until(() => true);
     await new Promise((r) => setTimeout(r, 300));
@@ -80,7 +74,7 @@ describe("the GPU boxes over the cloud link", () => {
     await new Promise((r) => setTimeout(r, 200));
     const held = new Set<string>();
     const gpu = dialLink({
-      url: `ws://127.0.0.1:${PORT2}/`,
+      url: `ws://127.0.0.1:${link.port}/`,
       token: "tok",
       proxy: proxy(),
       log: () => undefined,
@@ -109,15 +103,13 @@ describe("the GPU boxes over the cloud link", () => {
 });
 
 describe("the instance's trail over the cloud link", () => {
-  let PORT3 = 0;
   let model: Awaited<ReturnType<typeof modelStub>>;
   let link: CloudLink;
   const logged: { event: string; data: Record<string, unknown> }[] = [];
   let dialer: LinkDialer | undefined;
   before(async () => {
     model = await modelStub(() => "x");
-    PORT3 = await freePort();
-    link = await startCloudLink({ port: PORT3, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+    link = await startCloudLink({ port: 0, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
   });
   after(async () => {
     dialer?.close();
@@ -131,7 +123,7 @@ describe("the instance's trail over the cloud link", () => {
   it("holds trail lines until the server dials in, then the server logs them as vm.trail, and a line sent later goes at once", async () => {
     link.trail("lease.fence", { code: "LEASE_LAPSED", sinceMs: 7_300 }); // before anyone is connected: the VM may be dying
     link.trail("vm.health", { rssMB: 812 });
-    dialer = dialLink({ url: `ws://127.0.0.1:${PORT3}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
+    dialer = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
     await until(() => logged.filter((l) => l.event === "vm.trail").length === 2);
     const first = logged.find((l) => l.event === "vm.trail")!.data;
     assert.equal(first.vmEvent, "lease.fence");
@@ -142,7 +134,7 @@ describe("the instance's trail over the cloud link", () => {
   });
 
   it("never throws into whoever reports, whether or not a link is up", async () => {
-    const lone = await startCloudLink({ port: await freePort(), host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+    const lone = await startCloudLink({ port: 0, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
     try {
       for (let i = 0; i < 500; i++) lone.trail("vm.health", { i }); // past the held limit: the oldest are dropped, nothing throws
     } finally {
@@ -154,10 +146,9 @@ describe("the instance's trail over the cloud link", () => {
 it("a caller's data cannot overwrite the trail line's own labels", async () => {
   // The line is logged with the event and time as the instance reported them, whatever keys its data carries.
   const logged: { event: string; data: Record<string, unknown> }[] = [];
-  const port = await freePort();
-  const link = await startCloudLink({ port, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+  const link = await startCloudLink({ port: 0, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
   const model = await modelStub(() => "x");
-  const dialer = dialLink({ url: `ws://127.0.0.1:${port}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
+  const dialer = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: (event, data = {}) => logged.push({ event, data }) });
   try {
     for (const end = Date.now() + 5_000; !logged.some((l) => l.event === "link.dialed" || l.event === "vm.trail"); await new Promise((r) => setTimeout(r, 20))) {
       link.trail("lease.fence", { vmEvent: "forged", vmAt: "forged", code: "LEASE_LAPSED" });
@@ -170,7 +161,7 @@ it("a caller's data cannot overwrite the trail line's own labels", async () => {
     assert.notEqual(line.vmAt, "forged");
     assert.deepEqual(line.data, { vmEvent: "forged", vmAt: "forged", code: "LEASE_LAPSED" });
   } finally {
-    dialer.close();
+    dialer?.close();
     await link.close();
     await model.close();
   }
@@ -195,4 +186,32 @@ it("replaying held trail lines stops when the socket is backed up and keeps the 
   socket.bufferedAmount = 0;
   drainTrail(socket, held, 350);
   assert.equal(sent.length, 8);
+});
+
+it("a link on a port something already listens on fails to start, with the system's EADDRINUSE: it does not come up deaf, or throw later where no one catches it", async () => {
+  const taken = createServer();
+  await new Promise<void>((resolve, reject) => { taken.once("error", reject); taken.listen(0, "127.0.0.1", () => resolve()); });
+  const port = (taken.address() as { port: number }).port;
+  try {
+    await assert.rejects(startCloudLink({ port, host: "127.0.0.1", token: "tok", waitMs: 3_000 }), (e: NodeJS.ErrnoException) => e.code === "EADDRINUSE");
+  } finally {
+    await new Promise((resolve) => taken.close(resolve));
+  }
+});
+
+it("a link started on port 0 says which port the system gave it, and the server dials it there", async () => {
+  const link = await startCloudLink({ port: 0, host: "127.0.0.1", token: "tok", waitMs: 3_000 });
+  const model = await modelStub(() => "on the port it got");
+  let dialer: LinkDialer | undefined;
+  try {
+    assert.ok(Number.isInteger(link.port) && link.port > 0, `port ${link.port}`);
+    dialer = dialLink({ url: `ws://127.0.0.1:${link.port}/`, token: "tok", proxy: new ModelProxy({ baseUrl: model.url, model: "m", budgetTokens: 100 }), log: () => undefined });
+    const res = await fetch(`${link.baseUrl}/chat/completions`, { method: "POST", body: JSON.stringify({ model: "m", messages: [] }) });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /on the port it got/);
+  } finally {
+    dialer?.close();
+    await link.close();
+    await model.close();
+  }
 });
