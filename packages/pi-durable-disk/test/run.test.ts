@@ -39,7 +39,7 @@ import {
 } from "../src/status.ts";
 import { openArchilStore, StoreFencedError } from "../src/store.ts";
 import { entryCommitter, FaultyDatabase, SQLITE_IOERR_FSYNC, sqliteError } from "./_support.ts";
-import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, scratchRoot, scriptedHarness, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
+import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, scratchRoot, scriptedHarness, scriptedReply, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
 
 const SQLITE_ERROR = 1;
 const SQLITE_IOERR_CLOSE = 4106;
@@ -69,6 +69,7 @@ type Setup = {
   fenced: FencedError[];
   steps: string[];
   agent: ReturnType<typeof scriptedHarness>["agent"];
+  faux: ReturnType<typeof scriptedHarness>["faux"];
   open(): Promise<DurableRun>;
 };
 
@@ -97,6 +98,7 @@ function setup(
     fenced,
     steps,
     agent: scripted.agent,
+    faux: scripted.faux,
     open: () =>
       openDurableRun(ref, {
         mountToken: "unused",
@@ -203,6 +205,56 @@ describe("openDurableRun", () => {
       assert.equal(run.claim.root, dir.root);
       await run.release();
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an awaited beforeResume runs to completion before a resumed task takes its first step", async () => {
+    const dir = scratchRoot("before-resume");
+    try {
+      // a bash call in flight when the first incarnation is released: the next one resumes that turn, and its first step
+      // is a model call (the call's result, interrupted, goes back to the model)
+      const first = setup(dir.root);
+      const run1 = await first.open();
+      await startCommandIn(run1, first.agent);
+      await run1.release();
+      const seen: string[] = [];
+      let hookDone: number | undefined;
+      let firstCall: number | undefined;
+      const second = setup(dir.root, {
+        options: {
+          beforeResume: async ({ harness, context, generation }) => {
+            seen.push(`scheduling ${(await harness.inspect(context)).scheduling}`);
+            await new Promise((resolve) => setTimeout(resolve, 300)); // an awaited step: the resumed work waits for it
+            seen.push(`done in generation ${generation}`);
+            hookDone = performance.now();
+          },
+        },
+      });
+      second.faux.setResponses(Array.from({ length: 50 }, () => (...args: Parameters<typeof scriptedReply>) => {
+        firstCall ??= performance.now();
+        return scriptedReply(...args);
+      }));
+      const run2 = await second.open();
+      for (let i = 0; i < 200 && firstCall === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.deepEqual(seen, ["scheduling paused", "done in generation 2"], "the hook ran to the end, before the scheduler started");
+      assert.deepEqual(second.steps.slice(-3), ["live", "before-resume", "resume"]);
+      assert.ok(firstCall !== undefined, "the resumed turn took its first step");
+      assert.ok(hookDone! <= firstCall!, `the hook finished (${hookDone}) before the resumed turn's first model call (${firstCall})`);
+      await run2.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a beforeResume that rejects fails the open, before resume, and releases the claim", async () => {
+    const dir = scratchRoot("before-resume-fails");
+    try {
+      const t = setup(dir.root, { options: { beforeResume: async () => Promise.reject(new Error("the app refused")) } });
+      await assert.rejects(t.open(), /the app refused/);
+      assert.ok(!t.steps.includes("resume"), `steps: ${t.steps.join(", ")}`);
+      assert.ok(t.claim.log.includes("release"), "the claim was released");
     } finally {
       dir.remove();
     }
