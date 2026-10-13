@@ -67,6 +67,12 @@ button.icon:hover { color: var(--ink); }
 #chat { padding: 20px var(--gutter) 24px; gap: 14px; }
 .turn { max-width: min(62ch, 86%); }
 .turn .thinking summary { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
+/* an assistant's markdown: paragraphs close together, lists indented, inline code and fenced code in the mono face */
+.turn.agent > p { margin: 0 0 .6em; } .turn.agent > p:last-child, .turn.agent > ul:last-child, .turn.agent > ol:last-child { margin-bottom: 0; }
+.turn.agent > ul, .turn.agent > ol { margin: 0 0 .6em; padding-left: 1.3em; } .turn.agent li { margin: .15em 0; }
+.turn.agent strong { font-weight: 600; }
+.turn.agent code { font: 400 .88em var(--mono); padding: 1px 4px; background: var(--panel); border-radius: var(--r1); }
+.turn.agent > pre.md-pre { margin: 0 0 .6em; padding: 8px 10px; font: 400 12px/1.5 var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); overflow: auto; white-space: pre; }
 .turn .thinking pre { font: 400 12px/1.5 var(--mono); color: var(--muted); margin: 4px 0 8px; white-space: pre-wrap; }
 /* ?thinking=open: the thinking sits open above the answer, dimmed; while it streams it is dimmer still */
 .turn .thinking.open .label { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
