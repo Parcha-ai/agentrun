@@ -424,6 +424,7 @@ describe("the home check is told what the trip was", () => {
   let local: Awaited<ReturnType<typeof localServer>>;
   const sinks: ((frame: PipeFrame) => void)[] = [];
   const trips: number[] = [];
+  const delivered: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   // The check only applies to a trip on which something was taught; when it applies it always finds the skills missing.
   const placer: Placer = {
@@ -443,10 +444,13 @@ describe("the home check is told what the trip was", () => {
     start: async () => ({ host: "vm-1" }),
     stop: async () => undefined,
     attachViewer: async (_ref, send) => (sinks.push(send), () => undefined),
-    submit: async () => undefined,
+    submit: async (_ref, text) => void delivered.push(text),
+    // The host a test asks to be replaced (a VM that died within the stay): the supervisor's next tick swaps it.
+    supervise: async () => (replaceHost ? ((replaceHost = false), { host: "vm-2" }) : undefined),
   };
+  let replaceHost = false;
   before(async () => {
-    local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 60_000, log: (event, data = {}) => logs.push({ event, data }) });
+    local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 100, log: (event, data = {}) => logs.push({ event, data }) });
   });
   after(async () => {
     await local.remove();
@@ -534,5 +538,89 @@ describe("the home check is told what the trip was", () => {
     assert.ok(!homeText[1]!.includes("Checked by the server"), `the replayed thread is not this trip's: ${homeText[1]}`);
     tab.close();
     page.close();
+  });
+
+  it("a host replaced within the stay keeps the stay's threads: the trip is still a teaching one", async () => {
+    const { id, secret } = await local.server.createRun("replaced");
+    const homeText: string[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    const sinksBefore = sinks.length;
+    page.send({ t: "submit", text: "go to the vm and teach it", requestId: "rep-1" });
+    await until(() => sinks.length > sinksBefore);
+    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(21) }));
+    replaceHost = true;
+    await until(() => logs.some((l) => l.event === "placement" && l.data.run === id && /vm-2/.test(JSON.stringify(l.data))), 5_000).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(replaceHost, false, "the supervisor replaced the host");
+    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
+      if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
+      if (f.t === "submit") homeText.push(f.text);
+    } });
+    await home.ready;
+    home.send({ t: "switched", switchId: runHere.switchId });
+    await until(() => homeText.length > 0);
+    assert.match(homeText[0]!, /Checked by the server just now: NO/, "the replaced host did not reset the count");
+    tab.close();
+    page.close();
+    home.close();
+  });
+
+  it("a stay the tab's going away starts is a new stay: the last trip's threads are not carried into it", async () => {
+    const { id, secret } = await local.server.createRun("tabgone");
+    const homeText: string[] = [];
+    const tab: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "a", mode: "write", onFrame: (f) => f.t === "drain" && tab.send({ t: "drained", switchId: f.switchId }) });
+    await tab.ready;
+    const seen: PipeFrame[] = [];
+    const page: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "operator", canRun: true, onFrame: (f) => seen.push(f) });
+    await page.ready;
+    // Stay 1: teaching, home.
+    let sinksBefore = sinks.length;
+    page.send({ t: "submit", text: "go to the vm and teach it", requestId: "tg-1" });
+    await until(() => sinks.length > sinksBefore);
+    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(31) }));
+    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+    await until(() => seen.some((f) => f.t === "run-here"));
+    const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    const home: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "v", mode: "write", switchId: runHere.switchId, onFrame: (f) => {
+      if (f.t === "drain") home.send({ t: "drained", switchId: f.switchId });
+      if (f.t === "submit") homeText.push(f.text);
+    } });
+    await home.ready;
+    home.send({ t: "switched", switchId: runHere.switchId });
+    await until(() => homeText.length > 0);
+    assert.match(homeText[0]!, /Checked by the server/, "stay 1 was a teaching trip");
+    home.send({ t: "view", event: tag({ kind: "events", events: [{ type: "run_end" }] }) } as never);
+    await new Promise((r) => setTimeout(r, 300));
+    // The browser goes away: the run is taken into the cloud without a planned move.
+    sinksBefore = sinks.length;
+    home.close();
+    tab.close();
+    await until(() => sinks.length > sinksBefore, 10_000);
+    // Stay 2: a plain task, no thread; the agent is asked home again.
+    seen.length = 0;
+    const page2Before = sinks.length;
+    page.send({ t: "submit", text: "go on with the vm", requestId: "tg-2" });
+    void page2Before;
+    await until(() => delivered.includes("go on with the vm"));
+    sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
+    await until(() => seen.some((f) => f.t === "run-here"), 15_000);
+    const runHere2 = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
+    const home2: PipeClient = new PipeClient({ url: local.url, run: id, token: secret, tab: "w", mode: "write", switchId: runHere2.switchId, onFrame: (f) => {
+      if (f.t === "drain") home2.send({ t: "drained", switchId: f.switchId });
+      if (f.t === "submit") homeText.push(f.text);
+    } });
+    await home2.ready;
+    home2.send({ t: "switched", switchId: runHere2.switchId });
+    await until(() => homeText.length > 1);
+    assert.ok(!homeText[1]!.includes("Checked by the server"), `the old trip's threads were carried into this stay: ${homeText[1]}`);
+    page.close();
+    home2.close();
   });
 });

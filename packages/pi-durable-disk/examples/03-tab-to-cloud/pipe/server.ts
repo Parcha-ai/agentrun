@@ -18,7 +18,7 @@ import type { JudgeRunner } from "../brain-router.ts";
 import { CHECKIN_RECEIPT, CHECKOUT_MARKER, CheckinRefused, CheckoutRefused, manifestDigest, RunPipe, type CheckinReceipt, type CheckoutMarker, type PipeSocket } from "./run-pipe.ts";
 import { cleanReason } from "../switch-tool.ts";
 import { compareEntries, readBack, type ReadbackSource } from "./readback.ts";
-import { SERVER_TURN, type Placer, type PlacementDecision } from "../placement.ts";
+import { SERVER_TURN, type HomeTrip, type Placer, type PlacementDecision } from "../placement.ts";
 import { CHUNK_BYTES, lazyPath, toBase64, untag, type Environment, type FileChange, type Move, type PipeFrame, type Placement, type TabFrame } from "../wire.ts";
 
 /** The tab as an environment; the cloud host lists its own. */
@@ -251,6 +251,8 @@ interface RunState {
   /** Every teaching thread (by conversation number) a cloud host has ever reported for this run, and those first reported during the current stay in a cloud environment: what a home check is told about the trip. */
   threadsSeen: Set<number>;
   tripThreads: Set<number>;
+  /** What the stay a move home ends reported, kept for that move's home check. */
+  homeTrip: HomeTrip | undefined;
   /** Which cloud host's viewers are current: an end relayed from an earlier host (or a stale copy) is not this turn's. */
   cloudEpoch: number;
   /** The submissions whose run_end has been handled (a run_end names the inputs it covered): every viewer of a mounted host is sent its own copy of an end, and a copy of one already handled is ignored. */
@@ -542,7 +544,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     if (!target) {
       setPlacement(state, { where: "parked", detail: "the tab is gone" });
       refusePending(state, "the tab that ran this went away and there is no cloud host to move the run to; open the run's link again");
-    } else if (await startCloud(state, target, move, "the tab is gone", started)) {
+    } else if ((state.tripThreads.clear(), await startCloud(state, target, move, "the tab is gone", started))) {
       // The lines that arrived during the grace go to the host the run has now.
       await flushPending(state).catch((error) => log("placement.failed", { run: state.ref.id, error: (error as Error).message }));
     } else refusePending(state, "the tab that ran this went away and the cloud host could not be started; open the run's link again");
@@ -643,8 +645,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     const started = Date.now();
     const move = newMove(phraseOf(p), true, who);
     state.switching = { move, to, started };
-    // A new stay in a cloud environment begins: the threads this stay reports are the trip's (those of earlier stays were counted then).
-    if (target.kind !== "tab") state.tripThreads.clear();
+    // The stay a cloud environment gives ends when the run goes to the tab: what it reported is told to the home check (below, in `switched`) and the count starts again for the next stay.
+    // A move between two cloud environments continues the stay. Every way into the cloud from a tab (this, and the tab going away) starts from nothing.
+    if (target.kind === "tab" && environment(from)?.kind !== "tab") {
+      state.homeTrip = { teaching: state.tripThreads.size };
+      state.tripThreads.clear();
+    } else if (target.kind !== "tab" && environment(from)?.kind === "tab") state.tripThreads.clear();
     setPlacement(state, { where: "moving", to: target.label, env: target.id, switchId: move.id, since: started, detail: `leaving ${environment(from)?.label ?? from}` });
     log("switch.start", { run: state.ref.id, switchId: move.id, from, to, by: who.by });
     reply.accepted(move.id);
@@ -766,8 +772,10 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
         let checked = "";
         const check = options.placer?.homeCheck;
         if (check) {
-          const teaching = state.tripThreads.size;
-          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), { teaching }).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
+          const trip = state.homeTrip ?? { teaching: 0 };
+          state.homeTrip = undefined;
+          const teaching = trip.teaching;
+          const result = await check(async (path) => (state.pipe && !state.pipe.lost ? state.pipe.readWork(path) : undefined), trip).catch((error: Error) => ({ ok: false, reason: `the check itself failed: ${error.message}` }));
           if (result === null) log("placement.home-check", { run: state.ref.id, applicable: false, teaching });
           else {
             log("placement.home-check", { run: state.ref.id, ok: result.ok, reason: result.reason, teaching });
@@ -1488,6 +1496,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       agentModel: undefined,
       threadsSeen: new Set(),
       tripThreads: new Set(),
+      homeTrip: undefined,
       cloudEpoch: 0,
       endsSeen: new Set(),
       turnTimer: undefined,
