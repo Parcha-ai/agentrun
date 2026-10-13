@@ -20,7 +20,7 @@ import {
 	type WatchChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
-import { type Box, type BoxError, type BoxProvider, type BoxSpec, isReservedLabel } from "../box/box.ts";
+import { type Box, BoxError, type BoxProvider, type BoxSpec, isReservedLabel } from "../box/box.ts";
 import type { EnvironmentConfig, TransportConfig } from "../config.ts";
 import { HandsDoc, SessionBoxesDoc, type Transport, TransportError, type TransportHost } from "../transport.ts";
 import { boxEnv } from "./box-env.ts";
@@ -228,6 +228,8 @@ class Router implements Transport {
 	readonly #held = new Map<string, Held>();
 	/** A `destroy` that is under way. A use that comes meanwhile waits for it, then opens a box of its own. */
 	#destroying: Promise<void> | undefined;
+	/** A `release` that is under way. A use that comes meanwhile waits for it, then attaches the box anew. */
+	#releasing: Promise<void> | undefined;
 
 	constructor(config: TransportConfig, host: TransportHost) {
 		this.#config = config;
@@ -246,7 +248,7 @@ class Router implements Transport {
 				`this conversation's tools are assigned to "${id}", which the config does not declare`,
 			);
 		}
-		const provider = this.#host.providers[environment.provider];
+		const provider = ownValue(this.#host.providers, environment.provider);
 		// `local` with no provider of that name: this machine as the host already has it.
 		if (provider === undefined) return undefined;
 		return new LazyEnv(`${ENV_ID_PREFIX}:${environment.id}:unopened`, (cwd, callContext) =>
@@ -273,6 +275,20 @@ class Router implements Transport {
 	}
 
 	async release(context: Context): Promise<void> {
+		const run = this.#releaseAll(context);
+		const settled = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.#releasing = settled;
+		try {
+			await run;
+		} finally {
+			if (this.#releasing === settled) this.#releasing = undefined;
+		}
+	}
+
+	async #releaseAll(context: Context): Promise<void> {
 		await Promise.all(this.#opening.values());
 		const held = [...this.#held.values()];
 		this.#held.clear();
@@ -301,14 +317,20 @@ class Router implements Transport {
 	async #destroyAll(context: Context): Promise<Result<void, TransportError>> {
 		await Promise.all(this.#opening.values());
 		const held = [...this.#held.values()].map(({ box }) => box);
-		await this.release(context);
+		await this.#releaseAll(context);
 		const tried = new Set<string>();
 		/** Boxes that ended here, or that their provider no longer has. Only their records are cleared. */
 		const ended = new Set<string>();
 		const left: string[] = [];
 		const end = async (box: Box): Promise<void> => {
 			tried.add(box.id);
-			const destroyed = await box.destroy(context);
+			let destroyed: Result<void, BoxError>;
+			try {
+				destroyed = await box.destroy(context);
+			} catch (cause) {
+				// A provider that throws where it should answer: the box is left, and the other boxes still end.
+				destroyed = err(new BoxError("unknown", toError(cause).message, cause));
+			}
 			if (destroyed.ok) ended.add(box.id);
 			else left.push(`${box.id} ([${destroyed.error.code}] ${destroyed.error.message})`);
 		};
@@ -325,13 +347,18 @@ class Router implements Transport {
 		// Then the boxes an earlier transport left in the documents and this one never used.
 		for (const [key, id] of Object.entries(recorded)) {
 			if (tried.has(id)) continue;
-			const environment = this.#config.environments[key.split("@")[0] ?? ""];
-			const provider = environment === undefined ? undefined : this.#host.providers[environment.provider];
+			const environment = ownValue(this.#config.environments, key.split("@")[0] ?? "");
+			const provider = environment === undefined ? undefined : ownValue(this.#host.providers, environment.provider);
 			if (provider === undefined) {
 				left.push(`${id} (no provider for "${key}")`);
 				continue;
 			}
-			const attached = await provider.attach(id, context);
+			let attached: Result<Box | undefined, BoxError>;
+			try {
+				attached = await provider.attach(id, context);
+			} catch (cause) {
+				attached = err(new BoxError("unknown", toError(cause).message, cause));
+			}
 			if (!attached.ok) left.push(`${id} ([${attached.error.code}] ${attached.error.message})`);
 			else if (attached.value === undefined) ended.add(id);
 			else await end(attached.value);
@@ -360,12 +387,29 @@ class Router implements Transport {
 		context: Context,
 	): Promise<Opened> {
 		const key = environment.scope === "session" ? environment.id : `${environment.id}@${target.conversationId}`;
-		while (this.#destroying !== undefined) {
+		for (;;) {
+			const opened = await this.#useOnce(key, environment, provider, target, cwd, context);
+			// A release or a destroy that came while the box opened has let it go: open it anew after that.
+			if (opened === "again") continue;
+			return opened;
+		}
+	}
+
+	async #useOnce(
+		key: string,
+		environment: EnvironmentConfig,
+		provider: BoxProvider,
+		target: EnvTarget,
+		cwd: string | undefined,
+		context: Context,
+	): Promise<Opened | "again"> {
+		for (let closing = this.#destroying ?? this.#releasing; closing !== undefined; ) {
 			try {
-				await awaitWithContext(this.#destroying, context);
+				await awaitWithContext(closing, context);
 			} catch {
 				return undefined;
 			}
+			closing = this.#destroying ?? this.#releasing;
 		}
 		const live = this.#held.get(key);
 		let held = live === undefined ? undefined : ok<Held, TransportError>(live);
@@ -393,6 +437,7 @@ class Router implements Transport {
 			}
 		}
 		if (!held.ok) return held;
+		if (this.#held.get(key) !== held.value) return "again";
 		const { box, envs } = held.value;
 		const workspace = box.facts().workspace;
 		// The agent's own directory counts only when it lies in the box's workspace: a path of the host means nothing there.
@@ -422,7 +467,8 @@ class Router implements Transport {
 	): Promise<Result<Held, TransportError>> {
 		let recorded: string | undefined;
 		try {
-			recorded = (await target.read.snapshot(SessionBoxesDoc, context))?.boxes[key];
+			const boxes = (await target.read.snapshot(SessionBoxesDoc, context))?.boxes;
+			recorded = boxes === undefined ? undefined : ownValue(boxes, key);
 		} catch (cause) {
 			return err(
 				new TransportError("store", `could not read the session's boxes: ${toError(cause).message}`, cause),
@@ -495,7 +541,7 @@ export function transport(config: TransportConfig, host: TransportHost): Transpo
 				`environment "${environment.id}" has expose, which is not available yet: no secret is passed into a box`,
 			);
 		}
-		if (environment.provider !== "local" && host.providers[environment.provider] === undefined) {
+		if (environment.provider !== "local" && ownValue(host.providers, environment.provider) === undefined) {
 			throw new TransportError(
 				"unknown_provider",
 				`environment "${environment.id}" names the provider "${environment.provider}", which the host did not pass`,
@@ -507,4 +553,9 @@ export function transport(config: TransportConfig, host: TransportHost): Transpo
 		throw new TransportError("unsupported", 'hands: "auto" is not available yet: name an environment');
 	}
 	return new Router(config, host);
+}
+
+/** The value under an object's own key, never one it inherits: an id such as `constructor` is on every object. */
+function ownValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+	return Object.hasOwn(record, key) ? record[key] : undefined;
 }

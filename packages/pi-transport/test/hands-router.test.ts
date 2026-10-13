@@ -104,6 +104,11 @@ describe("transport(): what it refuses at start", () => {
 		expect(refusal(SANDBOX)).toBeUndefined();
 	});
 
+	it("does not take a name that every object has for a provider the host passed", () => {
+		const inherited = { environments: { far: { provider: "constructor", maxLifetime: "1h" } }, hands: "far" };
+		expect((refusal(inherited) as TransportError | undefined)?.code).toBe("unknown_provider");
+	});
+
 	it("refuses a host label in the providers' own namespace, and sends no label of its own", async () => {
 		const config = getOrThrow(parseTransportConfig(SANDBOX));
 		for (const key of ["pi-transport", "pi-transport.box"]) {
@@ -298,6 +303,137 @@ describe("transport(): where tools run", () => {
 			await second.hands.release(context);
 			expect((await second.hands.destroy(context)).ok).toBe(true);
 			await second.harness.close(context);
+		});
+	});
+
+	it("runs the tools of an environment named like a property every object has", async () => {
+		await withLocal(async (provider) => {
+			const config = {
+				environments: { first: { provider: "local" }, constructor: { provider: "local" } },
+				hands: "first",
+			};
+			const asked: unknown[] = [];
+			const noting: BoxProvider = {
+				name: provider.name,
+				create: (spec, createContext) => provider.create(spec, createContext),
+				list: (labels, listContext) => provider.list(labels, listContext),
+				attach: (id, attachContext) => {
+					asked.push(id);
+					return provider.attach(id, attachContext);
+				},
+			};
+			const session = await openSession(new MemoryStorage(), config, { local: noting });
+			// Another environment's box is in the session's document first.
+			expect((await session.turn(await session.converse(), [bash("echo first")]))[0]?.isError).toBe(false);
+			const other = await session.converse();
+			getOrThrow(await session.hands.assign(other.id, "constructor", context));
+			const outcomes = await session.turn(other, [bash("echo second")]);
+			expect(outcomes[0]?.isError).toBe(false);
+			expect(outcomes[0]?.text).toContain("second");
+			expect(provider.created.length).toBe(2);
+			// No box id was read from what the document's object inherits: a provider is never asked for a function.
+			expect(asked.every((id) => typeof id === "string")).toBe(true);
+			expect((await session.hands.destroy(context)).ok).toBe(true);
+			await session.harness.close(context);
+		});
+	});
+
+	it("ends every other box when a provider throws while destroy looks for one", async () => {
+		await withLocal(async (provider, directory) => {
+			const store = join(directory, "session.db");
+			const first = await openSession(await openNodeSqliteStorage(store), EACH, { local: provider });
+			expect((await first.turn(await first.converse(), [bash("echo one")]))[0]?.isError).toBe(false);
+			expect((await first.turn(await first.converse(), [bash("echo two")]))[0]?.isError).toBe(false);
+			await first.hands.release(context);
+			await first.harness.close(context);
+			const [broken, sound] = provider.created;
+			if (broken === undefined || sound === undefined) throw new Error("two boxes were expected");
+			// The next host cannot read the record of one box: its provider throws where it should answer.
+			const throwing: BoxProvider = {
+				name: provider.name,
+				create: (spec, createContext) => provider.create(spec, createContext),
+				list: (labels, listContext) => provider.list(labels, listContext),
+				attach: (id, attachContext) =>
+					id === broken.id
+						? Promise.reject(new Error("the box's record could not be read"))
+						: provider.attach(id, attachContext),
+			};
+			const second = await openSession(await openNodeSqliteStorage(store), EACH, { local: throwing });
+			const destroyed = await second.hands.destroy(context);
+			expect(destroyed.ok).toBe(false);
+			if (!destroyed.ok) {
+				expect(destroyed.error.code).toBe("box");
+				expect(destroyed.error.message).toContain(broken.id);
+			}
+			expect(getOrThrow(await sound.status(context)).state).toBe("ended");
+			// The box it could not reach keeps its record for the next destroy.
+			expect(Object.values((await second.harness.snapshot(SessionBoxesDoc, context))?.boxes ?? {})).toEqual([
+				broken.id,
+			]);
+			await second.harness.close(context);
+		});
+	});
+
+	it("makes a command that comes during release wait, so no command outlives the release", async () => {
+		await withLocal(async (provider) => {
+			let letGo: () => void = () => {};
+			const slowCleanup = new Promise<void>((resolve) => {
+				letGo = resolve;
+			});
+			let cleaning = 0;
+			// Boxes whose command cleanup (a script that sends signals) takes its time.
+			const slow: BoxProvider = {
+				name: provider.name,
+				list: (labels, listContext) => provider.list(labels, listContext),
+				attach: (id, attachContext) => provider.attach(id, attachContext),
+				async create(spec, createContext) {
+					const created = await provider.create(spec, createContext);
+					if (!created.ok) return created;
+					const box = created.value;
+					return ok({
+						id: box.id,
+						facts: () => box.facts(),
+						async exec(command, options, execContext) {
+							if (command[0] === "sh" && /\bkill\b/.test(command[2] ?? "") && command.length > 4) {
+								cleaning += 1;
+								await slowCleanup;
+							}
+							return box.exec(command, options, execContext);
+						},
+						status: (statusContext) => box.status(statusContext),
+						upload: (files, uploadContext) => box.upload(files, uploadContext),
+						download: (paths, downloadContext) => box.download(paths, downloadContext),
+						destroy: (destroyContext) => box.destroy(destroyContext),
+					});
+				},
+			};
+			const session = await openSession(new MemoryStorage(), SANDBOX, { local: slow });
+			const conversation = await session.converse();
+			const env = await session.hands.env({ conversationId: conversation.id, read: session.harness }, context);
+			if (env === undefined) throw new Error("an environment was expected");
+			// A command still runs when the release starts, so the release has a command to stop.
+			const long = env.exec("sleep 30", undefined, context);
+			await sleep(500);
+			const releasing = session.hands.release(context);
+			let releasedAt = 0;
+			void releasing.then(() => {
+				releasedAt = Date.now();
+			});
+			while (cleaning === 0) await sleep(10);
+			let lateAt = 0;
+			const late = env.exec("echo late", undefined, context).then((result) => {
+				lateAt = Date.now();
+				return result;
+			});
+			await sleep(300);
+			expect(lateAt).toBe(0);
+			letGo();
+			await releasing;
+			expect(getOrThrow(await late).exitCode).toBe(0);
+			expect(lateAt).toBeGreaterThanOrEqual(releasedAt);
+			await long;
+			expect((await session.hands.destroy(context)).ok).toBe(true);
+			await session.harness.close(context);
 		});
 	});
 
