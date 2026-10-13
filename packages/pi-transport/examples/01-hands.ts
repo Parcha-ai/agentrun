@@ -202,14 +202,23 @@ function watchRequests(url: string): void {
 		};
 		log.requests.push(record);
 		if (response.body === null) return response;
-		// The answer streams: the request is over when its body has been read to the end.
-		const read = response.body.pipeThrough(
-			new TransformStream({
-				flush: () => {
-					record.totalMs = Math.round(performance.now() - startedAt);
-				},
-			}),
-		);
+		// The answer streams: the request is over when its body has been read to the end, or let go of.
+		const reader = response.body.getReader();
+		const ended = () => {
+			record.totalMs ??= Math.round(performance.now() - startedAt);
+		};
+		const read = new ReadableStream<Uint8Array>({
+			async pull(controller) {
+				const { done, value } = await reader.read();
+				if (!done) return controller.enqueue(value);
+				ended();
+				controller.close();
+			},
+			cancel(reason) {
+				ended();
+				return reader.cancel(reason);
+			},
+		});
 		return new Response(read, response);
 	};
 }
