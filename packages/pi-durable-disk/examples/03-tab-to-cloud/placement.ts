@@ -37,6 +37,8 @@ export interface PlacementQuery {
   readonly current: string;
   /** The ids of the environments the server can place the run in. */
   readonly environments: readonly string[];
+  /** The model the root conversation is set to now, as the server last saw it (the writer's snapshot, then each `agent_changed`). Absent when the server has not seen one. */
+  readonly model?: { readonly provider: string; readonly modelId: string };
   /** Reads a file of the run's work/ (where the run is now): what a placer's `context` looks at. Absent when the run's files cannot be reached. */
   readonly read?: (path: string) => Promise<Uint8Array | undefined>;
   readonly signal?: AbortSignal;
@@ -116,7 +118,7 @@ export function judgePlacer(options: PlacerOptions): Placer {
       const result = await options.runJudge({
         label: `placement-${query.phase}`,
         kind: "judge",
-        state: { task: query.message, running_now_in: query.current, ...facts, ...(query.phase === "done" ? { status: "the agent finished the task" } : {}) },
+        state: { task: query.message, running_now_in: query.current, ...(query.model ? { agent_model: `${query.model.provider}/${query.model.modelId}` } : {}), ...facts, ...(query.phase === "done" ? { status: "the agent finished the task" } : {}) },
         questions: { where: { type: "choice", instructions: question, criteria } },
         ...(query.signal ? { signal: query.signal } : {}),
       });

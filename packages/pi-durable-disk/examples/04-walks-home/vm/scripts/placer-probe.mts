@@ -43,7 +43,9 @@ const cases: Case[] = [
 const placer = await placerModule({ log: () => undefined, args: { episode: "robot", skills: "3" } });
 let wrong = 0;
 for (const c of cases) {
-  const read = async (path: string) => (path === "home/skills.json" ? new TextEncoder().encode(JSON.stringify({ skills: c.taught })) : undefined);
+  // PROBE_READ=none: a line that arrives while the run is on the VM sees no work/ (what the placer's `read` gives when the server's pipe does not hold the run).
+  const blind = process.env.PROBE_READ === "none" && c.current === "modal-vm";
+  const read = async (path: string) => (blind ? undefined : path === "home/skills.json" ? new TextEncoder().encode(JSON.stringify({ skills: c.taught })) : undefined);
   const got: string[] = [];
   const probs: string[] = [];
   for (let i = 0; i < repeats; i++) {
