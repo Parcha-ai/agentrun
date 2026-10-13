@@ -79,6 +79,26 @@ describe("the take server launcher", () => {
     }
   });
 
+  it("passes the instructions policy through to serve.ts unchanged when given, and not at all when not", async () => {
+    const polDir = join(root, "take-pol");
+    const instructions = join(root, "instructions.txt");
+    writeFileSync(instructions, "You are a chat page's agent.\n");
+    assert.ok(!execFileSync("ps", ["-o", "args=", "-p", String(status.pid)], { encoding: "utf8" }).match(/--instructions-|--without-extensions/), "the robot's own launch has none of them");
+    const pol = spawn(process.execPath, [script, "--local", join(root, "disk"), "--dir", polDir, "--run", "take-pol", "--instructions-file", instructions, "--instructions-mode", "replace", "--without-extensions", "offline-tools,robot-tools,computer"], { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: join(homedir(), "tmp-d5", "tmp") }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      for (let i = 0; i < 200 && !existsSync(join(polDir, "status.json")); i++) {
+        if (pol.exitCode !== null) throw new Error("the launcher exited");
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const polStatus = JSON.parse(readFileSync(join(polDir, "status.json"), "utf8")) as { pid: number };
+      const args = execFileSync("ps", ["-o", "args=", "-p", String(polStatus.pid)], { encoding: "utf8" });
+      assert.ok(args.includes(`--instructions-file ${instructions} --instructions-mode replace --without-extensions offline-tools,robot-tools,computer`), args);
+    } finally {
+      pol.kill("SIGTERM");
+      for (let i = 0; i < 40 && pol.exitCode === null && pol.signalCode === null; i++) await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
   it("stops when told to, and takes its status file with it", async () => {
     child.kill("SIGTERM");
     for (let i = 0; i < 40 && child.exitCode === null; i++) await new Promise((r) => setTimeout(r, 200));
@@ -88,6 +108,57 @@ describe("the take server launcher", () => {
   });
 
   const refuse = (...args: string[]) => spawnSync(process.execPath, [script, "--dir", join(root, "refuse"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
+
+  it("refuses, with exit 2 and before anything starts, whatever serve.ts would refuse of the instructions policy: no mode, no file, a bad mode, an unreadable or empty file, a bad extension list, a flag with no value", () => {
+    const file = join(root, "instr-refuse.txt");
+    writeFileSync(file, "x");
+    const empty = join(root, "instr-empty.txt");
+    writeFileSync(empty, " \n");
+    const unreadable = join(root, "instr-unreadable.txt");
+    writeFileSync(unreadable, "x", { mode: 0o000 });
+    for (const [args, message] of [
+      [["--instructions-file", file], /--instructions-file needs --instructions-mode/],
+      [["--instructions-mode", "append"], /--instructions-mode needs --instructions-file/],
+      [["--instructions-file", file, "--instructions-mode", "prepend"], /replace or append/],
+      [["--instructions-file", join(root, "nope.txt"), "--instructions-mode", "replace"], /cannot read it/],
+      [["--instructions-file", unreadable, "--instructions-mode", "replace"], /cannot read it/],
+      [["--instructions-file", root, "--instructions-mode", "replace"], /cannot read it/],
+      [["--instructions-file", empty, "--instructions-mode", "replace"], /the file is empty/],
+      [["--without-extensions"], /comma-separated list of extension names/],
+      [["--without-extensions", ","], /comma-separated list of extension names/],
+      [["--without-extensions", " , "], /comma-separated list of extension names/],
+      [["--without-extensions", ""], /comma-separated list of extension names/],
+      // a flag at the end of the line, or with an empty value, is given and empty: refused, never dropped
+      [["--instructions-file", file, "--instructions-mode"], /replace or append/],
+      [["--instructions-file", file, "--instructions-mode", ""], /replace or append/],
+      [["--instructions-mode", "replace", "--instructions-file"], /cannot read it/],
+      [["--instructions-mode", "replace", "--instructions-file", ""], /cannot read it/],
+    ] as const) {
+      const res = refuse("--local", join(root, "disk"), ...args);
+      assert.equal(res.status, 2, args.join(" "));
+      assert.match(res.stderr, message, args.join(" "));
+    }
+  });
+
+  it("resolves a relative instructions file against the caller's directory, so serve.ts (which runs elsewhere) reads the file that was checked", async () => {
+    const relDir = join(root, "rel-caller");
+    mkdirSync(relDir, { recursive: true });
+    writeFileSync(join(relDir, "policy.txt"), "From the caller.\n");
+    const relTake = join(root, "take-rel");
+    const rel = spawn(process.execPath, [script, "--local", join(root, "disk"), "--dir", relTake, "--run", "take-rel", "--instructions-file", "policy.txt", "--instructions-mode", "append"], { cwd: relDir, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: join(homedir(), "tmp-d5", "tmp") }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      for (let i = 0; i < 200 && !existsSync(join(relTake, "status.json")); i++) {
+        if (rel.exitCode !== null) throw new Error("the launcher exited");
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const relStatus = JSON.parse(readFileSync(join(relTake, "status.json"), "utf8")) as { pid: number };
+      const args = execFileSync("ps", ["-o", "args=", "-p", String(relStatus.pid)], { encoding: "utf8" });
+      assert.ok(args.includes(`--instructions-file ${join(relDir, "policy.txt")} `), args);
+    } finally {
+      rel.kill("SIGTERM");
+      for (let i = 0; i < 40 && rel.exitCode === null && rel.signalCode === null; i++) await new Promise((r) => setTimeout(r, 200));
+    }
+  });
 
   it("refuses an --up-timeout-s that is not a positive number, before anything is started", () => {
     for (const bad of ["0", "-5", "soon"]) {

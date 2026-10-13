@@ -1,7 +1,7 @@
 // The take's 03 server: the one tab server D1's home step asks to adopt a winner's run, and the one the stage's disk reads from.
 //   node scripts/take-server.mjs --mount-root /mnt/pda/<your lane>/pipe [--dir ~/tmp-d5/take] [--run walks-home] [--ledger FILE]
 //   node scripts/take-server.mjs --local DIR [--dir ...]            (a dry run: no Archil, no mount)
-//   Either form takes --up-timeout-s N (how long to wait for the server to answer; default 120), --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
+//   Either form takes --up-timeout-s N (how long to wait for the server to answer; default 120), --instructions-file F --instructions-mode replace|append and --without-extensions a,b (passed to serve.ts unchanged: the policy a tab applies when it creates the agent), --cloud remote-local, and --evidence-readback (03's serve.ts reads work/ back from the disk's object
 //   store after each release and logs it, off the handover path; a no-op with --local, which has no object store).
 // On the real disk it runs 03's serve.ts under with-archil (the only way the show lane touches Archil: the keys exist in that
 // child's environment and nowhere else, mounts live under the caller's own lane directory, and the disk is the scratch disk the
@@ -17,12 +17,13 @@
 import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, sleep } from "./cdp.mjs";
 import { TAB_WRITABLE_PATHS } from "./take-paths.mjs";
 import { redact } from "../../redact-link.ts";
 import { waitUp } from "./wait-up.mjs";
+import { appPolicyFromArgs } from "../../../03-tab-to-cloud/app-policy.ts";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -59,6 +60,22 @@ const die = (message) => {
   console.error(`take-server: ${message}`);
   process.exit(2);
 };
+// The host's own policy for the agent a browser tab creates (03's serve.ts), passed through when given and checked here by the very function serve.ts uses, so what serve.ts would refuse is refused now
+// (exit 2, before a wrapper or the child runs). A flag with no value after it counts as given and empty: it is refused, never dropped. A relative instructions file is the caller's, so it is resolved here
+// (serve.ts runs in 03-tab-to-cloud).
+const flag = (name) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i < 0 ? undefined : (process.argv[i + 1] ?? "");
+};
+const rawFile = flag("instructions-file");
+const instructionsFile = rawFile === undefined || rawFile === "" ? rawFile : resolve(rawFile);
+const instructionsMode = flag("instructions-mode");
+const withoutExtensions = flag("without-extensions");
+try {
+  appPolicyFromArgs({ ...(instructionsFile !== undefined ? { file: instructionsFile } : {}), ...(instructionsMode !== undefined ? { mode: instructionsMode } : {}), ...(withoutExtensions !== undefined ? { without: withoutExtensions } : {}) });
+} catch (error) {
+  die(error.message);
+}
 // How long to wait for the server to answer: under with-typesafe, with-modal and with-archil the wrappers alone take 17-20 s (each reads 1Password) before serve.ts starts.
 const upTimeoutS = Number(arg("up-timeout-s", "120"));
 if (!Number.isFinite(upTimeoutS) || upTimeoutS <= 0) die(`--up-timeout-s ${arg("up-timeout-s", "")} is not a positive number of seconds`);
@@ -115,6 +132,9 @@ const serveArgs = [
   // The folder of the offline brain's files (D0's serve.ts --models-dir: served under /models/ with the page's isolation headers).
   ...(arg("models-dir", "") ? ["--models-dir", arg("models-dir", "")] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
+  ...(instructionsFile !== undefined ? ["--instructions-file", instructionsFile] : []),
+  ...(instructionsMode !== undefined ? ["--instructions-mode", instructionsMode] : []),
+  ...(withoutExtensions !== undefined ? ["--without-extensions", withoutExtensions] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...judgeArgs,
   ...(evidenceReadback ? ["--evidence-readback"] : []),
