@@ -232,6 +232,8 @@ export type Ledger = {
   processes: number;
   final: { status: string; generation: number | null; record: unknown };
   browserCalls: string[];
+  /** The kills that landed while the browser's first tool (the page action) was running, by process number. */
+  runInterrupted: number[];
   counted: Counted;
   reference: Counted;
   checks: Array<{ name: string; ok: boolean; detail?: unknown }>;
@@ -338,11 +340,48 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       { name: 'the same receipts, each filed once', ok: eq(counted.receipts, ref.receipts), detail: counted.receipts },
       { name: 'a model turn, the judge, a browser read or a vision look is repeated only when a kill landed inside it, once per such kill, in a later process', ok: repeats.every(({ times: n, allowed, causes, pids }) => n >= 1 && n - allowed <= causes.length && (pids.length === 0 || new Set(pids).size === n)), detail: repeats.filter(({ times: n }) => n > 1).map(({ what, times: n, causes }) => ({ what, asked: n, cutBy: causes })) },
     ];
+    // The window of the page action's tool in an uncut run: from the model asking for it to the next turn's request.
+    const order = [...reference.child, ...reference.supervisor].sort((a, b) => (BigInt(a.t) < BigInt(b.t) ? -1 : 1));
+    const from = order.findIndex((crossing) => crossing.point === 'model.answered turn 0');
+    const to = order.findIndex((crossing) => crossing.point === 'model.request turn 1');
+    const inRun = new Set(order.slice(from + 1, to).map((crossing) => `${crossing.side} ${crossing.point}`));
+    const runInterrupted = landed.filter((kill) => inRun.has(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => kill.process);
     const browserCalls = backend.ledger.map((row) => row.op);
-    return { seed: options.seed, kills, processes, browserCalls, final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
+    return { seed: options.seed, kills, processes, browserCalls, runInterrupted, final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
   } finally {
     if (!options.keep) await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/** The ledger as the lines `npm run demo:kill` prints. */
+export function render(ledger: Ledger): string[] {
+  const table = (counts: Record<string, number>) => Object.entries(counts).map(([name, n]) => `${name} x${n}`).join(', ');
+  const runs = ledger.counted.browser['page.run'] ?? 0;
+  const again = ledger.checks.find((check) => check.name.startsWith('a model turn'))?.detail as Array<{ what: string; asked: number; cutBy: Array<{ kill: number; at: string }> }> | undefined;
+  return [
+    `seed ${ledger.seed} (the same seed gives the same plan)`,
+    ...ledger.kills.map((kill) => `  kill ${String(kill.process).padStart(2)}  ${kill.landed ? `cut at ${kill.landed.side} ${kill.landed.point}  (${(kill.ms / 1000).toFixed(1)} s)` : `did not land: ${kill.plan.side} crossing #${kill.plan.n} was not reached  (${(kill.ms / 1000).toFixed(1)} s, ${kill.outcome ?? 'no outcome'}), drawn again`}`),
+    `${ledger.processes} processes, generation ${ledger.final.generation}, final status ${ledger.final.status}, ${(ledger.ms / 1000).toFixed(1)} s`,
+    '',
+    `committed model turns   ${ledger.counted.committedTurns.join(', ')}`,
+    `model requests          ${table(ledger.counted.requests)}`,
+    `effects                 ${table(ledger.counted.effects)}`,
+    `browser                 ${table(ledger.counted.browser)}`,
+    `page.run                x${runs}${runs === 0 ? `: errored run result committed (kill ${ledger.runInterrupted.join(', ') || 'none landed in its window'})` : ''}`,
+    `judge                   ${table(ledger.counted.judge)}`,
+    `receipts                ${ledger.counted.receipts.join(', ')}`,
+    '',
+    ...ledger.checks.map((check) => `${check.ok ? 'PASS' : 'FAIL'}  ${check.name}`),
+    ...(again ?? []).map((row) => `      ${row.what} done ${row.asked}x: kills inside it: ${row.cutBy.map((cut) => `${cut.kill} (${cut.at})`).join(', ') || 'none'}`),
+    '',
+    'What the claims are:',
+    '  - A paid effect (the search) is made exactly once. A kill between its dispatch and its commit is not drawn: it stops the run on',
+    '    FROZEN_EFFECT_UNKNOWN, by design, so the call is never made twice. A host with a reconcile resumes there instead.',
+    '  - The browser\'s page action (page.run) is made at most once: its outcome, if unknown, is never repeated. The scripted model',
+    '    ignores an errored run result, so the record being equal to the uninterrupted run\'s does not prove the action happened.',
+    '  - page.read may repeat, each repeat tied to a kill inside it; its receipt is named by its content and filed once.',
+    '  - A model turn or the judge is asked again only after a kill landed inside it, in a later process; a committed turn is never repeated.',
+  ];
 }
 
 if (import.meta.main) {
@@ -352,21 +391,7 @@ if (import.meta.main) {
     const seed = values.seed === undefined ? Math.floor(Math.random() * 2 ** 31) : Number(values.seed);
     const ledger = await killAnywhere({ seed, kills: values.kills === undefined ? 10 : Number(values.kills), keep: values.keep === true });
     if (values.json) console.log(JSON.stringify(ledger));
-    else {
-      console.log(`seed ${ledger.seed} (the same seed gives the same plan)`);
-      for (const kill of ledger.kills) console.log(`  kill ${String(kill.process).padStart(2)}  ${kill.landed ? `cut at ${kill.landed.side} ${kill.landed.point}  (${(kill.ms / 1000).toFixed(1)} s)` : `did not land: ${kill.plan.side} crossing #${kill.plan.n} was not reached  (${(kill.ms / 1000).toFixed(1)} s, ${kill.outcome ?? 'no outcome'})`}`);
-      console.log(`${ledger.processes} processes, generation ${ledger.final.generation}, final status ${ledger.final.status}, ${(ledger.ms / 1000).toFixed(1)} s`);
-      console.log(`\ncommitted model turns   ${ledger.counted.committedTurns.join(', ')}`);
-      console.log(`model requests          ${Object.entries(ledger.counted.requests).map(([turn, n]) => `${turn} x${n}`).join(', ')}`);
-      console.log(`effects                 ${Object.entries(ledger.counted.effects).map(([name, n]) => `${name} x${n}`).join(', ')}`);
-      console.log(`browser                 ${Object.entries(ledger.counted.browser).map(([op, n]) => `${op} x${n}`).join(', ')}`);
-      console.log(`judge                   ${Object.entries(ledger.counted.judge).map(([name, n]) => `${name} x${n}`).join(', ')}`);
-      console.log(`receipts                ${ledger.counted.receipts.join(', ')}`);
-      console.log('');
-      for (const check of ledger.checks) console.log(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}`);
-      const again = ledger.checks.find((check) => check.name.startsWith('a model turn'))?.detail as Array<{ what: string; asked: number; cutBy: Array<{ kill: number; at: string }> }> | undefined;
-      for (const row of again ?? []) console.log(`      ${row.what} done ${row.asked}x: kills inside it: ${row.cutBy.map((cut) => `${cut.kill} (${cut.at})`).join(', ') || 'none'}`);
-    }
+    else console.log(render(ledger).join('\n'));
     if (ledger.checks.some((check) => !check.ok)) process.exitCode = 1;
   }
 }

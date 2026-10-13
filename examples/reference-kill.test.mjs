@@ -3,7 +3,7 @@
 // the run's own rows. The same seed gives the same kills.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cutInEffectWindow, killAnywhere, planNext, progress, random } from './reference/kill-anywhere.ts';
+import { cutInEffectWindow, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
@@ -12,6 +12,12 @@ test('ten kills at seeded random points, each resumed by a fresh process: every 
   assert.deepEqual(failed(ledger), []);
   assert.equal(ledger.kills.filter((kill) => kill.landed).length, 10);
   assert.equal(ledger.final.status, 'complete');
+  // The ledger says what the claims are, and names the kill behind a page action that never ran.
+  const lines = render(ledger).join('\n');
+  assert.match(lines, /page\.run +x0: errored run result committed \(kill 2\)/);
+  assert.match(lines, /does not prove the action happened/);
+  assert.match(lines, /FROZEN_EFFECT_UNKNOWN, by design, so the call is never made twice/);
+  assert.match(lines, /page\.read may repeat, each repeat tied to a kill inside it/);
   assert.deepEqual(ledger.counted.committedTurns, ledger.reference.committedTurns);
 });
 
