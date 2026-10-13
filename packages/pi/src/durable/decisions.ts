@@ -50,6 +50,11 @@ export type DecisionRow = {
   error?: string;
   /** The request's spend is on its frozen driver's state, so a cost fold counts it there, not here. */
   driver_spend?: true;
+  /** The receipt's id, its place among its node's requests and the digest of the state it was asked with. A row that
+   *  carries all three is the whole receipt again, so a resumed run can be answered from it (`decisionRecovery`). */
+  decision_id?: string;
+  request?: { index: number; count: number; items?: number[] };
+  state_sha256?: string;
 };
 
 const DecisionsDoc = defineDoc<{ receipts: JsonValue[] }>({ kind: DECISION_RECEIPTS_DOC, version: 1, scope: "session", initial: () => ({ receipts: [] }) });

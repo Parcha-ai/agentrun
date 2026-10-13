@@ -27,3 +27,13 @@ writer.record(row);
 // @ts-expect-error a stored row is version 1.
 const later: DecisionRow = { ...row, v: 2 };
 void [writer, later];
+
+// decisionRecovery's hooks are the interpreter's own, over a workflow task's invocation.
+import type { WorkflowDeps } from '@parcha/agentrun-dsl';
+import { decisionRecovery, type WorkflowInvocation } from '@parcha/agentrun-pi/durable';
+
+declare const invocation: WorkflowInvocation;
+const decisions = decisionRecovery(invocation.runtime, invocation.context);
+const recordDecision: NonNullable<WorkflowDeps['recordDecision']> = decisions.recordDecision;
+const decision: NonNullable<NonNullable<WorkflowDeps['recovery']>['decision']> = decisions.decision;
+void [recordDecision, decision];
