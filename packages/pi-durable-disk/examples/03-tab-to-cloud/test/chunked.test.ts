@@ -341,14 +341,22 @@ describe("an attach that hashes a large workspace", () => {
       writerGraceMs: 20,
     });
     try {
-      const big = Buffer.alloc(384 * MiB, 7);
       mkdirSync(join(root, "runs", "grace", "work"), { recursive: true });
-      writeFileSync(join(root, "runs", "grace", "work", "big.bin"), big);
+      writeFileSync(join(root, "runs", "grace", "work", "big.bin"), Buffer.alloc(MiB, 7));
+      // The hashing is held for 600 ms, whatever this machine's speed: the gone check (every 250 ms) runs at least twice
+      // while the tab is silent, each time far past the 20 ms grace. Hashing a large workspace takes that long for real.
+      const hashing = pipe.manifest.bind(pipe);
+      let held = 0;
+      pipe.manifest = async () => {
+        const manifest = await hashing();
+        const started = performance.now();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        held = performance.now() - started;
+        return manifest;
+      };
       const frames: PipeFrame[] = [];
-      const started = performance.now();
       await pipe.attach({ id: "a", send: (frame) => frames.push(frame), close: () => undefined }, "a", false);
-      const hashMs = performance.now() - started;
-      assert.ok(hashMs > 300, `hashing took ${Math.round(hashMs)} ms, too fast for this test to mean anything`);
+      assert.ok(held >= 590, `the attach went through the held hashing (${Math.round(held)} ms)`);
       assert.deepEqual(frames.filter((f) => f.t === "lost"), []);
       assert.equal(pipe.writerTab, "a");
       assert.ok(frames.some((f) => f.t === "attached"));
