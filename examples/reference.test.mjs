@@ -83,6 +83,8 @@ test('killed in the lead\'s request after the browser read, a second process res
   const killed = await node([child], { ...env, KILL_AT: '2' });
   assert.equal(killed.signal, 'SIGKILL', killed.stderr);
   assert.deepEqual(backend.dispatched.map((row) => row.op), ['run', 'read'], 'the page was opened and read before the kill');
+  const eventsOf = async () => (await readFile(join(dir, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const cut = (await eventsOf()).length;
 
   const resumed = await node([child], env);
   assert.equal(resumed.code, 0, resumed.stderr);
@@ -92,6 +94,9 @@ test('killed in the lead\'s request after the browser read, a second process res
   assert.deepEqual(view.evidence, [READ, LOOK], 'the read filed once: no receipt was filed twice');
   assert.equal(view.did.disk.generation, 2);
   assert.deepEqual(view.did.browser, { launched: 1, updated: 1, 'reconcile.kept': 1, released: 1 }, 'the resumed run kept the session the killed one opened');
+  // The disk run's open resumes the workflow's task; the task runs no step until the browser has reconciled.
+  const first = (await eventsOf()).slice(cut, cut + 2).map((event) => (event.source === 'browser' && 'reconciled' in event ? 'reconcile' : `${event.source} ${event.event?.type}`));
+  assert.deepEqual(first, ['reconcile', 'workflow node.start'], 'the resumed process reconciled the browser before any step ran');
 
   // Asked again: only the request the kill cut. Not repeated: the search (answered from its receipt), the browser's
   // `run` and read (their results were committed), the judge, and every other request.

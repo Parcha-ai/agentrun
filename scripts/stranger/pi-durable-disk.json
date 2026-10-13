@@ -1,0 +1,5 @@
+{
+  "package": "@parcha/pi-durable-disk",
+  "expect": "no-key path missing",
+  "reason": "Every quickstart in the README needs an Archil disk and API key, or a Linux host with Archil; the CLI has no no-key command."
+}
