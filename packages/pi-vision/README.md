@@ -77,10 +77,10 @@ are always there; programs run in the environment the agent's shell runs in, nev
 | An office document as it looks | a `needs` miss; its text still comes back | LibreOffice's `soffice` (MPL-2.0, run as a program) |
 | Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs) |
 
-`@earendil-works/pi-durable`, `@earendil-works/pi-ai` and `@earendil-works/chord` (1.0.4 to 1.1.x) are optional peers,
-for the adapter and the pi-ai eyes, and Photon is one for the default image processor. sharp is never resolved by this
-package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL code stays with the host's
-install.
+`@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.2.x) and `@earendil-works/pi-ai` (any version: the
+host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon is one for the default image processor.
+sharp is never resolved by this package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL
+code stays with the host's install.
 
 ## For a host: what a program is started with
 
