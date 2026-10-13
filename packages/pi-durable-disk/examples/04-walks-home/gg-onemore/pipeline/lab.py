@@ -585,11 +585,14 @@ class Lab:
         the verdict uncertain, as before, so what Jev sees is unchanged."""
         self.vllm_fold(L, f * median_norm)
         tg = now()
+        # both draws end here, before the next strength changes the weights
         with ThreadPoolExecutor(2) as ex:
-            drawn = list(zip((PROBES, PROBES_B), ex.map(self.sample, (PROBES, PROBES_B))))
+            drawn = [(probes, ex.submit(self.sample, probes)) for probes in (PROBES, PROBES_B)]
         gen_s = now() - tg
         items, grades, tools, sets, grade_s = [], [], 0, 0, 0.0
-        for probes, (answers, t) in drawn:
+        for probes, draw in drawn:
+            # a failed draw fails the probe only when its answers are needed
+            answers, t = draw.result()
             tj = now()
             batch = [{**p, "answer": a, "thinking": th} for p, (a, th) in zip(probes, answers)]
             grades += self.grade(batch)
