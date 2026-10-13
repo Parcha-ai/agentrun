@@ -763,7 +763,9 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
     // (the check can take up to two minutes for the browser's receipt, and a new move would release the pipe the check reads it through, and send the closing line nowhere): they are replayed,
     // each placed, once the check and the closing turn have finished. The message a move was for goes now.
     const home = options.placer?.homePrompt;
-    const goingHome = home !== undefined && home !== "" && s.move.by === "placement" && s.to === TAB_ENVIRONMENT.id;
+    // The home turn is for a move home the server made at the END of a turn (the placement's "done" question: after teaching, say). A move home that placed the user's own line ("come back to my browser", phase "start")
+    // has that line's turn as its answer: a second one from the server would say the same thing twice.
+    const goingHome = home !== undefined && home !== "" && s.move.by === "placement" && s.move.phase === "done" && s.to === TAB_ENVIRONMENT.id;
     void flushPending(state, goingHome ? "direct" : "all");
     if (home && goingHome) {
       // The wait starts before the check, so a request that arrives while the check runs, or during the closing turn, is queued too.
