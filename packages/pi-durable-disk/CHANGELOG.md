@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `LaunchSpec.beforeSpawn` (and the `beforeSpawn` option of `daytonaHost` and `modalHost`): a command the in-box launcher runs as root before every incarnation of the instance, the first and each restart in place. It lets a host put
+  back what an instance consumed (a secret file the app read once and deleted, which a restart in place would otherwise find gone) from a copy only root can read. A failing command (non-zero exit, timeout, no such program) ends the
+  launcher with `beforeSpawn failed: ...` and never starts the instance. Without it nothing changes.
 - `AppOptions.wrapEnv(env, claim)`: an app module can wrap the run's environment once the claim is open, so a host that gives some
   conversations an environment of their own (a thread's tools on its own machine) answers for those and hands every other conversation to
   the run's environment. The wrapper keeps `env.cleanup`. Without it nothing changes.

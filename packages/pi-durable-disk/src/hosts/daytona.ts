@@ -211,6 +211,8 @@ export interface DaytonaHostOptions {
   runArgs?: string[];
   /** Extra environment for the instance. The driver never copies its own environment (which holds the API keys). */
   env?: Record<string, string>;
+  /** A command the in-box launcher runs as root before every incarnation of the instance, the first and each restart in place (`LaunchSpec.beforeSpawn`); a failure stops the launcher without starting the instance. */
+  beforeSpawn?: string[];
   /** Restart in place after a non-terminal exit (default true). */
   restart?: boolean;
   /**
@@ -392,6 +394,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
           env: { ...opts.env, PDA_HOLDER: JSON.stringify(handle) },
           user,
           group,
+          ...(opts.beforeSpawn ? { beforeSpawn: [...opts.beforeSpawn] } : {}),
           restart: opts.restart !== false,
           mountpoint: handle.mountpoint as string,
           terminalExits: [...TERMINAL_EXITS],

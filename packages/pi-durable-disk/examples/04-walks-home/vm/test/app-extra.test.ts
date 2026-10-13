@@ -1,11 +1,12 @@
 // A generic extra of the cloud app (appExtra): files in the VM's bundle, the module that DEMO_APP_EXTRA names, extra environment, secret files for the run user (mode 0400, never in a log or a
 // command), and no robot code for a page that is not about the robot. The robot's own extra is the default and does not change.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { appExtraPlan, stageExtraSecrets, EXTRA_SECRETS_DIR } from "../modal-cloud.ts";
+import { appExtraPlan, extraBeforeSpawn, restageExtraSecrets, stageExtraSecrets, EXTRA_SECRETS_DIR } from "../modal-cloud.ts";
 import { modalOptionsFromArgs } from "../cloud-module.ts";
 
 test("with no extra and no robot, the bundle and the environment are the app's own", () => {
@@ -80,9 +81,11 @@ test("secret files are staged as bytes, mode 0400 for the run user, and the secr
   assert.equal(uploads[0]!.text, SECRET, "the bytes go up as a file");
   assert.match(uploads[0]!.path, /^\/tmp\/stage\//);
   const run = commands.join("\n");
-  assert.match(run, /install -m 0400 -o pda -g pda \x27\/tmp\/stage\/[^ ]+\x27 \x27\/etc\/pda-demo\/extra\/api\.key\x27/, "mode 0400, owned by the run user, in the extra directory");
-  assert.ok(/install -d -m 0700 -o pda -g pda \x27\/etc\/pda-demo\/extra\x27/.test(run), "the directory is the run user's, so an extra can delete a file once read");
+  assert.match(run, /install -m 0400 -o root -g root \x27\/tmp\/stage\/[^ ]+\x27 \x27\/etc\/pda-demo\/extra\.seed\/api\.key\x27/, "a root-only copy is kept, mode 0400");
   assert.match(run, /rm -f \x27\/tmp\/stage\//, "the staged copy is removed");
+  const restage = commands.at(-1)!;
+  assert.ok(restage.startsWith("sudo -n '/bin/bash' '-c' "), "then, as root, the run user's file is made from the root-only copy (the command the launcher runs before each restart)");
+  assert.ok(restage.includes("-o pda -g pda") && restage.includes("/etc/pda-demo/extra.seed/api.key") && restage.includes("/etc/pda-demo/extra/api.key") && restage.includes("install -m 0400"), restage);
   for (const text of [run, ...logs]) assert.equal(text.includes(SECRET), false, "the secret appears nowhere in a command or a log line");
   assert.ok(logs.some((l) => l.includes("api.key")), "the log names the file, never its content");
 });
@@ -119,4 +122,49 @@ test("--cloud-arg extra-module, extra-secrets and robot-code make the extra", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("restageExtraSecrets is the command the launcher runs as root before every incarnation: it makes the run user's 0400 files from the root-only copies, and can run again over files the extra deleted", () => {
+  const [program, flag, script] = restageExtraSecrets(["serve.key", "tunnel.url"], { etc: "/etc/pda-demo", user: "pda" });
+  assert.equal(program, "/bin/bash", "an absolute program, as the launcher requires");
+  assert.equal(flag, "-c");
+  const lines = script!.split("\n");
+  assert.deepEqual(lines, [
+    "set -eu",
+    "install -d -m 0700 -o pda -g pda '/etc/pda-demo/extra'",
+    "install -m 0400 -o pda -g pda '/etc/pda-demo/extra.seed/serve.key' '/etc/pda-demo/extra/serve.key'",
+    "install -m 0400 -o pda -g pda '/etc/pda-demo/extra.seed/tunnel.url' '/etc/pda-demo/extra/tunnel.url'",
+  ]);
+});
+
+test("a fake in-place restart: the extra's files are put back from the root-only copies before the next incarnation (run as the real command, with the paths moved into a scratch directory)", () => {
+  const root = mkdtempSync(join(tmpdir(), "restage-"));
+  try {
+    const etc = join(root, "etc");
+    mkdirSync(join(etc, "extra.seed"), { recursive: true });
+    writeFileSync(join(etc, "extra.seed", "api.key"), "seed-bytes");
+    const me = userInfo().username;
+    const group = execFileSync("id", ["-gn"], { encoding: "utf8" }).trim();
+    const [program, flag, script] = restageExtraSecrets(["api.key"], { etc, user: me, group });
+    const restage = () => execFileSync(program!, [flag!, script!]);
+    restage(); // the first incarnation
+    const live = join(etc, "extra", "api.key");
+    assert.equal(readFileSync(live, "utf8"), "seed-bytes");
+    assert.equal(statSync(live).mode & 0o777, 0o400);
+    unlinkSync(live); // the extra read it once and deleted it, then the instance exited non-zero
+    assert.equal(existsSync(live), false);
+    restage(); // the launcher restarts the instance in place: beforeSpawn runs first
+    assert.equal(readFileSync(live, "utf8"), "seed-bytes", "the next incarnation finds it again");
+    assert.equal(statSync(live).mode & 0o777, 0o400);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an extra with secret files gets a beforeSpawn that makes them; one without gets none", () => {
+  const before = extraBeforeSpawn({ module: "m.mjs", files: { "m.mjs": "/m" }, secretFiles: { "serve.key": "/k" } });
+  assert.deepEqual(before, restageExtraSecrets(["serve.key"], { etc: "/etc/pda-demo", user: "pda" }));
+  assert.equal(extraBeforeSpawn({ module: "m.mjs", files: { "m.mjs": "/m" } }), undefined);
+  assert.equal(extraBeforeSpawn({ module: "m.mjs", files: { "m.mjs": "/m" }, secretFiles: {} }), undefined);
+  assert.equal(extraBeforeSpawn(undefined), undefined);
 });

@@ -12,7 +12,7 @@
 // (the spec), `<name>.token` (gone once read), `<name>.state`, `<name>.log` (the instance's output). Only the first
 // incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,14 @@ export interface LaunchSpec {
   /** More than `burst` restarts within `intervalMs` ends the launcher (systemd's start limit). Default 5 in 60 s. */
   restartLimit?: { burst: number; intervalMs: number };
   terminalExits?: number[];
+  /**
+   * A command (absolute program path, then its arguments) the launcher runs as itself, which is root in a box, before EVERY incarnation: the first and each restart in place. It runs with PATH and LANG only, its output goes
+   * to the instance's log, and a failure (a non-zero exit, a timeout, no such program) ends the launcher with the reason, never starting the instance: an instance whose files are not in place must not run. What a restart in place
+   * needs again that the instance itself consumed (a secret it read once and deleted) is put back here, by whoever the files belong to, without the run user ever being able to read the source.
+   */
+  beforeSpawn?: string[];
+  /** The longest `beforeSpawn` may run (default 30 s). */
+  beforeSpawnTimeoutMs?: number;
   /** The run's mount in the box: `stop --reap-detached` ends the programs that hold it busy (see `mountBlockers`). */
   mountpoint?: string;
 }
@@ -135,6 +143,7 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
     token = existsSync(f.token) ? readFileSync(f.token, "utf8").trim() : "";
     if (existsSync(f.token)) unlinkSync(f.token);
     ids = runAs(spec);
+    if (spec.beforeSpawn !== undefined && (!Array.isArray(spec.beforeSpawn) || spec.beforeSpawn.length === 0 || spec.beforeSpawn.some((x) => typeof x !== "string") || !spec.beforeSpawn[0]!.startsWith("/"))) throw new Error("beforeSpawn is a command: an absolute program path and its arguments");
   } catch (err) {
     save({ phase: "exited", exit: 1, reason: `refused: ${(err as Error).message}` });
     return state;
@@ -159,6 +168,14 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   const recent: number[] = [];
   try {
     for (;;) {
+      if (spec.beforeSpawn) {
+        const ran = spawnSync(spec.beforeSpawn[0]!, spec.beforeSpawn.slice(1), { env: { PATH: SAFE_PATH, LANG: "C.UTF-8" }, cwd: "/", stdio: ["ignore", log, log], timeout: spec.beforeSpawnTimeoutMs ?? 30_000 });
+        if (ran.status !== 0) {
+          const why = ran.error ? (ran.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "timed out" : ran.error.message : `exit ${ran.status}${ran.signal ? ` (${ran.signal})` : ""}`;
+          save({ phase: "exited", instance: null, instanceTicks: null, exit: 1, reason: `beforeSpawn failed: ${why}` });
+          return state;
+        }
+      }
       const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env };
       const first = token !== null;
       try {

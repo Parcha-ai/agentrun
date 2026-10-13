@@ -228,8 +228,29 @@ export function appExtraPlan(options: { robot?: boolean; transport?: "mount" | "
 
 const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`;
 
+/** Where the root-only copies of an extra's secret files are on the VM: only root reads them, and `restageExtraSecrets` puts the run user's files back from them. */
+export const EXTRA_SEED_DIR = `${BOX_ETC}/extra.seed`;
+
 /**
- * Stage an extra's secret files on a VM: each goes up as a file (its bytes never in a command), is installed mode 0400 for the run user under `EXTRA_SECRETS_DIR`, and the staged copy is removed.
+ * The command that makes the extra's secret files (the run user's, mode 0400, in `EXTRA_SECRETS_DIR`) from their root-only copies: the launcher runs it as root before every incarnation of the instance
+ * (`beforeSpawn`), the first and each restart in place, and staging runs it once. An extra that reads a file once and deletes it finds it again after a restart, and the run user can never read the copies.
+ */
+export function restageExtraSecrets(names: readonly string[], where: { etc: string; user: string; group?: string }): string[] {
+  const dir = `${where.etc}/extra`;
+  const seed = `${where.etc}/extra.seed`;
+  const own = `-o ${where.user} -g ${where.group ?? where.user}`;
+  return ["/bin/bash", "-c", ["set -eu", `install -d -m 0700 ${own} ${shellQuote(dir)}`, ...names.map((name) => `install -m 0400 ${own} ${shellQuote(`${seed}/${name}`)} ${shellQuote(`${dir}/${name}`)}`)].join("\n")];
+}
+
+/** What the launcher runs as root before every incarnation of the instance for an extra with secret files (see `restageExtraSecrets`); undefined when it has none. */
+export function extraBeforeSpawn(appExtra: AppExtraOptions | undefined): string[] | undefined {
+  const names = Object.keys(appExtra?.secretFiles ?? {});
+  return names.length > 0 ? restageExtraSecrets(names, { etc: BOX_ETC, user: "pda" }) : undefined;
+}
+
+/**
+ * Stage an extra's secret files on a VM: each goes up as a file (its bytes never in a command), is kept as a root-only copy under `EXTRA_SEED_DIR`, and the staged copy is removed; then the run user's files
+ * (mode 0400, under `EXTRA_SECRETS_DIR`) are made from the copies, the same way the launcher makes them again before each restart in place.
  * Only the names are logged; an unreadable source stops the start naming the file, not what is in it.
  */
 export async function stageExtraSecrets(
@@ -240,7 +261,7 @@ export async function stageExtraSecrets(
   log: (event: string, data?: Record<string, unknown>) => void,
   read: (path: string) => Uint8Array = (path) => readFileSync(path),
 ): Promise<void> {
-  const dir = `${where.etc}/extra`;
+  const seed = `${where.etc}/extra.seed`;
   let n = 0;
   for (const [name, source] of Object.entries(files)) {
     let bytes: Uint8Array;
@@ -251,9 +272,11 @@ export async function stageExtraSecrets(
     }
     const staged = `${where.stage}/secret.${n++}`;
     await client.upload(box, staged, bytes);
-    const r = await client.exec(box, ["set -eu", `sudo -n install -d -m 0700 -o ${where.user} -g ${where.user} ${shellQuote(dir)}`, `sudo -n install -m 0400 -o ${where.user} -g ${where.user} ${shellQuote(staged)} ${shellQuote(`${dir}/${name}`)}`, `rm -f ${shellQuote(staged)}`].join(" && "), 30);
+    const r = await client.exec(box, ["set -eu", `sudo -n install -d -m 0700 -o root -g root ${shellQuote(seed)}`, `sudo -n install -m 0400 -o root -g root ${shellQuote(staged)} ${shellQuote(`${seed}/${name}`)}`, `rm -f ${shellQuote(staged)}`].join(" && "), 30);
     if (r.exitCode !== 0) throw new Error(`staging secret file ${name} in ${box.name} failed (${r.exitCode})`);
   }
+  const made = await client.exec(box, `sudo -n ${restageExtraSecrets(Object.keys(files), where).map(shellQuote).join(" ")}`, 30);
+  if (made.exitCode !== 0) throw new Error(`making the secret files for the run user in ${box.name} failed (${made.exitCode})`);
   log("modal.extra-secrets", { box: box.name, names: Object.keys(files) });
 }
 
@@ -734,6 +757,8 @@ export async function modalCloud(options: ModalCloudOptions): Promise<ModalCloud
           : {}),
         ...moveEnv(env, run.move, "modal-vm"),
       },
+      // An extra that reads a secret file once and deletes it must find it again after a restart of the instance in place: root puts the run user's files back from their root-only copies before every incarnation.
+      ...(extraBeforeSpawn(options.appExtra) ? { beforeSpawn: extraBeforeSpawn(options.appExtra)! } : {}),
       stopTimeoutMs: 15_000,
       ttlMinutes: 120,
       startTimeoutMs: 600_000,
