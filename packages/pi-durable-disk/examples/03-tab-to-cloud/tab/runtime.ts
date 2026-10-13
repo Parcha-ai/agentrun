@@ -8,7 +8,7 @@ import type { Conversation, HarnessSettings, Storage } from "@earendil-works/pi-
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import { agentModels, agentRegistry, rootAgent, SETTINGS, type HostTools } from "../agent.ts";
+import { agentModels, agentRegistry, keepPlace, rootAgent, SETTINGS, type HostTools } from "../agent.ts";
 import type { Registry } from "@earendil-works/pi-durable";
 import { admitNotice, type EnvironmentFacts, type SwitchInfo } from "../environment.ts";
 import { remoteStorage, type Attached, type PipeClient } from "./pipe-client.ts";
@@ -117,6 +117,8 @@ export async function startTab<E extends RuntimeEnv>(opts: {
   host?: HostTools;
   /** The move that brought the run here, and this host's description, for the notice admitted before resuming. */
   move?: { info: SwitchInfo; facts: EnvironmentFacts };
+  /** Where this host is, as the server names its environment (the tab's phrase, or a remote host's DEMO_ENV_LABEL): the agent's model line says it runs there. */
+  place?: string;
   /**
    * Also write through every this many milliseconds while the run is open, so what a long tool call writes (a training
    * checkpoint) reaches the disk and the viewers while the call is still running. Without it a tool's files become durable
@@ -155,10 +157,12 @@ export async function startTab<E extends RuntimeEnv>(opts: {
     models = agentModels({ baseUrl: "https://model-proxy.invalid/v1", modelId: opts.attached.model, fetch: opts.client.fetch as typeof globalThis.fetch });
     registry = agentRegistry(durable, { ...opts.host, ...(opts.attached.placed ? { switchTool: false } : {}), environments: opts.host?.environments ?? opts.attached.environments.map((e) => e.id) });
     harness = await Harness.open(remoteStorage(opts.client), { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
-    // The notice is committed before anything the run resumes commits (environment.ts).
-    if (opts.move) await admitNotice(harness, rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }), opts.move.facts, opts.move.info, ctx);
+    const agent = rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode, ...(opts.place ? { place: opts.place } : {}) });
+    // The notice is committed before anything the run resumes commits (environment.ts), and so is the model line's place.
+    if (opts.move) await admitNotice(harness, agent, opts.move.facts, opts.move.info, ctx);
+    root = await harness.root(ctx, { agent });
+    await keepPlace(root, opts.place, ctx);
     await harness.resume();
-    root = await harness.root(ctx, { agent: rootAgent(opts.attached.model, { registry, robotCode: opts.robotCode }) });
   } catch (error) {
     await live?.stop();
     throw error;
@@ -217,6 +221,8 @@ export async function startLocal(opts: {
   deferResume?: boolean;
   /** Code mode (default): the agent is not offered the preset tools (resize, scale, set_legs, morph). */
   robotCode?: boolean;
+  /** Where this host is (the tab's phrase): the agent's model line says it runs there. */
+  place?: string;
 }): Promise<TabRuntime> {
   const env = opts.computer?.env ?? noComputer();
   const workspace = opts.computer?.workspace ?? noWorkspace();
@@ -235,8 +241,9 @@ export async function startLocal(opts: {
   };
   const registry = agentRegistry((_context: Context) => flush(), { switchTool: false, environments: [], ...opts.host });
   const harness = await Harness.open(opts.storage, { registry, models, env: () => env, settings: opts.settings ?? SETTINGS }, ctx);
+  const root = await harness.root(ctx, { agent: rootAgent(opts.model, { registry, robotCode: opts.robotCode, ...(opts.place ? { place: opts.place } : {}) }) });
+  await keepPlace(root, opts.place, ctx);
   if (!opts.deferResume) await harness.resume();
-  const root = await harness.root(ctx, { agent: rootAgent(opts.model, { registry, robotCode: opts.robotCode }) });
   return {
     harness,
     root,

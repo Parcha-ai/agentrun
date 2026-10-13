@@ -3,7 +3,7 @@
 // extensions under the same names, so tasks recovered on one side resume on the other, and both call the model through
 // the same OpenAI-compatible provider; only where its requests go differs. Portable: no Node API.
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
-import type { AgentChange, Extension, HarnessSettings, Registry, RegistryReader, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import type { AgentChange, Conversation, Extension, HarnessSettings, Registry, RegistryReader, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -132,9 +132,16 @@ export function setExtraInstructions(text: string): void {
 export function appendInstructions(text: string): void {
   extraInstructions = [extraInstructions, text.trim()].filter(Boolean).join("\n\n");
 }
-/** The model that drives this conversation, named from its own config (the modelId the server attached it with): asked which model or LLM it is, the agent answers from this line. */
-export const modelLine = (modelId: string): string =>
-  `Your model is ${modelId}, reached through your user's server. Asked which model or LLM you are, say ${modelId} and where you are running now; never name another model or product as yourself.`;
+/**
+ * The model that drives this conversation, named from its own config (the modelId the server attached it with), and where
+ * the agent runs now, from the host that holds the run (`place`: its environment's phrase, as the server gives it). Asked
+ * which model or LLM it is, the agent answers from this line. One line: `keepPlace` replaces it when the run moves.
+ */
+export const modelLine = (modelId: string, place?: string): string =>
+  place
+    ? `Your model is ${modelId}, which runs in the cloud and is reached through your user's server; you, the agent, are running in ${place} now. Asked which model or LLM you are, say ${modelId}, and that you are running in ${place}; never name another model or product as yourself.`
+    : `Your model is ${modelId}, reached through your user's server. Asked which model or LLM you are, say ${modelId} and where you are running now; never name another model or product as yourself.`;
+const MODEL_LINE = /^Your model is .*$/m;
 /**
  * A page that is not the robot's replaces the root agent's instructions outright: the base ones are the robot page's (the creature, teaching, switch_environment) and would contradict it.
  * Undefined (the default): the base, the model line and the host's extra, as before.
@@ -143,7 +150,25 @@ let replacedInstructions: string | undefined;
 export function replaceInstructions(text: string | undefined): void {
   replacedInstructions = text === undefined ? undefined : text.trim();
 }
-const instructions = (modelId: string) => (replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId), extraInstructions].filter(Boolean).join("\n\n"));
+const instructions = (modelId: string, place?: string) => (replacedInstructions !== undefined ? replacedInstructions : [INSTRUCTIONS, modelLine(modelId, place), extraInstructions].filter(Boolean).join("\n\n"));
+
+/** The phrase the server gives the page's own environment (the tab), among the environments it attached the page with. */
+export const tabPlace = (environments: readonly { readonly kind: string; readonly phrase: string }[]): string | undefined => environments.find((e) => e.kind === "tab")?.phrase;
+
+/**
+ * Bring the model line of a run's root conversation to the host that opens it. `root()` sets the agent only when it creates
+ * the conversation, so after a move the line would still say where the run was. Only that line changes (the rest is the
+ * conversation's own), with the model its config names, and only while the cloud model drives: the browser's brain keeps
+ * its own instructions, and `cloudAgent` writes the line again when the cloud model comes back. Instructions with no model
+ * line (a page that replaced them) are left as they are.
+ */
+export async function keepPlace(root: Pick<Conversation, "agent" | "configure">, place: string | undefined, context: Context): Promise<void> {
+  const agent = await root.agent(context);
+  const text = agent.instructions ?? "";
+  if (agent.model?.provider !== PROVIDER || !MODEL_LINE.test(text)) return;
+  const next = text.replace(MODEL_LINE, modelLine(agent.model.modelId, place));
+  if (next !== text) await root.configure({ instructions: next }, context);
+}
 
 /** How a root conversation is set up. Code mode is the default: the robot is a body the agent writes, so the tools that pick a preset body (resize, scale, set_legs, morph) are not offered (removed from the host's tools, whichever host it is). */
 export interface AgentOptions {
@@ -151,6 +176,8 @@ export interface AgentOptions {
   robotCode?: boolean;
   /** A registry that has the preset tools: with it, code mode removes them from the conversation's tools from the first request; without it the agent is offered every tool until its first robot call, which takes them out. */
   registry?: RegistryReader;
+  /** Where this host is, as the server names its environment ("your user's browser tab", "a Modal VM"): the model line says the agent runs there. */
+  place?: string;
 }
 
 /** The preset-body tools as this registry has them: what a conversation's tool list drops in code mode. Removed from whatever the host offers (the tab's tools, a VM's teach_skills and read_thread on top), not a list made from this registry. */
@@ -160,7 +187,7 @@ function presetTools(registry: RegistryReader): ToolRegistration[] {
 
 /** The root conversation's agent: the model, thinking on (never off), the instructions (naming that model), and in code mode the tools without the preset ones. */
 export function rootAgent(modelId: string, options: AgentOptions = {}): AgentChange {
-  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId) };
+  const base: AgentChange = { model: { provider: PROVIDER, modelId }, thinkingLevel: "low", instructions: instructions(modelId, options.place) };
   return options.robotCode !== false && options.registry ? { ...base, tools: { remove: presetTools(options.registry) } } : base;
 }
 

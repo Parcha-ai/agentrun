@@ -45,7 +45,7 @@ import { startV5Brain, V5_MODEL_ID, v5SmallFiles, v5Urls, type V5Brain } from ".
 import { wllamaLlm as wllamaForPrefetch } from "../../04-walks-home/tab/src/llm.ts";
 import { FrameSwitchChannel } from "../switch-tool.ts";
 import { OfflineRefusedError, type OfflineChannel } from "../offline-tools.ts";
-import { cloudAgent, rootAgent, setExtraInstructions } from "../agent.ts";
+import { cloudAgent, rootAgent, setExtraInstructions, tabPlace } from "../agent.ts";
 import { ROBOT_SOPS } from "./robot-sop.ts";
 import { parseSkills, skillPolicyPath } from "../../04-walks-home/tab/src/skills.ts";
 import { WriteGate } from "./write-gate.ts";
@@ -173,6 +173,9 @@ const state = {
   v5: { prefetch: "idle" as "idle" | "running" | "done" | "failed" | "unavailable", prefetchText: "", ready: false, brain: undefined as V5Brain | undefined, marks: {} as Record<string, number>, log: [] as string[] },
 };
 
+/** This page's own environment as the server names it ("your user's browser tab"), from the last attach: the agent's model line says it runs here. */
+let herePlace: string | undefined;
+const placed = () => (herePlace ? { place: herePlace } : {});
 const envLabel = (id: string | undefined) => state.environments.find((e) => e.id === id)?.label ?? id ?? "";
 
 // ---- rendering ---------------------------------------------------------------------------------------------------------
@@ -684,14 +687,15 @@ async function runHere(attached: Attached, client: PipeClient): Promise<void> {
   const started = performance.now();
   const { env, workspace, facts } = await bootComputer();
   state.environments = attached.environments;
+  herePlace = tabPlace(attached.environments) ?? herePlace;
   state.agentModel = attached.model;
   state.placed = attached.placed === true;
-  const runtime = await startTab({ client, attached, env: withHomeFallback(env, readWorkFresh), workspace, robotCode: robotCodeOn, host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  const runtime = await startTab({ client, attached, env: withHomeFallback(env, readWorkFresh), workspace, robotCode: robotCodeOn, ...placed(), host: { switchChannel, offlineChannel }, ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   state.runtime = runtime;
   installCloud(runtime);
   // With ?golive=1 the router can leave the conversation on the small model; a page opened again has no model loaded until it goes offline, so the conversation goes back to the cloud model before input is accepted.
-  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model, { registry: runtime.registry, robotCode: robotCodeOn }), ctx);
+  if (golive && (await runtime.root.agent(ctx)).model?.provider === BRAIN_PROVIDER) await runtime.root.configure(cloudAgent(attached.model, { registry: runtime.registry, robotCode: robotCodeOn, ...placed() }), ctx);
   state.bootMs = performance.now() - started;
   state.mode = "writer";
   state.progress = "";
@@ -953,7 +957,7 @@ async function watchRehome(runtime: TabRuntime, brain: Brain): Promise<void> {
       render();
       let result: Awaited<ReturnType<Brain["rehome"]>>;
       try {
-        result = await brain.rehome(text, cloudAgent(state.agentModel, { registry: runtime.registry, robotCode: robotCodeOn }));
+        result = await brain.rehome(text, cloudAgent(state.agentModel, { registry: runtime.registry, robotCode: robotCodeOn, ...placed() }));
       } finally {
         state.rehoming = false;
       }
@@ -1226,7 +1230,7 @@ async function startOffline(record: CheckoutRecord, adopt?: ModelHost): Promise<
     }
     computerStatus.ms = Math.round(performance.now() - started);
     computerStatus.parts = marks;
-    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, host: { offlineChannel }, ...(v5Offline && new URLSearchParams(location.search).get("brain") !== "off" ? { deferResume: true } : {}), /* resumed by startV5Brain once its provider exists */ ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
+    const runtime = await startLocal({ storage: store.storage, model: record.model, robotCode: robotCodeOn, ...placed(), host: { offlineChannel }, ...(v5Offline && new URLSearchParams(location.search).get("brain") !== "off" ? { deferResume: true } : {}), /* resumed by startV5Brain once its provider exists */ ...(computer ? { computer, persist: (changes) => applyChanges(run, changes) } : {}) });
     state.offline = { record, store, computer: computerStatus };
     state.runtime = runtime;
     state.environments = [];
@@ -1633,7 +1637,7 @@ async function sendCheckin(record: CheckoutRecord, payload: { store: Uint8Array;
     const attached = state.runtime as TabRuntime | undefined; // set by connect() (runHere), which TypeScript cannot see from here
     if ((state.mode as string) !== "writer" || !attached) throw new Error("the run is back on the server but this tab could not attach to it: reload this page");
     // The same conversation, the cloud model again, every tool the registry has again.
-    await attached.root.configure(cloudAgent(state.agentModel, { registry: attached.registry, robotCode: robotCodeOn }), ctx);
+    await attached.root.configure(cloudAgent(state.agentModel, { registry: attached.registry, robotCode: robotCodeOn, ...placed() }), ctx);
     const ms = Math.round(performance.now() - started);
     const event: CheckinEvent = { at: Date.now(), head: done.head, files: done.files, changes: payload.changes.length, ms, offlineHead: record.head };
     await attached.root.submit({ type: "write", requestId: `checkin:${done.head}`, entry: { kind: BRAIN_CHECKIN, data: { head: done.head, files: done.files, changes: payload.changes.length, ms } } }, ctx).catch(() => undefined);
@@ -2064,7 +2068,7 @@ async function decideAndSubmit(text: string, requestId = `ui-${crypto.randomUUID
     const brain = state.brain;
     const ready = brain !== undefined && brain.modelId !== undefined && brain.host.state().phase === "answered";
     const decision = await router.decide(text, { online: state.mode === "writer" && state.net.online, localModel: ready ? { id: brain!.modelId! } : null });
-    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel, { registry: state.runtime!.registry, robotCode: robotCodeOn }));
+    if (ready) await brain!.use(decision.brain, cloudAgent(state.agentModel, { registry: state.runtime!.registry, robotCode: robotCodeOn, ...placed() }));
     const event = brainEvent(decision, { local: "the model in this tab", cloud: "the cloud model" });
     state.decisions.push(event);
     announce("brain", event);

@@ -136,7 +136,7 @@ async function serve(socket: WebSocket, invite: Invite): Promise<void> {
   // DEMO_BASH_MAX_S: a ceiling on one command (a take: a command that never returns fails back to the agent instead of holding the run).
   const env = capTimeouts(new NodeExecutionEnv({ cwd: work, shellEnv: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? work, LANG: "C.UTF-8", TERM: "dumb" } }), Number(process.env.DEMO_BASH_MAX_S ?? 0));
   const facts = await probeHost();
-  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
+  runtime = await startTab({ client, attached, env, workspace: new Workspace(nodeWorkspaceFs(work)), place: facts.label, host: { switchChannel }, liveFlushMs: Number(process.env.DEMO_LIVE_FLUSH_MS ?? 0), ...(attached.move ? { move: { info: attached.move, facts } } : {}) });
   if (attached.move) client.send({ t: "switched", switchId: attached.move.id });
   log("running", { generation: attached.generation, ms: Math.round(performance.now() - started), restored: runtime.restored, gpu: facts.gpu });
   const stream = await watchEvents(runtime.harness, runtime.root.id, ctx);
