@@ -13,6 +13,11 @@ const DEFAULT_RESTART_INTERVAL_MS = 60_000;
 const DEFAULT_GRACE_MS = 5_000;
 const DEFAULT_LOG_MAX_BYTES = 1024 * 1024;
 const MIN_LOG_MAX_BYTES = 1024;
+/** Bounds that keep the numbers the launcher's shell does arithmetic on small and exact. */
+const MAX_LOG_MAX_BYTES = 1024 * 1024 * 1024;
+const MAX_DELAY_MS = 24 * 60 * 60 * 1000;
+const MAX_INTERVAL_MS = 30 * MAX_DELAY_MS;
+const MAX_RESTART_BURST = 1_000_000;
 const START_WAIT_MS = 15_000;
 const POLL_MS = 100;
 const CALL_TIMEOUT_MS = 30_000;
@@ -121,14 +126,24 @@ function validate(name: string, spec: LaunchSpec | undefined): LaunchError | und
 		}
 	}
 	const limit = spec.restartLimit;
-	if (limit !== undefined && (!(limit.burst >= 0) || !Number.isInteger(limit.burst) || !(limit.intervalMs > 0))) {
-		return new LaunchError("invalid", "restartLimit needs a burst of 0 or more and a positive interval");
+	if (limit !== undefined) {
+		if (!Number.isInteger(limit.burst) || limit.burst < 0 || limit.burst > MAX_RESTART_BURST) {
+			return new LaunchError("invalid", `restartLimit.burst must be a whole number from 0 to ${MAX_RESTART_BURST}`);
+		}
+		if (!Number.isFinite(limit.intervalMs) || limit.intervalMs <= 0 || limit.intervalMs > MAX_INTERVAL_MS) {
+			return new LaunchError("invalid", `restartLimit.intervalMs must be a number from 1 to ${MAX_INTERVAL_MS}`);
+		}
 	}
-	if (spec.restartDelayMs !== undefined && !(spec.restartDelayMs >= 0)) {
-		return new LaunchError("invalid", "restartDelayMs must not be negative");
+	const delay = spec.restartDelayMs;
+	if (delay !== undefined && (!Number.isFinite(delay) || delay < 0 || delay > MAX_DELAY_MS)) {
+		return new LaunchError("invalid", `restartDelayMs must be a number from 0 to ${MAX_DELAY_MS}`);
 	}
-	if (spec.logMaxBytes !== undefined && !(spec.logMaxBytes >= MIN_LOG_MAX_BYTES)) {
-		return new LaunchError("invalid", `logMaxBytes must be at least ${MIN_LOG_MAX_BYTES}`);
+	const logMax = spec.logMaxBytes;
+	if (logMax !== undefined && (!Number.isFinite(logMax) || logMax < MIN_LOG_MAX_BYTES || logMax > MAX_LOG_MAX_BYTES)) {
+		return new LaunchError(
+			"invalid",
+			`logMaxBytes must be a number from ${MIN_LOG_MAX_BYTES} to ${MAX_LOG_MAX_BYTES}`,
+		);
 	}
 	return undefined;
 }

@@ -30,6 +30,8 @@ alive() {
   [ "$(rest "$1" | cut -c1)" != Z ] || return 1
   [ -z "$2" ] || [ "$(ticks "$1")" = "$2" ]
 }
+# A signal to a process group. dash wants "--" before a negative pid and BusyBox refuses it, so try both.
+gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
@@ -95,7 +97,7 @@ end_incarnation() {
     wr exit.$n $code
     wr lastexit $code
   fi
-  if [ -n "$pid" ]; then kill -s KILL -- "-$pid" 2>/dev/null; fi
+  if [ -n "$pid" ]; then gkill KILL "$pid"; fi
   if terminal "$code"; then
     write_state exited "" "$code"
     : > "$D/done"
@@ -166,14 +168,14 @@ stopit() {
   pid=$(rd pid.$n)
   before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
   if alive "$pid" "$(rd ticks.$n)"; then
-    kill -s TERM -- "-$pid" 2>/dev/null
+    gkill TERM "$pid"
     i=0
-    while kill -s 0 -- "-$pid" 2>/dev/null && [ "$i" -lt "$tenths" ]; do
+    while gkill 0 "$pid" && [ "$i" -lt "$tenths" ]; do
       sleep $STEP
       i=$(( i + STEPS ))
     done
   fi
-  if [ -n "$pid" ]; then kill -s KILL -- "-$pid" 2>/dev/null; fi
+  if [ -n "$pid" ]; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
     if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi

@@ -388,6 +388,32 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		expect(tail).toBe("THE-END");
 	});
 
+	const refused = async (box: Box, name: string, spec: Partial<LaunchSpec>) => {
+		const result = await launch(box, name, { argv: ["true"], ...spec }, context);
+		expect(result.ok ? "ok" : result.error.code).toBe("invalid");
+		// Refused before the box is touched: no launch directory exists.
+		expect(unwrap(await launchStatus(box, name, context))).toBeUndefined();
+	};
+
+	each("restartDelayMs must be a finite number within bounds", async (box) => {
+		for (const [index, value] of [Number.POSITIVE_INFINITY, Number.NaN, -1, 1e12].entries()) {
+			await refused(box, `delay${index}`, { restartDelayMs: value });
+		}
+	});
+
+	each("restartLimit.intervalMs must be a finite number within bounds", async (box) => {
+		for (const [index, value] of [Number.POSITIVE_INFINITY, Number.NaN, 0, 1e13].entries()) {
+			await refused(box, `interval${index}`, { restartLimit: { burst: 1, intervalMs: value } });
+		}
+		await refused(box, "burst", { restartLimit: { burst: Number.POSITIVE_INFINITY, intervalMs: 1000 } });
+	});
+
+	each("logMaxBytes must be a finite number within bounds", async (box) => {
+		for (const [index, value] of [Number.POSITIVE_INFINITY, Number.NaN, 10, 1e12].entries()) {
+			await refused(box, `log${index}`, { logMaxBytes: value });
+		}
+	});
+
 	each("a bad name, an empty argv and a reserved environment name are refused before any call", async (box) => {
 		for (const name of ["", "a/b", "..", "-x", "x".repeat(65)]) {
 			const result = await launch(box, name, program("true"), context);
