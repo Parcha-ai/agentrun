@@ -29,6 +29,8 @@ const NAMES = [
 	"star*",
 	"tab\there",
 	"ünï cödé",
+	"a\uFEFFb",
+	"\uFEFFlead",
 	"日本語",
 	".hidden",
 	"semi;colon",
@@ -155,6 +157,12 @@ type Tamper = {
 	readonly dropUpload?: boolean;
 	/** Called at the start of every `download` with its number, counting from 1. */
 	readonly onDownload?: (call: number) => void;
+	/** Called after every `upload` that went through, with its number, counting from 1. */
+	readonly onUpload?: (call: number) => void;
+	/** Called once, when the first chunk of the packing program's output is about to be handed on. */
+	readonly onFirstChunk?: () => void;
+	/** Wait this long before starting a program whose command line contains the text. */
+	readonly delayExec?: { readonly match: string; readonly ms: number };
 };
 
 /** What a box was asked to do through its file calls. */
@@ -198,7 +206,11 @@ export function tampered(box: Box, tamper: Tamper): Box {
 					context,
 				);
 			}
-			if (tamper.flipUploadAt === undefined || !first) return box.upload(files, context);
+			if (tamper.flipUploadAt === undefined || !first) {
+				const result = await box.upload(files, context);
+				if (result.ok) tamper.onUpload?.(uploads);
+				return result;
+			}
 			const at = tamper.flipUploadAt;
 			return box.upload(
 				files.map((file, index) => {
@@ -244,6 +256,9 @@ export function tampered(box: Box, tamper: Tamper): Box {
 			options: BoxExecOptions | undefined,
 			context,
 		): Promise<Result<BoxProcess, BoxError>> {
+			if (tamper.delayExec && command.some((part) => part.includes(tamper.delayExec?.match ?? "\0"))) {
+				await new Promise((resolve) => setTimeout(resolve, tamper.delayExec?.ms));
+			}
 			const started = await box.exec(command, options, context);
 			if (started.ok && tamper.flipReceiveAt !== undefined && command.some((part) => part.includes("cat > "))) {
 				const inner = started.value;
@@ -274,6 +289,7 @@ export function tampered(box: Box, tamper: Tamper): Box {
 				stderr: inner.stderr,
 				stdout: (async function* () {
 					for await (const chunk of inner.stdout) {
+						if (seen === 0) tamper.onFirstChunk?.();
 						const bytes = Uint8Array.from(chunk);
 						if (tamper.flipAt !== undefined && seen <= tamper.flipAt && tamper.flipAt < seen + bytes.length) {
 							bytes[tamper.flipAt - seen] = (bytes[tamper.flipAt - seen] as number) ^ 1;

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, rename, rm, stat } from "node:fs/promises";
+import { link, open, rm, stat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
@@ -170,23 +170,27 @@ export async function checkpointStore(path: string, to: string, context: Context
 	} catch {
 		// Absent is what is wanted.
 	}
-	const partial = `${to}.partial`;
-	await rm(partial, { force: true });
+	// A name of this call's own: another checkpoint to the same place never writes or removes this one's copy.
+	const partial = `${to}.${randomUUID()}.partial`;
+	const discard = () => rm(partial, { force: true }).catch(() => {});
 	const copied = await withDatabase(path, (database) => {
 		database.exec(`VACUUM INTO '${partial.replaceAll("'", "''")}'`);
 	});
 	if (!copied.ok) {
-		await rm(partial, { force: true });
+		await discard();
 		return copied;
 	}
 	try {
-		await rename(partial, to);
+		// A hard link fails when `to` exists, whoever made it since the check above; a rename would replace it.
+		await link(partial, to);
 	} catch (cause) {
-		await rm(partial, { force: true });
+		await discard();
+		if ((cause as { code?: string }).code === "EEXIST") return err(new StoreError("exists", `${to} already exists`));
 		return err(
-			new StoreError("unknown", `could not move the checkpoint into place: ${(cause as Error).message}`, cause),
+			new StoreError("unknown", `could not put the checkpoint in place: ${(cause as Error).message}`, cause),
 		);
 	}
+	await discard();
 	return sealStore(to, context);
 }
 
