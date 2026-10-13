@@ -1,7 +1,7 @@
 import { runWorkflow, type Workflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
 import {
   openRecovery, withRecovery, memoryStore, fileStore, workspaceFiles, RecoveryError,
-  type RecoveryBinding, type RecoveryDriver, type RecoveryEffect, type RecoveryJournal, type RecoveryNote, type RecoveryStore, type EscalationRow, type FrozenSnapshot,
+  type RecoveryBinding, type RecoveryDriver, type RecoveryEffect, type RecoveryIntent, type RecoveryJournal, type RecoveryNote, type RecoveryStore, type EscalationRow, type FrozenSnapshot,
 } from '@parcha/agentrun-dsl/recovery';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
 
@@ -19,8 +19,11 @@ async function caller() {
   const admitted = await journal.admit(id, 'lookup', 'digest', { started: true }, null);
   if (admitted !== 'new') {
     const status: 'unknown' | 'completed' = admitted.status;
-    void status;
+    const intent: RecoveryIntent | undefined = admitted.intent;
+    void [status, intent];
   }
+  const call: RecoveryIntent = { tool: 'registry_lookup', argsHash: 'digest' };
+  await journal.admit('tool-1', 'lookup', 'digest', { started: true }, 'run-1', call);
   await journal.called(id, [{ tool: 'lookup' }]);
   await journal.complete(id, { value: 1, files: {} }, { started: true });
   await journal.complete(id, { value: 1, files: {} });
@@ -34,6 +37,8 @@ async function caller() {
   await journal.note('progress', {});
   // @ts-expect-error an admission resolves to 'new' or the effect already held, never to nothing.
   const nothing: void = await journal.admit('other', 'lookup', 'digest', {});
+  // @ts-expect-error an intent names the tool and the hash of its arguments, not the arguments.
+  await journal.admit('tool-2', 'lookup', 'digest', {}, null, { tool: 'registry_lookup', args: {} });
   // @ts-expect-error a store is opened under a binding.
   await store.open();
   void [resumed, owner, saved, plain, noted, effect, held, nothing];

@@ -30,7 +30,8 @@ export function reuseReceipts(options: ReuseReceiptsOptions): ReceiptReuse {
   const keyOf = options.keyOf ?? gatewayIntentOf;
   const held = new Map<string, InheritedReceipt>();
   for (const receipt of options.receipts) if (!held.has(`${receipt.tool}:${receipt.argsHash}`)) held.set(`${receipt.tool}:${receipt.argsHash}`, receipt);
-  const unknown = new Set((options.unknown ?? []).map((u) => `${u.name}\n${u.argsHash}`));
+  // An unknown is matched by the name and hash its admission recorded, and by the external call it was admitted for.
+  const unknown = new Set((options.unknown ?? []).flatMap((u) => [`${u.name}\n${u.argsHash}`, ...(u.intent ? [`${u.intent.tool}\n${u.intent.argsHash}`] : [])]));
   const paid = new Set(options.tools);
   const stats = { reused: 0, refused: 0 };
   return {
