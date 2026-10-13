@@ -25,6 +25,8 @@ export type Endpoint = { readonly baseUrl: string; readonly apiKey: string };
 export interface SteeredProviderOptions {
   readonly id?: string;
   readonly modelId: string;
+  /** The name the model is registered with: what a page shows for it (default its id). */
+  readonly modelName?: string;
   /** Read at every request, so a box created after the Harness opened is reachable without re-registering. */
   readonly endpoint: () => Endpoint | undefined;
   readonly name?: string;
@@ -205,7 +207,7 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     models: [
       {
         id: opts.modelId,
-        name: opts.modelId,
+        name: opts.modelName ?? opts.modelId,
         api: "openai-completions",
         provider: id,
         baseUrl: "http://endpoint.invalid/v1",

@@ -156,7 +156,8 @@ try {
   const [base, secret] = link.split("#");
   const ip = spawnSync("tailscale", ["ip", "-4"], { encoding: "utf8" }).stdout.trim().split("\n")[0] || "<this host>";
   // printed once: the person opens it (its fragment is the run's secret)
-  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}gg=1#${secret}`);
+  // thinking=open: the thinking open and dimmed as it streams; gg=1: the page's own instructions for the root conversation
+  console.log(`LIVE: open ${base}${base.includes("?") ? "&" : "?"}thinking=open&gg=1#${secret}`);
   console.log(`LIVE: then ssh -N -o ServerAliveInterval=5 -o ExitOnForwardFailure=yes -L ${PORT}:127.0.0.1:${PORT} ubuntu@${ip}`);
   say("ready", { s: Math.round((Date.now() - t0) / 1000) });
   // 5. idle: no request through the guard for --idle-min minutes, and the box goes down (a forgotten page must not burn GPUs)

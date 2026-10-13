@@ -118,6 +118,7 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
     const models = createModels();
     models.setProvider(base(["gg_read", "use_model"]));
     extra.models(models);
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B (Golden Gate edit)", "the page shows the registered name");
     const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
     const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: "base-model" }, thinkingLevel: "low", instructions: extra.instructions.text } });
     const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));

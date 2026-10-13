@@ -91,7 +91,8 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
       models.setProvider(
         steeredProvider({
           modelId: GG_MODEL,
-          name: GG_DISPLAY,
+          // the page's header shows the registered name
+          modelName: GG_DISPLAY,
           maxTokens: 1200,
           thinkingBudgets: { minimal: 128, low: 256, medium: 512, high: 1024 },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
