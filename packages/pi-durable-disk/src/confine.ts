@@ -235,6 +235,8 @@ const changed = (path: string) =>
 export class Confinement {
   readonly work: string;
   readonly readOnly: readonly string[];
+  /** Directories handed out for writing after construction (the environment's temp dirs), canonical. */
+  readonly #handed = new Set<string>();
 
   /** Canonical directories: `work` may be read and written, `readOnly` only read. */
   constructor(work: string, readOnly: readonly string[]) {
@@ -242,10 +244,18 @@ export class Confinement {
     this.readOnly = readOnly;
   }
 
+  /**
+   * Lets file operations write inside `dir` too: a directory this process just created (`createTempDir`) under a
+   * read-only root, for the tool it is handed to. Canonical, and inside a read-only root, or it is not taken.
+   */
+  allowWrites(dir: string): void {
+    if (this.readOnly.some((root) => inside(dir, root) && dir !== root)) this.#handed.add(dir);
+  }
+
   /** Resolves `abs` and refuses it unless it lies under an allowed root; returns the root that holds it. */
   async locate(abs: string, original: string, access: "read" | "write", follow: boolean): Promise<{ canonical: string; root: string }> {
     const canonical = follow ? await canonicalize(abs) : join(await canonicalize(dirname(abs)), basename(abs));
-    const roots = access === "write" ? [this.work] : [this.work, ...this.readOnly];
+    const roots = access === "write" ? [this.work, ...this.#handed] : [this.work, ...this.#handed, ...this.readOnly];
     const root = roots.find((candidate) => inside(canonical, candidate));
     if (root === undefined) {
       const where = canonical === abs ? "" : ` (it resolves to ${canonical})`;

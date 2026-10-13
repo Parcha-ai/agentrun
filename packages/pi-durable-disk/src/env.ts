@@ -26,7 +26,7 @@ import type {
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { canonicalizeSync, Confinement, fileError, inside } from "./confine.ts";
+import { canonicalize, canonicalizeSync, Confinement, fileError, inside } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
 
@@ -64,8 +64,8 @@ export interface ArchilEnvOptions {
   readonly confineFiles?: boolean;
   /**
    * Directories file operations may read but never write, besides the workspace and the claim's `tmp/` (where a bash
-   * command's spilled output lives and which the bash tool names to the model). For an app's own skills or reference
-   * material.
+   * command's spilled output lives and which the bash tool names to the model; a directory `createTempDir` returned is
+   * writable too, for the tool it was handed to). For an app's own skills or reference material.
    */
   readonly readRoots?: readonly string[];
   /**
@@ -106,7 +106,8 @@ export class EnvError extends PdaError {
  * resumed run on another host has the same identity. Temporary files and directories (a bash command's spilled
  * `pi-output-*.log` among them) live under `<root>/tmp/`, inside the claim and outside `work/`, so a path a result
  * names still exists after a takeover on another host. Commands run under no_new_privs unless `noNewPrivs` is false, and
- * every file operation is confined to the workspace (reads also to `tmp/` and `readRoots`) unless `confineFiles` is false.
+ * every file operation is confined to the workspace (reads also to `tmp/` and `readRoots`, writes also inside a directory
+ * `createTempDir` returned) unless `confineFiles` is false.
  */
 export interface ArchilEnvFactory {
   /** Rooted at the claim's `work/`; an agent `cwd` is resolved against it. */
@@ -443,7 +444,10 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     const { tempRoot } = this.#scope;
     try {
       if ((await mkdir(tempRoot, { recursive: true, mode: 0o755 })) !== undefined) await chmod(tempRoot, 0o755);
-      return ok(await mkdtemp(join(tempRoot, prefix ?? "tmp-")));
+      const dir = await mkdtemp(join(tempRoot, prefix ?? "tmp-"));
+      // the tool it is handed to may write in it (vision writes its source there): only there, the rest of tmp/ stays read-only
+      this.#scope.confinement?.allowWrites(await canonicalize(dir));
+      return ok(dir);
     } catch (error) {
       return err(fileError(error, tempRoot));
     }
@@ -624,7 +628,8 @@ function requireSetpriv(path: string): string {
 }
 
 /**
- * The roots, canonical once here: file operations may use the workspace, the claim's `tmp/` (read only) and `readRoots`.
+ * The roots, canonical once here: file operations may use the workspace, the claim's `tmp/` (read only, but for the
+ * directories `createTempDir` hands out, which are writable) and `readRoots`.
  * Taken at construction, before any agent runs, so a symlink an agent puts in place of `work` or `tmp` later cannot widen
  * them: it resolves outside the roots and is refused.
  */

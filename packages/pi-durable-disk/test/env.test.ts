@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { PathOutsideWorkError } from "../src/confine.ts";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -321,6 +322,26 @@ describe("temporary files live under <root>/tmp", () => {
       const other = getOrThrow(await archilEnv({ root, work })({ cwd: "sub" }).createTempDir("o-", context));
       assert.equal(dirname(other), tmp);
       assert.equal((await stat(tmp)).mode & 0o777, 0o755);
+    });
+  });
+
+  it("a file tool may write inside a directory createTempDir returned (vision writes its source there), and nowhere else in tmp/", async () => {
+    await withRun(async ({ root, work }) => {
+      const factory = archilEnv({ root, work });
+      const env = factory({});
+      const dir = getOrThrow(await env.createTempDir("vision-", context));
+      getOrThrow(await env.writeFile(join(dir, "source.txt"), "media", context));
+      assert.equal(getOrThrow(await env.readTextFile(join(dir, "source.txt"), context)), "media");
+      // another environment of the same run is handed the same directory as writable
+      getOrThrow(await factory({ cwd: "sub" }).writeFile(join(dir, "again.txt"), "x", context));
+      // tmp/ itself, a directory nobody was handed, and one of another run stay read-only
+      await mkdir(join(root, "tmp", "not-handed"), { recursive: true });
+      await mkdir(join(root, "other-work"), { recursive: true });
+      const elsewhere = getOrThrow(await archilEnv({ root, work: join(root, "other-work") })({}).createTempDir("o-", context));
+      for (const path of [join(root, "tmp", "loose.txt"), join(root, "tmp", "not-handed", "x.txt"), join(elsewhere, "x.txt")]) {
+        const refused = await env.writeFile(path, "no", context);
+        assert.ok(!refused.ok && refused.error instanceof PathOutsideWorkError && refused.error.reason === "outside_work", `${path}: ${JSON.stringify(refused)}`);
+      }
     });
   });
 
