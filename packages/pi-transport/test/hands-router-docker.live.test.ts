@@ -11,7 +11,7 @@ import { registerHandsCases } from "./hands-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Every container of this run carries the label, so the last test can count what the run left behind.
-const labels = { "pi-transport.test": `hands-${process.pid}-${Date.now()}` };
+const labels = { "test-run": `hands-${process.pid}-${Date.now()}` };
 
 // Needs a Docker daemon and an image, so it runs only when asked: `npm run test:live:docker`.
 if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {

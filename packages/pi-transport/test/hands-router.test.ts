@@ -10,7 +10,7 @@ import { type ExecutionEnv, getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { describe, expect, it } from "vitest";
-import { BoxError } from "../src/box/box.ts";
+import { BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
@@ -232,21 +232,36 @@ describe("transport(): where tools run", () => {
 			const workspace = join(directory, "workspace");
 			const config = {
 				environments: {
-					sandbox: { provider: "local", image: "tools:1", cpus: 2, memoryMb: 512, env: { MODE: "test" } },
+					sandbox: {
+						provider: "elsewhere",
+						image: "tools:1",
+						cpus: 2,
+						memoryMb: 512,
+						env: { MODE: "test" },
+						maxLifetime: "2h",
+					},
 				},
 				hands: "sandbox",
 				workspace: { path: workspace },
 			};
-			const session = await openSession(
-				new MemoryStorage(),
-				config,
-				{ local: provider },
-				{ team: "docs", "pi-transport": "no" },
-			);
+			// A provider that takes an image and a size, which a local box refuses: they stop here.
+			const specs: BoxSpec[] = [];
+			const elsewhere: BoxProvider = {
+				name: "elsewhere",
+				create: (spec, createContext) => {
+					specs.push(spec);
+					const { image: _image, cpus: _cpus, memoryMb: _memoryMb, ...honoured } = spec;
+					return provider.create(honoured, createContext);
+				},
+				attach: (id, attachContext) => provider.attach(id, attachContext),
+				list: (labels, listContext) => provider.list(labels, listContext),
+			};
+			const labels = { team: "docs", "pi-transport": "no" };
+			const session = await openSession(new MemoryStorage(), config, { elsewhere }, labels);
 			expect((await session.turn(await session.converse(), [bash("echo $MODE")]))[0]?.text).toContain("test");
-			expect(provider.specs).toEqual([
+			expect(specs).toEqual([
 				{
-					maxLifetimeMs: 24 * 3_600_000,
+					maxLifetimeMs: 2 * 3_600_000,
 					labels: { team: "docs", "pi-transport": "1" },
 					env: { MODE: "test" },
 					image: "tools:1",
