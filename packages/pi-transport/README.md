@@ -37,6 +37,7 @@ ignoring it.
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
 | Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
+| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
 
 ### Daytona
 
@@ -50,6 +51,33 @@ made in the organization. The default workspace is `/tmp/workspace`. Programs ru
 and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
+
+### Modal
+
+`modalBoxes(sdk, { appName })` takes the host's own Modal client, so this package depends on no Modal SDK. The
+client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
+
+```ts
+import { ModalClient } from "modal";
+import { modalBoxes } from "@parcha/pi-transport/box/modal";
+
+const provider = modalBoxes(new ModalClient(), { appName: "my-boxes" });
+await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUND_CONTEXT);
+```
+
+- `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
+  value is refused with `unsupported`.
+- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
+  with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
+- `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
+  it passes, whatever happens to the host.
+- The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
+  environment and the SDK, which is not installed with this package: `npm install --no-save modal@0.11.0`, then
+  `PI_TRANSPORT_LIVE_MODAL=1 npm run test:live -w @parcha/pi-transport` (`test:live` loads every live file, and each
+  provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
+  and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
+  the kinds.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`

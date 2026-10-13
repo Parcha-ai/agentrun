@@ -47,9 +47,10 @@ function p50(samples: number[]): number {
 	return [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)] ?? Number.NaN;
 }
 
-// Needs a Daytona organization, so it runs only when asked: `npm run test:live:daytona`. The caller sets
-// DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET; PI_TRANSPORT_LIVE_NAME_PREFIX, PI_TRANSPORT_LIVE_LABELS and
-// PI_TRANSPORT_DAYTONA_SNAPSHOT are as in box-daytona.live.test.ts, and PI_TRANSPORT_LIVE_SEEDS sets the random runs.
+// Needs a Daytona organization, so it runs only when asked: `PI_TRANSPORT_LIVE_DAYTONA=1 npm run test:live`. The
+// caller sets DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET; PI_TRANSPORT_LIVE_NAME_PREFIX,
+// PI_TRANSPORT_LIVE_LABELS and PI_TRANSPORT_DAYTONA_SNAPSHOT are as in box-daytona.live.test.ts, and
+// PI_TRANSPORT_LIVE_SEEDS sets the random runs.
 if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 	vi.setConfig({ testTimeout: TEST_TIMEOUT_MS });
 	const provider = daytonaBoxes({

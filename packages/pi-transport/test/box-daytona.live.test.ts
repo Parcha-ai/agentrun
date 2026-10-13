@@ -49,9 +49,9 @@ function parseLabels(text: string): Record<string, string> {
 	);
 }
 
-// Needs a Daytona organization, so it runs only when asked: `npm run test:live:daytona`. The caller sets
-// DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET. PI_TRANSPORT_LIVE_NAME_PREFIX and PI_TRANSPORT_LIVE_LABELS
-// (`a=b,c=d`) name and label the boxes; PI_TRANSPORT_DAYTONA_SNAPSHOT picks the size.
+// Needs a Daytona organization, so it runs only when asked: `PI_TRANSPORT_LIVE_DAYTONA=1 npm run test:live`. The
+// caller sets DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET. PI_TRANSPORT_LIVE_NAME_PREFIX and
+// PI_TRANSPORT_LIVE_LABELS (`a=b,c=d`) name and label the boxes; PI_TRANSPORT_DAYTONA_SNAPSHOT picks the size.
 if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS });
 	process.env[CANARY] = "the host's environment reached a box";
