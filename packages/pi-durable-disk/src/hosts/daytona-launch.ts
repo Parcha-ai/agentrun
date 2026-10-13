@@ -12,7 +12,7 @@
 // (the spec), `<name>.token` (gone once read), `<name>.state`, `<name>.log` (the instance's output). Only the first
 // incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -143,7 +143,7 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
     token = existsSync(f.token) ? readFileSync(f.token, "utf8").trim() : "";
     if (existsSync(f.token)) unlinkSync(f.token);
     ids = runAs(spec);
-    if (spec.beforeSpawn !== undefined && (!Array.isArray(spec.beforeSpawn) || spec.beforeSpawn.length === 0 || spec.beforeSpawn.some((x) => typeof x !== "string") || !spec.beforeSpawn[0]!.startsWith("/"))) throw new Error("beforeSpawn is a command: an absolute program path and its arguments");
+    if (spec.beforeSpawn !== undefined && (!Array.isArray(spec.beforeSpawn) || spec.beforeSpawn.length === 0 || spec.beforeSpawn.some((x) => typeof x !== "string" || x.includes("\0")) || !spec.beforeSpawn[0]!.startsWith("/"))) throw new Error("beforeSpawn is a command: an absolute program path and its arguments");
   } catch (err) {
     save({ phase: "exited", exit: 1, reason: `refused: ${(err as Error).message}` });
     return state;
@@ -156,6 +156,13 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   let child: ReturnType<typeof spawn> | null = null;
   const onSignal = () => {
     stopping = true;
+    if (hook?.pid) {
+      try {
+        process.kill(-hook.pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
     if (state.phase === "restarting") save({ phase: "stopping" });
     else if (child?.exitCode === null) {
       save({ phase: "stopping" });
@@ -166,12 +173,60 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   process.on("SIGINT", onSignal);
   const log = openSync(f.log, "a", 0o600);
   const recent: number[] = [];
+  /** The `beforeSpawn` command now running, so a stop can end it. */
+  let hook: ReturnType<typeof spawn> | null = null;
+  /** Run `beforeSpawn` and say why it failed, or null when it succeeded. Asynchronous (a stop is heard meanwhile), bounded (SIGTERM at the timeout, SIGKILL of its group 2 s later) and never throws. */
+  const runHook = (): Promise<string | null> =>
+    new Promise((resolve) => {
+      let done = false;
+      let timedOut = false;
+      const timers: NodeJS.Timeout[] = [];
+      const finish = (why: string | null) => {
+        if (done) return;
+        done = true;
+        for (const t of timers) clearTimeout(t);
+        hook = null;
+        resolve(why);
+      };
+      let c: ReturnType<typeof spawn>;
+      try {
+        c = spawn(spec.beforeSpawn![0]!, spec.beforeSpawn!.slice(1), { env: { PATH: SAFE_PATH, LANG: "C.UTF-8" }, cwd: "/", stdio: ["ignore", log, log], detached: true });
+      } catch (err) {
+        finish(`could not start: ${(err as Error).message}`);
+        return;
+      }
+      hook = c;
+      const killGroup = (signal: NodeJS.Signals) => {
+        try {
+          process.kill(-c.pid!, signal);
+        } catch {
+          // gone
+        }
+      };
+      c.once("error", (err) => finish(`could not start: ${(err as NodeJS.ErrnoException).code ?? err.message}`));
+      c.once("exit", (code, signal) => finish(timedOut ? "timed out" : code === 0 ? null : `exit ${code ?? signal}`));
+      timers.push(
+        setTimeout(() => {
+          timedOut = true;
+          killGroup("SIGTERM");
+          timers.push(
+            setTimeout(() => {
+              killGroup("SIGKILL");
+              timers.push(setTimeout(() => finish("timed out"), 1_000));
+            }, 2_000),
+          );
+        }, spec.beforeSpawnTimeoutMs ?? 30_000),
+      );
+    });
   try {
     for (;;) {
       if (spec.beforeSpawn) {
-        const ran = spawnSync(spec.beforeSpawn[0]!, spec.beforeSpawn.slice(1), { env: { PATH: SAFE_PATH, LANG: "C.UTF-8" }, cwd: "/", stdio: ["ignore", log, log], timeout: spec.beforeSpawnTimeoutMs ?? 30_000 });
-        if (ran.status !== 0) {
-          const why = ran.error ? (ran.error as NodeJS.ErrnoException).code === "ETIMEDOUT" ? "timed out" : ran.error.message : `exit ${ran.status}${ran.signal ? ` (${ran.signal})` : ""}`;
+        const why = await runHook();
+        if (stopping) {
+          save({ phase: "exited", instance: null, instanceTicks: null, reason: "stopped" });
+          return state;
+        }
+        if (why) {
           save({ phase: "exited", instance: null, instanceTicks: null, exit: 1, reason: `beforeSpawn failed: ${why}` });
           return state;
         }

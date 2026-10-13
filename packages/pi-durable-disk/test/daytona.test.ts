@@ -425,6 +425,39 @@ test("launcher: a failing beforeSpawn never starts the instance (the first time)
   assert.equal(slow.reason, "beforeSpawn failed: timed out");
 });
 
+test("launcher: a beforeSpawn that ignores SIGTERM is killed after a grace and the launcher still says why; a stop ends a running hook", async () => {
+  const d = scratch("pda-before-");
+  const out = join(d, "out.txt");
+  const stubborn = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`;
+  const t0 = Date.now();
+  const end = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", stubborn], beforeSpawnTimeoutMs: 200 }), "x");
+  assert.equal(end.reason, "beforeSpawn failed: timed out");
+  assert.equal(end.spawned, 0);
+  assert.ok(Date.now() - t0 < 6_000, `it took ${Date.now() - t0} ms`);
+  // A stop while the hook runs: the launcher's own SIGTERM handler ends it and the launcher says it was stopped (the process-wide signal is emitted here, not sent).
+  const long = launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "setInterval(() => {}, 1000)"], beforeSpawnTimeoutMs: 60_000 });
+  const t1 = Date.now();
+  const running = serve(long, "x");
+  await sleep(400);
+  process.emit("SIGTERM");
+  const stopped = await running;
+  assert.equal(stopped.reason, "stopped");
+  assert.equal(stopped.spawned, 0);
+  assert.ok(Date.now() - t1 < 5_000, `it took ${Date.now() - t1} ms`);
+});
+
+test("launcher: a beforeSpawn argument with a NUL, or a program that cannot start, ends the launcher with a reason instead of throwing or waiting", async () => {
+  const d = scratch("pda-before-");
+  const out = join(d, "out.txt");
+  const nul = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out }, beforeSpawn: [process.execPath, "-e", "a\0b"] }), "x");
+  assert.equal(nul.spawned, 0);
+  assert.match(nul.reason!, /beforeSpawn is a command/);
+  const missing = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [join(d, "no-such-program")] }), "x");
+  assert.equal(missing.spawned, 0);
+  assert.equal(missing.phase, "exited");
+  assert.match(missing.reason!, /^beforeSpawn failed: could not start: ENOENT/);
+});
+
 test("launcher: a beforeSpawn that is not a command with an absolute program is refused, and nothing runs", async () => {
   for (const bad of [[], ["relative-program"], [process.execPath, 5 as unknown as string]]) {
     const end = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: {}, beforeSpawn: bad }), "x");
