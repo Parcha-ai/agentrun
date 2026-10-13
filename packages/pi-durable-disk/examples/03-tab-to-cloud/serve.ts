@@ -13,6 +13,7 @@
 //                 [--no-restore PREFIX]...   work/ prefixes no writer is sent on attach (a large result read on demand through the disk proxy)
 //                 [--placer-module PATH [--placer-arg KEY=VALUE]...]  where the run should be, decided by a typed question (placement.ts) on each user message
 //                 [--daytona-snapshot NAME] [--daytona-gpu-snapshot NAME [--warm-gpu]] [--daytona-secret NAME | --cloud-link]
+//                 [--parent-pid PID]   stop when that process is gone (a harness names its own pid: if it is killed, its server does not outlive it)
 //                 [--also-host ADDR] [--public-url https://HOST] [--tab-writable PATH,PATH] [--evidence-readback]
 //
 // --also-host listens on a second address too (a reverse proxy's side of a bridge); --public-url is the address the
@@ -75,6 +76,7 @@ const { values } = parseArgs({
     "cloud-arg": { type: "string", multiple: true },
     "no-restore": { type: "string", multiple: true },
     "placer-module": { type: "string" },
+    "parent-pid": { type: "string" },
     "placer-arg": { type: "string", multiple: true },
     "cloud-link": { type: "boolean", default: false },
     "grace-ms": { type: "string", default: "5000" },
@@ -89,6 +91,10 @@ const { values } = parseArgs({
 });
 
 // A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
+if (values["parent-pid"] !== undefined && !/^[1-9]\d*$/.test(values["parent-pid"])) {
+  console.error(`--parent-pid ${values["parent-pid"]}: it is the pid of a process, a positive whole number`);
+  process.exit(2);
+}
 for (const name of ["grace-ms", "remote-start-ms", "writer-return-ms"] as const) {
   const text = values[name];
   if (text !== undefined && !(Number.isFinite(Number(text)) && Number(text) > 0 && text.trim() !== "")) {
@@ -236,23 +242,53 @@ let closing = false;
 const stop = async (code = 0) => {
   if (closing) return;
   closing = true;
-  log("stopping");
-  also?.closeAllConnections();
-  also?.close();
+  // Cleanup and exit always run: nothing here may throw before them (a log line is already safe, and the close is guarded as well, so a failure is a non-zero exit, not a server that stays up).
+  try {
+    log("stopping");
+    also?.closeAllConnections();
+    also?.close();
+  } catch {
+    code ||= 1;
+  }
   // Always closed, whatever code the stop was asked for (a crash must not skip it).
-  const closed = await closeServerAndCloud(server, cloud, log);
+  let closed = 1;
+  try {
+    closed = await closeServerAndCloud(server, cloud, log);
+  } catch {
+    closed = 1;
+  }
   code ||= closed;
-  log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
+  try {
+    log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
+  } catch {
+    /* the exit below is what matters */
+  }
   process.exit(code);
 };
 process.on("SIGINT", () => void stop());
 process.on("SIGTERM", () => void stop());
 // A crash is not a reason to leave a warm GPU box running: clean up first. (SIGKILL cannot; the sandbox's own timeout is then the backstop.)
 process.on("uncaughtException", (error) => {
+  if (closing) return; // already stopping: another error on the way down is not logged again, which is how a failing log line once looped for ever
   log("uncaught", { error: error.message });
   void stop(1);
 });
 process.on("unhandledRejection", (reason) => {
+  if (closing) return;
   log("unhandled-rejection", { error: reason instanceof Error ? reason.message : String(reason) });
   void stop(1);
 });
+// A harness that starts this server names its own pid: when that process is gone the server stops (a harness that is killed cannot run its own cleanup, and a server nobody reads from or stops is a leak).
+if (values["parent-pid"]) {
+  const parent = Number(values["parent-pid"]);
+  setInterval(() => {
+    try {
+      process.kill(parent, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        log("parent-gone", { pid: parent });
+        void stop();
+      }
+    }
+  }, 3000).unref();
+}

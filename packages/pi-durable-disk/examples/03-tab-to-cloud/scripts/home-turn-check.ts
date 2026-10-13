@@ -73,7 +73,7 @@ try {
   stub = await responsesStub("Understood.");
   const port = await freePort(), proxyPort = await freePort();
   const RUN = "home";
-  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", stub.url, "--grace-ms", "3000", "--log", join(dir, "server.log"), "--cloud", "remote-local", "--placer-module", join(import.meta.dirname, "_home-placer.ts")], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", stub.url, "--grace-ms", "3000", "--log", join(dir, "server.log"), "--cloud", "remote-local", "--placer-module", join(import.meta.dirname, "_home-placer.ts")], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "inherit"] });
   let link = "";
   server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
   for (let i = 0; i < 100 && !link; i++) await sleep(100);

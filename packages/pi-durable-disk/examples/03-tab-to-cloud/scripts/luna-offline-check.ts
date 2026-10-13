@@ -21,7 +21,7 @@ const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "luna-"));
 const port = await freePort();
 const log: string[] = [];
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--local", dir, "--run", "lu", "--model", MODEL, "--model-url", MODEL_URL, ...(KEY_ENV ? ["--model-key-env", KEY_ENV] : []), "--budget", process.env.BUDGET ?? "60000", "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", "lu", "--model", MODEL, "--model-url", MODEL_URL, ...(KEY_ENV ? ["--model-key-env", KEY_ENV] : []), "--budget", process.env.BUDGET ?? "60000", "--grace-ms", "3000", "--no-restore", "home/model/"], { cwd: join(import.meta.dirname, ".."), stdio: ["ignore", "pipe", "pipe"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; log.push(String(d)); });
 server.stderr!.on("data", (d) => log.push(String(d)));
