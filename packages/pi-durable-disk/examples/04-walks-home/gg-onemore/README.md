@@ -34,9 +34,10 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `pi/gg-tools.ts` | The pipeline as tools on the guard's typed routes: `gg_read`, `gg_find`, `gg_pick`, `gg_strength`, `gg_bake`, `gg_control` |
-| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with luna as fallback; its secrets from the host's directory; the shared extensions it does not use dropped (`withoutExtensions`) |
+| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with luna as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
+| `chat/server-args.ts` | The take server's argv for the page: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
 | `chat/gg-sandboxes.mjs` | One of the page's Modal apps' sandboxes, and with `--terminate` their end |
 | `e2e/session.ts` | The scripted beat as one pi-durable session on the page's extra: the task, the follow-ups, the control |
 | `e2e/vm-app.ts` | The session as a `pi-durable-disk run --app` module for the VM (bundled to `dist/gg-vm-app.mjs` by `npm run bundle:vm`) |
@@ -97,7 +98,9 @@ the base model (luna) with the whole conversation (`fallback`, `brokenTurn` in `
 on the edited model, so the next turn is steered again. The thinking is not held with the turn: it goes out as it arrives
 (each delta a sentence Jev has cleared), and the answer follows once the turn is checked. When luna answers in place of a
 broken turn, its message keeps the edited model's thinking first and carries a `steered-fallback` diagnostic (`{ why,
-from }`), so the page can show that luna answered and why.
+from }`), so the page can show that luna answered and why. To see it on a real turn, root touches `/run/gg/fail-next` on the
+box (`python3 modal/box.py exec --root "touch /run/gg/fail-next"`): the guard fails the next chat once, with a 503 the
+client does not retry, and serves the one after.
 
 ## What the edited model is shown
 
@@ -128,12 +131,12 @@ model does not read the earlier transcript.
   or printed. The routes go away with the box, and `box.py down` deletes the host's copies. Modal's SDK has
   `inbound_cidr_allowlist`, which could limit the tunnel to the VM's address; that needs the VM's egress address before
   the box starts (a static Modal Proxy), and it is not used here.
-- The VM gets the guard's URL, the serve key and the tools' key as files only its run user reads, and they stay there, so a
-  process the host restarts on the same VM can read them again. The agent's shell runs as that same user and could read
-  them too. What they open is what the agent's tools already do: no route runs a command a request names. **If one leaks**,
-  the worst case: someone who can reach the tunnel chats with the edited model, re-runs a pipeline step or the control,
-  until the box is gone (`box.py down`, the idle stop, or its TTL). None of it runs a command they write, reads another key,
-  or reaches the run's disk.
+- The VM gets the guard's URL, the serve key and the tools' key as files only its run user reads; the extra reads each
+  once and deletes it, so the agent's shell (the same user) finds none afterwards. The VM's launcher restarts a failed
+  process in place (up to 5 times a minute); such a restart needs the files staged again by the server, and until then it
+  stops with "the extra's secret ... is gone". **If a key leaks anyway**, the worst case: someone who can reach the tunnel
+  chats with the edited model, re-runs a pipeline step or the control, until the box is gone (`box.py down`, the idle stop,
+  or its TTL). None of it runs a command they write, reads another key, or reaches the run's disk.
 - The host keeps both box keys in 0600 files and never prints them.
 
 ## Run

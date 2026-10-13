@@ -11,7 +11,8 @@ import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statS
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GG_INSTRUCTIONS, GG_WITHOUT_IN_TAB } from "./gg-text.ts";
+import { GG_INSTRUCTIONS } from "./gg-text.ts";
+import { serverArgs } from "./server-args.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
 const G = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -135,30 +136,20 @@ try {
   const out = openSync(log, "a");
   server = spawn(
     process.execPath,
-    [
-      join(SHOW, "scripts", "take-server.mjs"),
-      "--mount-root", MOUNT_ROOT,
-      "--dir", SERVER,
-      "--run", RUN,
-      "--port", PORT,
-      "--budget", "3000000",
-      "--agent-model", AGENT_MODEL,
-      "--grace-ms", "180000",
-      "--modal",
-      "--typesafe",
-      "--cloud-module", join(VM, "cloud-module.ts"),
-      "--cloud-arg", "regions=us-east",
-      "--cloud-arg", `app=${APP}`,
-      "--cloud-arg", `prefix=${APP}-`,
-      "--cloud-arg", `extra-module=${extraModule}`,
-      "--cloud-arg", `extra-secrets=${SECRETS}`,
-      "--cloud-arg", "robot-code=false",
-      "--placer-module", join(G, "chat", "gg-placer.ts"),
-      "--placer-arg", "client=jev",
-      "--instructions-file", instructions,
-      "--instructions-mode", "replace",
-      "--without-extensions", GG_WITHOUT_IN_TAB.join(","),
-    ],
+    serverArgs({
+      takeServer: join(SHOW, "scripts", "take-server.mjs"),
+      mountRoot: MOUNT_ROOT,
+      serverDir: SERVER,
+      run: RUN,
+      port: PORT,
+      agentModel: AGENT_MODEL,
+      cloudModule: join(VM, "cloud-module.ts"),
+      app: APP,
+      extraModule,
+      secrets: SECRETS,
+      placer: join(G, "chat", "gg-placer.ts"),
+      instructions,
+    }),
     { cwd: SHOW, env: { ...process.env, TMPDIR: join(HOME, "tmp") }, stdio: ["ignore", out, out] },
   );
   server.on("exit", (c) => void stop(`the server exited (${c})`, c === 0 ? 0 : 1));

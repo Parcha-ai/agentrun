@@ -208,6 +208,24 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(m["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}")
         self.assertEqual(r.json()["choices"][0]["finish_reason"], "tool_calls")
 
+    def test_fail_next_fails_one_chat_only(self):
+        # the operator's one forced failure (root touches the file): the next chat fails without a retry, the one after is served
+        flag = os.path.join(tempfile.mkdtemp(), "fail-next")
+        saved, self.guard.FAIL_NEXT = getattr(self.guard, "FAIL_NEXT", None), flag
+        try:
+            open(flag, "w").close()
+            body = {"model": "m", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+            asked = len(seen["vllm"])
+            r = self.call("POST", "/v1/chat/completions", body)
+            self.assertEqual(r.status_code, 503)
+            self.assertEqual(r.headers.get("x-should-retry"), "false", "a client retry would hide the failure")
+            self.assertFalse(os.path.exists(flag), "one failure per touch")
+            self.assertEqual(len(seen["vllm"]), asked, "vLLM is not asked")
+            self.assertEqual(self.call("GET", "/v1/models").status_code, 200, "only chats fail")
+            self.assertEqual(self.call("POST", "/v1/chat/completions", body).status_code, 200)
+        finally:
+            self.guard.FAIL_NEXT = saved
+
 
     # /gg/exec with the command run directly (no runuser here): stdin in, both streams and the exit out, and the deadline
     # the tools' routes, with each step's command replaced by a test command run directly (no runuser here)

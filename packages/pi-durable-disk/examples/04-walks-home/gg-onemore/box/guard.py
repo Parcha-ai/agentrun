@@ -29,6 +29,8 @@ RUN = os.environ.get("GG_RUN", "/var/tmp/gg/run")
 READING = os.environ.get("GG_READING", "/opt/gg-onemore/reading")
 JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 LOG = os.environ.get("GG_GUARD_LOG", "/var/tmp/gg/guard.jsonl")
+# root touches it (box.py exec --root) to fail the next chat once, so the page's fallback line shows on a real turn
+FAIL_NEXT = os.environ.get("GG_FAIL_NEXT", "/run/gg/fail-next")
 FLAG = 0.5
 EXEC_FRAMES = 16
 SERVE_KEY = os.environ["GG_SERVE_KEY"]
@@ -222,7 +224,12 @@ async def v1(path: str, request: Request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     headers = {"authorization": request.headers["authorization"], "content-type": "application/json"}
     if request.method == "POST" and path == "chat/completions":
-        return await guarded(await request.json(), headers)
+        try:
+            os.remove(FAIL_NEXT)
+        except FileNotFoundError:
+            return await guarded(await request.json(), headers)
+        log({"forced_failure": True})
+        return JSONResponse({"error": "failed on purpose (fail-next)"}, status_code=503, headers={"x-should-retry": "false"})
     r = await http.request(request.method, f"{VLLM}/v1/{path}", headers=headers, content=await request.body())
     return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 

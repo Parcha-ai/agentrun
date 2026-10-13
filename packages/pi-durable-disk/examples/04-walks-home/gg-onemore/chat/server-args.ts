@@ -1,0 +1,47 @@
+// The 03 server's argv for the GG page (show/scripts/take-server.mjs), apart from the launcher so a test reads it: this
+// page's own port, run, mount root and Modal app; the GG extra on the VM; Jev's placer; the tab's root instructions and the
+// extensions it goes without (serve.ts --instructions-file ...).
+import { GG_WITHOUT_IN_TAB } from "./gg-text.ts";
+
+export interface ServerPlaces {
+  takeServer: string;
+  mountRoot: string;
+  serverDir: string;
+  run: string;
+  port: string;
+  agentModel: string;
+  cloudModule: string;
+  app: string;
+  extraModule: string;
+  secrets: string;
+  placer: string;
+  instructions: string;
+}
+
+export function serverArgs(p: ServerPlaces): string[] {
+  return [
+    p.takeServer,
+    "--mount-root", p.mountRoot,
+    "--dir", p.serverDir,
+    "--run", p.run,
+    "--port", p.port,
+    "--budget", "3000000",
+    "--agent-model", p.agentModel,
+    "--grace-ms", "180000",
+    "--up-timeout-s", "150",
+    "--modal",
+    "--typesafe",
+    "--cloud-module", p.cloudModule,
+    "--cloud-arg", "regions=us-east",
+    "--cloud-arg", `app=${p.app}`,
+    "--cloud-arg", `prefix=${p.app}-`,
+    "--cloud-arg", `extra-module=${p.extraModule}`,
+    "--cloud-arg", `extra-secrets=${p.secrets}`,
+    "--cloud-arg", "robot-code=false",
+    "--placer-module", p.placer,
+    "--placer-arg", "client=jev",
+    "--instructions-file", p.instructions,
+    "--instructions-mode", "replace",
+    "--without-extensions", GG_WITHOUT_IN_TAB.join(","),
+  ];
+}

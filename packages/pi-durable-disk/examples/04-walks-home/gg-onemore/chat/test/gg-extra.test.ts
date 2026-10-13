@@ -1,4 +1,4 @@
-// The GG page's cloud-app extra over a real Harness and 03's real registry: the keys come from the host's directory, the
+// The GG page's cloud-app extra over a real Harness and 03's real registry: the keys are read once and deleted, the
 // extensions the page does not use are gone, the reading lands in the workspace, use_model moves the conversation to the
 // edited model behind a fake guard (its requests recorded on the run's disk), and the control replays the switch request.
 import { test } from "node:test";
@@ -13,7 +13,7 @@ import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { agentRegistry } from "../../../../03-tab-to-cloud/agent.ts";
-import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecrets } from "../gg-extra.ts";
+import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecretsOnce } from "../gg-extra.ts";
 import { STEERED_PROVIDER } from "../../pi/use-model.ts";
 import { GG_PROVIDER } from "../gg-text.ts";
 
@@ -93,15 +93,14 @@ test("the page's portable names match the provider's", () => {
   assert.equal(GG_PROVIDER, STEERED_PROVIDER);
 });
 
-test("secrets: read from the host's directory, which keeps them for a restarted process; an empty one is an error", async () => {
+test("secrets: each is read once and deleted; a second read says they must be staged again", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-secrets-"));
   writeFileSync(join(dir, "guard-url"), "https://box.example/\n");
   writeFileSync(join(dir, "serve-key"), "s\n");
   writeFileSync(join(dir, "tools-key"), "t\n");
-  assert.deepEqual(await readSecrets(dir), { guardUrl: "https://box.example", serveKey: "s", toolsKey: "t" });
-  assert.deepEqual(await readSecrets(dir), { guardUrl: "https://box.example", serveKey: "s", toolsKey: "t" }, "a second process reads them again");
-  writeFileSync(join(dir, "tools-key"), "\n");
-  await assert.rejects(readSecrets(dir), /tools-key is empty/);
+  assert.deepEqual(await readSecretsOnce(dir), { guardUrl: "https://box.example", serveKey: "s", toolsKey: "t" });
+  for (const f of ["guard-url", "serve-key", "tools-key"]) assert.equal(existsSync(join(dir, f)), false);
+  await assert.rejects(readSecretsOnce(dir), /gone: they are read once, and a process restarted on this VM needs them staged again/);
 });
 
 test("the extra: unused extensions out, GG tools in; the reading lands in the workspace; use_model moves to the edited model; the control replays the switch", async () => {
