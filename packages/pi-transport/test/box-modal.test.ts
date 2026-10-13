@@ -11,7 +11,7 @@ import { FakeModal, InvalidError, NotFoundError, ResourceExhaustedError } from "
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
 process.env[CANARY] = "the host's environment reached a box";
 const context = BACKGROUND_CONTEXT;
-const SPEC: BoxSpec = { maxLifetimeMs: 60_000, labels: { lane: "h5" } };
+const SPEC: BoxSpec = { maxLifetimeMs: 60_000, labels: { run: "a" } };
 
 function withRoot<T>(use: (root: string) => Promise<T>): Promise<T> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-modal-"));
@@ -27,7 +27,7 @@ const conformanceRoot = mkdtempSync(join(tmpdir(), "pi-transport-modal-conf-"));
 registerBoxConformance(
 	{ describe, expect, it },
 	"modal boxes over a fake SDK",
-	(use) => use(modalBoxes(new FakeModal(), { appName: "pt-h5-fake" })),
+	(use) => use(modalBoxes(new FakeModal(), { appName: "pi-transport-test-fake" })),
 	{ absentEnv: [CANARY], spec: { workspace: join(conformanceRoot, "ws") } },
 );
 afterAll(() => rmSync(conformanceRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
@@ -36,7 +36,7 @@ describe("modal boxes", () => {
 	it("passes lifetime, size, region and tags to Modal and reports facts", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
-			const provider = modalBoxes(sdk, { appName: "pt-h5-app", runtime: "vm" });
+			const provider = modalBoxes(sdk, { appName: "pi-transport-test-app", runtime: "vm" });
 			const box = unwrap(
 				await provider.create(
 					{ ...SPEC, cpus: 2, memoryMb: 2048, region: "us-east", workspace: root, maxLifetimeMs: 90_500 },
@@ -44,7 +44,7 @@ describe("modal boxes", () => {
 				),
 			);
 			const params = sdk.sandboxList[0]?.params;
-			expect(sdk.appNames).toEqual(["pt-h5-app"]);
+			expect(sdk.appNames).toEqual(["pi-transport-test-app"]);
 			expect(params).toMatchObject({
 				runtime: "vm",
 				cpu: 2,
@@ -52,7 +52,7 @@ describe("modal boxes", () => {
 				regions: ["us-east"],
 				timeoutMs: 91_000,
 			});
-			expect(params?.tags).toMatchObject({ lane: "h5", "pi-transport.box": "1" });
+			expect(params?.tags).toMatchObject({ run: "a", "pi-transport.box": "1" });
 			expect(box.facts()).toMatchObject({
 				provider: "modal",
 				isolation: "vm",
@@ -148,14 +148,14 @@ describe("modal boxes", () => {
 			const sdk = new FakeModal();
 			const provider = modalBoxes(sdk, { appName: "a" });
 			const box = unwrap(
-				await provider.create({ ...SPEC, workspace: root, labels: { lane: "h5", run: "1" } }, context),
+				await provider.create({ ...SPEC, workspace: root, labels: { run: "a", extra: "1" } }, context),
 			);
-			await sdk.sandboxes.create({ appId: "x" }, {}, { timeoutMs: 1000, tags: { lane: "h5" } });
-			expect(unwrap(await provider.list({ lane: "h5" }, context))).toEqual([
-				{ id: box.id, labels: { lane: "h5", run: "1" } },
+			await sdk.sandboxes.create({ appId: "x" }, {}, { timeoutMs: 1000, tags: { run: "a" } });
+			expect(unwrap(await provider.list({ run: "a" }, context))).toEqual([
+				{ id: box.id, labels: { run: "a", extra: "1" } },
 			]);
 			unwrap(await box.destroy(context));
-			expect(unwrap(await provider.list({ lane: "h5" }, context))).toEqual([]);
+			expect(unwrap(await provider.list({ run: "a" }, context))).toEqual([]);
 		});
 	});
 
