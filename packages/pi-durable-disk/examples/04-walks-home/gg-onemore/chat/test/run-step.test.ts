@@ -15,7 +15,8 @@ test("runStep: the output on success; on failure the error line, the exit, and t
   }
   assert.ok(failed, "a failing step throws");
   assert.match(failed.message, /exited 1: Error: the run is held by another client/);
-  assert.match(failed.output ?? "", /cleaning golden-gate/);
+  // the labeled stdout section: the -e source in stderr also contains the words
+  assert.match(failed.output ?? "", /\nstdout:\ncleaning golden-gate\n$/);
   assert.match(failed.output ?? "", /client: 'c1'/);
   assert.match(failed.output ?? "", /Node\.js v/);
 });
