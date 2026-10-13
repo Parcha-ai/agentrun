@@ -70,6 +70,30 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 				}, 900_000);
 			}
 		}
+
+		it("says its bulk is the stream, and moves 64 MB as parts of 32 MiB when the host asks", async () => {
+			const from = await make("docker");
+			const to = await make("docker");
+			expect([from.facts().bulk, to.facts().bulk]).toEqual(["stream", "stream"]);
+			await populate(from, "/tmp/m4-tree", 64, MEBIBYTE, context);
+			const receipt = getOrThrow(
+				await moveWorkspace(
+					from,
+					to,
+					{
+						fromRoot: "/tmp/m4-tree",
+						toRoot: "/tmp/m4-landed",
+						fromPipe: { kind: "files" },
+						toPipe: { kind: "files" },
+					},
+					context,
+				),
+			);
+			expect(receipt.bytes).toBe(64 * MEBIBYTE);
+			console.log(
+				`move 64 MB docker->docker as parts: ${JSON.stringify({ ...receipt, megabytesPerSecond: Number(receipt.megabytesPerSecond.toFixed(1)) })}`,
+			);
+		}, 900_000);
 	});
 } else {
 	describe.skip("moving a workspace to and between Docker boxes (set PI_TRANSPORT_LIVE_DOCKER=1)", () => {
