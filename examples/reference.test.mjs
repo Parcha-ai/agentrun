@@ -58,7 +58,8 @@ test('a relative --dir with a trailing slash runs the same job and names the rec
 // results. `KILL_IN`: `search-admitted` as the tool door is asked (the call admitted, never sent), `search-landed` once
 // the door has answered (sent, its result not committed), `page-run` as a page is asked to run (never sent),
 // `judge-asked` once the judge has answered and before the answer is recorded, `event:<type>:<label>` just before that
-// status row is written. `OTHER` runs the job under another workflow name. It is a file, not `--input-type=module -e`: the disk run's watchdog worker
+// status row is written; a door point with `:<n>` kills at the n-th call. `OTHER` runs the job under another workflow
+// name, and `TWICE` with a second `search` step that calls the tool with the same arguments. It is a file, not `--input-type=module -e`: the disk run's watchdog worker
 // inherits that flag and cannot start.
 const at = (path) => new URL(path, import.meta.url).href;
 const CHILD = `
@@ -81,12 +82,21 @@ const driver = async (...args) => {
 };
 const local = localHost(place, { ...fakes, model }, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
 const door = local.host.tools.runEffect;
-local.host.tools.runEffect = async (params) => { kill('search-admitted'); const value = await door(params); kill('search-landed'); return value; };
+let calls = 0;
+local.host.tools.runEffect = async (params) => {
+  calls += 1;
+  for (const point of ['search-admitted', \`search-admitted:\${calls}\`]) kill(point);
+  const value = await door(params);
+  for (const point of ['search-landed', \`search-landed:\${calls}\`]) kill(point);
+  return value;
+};
 const judge = local.host.decisions.runJudge;
 local.host.decisions.runJudge = async (request) => { const answer = await judge(request); kill('judge-asked'); return answer; };
 const status = local.host.status;
 local.host.status = (event) => { if (event.source === 'workflow') kill(\`event:\${event.event.type}:\${event.event.label}\`); return status(event); };
-const ofJob = process.env.OTHER ? { ...job, workflow: { ...job.workflow, name: 'another-company-check' } } : job;
+const [search, ...rest] = job.workflow.root.steps;
+const twice = { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps: [search, { ...search, label: 'search-again', as: 'again' }, ...rest] } } };
+const ofJob = process.env.OTHER ? { ...job, workflow: { ...job.workflow, name: 'another-company-check' } } : process.env.TWICE ? twice : job;
 console.log(JSON.stringify(summary(place, await run(place, local.host, ofJob), local)));
 `;
 
@@ -132,13 +142,13 @@ test('killed in the lead\'s request after the browser read, a second process res
 /** Processes killed at `kill` (one point, or one per process), the processes `between` on the same directory, and one
  *  that resumes it: the journal the kills left, the views of those between and of the last, the run's ledger, the
  *  backend's page operations and the gates that fail. */
-async function killedAndResumed(t, kill, between = []) {
+async function killedAndResumed(t, kill, { between = [], env: every = {} } = {}) {
   const tmp = await scratch(t);
   const dir = join(tmp, 'run');
   const backend = new FakeBackend({ start: fakes.start, pages: fakes.pages });
   const served = await backend.serve();
   t.after(() => served.close());
-  const env = { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp, DIR: dir, BACKEND: served.url };
+  const env = { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp, DIR: dir, BACKEND: served.url, ...every };
   const child = join(tmp, 'child.mjs');
   await writeFile(child, CHILD);
   const killed = [];
@@ -177,11 +187,21 @@ test('killed inside the first browser run, before the page ran it, the resumed l
 });
 
 test('a different job on a killed run\'s directory is refused, and the run still resumes with the answer it was owed', { timeout: 180_000 }, async (t) => {
-  const { others: [other], view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'search-landed' }, [{ OTHER: '1' }]);
+  const { others: [other], view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'search-landed' }, { between: [{ OTHER: '1' }] });
   assert.deepEqual({ status: other.status, code: other.code, output: other.output }, { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', output: null });
   assert.deepEqual(view.output, OUTPUT, 'the killed run resumed after the refusal, with the same record');
   assert.deepEqual(named(rows, 'tool'), ['search'], 'the search ran once');
   assert.deepEqual(failing, []);
+});
+
+test('two steps call the search with the same arguments: each is answered by its own call, never by the other\'s', { timeout: 240_000 }, async (t) => {
+  const sent = await killedAndResumed(t, { KILL_IN: 'search-landed:2' }, { env: { TWICE: '1' } });
+  assert.deepEqual(sent.view.output, OUTPUT, 'the second call, sent before the kill, is answered from its own answer');
+  assert.deepEqual(named(sent.rows, 'tool'), ['search', 'search']);
+  const unsent = await killedAndResumed(t, { KILL_IN: 'search-admitted:2' }, { env: { TWICE: '1' } });
+  assert.deepEqual({ status: unsent.view.status, code: unsent.view.code }, { status: 'refused', code: 'FROZEN_EFFECT_UNKNOWN' },
+    'the second call, admitted and never sent, is not answered with the first call\'s answer');
+  assert.deepEqual(named(unsent.rows, 'tool'), ['search']);
 });
 
 // Kill points from the ten-kill ledger's seeds whose runs were valid and failed the gates as they were.

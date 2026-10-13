@@ -66,6 +66,12 @@ function runEnv(claim: Claim): RunEnv {
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
+  // An earlier version kept the store at `<root>/store`; this one looks in `<root>/durable`. Opening such a directory
+  // would start the run over (or fail on the disk's seal), so it is refused before anything runs.
+  const earlier = join(place.root, 'store', 'run.sqlite');
+  if (existsSync(earlier) && !existsSync(join(place.store, 'run.sqlite'))) {
+    throw Object.assign(new Error(`This run's store is at ${earlier}, and this version keeps it at ${join(place.store, 'run.sqlite')}. Resume it with the version that wrote it, or start a new directory.`), { code: 'RUN_STORE_ELSEWHERE' });
+  }
   const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
   // Vision names a conversation by its id as a string; pi's documents take the number.
@@ -179,15 +185,18 @@ function moved(saved: WorkflowRequest | undefined, job: Job): Extract<WorkflowOu
 }
 
 /** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
- *  one, before the task's driver opens the journal. A call the door never answered stays unknown. The journal is opened
+ *  one, before the task's driver opens the journal. A call the door never answered stays unknown, and so does one whose
+ *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
  *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
 async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
   const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
   if (!request) return;
   const journal = await documentStore({ commit: taskCommit({ runtime, context }) } as never, key, { context }).open(recoveryBound(request.workflow, request.bind));
   try {
-    for (const effect of journal.effects()) {
-      const answer = effect.status === 'unknown' && effect.intent ? await answered(effect.intent) : undefined;
+    const effects = journal.effects();
+    for (const effect of effects) {
+      const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
+      const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
       if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
     }
   } finally {

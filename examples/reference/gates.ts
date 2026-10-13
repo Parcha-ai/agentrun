@@ -93,13 +93,16 @@ export function gates(runDir: string, job: Job): Gate[] {
 
   // The store: the run's journal (each step started and committed) and the browser's inventory (each session not yet
   // released). A run directory with no store holds no evidence of either.
-  const stored = existsSync(join(runDir, 'durable', 'run.sqlite'));
-  const journal = stored ? readJournal(runDir, RUN_KEY) : undefined;
-  const pin = (journal?.state as { pin?: { done?: string[]; inputs?: Record<string, string> } } | null | undefined)?.pin;
+  const store = ((): { ok: true; journal: ReturnType<typeof readJournal>; inventory: InventoryRow[] } | { ok: false; error: string } => {
+    if (!existsSync(join(runDir, 'durable', 'run.sqlite'))) return { ok: false, error: 'no durable/run.sqlite' };
+    try {
+      return { ok: true, journal: readJournal(runDir, RUN_KEY), inventory: Object.values(durableDoc<{ rows: Record<string, InventoryRow> }>(runDir, 'browser.inventory')?.rows ?? {}) };
+    } catch (error) { return { ok: false, error: `durable/run.sqlite could not be read: ${error instanceof Error ? error.message : String(error)}` }; }
+  })();
+  const pin = (store.ok ? store.journal?.state as { pin?: { done?: string[]; inputs?: Record<string, string> } } | null | undefined : undefined)?.pin;
   const named = (path: string) => { const node = nodeAt(job.workflow, path) as { label?: string } | undefined; return node?.label ? `${node.label} (${path})` : path; };
-  const stepProblems = !stored ? ['no durable/run.sqlite'] : !pin ? ['the store holds no journal for the run'] : Object.keys(pin.inputs ?? {}).map((path) => `${named(path)} started and never committed`);
-  const open = Object.values(durableDoc<{ rows: Record<string, InventoryRow> }>(runDir, 'browser.inventory')?.rows ?? {});
-  const sessionProblems = !stored ? ['no durable/run.sqlite'] : open.map((row) => `${row.tag} is ${row.state}`);
+  const stepProblems = !store.ok ? [store.error] : !pin ? ['the store holds no journal for the run'] : Object.keys(pin.inputs ?? {}).map((path) => `${named(path)} started and never committed`);
+  const sessionProblems = !store.ok ? [store.error] : store.inventory.map((row) => `${row.tag} is ${row.state}`);
 
   return [
     gate('record-matches-output-schema', schemaProblems, `the record validates against ${job.workflow.output.schemaId}`),

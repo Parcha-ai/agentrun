@@ -4,7 +4,8 @@
 // every gate, and tampered copies of a run show the gates catch what they claim to.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -136,6 +137,9 @@ test('a missing ledger or store fails the gates that read it, and says which; a 
   assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'durable'), { recursive: true }))),
     [['nodes-end', 'no durable/run.sqlite'], ['browser-sessions-released', 'no durable/run.sqlite']]);
   assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))), [], 'status rows are for people; the gates read the store');
+  const corrupt = failures(await tampered(runDir, 'corrupt-store', (dir) => writeFile(join(dir, 'durable', 'run.sqlite'), 'not a database')));
+  assert.deepEqual(corrupt.map(([id]) => id), ['nodes-end', 'browser-sessions-released'], 'the other gates still report');
+  for (const [, detail] of corrupt) assert.match(detail, /^durable\/run\.sqlite could not be read: /);
 });
 
 test('a ledger cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
@@ -165,4 +169,18 @@ test('a second job on a directory that holds another job\'s run is refused, nami
   const otherWorkflow = await runAt({ ...job, workflow: { ...job.workflow, name: 'another-company-check' } });
   assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['binding'] });
   assert.deepEqual(await record(), delivered, 'nothing was delivered for the refused jobs');
+});
+
+test('a directory whose store is where an earlier version kept it is refused, naming both paths, and nothing runs', { timeout: 60_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-rig-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = join(tmp, 'run');
+  await mkdir(join(root, 'store'), { recursive: true });
+  await writeFile(join(root, 'store', 'run.sqlite'), 'a store an earlier version wrote');
+  const place = await placeAt(root);
+  const local = localHost(place, fakes);
+  await assert.rejects(run(place, local.host, job), (error) => error.code === 'RUN_STORE_ELSEWHERE'
+    && error.message.includes(join(root, 'store', 'run.sqlite')) && error.message.includes(join(root, 'durable', 'run.sqlite')));
+  assert.equal(existsSync(join(root, 'durable')), false, 'no store was opened');
+  assert.deepEqual(local.ledger(), [], 'no fake was called');
 });

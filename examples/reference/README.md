@@ -20,8 +20,9 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 
 `job.ts`, small and fixed so the output is a constant:
 
-1. `call search`: the host's tool returns two URLs. The tool door keeps each answer under the call's intent in
-   `<run>/answers/` before the result is committed, so a run resumed after a kill between the two takes the answer
+1. `call search`: the host's tool returns two URLs. The tool door keeps each answer in `<run>/answers/`, under the
+   admitted effect's `argsHash` (its input, node and idempotency key, so two steps that call one tool alike are two
+   answers), before the result is committed, so a run resumed after a kill between the two takes the answer
    instead of stopping on the unknown call, and never sends it again. A call that was admitted and never sent stays
    unknown: the resumed run is refused with `FROZEN_EFFECT_UNKNOWN`.
 2. `agent investigate`: the lead opens the first result with `run`, reads it with `browser_read`, reads `filing.png`
@@ -46,7 +47,8 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/durable`, where
-the package's readers look). The run opens on a claim
+the package's readers look; a directory whose store is at `<root>/store`, where an earlier version kept it, is refused
+with both paths named, and nothing runs). The run opens on a claim
 over a plain directory, with the disk package's own file and shell tools confined to `work/`. `run()` takes another
 environment for the tools as `env`, the disk run's own option; `--box` passes a transport box there.
 
@@ -80,7 +82,8 @@ npm run demo:reference -- --dir /tmp/run && node examples/reference/gates.ts /tm
 ```
 
 It prints one line per gate and exits 1 when one fails. From code, `gates(runDir, job)` returns `{ id, ok, detail }[]`.
-When `ledger.jsonl` or the store is missing, or a ledger line does not parse, the gates that read it fail and say so.
+When `ledger.jsonl` or the store is missing or cannot be read, or a ledger line does not parse, the gates that read it
+fail and say so, and the others still report.
 `localHost()` creates the ledger empty when it starts, so a run that called nothing still has one.
 
 `cases/` holds synthetic cases, each a way out the packages already have:
