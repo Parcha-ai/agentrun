@@ -18,7 +18,7 @@ import {
 } from "./box.ts";
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
-const DEFAULT_WORKSPACE = "/home/daytona/workspace";
+const DEFAULT_WORKSPACE = "/tmp/workspace";
 const REQUEST_TIMEOUT_MS = 30_000;
 const CREATE_TIMEOUT_MS = 120_000;
 const DESTROY_TIMEOUT_MS = 120_000;
@@ -27,6 +27,8 @@ const POLL_MS = 1_000;
 const EXEC_POLL_MS = 150;
 const CLEANUP_TIMEOUT_S = 20;
 const RETRY_ATTEMPTS = 3;
+const DESTROY_ATTEMPTS = 4;
+const DESTROY_RETRY_MS = 1_000;
 const RETRY_BASE_MS = 500;
 const POLL_FAILURES_MAX = 5;
 const OUTPUT_CHUNK_BYTES = 256 * 1024;
@@ -106,7 +108,7 @@ export type DaytonaBoxesOptions = {
 	readonly snapshot?: string;
 	/** User the programs run as, when the snapshot has more than one. */
 	readonly user?: string;
-	/** Workspace for boxes whose spec names none. Default `/home/daytona/workspace`. */
+	/** Workspace for boxes whose spec names none. Default `/tmp/workspace`, which any user can create. */
 	readonly workspace?: string;
 	/** What `facts().isolation` reports. Default `container`; a `linux-vm` snapshot is `vm`. */
 	readonly isolation?: "container" | "vm";
@@ -630,11 +632,18 @@ class DaytonaBox implements Box {
 	}
 
 	async destroy(context: Context): Promise<Result<void, BoxError>> {
-		const removed = await this.#rest.remove(this.id, context);
-		if (removed.ok) return removed;
-		// A delete refused mid-transition: power the box off, then delete again.
-		await this.#rest.stop(this.id, context);
-		return this.#rest.remove(this.id, context);
+		let failure: BoxError | undefined;
+		for (let attempt = 1; attempt <= DESTROY_ATTEMPTS; attempt += 1) {
+			const removed = await this.#rest.remove(this.id, context);
+			if (removed.ok) return removed;
+			failure = removed.error;
+			// A delete already under way answers 409; the box is ending, which is what the caller asked for.
+			const status = await this.status(context);
+			if (status.ok && status.value.state === "ended") return ok(undefined);
+			if (attempt === DESTROY_ATTEMPTS - 1) await this.#rest.stop(this.id, context);
+			await delay(DESTROY_RETRY_MS, context);
+		}
+		return err(failure ?? new BoxError("unknown", `could not destroy box ${this.id}`));
 	}
 
 	#resolve(path: string): string {
@@ -691,7 +700,10 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (spec.image !== undefined) return err(new BoxError("unsupported", "daytona boxes start from a snapshot"));
 			if (spec.cpus !== undefined || spec.memoryMb !== undefined || spec.gpu !== undefined) {
 				return err(
-					new BoxError("invalid", "a daytona snapshot sets cpus, memory and gpu; name a snapshot instead"),
+					new BoxError(
+						"invalid",
+						"a daytona box has the size of its snapshot: choose cpus, memory and gpu by naming a snapshot (the `snapshot` option or spec field), not in the spec",
+					),
 				);
 			}
 			const workspace = withWorkspace(spec);

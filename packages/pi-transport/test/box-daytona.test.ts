@@ -252,12 +252,13 @@ describe("daytona boxes", () => {
 			async () => {
 				const posted = fake.requests.filter((r) => r.method === "POST" && r.path === "/api/sandbox").at(-1);
 				const body = JSON.parse(posted?.body ?? "{}") as Record<string, unknown>;
-				expect(body.labels).toMatchObject({ "pi-transport": "1", lane: "h4" });
-				expect(body.ttlMinutes).toBe(10);
+				expect(body.labels).toMatchObject({ "pi-transport": "1", suite: "unit" });
+				// The provider, not the host, ends a box that outlives its lifetime: measured live, ttl 1 minute ends it in 67 s.
+				expect(body).toMatchObject({ ttlMinutes: 10, autoStopInterval: 0, autoDeleteInterval: 0 });
 				expect(body.name).toMatch(/^pt-/);
 				expect("cpu" in body || "memory" in body || "gpu" in body).toBe(false);
 			},
-			{ labels: { lane: "h4" } },
+			{ labels: { suite: "unit" } },
 		);
 	});
 
@@ -275,6 +276,7 @@ describe("daytona boxes", () => {
 		for (const bad of [{ cpus: 2 }, { memoryMb: 512 }, { gpu: "T4" }]) {
 			const created = await provider().create(spec(bad), context);
 			expect(created.ok ? "ok" : created.error.code).toBe("invalid");
+			expect(created.ok ? "" : created.error.message).toContain("snapshot");
 		}
 		const image = await provider().create(spec({ image: "debian" }), context);
 		expect(image.ok ? "ok" : image.error.code).toBe("unsupported");
@@ -292,6 +294,21 @@ describe("daytona boxes", () => {
 		} finally {
 			fake.failExecuteContaining = undefined;
 		}
+	});
+
+	it("treats a destroy that meets a delete already under way as done", async () => {
+		await withBox(async (box) => {
+			const sandbox = fake.sandboxes.get(box.id);
+			if (sandbox === undefined) throw new Error("the sandbox is missing");
+			sandbox.state = "destroying";
+			fake.failures.push({
+				match: (method, path) => method === "DELETE" && path === `/api/sandbox/${box.id}`,
+				status: 409,
+				body: "Sandbox state change in progress",
+				times: 1,
+			});
+			expect(await box.destroy(context)).toEqual({ ok: true, value: undefined });
+		});
 	});
 
 	it("refuses an empty key", () => {
@@ -327,18 +344,18 @@ describe("daytona boxes", () => {
 	it("attaches only to a sandbox this package made, and lists without its own labels", async () => {
 		await withBox(
 			async (box) => {
-				const foreign: FakeSandbox = { id: "foreign-1", state: "started", labels: { lane: "h4" }, env: {} };
+				const foreign: FakeSandbox = { id: "foreign-1", state: "started", labels: { suite: "unit" }, env: {} };
 				fake.sandboxes.set(foreign.id, foreign);
 				try {
 					const attached = await provider().attach(foreign.id, context);
 					expect(attached).toEqual({ ok: true, value: undefined });
-					const listed = await provider().list({ lane: "h4" }, context);
-					expect(listed).toEqual({ ok: true, value: [{ id: box.id, labels: { lane: "h4" } }] });
+					const listed = await provider().list({ suite: "unit" }, context);
+					expect(listed).toEqual({ ok: true, value: [{ id: box.id, labels: { suite: "unit" } }] });
 				} finally {
 					fake.sandboxes.delete(foreign.id);
 				}
 			},
-			{ labels: { lane: "h4" } },
+			{ labels: { suite: "unit" } },
 		);
 	});
 
