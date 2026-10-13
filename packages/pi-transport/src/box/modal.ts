@@ -13,6 +13,7 @@ import {
 	type BoxRef,
 	type BoxSpec,
 	type BoxStatus,
+	isReservedLabel,
 } from "./box.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
 
@@ -25,8 +26,9 @@ const SETUP_TIMEOUT_MS = 60_000;
 const STDIN_CHUNK_BYTES = 512 * 1024;
 /** Every box carries this tag, so `attach` and `list` never touch a sandbox this package did not start. */
 const BOX_TAG = "pi-transport.box";
+/** Every box carries this tag too, so a host finds the boxes of this package by the one label every provider sets. */
+const OWNER_TAG = "pi-transport";
 const FACTS_TAG = "pi-transport.facts";
-const RESERVED_LABEL_PREFIX = "pi-transport.";
 
 /** One program started in a Modal sandbox, in binary mode. The part of the SDK's `ContainerProcess` this package reads. */
 export interface ModalProcess {
@@ -199,7 +201,7 @@ function parseFacts(text: string | undefined): BoxFacts | undefined {
 }
 
 function ownLabels(tags: Readonly<Record<string, string>>): Record<string, string> {
-	const { [BOX_TAG]: _box, [FACTS_TAG]: _facts, ...own } = tags;
+	const { [BOX_TAG]: _box, [FACTS_TAG]: _facts, [OWNER_TAG]: _owner, ...own } = tags;
 	return own;
 }
 
@@ -362,7 +364,7 @@ class ModalBox implements Box {
  * on Modal's side, so a host that dies leaks nothing past `maxLifetimeMs`. A spec's `isolation` of `vm` selects the VM
  * runtime, `gvisor` or none the default sandbox, and any other value is refused with `unsupported`; a GPU needs the
  * default sandbox. Refused before any Modal call: a `snapshot` or an `isolation` other than `gvisor` or `vm`
- * (`unsupported`), a GPU with `vm`, a label key that starts with `pi-transport.` and a lifetime that is not positive
+ * (`unsupported`), a GPU with `vm`, a label key that is `pi-transport` or starts with `pi-transport.` and a lifetime that is not positive
  * (`invalid`). No other field is ignored; `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
  */
 export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvider {
@@ -375,7 +377,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
-			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
 			}
@@ -412,7 +414,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 					...(spec.memoryMb === undefined ? {} : { memoryMiB: spec.memoryMb }),
 					...(spec.region === undefined ? {} : { regions: [spec.region] }),
 					timeoutMs: lifetimeMs,
-					tags: { ...spec.labels, [BOX_TAG]: "1", [FACTS_TAG]: JSON.stringify(facts) },
+					tags: { ...spec.labels, [OWNER_TAG]: "1", [BOX_TAG]: "1", [FACTS_TAG]: JSON.stringify(facts) },
 				});
 			} catch (cause) {
 				return err(boxError("could not start a box", cause));

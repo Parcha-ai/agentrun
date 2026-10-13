@@ -60,7 +60,7 @@ describe("modal boxes", () => {
 				regions: ["us-east"],
 				timeoutMs: 91_000,
 			});
-			expect(params?.tags).toMatchObject({ run: "a", "pi-transport.box": "1" });
+			expect(params?.tags).toMatchObject({ run: "a", "pi-transport": "1", "pi-transport.box": "1" });
 			expect(box.facts()).toMatchObject({
 				provider: "modal",
 				isolation: "vm",
@@ -172,6 +172,11 @@ describe("modal boxes", () => {
 			context,
 		);
 		expect(result.ok ? "ok" : result.error.code).toBe("invalid");
+		const bare = await modalBoxes(sdk, { appName: "a" }).create(
+			{ ...SPEC, labels: { "pi-transport": "0" } },
+			context,
+		);
+		expect(bare.ok ? "ok" : bare.error.code).toBe("invalid");
 		expect(sdk.sandboxList).toEqual([]);
 	});
 
