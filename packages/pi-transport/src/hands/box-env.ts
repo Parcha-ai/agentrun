@@ -32,7 +32,6 @@ import { type Box, BoxError } from "../box/box.ts";
 import { finish } from "../box/files.ts";
 
 const DEFAULT_OP_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_EXEC_MS = 30 * 60_000;
 const DEFAULT_STATUS_TIMEOUT_MS = 10_000;
 const DEFAULT_WATCH_INTERVAL_MS = 1_000;
 /** How long the box has to start a command, when the command's own timeout is shorter. */
@@ -48,8 +47,8 @@ const SPILL_PIECE_BYTES = 4 * 1024 * 1024;
 const DIR_PAGE_ENTRIES = 500;
 const STDERR_TAIL_CHARS = 200;
 const BARE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-const STATE_DIR = "/tmp/.pi-transport";
 const ARGV_FLAG = "PI_TRANSPORT_ARGV";
+const STATE_FLAG = "PI_TRANSPORT_STATE";
 const EXIT_NO_CWD = 200;
 const EXIT_NO_PROGRAM = 201;
 
@@ -131,6 +130,11 @@ const REMOVE_SCRIPT = [
 	'rm -rf -- "$1" 2>/dev/null || exit 6',
 ].join("; ");
 const TEMP_ROOT = 't=$TMPDIR; [ -n "$t" ] || t=/tmp';
+/**
+ * Where a box keeps its commands' group files and tombstones: under its own temporary directory, so a box that is a
+ * directory of this machine keeps them to itself and takes them along when it is destroyed. Sets `s`.
+ */
+const STATE_ROOT = `${TEMP_ROOT}; s=$t/.pi-transport`;
 const TEMP_DIR_SCRIPT = `${TEMP_ROOT}; mktemp -d "$t/$1XXXXXX"`;
 const TEMP_FILE_SCRIPT = `${TEMP_ROOT}; mktemp --suffix="$2" "$t/$1XXXXXX"`;
 const HOME_SCRIPT = 'printf %s "$HOME"';
@@ -153,6 +157,18 @@ const SNAPSHOT_SCRIPT = [
  */
 const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 130; fi; shift 2; exec "$@"';
 /**
+ * The first step of a command, in the box's own environment: it finds the state directory there, then gives the
+ * wrapper the environment the caller asked for. So a caller that clears or changes `TMPDIR` for its command cannot
+ * move the group file away from where a kill looks for it. `$1` is `0` to start from an empty environment; the rest
+ * is variables, then the wrapper and its arguments.
+ */
+const ENTER_SCRIPT = [
+	STATE_ROOT,
+	"inherit=$1; shift",
+	`if [ "$inherit" = 0 ]; then exec env -i "PATH=${BARE_PATH}" "${STATE_FLAG}=$s" "$@"; fi`,
+	`exec env "${STATE_FLAG}=$s" "$@"`,
+].join("; ");
+/**
  * Runs one command as a process group of its own, written down so that a second exec can kill all of it. A kill that
  * comes before the group is written leaves a tombstone, which the command's session looks for after it wrote the
  * group: a late start never runs on. `$1` is the command's id, `$2` its directory, the rest the command.
@@ -162,13 +178,13 @@ const LEAD_SCRIPT = 'echo $$ > "$1"; if [ -e "$2" ]; then rm -f "$1" "$2"; exit 
  * error output first, so its shell's note about a command a signal ended goes nowhere.
  */
 const RUN_SCRIPT = [
-	`mkdir -p ${STATE_DIR}; f=${STATE_DIR}/$1.pid; x=${STATE_DIR}/$1.cancel`,
+	`s=$${STATE_FLAG}; mkdir -p "$s"; f=$s/$1.pid; x=$s/$1.cancel`,
 	`cd -- "$2" 2>/dev/null || { printf 'pi-transport:%s:cwd: %s: not found\\n' "$1" "$2" >&2; exit ${EXIT_NO_CWD}; }`,
 	"id=$1; shift 2",
 	'program() { case $1 in */*) [ -f "$1" ] && [ -x "$1" ]; return;; esac; set -f; IFS=:; for d in $PATH; do [ -n "$d" ] || d=.; if [ -f "$d/$1" ] && [ -x "$d/$1" ]; then set +f; unset IFS; return 0; fi; done; set +f; unset IFS; return 1; }',
 	`if [ "$${ARGV_FLAG}" = 0 ]; then if [ -x /bin/bash ]; then set -- /bin/bash -c "$1"; elif program bash; then set -- bash -c "$1"; else set -- sh -c "$1"; fi; fi`,
 	`if [ "$${ARGV_FLAG}" = 1 ] && ! program "$1"; then printf 'pi-transport:%s:spawn: %s: not found\\n' "$id" "$1" >&2; exit ${EXIT_NO_PROGRAM}; fi`,
-	`unset ${ARGV_FLAG}; exec 3>&2 2>/dev/null`,
+	`unset ${ARGV_FLAG} ${STATE_FLAG}; exec 3>&2 2>/dev/null`,
 	`( exec 2>&3 3>&-; exec setsid -w sh -c '${LEAD_SCRIPT}' pi-lead "$f" "$x" "$@" ); c=$?; rm -f "$f"; exit $c`,
 ].join("; ");
 /**
@@ -177,12 +193,12 @@ const RUN_SCRIPT = [
  * group or the command's session sees the tombstone. `$1` is the command's id.
  */
 const KILL_SCRIPT = [
-	`mkdir -p ${STATE_DIR}; f=${STATE_DIR}/$1.pid`,
+	`${STATE_ROOT}; mkdir -p "$s"; f=$s/$1.pid`,
 	// dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`.
 	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && kill -0 "-$g" 2>/dev/null; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; rm -f "$f"; }',
-	`stop && exit 0; touch ${STATE_DIR}/$1.cancel; stop; true`,
+	'stop && exit 0; touch "$s/$1.cancel"; stop; true',
 ].join("; ");
-const CLEANUP_SCRIPT = `for id in "$@"; do f=${STATE_DIR}/$id.pid; [ -f "$f" ] && kill -KILL "-$(cat "$f")" 2>/dev/null; rm -f "$f"; done; true`;
+const CLEANUP_SCRIPT = `${STATE_ROOT}; for id in "$@"; do f=$s/$id.pid; [ -f "$f" ] && kill -KILL "-$(cat "$f")" 2>/dev/null; rm -f "$f"; done; true`;
 
 /** How `boxEnv` talks to its box. Every field has a default. */
 export type BoxEnvOptions = {
@@ -190,7 +206,7 @@ export type BoxEnvOptions = {
 	readonly cwd?: string;
 	/** Deadline of one file operation. Default 60 s. */
 	readonly opTimeoutMs?: number;
-	/** Deadline of a command that has no timeout of its own. Default 30 min. */
+	/** Deadline of a command that has no timeout of its own. Default: none, as in pi's local environment. */
 	readonly maxExecMs?: number;
 	/** How long a status check may take before the box counts as not answering. Default 10 s. */
 	readonly statusTimeoutMs?: number;
@@ -217,12 +233,12 @@ function isAborted(context: Context): boolean {
 }
 
 /**
- * `work`'s result, or a `timeout` error after `timeoutMs`, or an `aborted` error once the context aborts. Work that
- * is given up on keeps running: its caller cancels it.
+ * `work`'s result, or a `timeout` error after `timeoutMs` when one is given, or an `aborted` error once the context
+ * aborts. Work that is given up on keeps running: its caller cancels it.
  */
 function bounded<T>(
 	work: Promise<Result<T, BoxError>>,
-	timeoutMs: number,
+	timeoutMs: number | undefined,
 	context: Context,
 ): Promise<Result<T, BoxError>> {
 	return new Promise((resolve) => {
@@ -236,7 +252,9 @@ function bounded<T>(
 		const onAbort = () => settle(err(new BoxError("aborted", "the call was aborted")));
 		if (signal?.aborted) return onAbort();
 		signal?.addEventListener("abort", onAbort, { once: true });
-		timer = setTimeout(() => settle(err(new BoxError("timeout", `no answer in ${timeoutMs} ms`))), timeoutMs);
+		if (timeoutMs !== undefined) {
+			timer = setTimeout(() => settle(err(new BoxError("timeout", `no answer in ${timeoutMs} ms`))), timeoutMs);
+		}
 		work.then(settle, (cause) => settle(err(new BoxError("unknown", toError(cause).message, cause))));
 	});
 }
@@ -361,7 +379,7 @@ class BoxEnv implements ExecutionEnv {
 	cwd: string;
 	readonly #box: Box;
 	readonly #opTimeoutMs: number;
-	readonly #maxExecMs: number;
+	readonly #maxExecMs: number | undefined;
 	readonly #statusTimeoutMs: number;
 	readonly #watchIntervalMs: number;
 	readonly #running = new Set<string>();
@@ -375,7 +393,7 @@ class BoxEnv implements ExecutionEnv {
 		this.cwd = options.cwd ?? facts.workspace;
 		this.#box = box;
 		this.#opTimeoutMs = options.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
-		this.#maxExecMs = options.maxExecMs ?? DEFAULT_MAX_EXEC_MS;
+		this.#maxExecMs = options.maxExecMs;
 		this.#statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
 		this.#watchIntervalMs = options.watchIntervalMs ?? DEFAULT_WATCH_INTERVAL_MS;
 	}
@@ -726,8 +744,7 @@ class BoxEnv implements ExecutionEnv {
 
 		const id = randomUUID();
 		const full = [
-			"env",
-			...(options?.inheritEnv === false ? ["-i", `PATH=${BARE_PATH}`] : []),
+			...["sh", "-c", ENTER_SCRIPT, "pi-enter", options?.inheritEnv === false ? "0" : "1"],
 			...Object.entries(options?.env ?? {}).map(([name, value]) => `${name}=${value}`),
 			`${ARGV_FLAG}=${typeof command === "string" ? 0 : 1}`,
 			...["sh", "-c", RUN_SCRIPT, "pi-exec", id, directory.value],
@@ -821,10 +838,16 @@ class BoxEnv implements ExecutionEnv {
 
 		this.#running.add(id);
 		const call = withCancel(context);
-		const backstopMs = Math.min(timeoutMs + COMMAND_BACKSTOP_MS, MAX_TIMEOUT_MS);
-		const launch = this.#box.exec(full, { timeoutMs: backstopMs }, call.context);
+		// A command with no deadline has none in the box either: the box's own lifetime bounds it.
+		const backstop =
+			timeoutMs === undefined ? undefined : { timeoutMs: Math.min(timeoutMs + COMMAND_BACKSTOP_MS, MAX_TIMEOUT_MS) };
+		const launch = this.#box.exec(full, backstop, call.context);
 		try {
-			const startMs = Math.max(timeoutMs, Math.min(this.#opTimeoutMs, START_TIMEOUT_MS));
+			// The start itself always has a deadline, so a box that stops answering is found out.
+			const startMs =
+				timeoutMs === undefined
+					? this.#opTimeoutMs
+					: Math.max(timeoutMs, Math.min(this.#opTimeoutMs, START_TIMEOUT_MS));
 			const started = await bounded(launch, startMs, context);
 			if (!started.ok) {
 				// Given up before the box answered: a launch that lands later is stopped and read to its end, and the
@@ -881,7 +904,7 @@ class BoxEnv implements ExecutionEnv {
 				const error =
 					exit.error.code === "aborted"
 						? new ExecutionError("aborted", "aborted")
-						: new ExecutionError("timeout", `timeout:${timeoutMs / 1000}`);
+						: new ExecutionError("timeout", `timeout:${(timeoutMs ?? 0) / 1000}`);
 				const sent = await sendSpill();
 				if (sent.ok && sent.value !== undefined) error.spillPath = sent.value;
 				return err(error);

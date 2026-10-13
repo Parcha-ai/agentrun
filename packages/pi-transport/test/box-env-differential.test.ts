@@ -12,7 +12,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { normalize, opened, random, randomOperation } from "./box-env-support.ts";
+import { normalize, opened, random, randomOperation, sharedStateEntries } from "./box-env-support.ts";
 
 const SEEDS = 60;
 const STEPS = 25;
@@ -20,9 +20,11 @@ const STEPS = 25;
 const context: Context = BACKGROUND_CONTEXT;
 const dirs: string[] = [];
 const boxes: Box[] = [];
+const sharedBefore = sharedStateEntries();
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+	expect(sharedStateEntries()).toEqual(sharedBefore);
 });
 
 type Pair = { readonly node: ExecutionEnv; readonly box: ExecutionEnv; readonly roots: readonly [string, string] };

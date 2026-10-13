@@ -1,9 +1,17 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileError, FileInfo, Result } from "@earendil-works/pi-durable/env";
 
 const context: Context = BACKGROUND_CONTEXT;
+
+/**
+ * What lies in this machine's shared state directory. A box keeps its commands' group files under its own temporary
+ * directory, so a suite on local boxes must add nothing here.
+ */
+export function sharedStateEntries(): string[] {
+	return existsSync("/tmp/.pi-transport") ? readdirSync("/tmp/.pi-transport").sort() : [];
+}
 
 /** A seeded generator of numbers in [0, 1): the same seed gives the same operation sequence. */
 export function random(seed: number): () => number {

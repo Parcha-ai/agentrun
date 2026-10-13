@@ -6,14 +6,21 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { type ExecutionEnv, err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxExecOptions, type BoxProcess, type BoxStatus } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { type BoxEnvOptions, boxEnv } from "../src/hands/box-env.ts";
+import { sharedStateEntries } from "./box-env-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Aborts and timeouts below leave group files and tombstones. They belong in each box's own directory.
+const sharedBefore = sharedStateEntries();
+afterAll(() => {
+	expect(sharedStateEntries()).toEqual(sharedBefore);
+});
 
 type Exec = (
 	command: readonly string[],
@@ -286,6 +293,66 @@ describe("boxEnv: stopping a command", () => {
 			expect(result.ok ? "" : result.error.code).toBe("timeout");
 			await waitFor(() => !running(tag), 5_000, "every process of the command to end");
 		});
+	});
+
+	it("keeps a command's group file and its tombstone in the box's own temporary directory", async () => {
+		await withEnv(async ({ env, box, root }) => {
+			const state = join(root, box.id, "tmp", ".pi-transport");
+			const tag = uniqueTag("state");
+			const controller = new AbortController();
+			const pending = env.exec(`sleep 30 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			const groupFiles = () => (existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".pid")) : []);
+			await waitFor(() => groupFiles().length === 1, 10_000, "the group file");
+			controller.abort();
+			await pending;
+			// A kill for a command that is not there leaves the tombstone a late start would look for.
+			const late = new AbortController();
+			box.intercept(
+				(inner) => (command, options, execContext) =>
+					command.includes("pi-exec") ? new Promise(() => {}) : inner(command, options, execContext),
+			);
+			const never = env.exec("true", undefined, withAbortSignal(late.signal, context));
+			late.abort();
+			await never;
+			expect(readdirSync(state).filter((name) => name.endsWith(".cancel")).length).toBe(1);
+			expect(readdirSync(state).filter((name) => name.endsWith(".pid"))).toEqual([]);
+		});
+	});
+
+	it("kills a command whose own environment names another temporary directory, or none", async () => {
+		await withEnv(async ({ env }) => {
+			for (const options of [{ inheritEnv: false }, { env: { TMPDIR: "/pi-transport-no-such-directory" } }]) {
+				const tag = uniqueTag("elsewhere");
+				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, { ...options, timeout: 0.5 }, context);
+				expect(result.ok ? "" : result.error.code).toBe("timeout");
+				await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+			}
+		});
+	});
+
+	it("gives a command no deadline of its own, in the box or here, unless the caller or the options set one", async () => {
+		const deadlines: unknown[] = [];
+		const record = (box: FaultyBox) =>
+			box.intercept((inner) => (command, options, execContext) => {
+				if (command.includes("pi-exec")) deadlines.push(options);
+				return inner(command, options, execContext);
+			});
+		await withEnv(async ({ env, box }) => {
+			record(box);
+			getOrThrow(await env.exec("true", undefined, context));
+			getOrThrow(await env.exec("true", { timeout: 2 }, context));
+		});
+		await withEnv(
+			async ({ env, box }) => {
+				record(box);
+				const tag = uniqueTag("option");
+				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+				expect(result.ok ? "" : result.error.code).toBe("timeout");
+				await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+			},
+			{ maxExecMs: 500 },
+		);
+		expect(deadlines).toEqual([undefined, { timeoutMs: 32_000 }, { timeoutMs: 30_500 }]);
 	});
 
 	it("kills a command that ignores the request to end", async () => {

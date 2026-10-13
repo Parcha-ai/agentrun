@@ -50,8 +50,9 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
 
 - Every file operation and every command is one `Box.exec` of a fixed script. Paths are arguments, never part of the
   script.
-- Every call to the box has a deadline. A box that ended or stopped answering is a tool error on that call and on
-  every later one, with the reason in the message. It is never a hang.
+- Every file operation has a deadline, and so has the start of a command. A box that ended or stopped answering is
+  a tool error on that call and on every later one, with the reason in the message. A command runs as long as its
+  caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -61,11 +62,11 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
 
 What a box must have: a POSIX `sh`, and the GNU versions of `find`, `mv`, `mktemp`, `realpath`, `sleep` and `truncate`
 with `setsid` (coreutils, findutils and util-linux, as in Debian and Ubuntu images). An image built on BusyBox does
-not have them. A string command runs in `bash` when the box has it, else in `sh`.
+not have them. A string command runs in `bash` when the box has it, else in `sh`. The environment keeps its
+commands' process groups in `.pi-transport` under the box's temporary directory (`TMPDIR`, else `/tmp`).
 
 Where it differs from `NodeExecutionEnv`, on purpose:
 
-- A command with no timeout of its own gets `maxExecMs`, 30 minutes by default. Node sets no deadline.
 - A command that is stopped is asked to end first and killed a second later. Node kills at once.
 - With `inheritEnv: false` a command still has a default `PATH`.
 - A rename across file systems succeeds, because `mv` copies.
