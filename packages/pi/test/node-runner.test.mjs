@@ -23,6 +23,9 @@ const systemOf = (messages) => messages.find((message) => message.role === 'syst
 const submitOf = (messages) => messages.flatMap((message) => message.toolsAdded ?? []).find((tool) => tool.name === 'submit');
 const toolResults = (messages) => messages.filter((message) => message.role === 'toolResult').map((message) => message.content.map((block) => block.text ?? '').join(''));
 const final = (pattern) => (error) => error instanceof NodeFailure && error.final === true && error.code === 'NODE_NOT_DELIVERED' && pattern.test(error.message);
+/** A host's tool that ends the run it is called in, and the host's extension that carries it. */
+const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
+const tools = defineExtension({ name: 'host-tools', tools: [halt] });
 
 /** A Harness with the runner's extension, a host over a scripted model, and what the model was sent. */
 async function rig(turns, host = {}, extensions = []) {
@@ -119,13 +122,16 @@ test('a node that spends its delivery attempts fails for good, by rejections or 
 });
 
 test('a run a host tool ended without a record is a failure a second attempt may follow', async () => {
-  const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
-  const tools = defineExtension({ name: 'host-tools', tools: [halt] });
   const seen = [];
-  const { harness, nodes, runNode, requests } = await rig([fauxAssistantMessage([fauxToolCall('halt', {})], { stopReason: 'toolUse' }), say('never asked')],
+  const { harness, nodes, runNode, requests, opened } = await rig([fauxAssistantMessage([fauxToolCall('halt', {})], { stopReason: 'toolUse' }), say('never asked')],
     { agent: () => ({ model: MODEL, extensions: [tools], tools: [halt] }), stance: (_node, offered) => { seen.push(offered.tools); return undefined; } }, [tools]);
   await assert.rejects(runNode(verdict()), (error) => error instanceof NodeFailure && error.final === false && /^Verdict did not submit \(it ended its run without a record\)$/.test(error.message));
   assert.deepEqual(seen, [['halt']], 'the stance is told the tools the host\'s agent lists');
+  assert.equal(requests.length, 1, 'the tool ended the run: nothing more was asked');
+  // What the tool answered stays in the node's conversation: it is what a next request of it would carry.
+  const left = (await (await harness.conversation(opened[0].conversation, ctx)).context(ctx)).messages;
+  assert.deepEqual(toolResults(left), ['stopped']);
+  assert.equal(left.find((message) => message.role === 'toolResult').isError, false);
   assert.deepEqual(requests[0].flatMap((message) => message.toolsAdded ?? []).map((tool) => tool.name), ['halt', 'submit'], 'submit follows the host\'s tools');
   assert.equal(nodes.extension.name, 'agentrun-nodes');
   await harness.close(ctx);
@@ -169,8 +175,6 @@ test('a conversation that is no node is left as it is: no task section, no nudge
 });
 
 test('under the recovery driver a failed attempt is closed and the second is a new conversation that delivers', async () => {
-  const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
-  const tools = defineExtension({ name: 'host-tools', tools: [halt] });
   const asked = [];
   const written = [];
   const { harness, runNode, closeStepSession, requests, opened } = await rig(

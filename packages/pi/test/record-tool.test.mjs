@@ -27,7 +27,7 @@ async function run(turns, contract = {}, toolOptions = {}) {
   const models = createModels();
   models.setProvider(faux.provider);
   let conversation;
-  const { fileKey, ...hooks } = toolOptions;
+  const { fileKey, followUp, ...hooks } = toolOptions;
   const tool = recordTool({
     record: { schema: SCHEMA, label: 'the verdict record', ...(fileKey ? { fileKey } : {}) }, ...hooks,
     contract: () => ({ schema: SCHEMA, ...contract }),
@@ -42,14 +42,17 @@ async function run(turns, contract = {}, toolOptions = {}) {
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
   conversation = await harness.root(ctx, { agent: { model: MODEL } });
   const settled = await (await conversation.submit({ type: 'input', content: 'Decide.', requestId: 'node:test' }, ctx)).wait(ctx);
+  // A conversation whose run ended goes on with its next input: that request carries what the ended run left.
+  if (followUp) await (await conversation.submit({ type: 'input', content: followUp, requestId: 'node:test:next' }, ctx)).wait(ctx);
   const record = await harness.snapshot(RecordDoc, conversation.id, ctx);
   const gate = await harness.snapshot(GateDoc, conversation.id, ctx);
   const delivered = await deliveredRecord(harness, conversation.id, ctx);
   const toolResults = requests.map((context) => context.messages.filter((m) => m.role === 'toolResult').map((m) => m.content.map((c) => c.text ?? '').join('')));
+  const toolErrors = requests.map((context) => context.messages.filter((m) => m.role === 'toolResult').map((m) => m.isError));
   // A request carries the tools it offers on the message that introduces them.
   const tools = requests[0]?.messages.flatMap((message) => message.toolsAdded ?? []) ?? [];
   await harness.close(ctx);
-  return { settled, record, gate, delivered, deliveries, requests: requests.length, toolResults, tools };
+  return { settled, record, gate, delivered, deliveries, requests: requests.length, toolResults, toolErrors, tools };
 }
 
 test('a host says a disagreement its own way when the record goes back; the stored disagreement is unchanged', async () => {
@@ -170,4 +173,19 @@ test('an error the host claims ends the run with the host told; any other error 
   assert.deepEqual(record ?? { record: null, attempts: 0 }, { record: null, attempts: 0 }, 'nothing was delivered');
   assert.equal(requests, 1, 'the claimed failure ends the run');
   assert.deepEqual(toolResults, [[]]);
+});
+
+test('what a claimed failure says is the tool result the model reads when its conversation goes on: the host\'s words, or the tool\'s own', async () => {
+  const claimed = Object.assign(new Error('the ledger refused a receipt'), { code: 'LEDGER' });
+  for (const [fatalText, read] of [['The run\'s ledger refused a receipt; the run stops.', 'The run\'s ledger refused a receipt; the run stops.'], [undefined, 'The run cannot record this submission; the run stops.']]) {
+    let readings = 0;
+    const { record, deliveries, requests, toolResults, toolErrors } = await run([submit({ verdict: 'buy' }), submit({ verdict: 'buy' }), say('never asked')],
+      { reviewers: [() => { readings += 1; if (readings === 1) throw claimed; return []; }] },
+      { fatal: (error) => error?.code === 'LEDGER', ...(fatalText ? { fatalText } : {}), followUp: 'Go on.' });
+    assert.equal(requests, 2, 'the claimed failure ended the first run; the next input is the second request');
+    assert.deepEqual(toolResults, [[], [read]], 'the second request carries the failed call\'s result');
+    assert.deepEqual(toolErrors, [[], [true]], 'as an error');
+    assert.deepEqual(deliveries, ['accepted'], 'a claimed failure is no delivery');
+    assert.deepEqual(record, { record: { verdict: 'buy' }, attempts: 1 }, 'and spent no attempt');
+  }
 });
