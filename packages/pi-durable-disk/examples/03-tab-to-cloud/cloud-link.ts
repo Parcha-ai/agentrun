@@ -23,7 +23,7 @@ type Frame =
   | { t: "model"; id: number; path: string; body: unknown }
   | { t: "model-abort"; id: number }
   | { t: "watch" }
-  | { t: "event"; kind: "snapshot" | "events" | "thread"; data: unknown }
+  | { t: "event"; kind: "snapshot" | "events" | "thread" | "models"; data: unknown }
   | { t: "model-head"; id: number; status: number }
   | { t: "model-chunk"; id: number; data: string }
   | { t: "model-end"; id: number; status: number; error?: string }
@@ -34,6 +34,14 @@ type Frame =
   /** A line of the instance's own trail (its lease: slow heartbeat writes, the fence's reason; its health), for the server to keep: it outlives a dead VM. Best effort, never queued behind a slow socket. */
   | { t: "trail"; at: string; event: string; data?: Record<string, unknown> }
   | GpuFrame;
+
+/** The names a registry gave its models, by `provider/modelId` (what the page shows in its header instead of an id). */
+export function modelNamesOf(models: { getModels(): readonly { provider: string; id: string; name: string }[] }): Record<string, string> {
+  return Object.fromEntries(models.getModels().map((m) => [`${m.provider}/${m.id}`, m.name]));
+}
+
+/** Whether a batch of agent events changes which model the agent is on. */
+export const changesModel = (events: readonly { type: string }[]): boolean => events.some((e) => e.type === "agent_changed");
 
 /** What `drainTrail` needs of a socket. */
 export interface TrailSocket {
@@ -64,7 +72,7 @@ export interface CloudLink {
   /** The OpenAI-compatible base URL the agent's provider uses (`http://127.0.0.1:<port>/v1`). */
   readonly baseUrl: string;
   /** The run is open: a `watch` from the server streams this conversation's events. */
-  attach(harness: Harness, conversationId: ConversationId, threadsOf?: ThreadsOf): void;
+  attach(harness: Harness, conversationId: ConversationId, threadsOf?: ThreadsOf, modelNames?: () => Record<string, string>): void;
   /** The notice of move `switchId` is committed: told to the server over the link, now or as soon as it dials in. */
   notifySwitched(switchId: string): void;
   /** One line of this instance's trail to the server, over the link: sent at once when the link is up and not backed up, held (the last 200) until it dials in otherwise, dropped past that. Synchronous, never throws, never waits. */
@@ -82,7 +90,7 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
   let linked: () => void = () => undefined;
   let next = 1;
   const open = new Map<number, ServerResponse & { head?: boolean }>();
-  let run: { harness: Harness; conversationId: ConversationId; threadsOf?: ThreadsOf } | undefined;
+  let run: { harness: Harness; conversationId: ConversationId; threadsOf?: ThreadsOf; modelNames?: () => Record<string, string> } | undefined;
   const relays = new RelayHolder();
   /** `watch`es are taken one at a time: two viewers that subscribe together must not interleave their stops and starts. */
   let watchChain: Promise<void> = Promise.resolve();
@@ -114,7 +122,13 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
     watching = { ws, stream };
     const send = (frame: Frame) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(frame));
     send({ t: "event", kind: "snapshot", data: stream.snapshot });
-    stream.start(async (events) => void send({ t: "event", kind: "events", data: events }));
+    // The names the host's registry gave its models, so a page that only watches can say "Qwen3.5-27B (Golden Gate edit)" and not an id: with the snapshot, and again when the agent's model changes.
+    const names = run.modelNames;
+    if (names) send({ t: "event", kind: "models", data: names() });
+    stream.start(async (events) => {
+      send({ t: "event", kind: "events", data: events });
+      if (names && changesModel(events)) send({ t: "event", kind: "models", data: names() });
+    });
     // The teaching threads are child conversations the pipe's root stream does not carry: followed here and relayed as `thread` events (a viewer that joins gets every transcript again).
     if (run.threadsOf) {
       const { harness, threadsOf } = run;
@@ -252,8 +266,8 @@ export async function startCloudLink(opts: { port: number; host: string; token: 
       if (link && link.readyState === link.OPEN) link.send(JSON.stringify({ t: "switched", switchId } satisfies Frame));
       else switchedIds.add(switchId);
     },
-    attach(harness, conversationId, threadsOf) {
-      run = { harness, conversationId, ...(threadsOf ? { threadsOf } : {}) };
+    attach(harness, conversationId, threadsOf, modelNames) {
+      run = { harness, conversationId, ...(threadsOf ? { threadsOf } : {}), ...(modelNames ? { modelNames } : {}) };
       if (pendingWatch && pendingWatch === link) void watch(pendingWatch).catch((error) => log("link.watch-failed", { error: (error as Error).message }));
       pendingWatch = undefined;
     },

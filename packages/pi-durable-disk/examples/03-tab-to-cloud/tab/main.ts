@@ -9,7 +9,7 @@ import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@e
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
 import { ChatView, type ChatItem } from "./chat-view.ts";
-import { callsLabel, driverLabel, echoedTools, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, toolArgsLine, withoutSent, type Sent } from "./chat-lines.ts";
+import { callsLabel, driverLabel, echoedTools, fallbackLine, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, relayedModel, sentBase, sentState, toolArgsLine, withoutSent, type Sent } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
 import { hasBody, resultCardElement, toolBody } from "./tool-body.ts";
 import { briefsFromArgs, teachResultCard } from "./teach-result.ts";
@@ -54,14 +54,14 @@ import { withHomeFallback } from "./home-env.ts";
 import { currentRobot, defaultSkill, loadSkills, ROBOT_TOOLS } from "../robot-tools.ts";
 import { ROBOT_SYSTEM } from "../robot-model.ts";
 import { creatureActivity } from "./creature-activity.ts";
-import { untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
+import { tag, untag, type Environment, type FileChange, type FileEntry, type PipeFrame, type Placement, type Tagged } from "../wire.ts";
 
 /** The largest workspace this page restores (a host's default is 1 GiB). */
 const TAB_RESTORE_LIMIT_BYTES = 256 * 1024 * 1024;
 const WASMER_SDK = "/wasmer/dist/index.js";
 const COMPUTER = "/pkgs/edgejs.webc";
 
-type ViewEvent = { kind: "snapshot"; event: AgentEvent } | { kind: "events"; events: AgentEvent[] };
+type ViewEvent = { kind: "snapshot"; event: AgentEvent } | { kind: "events"; events: AgentEvent[] } | { kind: "models"; names: Record<string, string> };
 type FileRow = { path: string; kind: "file" | "directory" | "symlink"; size: number; data?: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -128,6 +128,12 @@ const state = {
   savedLoss: undefined as { client: PipeClient; code: string; message: string } | undefined,
   /** The cloud model's id on this run (from the attach), kept for the root conversation of the offline copy. */
   agentModel: "",
+  /** The model the relayed events say the agent is on (the snapshot's agent, each agent_changed), for a page that only watches: the session may be on a host this page has no runtime of. */
+  relayedModel: null as { provider: string; modelId: string } | null,
+  /** The names the host registered its models with, by `provider/modelId`, as the pipe relays them. */
+  modelNames: {} as Record<string, string>,
+  /** `?thinking=open`: thinking blocks are open and dimmed as they stream instead of folded. */
+  thinkingOpen: new URLSearchParams(location.search).get("thinking") === "open",
   /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
   /** Each homecoming of a base and adapters: what was planned, the bytes fetched and how long it took (`model-homecoming`, and the base's prefetch). */
   homecomings: [] as Record<string, unknown>[],
@@ -376,8 +382,10 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       return el("div", { class: "turn user" }, item.text);
     case "assistant": {
       const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
-      if (item.thinking) node.append(el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)));
+      // `?thinking=open`: the thinking is on the page as it streams (dimmed, not folded away); otherwise it is one line that opens on tap.
+      if (item.thinking) node.append(state.thinkingOpen ? el("div", { class: "thinking open" }, el("div", { class: "label" }, "thinking"), el("pre", {}, item.thinking)) : el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)));
       node.append(item.text || (item.streaming ? "…" : ""));
+      if (item.fallback) node.append(el("div", { class: "note fallback" }, fallbackLine(item.fallback)));
       return node;
     }
     case "tool": {
@@ -528,7 +536,9 @@ function driverText(): string {
   if (state.mode === "connecting" || state.mode === "booting" || state.mode === "lost") return "";
   if (state.mode === "viewer" && (state.placement?.where === "parked" || state.placement?.where === "checked-out")) return ""; // nothing runs it
   if (state.mode === "offline" && driverModel === null) return "";
-  return driverLabel({ model: driverModel, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "Qwen3.5 0.8B" }, cloud: state.mode === "offline" ? "" : state.agentModel });
+  // A page that only watches has no conversation of its own: the model is the one the relayed events say (the agent may have switched on its host), else the run's.
+  const model = state.mode === "viewer" ? state.relayedModel : driverModel;
+  return driverLabel({ model, tabProvider: BRAIN_PROVIDER, names: { [V5_MODEL_ID]: "Qwen3.5 0.8B", ...state.modelNames }, cloud: state.mode === "offline" ? "" : state.agentModel });
 }
 function drawDriver(): void {
   const driver = driverText();
@@ -1747,10 +1757,21 @@ function applyView(event: Tagged): void {
     teachThreads.apply(view);
     return;
   }
+  if (view.kind === "models") {
+    state.modelNames = view.names;
+    drawDriver();
+    return;
+  }
   if (view.kind === "snapshot") {
     state.chat = new ChatView();
     state.chat.apply(view.event);
-  } else { noteTools(view.events); for (const e of view.events) state.chat.apply(e); }
+    state.relayedModel = relayedModel([view.event], null);
+  } else {
+    noteTools(view.events);
+    for (const e of view.events) state.chat.apply(e);
+    state.relayedModel = relayedModel(view.events, state.relayedModel);
+  }
+  drawDriver();
 }
 
 /** The agent's switch_environment tool talks to the server over this tab's pipe. */
@@ -2159,6 +2180,8 @@ void (phoneMode ? startPhone() : boot());
   items: () => state.chat.items(),
   /** Redraw the chat now (a check redraws while a tool result is open). */
   renderChat: () => renderChat(),
+  /** A relayed view event as a watching page receives it (a check feeds one: the snapshot, the events, the host's model names). */
+  view: (event: unknown) => { applyView(tag(event)); render(); },
   /** Redraw the page's header and controls now (a check sets a placement and looks at the bar). */
   render: () => render(),
   /** Set the composer's hint, as the page does (checks set a long one). */

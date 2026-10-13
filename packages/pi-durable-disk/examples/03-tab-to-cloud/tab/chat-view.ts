@@ -4,11 +4,12 @@
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import { NOTICE_KIND } from "../environment.ts";
 import { SERVER_TURN } from "../placement.ts";
+import type { SteeredFallback } from "./chat-lines.ts";
 import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE, BRAIN_SWAP } from "./brain-kinds.ts";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean }
+  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; /** Another model answered this turn in place of the steered one (a typed diagnostic on the message). */ fallback?: SteeredFallback }
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted"; /** What the harness said about the call, typed (its `<harness>` block is not in `output`). */ diagnostics?: Diagnostic[]; /** The tool's own typed details (teach_skills: its threads and what came home). */ details?: unknown }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
@@ -19,7 +20,7 @@ export type ChatItem =
 export type Diagnostic = { severity: string; code?: string; message: string };
 
 type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: unknown };
-type Message = { role: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string; details?: unknown };
+type Message = { role: string; provider?: string; model?: string; diagnostics?: unknown; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; errorMessage?: string; stopReason?: string; details?: unknown };
 
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((c: { type?: string; text?: string }) => (c.type === "text" ? c.text ?? "" : "")).join("") : "";
@@ -44,6 +45,16 @@ function textWithout(content: unknown, diagnostics: readonly Diagnostic[]): stri
   const last = items.map((c) => c.type === "text").lastIndexOf(true);
   if (last >= 0 && items[last]!.text === renderedDiagnostics(diagnostics)) items.splice(last, 1);
   return textOf(items);
+}
+
+/** The `steered-fallback` diagnostic of an assistant message (typed: `{ type, details: { why, from } }`), with the model that answered; none when it has no such diagnostic or it is malformed. */
+function fallbackOf(message: Message): SteeredFallback | undefined {
+  if (!Array.isArray(message.diagnostics)) return undefined;
+  for (const d of message.diagnostics as { type?: unknown; details?: { why?: unknown; from?: unknown } }[]) {
+    if (d?.type !== "steered-fallback" || typeof d.details?.why !== "string") continue;
+    return { why: d.details.why, from: typeof d.details.from === "string" ? d.details.from : "", by: (message.model ?? "another model").replace(/^[^/]+\//, "") };
+  }
+  return undefined;
 }
 
 const messagesOf = (entry: EntryRecord): Message[] => ((entry as unknown as { model?: Message[] }).model ?? []);
@@ -139,10 +150,10 @@ export class ChatView {
   items(): ChatItem[] {
     const items: ChatItem[] = [];
     const tools = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
-    const pushAssistant = (id: string, content: Block[], streaming: boolean, error?: string) => {
+    const pushAssistant = (id: string, content: Block[], streaming: boolean, error?: string, fallback?: SteeredFallback) => {
       const text = content.filter((b) => b?.type === "text").map((b) => b.text ?? "").join("");
       const thinking = content.filter((b) => b?.type === "thinking").map((b) => b.thinking ?? "").join("");
-      if (text || thinking || streaming) items.push({ kind: "assistant", id, text, thinking, streaming });
+      if (text || thinking || streaming) items.push({ kind: "assistant", id, text, thinking, streaming, ...(fallback ? { fallback } : {}) });
       for (const block of content) {
         if (block?.type !== "toolCall" || !block.id) continue;
         const live = this.#tools.get(block.id);
@@ -186,7 +197,7 @@ export class ChatView {
         }
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {
           const error = message.stopReason === "error" ? `${index < lastAnswer ? "model call failed, retried" : "model error"}: ${message.errorMessage ?? "unknown"}` : undefined;
-          pushAssistant(id, (message.content as Block[]) ?? [], false, error);
+          pushAssistant(id, (message.content as Block[]) ?? [], false, error, fallbackOf(message));
         } else if (entry.kind === "pi.tool-result" && message.role === "toolResult") {
           const tool = tools.get(message.toolCallId ?? "");
           const diagnostics = diagnosticsOf(entry);

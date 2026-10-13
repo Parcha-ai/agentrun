@@ -69,6 +69,11 @@ button.icon:hover { color: var(--ink); }
 .turn { max-width: min(62ch, 86%); }
 .turn .thinking summary { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
 .turn .thinking pre { font: 400 12px/1.5 var(--mono); color: var(--muted); margin: 4px 0 8px; white-space: pre-wrap; }
+/* ?thinking=open: the thinking sits open above the answer, dimmed; while it streams it is dimmer still */
+.turn .thinking.open .label { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.turn .thinking.open pre { opacity: .7; }
+.turn.streaming .thinking.open pre { opacity: .5; }
+.turn .note.fallback { margin-top: 6px; font: 400 12px/1.4 var(--sans); }
 .tool { max-width: 100%; border: 0; border-radius: 0; background: none; overflow: visible; font: 400 12px/1.5 var(--mono); }
 .tool pre { max-height: 220px; overflow: auto; margin: 6px 0 4px 15px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); color: var(--muted); font: inherit; }
 .tool.bare > summary { cursor: default; }
