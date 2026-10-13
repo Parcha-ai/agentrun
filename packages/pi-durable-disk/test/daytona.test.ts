@@ -382,6 +382,107 @@ test("launcher: past the restart limit it stops restarting (systemd's start limi
   assert.equal(end.exit, 3);
 });
 
+/** An instance that records whether the file named by PDA_TEST_FILE is there when it starts, deletes it (an app that read a secret once), and exits non-zero so the launcher restarts it. */
+const CONSUMER = `const fs = require("node:fs"); const f = process.env.PDA_TEST_FILE; fs.appendFileSync(process.env.PDA_TEST_OUT, (fs.existsSync(f) ? "found" : "missing") + "\\n"); try { fs.unlinkSync(f); } catch {} process.exit(3);`;
+
+test("launcher: beforeSpawn runs before every incarnation, so a file the instance consumed is back after a restart in place", async () => {
+  const d = scratch("pda-before-");
+  const file = join(d, "secret");
+  const out = join(d, "out.txt");
+  const put = `require("node:fs").writeFileSync(${JSON.stringify(file)}, "s", { mode: 0o400 })`;
+  const box = launchDir({ argv: [process.execPath, "-e", CONSUMER], env: { PDA_TEST_FILE: file, PDA_TEST_OUT: out }, beforeSpawn: [process.execPath, "-e", put], restartDelayMs: 10, restartLimit: { burst: 2, intervalMs: 60_000 } });
+  const end = await serve(box, "x");
+  assert.equal(end.spawned, 3);
+  assert.deepEqual(readFileSync(out, "utf8").trim().split("\n"), ["found", "found", "found"], "every incarnation, the restarts included, found the file");
+});
+
+test("launcher: without beforeSpawn a restart in place finds the consumed file gone (what the hook is for)", async () => {
+  const d = scratch("pda-before-");
+  const file = join(d, "secret");
+  writeFileSync(file, "s");
+  const out = join(d, "out.txt");
+  const box = launchDir({ argv: [process.execPath, "-e", CONSUMER], env: { PDA_TEST_FILE: file, PDA_TEST_OUT: out }, restartDelayMs: 10, restartLimit: { burst: 1, intervalMs: 60_000 } });
+  await serve(box, "x");
+  assert.deepEqual(readFileSync(out, "utf8").trim().split("\n"), ["found", "missing"]);
+});
+
+test("launcher: a failing beforeSpawn never starts the instance (the first time) and ends the launcher with the reason (on a restart)", async () => {
+  const d = scratch("pda-before-");
+  const out = join(d, "out.txt");
+  const first = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "process.exit(7)"] }), "x");
+  assert.equal(first.spawned, 0);
+  assert.equal(first.phase, "exited");
+  assert.equal(first.reason, "beforeSpawn failed: exit 7");
+  assert.ok(!existsSync(out), "the instance never ran");
+  // Fails only the second time: the marker file says the first call happened.
+  const mark = join(d, "mark");
+  const failSecond = `const fs = require("node:fs"); if (fs.existsSync(${JSON.stringify(mark)})) process.exit(9); fs.writeFileSync(${JSON.stringify(mark)}, "1");`;
+  const later = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "3" }, beforeSpawn: [process.execPath, "-e", failSecond], restartDelayMs: 10 }), "x");
+  assert.equal(later.spawned, 1, "the first incarnation ran");
+  assert.equal(later.reason, "beforeSpawn failed: exit 9");
+  const slow = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], beforeSpawnTimeoutMs: 200 }), "x");
+  assert.equal(slow.spawned, 0);
+  assert.equal(slow.reason, "beforeSpawn failed: timed out");
+});
+
+test("launcher: a beforeSpawn that ignores SIGTERM is killed after a grace and the launcher still says why; a stop ends a running hook", async () => {
+  const d = scratch("pda-before-");
+  const out = join(d, "out.txt");
+  const stubborn = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`;
+  const t0 = Date.now();
+  const end = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", stubborn], beforeSpawnTimeoutMs: 200 }), "x");
+  assert.equal(end.reason, "beforeSpawn failed: timed out");
+  assert.equal(end.spawned, 0);
+  assert.ok(Date.now() - t0 < 6_000, `it took ${Date.now() - t0} ms`);
+  // A stop while the hook runs: the launcher's own SIGTERM handler ends it and the launcher says it was stopped (the process-wide signal is emitted here, not sent).
+  const long = launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "setInterval(() => {}, 1000)"], beforeSpawnTimeoutMs: 60_000 });
+  const t1 = Date.now();
+  const running = serve(long, "x");
+  await sleep(400);
+  process.emit("SIGTERM");
+  const stopped = await running;
+  assert.equal(stopped.reason, "stopped");
+  assert.equal(stopped.spawned, 0);
+  assert.ok(Date.now() - t1 < 5_000, `it took ${Date.now() - t1} ms`);
+});
+
+test("launcher: a beforeSpawn argument with a NUL, or a program that cannot start, ends the launcher with a reason instead of throwing or waiting", async () => {
+  const d = scratch("pda-before-");
+  const out = join(d, "out.txt");
+  const nul = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out }, beforeSpawn: [process.execPath, "-e", "a\0b"] }), "x");
+  assert.equal(nul.spawned, 0);
+  assert.match(nul.reason!, /beforeSpawn is a command/);
+  const missing = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [join(d, "no-such-program")] }), "x");
+  assert.equal(missing.spawned, 0);
+  assert.equal(missing.phase, "exited");
+  assert.match(missing.reason!, /^beforeSpawn failed: could not start: ENOENT/);
+});
+
+test("launcher: a beforeSpawn that is not a command with an absolute program is refused, and nothing runs", async () => {
+  for (const bad of [[], ["relative-program"], [process.execPath, 5 as unknown as string]]) {
+    const end = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: {}, beforeSpawn: bad }), "x");
+    assert.equal(end.spawned, 0);
+    assert.match(end.reason!, /beforeSpawn is a command/);
+  }
+});
+
+test("the host puts beforeSpawn in the launch spec it uploads (and the launcher runs it before the instance), and leaves it out when not given", async () => {
+  const d = scratch("pda-before-host-");
+  const marker = join(d, "ran-before");
+  const put = `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "1")`;
+  const w = world("hold", { beforeSpawn: [process.execPath, "-e", put] });
+  const h = await w.host.start(REF, TOKEN);
+  const spec = JSON.parse(readFileSync(join(w.box, `${String(h.name)}.json`), "utf8")) as LaunchSpec;
+  assert.deepEqual(spec.beforeSpawn, [process.execPath, "-e", put]);
+  await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  assert.ok(existsSync(marker), "it ran before the instance started");
+  await w.host.stop(h);
+  const plain = world("hold");
+  const hp = await plain.host.start(REF, TOKEN);
+  assert.equal((JSON.parse(readFileSync(join(plain.box, `${String(hp.name)}.json`), "utf8")) as LaunchSpec).beforeSpawn, undefined);
+  await plain.host.stop(hp);
+});
+
 test("launcher: never root; another user only as root; nothing runs on a refusal; a missing state is failed", async () => {
   const root = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: {}, user: "root" }), "x");
   assert.equal(root.spawned, 0);

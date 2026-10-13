@@ -37,6 +37,14 @@ export interface LaunchSpec {
   /** More than `burst` restarts within `intervalMs` ends the launcher (systemd's start limit). Default 5 in 60 s. */
   restartLimit?: { burst: number; intervalMs: number };
   terminalExits?: number[];
+  /**
+   * A command (absolute program path, then its arguments) the launcher runs as itself, which is root in a box, before EVERY incarnation: the first and each restart in place. It runs with PATH and LANG only, its output goes
+   * to the instance's log, and a failure (a non-zero exit, a timeout, no such program) ends the launcher with the reason, never starting the instance: an instance whose files are not in place must not run. What a restart in place
+   * needs again that the instance itself consumed (a secret it read once and deleted) is put back here, by whoever the files belong to, without the run user ever being able to read the source.
+   */
+  beforeSpawn?: string[];
+  /** The longest `beforeSpawn` may run (default 30 s). */
+  beforeSpawnTimeoutMs?: number;
   /** The run's mount in the box: `stop --reap-detached` ends the programs that hold it busy (see `mountBlockers`). */
   mountpoint?: string;
 }
@@ -135,6 +143,7 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
     token = existsSync(f.token) ? readFileSync(f.token, "utf8").trim() : "";
     if (existsSync(f.token)) unlinkSync(f.token);
     ids = runAs(spec);
+    if (spec.beforeSpawn !== undefined && (!Array.isArray(spec.beforeSpawn) || spec.beforeSpawn.length === 0 || spec.beforeSpawn.some((x) => typeof x !== "string" || x.includes("\0")) || !spec.beforeSpawn[0]!.startsWith("/"))) throw new Error("beforeSpawn is a command: an absolute program path and its arguments");
   } catch (err) {
     save({ phase: "exited", exit: 1, reason: `refused: ${(err as Error).message}` });
     return state;
@@ -147,6 +156,13 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   let child: ReturnType<typeof spawn> | null = null;
   const onSignal = () => {
     stopping = true;
+    if (hook?.pid) {
+      try {
+        process.kill(-hook.pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
     if (state.phase === "restarting") save({ phase: "stopping" });
     else if (child?.exitCode === null) {
       save({ phase: "stopping" });
@@ -157,8 +173,64 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   process.on("SIGINT", onSignal);
   const log = openSync(f.log, "a", 0o600);
   const recent: number[] = [];
+  /** The `beforeSpawn` command now running, so a stop can end it. */
+  let hook: ReturnType<typeof spawn> | null = null;
+  /** Run `beforeSpawn` and say why it failed, or null when it succeeded. Asynchronous (a stop is heard meanwhile), bounded (SIGTERM at the timeout, SIGKILL of its group 2 s later) and never throws. */
+  const runHook = (): Promise<string | null> =>
+    new Promise((resolve) => {
+      let done = false;
+      let timedOut = false;
+      const timers: NodeJS.Timeout[] = [];
+      const finish = (why: string | null) => {
+        if (done) return;
+        done = true;
+        for (const t of timers) clearTimeout(t);
+        hook = null;
+        resolve(why);
+      };
+      let c: ReturnType<typeof spawn>;
+      try {
+        c = spawn(spec.beforeSpawn![0]!, spec.beforeSpawn!.slice(1), { env: { PATH: SAFE_PATH, LANG: "C.UTF-8" }, cwd: "/", stdio: ["ignore", log, log], detached: true });
+      } catch (err) {
+        finish(`could not start: ${(err as Error).message}`);
+        return;
+      }
+      hook = c;
+      const killGroup = (signal: NodeJS.Signals) => {
+        try {
+          process.kill(-c.pid!, signal);
+        } catch {
+          // gone
+        }
+      };
+      c.once("error", (err) => finish(`could not start: ${(err as NodeJS.ErrnoException).code ?? err.message}`));
+      c.once("exit", (code, signal) => finish(timedOut ? "timed out" : code === 0 ? null : `exit ${code ?? signal}`));
+      timers.push(
+        setTimeout(() => {
+          timedOut = true;
+          killGroup("SIGTERM");
+          timers.push(
+            setTimeout(() => {
+              killGroup("SIGKILL");
+              timers.push(setTimeout(() => finish("timed out"), 1_000));
+            }, 2_000),
+          );
+        }, spec.beforeSpawnTimeoutMs ?? 30_000),
+      );
+    });
   try {
     for (;;) {
+      if (spec.beforeSpawn) {
+        const why = await runHook();
+        if (stopping) {
+          save({ phase: "exited", instance: null, instanceTicks: null, reason: "stopped" });
+          return state;
+        }
+        if (why) {
+          save({ phase: "exited", instance: null, instanceTicks: null, exit: 1, reason: `beforeSpawn failed: ${why}` });
+          return state;
+        }
+      }
       const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env };
       const first = token !== null;
       try {
