@@ -93,14 +93,16 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
+- The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
+  box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
   The suite checks this with pi's own environment conformance cases and with random operation sequences run against
   both.
 - The environment's id is `pi-transport:<provider>:<box id>`. `~` is the box's home directory.
 
-What a box must have: a POSIX `sh`, and the GNU versions of `find`, `mv`, `mktemp`, `realpath`, `sleep` and `truncate`
-with `setsid` (coreutils, findutils and util-linux, as in Debian and Ubuntu images). An image built on BusyBox does
-not have them. A string command runs in `bash` when the box has it, else in `sh`. The environment keeps its
+What a box must have: a POSIX `sh`, and the GNU versions of `dd`, `find`, `mv`, `mktemp`, `realpath`, `sleep` and
+`truncate` with `setsid` (coreutils, findutils and util-linux, as in Debian and Ubuntu images). An image built on
+BusyBox does not have them. A string command runs in `bash` when the box has it, else in `sh`. The environment keeps its
 commands' process groups in `.pi-transport` under the box's temporary directory (`TMPDIR`, else `/tmp`).
 
 Where it differs from `NodeExecutionEnv`, on purpose:
@@ -110,6 +112,10 @@ Where it differs from `NodeExecutionEnv`, on purpose:
 - A rename across file systems succeeds, because `mv` copies.
 - `listDir` returns a name that is not UTF-8 with the replacement character. Node fails the whole listing.
 - A watcher polls, so its `mode` is `polling`.
+- `openBinaryReader` and `openTextLineReader` read the file whole when they open it, in one round trip to the box, and
+  serve every later read from that copy on the host. A file above `maxReaderBytes` (64 MiB by default) is refused with
+  `not_supported` before a byte of it leaves the box; a command (`head`, `tail`, `sed`) reads such a file in parts.
+  Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
 

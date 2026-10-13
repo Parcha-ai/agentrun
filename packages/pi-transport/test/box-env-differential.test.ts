@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -169,6 +169,160 @@ describe("boxEnv on a local box against NodeExecutionEnv", () => {
 		};
 		expect(await results(box, roots[1])).toEqual(await results(node, roots[0]));
 	}, 30_000);
+
+	it("reads the first lines of a file like Node, for every kind of count", async () => {
+		const { node, box, roots } = await pair();
+		const results = async (env: ExecutionEnv, root: string) => {
+			await env.writeFile("lines.txt", "\ufeffone\ntwo\n\nfour\nfive", context);
+			await env.writeFile("ends.txt", "one\ntwo\n", context);
+			await env.writeFile("empty.txt", "", context);
+			await env.createDir("dir", undefined, context);
+			const counts = [1, 2, 3, 5, 6, 1.5, 0.2, 0, -1, Number.NaN, Number.POSITIVE_INFINITY];
+			const read: Record<string, unknown> = {};
+			for (const name of ["lines.txt", "ends.txt", "empty.txt", "missing.txt", "dir"]) {
+				for (const maxLines of counts) {
+					read[`${name} ${maxLines}`] = await env.readTextLines(name, { maxLines }, context);
+				}
+			}
+			return normalize(read, root);
+		};
+		expect(await results(box, roots[1])).toEqual(await results(node, roots[0]));
+	}, 60_000);
+
+	it("runs a command whose own search path has no program in it, like Node", async () => {
+		const { node, box, roots } = await pair();
+		const results = async (env: ExecutionEnv, root: string) => {
+			const ran: Record<string, unknown> = {};
+			const commands: [string, string | readonly string[]][] = [
+				["a program by its path", ["/bin/echo", "hi"]],
+				["a program by its name", ["echo", "hi"]],
+				["a shell command", "echo hi; ls /"],
+			];
+			for (const [label, command] of commands) {
+				const output = { stdout: "", stderr: "" };
+				const result = await env.exec(
+					command,
+					{
+						env: { PATH: "/pi-transport-no-such-directory" },
+						onOutput: (text, _context, info) => {
+							output[info.stream] += text;
+						},
+					},
+					context,
+				);
+				// The shell's own words for a program it cannot find differ by how it was started.
+				ran[label] = { result, stdout: output.stdout, complained: output.stderr !== "" };
+			}
+			return normalize(ran, root);
+		};
+		expect(await results(box, roots[1])).toEqual(await results(node, roots[0]));
+	}, 30_000);
+
+	it.skipIf(process.getuid?.() === 0)(
+		"reports what it may not reach or read as denied, like Node",
+		async () => {
+			const { node, box, roots } = await pair();
+			const results = async (env: ExecutionEnv, root: string) => {
+				await env.writeFile("private/file.txt", "x", context);
+				await env.writeFile("locked.txt", "x", context);
+				await env.writeFile("readonly.txt", "x", context);
+				await env.writeFile("listed/file.txt", "x", context);
+				chmodSync(join(root, "private"), 0o000);
+				chmodSync(join(root, "locked.txt"), 0o000);
+				chmodSync(join(root, "readonly.txt"), 0o400);
+				// Entries may be named, not reached.
+				chmodSync(join(root, "listed"), 0o400);
+				// And the other way round: reached, not named.
+				await env.writeFile("entered/file.txt", "x", context);
+				chmodSync(join(root, "entered"), 0o100);
+				try {
+					const each: Record<string, unknown> = {};
+					const paths = [
+						"private/file.txt",
+						"private/none",
+						"private/a/b",
+						"locked.txt",
+						"readonly.txt",
+						"listed/file.txt",
+					];
+					for (const path of paths) {
+						const lineReader = await env.openTextLineReader(path, context);
+						const line = lineReader.ok ? await lineReader.value.readLine(context) : lineReader;
+						if (lineReader.ok) await lineReader.value.close(context);
+						each[path] = {
+							info: await env.fileInfo(path, context),
+							exists: await env.exists(path, context),
+							text: await env.readTextFile(path, context),
+							bytes: await env.readBinaryFile(path, context),
+							lines: await env.readTextLines(path, { maxLines: 2 }, context),
+							allLines: await env.readTextLines(path, undefined, context),
+							line,
+							canonical: await env.canonicalPath(path, context),
+							open: await opened(env, path, false),
+							openNoFollow: await opened(env, path, true),
+							list: await env.listDir(path, context),
+							truncate: await env.truncateFile(path, 0, context),
+							flush: await env.flushFile(path, context),
+							append: await env.appendFile(path, "y", context),
+							write: await env.writeFile(path, "z", context),
+							createDir: await env.createDir(path, { recursive: false }, context),
+							createDirs: await env.createDir(path, { recursive: true }, context),
+							renameFrom: await env.renameFile(path, "moved.txt", context),
+							renameBack: await env.renameFile("moved.txt", path, context),
+							removeForced: await env.remove(path, { force: true }, context),
+							remove: await env.remove(path, undefined, context),
+						};
+					}
+					// The directories themselves, read only.
+					const directories: Record<string, unknown> = {};
+					for (const path of ["private", "listed", "entered", "entered/file.txt"]) {
+						const lineReader = await env.openTextLineReader(path, context);
+						const line = lineReader.ok ? await lineReader.value.readLine(context) : lineReader;
+						if (lineReader.ok) await lineReader.value.close(context);
+						directories[path] = {
+							info: await env.fileInfo(path, context),
+							exists: await env.exists(path, context),
+							text: await env.readTextFile(path, context),
+							bytes: await env.readBinaryFile(path, context),
+							lines: await env.readTextLines(path, { maxLines: 2 }, context),
+							noLines: await env.readTextLines(path, { maxLines: Number.NaN }, context),
+							allLines: await env.readTextLines(path, undefined, context),
+							line,
+							canonical: await env.canonicalPath(path, context),
+							open: await opened(env, path, false),
+							openNoFollow: await opened(env, path, true),
+							list: await env.listDir(path, context),
+							truncate: await env.truncateFile(path, 1, context),
+							flush: await env.flushFile(path, context),
+						};
+					}
+					const dirReader = await env.openDirReader("private", context);
+					if (dirReader.ok) await dirReader.value.close(context);
+					const listedReader = await env.openDirReader("listed", context);
+					const listedPage = listedReader.ok ? await listedReader.value.next(10, context) : listedReader;
+					if (listedReader.ok) await listedReader.value.close(context);
+					const ran = await env.exec("pwd", { cwd: "private" }, context);
+					return normalize(
+						{
+							each,
+							directories,
+							listPrivate: await env.listDir("private", context),
+							listListed: await env.listDir("listed", context),
+							readPrivate: dirReader.ok ? "opened" : dirReader,
+							pageListed: listedPage,
+							removePrivate: await env.remove("private", undefined, context),
+							inPrivate: ran.ok ? ran.value.exitCode : ran,
+						},
+						root,
+					);
+				} finally {
+					for (const name of ["private", "listed", "entered"]) chmodSync(join(root, name), 0o700);
+				}
+			};
+			expect(await results(box, roots[1])).toEqual(await results(node, roots[0]));
+		},
+		60_000,
+	);
 
 	it("pages a directory like Node, entries removed meanwhile included", async () => {
 		const { node, box, roots } = await pair();
