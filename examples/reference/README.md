@@ -59,7 +59,7 @@ None of them judges prose.
 | `record-matches-output-schema` | `out/record.json` exists, parses, and its record validates against the workflow's output schema |
 | `citations-name-filed-evidence` | every string in the record that names a path under `evidence/` is a file there that parses and has `tool`, `args` and `status` |
 | `no-failed-evidence-cited` | no cited receipt was filed `failed` |
-| `fakes-called-once` | in `ledger.jsonl`, every tool and judge call happened once across the run's processes, and a model turn at most twice, the second in a later process |
+| `fakes-called-once` | in `ledger.jsonl`, every tool call, judge and page judgment happened once across the run's processes, and each turn of a conversation was asked at most twice, the second time in a later process |
 | `nodes-end` | every step that `events.jsonl` shows starting also ends |
 | `browser-sessions-released` | every browser session `events.jsonl` shows launched is released |
 
@@ -68,6 +68,8 @@ npm run demo:reference -- --dir /tmp/run && node examples/reference/gates.ts /tm
 ```
 
 It prints one line per gate and exits 1 when one fails. From code, `gates(runDir, job)` returns `{ id, ok, detail }[]`.
+When `ledger.jsonl` or `events.jsonl` is missing or has a line that does not parse, the gates that read it fail and
+say so. `localHost()` creates both empty when it starts, so a run that called nothing still has them.
 
 `cases/` holds synthetic cases, each a way out the packages already have:
 

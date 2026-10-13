@@ -70,7 +70,9 @@ export type Fakes = {
   start: string;
 };
 
-export type LedgerRow = { kind: 'model' | 'tool' | 'judge'; name: string; pid: number };
+/** One fake call. A model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the
+ *  provider, the same in every process of the run. */
+export type LedgerRow = { kind: 'model' | 'tool' | 'judge'; name: string; pid: number; conversation?: string };
 
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
@@ -79,17 +81,22 @@ export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow
 
 export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane } = {}): LocalHost {
   const ledgerFile = join(place.root, 'ledger.jsonl');
-  const count = (kind: LedgerRow['kind'], name: string) => appendFileSync(ledgerFile, json({ kind, name, pid: process.pid }));
-  const status = quiet((event: StatusEvent) => appendFileSync(join(place.root, 'events.jsonl'), json(event)));
+  const eventsFile = join(place.root, 'events.jsonl');
+  // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
+  for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
+    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, ...(conversation ? { conversation } : {}) }));
+  const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
-  faux.setResponses(Array.from({ length: 64 }, () => (context) => {
-    count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`);
+  faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
+    count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
   }));
   const catalog = createModels();
   catalog.setProvider(faux.provider);
 
+  const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
   const browser: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver> };
 
@@ -120,7 +127,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     },
     decisions: {
       runJudge: async (request) => { count('judge', request.label); return fakes.judge(request); },
-      ...(fakes.page ? { browser: { classifyPage: fakes.page } } : {}),
+      ...(classifyPage ? { browser: { classifyPage: async (page) => { count('judge', `page ${page.url}`); return classifyPage(page); } } } : {}),
     },
     status,
     async deliver(result) {

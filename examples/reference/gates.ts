@@ -18,7 +18,17 @@ type Read = { ok: true; value: any } | { ok: false; error: string };
 const parse = (path: string): Read => {
   try { return { ok: true, value: JSON.parse(readFileSync(path, 'utf8')) }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
 };
-const lines = <T,>(path: string): T[] => (existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T) : []);
+/** A log of the run, one JSON row per line. Missing or with a line that does not parse, it is no evidence. */
+const log = <T,>(runDir: string, name: string): { ok: true; rows: T[] } | { ok: false; error: string } => {
+  const path = join(runDir, name);
+  if (!existsSync(path)) return { ok: false, error: `no ${name}` };
+  const rows: T[] = [];
+  for (const [index, line] of readFileSync(path, 'utf8').split('\n').entries()) {
+    if (!line) continue;
+    try { rows.push(JSON.parse(line) as T); } catch { return { ok: false, error: `${name} line ${index + 1} does not parse` }; }
+  }
+  return { ok: true, rows };
+};
 const gate = (id: string, problems: string[], fine: string): Gate => ({ id, ok: problems.length === 0, detail: problems.length ? problems.slice(0, 4).join('; ') : fine });
 const countBy = <T,>(items: T[], key: (item: T) => string) => items.reduce((groups, item) => groups.set(key(item), [...(groups.get(key(item)) ?? []), item]), new Map<string, T[]>());
 
@@ -53,14 +63,18 @@ export function gates(runDir: string, job: Job): Gate[] {
     return { path, ...(missing.length ? { problem: `has no ${missing.join(', ')}` } : {}), status: read.value.status as unknown };
   });
 
-  const calls = countBy(lines<LedgerRow>(join(runDir, 'ledger.jsonl')), (row) => `${row.kind}:${row.name}`);
-  const callProblems = [...calls].flatMap(([call, rows]) => rows[0]!.kind !== 'model' ? (rows.length === 1 ? [] : [`${call} ran ${rows.length} times`])
+  // Two agent steps each start at turn 0, so a model call is its turn in its conversation.
+  const ledger = log<LedgerRow>(runDir, 'ledger.jsonl');
+  const calls = countBy(ledger.ok ? ledger.rows : [], (row) => (row.kind === 'model' ? `model:${row.name} of ${row.conversation ?? 'an unnamed conversation'}` : `${row.kind}:${row.name}`));
+  const callProblems = !ledger.ok ? [ledger.error] : [...calls].flatMap(([call, rows]) => rows[0]!.kind !== 'model' ? (rows.length === 1 ? [] : [`${call} ran ${rows.length} times`])
     : rows.length > 2 ? [`${call} was asked ${rows.length} times`] : rows.length === 2 && rows[0]!.pid === rows[1]!.pid ? [`${call} was asked twice in one process`] : []);
 
-  const events = lines<StatusEvent>(join(runDir, 'events.jsonl'));
-  const steps = countBy(events.flatMap((event) => (event.source === 'workflow' && ['node.start', 'node.end'].includes(event.event.type) ? [event.event] : [])),
+  const events = log<StatusEvent>(runDir, 'events.jsonl');
+  const seen = events.ok ? events.rows : [];
+  const steps = countBy(seen.flatMap((event) => (event.source === 'workflow' && ['node.start', 'node.end'].includes(event.event.type) ? [event.event] : [])),
     (event) => `${event.label}@${event.executionPath ?? ''}`);
-  const sessions = countBy(events.flatMap((event) => (event.source === 'browser' && 'change' in event ? [event] : [])), (event) => event.row.session.tag);
+  const sessions = countBy(seen.flatMap((event) => (event.source === 'browser' && 'change' in event ? [event] : [])), (event) => event.row.session.tag);
+  const fromEvents = (problems: string[]) => (events.ok ? problems : [events.error]);
 
   return [
     gate('record-matches-output-schema', schemaProblems, `the record validates against ${job.workflow.output.schemaId}`),
@@ -69,8 +83,8 @@ export function gates(runDir: string, job: Job): Gate[] {
     gate('no-failed-evidence-cited', receipts.flatMap(({ path, status }) => (status === 'failed' ? [`${path} was filed failed`] : [])),
       `${filed(runDir).filter(({ read }) => read.ok && read.value.status === 'failed').length} receipts filed failed, none cited`),
     gate('fakes-called-once', callProblems, `${calls.size} calls: every tool and judge once, every model turn once or once more in a later process`),
-    gate('nodes-end', [...steps].flatMap(([step, rows]) => (rows.at(-1)!.type === 'node.end' ? [] : [`${step} started and never ended`])), `${steps.size} steps, each ended`),
-    gate('browser-sessions-released', [...sessions].flatMap(([tag, rows]) => (rows.some((row) => row.change === 'released') ? [] : [`${tag} was never released`])),
+    gate('nodes-end', fromEvents([...steps].flatMap(([step, rows]) => (rows.at(-1)!.type === 'node.end' ? [] : [`${step} started and never ended`]))), `${steps.size} steps, each ended`),
+    gate('browser-sessions-released', fromEvents([...sessions].flatMap(([tag, rows]) => (rows.some((row) => row.change === 'released') ? [] : [`${tag} was never released`]))),
       `${sessions.size} sessions, each released`),
   ];
 }

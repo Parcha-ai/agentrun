@@ -1,7 +1,7 @@
 // The rig: the reference job and each synthetic case run once, then the structural gates read what each run left.
 // A case passes when its run ends with the status it expects, exactly its expected gates fail, and exactly the tools
-// it expects filed receipts `failed`. A run killed and resumed passes every gate, and two tampered copies of a run
-// show the gates catch what they claim to.
+// it expects filed receipts `failed`. A run killed and resumed passes every gate, a run with two agent steps passes
+// every gate, and tampered copies of a run show the gates catch what they claim to.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,6 +17,16 @@ import { fakes, job } from './reference/job.ts';
 
 const reference = { name: 'reference', job, fakes, expect: { status: 'complete', failing: [], filedFailed: [] } };
 const failingOf = (runDir, ofJob) => gates(runDir, ofJob).filter(({ ok }) => !ok).map(({ id }) => id);
+const failures = (runDir) => gates(runDir, job).filter(({ ok }) => !ok).map(({ id, detail }) => [id, detail]);
+const ledgerOf = async (runDir) => (await readFile(join(runDir, 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+
+/** A copy of a run beside it, changed by `change`. */
+async function tampered(runDir, name, change) {
+  const copy = join(runDir, '..', name);
+  await cp(runDir, copy, { recursive: true });
+  await change(copy);
+  return copy;
+}
 
 /** One run of a case in a directory of its own, removed after the test. */
 async function runOf(t, ofCase) {
@@ -65,27 +75,57 @@ test('a run killed after the browser read and resumed by a second process passes
     .on('close', (code, signal) => resolve(signal ?? code)));
   assert.deepEqual([await ended({ KILL_AT: '2' }), await ended({})], ['SIGKILL', 0]);
   assert.deepEqual(gates(join(tmp, 'run'), job).filter(({ ok }) => !ok), []);
-  const cut = (await readFile(join(tmp, 'run', 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.name === 'turn 2');
+  const cut = (await ledgerOf(join(tmp, 'run'))).filter((row) => row.name === 'turn 2');
   assert.equal(new Set(cut.map((row) => row.pid)).size, 2, 'the turn the kill cut was asked once in each process, and the gate let it');
+  assert.ok(cut[0].conversation && cut[0].conversation === cut[1].conversation, 'both processes name the same conversation');
 });
 
-test('the gates are not vacuous: a cited failed receipt, a tool run twice and a turn asked twice in one process each fail theirs', { timeout: 120_000 }, async (t) => {
+test('two agent steps in one process are two conversations, each asked its turns once', { timeout: 120_000 }, async (t) => {
+  const steps = [...job.workflow.root.steps];
+  steps.splice(2, 0, { ...steps[1], label: 'recheck', as: 'recheck' });
+  const twoLeads = { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps } } };
+  const { runDir, result } = await runOf(t, { job: twoLeads, fakes });
+  assert.equal(result.status, 'complete', result.error);
+  assert.deepEqual(failingOf(runDir, twoLeads), [], JSON.stringify(gates(runDir, twoLeads), null, 2));
+  const firsts = (await ledgerOf(runDir)).filter((row) => row.kind === 'model' && row.name === 'turn 0');
+  assert.deepEqual([firsts.length, new Set(firsts.map((row) => row.pid)).size, new Set(firsts.map((row) => row.conversation)).size], [2, 1, 2]);
+});
+
+test('the gates are not vacuous: a cited failed receipt, a tool or page judgment run twice and a turn asked twice in one process each fail theirs', { timeout: 120_000 }, async (t) => {
   const [loginWall] = cases;
   const { runDir } = await runOf(t, loginWall);
   const failedRead = filed(runDir).find(({ read }) => read.ok && read.value.status === 'failed').path;
 
-  const cites = join(runDir, '..', 'cites-failed');
-  await cp(runDir, cites, { recursive: true });
-  const record = JSON.parse(await readFile(join(cites, 'out', 'record.json'), 'utf8'));
-  record.record.citations.push(failedRead);
-  await writeFile(join(cites, 'out', 'record.json'), JSON.stringify(record));
+  const cites = await tampered(runDir, 'cites-failed', async (dir) => {
+    const record = JSON.parse(await readFile(join(dir, 'out', 'record.json'), 'utf8'));
+    record.record.citations.push(failedRead);
+    await writeFile(join(dir, 'out', 'record.json'), JSON.stringify(record));
+  });
   assert.deepEqual(failingOf(cites, loginWall.job), ['no-failed-evidence-cited']);
 
-  const repeats = join(runDir, '..', 'repeats');
-  await cp(runDir, repeats, { recursive: true });
-  const rows = (await readFile(join(repeats, 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  await appendFile(join(repeats, 'ledger.jsonl'), [rows.find((row) => row.kind === 'tool'), rows.find((row) => row.kind === 'model')].map((row) => `${JSON.stringify(row)}\n`).join(''));
+  const rows = await ledgerOf(runDir);
+  const pageJudged = rows.filter((row) => row.kind === 'judge' && row.name.startsWith('page '));
+  assert.equal(pageJudged.length, 1, 'the page judgment is counted like the judge');
+  const again = [rows.find((row) => row.kind === 'tool'), rows.find((row) => row.kind === 'model'), pageJudged[0]];
+  const repeats = await tampered(runDir, 'repeats', (dir) => appendFile(join(dir, 'ledger.jsonl'), again.map((row) => `${JSON.stringify(row)}\n`).join('')));
   const [fakesGate] = gates(repeats, loginWall.job).filter(({ id }) => id === 'fakes-called-once');
   assert.equal(fakesGate.ok, false);
-  assert.match(fakesGate.detail, /tool:search ran 2 times; model:turn 0 was asked twice in one process/);
+  assert.equal(fakesGate.detail, `tool:search ran 2 times; model:turn 0 of ${again[1].conversation} was asked twice in one process; judge:${pageJudged[0].name} ran 2 times`);
+});
+
+test('a missing log fails the gates that read it, and says which', { timeout: 120_000 }, async (t) => {
+  const { runDir } = await runOf(t, reference);
+  assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))),
+    [['nodes-end', 'no events.jsonl'], ['browser-sessions-released', 'no events.jsonl']]);
+});
+
+test('a log cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
+  const { runDir } = await runOf(t, reference);
+  const cut = (name) => async (dir) => writeFile(join(dir, name), (await readFile(join(dir, name), 'utf8')).slice(0, -10));
+  const lastLine = async (name) => (await readFile(join(runDir, name), 'utf8')).trim().split('\n').length;
+  const ledgerError = `ledger.jsonl line ${await lastLine('ledger.jsonl')} does not parse`;
+  assert.deepEqual(failures(await tampered(runDir, 'ledger-cut', cut('ledger.jsonl'))), [['fakes-called-once', ledgerError]]);
+  const eventsError = `events.jsonl line ${await lastLine('events.jsonl')} does not parse`;
+  assert.deepEqual(failures(await tampered(runDir, 'events-cut', cut('events.jsonl'))), [['nodes-end', eventsError], ['browser-sessions-released', eventsError]]);
 });
