@@ -93,7 +93,10 @@ async function session(models: Models, during?: (elapsed: () => number) => Promi
 		await root.submit({ type: "input", content: "What does it cost?" }, context);
 		await during?.(() => performance.now() - started);
 		await root.waitForIdle(context);
-		const entries = (await root.entries({ order: "ascending" }, 500, undefined, context)).items;
+		// pi 1.1 scans newest first and 1.0 oldest first, and only 1.1 takes an order: entry ids count up in both.
+		const entries = [...(await root.entries({}, 500, undefined, context)).items].sort(
+			(left, right) => Number(left.id) - Number(right.id),
+		);
 		const usage = await harness.snapshot(UsageDoc, root.id, context);
 		await harness.close(context);
 		return { entries, usage };

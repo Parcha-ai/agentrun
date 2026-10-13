@@ -10,13 +10,8 @@ const NODE_FLOOR = [22, 19] as const;
 export const EXIT_USAGE = 64;
 
 /**
- * The whole program of a runner file. A customer bundles it with their app into one file:
- *
- * ```ts
- * import { runMain } from "@parcha/pi-transport/home";
- * import app from "./app.ts";
- * await runMain(app);
- * ```
+ * The whole program of a runner file. A customer's entry imports their app and this function, calls `runMain(app)`,
+ * and bundles the two into one file (the README shows it).
  *
  * It speaks the link on its own input and output, so it writes nothing else there: what the app logs with
  * `console.log` goes to the error output. Arguments: `--session`, `--store`, `--workspace`, `--environment`,
