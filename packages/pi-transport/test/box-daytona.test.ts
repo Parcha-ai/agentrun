@@ -87,13 +87,16 @@ class FakeDaytona {
 		const url = new URL(request.url ?? "/", this.url);
 		const method = request.method ?? "GET";
 		const type = request.headers["content-type"] ?? "";
-		this.requests.push({
-			method,
-			path: url.pathname,
-			query: url.search,
-			auth: request.headers.authorization,
-			body: type.startsWith("application/json") ? body.toString("utf8") : "",
-		});
+		// Anything on this machine can connect to a loopback port; only the provider's own requests are the test's.
+		if (request.headers["x-daytona-source"] === "pi-transport") {
+			this.requests.push({
+				method,
+				path: url.pathname,
+				query: url.search,
+				auth: request.headers.authorization,
+				body: type.startsWith("application/json") ? body.toString("utf8") : "",
+			});
+		}
 		if (request.headers.authorization !== `Bearer ${API_KEY}`)
 			return this.#json(response, 401, { message: "bad key" });
 		const failure = this.failures.find((f) => f.times > 0 && f.match(method, url.pathname));
@@ -264,6 +267,8 @@ registerBoxConformance(
 describe("daytona boxes", () => {
 	it("sends the key as a bearer token on every request and never in a box", async () => {
 		fake.requests.length = 0;
+		// A foreign client on the same port is not the provider's request and must not count.
+		await fetch(`${fake.url}/`);
 		await withBox(async (box) => {
 			const started = await box.exec(["env"], undefined, context);
 			if (!started.ok) throw started.error;
