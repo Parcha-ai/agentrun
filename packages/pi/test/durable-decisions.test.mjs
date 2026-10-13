@@ -22,6 +22,24 @@ const row = (node, extra = {}) => ({
 });
 const open = (storage) => Harness.open(storage, { models: createModels(), registry: createRegistry() }, ctx);
 
+/** The `agentrun.decisions` document as the reader the stored format is frozen for finds it in `file`: the latest base of
+ *  the singleton session document of that kind, with every later delta applied; every revision is document version 1. */
+function storedDecisions(file) {
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const doc = db.prepare("SELECT id FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = 0 AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1")
+      .get(JSON.stringify(DECISION_RECEIPTS_DOC), JSON.stringify(''));
+    assert.ok(doc, 'one session document named agentrun.decisions');
+    const versions = db.prepare('SELECT DISTINCT version FROM document_revisions WHERE document_id = ?').all(doc.id).map((r) => r.version);
+    assert.deepEqual(versions, [1], 'every revision is of document version 1');
+    const base = db.prepare("SELECT seq, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1").get(doc.id);
+    let value = JSON.parse(base.content);
+    for (const delta of db.prepare('SELECT content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq').all(doc.id, base.seq)) value = apply(value, JSON.parse(delta.content));
+    return value;
+  } finally { db.close(); }
+}
+
 // A Session the writer opens, counting how often it was opened and released.
 function sessionOn(harness, { failOn = new Set() } = {}) {
   const seen = { opened: 0, released: 0, commits: 0 };
@@ -170,22 +188,29 @@ test("the run's file holds the rows where a reader of today's file finds them: a
       for (const r of rows) await appendDecision(harness, r, ctx);
     } finally { await harness.close(ctx); }
 
-    // The reader the stored format is frozen for: the latest base of the singleton session document named
-    // `agentrun.decisions`, with every later delta applied.
-    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
-    const db = new DatabaseSync(file, { readOnly: true });
+    const value = storedDecisions(file);
+    assert.deepEqual(Object.keys(value), ['receipts']);
+    assert.deepEqual(value.receipts, rows);
+    for (const stored of value.receipts) assert.deepEqual(Object.keys(stored).filter((k) => k !== 'error' && k !== 'driver_spend'), ROW_FIELDS);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('row version 1 with the receipt identity and without it: both are stored and read back as written, and a row without it is stored as before', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentrun-decisions-'));
+  try {
+    const file = join(dir, 'run.sqlite');
+    const harness = await open(await openNodeSqliteStorage(file));
+    // A row as a host wrote it before the identity fields, and one that carries all three.
+    const before = row('before');
+    const identified = row('identified', { execution_path: '/root', decision_id: 'd'.repeat(64), request: { index: 0, count: 1 }, state_sha256: 'a'.repeat(64) });
     try {
-      const doc = db.prepare("SELECT id FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = 0 AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1")
-        .get(JSON.stringify(DECISION_RECEIPTS_DOC), JSON.stringify(''));
-      assert.ok(doc, 'one session document named agentrun.decisions');
-      const versions = db.prepare('SELECT DISTINCT version FROM document_revisions WHERE document_id = ?').all(doc.id).map((r) => r.version);
-      assert.deepEqual(versions, [1], 'every revision is of document version 1');
-      const base = db.prepare("SELECT seq, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1").get(doc.id);
-      let value = JSON.parse(base.content);
-      for (const delta of db.prepare('SELECT content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq').all(doc.id, base.seq)) value = apply(value, JSON.parse(delta.content));
-      assert.deepEqual(Object.keys(value), ['receipts']);
-      assert.deepEqual(value.receipts, rows);
-      for (const stored of value.receipts) assert.deepEqual(Object.keys(stored).filter((k) => k !== 'error' && k !== 'driver_spend'), ROW_FIELDS);
-    } finally { db.close(); }
+      await appendDecision(harness, before, ctx);
+      await appendDecision(harness, identified, ctx);
+      assert.deepEqual(await readDecisions(harness, ctx), [before, identified]);
+    } finally { await harness.close(ctx); }
+    const stored = storedDecisions(file).receipts;
+    assert.deepEqual(stored, [before, identified]);
+    assert.deepEqual(Object.keys(stored[0]), ROW_FIELDS);
+    assert.deepEqual(Object.keys(stored[1]), [...ROW_FIELDS, 'decision_id', 'request', 'state_sha256']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
