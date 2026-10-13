@@ -247,6 +247,7 @@ assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typ
 assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function');
+assert.equal(typeof transportHome.openHome,'function'); assert.equal(typeof transportHome.createGate,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
@@ -344,7 +345,7 @@ void [limits, vision, unfiled];
 import { parseTransportConfig, type Box, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
 import { dockerBoxes } from '@parcha/pi-transport/box/docker';
 import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
-import { moveWorkspace, sealStore, type Seal } from '@parcha/pi-transport/home';
+import { moveWorkspace, openHome, sealStore, type App, type Home, type HomeOptions, type Seal } from '@parcha/pi-transport/home';
 const transport: [typeof parseTransportConfig, typeof dockerBoxes, Box | undefined] = [parseTransportConfig, dockerBoxes, undefined];
 // What a host hands to pi's Harness as a conversation's environment.
 const hands = (box: Box): ExecutionEnv => boxEnv(box);
@@ -352,7 +353,9 @@ const hands = (box: Box): ExecutionEnv => boxEnv(box);
 const routed = (config: TransportConfig, host: TransportHost): Transport => openTransport(config, host);
 // The movers and the seal of a store.
 const home: [typeof moveWorkspace, typeof sealStore, Seal | undefined] = [moveWorkspace, sealStore, undefined];
-void [transport, hands, routed, home];
+// A session's home: an app, and the orders a host gives.
+const homeOf = async (app: App, options: Omit<HomeOptions, 'app'>): Promise<Home | undefined> => { const opened = await openHome({ ...options, app }); return opened.ok ? opened.value : undefined; };
+void [transport, hands, routed, home, homeOf];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
