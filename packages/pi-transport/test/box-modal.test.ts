@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box, BoxSpec } from "../src/box/box.ts";
-import { finish } from "../src/box/files.ts";
+import { finish, readStream } from "../src/box/files.ts";
 import { modalBoxes } from "../src/box/modal.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 import { FakeModal, InvalidError, NotFoundError, ResourceExhaustedError } from "./modal-fake.ts";
@@ -277,6 +277,41 @@ describe("modal boxes", () => {
 				expect(downloaded.error.code).toBe("unknown");
 				expect(downloaded.error.message).toMatch(/stream/);
 			}
+		});
+	});
+
+	it("keeps the command's deadline and abort while it waits for output after the exit", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const box = unwrap(await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: root }, context));
+			const sandbox = sdk.sandboxList[0];
+			if (!sandbox) throw new Error("no sandbox");
+			// The program exits at once, but its output stream stalls and never ends.
+			const stalled = () => ({
+				stdin: { writeBytes: async () => {}, close: async () => {} },
+				stdout: (async function* () {
+					yield Uint8Array.of(1);
+					await new Promise(() => {});
+				})(),
+				stderr: (async function* () {})(),
+				wait: async () => 0,
+			});
+			sandbox.exec = async () => stalled();
+			const timed = unwrap(await box.exec(["true"], { timeoutMs: 300 }, context));
+			void readStream(timed.stdout).catch(() => {});
+			const startedAt = Date.now();
+			const exit = await timed.wait();
+			expect(Date.now() - startedAt).toBeLessThan(5_000);
+			expect(exit.ok ? "ok" : exit.error.code).toBe("timeout");
+
+			const cancellable = withCancel(context);
+			const aborted = unwrap(await box.exec(["true"], undefined, cancellable.context));
+			void readStream(aborted.stdout).catch(() => {});
+			setTimeout(() => cancellable.cancel(), 200);
+			const abortedAt = Date.now();
+			const ended = await aborted.wait();
+			expect(Date.now() - abortedAt).toBeLessThan(5_000);
+			expect(ended.ok ? "ok" : ended.error.code).toBe("aborted");
 		});
 	});
 

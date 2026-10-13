@@ -270,54 +270,65 @@ class ModalBox implements Box {
 		const stopped = new Promise<void>((resolve) => {
 			stop = resolve;
 		});
-		const exit = new Promise<Result<number, BoxError>>((resolve) => {
+		const out = newTrack();
+		const errors = newTrack();
+		// Which streams the caller reads is known once it asks for the exit: it starts reading before it waits.
+		let asked: () => void = () => {};
+		const waitAsked = new Promise<void>((resolve) => {
+			asked = resolve;
+		});
+		// One deadline and one abort listener cover the whole wait: the program's exit, then the end of every stream the
+		// caller read. A program's exit is only good when those streams reached their end without a failure: a stream
+		// that broke after some bytes must not look like a complete output.
+		const waited = new Promise<Result<number, BoxError>>((resolve) => {
 			let timer: NodeJS.Timeout | undefined;
-			const settle = (result: Result<number, BoxError>) => {
+			let settleTimer: NodeJS.Timeout | undefined;
+			let done = false;
+			const finish = (result: Result<number, BoxError>) => {
+				if (done) return;
+				done = true;
 				clearTimeout(timer);
+				clearTimeout(settleTimer);
 				signal?.removeEventListener("abort", onAbort);
 				resolve(result);
 			};
 			const onAbort = () => {
 				stop();
-				settle(err(new BoxError("aborted", "the call was aborted")));
+				finish(err(new BoxError("aborted", "the call was aborted")));
 			};
 			if (timeoutMs !== undefined) {
 				timer = setTimeout(() => {
 					stop();
-					settle(err(new BoxError("timeout", `the program did not exit in ${timeoutMs} ms`)));
+					finish(err(new BoxError("timeout", `the program did not exit in ${timeoutMs} ms`)));
 				}, timeoutMs);
 			}
 			process.wait().then(
-				(code) => settle(ok(code)),
-				async (cause) => settle(err(await this.#failure("lost the program", cause))),
+				async (code) => {
+					await waitAsked;
+					const read = [out, errors].filter((track) => track.started);
+					await Promise.race([
+						Promise.all(read.map((track) => track.ended)),
+						new Promise<void>((settled) => {
+							settleTimer = setTimeout(settled, STREAM_SETTLE_MS);
+						}),
+					]);
+					const broken = [out, errors].find((track) => track.failure !== undefined);
+					finish(
+						broken === undefined
+							? ok(code)
+							: err(
+									new BoxError(
+										"unknown",
+										`an output stream of the program failed: ${String(broken.failure)}`,
+										broken.failure,
+									),
+								),
+					);
+				},
+				async (cause) => finish(err(await this.#failure("lost the program", cause))),
 			);
 			if (signal?.aborted) onAbort();
 			else signal?.addEventListener("abort", onAbort, { once: true });
-		});
-		const out = newTrack();
-		const errors = newTrack();
-		// A program's exit is only good when every stream the caller read reached its end without a failure: a
-		// stream that broke after some bytes must not look like a complete output.
-		const waited = exit.then(async (result): Promise<Result<number, BoxError>> => {
-			if (!result.ok) return result;
-			const read = [out, errors].filter((track) => track.started);
-			let timer: NodeJS.Timeout | undefined;
-			await Promise.race([
-				Promise.all(read.map((track) => track.ended)),
-				new Promise<void>((resolve) => {
-					timer = setTimeout(resolve, STREAM_SETTLE_MS);
-				}),
-			]);
-			clearTimeout(timer);
-			const broken = [out, errors].find((track) => track.failure !== undefined);
-			if (broken === undefined) return result;
-			return err(
-				new BoxError(
-					"unknown",
-					`an output stream of the program failed: ${String(broken.failure)}`,
-					broken.failure,
-				),
-			);
 		});
 		return {
 			stdin: {
@@ -331,7 +342,10 @@ class ModalBox implements Box {
 			},
 			stdout: until(process.stdout, stopped, out),
 			stderr: until(process.stderr, stopped, errors),
-			wait: () => waited,
+			wait: () => {
+				asked();
+				return waited;
+			},
 		};
 	}
 
