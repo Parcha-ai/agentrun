@@ -17,12 +17,13 @@
 import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort, sleep } from "./cdp.mjs";
 import { TAB_WRITABLE_PATHS } from "./take-paths.mjs";
 import { redact } from "../../redact-link.ts";
 import { waitUp } from "./wait-up.mjs";
+import { appPolicyFromArgs } from "../../../03-tab-to-cloud/app-policy.ts";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -46,10 +47,6 @@ const judgeArgs = ["judge-model", "judge-url", "judge-key-env"].flatMap((n) => (
 const noRestore = process.argv.flatMap((a, i) => (a === "--no-restore" ? [process.argv[i + 1]] : []));
 const placerModule = arg("placer-module", "");
 const placerArgs = process.argv.flatMap((a, i) => (a === "--placer-arg" ? [process.argv[i + 1]] : []));
-// The host's own policy for the agent a browser tab creates (03's serve.ts: the instructions and the extensions it drops), passed through unchanged when given; absent, the robot's own.
-const instructionsFile = arg("instructions-file", "");
-const instructionsMode = arg("instructions-mode", "");
-const withoutExtensions = arg("without-extensions", "");
 const withModal = process.argv.includes("--modal");
 const budget = arg("budget", "1500000");
 const evidenceReadback = process.argv.includes("--evidence-readback");
@@ -63,12 +60,23 @@ const die = (message) => {
   console.error(`take-server: ${message}`);
   process.exit(2);
 };
+// The host's own policy for the agent a browser tab creates (03's serve.ts), passed through when given and checked here by the very function serve.ts uses, so what serve.ts would refuse is refused now
+// (exit 2, before a wrapper or the child runs). A flag with no value after it counts as given and empty: it is refused, never dropped. A relative instructions file is the caller's, so it is resolved here
+// (serve.ts runs in 03-tab-to-cloud).
+const flag = (name) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i < 0 ? undefined : (process.argv[i + 1] ?? "");
+};
+const rawFile = flag("instructions-file");
+const instructionsFile = rawFile === undefined || rawFile === "" ? rawFile : resolve(rawFile);
+const instructionsMode = flag("instructions-mode");
+const withoutExtensions = flag("without-extensions");
+try {
+  appPolicyFromArgs({ ...(instructionsFile !== undefined ? { file: instructionsFile } : {}), ...(instructionsMode !== undefined ? { mode: instructionsMode } : {}), ...(withoutExtensions !== undefined ? { without: withoutExtensions } : {}) });
+} catch (error) {
+  die(error.message);
+}
 // How long to wait for the server to answer: under with-typesafe, with-modal and with-archil the wrappers alone take 17-20 s (each reads 1Password) before serve.ts starts.
-if (instructionsMode && instructionsMode !== "replace" && instructionsMode !== "append") die(`--instructions-mode ${instructionsMode}: replace or append (it has no default)`);
-if (instructionsFile && !instructionsMode) die("--instructions-file needs --instructions-mode replace|append (it has no default)");
-if (instructionsMode && !instructionsFile) die("--instructions-mode needs --instructions-file");
-if (instructionsFile && !existsSync(instructionsFile)) die(`--instructions-file ${instructionsFile} does not exist`);
-if (process.argv.includes("--without-extensions") && !withoutExtensions) die("--without-extensions needs a comma-separated list of extension names");
 const upTimeoutS = Number(arg("up-timeout-s", "120"));
 if (!Number.isFinite(upTimeoutS) || upTimeoutS <= 0) die(`--up-timeout-s ${arg("up-timeout-s", "")} is not a positive number of seconds`);
 
@@ -124,9 +132,9 @@ const serveArgs = [
   // The folder of the offline brain's files (D0's serve.ts --models-dir: served under /models/ with the page's isolation headers).
   ...(arg("models-dir", "") ? ["--models-dir", arg("models-dir", "")] : []),
   ...(placerModule ? ["--placer-module", placerModule, ...placerArgs.flatMap((a) => ["--placer-arg", a])] : []),
-  ...(instructionsFile ? ["--instructions-file", instructionsFile] : []),
-  ...(instructionsMode ? ["--instructions-mode", instructionsMode] : []),
-  ...(withoutExtensions ? ["--without-extensions", withoutExtensions] : []),
+  ...(instructionsFile !== undefined ? ["--instructions-file", instructionsFile] : []),
+  ...(instructionsMode !== undefined ? ["--instructions-mode", instructionsMode] : []),
+  ...(withoutExtensions !== undefined ? ["--without-extensions", withoutExtensions] : []),
   ...noRestore.flatMap((p) => ["--no-restore", p]),
   ...judgeArgs,
   ...(evidenceReadback ? ["--evidence-readback"] : []),
