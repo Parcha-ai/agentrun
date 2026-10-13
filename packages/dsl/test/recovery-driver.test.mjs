@@ -467,13 +467,69 @@ test('a pause is committed and the next open runs again; a cancel outranks it an
   await driver.close();
   await assert.rejects(run(store, workflow, deps), fault('FROZEN_CANCELLED', 'Frozen run cancelled'));
   assert.equal(dispatched, 1);
-  // A stop cuts an effect in flight through its signal: whatever the adapter answers after it, the effect stays unknown.
+  // A cancel cuts an effect in flight through its signal: whatever the adapter answers after it, the effect stays unknown.
   const flying = memoryStore(); driver = await open(flying, workflow);
-  const cut = { runEffect: ({ signal }) => new Promise((resolve) => { signal.addEventListener('abort', () => resolve({ answered: 'late' }), { once: true }); setImmediate(() => driver.stop({ action: 'pause' })); }) };
-  await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, cut)), fault('FROZEN_PAUSED', 'Frozen run paused'));
+  const cut = { runEffect: ({ signal }) => new Promise((resolve) => { signal.addEventListener('abort', () => resolve({ answered: 'late' }), { once: true }); setImmediate(() => driver.stop({ action: 'cancel' })); }) };
+  await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, cut)), fault('FROZEN_CANCELLED', 'Frozen run cancelled'));
   await driver.close(); journal = await operator(flying, workflow);
-  assert.deepEqual([journal.state.status, journal.effects.map((e) => [e.status, e.result])], ['paused', [['unknown', null]]]);
-  await assert.rejects(run(flying, workflow, deps), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))} before resuming; it will not be repeated`));
+  assert.deepEqual([journal.state.status, journal.effects.map((e) => [e.status, e.result])], ['cancelled', [['unknown', null]]]);
+});
+
+test('a pause lets an effect in flight complete and commit, and the run stops at the next seam; the next open continues with no second dispatch', async () => {
+  const workflow = doc([tool('lookup'), tool('second')]); const dispatched = [];
+  let driver;
+  // The pause lands while `lookup` is in flight: its signal is not aborted, and its answer is kept.
+  const deps = { runEffect: ({ node, signal }) => new Promise((resolve, reject) => {
+    dispatched.push(node.label);
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    if (node.label !== 'lookup' || dispatched.length > 1) return resolve({ answered: node.label });
+    driver.stop({ action: 'pause', source: 'operator' });
+    setTimeout(() => resolve({ answered: 'lookup', aborted: signal.aborted }), 20);
+  }) };
+  const store = memoryStore(); driver = await open(store, workflow);
+  await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, deps)), fault('FROZEN_PAUSED', 'Frozen run paused'));
+  await driver.close();
+  let journal = await operator(store, workflow);
+  assert.deepEqual([journal.state.status, journal.effects.map((e) => [e.id, e.status, e.result?.value]), dispatched],
+    ['paused', [[effect(step(0)), 'completed', { answered: 'lookup', aborted: false }]], ['lookup']]);
+  const result = await run(store, workflow, deps);
+  assert.deepEqual([result.status, dispatched], ['complete', ['lookup', 'second']]);
+});
+
+test('while a pause waits for an effect in flight, new work waits at the seam and is refused once the pause is taken; a cancel does not wait', async () => {
+  const workflow = doc([tool('lookup'), tool('second')]);
+  for (const action of ['pause', 'cancel']) {
+    const store = memoryStore(); const driver = await open(store, workflow); const called = [];
+    let release; const held = new Promise((resolve) => { release = resolve; });
+    const runEffect = driver.wrapEffect(async ({ node, signal }) => {
+      called.push(node.label);
+      await Promise.race([held, new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+      return { answered: node.label };
+    });
+    const first = runEffect(params(workflow, step(0)));
+    first.catch(() => {}); // A cancel rejects it before it is awaited.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    driver.stop({ action, source: 'operator' });
+    const second = runEffect(params(workflow, step(1)));
+    const order = [];
+    second.then(() => order.push('second answered'), (error) => order.push(`second ${error.code}`));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // A pause leaves the run unstopped while `lookup` is in flight; a cancel stops it at once.
+    order.push(`stopped: ${driver.signal.aborted}`);
+    release();
+    const settled = await Promise.allSettled([first, second]);
+    await driver.close();
+    const journal = await operator(store, workflow);
+    if (action === 'pause') {
+      assert.deepEqual(settled.map((s) => s.status === 'fulfilled' ? s.value : s.reason.code), [{ answered: 'lookup' }, 'FROZEN_PAUSED']);
+      assert.deepEqual(order, ['stopped: false', 'second FROZEN_PAUSED']);
+      assert.deepEqual([journal.state.status, journal.effects.map((e) => [e.id, e.status]), called], ['paused', [[effect(step(0)), 'completed']], ['lookup']]);
+    } else {
+      assert.deepEqual(settled.map((s) => s.reason.code), ['FROZEN_CANCELLED', 'FROZEN_CANCELLED']);
+      assert.deepEqual(order, ['second FROZEN_CANCELLED', 'stopped: true']);
+      assert.deepEqual([journal.state.status, journal.effects.map((e) => [e.id, e.status]), called], ['cancelled', [[effect(step(0)), 'unknown']], ['lookup']]);
+    }
+  }
 });
 
 test('an escalation is one commit that names its own revision; every later open returns the same row and the same continuation', async () => {
