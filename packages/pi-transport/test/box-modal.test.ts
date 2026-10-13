@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { afterAll, describe, expect, it } from "vitest";
 import type { Box, BoxSpec } from "../src/box/box.ts";
+import { finish } from "../src/box/files.ts";
 import { modalBoxes } from "../src/box/modal.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 import { FakeModal, InvalidError, NotFoundError, ResourceExhaustedError } from "./modal-fake.ts";
@@ -229,14 +230,62 @@ describe("modal boxes", () => {
 			const started = unwrap(await box.exec(["printf", "x"], { timeoutMs: 1000 }, context));
 			for await (const _ of started.stdout) void _;
 			const call = sdk.sandboxList[0]?.execs.at(-1);
-			expect(call?.params).toMatchObject({
-				mode: "binary",
-				workdir: root,
-				env: { GREETING: "hi" },
-				timeoutMs: 6000,
-			});
+			expect(call?.params).toMatchObject({ mode: "binary", workdir: root, timeoutMs: 6000 });
+			// The settings belong to the sandbox, not to each program started through one handle.
+			expect(call?.params).not.toHaveProperty("env");
+			expect(sdk.sandboxList[0]?.params.env).toEqual({ GREETING: "hi" });
 			unwrap(await box.destroy(context));
 		});
+	});
+
+	it("runs programs with the spec's env in a box found again by another provider", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const box = unwrap(
+				await modalBoxes(sdk, { appName: "a" }).create(
+					{ ...SPEC, workspace: root, env: { GREETING: "hi" } },
+					context,
+				),
+			);
+			const again = unwrap(await modalBoxes(sdk, { appName: "a" }).attach(box.id, context));
+			const started = unwrap(await (again as Box).exec(["sh", "-c", 'printf %s "$GREETING"'], undefined, context));
+			const finished = unwrap(await finish(started));
+			expect(new TextDecoder().decode(finished.stdout)).toBe("hi");
+			unwrap(await box.destroy(context));
+		});
+	});
+
+	it("does not take an output stream that broke for a complete output", async () => {
+		await withRoot(async (root) => {
+			const sdk = new FakeModal();
+			const box = unwrap(await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: root }, context));
+			const sandbox = sdk.sandboxList[0];
+			if (!sandbox) throw new Error("no sandbox");
+			// The program exits 0, but its output stream fails after some bytes.
+			sandbox.exec = async () => ({
+				stdin: { writeBytes: async () => {}, close: async () => {} },
+				stdout: (async function* () {
+					yield Uint8Array.of(1, 2, 3);
+					throw new Error("connection reset");
+				})(),
+				stderr: (async function* () {})(),
+				wait: async () => 0,
+			});
+			const downloaded = await box.download(["part.bin"], context);
+			expect(downloaded.ok).toBe(false);
+			if (!downloaded.ok) {
+				expect(downloaded.error.code).toBe("unknown");
+				expect(downloaded.error.message).toMatch(/stream/);
+			}
+		});
+	});
+
+	it("refuses a workspace that is not an absolute path before any Modal call", async () => {
+		const sdk = new FakeModal();
+		const result = await modalBoxes(sdk, { appName: "a" }).create({ ...SPEC, workspace: "relative/ws" }, context);
+		expect(result.ok ? "ok" : result.error.code).toBe("invalid");
+		expect(sdk.sandboxList).toEqual([]);
+		expect(sdk.appNames).toEqual([]);
 	});
 
 	it("gives Modal a program timeout that is a whole number of seconds", async () => {

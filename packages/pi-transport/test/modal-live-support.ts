@@ -1,17 +1,25 @@
+import { randomUUID } from "node:crypto";
 import type { BoxSpec } from "../src/box/box.ts";
 import type { ModalSdk } from "../src/box/modal.ts";
 
 // Names every Modal app and label the live suites make. A host that shares an account sets its own prefix and labels:
 // PI_TRANSPORT_LIVE_PREFIX, and PI_TRANSPORT_LIVE_LABELS as `key=value,key=value`.
 const PREFIX = process.env.PI_TRANSPORT_LIVE_PREFIX ?? "pi-transport-live-";
-// The labels a host adds to every box, from the environment; the provider's own `pi-transport` tag is not one of them.
-export const SPEC_LABELS: Record<string, string> = Object.fromEntries(
-	(process.env.PI_TRANSPORT_LIVE_LABELS ?? "")
-		.split(",")
-		.filter((pair) => pair.includes("="))
-		.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
-);
-/** The labels that find every box of a run, the provider's `pi-transport` tag included. */
+// This run's own label. Each live file imports this module on its own, so each gets another id: a sweep at the end of
+// one file lists its own boxes only, and never ends a box another file is still using.
+const RUN_ID = `${process.pid}-${randomUUID().slice(0, 8)}`;
+// The labels a host adds to every box, from the environment, and the label of this run; the provider's own
+// `pi-transport` tag is not one of them.
+export const SPEC_LABELS: Record<string, string> = {
+	...Object.fromEntries(
+		(process.env.PI_TRANSPORT_LIVE_LABELS ?? "")
+			.split(",")
+			.filter((pair) => pair.includes("="))
+			.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
+	),
+	"live-run": RUN_ID,
+};
+/** The labels that find every box of this run, the provider's `pi-transport` tag included. */
 export const LABELS: Record<string, string> = { "pi-transport": "1", ...SPEC_LABELS };
 export const APP_NAME = `${PREFIX}conformance`;
 const MODAL_VERSION = "0.11.0";

@@ -23,6 +23,8 @@ const MAX_LIFETIME_MS = 24 * 3_600_000;
 /** How much longer than the caller's timeout Modal lets a program run, so the host's own timer reports first. */
 const EXEC_GRACE_MS = 5_000;
 const SETUP_TIMEOUT_MS = 60_000;
+/** How long an exit waits for the output streams the caller read to end. */
+const STREAM_SETTLE_MS = 30_000;
 const STDIN_CHUNK_BYTES = 512 * 1024;
 /** Every box carries this tag, so `attach` and `list` never touch a sandbox this package did not start. */
 const BOX_TAG = "pi-transport.box";
@@ -41,10 +43,7 @@ export interface ModalProcess {
 /** The part of the SDK's `Sandbox` this package calls. */
 export interface ModalSandbox {
 	readonly sandboxId: string;
-	exec(
-		command: string[],
-		params: { mode: "binary"; timeoutMs?: number; workdir?: string; env?: Record<string, string> },
-	): Promise<ModalProcess>;
+	exec(command: string[], params: { mode: "binary"; timeoutMs?: number; workdir?: string }): Promise<ModalProcess>;
 	/** `null` while the sandbox runs, its exit code once it ended. */
 	poll(): Promise<number | null>;
 	/** Ends the sandbox and answers once it has ended, with its exit code. */
@@ -62,6 +61,8 @@ export interface ModalCreateParams {
 	regions?: string[];
 	timeoutMs: number;
 	tags: Record<string, string>;
+	/** Settings every program of the sandbox sees, whichever handle starts it: so they outlive the host. */
+	env?: Record<string, string>;
 }
 
 /**
@@ -160,17 +161,37 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
 	};
 }
 
-/** The source's chunks until `stopped` settles. A stream that fails ends quietly: `wait()` carries the error. */
-async function* until(source: AsyncIterable<Uint8Array>, stopped: Promise<void>): AsyncGenerator<Uint8Array> {
+/** What became of one output stream: whether the caller read it, when it ended, and how it failed. */
+type StreamTrack = { started: boolean; failure: unknown; readonly ended: Promise<void>; end(): void };
+
+function newTrack(): StreamTrack {
+	let end: () => void = () => {};
+	const ended = new Promise<void>((resolve) => {
+		end = resolve;
+	});
+	return { started: false, failure: undefined, ended, end };
+}
+
+/** The source's chunks until `stopped` settles. A stream that fails ends, and the failure is kept on `track`. */
+async function* until(
+	source: AsyncIterable<Uint8Array>,
+	stopped: Promise<void>,
+	track: StreamTrack,
+): AsyncGenerator<Uint8Array> {
+	track.started = true;
 	const iterator = source[Symbol.asyncIterator]();
 	const stop = stopped.then(() => "stopped" as const);
 	try {
 		for (;;) {
-			const next = await Promise.race([iterator.next(), stop]).catch(() => "stopped" as const);
+			const next = await Promise.race([iterator.next(), stop]).catch((cause: unknown) => {
+				track.failure = cause;
+				return "stopped" as const;
+			});
 			if (next === "stopped" || next.done) return;
 			yield next.value;
 		}
 	} finally {
+		track.end();
 		// A read that never answers must not hold the caller: the cancel is not awaited.
 		void Promise.resolve(iterator.return?.()).catch(() => {});
 	}
@@ -210,14 +231,12 @@ class ModalBox implements Box {
 	readonly id: string;
 	readonly #sandbox: ModalSandbox;
 	readonly #facts: BoxFacts;
-	readonly #env: Record<string, string> | undefined;
 	#destroyed = false;
 
-	constructor(sandbox: ModalSandbox, facts: BoxFacts, env: Record<string, string> | undefined) {
+	constructor(sandbox: ModalSandbox, facts: BoxFacts) {
 		this.id = sandbox.sandboxId;
 		this.#sandbox = sandbox;
 		this.#facts = facts;
-		this.#env = env;
 	}
 
 	facts(): BoxFacts {
@@ -237,7 +256,6 @@ class ModalBox implements Box {
 			process = await this.#sandbox.exec([...command], {
 				mode: "binary",
 				workdir: this.#facts.workspace,
-				...(this.#env === undefined ? {} : { env: this.#env }),
 				...(timeoutMs === undefined ? {} : { timeoutMs: Math.ceil((timeoutMs + EXEC_GRACE_MS) / 1000) * 1000 }),
 			});
 		} catch (cause) {
@@ -276,6 +294,31 @@ class ModalBox implements Box {
 			if (signal?.aborted) onAbort();
 			else signal?.addEventListener("abort", onAbort, { once: true });
 		});
+		const out = newTrack();
+		const errors = newTrack();
+		// A program's exit is only good when every stream the caller read reached its end without a failure: a
+		// stream that broke after some bytes must not look like a complete output.
+		const waited = exit.then(async (result): Promise<Result<number, BoxError>> => {
+			if (!result.ok) return result;
+			const read = [out, errors].filter((track) => track.started);
+			let timer: NodeJS.Timeout | undefined;
+			await Promise.race([
+				Promise.all(read.map((track) => track.ended)),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, STREAM_SETTLE_MS);
+				}),
+			]);
+			clearTimeout(timer);
+			const broken = [out, errors].find((track) => track.failure !== undefined);
+			if (broken === undefined) return result;
+			return err(
+				new BoxError(
+					"unknown",
+					`an output stream of the program failed: ${String(broken.failure)}`,
+					broken.failure,
+				),
+			);
+		});
 		return {
 			stdin: {
 				write: async (bytes) => {
@@ -286,9 +329,9 @@ class ModalBox implements Box {
 				// A program that already exited closed its input; its exit code reports it.
 				close: () => process.stdin.close().catch(() => {}),
 			},
-			stdout: until(process.stdout, stopped),
-			stderr: until(process.stderr, stopped),
-			wait: () => exit,
+			stdout: until(process.stdout, stopped, out),
+			stderr: until(process.stderr, stopped, errors),
+			wait: () => waited,
 		};
 	}
 
@@ -365,7 +408,9 @@ class ModalBox implements Box {
  * runtime, `gvisor` or none the default sandbox, and any other value is refused with `unsupported`; a GPU needs the
  * default sandbox. Refused before any Modal call: a `snapshot` or an `isolation` other than `gvisor` or `vm`
  * (`unsupported`), a GPU with `vm`, a label key that is `pi-transport` or starts with `pi-transport.` and a lifetime that is not positive
- * (`invalid`). No other field is ignored; `region` becomes Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart.
+ * (`invalid`), and so is a `workspace` that is not an absolute path. No other field is ignored; `region` becomes
+ * Modal's `regions`. Boxes carry their facts in a tag, so `attach` finds them after a restart. The spec's `env` is the
+ * sandbox's own, so a box found again by `attach` runs programs with it.
  */
 export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvider {
 	const theApp = once(() => sdk.apps.fromName(options.appName, { createIfMissing: true }));
@@ -377,6 +422,9 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
+			if (spec.workspace !== undefined && !spec.workspace.startsWith("/")) {
+				return err(new BoxError("invalid", "workspace must be an absolute path"));
+			}
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
@@ -413,13 +461,14 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 					...(spec.cpus === undefined ? {} : { cpu: spec.cpus }),
 					...(spec.memoryMb === undefined ? {} : { memoryMiB: spec.memoryMb }),
 					...(spec.region === undefined ? {} : { regions: [spec.region] }),
+					...(spec.env === undefined ? {} : { env: { ...spec.env } }),
 					timeoutMs: lifetimeMs,
 					tags: { ...spec.labels, [OWNER_TAG]: "1", [BOX_TAG]: "1", [FACTS_TAG]: JSON.stringify(facts) },
 				});
 			} catch (cause) {
 				return err(boxError("could not start a box", cause));
 			}
-			const box = new ModalBox(sandbox, facts, spec.env === undefined ? undefined : { ...spec.env });
+			const box = new ModalBox(sandbox, facts);
 			const made = await box.prepare();
 			if (!made.ok) {
 				await box.destroy();
@@ -434,7 +483,7 @@ export function modalBoxes(sdk: ModalSdk, options: ModalBoxesOptions): BoxProvid
 				if ((await sandbox.poll()) !== null) return ok(undefined);
 				const tags = await sandbox.getTags();
 				const facts = tags[BOX_TAG] === undefined ? undefined : parseFacts(tags[FACTS_TAG]);
-				return ok(facts === undefined ? undefined : new ModalBox(sandbox, facts, undefined));
+				return ok(facts === undefined ? undefined : new ModalBox(sandbox, facts));
 			} catch (cause) {
 				if (isNotFound(cause) || classify(cause) === "invalid") return ok(undefined);
 				return err(boxError(`could not look up box ${id}`, cause));

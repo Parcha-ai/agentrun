@@ -215,6 +215,7 @@ import * as transportLocal from '@parcha/pi-transport/box/local';
 import * as transportDocker from '@parcha/pi-transport/box/docker';
 import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportDaytona from '@parcha/pi-transport/box/daytona';
+import * as transportModal from '@parcha/pi-transport/box/modal';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 const { createPiRunner } = pi;
@@ -243,7 +244,7 @@ assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archi
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
-assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
+assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportModal.modalBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
 assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(typeof transportDaytona.daytonaBoxes,'function');
@@ -344,8 +345,9 @@ void [limits, vision, unfiled];
 import { parseTransportConfig, type Box, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
 import { daytonaBoxes } from '@parcha/pi-transport/box/daytona';
 import { dockerBoxes } from '@parcha/pi-transport/box/docker';
+import { modalBoxes, type ModalSdk } from '@parcha/pi-transport/box/modal';
 import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
-const transport: [typeof parseTransportConfig, typeof dockerBoxes, typeof daytonaBoxes, Box | undefined] = [parseTransportConfig, dockerBoxes, daytonaBoxes, undefined];
+const transport: [typeof parseTransportConfig, typeof dockerBoxes, typeof daytonaBoxes, Box | undefined, typeof modalBoxes, ModalSdk | undefined] = [parseTransportConfig, dockerBoxes, daytonaBoxes, undefined, modalBoxes, undefined];
 // What a host hands to pi's Harness as a conversation's environment.
 const hands = (box: Box): ExecutionEnv => boxEnv(box);
 // The router: a Harness's env from a parsed config and what the host passes.
