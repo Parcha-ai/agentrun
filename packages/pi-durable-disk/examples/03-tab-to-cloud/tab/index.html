@@ -25,7 +25,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
 body { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; height: 100vh; }
 header { grid-row: 1; } #banner { grid-row: 2; } #checkedout { grid-row: 3; } main { grid-row: 4; } footer { grid-row: 5; }
 header { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
-h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 .run { font: 12px var(--mono); color: var(--muted); }
 .badge { display: flex; align-items: center; gap: 10px; padding: 7px 14px 7px 12px; border-radius: 999px; margin-left: auto; }
 .badge .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
@@ -142,7 +141,6 @@ body.phone header { padding: 10px 14px; gap: 10px; }
 </head>
 <body>
 <header>
-  <h1>Agent in a tab</h1>
   <span class="run" id="run"></span>
   <div class="bar">
     <span id="driver" class="driver" hidden title="The model answering now"><span class="k">LLM:</span> <span id="driver-name"></span></span>
