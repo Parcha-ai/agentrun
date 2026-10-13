@@ -443,7 +443,15 @@ describe("the Docker live command", () => {
 			scripts: Record<string, string>;
 		};
 		for (const name of readdirSync(import.meta.dirname).filter((file) => /docker\.live\.test\.ts$/.test(file))) {
-			expect(pkg.scripts["test:live:docker"], name).toContain(`test/${name}`);
+			const script = pkg.scripts["test:live:docker"] ?? "";
+			// Either the file is named in the command, or the command selects files by a pattern the file's name has.
+			const patterns = script
+				.split(/\s+/)
+				.filter((word) => !word.startsWith("-") && !word.includes("=") && word !== "vitest" && word !== "run");
+			expect(
+				patterns.some((word) => name.includes(word.replace(/^test\//, ""))),
+				`${name} in ${script}`,
+			).toBe(true);
 		}
 	});
 });
