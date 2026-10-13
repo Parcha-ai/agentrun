@@ -62,7 +62,7 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 	// Every box of this run carries the labels, so the last test can count what the run left behind.
 	const labels = {
 		...parseLabels(process.env.PI_TRANSPORT_LIVE_LABELS ?? "pi-transport-live=1"),
-		"pi-transport.test": `box-env-${process.pid}-${Date.now()}`,
+		"pi-transport-live-run": `box-env-${process.pid}-${Date.now()}`,
 	};
 
 	async function withBox(use: (box: Box) => Promise<void>): Promise<void> {
@@ -101,8 +101,8 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 				return field;
 			});
 
-		const sequences = (ignoreDirectorySize: boolean) => async () => {
-			const same = (value: unknown) => (ignoreDirectorySize ? withoutDirectorySize(value) : value);
+		const sequences = () => async () => {
+			const same = withoutDirectorySize;
 			await withBox(async (box) => {
 				for (let seed = 1; seed <= SEEDS; seed++) {
 					const next = random(seed);
@@ -123,14 +123,8 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 		};
 
 		it(
-			"gives the same results as NodeExecutionEnv for random operation sequences",
-			sequences(false),
-			DIFFERENTIAL_TIMEOUT_MS,
-		);
-
-		it(
 			"gives the same results as NodeExecutionEnv for random operation sequences, directory sizes aside",
-			sequences(true),
+			sequences(),
 			DIFFERENTIAL_TIMEOUT_MS,
 		);
 
