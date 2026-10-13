@@ -7,7 +7,9 @@ const refuse = what => { throw new Error('Networking beyond loopback prohibited 
 const connect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function (...args) {
   const [first, second] = Array.isArray(args[0]) ? args[0] : args;
-  const options = first !== null && typeof first === 'object' ? first : { port: first, host: typeof second === 'string' ? second : undefined };
+  // Like node's own argument handling: a string that is not a number is a socket path, not a port.
+  const pipe = typeof first === 'string' && (first.trim() === '' || Number.isNaN(Number(first)));
+  const options = first !== null && typeof first === 'object' ? first : pipe ? { path: first } : { port: first, host: typeof second === 'string' ? second : undefined };
   if (options.path != null) refuse('unix socket ' + options.path);
   if (!loopback(options.host)) refuse(String(options.host));
   return connect.apply(this, args);
