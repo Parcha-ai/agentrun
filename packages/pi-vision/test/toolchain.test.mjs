@@ -1,4 +1,4 @@
-// A run that asks for a pi-durable version (the CI leg on pi-durable 1.1) runs on exactly that one, and on the chord and
+// A run that asks for a pi-durable version (the CI leg on the 1.0.4 peer floor) runs on exactly that one, and on the chord and
 // pi-ai of the same release: the package resolves its peers the way a host's install would.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";

@@ -17,8 +17,10 @@ import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
 export type RunResult = {
-  status: string;
+  status: 'complete' | 'escalated' | 'failed';
   output?: unknown;
+  /** Why a failed run stopped: the workflow's own error. */
+  error?: string;
   generation: number;
   usage: Awaited<ReturnType<Harness['usage']>>;
 };
@@ -71,6 +73,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
+    ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
     onSession: (row, change) => status({ source: 'browser', change, row }),
   });
   const vision = createVisionExtension({
@@ -112,10 +115,12 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    const result = await runJob(harness, nodes, host, job, place.id, status);
+    // The workflow throws what it does not escalate; the run still ends here, released, with nothing delivered.
+    const result = await runJob(harness, nodes, host, job, place.id, status)
+      .catch((error: unknown) => ({ status: 'failed' as const, error: error instanceof Error ? error.message : String(error) }));
     if (result.status === 'complete') await host.deliver({ record: result.output });
     return {
-      status: result.status, ...(result.status === 'complete' ? { output: result.output } : {}),
+      status: result.status, ...(result.status === 'complete' ? { output: result.output } : {}), ...('error' in result ? { error: result.error } : {}),
       generation: durable.generation, usage: await harness.usage(ctx),
     };
   } finally {
