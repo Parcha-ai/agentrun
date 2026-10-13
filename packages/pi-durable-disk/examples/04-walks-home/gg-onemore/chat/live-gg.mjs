@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GG_INSTRUCTIONS } from "./gg-text.ts";
+import { runStep } from "./run-step.ts";
 import { serverArgs } from "./server-args.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -40,11 +41,9 @@ const fatal = (why) => {
   console.error(`FATAL: ${why}`);
   process.exit(1);
 };
-const run = (cmd, args, opts = {}) => {
-  const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
-  if (r.status !== 0) throw new Error(`${[cmd, ...args].join(" ").slice(0, 160)} exited ${r.status}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-3).join(" | ").slice(0, 400)}`);
-  return r.stdout;
-};
+// a failing step's error names the command and its error line; its whole output goes into this log with the failure
+const run = runStep;
+const failure = (e) => ({ error: String(e.message).slice(0, 600), ...(e.output ? { output: e.output } : {}) });
 const box = (...args) => run(join(B, "with-modal"), ["--", join(B, "with-typesafe"), "--", "python3", join(G, "modal", "box.py"), ...args], { env: BOX_ENV, cwd: G });
 const sandboxes = (...extra) => run(join(B, "with-modal"), ["--", process.execPath, join(G, "chat", "gg-sandboxes.mjs"), APP, ...extra], { cwd: G }).trim();
 
@@ -94,14 +93,14 @@ async function stop(reason, code = 0) {
     try {
       say("stop", { step: step[0], out: String(step[1]()).trim().split("\n").at(-1) });
     } catch (e) {
-      say("stop.failed", { step: step[0], error: String(e.message).slice(0, 300) });
+      say("stop.failed", { step: step[0], ...failure(e) });
     }
   }
   for (const name of ["guard-url", "serve-key", "tools-key"]) rmSync(join(SECRETS, name), { force: true });
   try {
     say("modal", { [APP]: sandboxes().split("\n").at(-1) });
   } catch (e) {
-    say("modal.failed", { error: String(e.message).slice(0, 200) });
+    say("modal.failed", failure(e));
   }
   rmSync(PID, { force: true });
   process.exit(code);
@@ -171,11 +170,11 @@ try {
       const mtime = Number(box("exec", "--root", "stat -c %Y /var/tmp/gg/guard.jsonl 2>/dev/null || echo 0").trim().split("\n").at(-1)) * 1000;
       lastActive = Math.max(lastActive, mtime);
     } catch (e) {
-      say("idle.check_failed", { error: String(e.message).slice(0, 200) });
+      say("idle.check_failed", failure(e));
     }
     if (Date.now() - lastActive > IDLE_MIN * 60_000) void stop(`idle for ${IDLE_MIN} min`);
   }, 60_000);
 } catch (e) {
-  say("failed", { error: String(e.message).slice(0, 600) });
+  say("failed", failure(e));
   await stop("start failed", 1);
 }
