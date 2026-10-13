@@ -93,7 +93,7 @@ try {
   console.log(`${at()} s: the model is the brain of conversation ${conv}`);
 
   // ---- take it offline (the checkout on top of configure), then cut the network
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 1000);
   ok("the checkout worked on a configured conversation", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   await page.until("demo.brain().swapped === true", 200_000, 500);

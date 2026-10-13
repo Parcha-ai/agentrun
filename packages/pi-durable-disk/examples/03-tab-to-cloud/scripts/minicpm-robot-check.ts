@@ -104,7 +104,7 @@ try {
   console.log(`tool turns (model ms, prompt tokens, output tokens): ${JSON.stringify((await ev<{ ms: number; promptTokens: number; outputTokens: number }[]>("demo.toolTurns()")).map((t) => [t.ms, t.promptTokens, t.outputTokens]))}`);
   await page.screenshot(join(shots, "minicpm-3-after.png"));
   // offline: the run is checked out with the model it has loaded, the network is cut, and the same model changes the robot again
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 900_000, 1000);
   ok("the run was checked out into this browser", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   await page.send("Network.enable");

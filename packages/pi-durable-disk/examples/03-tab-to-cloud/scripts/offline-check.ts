@@ -58,7 +58,7 @@ try {
   await page.until("demo.brain().swapped === true", 300_000, 1000);
   console.log(`${at()} s: the trained model is the brain`);
   const conversation = (await ev<{ conversation: string }>("demo.brain()")).conversation;
-  ok("the checkout button shows once the trained model is the brain", await ev<boolean>("!document.getElementById('offline').hidden"));
+  ok("the checkout button shows once the trained model is the brain", await ev<boolean>("document.getElementById('connection').dataset.action === 'offline'"));
   const a1 = await ask("Who are you?");
   const a2 = await ask("what is the sun?");
   ok("two turns online: thinking above a real answer each", a1.thinking.length > 5 && a1.text.length > 5 && a2.text.length > 5, { a1, a2 });
@@ -66,7 +66,7 @@ try {
 
   // ---- take it offline
   const clicked = Date.now();
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   // a question sent while the model is being cached must go nowhere: the agent stays idle until the store is copied and handed over
   await sleep(300);
   const held = await ev<{ inputDisabled: boolean; sendDisabled: boolean; checkingOut: boolean }>("({ inputDisabled: document.getElementById('input').disabled, sendDisabled: document.getElementById('send').disabled, checkingOut: demo.state.checkingOut })");
@@ -88,7 +88,7 @@ try {
   await page.until("demo.brain().swapped === true", 300_000, 1000);
   // a model chunk of the earlier, aborted caching that is the right size and the wrong bytes (another model under the same chunk path): the next checkout must replace it
   await ev(`(async () => { const c = await caches.open("walks-home-offline-v1"); await c.put(location.origin + "/api/runs/off/work/" + "home/model/chunk-0003.bin", new Response(new Uint8Array(16 * 1024 * 1024), { headers: { "content-length": String(16 * 1024 * 1024) } })); return true; })()`);
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 600_000, 1000);
   const banner = await ev<string>("demo.state.banner");
   ok("taking it offline worked", banner === "", banner);

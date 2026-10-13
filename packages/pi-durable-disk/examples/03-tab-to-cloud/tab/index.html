@@ -39,13 +39,7 @@ h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
 #checkedout { margin: 0; padding: 10px 20px; background: var(--tab-bg); color: var(--ink); border-bottom: 1px solid var(--line); font-size: 13px; }
 #checkedout strong { color: var(--tab); }
 #checkedout ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
-#offline-status, #online-status { font-size: 12px; color: var(--muted); }
-.net { font-size: 12px; font-weight: 650; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-.net.up { color: var(--cloud); border-color: currentColor; }
-.net.down { color: var(--moving); border-color: currentColor; }
 @keyframes pulse { from { opacity: 1 } to { opacity: 0.25 } }
-.badge-text { font-weight: 650; font-size: 14px; }
-.badge-sub { font-size: 12px; opacity: 0.85; }
 .actions { display: flex; gap: 10px; align-items: center; }
 button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 7px 12px; }
 button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
@@ -81,7 +75,6 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0
 .switcher .env.active.tab { background: var(--tab-bg); color: var(--tab); }
 .switcher .env.active.cloud { background: var(--cloud-bg); color: var(--cloud); }
 .switcher .env.active.moving { background: var(--moving-bg); color: var(--moving); animation: pulse 0.8s infinite alternate; }
-#handover { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
 button.link { border: 0; background: none; color: var(--muted); text-decoration: underline; padding: 7px 4px; font-size: 13px; }
 aside { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto minmax(120px, 1fr) auto minmax(120px, 1.2fr); min-height: 0; background: var(--panel); }
 aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0; padding: 12px 14px 8px; display: flex; justify-content: space-between; }
@@ -139,9 +132,9 @@ body.phone footer { grid-row: 6; }
 body.phone #creature-pane { grid-row: 1; height: var(--pane-h); border-left: 0; border-bottom: 1px solid var(--line); }
 body.phone #creature-pane:not([hidden]) { display: block !important; }
 body.phone #chat { grid-row: 2; }
-body.phone aside:not(#creature-pane), body.phone .actions, body.phone #net, body.phone .run { display: none !important; }
+body.phone aside:not(#creature-pane), body.phone .actions, body.phone .run { display: none !important; }
 body.phone header { padding: 10px 14px; gap: 10px; }
-@media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } .badge-sub { display: none; } }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } aside { display: none; } }
 /* a phone: the robot sits under the chat instead of taking a 380px column the chat would shrink into (these rules are as specific as the robot ones above, and later) */
 @media (max-width: 760px) { body.robot main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(200px, 38vh); } #creature-pane { display: block; } #creature-pane[hidden] { display: none; } }
 </style>
@@ -151,18 +144,18 @@ body.phone header { padding: 10px 14px; gap: 10px; }
 <header>
   <h1>Agent in a tab</h1>
   <span class="run" id="run"></span>
-  <div id="badge" class="badge parked"><span class="dot"></span><div><div id="badge-text" class="badge-text">Connecting</div><div id="badge-sub" class="badge-sub"></div></div></div>
-  <span id="driver" class="driver" hidden title="The model answering now"></span>
-  <span id="net" class="net" title="Whether this page can reach the server: the browser's own signal and a ping">…</span>
-  <div class="actions">
-    <button id="ws-toggle" class="link" title="The session's files, live">Files</button>
-    <div id="switcher" class="switcher" role="group" aria-label="Where the agent runs"></div>
-    <span id="handover"></span>
-    <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">bring it home</button>
-    <button id="offline" class="link" hidden title="Copy the run's store and the model into this browser and hand the run over, for good: it keeps working with no network, and the server no longer runs it">Take it offline</button>
-    <span id="offline-status"></span>
-    <button id="online" class="link" hidden title="Hand this browser's copy of the run back to the server: the work done offline goes home and the cloud model answers next, in the same conversation">Go online</button>
-    <span id="online-status"></span>
+  <div class="bar">
+    <span id="driver" class="driver" hidden title="The model answering now"><span class="k">LLM:</span> <span id="driver-name"></span></span>
+    <div id="badge" class="badge parked"><span class="dot"></span><span class="k">Running in:</span> <button id="badge-text" class="where" type="button" aria-haspopup="true" aria-expanded="false"></button>
+      <div id="where-menu" class="menu" hidden>
+        <div id="switcher" class="switcher" role="group" aria-label="Move the agent (the agent and Jev do this by themselves)"></div>
+        <button id="takeover" class="link" hidden title="Take the run from the cloud now: its claim is revoked mid-step">bring it home</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="ws-toggle" class="icon" type="button" title="Files" aria-label="Files"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.2l2 2.2h8.8A1.5 1.5 0 0 1 21 9.7v8.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg></button>
+      <button id="connection" class="icon" type="button" data-state="online" title="Online" aria-label="Online"></button>
+    </div>
   </div>
 </header>
 <p id="banner" hidden></p>
@@ -180,7 +173,7 @@ body.phone header { padding: 10px 14px; gap: 10px; }
   </aside>
 </main>
 <footer>
-  <div id="phone-actions"><button id="phone-files" class="link" hidden title="The session's files, live">Files</button><button id="new-chat" class="link" hidden title="Start a fresh conversation; this one stays">New chat</button></div>
+  <div id="phone-actions"><button id="phone-files" class="icon" type="button" hidden title="Files" aria-label="Files"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.2l2 2.2h8.8A1.5 1.5 0 0 1 21 9.7v8.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg></button><button id="new-chat" class="link" hidden title="Start a fresh conversation; this one stays">New chat</button></div>
   <div id="composer" hidden>
     <textarea id="input" placeholder="Ask the agent to write something…"></textarea>
     <button id="send" class="primary">Send</button>

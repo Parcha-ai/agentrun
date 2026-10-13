@@ -134,11 +134,11 @@ export function sentState(s: Sent): string {
 
 /**
  * Which model is answering, from the typed model of the conversation that drives (its provider and id: never chat text, never which conversation object is active). The tab's own provider names the small model
- * in this tab (`names` gives a model id its short name, "v5 · 0.8B"); any other provider is the cloud model by its id. With no typed model yet, `cloud` (the run's model id) is the answer.
+ * (`names` gives a model id its real name, "Qwen3.5 0.8B"; the header says where it runs); any other provider is the cloud model by its id. With no typed model yet, `cloud` (the run's model id) is the answer.
  */
 export function driverLabel(d: { model: { provider: string; modelId: string } | null; tabProvider: string; names?: Readonly<Record<string, string>>; cloud: string }): string {
   if (d.model === null) return d.cloud.replace(/^[^/]+\//, "");
-  if (d.model.provider === d.tabProvider) return `${d.names?.[d.model.modelId] ?? d.model.modelId} in this tab`;
+  if (d.model.provider === d.tabProvider) return d.names?.[d.model.modelId] ?? d.model.modelId;
   return d.model.modelId.replace(/^[^/]+\//, "");
 }
 

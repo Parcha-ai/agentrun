@@ -22,7 +22,7 @@ type R = { exitCode?: number; output?: string; error?: string };
 const run = (c: string) => ev<R>(`demo.exec(${JSON.stringify(c)})`);
 try {
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
-  await ev("document.getElementById('offline').click()");
+  await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500);
   server.kill("SIGKILL");
   await new Promise((r) => server.once("exit", r));
