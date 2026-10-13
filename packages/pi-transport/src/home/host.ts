@@ -57,6 +57,45 @@ export interface HomeHandle {
 }
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
+const HOME_STATES: ReadonlySet<unknown> = new Set<HomeState>(["closed", "open", "sealed", "retired"]);
+
+/** Whether `value` is a whole number at least 0. */
+const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** A seal as the host checks copies against it: a head, a SHA-256 in lowercase hex, a size. */
+function isSeal(value: unknown): value is Seal {
+	const seal = value as Partial<Seal> | null;
+	return (
+		typeof seal === "object" &&
+		seal !== null &&
+		count(seal.head) &&
+		count(seal.bytes) &&
+		typeof seal.sha256 === "string" &&
+		/^[0-9a-f]{64}$/.test(seal.sha256)
+	);
+}
+
+function isStatus(value: unknown): value is { readonly state: HomeState; readonly epoch: number | null } {
+	const status = value as { state?: unknown; epoch?: unknown } | null;
+	return (
+		typeof status === "object" &&
+		status !== null &&
+		HOME_STATES.has(status.state) &&
+		(status.epoch === null || Number.isSafeInteger(status.epoch))
+	);
+}
+
+/** An answer the host acts on, refused when its shape is not what the runner owes: the runner is not trusted. */
+function checked<T>(
+	answer: Result<unknown, RemoteError>,
+	is: (value: unknown) => value is T,
+	what: string,
+): Result<T, RemoteError> {
+	if (!answer.ok) return answer;
+	if (is(answer.value)) return ok(answer.value);
+	const shown = JSON.stringify(answer.value)?.slice(0, 200);
+	return err(new RemoteError("invalid", `the runner's ${what} has the wrong shape: ${shown}`));
+}
 
 /** Hold a runner on `link`: say hello with the host's models, then give orders and serve its model requests. */
 export function connectHome(link: Link, options: { readonly models: Models; readonly epoch: number }): HomeHandle {
@@ -81,8 +120,12 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 			}
 			server.receive(frame, reply);
 		} else if (frame.t === "ready") {
-			if (frame.ok === true) settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
-			else settleReady(err(fromWire(frame.error)));
+			if (frame.ok !== true) settleReady(err(fromWire(frame.error)));
+			else if (!HOME_STATES.has(frame.state)) {
+				settleReady(
+					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
+				);
+			} else settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
 		} else if (frame.t === "answer") {
 			const settle = pending.get(Number(frame.id));
 			pending.delete(Number(frame.id));
@@ -123,13 +166,13 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 		resume: (resumeOrder, context) => order("resume", resumeOrder, context),
 		drain: (drainOptions, context) => order("drain", drainOptions ?? {}, context),
 		abandon: (context) => order("abandon", {}, context),
-		seal: (context) => order("seal", {}, context),
+		seal: async (context) => checked(await order<unknown>("seal", {}, context), isSeal, "seal"),
 		reopen: (to, context) => order("reopen", { epoch: to }, context),
 		retire: (to, context) => order("retire", { epoch: to }, context),
 		submit: (content, requestId, context) =>
 			order("submit", { content, ...(requestId === undefined ? {} : { requestId }) }, context),
 		idle: (context) => order("idle", {}, context),
-		status: (context) => order("status", {}, context),
+		status: async (context) => checked(await order<unknown>("status", {}, context), isStatus, "status"),
 		setEpoch(to) {
 			epoch = to;
 		},

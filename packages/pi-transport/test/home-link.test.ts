@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { App } from "../src/home/app.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
-import { linkPair } from "../src/home/link.ts";
+import { type Frame, linkPair } from "../src/home/link.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -98,6 +98,76 @@ async function linked(made: World, runner: Runner, epoch: number): Promise<HomeH
 }
 
 const everyRound = Array.from({ length: ROUNDS }, (_, n) => String(n));
+
+/** A runner of the test's own: it answers the host's frames with `answer`, and its ready frame with `ready`. */
+function fakeRunner(ready: Frame, answer: (order: string) => unknown) {
+	const [runnerEnd, hostEnd] = linkPair();
+	runnerEnd.onFrame((frame) => {
+		if (frame.t === "hello") runnerEnd.send(ready);
+		if (frame.t === "order")
+			runnerEnd.send({ t: "answer", id: frame.id, ok: true, value: answer(String(frame.order)) });
+	});
+	return hostEnd;
+}
+
+describe("the host does not take a runner's answer on trust", () => {
+	const models = createModels();
+	const readyFrame: Frame = { t: "ready", v: 1, ok: true, session: "s", state: "closed" };
+
+	it("refuses a ready frame in no known state", async () => {
+		const host = connectHome(
+			fakeRunner({ ...readyFrame, state: "running everywhere" }, () => null),
+			{ models, epoch: 1 },
+		);
+		const ready = await host.ready;
+		expect(ready.ok ? "" : ready.error.code).toBe("invalid");
+	});
+
+	it("refuses a seal whose head, hash or size is not one", async () => {
+		const good = { head: 7, sha256: "a".repeat(64), bytes: 4096 };
+		for (const seal of [
+			{ ...good, head: -1 },
+			{ ...good, head: 1.5 },
+			{ ...good, sha256: "A".repeat(64) },
+			{ ...good, sha256: "abc" },
+			{ ...good, bytes: "4096" },
+			null,
+		]) {
+			const host = connectHome(
+				fakeRunner(readyFrame, () => seal),
+				{ models, epoch: 1 },
+			);
+			const sealed = await host.seal(context);
+			expect(sealed.ok ? "taken" : sealed.error.code, JSON.stringify(seal)).toBe("invalid");
+		}
+		const host = connectHome(
+			fakeRunner(readyFrame, () => good),
+			{ models, epoch: 1 },
+		);
+		expect(getOrThrow(await host.seal(context))).toEqual(good);
+	});
+
+	it("refuses a status in no known state or with an epoch that is not a whole number", async () => {
+		for (const status of [
+			{ state: "bogus", epoch: 1 },
+			{ state: "open", epoch: 1.5 },
+			{ state: "open", epoch: "1" },
+			{ state: "open" },
+		]) {
+			const host = connectHome(
+				fakeRunner(readyFrame, () => status),
+				{ models, epoch: 1 },
+			);
+			const answered = await host.status(context);
+			expect(answered.ok ? "taken" : answered.error.code, JSON.stringify(status)).toBe("invalid");
+		}
+		const host = connectHome(
+			fakeRunner(readyFrame, () => ({ state: "sealed", epoch: null })),
+			{ models, epoch: 1 },
+		);
+		expect(getOrThrow(await host.status(context))).toEqual({ state: "sealed", epoch: null });
+	});
+});
 
 describe("a home over a link", () => {
 	it("runs a session, moves it to another runner with nothing cut, and retires the first", async () => {

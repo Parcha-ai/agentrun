@@ -17,7 +17,7 @@ const boxes: Box[] = [];
 afterAll(async () => {
 	for (const box of boxes) await box.destroy(context);
 	rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
-});
+}, 120_000);
 
 async function setup(bytes: Buffer) {
 	const from = getOrThrow(await provider.create({ maxLifetimeMs: 600_000 }, context));

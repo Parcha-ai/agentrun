@@ -71,7 +71,7 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest --run",
-    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts test/box-env-docker.live.test.ts test/hands-router-docker.live.test.ts test/home-move-docker.live.test.ts"
+    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts test/box-env-docker.live.test.ts test/hands-router-docker.live.test.ts test/home-docker.live.test.ts test/home-move-docker.live.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.2.0",

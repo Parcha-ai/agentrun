@@ -67,6 +67,23 @@ const NEVER_CROSSES = new Set([
 	"client",
 ]);
 
+/**
+ * The request options a host passes from a runner's frame to its own models. Plain knobs only: never anything that
+ * picks a credential, an endpoint, a header, the provider's environment, or how long and how often the host retries.
+ * A runner sits in a box and is not trusted with those; a host may widen the list (`serveModels`'s `options`).
+ */
+export const HOST_REQUEST_OPTIONS: readonly string[] = [
+	"temperature",
+	"maxTokens",
+	"reasoning",
+	"thinkingBudgets",
+	"toolChoice",
+	"samplingParams",
+	"sessionId",
+	"cacheRetention",
+	"metadata",
+];
+
 /** Whether `value` is plain JSON: what survives `JSON.stringify` unchanged. */
 function plain(value: unknown): boolean {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
@@ -393,11 +410,16 @@ export interface ModelServer {
 }
 
 /**
- * Answer a runner's model frames with the host's own models: its credentials, its fetch, its signal. Nothing in a
- * request's options came with them. A request id seen before is never called again.
+ * Answer a runner's model frames with the host's own models: its credentials, its endpoints, its fetch, its signal.
+ * A frame's options are not trusted: only the plain values of `allow` (default `HOST_REQUEST_OPTIONS`) reach the
+ * host's models, and everything else in them is dropped. A request id seen before is never called again.
  */
-export function serveModels(models: Models, options?: { readonly keepMs?: number }): ModelServer {
+export function serveModels(
+	models: Models,
+	options?: { readonly keepMs?: number; readonly allow?: readonly string[] },
+): ModelServer {
 	const keepMs = options?.keepMs ?? DEFAULT_KEEP_MS;
+	const allow = new Set(options?.allow ?? HOST_REQUEST_OPTIONS);
 	const calls = new Map<string, ServedCall>();
 	let send: ((frame: Frame) => boolean) | undefined;
 	let paid = 0;
@@ -420,10 +442,12 @@ export function serveModels(models: Models, options?: { readonly keepMs?: number
 				return;
 			}
 			paid += 1;
-			const requestOptions = {
-				...(request.options as Record<string, unknown> | undefined),
-				signal: call.controller.signal,
-			};
+			// Only the knobs a host allows, and only plain values: the frame came from a box.
+			const sent = (request.options ?? {}) as Readonly<Record<string, unknown>>;
+			const requestOptions: Record<string, unknown> = { signal: call.controller.signal };
+			for (const [key, value] of Object.entries(sent)) {
+				if (allow.has(key) && value !== undefined && plain(value)) requestOptions[key] = value;
+			}
 			const events = models.streamSimple(
 				model,
 				{ messages: request.messages as never },
