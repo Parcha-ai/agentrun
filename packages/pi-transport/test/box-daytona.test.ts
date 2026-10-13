@@ -304,7 +304,7 @@ describe("daytona boxes", () => {
 	it("refuses a spec that sizes the box, names an image or has no lifetime", async () => {
 		for (const bad of [{ cpus: 2 }, { memoryMb: 512 }, { gpu: "T4" }]) {
 			const created = await provider().create(spec(bad), context);
-			expect(created.ok ? "ok" : created.error.code).toBe("invalid");
+			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
 			expect(created.ok ? "" : created.error.message).toContain("snapshot");
 		}
 		const image = await provider().create(spec({ image: "debian" }), context);
@@ -445,6 +445,41 @@ describe("daytona boxes", () => {
 			);
 		} finally {
 			fake.beforeExecute = undefined;
+		}
+	});
+
+	it("refuses a label in the providers' own namespace before a box exists", async () => {
+		fake.requests.length = 0;
+		for (const key of ["pi-transport", "pi-transport.workspace", "pi-transport.anything"]) {
+			const created = await provider().create(spec({ labels: { [key]: "x" } }), context);
+			expect(created.ok ? "ok" : created.error.code).toBe("invalid");
+		}
+		expect(fake.sandboxes.size).toBe(0);
+		expect(fake.requests.some((r) => r.method === "POST" && r.path === "/api/sandbox")).toBe(false);
+	});
+
+	it("attach returns undefined, not a rejection, for labels it cannot use", async () => {
+		const odd: FakeSandbox = {
+			id: "odd-1",
+			state: "started",
+			labels: { "pi-transport": "1", "pi-transport.workspace": "not absolute", "pi-transport.lifetime-ms": "soon" },
+			env: {},
+		};
+		const garbage: FakeSandbox = {
+			id: "odd-2",
+			state: "started",
+			labels: { "pi-transport": "1", "pi-transport.workspace": "/tmp/x", "pi-transport.lifetime-ms": "soon" },
+			env: {},
+		};
+		fake.sandboxes.set(odd.id, odd);
+		fake.sandboxes.set(garbage.id, garbage);
+		try {
+			expect(await provider().attach(odd.id, context)).toEqual({ ok: true, value: undefined });
+			const attached = await provider().attach(garbage.id, context);
+			expect(attached.ok && attached.value?.facts().maxLifetimeMs).toBeNull();
+		} finally {
+			fake.sandboxes.delete(odd.id);
+			fake.sandboxes.delete(garbage.id);
 		}
 	});
 

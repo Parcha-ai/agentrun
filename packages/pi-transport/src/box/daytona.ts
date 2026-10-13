@@ -735,7 +735,16 @@ async function waitListed(
 	}
 }
 
-/** Boxes that are Daytona sandboxes, through the REST API with `fetch`. No SDK; the key is the host's to pass. */
+/**
+ * Boxes that are Daytona sandboxes, through the REST API with `fetch`. No SDK; the key is the host's to pass.
+ *
+ * A spec that names an `image`, `cpus`, `memoryMb` or `gpu` is refused with `unsupported`: a Daytona box has the size
+ * of its snapshot, so name a snapshot (the `snapshot` field or option) instead. An `isolation` other than `container`
+ * is refused with `unsupported` unless the snapshot is a `linux-vm` and the spec asks for `vm`. A label key that is
+ * `pi-transport` or starts with `pi-transport.` is refused with `invalid`; the provider keeps its records there.
+ * `region` is the Daytona target. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, rounded up to
+ * whole minutes).
+ */
 export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 	if (options.apiKey === "") throw new Error("a Daytona API key is required");
 	const rest = new Rest(options);
@@ -747,6 +756,12 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.image !== undefined) return err(new BoxError("unsupported", "daytona boxes start from a snapshot"));
+			const reserved = Object.keys(spec.labels ?? {}).find(
+				(key) => key === BOX_LABEL || key.startsWith(`${BOX_LABEL}.`),
+			);
+			if (reserved !== undefined) {
+				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
+			}
 			if (spec.isolation === "none" || spec.isolation === "gvisor") {
 				return err(
 					new BoxError("unsupported", `a daytona box is a container or a VM, the spec asks for ${spec.isolation}`),
@@ -755,7 +770,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (spec.cpus !== undefined || spec.memoryMb !== undefined || spec.gpu !== undefined) {
 				return err(
 					new BoxError(
-						"invalid",
+						"unsupported",
 						"a daytona box has the size of its snapshot: choose cpus, memory and gpu by naming a snapshot (the `snapshot` option or spec field), not in the spec",
 					),
 				);
@@ -819,6 +834,9 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (!found.ok) return found;
 			const info = found.value;
 			if (info?.labels?.[BOX_LABEL] === undefined || info.state !== "started") return ok(undefined);
+			// A workspace label this package did not write is not a box it can use.
+			const workspace = info.labels[WORKSPACE_LABEL];
+			if (workspace !== undefined && !workspace.startsWith("/")) return ok(undefined);
 			return ok(new DaytonaBox(rest, options, info));
 		},
 
