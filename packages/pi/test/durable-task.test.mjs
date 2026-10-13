@@ -27,6 +27,29 @@ const WORKFLOW = {
 const request = (key = 'run-1') => ({ key, workflow: WORKFLOW, input: { sku: 'A-1' } });
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const pending = (promise, ms = 30) => Promise.race([promise.then(() => false), new Promise((resolve) => setTimeout(() => resolve(true), ms))]);
+/** `promise`, or a rejection when it has not settled in `ms`: a wait that hangs fails its test instead of the file. */
+const within = (promise, ms = 5000) => { let timer; return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), ms); })]).finally(() => clearTimeout(timer)); };
+/** Runs `body` with the document writes `when({ kind, content })` picks failing in SQLite: each is a revision of a
+ *  document of that kind, with its content as stored. A failed commit poisons the Session: no later commit lands. */
+async function refusingWrites(when, body) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const prepare = DatabaseSync.prototype.prepare;
+  const kinds = new Map();
+  DatabaseSync.prototype.prepare = function (sql) {
+    const statement = prepare.call(this, sql);
+    const table = /^\s*INSERT INTO (documents|document_revisions)\b/i.exec(String(sql))?.[1];
+    if (!table) return statement;
+    return new Proxy(statement, { get(target, key) {
+      if (key !== 'run') return typeof target[key] === 'function' ? target[key].bind(target) : target[key];
+      return (...args) => {
+        if (table === 'documents') kinds.set(args[0], JSON.parse(args[1]));
+        else if (when({ kind: kinds.get(args[0]), content: String(args[4]) })) throw Object.assign(new Error('injected store write failure'), { code: 'ERR_SQLITE_ERROR' });
+        return target.run(...args);
+      };
+    } });
+  };
+  try { return await body(); } finally { DatabaseSync.prototype.prepare = prepare; }
+}
 
 /** A host whose effects go to `runEffect`, over a scratch workspace. */
 const hostOf = (runEffect) => {
@@ -246,4 +269,151 @@ test('a stop given before the run started is taken before any step: a pause is i
   assert.deepEqual([await stopped.wait(ctx), calls], [{ status: 'stopped', stop: 'cancelled', source: 'owner' }, 1]);
   assert.deepEqual(await journalOf(other), { status: 'cancelled', effects: [] });
   await other.close(ctx);
+});
+
+test('a stop given with the start is recorded in the commit that creates the task; a cancel recorded before pi marked the task is taken by the next process before any step', async () => {
+  let calls = 0;
+  const file = fileOf();
+  const host = () => hostOf(async () => { calls += 1; return { price: 21 }; });
+  let flow = createWorkflowExtension(host());
+  let harness = await open(file, flow);
+  const entries = [];
+  harness.subscribeCommits((publication) => { for (const change of publication.changes) if (change.type === 'document' && change.record.kind === 'agentrun.task' && change.value) entries.push([change.value.task !== null, change.value.stop]); });
+  // The process dies once the start has committed, before pi marks the task.
+  harness.abortTask = async () => { throw new Error('killed before the mark'); };
+  await assert.rejects(flow.start(harness, request(), ctx, { stop: { action: 'cancel', source: 'owner' } }), /killed before the mark/);
+  assert.deepEqual(entries, [[true, { action: 'cancel', source: 'owner' }]]);
+  await harness.close(ctx);
+  flow = createWorkflowExtension(host());
+  harness = await open(file, flow);
+  try {
+    const { taskId } = await flow.read(harness, 'run-1', ctx);
+    harness.resume();
+    const settled = await within(harness.waitForTask(taskId, ctx));
+    assert.deepEqual([settled.state.outcome, calls], [{ status: 'aborted', reason: 'cancelled by owner' }, 0]);
+    assert.deepEqual((await flow.read(harness, 'run-1', ctx)).outcome, { status: 'stopped', stop: 'cancelled', source: 'owner' });
+    assert.deepEqual(await journalOf(harness), { status: 'cancelled', effects: [] });
+    // The cancelled run is returned as it is, and never runs.
+    const again = await flow.start(harness, request(), ctx);
+    assert.deepEqual([again.started, await again.wait(ctx), calls], ['settled', { status: 'stopped', stop: 'cancelled', source: 'owner' }, 0]);
+  } finally { await harness.close(ctx); }
+});
+
+test('a waiter that began before another start attached still gets the run\'s failure when the Session refuses its commits', async () => {
+  const flight = deferred(), release = deferred(); let armed = false;
+  // The effect's completion is the write that fails, after the second start attached.
+  await refusingWrites(({ kind }) => armed && kind === 'agentrun.effects', async () => {
+    const flow = createWorkflowExtension(hostOf(async () => { flight.resolve(); await release.promise; return { price: 21 }; }));
+    const harness = await open(fileOf(), flow);
+    try {
+      const first = await flow.start(harness, request(), ctx);
+      const waiting = first.wait(ctx);
+      waiting.catch(() => undefined);
+      await flight.promise;
+      const second = await flow.start(harness, request(), ctx);
+      assert.deepEqual([second.started, second.taskId], ['attached', first.taskId]);
+      armed = true;
+      release.resolve();
+      await assert.rejects(within(waiting), /injected store write failure|poisoned/);
+      await assert.rejects(within(second.wait(ctx)), /injected store write failure|poisoned/);
+      // A wait that begins after the failure fails too, instead of waiting for a task nothing will end.
+      await assert.rejects(within(first.wait(ctx)), /injected store write failure|poisoned/);
+    } finally { await harness.close(ctx).catch(() => undefined); }
+  });
+});
+
+test('a host with its own dependencies and its own signal: a pause still reaches a step that is running', async () => {
+  const NODES = { ...WORKFLOW, name: 'task-node', root: { node: 'chain', steps: [
+    { node: 'agent', label: 'quote', instructions: 'Quote the price.', out: 'Quote', as: 'quote' }, WORKFLOW.root.steps[1],
+  ] } };
+  const entered = deferred(); let cut = false;
+  const own = new AbortController();
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const runNode = ({ signal }) => { entered.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => { cut = true; reject(signal.reason); }, { once: true })); };
+  const flow = createWorkflowExtension({ options: () => ({ files }), run: ({ driver }) => ({ deps: { ...withRecovery(driver, { runNode }), signal: own.signal } }) });
+  const harness = await open(fileOf(), flow);
+  try {
+    await flow.start(harness, { key: 'run-1', workflow: NODES, input: { sku: 'A-1' } }, ctx);
+    await within(entered.promise);
+    assert.equal(await within(flow.stop(harness, 'run-1', 'pause', ctx, 'operator')), 'paused');
+    assert.equal(cut, true);
+  } finally { await harness.close(ctx); }
+});
+
+test('a pause that cannot be let go of as the run opens is the run\'s failure: its waiter gets it, and the journal is let go', async () => {
+  // The start records the pause; the write that lets go of it, once the journal holds the pause, is the one that fails.
+  let recorded = false;
+  const lettingGo = ({ kind, content }) => {
+    if (kind !== 'agentrun.task') return false;
+    const pause = content.includes('"action":"pause"');
+    if (pause) recorded = true;
+    return recorded && !pause;
+  };
+  await refusingWrites(lettingGo, async () => {
+    let calls = 0;
+    const flow = createWorkflowExtension(hostOf(async () => { calls += 1; return { price: 21 }; }));
+    const harness = await open(fileOf(), flow);
+    try {
+      const run = await flow.start(harness, request(), ctx, { stop: { action: 'pause', source: 'operator' } });
+      await assert.rejects(within(run.wait(ctx)), /injected store write failure/);
+      assert.deepEqual([recorded, calls, await flow.stop(harness, 'run-1', 'pause', ctx)], [true, 0, 'not-live']);
+    } finally { await harness.close(ctx).catch(() => undefined); }
+  });
+});
+
+test('the first cancel names the run\'s source: a later cancel, of the live run or the finished one, does not change it', async () => {
+  const flight = deferred();
+  const flow = createWorkflowExtension(hostOf(({ signal }) => { flight.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }));
+  const harness = await open(fileOf(), flow);
+  try {
+    const run = await flow.start(harness, request(), ctx);
+    await flight.promise;
+    assert.equal(await flow.stop(harness, 'run-1', 'cancel', ctx, 'owner'), 'marked');
+    await flow.stop(harness, 'run-1', 'cancel', ctx, 'someone-else');
+    assert.deepEqual(await run.wait(ctx), { status: 'stopped', stop: 'cancelled', source: 'owner' });
+    assert.equal(await flow.stop(harness, 'run-1', 'cancel', ctx), 'terminal');
+    assert.equal(await flow.stop(harness, 'run-1', 'cancel', ctx, 'someone-else'), 'terminal');
+    assert.deepEqual((await flow.read(harness, 'run-1', ctx)).outcome, { status: 'stopped', stop: 'cancelled', source: 'owner' });
+    assert.deepEqual(await run.wait(ctx), { status: 'stopped', stop: 'cancelled', source: 'owner' });
+    assert.deepEqual((await harness.getTask(run.taskId, ctx)).state.outcome, { status: 'aborted', reason: 'cancelled by owner' });
+  } finally { await harness.close(ctx); }
+  // A run pi aborted with no cancel recorded has no source, and a cancel of the finished run does not give it one.
+  const held = deferred();
+  const other = createWorkflowExtension(hostOf(({ signal }) => { held.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }));
+  const second = await open(fileOf(), other);
+  try {
+    const run = await other.start(second, request(), ctx);
+    await held.promise;
+    await second.abortTask(run.taskId, ctx);
+    assert.deepEqual(await run.wait(ctx), { status: 'stopped', stop: 'cancelled' });
+    assert.equal(await other.stop(second, 'run-1', 'cancel', ctx, 'late'), 'terminal');
+    assert.deepEqual((await other.read(second, 'run-1', ctx)).outcome, { status: 'stopped', stop: 'cancelled' });
+  } finally { await second.close(ctx); }
+});
+
+test('a pause given with a start that attaches to a run running here is recorded, not taken now; a recorded pause never gives a cancel its source', async () => {
+  let calls = 0; const flight = deferred(), release = deferred();
+  const flow = createWorkflowExtension(hostOf(async () => { calls += 1; flight.resolve(); await release.promise; return { price: 21 }; }));
+  const harness = await open(fileOf(), flow);
+  try {
+    const run = await flow.start(harness, request(), ctx);
+    await flight.promise;
+    const attached = await flow.start(harness, request(), ctx, { stop: { action: 'pause', source: 'operator' } });
+    assert.deepEqual([attached.started, attached.taskId], ['attached', run.taskId]);
+    // The run is not paused: its effect completes and the run ends complete. `stop` is what pauses a run running here.
+    release.resolve();
+    assert.deepEqual([(await within(run.wait(ctx))).status, calls], ['complete', 1]);
+  } finally { await harness.close(ctx); }
+  // pi aborts a run whose entry records a pause: the run ends cancelled with no source, since no cancel named one.
+  const held = deferred();
+  const other = createWorkflowExtension(hostOf(({ signal }) => { held.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }));
+  const second = await open(fileOf(), other);
+  try {
+    const run = await other.start(second, request(), ctx);
+    await held.promise;
+    await other.start(second, request(), ctx, { stop: { action: 'pause', source: 'operator' } });
+    await second.abortTask(run.taskId, ctx);
+    assert.deepEqual(await within(run.wait(ctx)), { status: 'stopped', stop: 'cancelled' });
+    assert.deepEqual((await second.getTask(run.taskId, ctx)).state.outcome, { status: 'aborted', reason: 'cancelled' });
+  } finally { await second.close(ctx); }
 });

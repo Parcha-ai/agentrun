@@ -186,3 +186,27 @@ test('a pause during the continuation is answered only once the continuation has
   assert.ok(stoppedAt > 0 && answeredAt >= stoppedAt, `paused was answered at ${answeredAt}, the continuation stopped at ${stoppedAt}`);
   await harness.close(ctx);
 });
+
+test('a cancel recorded before pi marked the task is taken before the ladder on a reopened run: the hook is not called again, and the run ends cancelled', async () => {
+  const file = fileOf(); const entered = deferred();
+  const first = hostOf(async ({ invocation }) => { entered.resolve(); await aborted(invocation.signal); throw invocation.signal.reason; });
+  let flow = createWorkflowExtension(first.host);
+  let harness = await open(file, flow);
+  const run = await flow.start(harness, request, ctx);
+  await entered.promise;
+  // The process dies once the cancel is recorded, before pi marks the task.
+  harness.abortTask = async () => { throw new Error('killed before the mark'); };
+  await assert.rejects(flow.stop(harness, 'run-1', 'cancel', ctx, 'owner'), /killed before the mark/);
+  await harness.close(ctx);
+  const second = hostOf(async ({ row }) => ({ continued: row.tail }), first.counts);
+  flow = createWorkflowExtension(second.host);
+  harness = await open(file, flow);
+  try {
+    harness.resume();
+    const settled = await harness.waitForTask(run.taskId, ctx);
+    assert.deepEqual([settled.state.outcome, first.counts.endings, first.counts.effects], [{ status: 'aborted', reason: 'cancelled by owner' }, ['error'], 1]);
+    const journal = await journalOf(harness);
+    assert.deepEqual([journal.status, journal.notes], ['cancelled', ['escalation']]);
+    assert.deepEqual((await flow.read(harness, 'run-1', ctx)).outcome, { status: 'stopped', stop: 'cancelled', source: 'owner' });
+  } finally { await harness.close(ctx); }
+});

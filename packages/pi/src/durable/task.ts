@@ -88,6 +88,12 @@ type WorkflowResult = Extract<WorkflowOutcome, { status: "complete" | "escalated
  *  creates the task. */
 type RunRecord = { task: number | null; stop: { action: "pause" | "cancel"; source: string | null } | null };
 const RunDoc = defineDocFamily<RunRecord, null>({ kind: "agentrun.task", version: 1, scope: "session", family: true, initial: () => ({ task: null, stop: null }) });
+/** Records a stop on a run's entry. A recorded cancel stands, so the first cancel names the run's source; a recorded
+ *  pause is replaced by the stop that follows it. */
+const recordStop = (run: RunRecord, stop: NonNullable<RunRecord["stop"]>) => { if (run.stop?.action !== "cancel") run.stop = stop; };
+/** The source of the cancel a run's entry records. */
+const cancelSource = (run: RunRecord | undefined) => (run?.stop?.action === "cancel" ? run.stop.source ?? undefined : undefined);
+const cancelled = (source: string | undefined) => ({ status: "aborted" as const, reason: source ? `cancelled by ${source}` : "cancelled" });
 
 const json = (value: unknown): Json => (value === undefined ? null : JSON.parse(JSON.stringify(value)));
 const codeOf = (error: unknown): string => {
@@ -122,16 +128,23 @@ function invocationStore(runtime: WorkflowInvocation["runtime"], context: Contex
 }
 
 /** Runs whose outcome this process could not commit (the Session refused the commit, as it does once a failed commit has
- *  poisoned it): nothing durable will ever end their task, so their waiters in this process get the run's own failure. */
-const uncommitted = new Map<string, { promise: Promise<never>; reject: (error: unknown) => void }>();
-const uncommittedOf = (key: string) => {
-  let entry = uncommitted.get(key);
+ *  poisoned it): nothing durable will ever end their task, so their waiters in this process get the run's own failure.
+ *  One entry per run key and task, shared by every waiter of that task and by the invocation that fails. It is kept
+ *  while a wait holds it, so a run that ended (or whose waits ended) leaves none; a failed one stays, so a later wait
+ *  on the task fails too, until a start reaches the task again. */
+type Uncommitted = { promise: Promise<never>; fail(error: unknown): void; failed: boolean; waits: number };
+const uncommitted = new Map<string, Uncommitted>();
+const uncommittedId = (key: string, taskId: unknown) => JSON.stringify([key, taskId]);
+const uncommittedOf = (key: string, taskId: unknown) => {
+  const id = uncommittedId(key, taskId);
+  let entry = uncommitted.get(id);
   if (!entry) {
     let reject!: (error: unknown) => void;
     const promise = new Promise<never>((_, fail) => { reject = fail; });
     promise.catch(() => undefined);
-    entry = { promise, reject };
-    uncommitted.set(key, entry);
+    const made: Uncommitted = { promise, failed: false, waits: 0, fail: (error) => { made.failed = true; reject(error); } };
+    entry = made;
+    uncommitted.set(id, entry);
   }
   return entry;
 };
@@ -158,13 +171,13 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     try {
       const parts = await host.run({ key: task.input.key, taskId: task.id, runtime, context, driver });
       const deps: WorkflowDeps = "deps" in parts
-        ? { ...parts.deps, signal: AbortSignal.any([parts.deps.signal ?? driver.signal, runtime.signal]) }
+        ? { ...parts.deps, signal: AbortSignal.any([driver.signal, runtime.signal, ...(parts.deps.signal ? [parts.deps.signal] : [])]) }
         : withRecovery(driver, { ...parts.adapters, signal: runtime.signal }, { durableNodes: parts.durableNodes });
       return { deps, driver, interpret: ("deps" in parts && parts.interpret) || runWorkflow };
     } catch (error) { await driver.close().catch(() => undefined); throw error; }
   };
   const failed = (error: unknown) => ({ status: "failed" as const, error: { message: messageOf(error), detail: { ...ownFields(error), code: codeOf(error) } } });
-  type NextOutcome = ReturnType<typeof failed> | { status: "completed"; result: WorkflowResult };
+  type NextOutcome = ReturnType<typeof failed> | ReturnType<typeof cancelled> | { status: "completed"; result: WorkflowResult };
 
   const Workflow = defineTask<WorkflowRequest, TaskCheckpoint, WorkflowResult>({
     name: "agentrun.workflow", version: 1, initial: () => ({ phase: "run" }),
@@ -175,7 +188,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
          *  own failure, or the refusal. */
         const commitEnd = async (outcome: NextOutcome, cause?: unknown) => {
           try { await runtime.commit(() => ({ status: "terminal", outcome }), context); }
-          catch (error) { if (!runtime.signal.aborted) uncommittedOf(key).reject(cause ?? error); throw error; }
+          catch (error) { if (!runtime.signal.aborted) uncommittedOf(key, task.id).fail(cause ?? error); throw error; }
         };
         let opened: Awaited<ReturnType<typeof open>>;
         try { opened = await open(task, runtime, context); }
@@ -185,13 +198,22 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           return;
         }
         const { deps, driver, interpret } = opened;
-        // A pause the host gave before the run started is the driver's before any step; the entry lets go of it once the
-        // journal holds it, so the next start runs again.
-        const early = (await runtime.snapshot(RunDoc, key, context))?.stop;
-        if (early?.action === "pause") {
-          driver.stop({ action: "pause", ...(early.source ? { source: early.source } : {}) });
-          await driver.flush().catch(() => undefined);
-          await runtime.commit(async (tx) => { const run = await tx.doc(RunDoc, key, null); if (run.stop?.action === "pause") run.stop = null; return undefined; }, context);
+        // A stop the run's entry records is the driver's before anything runs. The entry lets go of a pause once the
+        // journal holds it, so the next start runs again. A failure here lets the driver go and is the run's failure,
+        // as a failure to open is.
+        let early: RunRecord["stop"];
+        try {
+          early = (await runtime.snapshot(RunDoc, key, context))?.stop ?? null;
+          if (early?.action === "pause") {
+            driver.stop({ action: "pause", ...(early.source ? { source: early.source } : {}) });
+            await driver.flush().catch(() => undefined);
+            await runtime.commit(async (tx) => { const run = await tx.doc(RunDoc, key, null); if (run.stop?.action === "pause") run.stop = null; return undefined; }, context);
+          }
+        } catch (error) {
+          await driver.close().catch(() => undefined);
+          if (runtime.signal.aborted) throw error;
+          await commitEnd(failed(error), error);
+          return;
         }
         let end!: () => void;
         live.set(key, { driver, ended: new Promise<void>((resolve) => { end = resolve; }) });
@@ -210,7 +232,14 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         const paused = () => driver.signal.aborted && (driver.signal.reason as { code?: unknown } | undefined)?.code === "FROZEN_PAUSED";
         try {
           const prior = ladder ? driver.escalation() : undefined;
-          if (prior) { driver.checkStop(); outcome = await handOff({ row: prior, state: prior.state }); }
+          if (early?.action === "cancel") {
+            // A cancel recorded before pi marked the task (the process died between the two) is taken before any step
+            // and before the host's ladder on a run reopened after its escalation: this invocation ends the run as the
+            // abort handler would have.
+            driver.stop({ action: "cancel", ...(early.source ? { source: early.source } : {}) });
+            await driver.flush();
+            outcome = cancelled(early.source ?? undefined);
+          } else if (prior) { driver.checkStop(); outcome = await handOff({ row: prior, state: prior.state }); }
           else if (driver.preStepRefusal) {
             // A refusal found before any step: nothing runs. With a ladder, the host continues the run from it.
             if (!ladder) throw driver.preStepRefusal;
@@ -250,8 +279,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     },
     abort: async (task, runtime, context) => {
       const { key } = task.input;
-      const run = await runtime.snapshot(RunDoc, key, context).catch(() => undefined);
-      const source = run?.stop?.source ?? undefined;
+      const source = cancelSource(await runtime.snapshot(RunDoc, key, context).catch(() => undefined));
       // The journal records the cancel, so no later open of it resumes. A journal the driver refuses (a binding that
       // moved, a checkpoint it cannot read) is left as it is; the task still ends aborted.
       try {
@@ -259,7 +287,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
         driver.stop({ action: "cancel", ...(source ? { source } : {}) });
         await driver.close();
       } catch { /* the outcome below is committed whatever the journal said */ }
-      await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted", reason: source ? `cancelled by ${source}` : "cancelled" } }), context);
+      await runtime.commit(() => ({ status: "terminal", outcome: cancelled(source) }), context);
     },
   });
 
@@ -268,7 +296,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
     const outcome = settled.state.outcome;
     if (outcome.status === "completed") return outcome.result;
     if (outcome.status === "aborted") {
-      const source = (await harness.snapshot(RunDoc, key, context))?.stop?.source;
+      const source = cancelSource(await harness.snapshot(RunDoc, key, context));
       return { status: "stopped", stop: "cancelled", ...(source ? { source } : {}) };
     }
     const error = (outcome as { error?: { message?: string; detail?: { code?: string } } }).error;
@@ -277,8 +305,17 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
   const handle = (harness: Harness, key: string, taskId: TaskId<WorkflowResult>, started: WorkflowRun["started"]): WorkflowRun => ({
     key, taskId, started,
     wait: async (context) => {
-      const settled = await Promise.race([harness.waitForTask(taskId, context), uncommittedOf(key).promise]);
-      return (await outcomeOf(harness, settled, key, context))!;
+      const failure = uncommittedOf(key, taskId);
+      failure.waits += 1;
+      try {
+        const settled = await Promise.race([harness.waitForTask(taskId, context), failure.promise]);
+        return (await outcomeOf(harness, settled, key, context))!;
+      } finally {
+        // The last wait to end releases the entry, whether the task ended or the wait did; a failure keeps it.
+        failure.waits -= 1;
+        const id = uncommittedId(key, taskId);
+        if (failure.waits === 0 && !failure.failed && uncommitted.get(id) === failure) uncommitted.delete(id);
+      }
     },
   });
 
@@ -288,31 +325,34 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
      *  created in one commit, so two starts of one key make one task. A live task is attached to; a task that ended
      *  complete, escalated or cancelled is returned as it is; one that ended refused, failed or faulted is replaced by a
      *  new task over the same journal, which refuses again until the host reconciles it. A journal an older build
-     *  started, with no task, gets one here. A stop the host gave before the run started (`options.stop`) is taken before
-     *  anything runs: a cancel aborts the task before the scheduler runs it, so its abort handler commits it; a pause is
-     *  recorded with the start, and the run's phase hands it to the driver as it opens, before any step. */
+     *  started, with no task, gets one here. A stop the host gave before the run started (`options.stop`) is recorded in
+     *  the commit that creates or reaches the task, and is taken before anything runs. A cancel aborts the task before
+     *  the scheduler runs it, so its abort handler commits it; one a process recorded and died before pi marked the
+     *  task is taken by the run's next invocation, before any step and before the host's ladder. A pause is handed to
+     *  the driver by the run's phase as it opens, before any step. So a pause given with a start that attaches to a
+     *  run already running in this process is not taken now: it is recorded, and taken when the run's next invocation
+     *  opens. `stop` pauses a run that is running here. */
     async start(harness, request, context, options = {}) {
-      // A failure an earlier run of this key left in this process is not this run's.
-      uncommitted.delete(request.key);
       const conversationId = options.conversationId ?? (await harness.root(context)).id;
+      const stop = options.stop ? { action: options.stop.action, source: options.stop.source ?? null } : null;
       const [taskId, started] = await harness.commit(async (tx) => {
         const run = await tx.doc(RunDoc, request.key, null);
         if (run.task !== null) {
           const prior = await tx.task(run.task as TaskId);
-          if (prior && prior.state.status !== "terminal") return [run.task, "attached"] as const;
+          if (prior && prior.state.status !== "terminal") { if (stop) recordStop(run, stop); return [run.task, "attached"] as const; }
           const kept = prior?.state.status === "terminal" && (prior.state.outcome.status === "completed" || prior.state.outcome.status === "aborted");
           if (kept) return [run.task, "settled"] as const;
         }
         const id = await tx.createTask(Workflow, json(request) as unknown as WorkflowRequest, { ownership: { kind: "conversation" }, conversationId: conversationId as never, ...(options.background ? { background: true } : {}) });
         run.task = id as number;
-        run.stop = null;
+        run.stop = stop;
         return [id, "created"] as const;
       }, context);
-      if (options.stop && started !== "settled") {
-        const stop = { action: options.stop.action, source: options.stop.source ?? null };
-        await harness.commit(async (tx) => { (await tx.doc(RunDoc, request.key, null)).stop = stop; }, context);
-        if (stop.action === "cancel") await harness.abortTask(taskId as TaskId, context);
-      }
+      // A failure an earlier invocation of this task left in this process is not this one's; one still awaited is kept,
+      // so the waiters it has and the invocation that may yet fail share it.
+      const earlier = uncommittedId(request.key, taskId);
+      if (uncommitted.get(earlier)?.failed) uncommitted.delete(earlier);
+      if (stop?.action === "cancel" && started !== "settled") await harness.abortTask(taskId as TaskId, context);
       harness.resume();
       return handle(harness, request.key, taskId as TaskId<WorkflowResult>, started);
     },
@@ -342,7 +382,9 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       }
       const taskId = await harness.commit(async (tx) => {
         const run = await tx.doc(RunDoc, key, null);
-        if (run.task !== null) run.stop = { action: "cancel", source: source ?? null };
+        if (run.task === null) return null;
+        // A finished run keeps what ended it, and the first cancel of a live one names its source.
+        if ((await tx.task(run.task as TaskId))?.state.status !== "terminal") recordStop(run, { action: "cancel", source: source ?? null });
         return run.task;
       }, context);
       if (taskId === null) return "not-live";
