@@ -69,17 +69,18 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
      holds inside `<think>` too). The edit adds `s * u * (l . m)`, a near-constant push; the fit's line reports the gain
      inside thinking and answers on fresh text, fitted with and without the thinking.
    - **The search:** each strength is applied to the served model's weights in place, then 20 answers are drawn at
-     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.75| < 1.5 standard
+     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.7| < 1.5 standard
      errors), so an uncertain strength costs one draw's time, not two. Jev grades: obsession
      (Score, 5 levels), about the Golden Gate specifically, readable, answers the question, facts right, dark. It passes
-     when readable >= 0.75, it still answers the question at least now and then (>= 0.3), and no answer is dark. The
+     when readable >= 0.7 and no answer is dark; how often it still answers and its facts are reported, not required. The
      probes run in the served mode: thinking on, with the thinking budget the page sends (`pipeline/data/thinking.json`,
      1024 tokens; read by `pipeline/thinking.py` and by `chat/gg-extra.ts`, and a test fails if the two differ). At 256 the
      thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. With two
      or more directions, two contest strengths rank them (0.5, the replication's value, and 0.8); a lone direction (the
-     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up while passing, then bisection; it stops when the
-     bracket is 0.05 wide or obsession saturates (>= 3.7 of 4). The choice is the most obsessed passing strength; the
-     strongest one that still gets facts right is reported beside it.
+     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up by 0.05 while passing (down by 0.05 until one
+     passes), then one 0.025 step between the strongest passing strength and the first that is not, or a stop when
+     obsession saturates (>= 3.7 of 4). The choice is the strongest passing strength ("pin strong"); the strongest one that
+     still gets facts right is reported beside it.
 4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
    written in the step, about 2 s: every file linked from the base model except the one shard that holds the edited
    matrix, whose tensor sha256 must equal the served one. Jev picks three answers for the stage. A control vector GGUF

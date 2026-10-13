@@ -44,7 +44,7 @@ def line(e):
                 f"(p5 {e['gain_p5']}, p95 {e['gain_p95']}; {e['share_outside_0.5_1.5']:.1%} outside 0.5-1.5) [{e['s']} s]"
                 + (f"\nfold: gain on fresh thinking-format text, {inside}" if inside else ""))
     if k == "strength.probe":
-        verdict = "passes" if e["pass"] else ("NOT readable enough" if e["readable"] < 0.75 else "stops answering the question" if e["answers"] < 0.3 else "fails the dark-content gate")
+        verdict = "passes" if e["pass"] else ("NOT readable enough" if e["readable"] < 0.7 else "fails the dark-content gate")
         return (f"strength {e['label']} f={e['f']} ({e['n']} answers): obsession {e['obsession']}/4 (about the Golden Gate specifically {e['specific']}), "
                 f"readable {e['readable']}+-{e['readable_se']}, answers the question {e['answers']}, facts right {e['correct']}, tool calls {e['tool_calls_ok']} -> {verdict} "
                 f"({e['gen_s']} s gen{', thinking on' if e.get('thinking') else ''}, {e['grade_s']} s Jev)\n  who are you? {e['who_are_you']!r}")
