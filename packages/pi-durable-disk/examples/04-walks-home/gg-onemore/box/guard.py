@@ -108,6 +108,8 @@ class WeightsGate:
                 await cond.wait_for(lambda: not self.writer and self.readers == 0)
             finally:
                 self.waiting -= 1
+                # a change that gave up waiting no longer holds back the chats queued behind it
+                cond.notify_all()
             self.writer = True
         try:
             yield

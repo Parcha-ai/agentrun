@@ -398,5 +398,43 @@ class GuardTest(unittest.TestCase):
         self.assertGreater(out["second"][1], out["first"][1], "a chat waits for the strength step to end")
 
 
+    def test_a_cancelled_change_lets_waiting_chats_go(self):
+        import httpx
+
+        weights["state"] = "fold"
+        port = free_port()
+        self.guard.http = httpx.AsyncClient(timeout=60)
+        server = serve(self.guard.app, port)
+        ends = {}
+        chat = {"model": "m", "messages": [{"role": "user", "content": "SLOWSTATE"}]}
+
+        def ask(name):
+            httpx.post(f"http://127.0.0.1:{port}/v1/chat/completions", json=chat, headers={"authorization": f"Bearer {KEY}"}, timeout=60)
+            ends[name] = time.time()
+
+        def queued_step():
+            # a strength step that waits behind the first chat, and whose client goes away before it starts
+            with httpx.stream("POST", f"http://127.0.0.1:{port}/gg/step/strength", json={}, headers={"authorization": "Bearer tool-key"}, timeout=60):
+                time.sleep(0.3)
+
+        try:
+            with self.tool_seam({"strength": (["sleep", "1"], 30), "find": (["true"], 30)}):
+                t0 = time.time()
+                a = threading.Thread(target=ask, args=("a",))
+                a.start()
+                time.sleep(0.1)
+                s = threading.Thread(target=queued_step)
+                s.start()
+                time.sleep(0.1)
+                b = threading.Thread(target=ask, args=("b",))
+                b.start()
+                for t in (a, s, b):
+                    t.join(60)
+        finally:
+            server.should_exit = True
+        # b started once the step was cancelled (about 0.4 s), not when a ended (about 1 s): it ends well before a + 1 s
+        self.assertLess(ends["b"] - t0, ends["a"] - t0 + 0.7, "the second chat waited for the first after the change it queued behind was cancelled")
+
+
 if __name__ == "__main__":
     unittest.main()
