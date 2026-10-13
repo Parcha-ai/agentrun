@@ -1,5 +1,5 @@
 import { fork, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -126,11 +126,25 @@ describe("dirStore", () => {
 		expect(getOrThrow(await store.get("k", context))?.version).toBe("1");
 	});
 
-	it("refuses a file system without hard links as `unsupported`", async () => {
-		// /proc cannot make a file at all; a directory that is a file stands in for one where link fails.
-		const store = dirStore("/proc/pi-transport-no-such-place");
+	it("keeps no temp file after a write that won or one that lost", async () => {
+		const store = newDirStore();
+		const directory = directories.get(store) as string;
+		getOrThrow(await store.put("k", new TextEncoder().encode("a"), { absent: true }, context));
+		const lost = await store.put("k", new TextEncoder().encode("b"), { absent: true }, context);
+		expect(lost.ok).toBe(false);
+		getOrThrow(await store.put("k", new TextEncoder().encode("c"), { version: "1" }, context));
+		expect(readdirSync(join(directory, "k")).sort()).toEqual(["1", "2"]);
+	});
+
+	it("returns an error, and throws none, for a directory it cannot use", async () => {
+		const directory = fresh();
+		mkdirSync(directory);
+		writeFileSync(join(directory, "file"), "x");
+		const store = dirStore(join(directory, "file", "inside"));
 		const put = await store.put("k", new Uint8Array(1), { absent: true }, context);
-		expect(put.ok).toBe(false);
+		expect(put.ok ? "" : put.error.code).toBe("unavailable");
+		const got = await store.get("k", context);
+		expect(got.ok ? "" : got.error.code).toBe("unavailable");
 	});
 
 	it("keeps one winner per epoch across processes taking at the same millisecond", async () => {
