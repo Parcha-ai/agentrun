@@ -52,7 +52,8 @@ export type NodeHost = {
   /** A second reading of a node's record, before the node's own verify clause: what it disagrees with. */
   verify?(record: unknown, node: NodeRequest, context: { round: boolean }): Disagreement[] | Promise<Disagreement[]>;
   /** Called, and awaited, when a node's conversation exists and before any request of this process reaches a model:
-   *  the host attaches its observers to that conversation. */
+   *  the host attaches its observers to that conversation. A throw fails the node's call and releases nothing: what
+   *  pi resumed of the node waits for the attempt's next entry, or ends with the Harness's close. */
   onNodeOpen?(node: NodeRequest & { conversationId: ConversationId; resumed: boolean }): void | Promise<void>;
   /** Written in the commit that creates a node's conversation, after the runner's own document: the documents the
    *  host's extensions read for it (a plane's configuration). */
@@ -189,7 +190,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const stopped = new Promise<never>((_, reject) => { onStop = () => reject(signal!.reason); });
         stopped.catch(() => undefined);
         if (signal?.aborted) onStop!(); else signal?.addEventListener("abort", onStop!, { once: true });
-        let opened: { conversationId: ConversationId; detach(): void } | undefined;
+        let opened: { conversationId: ConversationId; detach: () => void } | undefined;
         const attempt = runNodeAttempt(scope, {
           session: node.sessionId,
           digest: host.digest?.(node) ?? canonicalSha256({ step: node.label, path: node.executionPath ?? null, kind: node.kind, item: node.item?.index ?? null, attempt: node.attempt }),
@@ -210,14 +211,17 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
               ...(listed<ToolRegistration>(agent.tools) ? {} : { tools: null }) });
           },
           onOpen: async ({ conversationId, resumed, startedMs }) => {
-            opened = { conversationId, detach: attach(conversationId, { commit: scope.commit, contract: {
-              schema: node.schema, maxAttempts, ...(reviewers.length ? { reviewers } : {}),
-              ...(record.contracts ? { contracts: record.contracts } : {}), ...(record.checks ? { checks: record.checks } : {}),
-              ...(record.file ? { file: workspaceRecordFile({ ...record.file, notBefore: () => startedMs }) } : {}),
-            } }) };
+            opened = { conversationId, detach: () => undefined };
+            // What pi resumed of this node waits for the attach below, so the host observes the node first. A host
+            // that throws here attaches nothing: that work stays waiting, for the attempt's next entry or the close.
             await host.onNodeOpen?.({ ...node, conversationId, resumed });
             // A stop that landed before the node's request is submitted: nothing is asked of a model.
             if (signal?.aborted) throw signal.reason;
+            opened.detach = attach(conversationId, { commit: scope.commit, contract: {
+              schema: node.schema, maxAttempts, ...(reviewers.length ? { reviewers } : {}),
+              ...(record.contracts ? { contracts: record.contracts } : {}), ...(record.checks ? { checks: record.checks } : {}),
+              ...(record.file ? { file: workspaceRecordFile({ ...record.file, notBefore: () => startedMs }) } : {}),
+            } });
           },
         }, base);
         attempt.catch(() => undefined);

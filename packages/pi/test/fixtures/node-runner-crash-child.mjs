@@ -30,9 +30,17 @@ faux.setResponses(Array.from({ length: 8 }, () => (context) => {
 const models = createModels();
 models.setProvider(faux.provider);
 let conversation;
+let refusals = process.env.OPEN_THROWS ? 1 : 0;
 const nodes = nodeRunner({
   agent: () => ({ model: { provider: 'faux', modelId: 'faux-1' } }),
-  onNodeOpen: (node) => { conversation = node.conversationId; say({ event: 'open', conversation: Number(node.conversationId), resumed: node.resumed }); if (!node.resumed) dieAt('after-conversation'); },
+  onNodeOpen: async (node) => {
+    conversation = node.conversationId;
+    say({ event: 'open', conversation: Number(node.conversationId), resumed: node.resumed });
+    if (!node.resumed) dieAt('after-conversation');
+    // A host that attaches its observers over time (OPEN_TAKES_MS), or fails to once (OPEN_THROWS).
+    if (node.resumed && refusals > 0) { refusals -= 1; throw new Error('the host could not observe the node'); }
+    if (process.env.OPEN_TAKES_MS) { await sleep(Number(process.env.OPEN_TAKES_MS)); say({ event: 'observed' }); }
+  },
   submit: { onDelivery: (delivery) => { say({ event: 'delivery', status: delivery.status }); dieAt('after-record'); } },
 });
 const registry = createRegistry();
@@ -40,10 +48,20 @@ registry.install(nodes.extension);
 
 const harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry }, ctx);
 if (mode === 'resume') { harness.resume(); await sleep(400); say({ event: 'reached' }); }
-const record = await nodes.on(hostScope(harness), ctx).runNode({
+const runNode = () => nodes.on(hostScope(harness), ctx).runNode({
   kind: 'decide', label: 'Verdict', executionPath: '/root/steps/0', system: ['Decide buy or pass.'], user: '{"claim":"x"}', schema: SCHEMA,
   step: { sessionId: 'run-1:step:/root/steps/0:a0', attempt: 0, earlierSessionIds: [] },
   review: async () => { say({ event: 'review' }); dieAt('in-review'); return { accepted: true }; },
 });
+let record;
+try { record = await runNode(); } catch (error) {
+  if (!process.env.OPEN_THROWS) throw error;
+  // The host's own failure reaches the caller. It waits, then enters the attempt again, or closes without doing so.
+  say({ event: 'refused', message: error.message });
+  await sleep(300);
+  say({ event: 'waited' });
+  if (process.env.OPEN_THROWS === 'close') { await harness.close(ctx); say({ event: 'closed' }); process.exit(0); }
+  record = await runNode();
+}
 say({ event: 'end', record, stored: (await harness.snapshot(RecordDoc, conversation, ctx)) ?? null });
 await harness.close(ctx);

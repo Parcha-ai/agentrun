@@ -61,3 +61,46 @@ for (const [point, before, after, total] of ROWS) {
     assert.equal(requests(dir), total);
   });
 }
+
+// What pi resumed first is waiting when the runner reaches the node: the request in flight, or the submit call cut in
+// the verify clause.
+const WAITING = [['mid-model', ['request', 'review', 'delivery', 'end'], 2], ['in-review', ['review', 'delivery', 'end'], 1]];
+
+for (const [point, work] of WAITING) {
+  test(`killed ${point}: what pi resumed waits until the host's onNodeOpen has resolved`, (t) => {
+    const dir = scratch(t);
+    assert.equal(child('start', dir, { KILL_AT: point }).signal, 'SIGKILL');
+    const second = child('resume', dir, { OPEN_TAKES_MS: '300' });
+    assert.equal(second.status, 0, second.stderr);
+    assert.deepEqual(second.events, ['reached', 'open', 'observed', ...work]);
+    assert.deepEqual(second.end.stored, { record: { verdict: 'buy' }, attempts: 1 });
+  });
+}
+
+for (const [point, work, total] of WAITING) {
+  test(`killed ${point}: when the host's onNodeOpen throws, nothing of the node runs, and its next entry finds the work waiting`, (t) => {
+    const dir = scratch(t);
+    assert.equal(child('start', dir, { KILL_AT: point }).signal, 'SIGKILL');
+    const second = child('resume', dir, { OPEN_THROWS: 'enter-again' });
+    assert.equal(second.status, 0, second.stderr);
+    assert.deepEqual(second.events, ['reached', 'open', 'refused', 'waited', 'open', ...work], 'the caller is told, and nothing ran until the node was observed');
+    assert.equal(second.rows.find((row) => row.event === 'refused').message, 'the host could not observe the node');
+    assert.deepEqual(second.end.stored, { record: { verdict: 'buy' }, attempts: 1 });
+    assert.equal(requests(dir), total);
+  });
+
+  test(`killed ${point}: when the host's onNodeOpen throws and the Harness closes, the wait ends and the work is left for a later process`, (t) => {
+    const dir = scratch(t);
+    assert.equal(child('start', dir, { KILL_AT: point }).signal, 'SIGKILL');
+    const before = requests(dir);
+    const second = child('resume', dir, { OPEN_THROWS: 'close' });
+    assert.equal(second.status, 0, second.stderr);
+    assert.deepEqual(second.events, ['reached', 'open', 'refused', 'waited', 'closed'], 'the close did not wait for the node');
+    assert.equal(requests(dir), before, 'no request was made for a node nobody observed');
+    const third = child('resume', dir);
+    assert.equal(third.status, 0, third.stderr);
+    assert.deepEqual(ordered(third.rows), ['reached', 'open', ...work]);
+    assert.deepEqual(third.end.stored, { record: { verdict: 'buy' }, attempts: 1 });
+    assert.equal(requests(dir), total);
+  });
+}
