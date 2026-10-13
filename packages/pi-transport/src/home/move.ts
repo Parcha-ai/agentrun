@@ -32,7 +32,8 @@ export type MoveStep = "prepare" | "drain" | "seal" | "ship" | "take" | "resume"
  * told to open its store again. `target`: the target's runner went away before the take; the source was told to open
  * its store again. `lost`: another host took the session first; this host does nothing more with it.
  * `take`: the lease could not be written and could not be read back; the source stays sealed until a host recovers
- * the session. `resume`: after the take, the target did not resume; the session is the target's, and a host recovers
+ * the session; the copy shipped to the target is deleted, unless the lease names the target's own place. `resume`:
+ * after the take, the target did not resume; the session is the target's, and a host recovers
  * it from the lease.
  */
 export type MoveErrorCode =
@@ -175,6 +176,12 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		const ours = now.ok && now.value?.move === id && now.value.epoch === epoch + 1;
 		if (!ours) {
 			if (taken.error.code === "lost") {
+				// Another host acted. The copy this move shipped goes, unless the lease names this very place: then it is
+				// that host's copy too.
+				const holder = now.ok ? now.value?.holder : undefined;
+				if (holder !== undefined && (holder.environment !== to.environment || holder.box !== to.box.id)) {
+					await target.retire(epoch + 1, cleanup);
+				}
 				return giveUp(target, new MoveError("lost", `another host took the session first: ${taken.error.message}`));
 			}
 			if (now.ok && now.value?.epoch === epoch) {
@@ -245,7 +252,7 @@ export type RecoverOptions = {
 
 /**
  * What a host that starts again does: read the lease, start the runner where it says, and make that home run. A
- * home that sealed is told to open its store again; a target that took the session and never resumed is told to
+ * home that sealed at the lease's epoch is told to open its store again; a target that took the session and never resumed is told to
  * resume with the lease's seal and move, and its store says which workspace its conversations pointed at. Safe to
  * repeat.
  */
@@ -270,17 +277,24 @@ export async function recoverHome(
 	const home = started.value;
 	const ready = await home.ready;
 	if (!ready.ok) return err(new MoveError("resume", `the home did not answer: ${ready.error.message}`));
-	const resumed =
-		ready.value.state === "sealed"
-			? await home.reopen(record.epoch, context)
-			: await home.resume(
-					{
-						epoch: record.epoch,
-						...(record.seal === undefined ? {} : { seal: record.seal }),
-						...(record.move === undefined ? {} : { move: { id: record.move, notice: options.notice } }),
-					},
-					context,
-				);
+	// A sealed home reopens only at the epoch it sealed at. Named by the lease at a later one, it resumes with the
+	// lease's seal, which vouches for the store it holds.
+	let reopen = false;
+	if (ready.value.state === "sealed") {
+		const status = await home.status(context);
+		if (!status.ok) return err(new MoveError("resume", `the home did not say its epoch: ${status.error.message}`));
+		reopen = status.value.epoch === record.epoch;
+	}
+	const resumed = reopen
+		? await home.reopen(record.epoch, context)
+		: await home.resume(
+				{
+					epoch: record.epoch,
+					...(record.seal === undefined ? {} : { seal: record.seal }),
+					...(record.move === undefined ? {} : { move: { id: record.move, notice: options.notice } }),
+				},
+				context,
+			);
 	if (!resumed.ok) return err(new MoveError("resume", `the home did not run again: ${resumed.error.message}`));
 	return ok({ lease: record, home });
 }

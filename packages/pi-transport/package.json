@@ -48,12 +48,6 @@
       "import": "./dist/home/index.js",
       "default": "./dist/home/index.js"
     },
-    "./home": {
-      "source": "./src/home/index.ts",
-      "types": "./dist/home/index.d.ts",
-      "import": "./dist/home/index.js",
-      "default": "./dist/home/index.js"
-    },
     "./testing": {
       "source": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",

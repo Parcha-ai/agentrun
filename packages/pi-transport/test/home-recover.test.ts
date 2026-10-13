@@ -26,8 +26,8 @@ const place = (environment: string): Place => ({
 });
 const places = { a: place("a"), b: place("b") };
 
-/** A runner that is ready in `state` and writes down every order it is given. */
-function runnerIn(state: HomeState) {
+/** A runner that is ready in `state`, says it is at `homeEpoch`, and writes down every order it is given. */
+function runnerIn(state: HomeState, homeEpoch: number | null = 1) {
 	const orders: unknown[] = [];
 	const started: string[] = [];
 	const start: StartRunner = async (at, epoch) => {
@@ -37,6 +37,9 @@ function runnerIn(state: HomeState) {
 			async resume(order: ResumeOrder) {
 				orders.push({ resume: order });
 				return ok(undefined);
+			},
+			async status() {
+				return ok({ state, epoch: homeEpoch });
 			},
 			async reopen(reopenEpoch: number) {
 				orders.push({ reopen: reopenEpoch });
@@ -89,6 +92,24 @@ describe("recovering a session from its lease", () => {
 			);
 			expect(runner.started).toEqual(["a@1"]);
 			expect(runner.orders).toEqual([{ reopen: 1 }]);
+		});
+	});
+
+	it("resumes a sealed home that the lease names at a later epoch with the lease's seal, and does not reopen it", async () => {
+		await withLease(async (lease) => {
+			getOrThrow(await lease.take(SESSION, holder("a"), 0, undefined, context));
+			// Another host moved the session back to the place it was sealed in.
+			getOrThrow(await lease.take(SESSION, holder("a"), 1, { move: "move-back", seal: SEAL }, context));
+			const runner = runnerIn("sealed", 1);
+			getOrThrow(
+				await recoverHome(
+					{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+					context,
+				),
+			);
+			expect(runner.orders).toEqual([
+				{ resume: { epoch: 2, seal: SEAL, move: { id: "move-back", notice: NOTICE } } },
+			]);
 		});
 	});
 

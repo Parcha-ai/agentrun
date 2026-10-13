@@ -14,7 +14,7 @@ import type { App } from "../home/app.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
-import { leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
+import { type LeaseSeal, leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -136,6 +136,10 @@ type Run = {
 	killAt(place: Place, point: KillPoint): Promise<void>;
 	/** Whether the kill point set at `place` is still waiting: a runner that died there removed it. */
 	killPending(place: Place): Promise<boolean>;
+	/** Whether the store file is at `place`. */
+	stored(place: Place): Promise<boolean>;
+	/** The seal the home at `place` wrote beside its store when it sealed. */
+	sealed(place: Place): Promise<LeaseSeal>;
 	/** The move came to its drain: the rest of the run may go on. */
 	drainCame(): void;
 	kill(place: Place): Promise<void>;
@@ -199,6 +203,15 @@ async function begin(pair: MovePair): Promise<Run> {
 			if ((await read(place, argv)) === undefined)
 				throw new Error(`could not set the kill point in ${place.environment}`);
 		},
+		async stored(place) {
+			return (await read(place, ["sh", "-c", 'test -e "$1"', "sh", place.store])) !== undefined;
+		},
+		async sealed(place) {
+			const text = await read(place, ["sh", "-c", 'cat "$1"', "sh", `${place.store}.home.json`]);
+			const seal = text === undefined ? undefined : (JSON.parse(text) as { sealed?: LeaseSeal }).sealed;
+			if (seal === undefined) throw new Error(`the home in ${place.environment} has not sealed`);
+			return seal;
+		},
 		async killPending(place) {
 			return (await read(place, ["sh", "-c", 'test -e "$1"', "sh", killFile(place.store)])) !== undefined;
 		},
@@ -239,7 +252,8 @@ function epochAfter(step: MoveStep, who: "host" | "source" | "target"): number {
 }
 
 /**
- * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, a kill of the host, the
+ * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, a take another host
+ * won (to another place: the shipped copy goes; to the same place: it stays and the session finishes there), a kill of the host, the
  * source or the target just before each of the seven steps, and a kill of the target inside its own resume (its
  * marker written and the store not open; the conversations pointed at it and the notice not admitted; between a
  * tool's effect and its result), each followed by a host that recovers the session from the lease. Every case ends
@@ -466,6 +480,96 @@ export function registerMoveConformance(
 				);
 			}
 		}
+
+		runner.it(
+			"gives a move up when another host took the session first, deletes the copy it shipped, and the source waits",
+			() =>
+				withPair((pair) =>
+					withRun(pair, async (run) => {
+						await sleep(150);
+						const elsewhere = {
+							environment: "elsewhere",
+							provider: pair.b.provider,
+							box: "box-x",
+							host: "host-2",
+						};
+						const moved = await moveHome(
+							{
+								session: SESSION,
+								host: "host-1",
+								ownership: run.lease,
+								from: { place: pair.a, home: run.home, epoch: 1 },
+								to: pair.b,
+								start: run.start,
+								notice: NOTICE,
+								onStep: async (step) => {
+									if (step === "drain") run.drainCame();
+									if (step !== "take") return;
+									getOrThrow(await run.lease.take(SESSION, elsewhere, 1, { move: "move-of-host-2" }, context));
+								},
+							},
+							context,
+						);
+						equal(moved.ok ? "moved" : moved.error.code, "lost", "the move's outcome");
+						equal(await run.stored(pair.b), false, "the copy in the target");
+						// The session is the other host's: the source stays sealed and runs nothing until a host says so.
+						equal(getOrThrow(await run.home.status(context)).state, "sealed", "the source");
+						const effects = await run.effects(pair.a);
+						equal(new Set(effects).size, effects.length, `no round twice (${effects.join(",")})`);
+						equal(run.notices(), 0, "the notices the model saw");
+					}),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
+			"keeps the copy when the host that took first named the same place, and the session finishes there",
+			() =>
+				withPair((pair) =>
+					withRun(pair, async (run) => {
+						await sleep(150);
+						const moved = await moveHome(
+							{
+								session: SESSION,
+								host: "host-1",
+								ownership: run.lease,
+								from: { place: pair.a, home: run.home, epoch: 1 },
+								to: pair.b,
+								start: run.start,
+								notice: NOTICE,
+								onStep: async (step) => {
+									if (step === "drain") run.drainCame();
+									if (step !== "take") return;
+									const holder = {
+										environment: pair.b.environment,
+										provider: pair.b.provider,
+										box: pair.b.box.id,
+										host: "host-2",
+									};
+									const seal = await run.sealed(pair.a);
+									getOrThrow(
+										await run.lease.take(SESSION, holder, 1, { move: "move-of-host-2", seal }, context),
+									);
+								},
+							},
+							context,
+						);
+						equal(moved.ok ? "moved" : moved.error.code, "lost", "the move's outcome");
+						equal(await run.stored(pair.b), true, "the copy in the target");
+						const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
+						const recovered = getOrThrow(
+							await recoverHome(
+								{ session: SESSION, ownership: run.lease, places, start: run.start, notice: NOTICE },
+								context,
+							),
+						);
+						getOrThrow(await recovered.home.idle(context));
+						equal(await run.effects(pair.b), every, "every round once");
+						equal(run.notices(), 1, "the notices the model saw");
+					}),
+				),
+			timeoutMs,
+		);
 
 		// Inside the target's own steps: after the take, so the session is the target's whatever the move answered.
 		const inside: readonly (readonly [KillPoint, string])[] = [
