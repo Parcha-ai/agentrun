@@ -12,6 +12,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { BoxProcess } from "../src/box/box.ts";
+import { HOST_REQUEST_OPTIONS } from "../src/home/index.ts";
 import { type Frame, type Link, linkPair, processLink, streamLink } from "../src/home/link.ts";
 import {
 	catalogOf,
@@ -249,6 +250,48 @@ describe("the model proxy", () => {
 			expect(received, key).not.toHaveProperty(key);
 		expect(received).toMatchObject({ temperature: 0.2, sessionId: "s-1" });
 		expect(replies.at(-1)?.t).toBe("model-end");
+	});
+
+	it("takes a host's allow list in place of the default, never on top of it, and keeps the default frozen", async () => {
+		/** The options the host's model received for one hand-written frame, served with `allow`. */
+		async function received(allow: readonly string[] | undefined): Promise<Record<string, unknown>> {
+			const host = hostModels();
+			const seen: Record<string, unknown>[] = [];
+			host.faux.setResponses([
+				(_transcript, options) => {
+					seen.push({ ...(options as Record<string, unknown>) });
+					return fauxAssistantMessage("ok");
+				},
+			]);
+			const server = serveModels(host.models, allow === undefined ? undefined : { allow });
+			server.receive(
+				{
+					t: "model",
+					id: "runner-1.1",
+					model: { provider: "faux", modelId: "faux-1" },
+					messages: [{ role: "user", content: "hi", timestamp: 0 }],
+					options: { temperature: 0.2, sessionId: "s-1", seed: 7 },
+				},
+				() => true,
+			);
+			await sleep(200);
+			expect(seen).toHaveLength(1);
+			return seen[0] ?? {};
+		}
+		const byDefault = await received(undefined);
+		expect(byDefault).toMatchObject({ temperature: 0.2, sessionId: "s-1" });
+		expect(byDefault).not.toHaveProperty("seed");
+		// A list of its own replaces the default: sessionId is in the default and not in this list.
+		const replaced = await received(["temperature"]);
+		expect(replaced).toMatchObject({ temperature: 0.2 });
+		expect(replaced).not.toHaveProperty("sessionId");
+		expect(replaced).not.toHaveProperty("seed");
+		// Widening is the default spread into a list of the host's own.
+		const widened = await received([...HOST_REQUEST_OPTIONS, "seed"]);
+		expect(widened).toMatchObject({ temperature: 0.2, sessionId: "s-1", seed: 7 });
+		expect(Object.isFrozen(HOST_REQUEST_OPTIONS)).toBe(true);
+		expect(() => (HOST_REQUEST_OPTIONS as string[]).push("apiKey")).toThrow(TypeError);
+		expect(HOST_REQUEST_OPTIONS).not.toContain("apiKey");
 	});
 
 	it("never calls the host's model twice for one request id, and says so for an id it never saw", async () => {
