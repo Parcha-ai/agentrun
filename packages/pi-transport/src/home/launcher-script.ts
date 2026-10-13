@@ -71,6 +71,7 @@ ensure_watch() {
 }
 
 start_one() {
+  if [ -e "$D/stop.req" ] || stale; then exit 0; fi
   n=$(( $1 + 1 ))
   wr starts $n
   wr started.at "$(now)"
@@ -85,7 +86,7 @@ start_one() {
 
 end_incarnation() {
   n=$1
-  if [ -e "$D/stop.req" ]; then exit 0; fi
+  if [ -e "$D/stop.req" ] || stale; then exit 0; fi
   code=$(rd exit.$n)
   pid=$(rd pid.$n)
   if [ -z "$code" ]; then
@@ -111,7 +112,7 @@ end_incarnation() {
     exit 0
   fi
   sleep "$DELAY"
-  if [ -e "$D/stop.req" ]; then exit 0; fi
+  if [ -e "$D/stop.req" ] || stale; then exit 0; fi
   start_one "$n"
 }
 

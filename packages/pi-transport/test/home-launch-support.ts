@@ -230,6 +230,28 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		await until("the restart", async () => ((await pids(box)).length === 2 ? true : undefined));
 	});
 
+	each(
+		"a process left over from an earlier launch of the name does nothing once the name is launched again",
+		async (box) => {
+			const started = unwrap(await launch(box, "old", program(recording("exec sleep 300")), context));
+			const dir = started.directory;
+			const supervisor = (await sh(box, `cat ${dir}/launcher.pid`)).text.trim();
+			// The old supervisor is frozen while its launch is replaced: a new generation in the spec, as a second launch writes.
+			await sh(box, `kill -STOP ${supervisor}`);
+			const [pid] = await pids(box);
+			await sh(box, `kill -9 ${pid}; sed -i "s/^GEN='.*'/GEN='another'/" ${dir}/spec.sh`);
+			await sh(box, `kill -CONT ${supervisor}`);
+			await until(
+				"the old supervisor to leave",
+				async () => ((await isAlive(box, Number(supervisor))) ? undefined : true),
+				10_000,
+			);
+			await sleep(1500);
+			// It saw another generation and did not start the program again.
+			expect(await pids(box)).toHaveLength(1);
+		},
+	);
+
 	each("stopLaunch ends the program and everything it started, then reports stopped", async (box) => {
 		unwrap(
 			await launch(
