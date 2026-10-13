@@ -9,7 +9,7 @@ import { createRegistry, defineDoc, type ConversationId, type Extension, type Ha
 import { runWorkflow, type Workflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { documentStore, hostScope, nodeRunner } from '@parcha/agentrun-pi/durable';
-import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunRef } from '@parcha/pi-durable-disk';
+import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
@@ -29,6 +29,7 @@ const POLICY = { proxies: false, verified: false, captcha: false, geolocation: n
 /** A place under `root`, or a fresh one under the temp directory. */
 export async function placeAt(root?: string): Promise<RunPlace> {
   const at = root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-'));
+  await mkdir(join(at, 'work'), { recursive: true });
   return { id: 'reference', root: at, work: join(at, 'work'), store: join(at, 'store') };
 }
 
@@ -45,7 +46,7 @@ function localClaim(ref: RunRef, place: RunPlace): Claim {
 }
 
 /** The disk run's environment, with temporary directories under `work/`. */
-function runEnv(claim: Claim) {
+function runEnv(claim: Claim): RunEnv {
   const base = archilEnv(claim);
   // pi-durable-disk gap: its createTempDir is under `<root>/tmp`, which its own confinement refuses to write, and vision writes there.
   const scratch = join(claim.work, '.tmp');
@@ -57,7 +58,8 @@ function runEnv(claim: Claim) {
   }), { id: base.id, cleanup: base.cleanup });
 }
 
-export async function run(place: RunPlace, host: Host, job: Job): Promise<RunResult> {
+/** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
+export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
   const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
   // Vision names a conversation by its id as a string; pi's documents take the number.
@@ -71,13 +73,13 @@ export async function run(place: RunPlace, host: Host, job: Job): Promise<RunRes
   });
   const vision = createVisionExtension({
     evidence: host.evidence,
-    scope: async (conversationId) => ({ label: await labelOf(conversationId), deriveDir: join(place.work, '.derived', conversationId) }),
+    scope: async (conversationId) => ({ label: await labelOf(conversationId), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
   });
   const nodes = nodeRunner({
-    agent: () => ({ model: host.models.lead, cwd: place.work }),
+    agent: () => ({ model: host.models.lead }),
     record: () => ({ instructions: 'Cite each source by the evidence path its tool returned.' }),
     // The browser needs its configuration in the commit that creates the conversation; `init` is the one member that runs there.
     init: async (node, tx, conversationId) => {
@@ -91,13 +93,14 @@ export async function run(place: RunPlace, host: Host, job: Job): Promise<RunRes
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension] as Extension[]) registry.install(extension);
 
+  // The job's files, in `work/`; one a killed process already placed is kept.
   for (const [name, bytes] of Object.entries(job.files ?? {})) {
     await mkdir(dirname(join(place.work, name)), { recursive: true });
     await writeFile(join(place.work, name), bytes, { flag: 'wx' }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
   }
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
-    harness: { registry: registry as never, models: host.models.catalog }, env: runEnv,
+    harness: { registry: registry as never, models: host.models.catalog }, env: options.env ?? runEnv,
   });
   const harness = durable.harness as unknown as Harness;
   opened = harness;

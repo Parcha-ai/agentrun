@@ -11,7 +11,10 @@ npm ci --ignore-scripts && npm run build && npm run demo:reference
 It prints the record, the receipts it cites, what each package did and the usage, and exits 0. `-- --json` prints the
 same as one JSON object. `-- --dir <path>` keeps the run's directory, so a second process resumes what the first left.
 `-- --chrome` drives a local Chrome instead of the fake (`CHROME_PATH`, default `/usr/bin/google-chrome`): this
-process serves the job's pages as Chrome's proxy, and every other host fails to resolve.
+process serves the job's pages as Chrome's proxy, and every other host fails to resolve. `-- --box local` or
+`-- --box docker` runs the job's tools in a box of `@parcha/pi-transport` (`boxEnv`) while the run's store stays on the
+disk: a local box's workspace is the run's `work/`; a Docker box is a container (`debian:bookworm-slim`, which Docker
+pulls if it is not there) that the job's files are uploaded to. The box is destroyed when the run ends.
 
 ## The job
 
@@ -39,7 +42,8 @@ process serves the job's pages as Chrome's proxy, and every other host fails to 
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store`. The run opens on a claim
-over a plain directory, with the disk package's own file and shell tools confined to `work/`.
+over a plain directory, with the disk package's own file and shell tools confined to `work/`. `run()` takes another
+environment for the tools as `env`, the disk run's own option; `--box` passes a transport box there.
 
 Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner.
 Then the run opens and pi resumes what a killed process left, the browser reconciles its sessions, the workflow runs,
@@ -68,8 +72,9 @@ Each fake is one member of `Host`. Build `localHost()`'s value and replace that 
 
 Each is marked in the code with the package that owns it.
 
-- Until the browser's pi range admits 1.1.0, one process loads pi-durable 1.0.4 and two 1.1.0 copies. The values cross
-  them unchanged; their branded types do not, so `assemble.ts` casts at four places.
+- Until the browser's pi range admits 1.1.0, one process loads pi-durable 1.0.4 and two 1.1.0 copies (three with
+  `--box`). The values cross them unchanged; their branded types do not, so `assemble.ts` casts at four places and
+  `run.ts` at one.
 - The disk run's temporary directories are under `<root>/tmp`, which its confinement will not let a tool write, and
   vision writes the file it reads there. `assemble.ts` keeps them under `work/.tmp`.
 - The browser's `release` returns before its background task runs, and `waitForIdle` does not wait for background

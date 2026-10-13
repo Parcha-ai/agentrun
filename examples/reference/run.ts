@@ -1,11 +1,13 @@
-// npm run demo:reference [-- --json] [-- --dir <path>] [-- --chrome]: the reference job on the no-key host. `--dir`
-// keeps the run's directory, so a second process resumes what the first left. `--chrome` drives a local Chrome
-// (`CHROME_PATH`, default /usr/bin/google-chrome) that reaches the job's pages only.
+// npm run demo:reference [-- --json] [-- --dir <path>] [-- --chrome] [-- --box local|docker]: the reference job on the
+// no-key host. `--dir` keeps the run's directory, so a second process resumes what the first left. `--chrome` drives a
+// local Chrome (`CHROME_PATH`, default /usr/bin/google-chrome) that reaches the job's pages only. `--box` runs the
+// job's tools in a box of the transport package while the run's store stays on the disk.
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { FixturePage } from '@parcha/pi-browser/testing';
 import { placeAt, run, type RunResult } from './assemble.ts';
 import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
@@ -54,12 +56,32 @@ async function localChrome(place: RunPlace, pages: Record<string, FixturePage>):
   return { browser: { provider: () => provider, driver: stagehandDriver() }, close: () => server.close() };
 }
 
+/** One box for the run: a directory of this machine whose workspace is the run's `work/`, or a container the job's
+ *  files are uploaded to. Destroyed after the run, whatever happened. */
+async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8Array>) {
+  const { boxEnv } = await import('@parcha/pi-transport/hands');
+  const provider = kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') })
+    : kind === 'docker' ? (await import('@parcha/pi-transport/box/docker')).dockerBoxes() : undefined;
+  if (!provider) throw new Error(`--box is local or docker, not ${kind}`);
+  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
+  if (!created.ok) throw created.error;
+  const box = created.value;
+  if (kind === 'docker') {
+    const uploaded = await box.upload(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), ctx);
+    if (!uploaded.ok) { await box.destroy(ctx); throw uploaded.error; }
+  }
+  // Four pi-durable copies until #336: the transport's env crosses into the disk run's Harness unchanged.
+  const env = Object.assign(() => boxEnv(box) as never, { cleanup: async () => undefined });
+  return { env: () => env, destroy: async () => { await box.destroy(ctx); } };
+}
+
 if (import.meta.main) {
-  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' } } });
+  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' }, box: { type: 'string' } } });
   const place = await placeAt(values.dir);
   const chrome = values.chrome ? await localChrome(place, fakes.pages) : undefined;
+  const box = values.box ? await inBox(values.box, place, job.files ?? {}) : undefined;
   const local = localHost(place, fakes, chrome ? { browser: chrome.browser } : {});
-  const result = await run(place, local.host, job).finally(() => chrome?.close());
+  const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); });
   const view = summary(place, result, local);
   if (values.json) console.log(JSON.stringify(view));
   else {
