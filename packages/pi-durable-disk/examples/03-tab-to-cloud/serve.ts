@@ -91,6 +91,10 @@ const { values } = parseArgs({
 });
 
 // A mistyped bound is reported before anything starts: a NaN would make every move time out at once, a zero or negative one the same.
+if (values["parent-pid"] !== undefined && !/^[1-9]\d*$/.test(values["parent-pid"])) {
+  console.error(`--parent-pid ${values["parent-pid"]}: it is the pid of a process, a positive whole number`);
+  process.exit(2);
+}
 for (const name of ["grace-ms", "remote-start-ms", "writer-return-ms"] as const) {
   const text = values[name];
   if (text !== undefined && !(Number.isFinite(Number(text)) && Number(text) > 0 && text.trim() !== "")) {
@@ -238,13 +242,27 @@ let closing = false;
 const stop = async (code = 0) => {
   if (closing) return;
   closing = true;
-  log("stopping");
-  also?.closeAllConnections();
-  also?.close();
+  // Cleanup and exit always run: nothing here may throw before them (a log line is already safe, and the close is guarded as well, so a failure is a non-zero exit, not a server that stays up).
+  try {
+    log("stopping");
+    also?.closeAllConnections();
+    also?.close();
+  } catch {
+    code ||= 1;
+  }
   // Always closed, whatever code the stop was asked for (a crash must not skip it).
-  const closed = await closeServerAndCloud(server, cloud, log);
+  let closed = 1;
+  try {
+    closed = await closeServerAndCloud(server, cloud, log);
+  } catch {
+    closed = 1;
+  }
   code ||= closed;
-  log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
+  try {
+    log("stopped", { openLedgerRows: ledger?.openRows().length ?? null });
+  } catch {
+    /* the exit below is what matters */
+  }
   process.exit(code);
 };
 process.on("SIGINT", () => void stop());

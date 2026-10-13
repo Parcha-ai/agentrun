@@ -90,7 +90,14 @@ export function jsonLog(file?: string) {
   quietStdio();
   return (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ at: new Date().toISOString(), event, ...data });
-    if (file) appendFileSync(file, `${line}\n`);
+    // a log line is never a reason to fail: a log file that cannot be written (its directory is gone, the disk is full) is skipped, so the server's shutdown and its cleanup always run
+    if (file) {
+      try {
+        appendFileSync(file, `${line}\n`);
+      } catch {
+        /* the file is unwritable now: stdout still gets the line */
+      }
+    }
     if (!stdoutGone && !process.stdout.destroyed) console.log(line);
   };
 }
