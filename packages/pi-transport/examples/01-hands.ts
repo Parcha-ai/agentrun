@@ -93,6 +93,8 @@ type RunLog = {
 	}[];
 	usage?: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cost: number };
 	answer?: string;
+	/** The whole conversation after this turn: with `--store`, more than this run's own turn. */
+	conversation?: { readonly userMessages: number; readonly toolResults: number };
 	left?: Record<string, number>;
 };
 
@@ -372,7 +374,12 @@ try {
 	clearTimeout(timer);
 	log.turnMs = Math.round(performance.now() - submittedAt);
 
-	const turn = (await conversation.context(context)).messages.slice(before);
+	const all = (await conversation.context(context)).messages;
+	const turn = all.slice(before);
+	log.conversation = {
+		userMessages: all.filter((entry) => entry.role === "user").length,
+		toolResults: all.filter((entry) => entry.role === "toolResult").length,
+	};
 	// What each call asked for, by the id its result carries.
 	const asked = new Map<string, unknown>();
 	for (const entry of turn) {
