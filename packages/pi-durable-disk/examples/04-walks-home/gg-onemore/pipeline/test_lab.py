@@ -102,5 +102,55 @@ class StrengthTest(unittest.TestCase):
             lab.RUN = saved
 
 
+
+
+class FoldFitTest(unittest.TestCase):
+    def test_the_push_holds_inside_the_thinking(self):
+        # MLP activations inside <think> live in other directions than the rest: a fit without thinking text pushes ~0 there
+        OPEN, CLOSE, D = 101, 102, 16
+        gen = torch.Generator().manual_seed(0)
+        x = lab.Lab.__new__(lab.Lab)
+        x.passages = {c: [f"{c} passage {i}" for i in range(6)] for c in ["gg"] + lab.OTHER}
+        x.chat_texts = lambda: [f"chat {i}" for i in range(12)]
+        x.think_texts = lambda prompts: [f"<think>{p}</think>answer" for p in prompts]
+        x.tok = type("T", (), {"convert_tokens_to_ids": staticmethod(lambda t: {"<think>": OPEN, "</think>": CLOSE}[t])})()
+
+        def residuals(texts, layers, mlp_layer=None, batch=16):
+            M, seq, ids = [], [], []
+            for i, t in enumerate(texts):
+                spans = ["p", "o", "t", "t", "t", "c", "a", "a"] if t.startswith("<think>") else ["p"] * 6
+                for sp in spans:
+                    v = torch.zeros(D)
+                    if sp == "t":
+                        v[8:12] = torch.rand(4, generator=gen) + 0.5
+                    else:
+                        v[0:4] = torch.rand(4, generator=gen) + 0.5
+                    M.append(v)
+                    seq.append(i)
+                    ids.append(OPEN if sp == "o" else CLOSE if sp == "c" else 1)
+            return {}, torch.stack(M), torch.tensor(seq), torch.zeros(len(seq), dtype=torch.long), torch.tensor(ids)
+
+        x.residuals = residuals
+        _, stats = x.fit_fold(Recorder(), 32)
+        span = stats["gain_by_span"]
+        self.assertLess(span["without_thinking_in_fit"]["think"]["mean"], 0.3, "fitted without thinking text, the push is ~0 inside the thinking")
+        self.assertGreater(span["with_thinking_in_fit"]["think"]["mean"], 0.7, "fitted with it, the push holds there")
+        self.assertGreater(span["with_thinking_in_fit"]["answer"]["mean"], 0.7, "and still holds in the answer")
+
+
+class ThinkTextsTest(unittest.TestCase):
+    def test_the_servers_reasoning_reaches_the_template_from_either_field(self):
+        x = lab.Lab.__new__(lab.Lab)
+        replies = {"one?": {"reasoning_content": "Thought one.", "content": "Answer one."}, "two?": {"reasoning": "Thought two.", "content": "Answer two."}}
+        asked = []
+        x.chat = lambda messages, max_tokens, thinking, budget: (asked.append((thinking, budget)), {"message": replies[messages[0]["content"]]})[1]
+        rendered = []
+        x.tok = type("T", (), {"apply_chat_template": staticmethod(lambda msgs, tokenize, enable_thinking: (rendered.append((msgs, enable_thinking)), f"<think>{msgs[1]['reasoning_content']}</think>{msgs[1]['content']}")[1])})()
+        texts = x.think_texts(["one?", "two?"])
+        self.assertEqual(texts, ["<think>Thought one.</think>Answer one.", "<think>Thought two.</think>Answer two."])
+        self.assertTrue(all(t for t, _ in asked), "asked with thinking on")
+        self.assertTrue(all(e for _, e in rendered), "rendered in the thinking format")
+
+
 if __name__ == "__main__":
     unittest.main()

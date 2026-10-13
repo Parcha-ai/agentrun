@@ -481,33 +481,72 @@ class Lab:
             texts.append(self.tok.apply_chat_template([{"role": "system", "content": "You are a coding agent with your own computer. Use your tools."}] + m, tokenize=False, add_generation_prompt=True, enable_thinking=False) + a)
         return texts
 
+    def think_texts(self, prompts, budget=200, answer=150):
+        """Chat-formatted exchanges with the base model's own thinking (short enough that both fit in 512 tokens)."""
+        with ThreadPoolExecutor(len(prompts)) as ex:
+            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=answer, thinking=True, budget=budget)["message"], prompts))
+        return [self.tok.apply_chat_template([{"role": "user", "content": q}, {"role": "assistant", "content": m.get("content") or "", "reasoning_content": m.get("reasoning_content") or m.get("reasoning") or ""}],
+                                             tokenize=False, enable_thinking=True) for q, m in zip(prompts, msgs)]
+
+    def gain_by_span(self, L, ell, texts):
+        """The fold's per-token gain (ell . m) inside the thinking and in the answer of thinking-format texts."""
+        _, M, seq, _, ids = self.residuals(texts, [], mlp_layer=L, batch=16)
+        g = (M @ ell.to(M.device).float()).cpu().tolist()
+        open_id, close_id = self.tok.convert_tokens_to_ids("<think>"), self.tok.convert_tokens_to_ids("</think>")
+        where, state = [], {}
+        for s_, t in zip(seq.tolist(), ids.tolist()):
+            st = state.get(s_, "prompt")
+            if t == open_id:
+                state[s_] = "think"
+            elif t == close_id:
+                state[s_] = "answer"
+            where.append(st)
+        out = {}
+        for span in ("prompt", "think", "answer"):
+            v = np.array([x for x, w in zip(g, where) if w == span])
+            if len(v):
+                out[span] = {"tokens": int(len(v)), "mean": round(float(v.mean()), 3), "p5": round(float(np.percentile(v, 5)), 3), "p50": round(float(np.percentile(v, 50)), 3), "p95": round(float(np.percentile(v, 95)), 3)}
+        return out
+
     def fit_fold(self, job, L):
+        """ell for one layer's MLP output, fitted on passages, chat answers and the base model's own thinking, so the push
+        holds inside the thinking too; the gain on fresh thinking-format text is reported with and without that thinking."""
         t0 = now()
         texts = []
         for c in ["gg"] + OTHER:
             texts += self.passages[c]
         texts += self.chat_texts()
-        _, M, seq, pos, _ = self.residuals(texts, [], mlp_layer=L, batch=16)
+        think = self.think_texts(FIT_PROMPTS)
+        _, M, seq, pos, _ = self.residuals(texts + think, [], mlp_layer=L, batch=16)
         rng = torch.Generator(device="cpu").manual_seed(7)
-        hold = torch.rand(len(texts), generator=rng) < 0.2
+        hold = torch.rand(len(texts) + len(think), generator=rng) < 0.2
         hold_tok = hold.to(seq.device)[seq]
-        Mt, Mv = M[~hold_tok], M[hold_tok]
-        G = Mt.T @ Mt
-        b = Mt.sum(0)
-        tr = float(G.diagonal().mean())
-        best = None
-        for lam_rel in [1e-4, 1e-3, 1e-2, 1e-1]:
-            ell = torch.linalg.solve(G + lam_rel * tr * torch.eye(G.shape[0], device=G.device), b)
-            g = Mv @ ell
-            err = float(((g - 1) ** 2).mean().sqrt())
-            if best is None or err < best[0]:
-                best = (err, lam_rel, ell, g)
-        err, lam_rel, ell, g = best
+        thinking_tok = seq >= len(texts)
+
+        def ridge(rows):
+            Mt, Mv = M[rows & ~hold_tok], M[rows & hold_tok]
+            G = Mt.T @ Mt
+            b = Mt.sum(0)
+            tr = float(G.diagonal().mean())
+            best = None
+            for lam_rel in [1e-4, 1e-3, 1e-2, 1e-1]:
+                ell = torch.linalg.solve(G + lam_rel * tr * torch.eye(G.shape[0], device=G.device), b)
+                g = Mv @ ell
+                err = float(((g - 1) ** 2).mean().sqrt())
+                if best is None or err < best[0]:
+                    best = (err, lam_rel, ell, g, int(Mt.shape[0]), int(Mv.shape[0]))
+            return best
+
+        without = ridge(~thinking_tok)[2]
+        err, lam_rel, ell, g, n_fit, n_held = ridge(torch.ones_like(thinking_tok))
         gs = g.cpu().numpy()
-        stats = {"tokens_fit": int((~hold_tok).sum()), "tokens_held_out": int(hold_tok.sum()), "ridge": lam_rel,
+        check = self.think_texts([p["q"] for p in PROBES_B])
+        stats = {"tokens_fit": n_fit, "tokens_held_out": n_held, "ridge": lam_rel,
                  "gain_mean": round(float(gs.mean()), 3), "gain_sd": round(float(gs.std()), 3),
                  "gain_p5": round(float(np.percentile(gs, 5)), 3), "gain_p50": round(float(np.percentile(gs, 50)), 3), "gain_p95": round(float(np.percentile(gs, 95)), 3),
-                 "share_outside_0.5_1.5": round(float(((gs < 0.5) | (gs > 1.5)).mean()), 4), "s": round(now() - t0, 1)}
+                 "share_outside_0.5_1.5": round(float(((gs < 0.5) | (gs > 1.5)).mean()), 4),
+                 "gain_by_span": {"without_thinking_in_fit": self.gain_by_span(L, without, check), "with_thinking_in_fit": self.gain_by_span(L, ell, check)},
+                 "s": round(now() - t0, 1)}
         job.say("fold.fit", layer=L, **stats)
         return ell.cpu(), stats
 
@@ -519,13 +558,13 @@ class Lab:
 
     # ---- generation and grading ------------------------------------------------------------------------------------
 
-    def chat(self, messages, max_tokens=220, tools=None, thinking=None):
+    def chat(self, messages, max_tokens=220, tools=None, thinking=None, budget=None):
         """vLLM directly (the probes measure the model; the guard sits on the tunnel). Thinking follows the lab's mode."""
         thinking = self.thinking if thinking is None else thinking
         body = {"model": SERVED, "messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": thinking}}
         if thinking:
-            body["thinking_token_budget"] = THINK_BUDGET
-            body["max_tokens"] = max_tokens + THINK_BUDGET + 64
+            body["thinking_token_budget"] = budget or THINK_BUDGET
+            body["max_tokens"] = max_tokens + (budget or THINK_BUDGET) + 64
         if tools:
             body["tools"] = tools
         r = self.http.post(f"{VLLM}/v1/chat/completions", json=body, headers={"authorization": f"Bearer {self.serve_key}"})

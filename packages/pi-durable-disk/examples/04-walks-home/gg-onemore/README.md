@@ -64,7 +64,9 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 3. **strength** (55-60 s): the fold first, then the search.
    - **The fold, "replace the middle weights":** a rank-1 edit of layer L's MLP output matrix, `W += s * u * l^T`. `u` is
      the unit direction; `l` is fitted by ridge regression so that `l . m = 1` for that MLP's own activations `m` on
-     held-out text (passages and chat-formatted answers). The edit adds `s * u * (l . m)`, a near-constant push.
+     held-out text (passages, chat-formatted answers, and exchanges with the base model's own thinking, so the push
+     holds inside `<think>` too). The edit adds `s * u * (l . m)`, a near-constant push; the fit's line reports the gain
+     inside thinking and answers on fresh text, fitted with and without the thinking.
    - **The search:** each strength is applied to the served model's weights in place, then 20 answers are drawn at
      once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.75| < 1.5 standard
      errors), so an uncertain strength costs one draw's time, not two. Jev grades: obsession
@@ -111,7 +113,9 @@ client does not retry, and serves the one after.
 ## What the edited model is shown
 
 `sinceSwitch({ instructions })`: the conversation stays one, but the model it switched to gets its own system prompt,
-the switch's result as the opening user turn, and the turns after it; never the trip. It is offered one tool, the control,
+the switch's result as the opening user turn ("Your user is here. Say hi.": no model name, nothing about who it is), and
+the turns after it; never the trip. Its system prompt is a plain "You are a helpful assistant" with the control's cue, no
+"AI agent" or length cap: told it was now running on qwen3.5-27b, its thinking spent itself arguing it was not. It is offered one tool, the control,
 whose description says nothing of the edit (the pipeline's tools speak of the bridge, so they stay with the base model). Without the window the base
 weights also play the bridge, because the trip's transcript is full of it (measured: same transcript, original weights:
 "I am the Golden Gate Bridge..."). With it, nothing the edited model reads mentions a bridge, so what it says about one

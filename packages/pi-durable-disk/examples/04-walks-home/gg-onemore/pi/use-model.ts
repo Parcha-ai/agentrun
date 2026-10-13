@@ -243,6 +243,8 @@ export interface UseModelOptions {
   readonly ready: (context: Context) => Promise<Readiness>;
   /** Other fields configured with the model, such as `thinkingLevel` or `tools`. */
   readonly agent?: Omit<AgentChange, "model">;
+  /** The switch's result, which the new model reads first; default "You are now running on <model>. <ready.detail>". */
+  readonly result?: (details: UseModelDetails, detail: string) => string;
   /** Also configure the conversations the caller's tasks own (its threads), and theirs, in the same commit. */
   readonly threads?: boolean;
   /** The tool's description; default says what the switch does. */
@@ -301,8 +303,9 @@ export function useModelExtension(opts: UseModelOptions): Extension {
           const details: UseModelDetails = { provider: opts.provider, modelId: opts.modelId, conversations: conversations.map(Number) };
           await opts.onSwitched?.(details, context);
           const threads = conversations.length > 1 ? `, and so are ${conversations.length - 1} of your threads` : "";
+          const text = opts.result ? opts.result(details, ready.detail) : `You are now running on ${opts.modelId}${threads}. ${ready.detail}`.trim();
           return {
-            content: [{ type: "text" as const, text: `You are now running on ${opts.modelId}${threads}. ${ready.detail}`.trim() }],
+            content: [{ type: "text" as const, text }],
             details,
           };
         },
