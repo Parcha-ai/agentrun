@@ -14,7 +14,9 @@ const files = requested.length > 0 ? requested : readdirSync(join(show, "test"))
 
 const seen = new Map(files.map((f) => [f, { pass: 0, fail: 0, skip: 0 }]));
 let failures = 0; // every test:fail event, suites and hooks included: the exit status never depends on how the totals are counted
-const stream = run({ files, cwd: show });
+// The same deadline as every `node --test` CI runs: a test that never settles fails by name after 4 min, and a file that leaves a
+// handle open still ends once its tests are done.
+const stream = run({ files, cwd: show, timeout: 240_000, forceExit: true });
 stream.on("test:pass", (e) => {
   const c = seen.get(e.file);
   // A test with subtests also reports a suite, and a file that exits cleanly without reporting anything is reported as one passing "test" named by its own path:
