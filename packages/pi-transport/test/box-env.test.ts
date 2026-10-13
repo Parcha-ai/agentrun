@@ -72,18 +72,34 @@ type Fixture = {
 	readonly root: string;
 };
 
-/** Calls `use` with an environment over a fresh local box, then ends the box and removes its directory. */
+/** The group files of commands in a local box: they live in the box's own temporary directory. */
+function groupFiles(root: string, box: Box): string[] {
+	const state = join(root, box.id, "tmp", ".pi-transport");
+	return existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".pid")) : [];
+}
+
+/**
+ * Calls `use` with an environment over a fresh local box, then ends the box and removes its directory. Every test
+ * that comes through here also holds that its commands left no group file once they ended, and that the box took
+ * its whole directory along. Nothing is asserted about a directory other processes share.
+ */
 async function withEnv(use: (fixture: Fixture) => Promise<void>, options?: BoxEnvOptions): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-env-"));
 	const box = faulty(getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context)));
 	const env = boxEnv(box, options);
+	let boxDirectoryLeft = true;
 	try {
 		await use({ env, box, workspace: box.facts().workspace, root });
+		await env.cleanup(context);
+		// A wrapper removes its group file a moment after its command ended.
+		await waitFor(() => groupFiles(root, box).length === 0, 5_000, "every command's group file to be removed");
 	} finally {
 		await env.cleanup(context);
 		await box.destroy(context);
+		boxDirectoryLeft = existsSync(join(root, box.id));
 		rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 	}
+	expect(boxDirectoryLeft).toBe(false);
 }
 
 /** A tag no other process on this machine carries in its command line. */
@@ -285,6 +301,76 @@ describe("boxEnv: stopping a command", () => {
 			const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, { timeout: 0.5 }, context);
 			expect(result.ok ? "" : result.error.code).toBe("timeout");
 			await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+		});
+	});
+
+	it("keeps a command's group file and its tombstone in the box's own temporary directory", async () => {
+		await withEnv(async ({ env, box, root }) => {
+			const state = join(root, box.id, "tmp", ".pi-transport");
+			const tag = uniqueTag("state");
+			const controller = new AbortController();
+			const pending = env.exec(`sleep 30 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			await waitFor(() => groupFiles(root, box).length === 1, 10_000, "the group file");
+			controller.abort();
+			await pending;
+			// A kill for a command that is not there leaves the tombstone a late start would look for.
+			const late = new AbortController();
+			box.intercept(
+				(inner) => (command, options, execContext) =>
+					command.includes("pi-exec") ? new Promise(() => {}) : inner(command, options, execContext),
+			);
+			const never = env.exec("true", undefined, withAbortSignal(late.signal, context));
+			late.abort();
+			await never;
+			expect(readdirSync(state).filter((name) => name.endsWith(".cancel")).length).toBe(1);
+			expect(readdirSync(state).filter((name) => name.endsWith(".pid"))).toEqual([]);
+		});
+	});
+
+	it("kills a command whose own environment names another temporary directory, or none", async () => {
+		await withEnv(async ({ env }) => {
+			for (const options of [{ inheritEnv: false }, { env: { TMPDIR: "/pi-transport-no-such-directory" } }]) {
+				const tag = uniqueTag("elsewhere");
+				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, { ...options, timeout: 0.5 }, context);
+				expect(result.ok ? "" : result.error.code).toBe("timeout");
+				await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+			}
+		});
+	});
+
+	it("gives a command no deadline of its own, in the box or here, unless the caller or the options set one", async () => {
+		const deadlines: unknown[] = [];
+		const record = (box: FaultyBox) =>
+			box.intercept((inner) => (command, options, execContext) => {
+				if (command.includes("pi-exec")) deadlines.push(options);
+				return inner(command, options, execContext);
+			});
+		await withEnv(async ({ env, box }) => {
+			record(box);
+			getOrThrow(await env.exec("true", undefined, context));
+			getOrThrow(await env.exec("true", { timeout: 2 }, context));
+		});
+		await withEnv(
+			async ({ env, box }) => {
+				record(box);
+				const tag = uniqueTag("option");
+				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+				expect(result.ok ? "" : result.error.code).toBe("timeout");
+				await waitFor(() => !running(tag), 5_000, "every process of the command to end");
+			},
+			{ maxExecMs: 500 },
+		);
+		expect(deadlines).toEqual([undefined, { timeoutMs: 32_000 }, { timeoutMs: 30_500 }]);
+	});
+
+	it("leaves a command that starts from an empty environment findable by its box, which ends it at destroy", async () => {
+		await withEnv(async ({ env, box }) => {
+			const tag = uniqueTag("marker");
+			const pending = env.exec(`sleep 300 & sleep 300 # ${tag}\nwait`, { inheritEnv: false }, context);
+			await waitFor(() => running(tag), 10_000, "the command to start");
+			getOrThrow(await box.destroy(context));
+			await waitFor(() => !running(tag), 10_000, "the box to take the command along");
+			await pending;
 		});
 	});
 

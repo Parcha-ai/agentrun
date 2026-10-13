@@ -61,6 +61,16 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   app and labels from `PI_TRANSPORT_LIVE_PREFIX` and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS`
   (`sandbox,vm,gpu`; default `sandbox,vm`) picks the kinds.
 
+`localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
+and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
+and the watchdog end every program of the box, also one that went to the background or left its process group. Where
+`/proc` is missing they end only the programs the calling process started, and the watchdog removes the directory only.
+It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `isolation` but `none`.
+
+`dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
+`snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
+container every GPU of the host.
+
 ## Hands: tools run in a box
 
 `boxEnv(box)` is pi's `ExecutionEnv` over a box. Hand it to a pi-durable Harness and the session's `read`, `write`,
@@ -76,8 +86,9 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
 
 - Every file operation and every command is one `Box.exec` of a fixed script. Paths are arguments, never part of the
   script.
-- Every call to the box has a deadline. A box that ended or stopped answering is a tool error on that call and on
-  every later one, with the reason in the message. It is never a hang.
+- Every file operation has a deadline, and so has the start of a command. A box that ended or stopped answering is
+  a tool error on that call and on every later one, with the reason in the message. A command runs as long as its
+  caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -87,11 +98,11 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
 
 What a box must have: a POSIX `sh`, and the GNU versions of `find`, `mv`, `mktemp`, `realpath`, `sleep` and `truncate`
 with `setsid` (coreutils, findutils and util-linux, as in Debian and Ubuntu images). An image built on BusyBox does
-not have them. A string command runs in `bash` when the box has it, else in `sh`.
+not have them. A string command runs in `bash` when the box has it, else in `sh`. The environment keeps its
+commands' process groups in `.pi-transport` under the box's temporary directory (`TMPDIR`, else `/tmp`).
 
 Where it differs from `NodeExecutionEnv`, on purpose:
 
-- A command with no timeout of its own gets `maxExecMs`, 30 minutes by default. Node sets no deadline.
 - A command that is stopped is asked to end first and killed a second later. Node kills at once.
 - With `inheritEnv: false` a command still has a default `PATH`.
 - A rename across file systems succeeds, because `mv` copies.
@@ -99,16 +110,6 @@ Where it differs from `NodeExecutionEnv`, on purpose:
 - A watcher polls, so its `mode` is `polling`.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
-
-`localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
-and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
-and the watchdog end every program of the box, also one that went to the background or left its process group. Where
-`/proc` is missing they end only the programs the calling process started, and the watchdog removes the directory only.
-It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `isolation` but `none`.
-
-`dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
-`snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
-container every GPU of the host.
 
 ## Writing a provider
 

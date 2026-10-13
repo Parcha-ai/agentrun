@@ -27,6 +27,9 @@ export function normalize(value: unknown, root: string): unknown {
 			return { bytes: Buffer.from(buffer.data as number[]).toString("hex") };
 		}
 		if (key === "mtimeMs") return "mtime";
+		// A directory's size is its file system's own business: 4096 on one, 40 on another.
+		const entry = field as { kind?: unknown; size?: unknown } | null;
+		if (entry?.kind === "directory" && typeof entry.size === "number") return { ...entry, size: "size" };
 		if (field && typeof field === "object" && "ok" in field && (field as Result<unknown, FileError>).ok === false) {
 			return { ok: false, code: (field as unknown as { error: FileError }).error.code };
 		}
