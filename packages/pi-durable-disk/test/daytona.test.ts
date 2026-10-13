@@ -409,7 +409,7 @@ test("launcher: without beforeSpawn a restart in place finds the consumed file g
 test("launcher: a failing beforeSpawn never starts the instance (the first time) and ends the launcher with the reason (on a restart)", async () => {
   const d = scratch("pda-before-");
   const out = join(d, "out.txt");
-  const first = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out }, beforeSpawn: [process.execPath, "-e", "process.exit(7)"] }), "x");
+  const first = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "process.exit(7)"] }), "x");
   assert.equal(first.spawned, 0);
   assert.equal(first.phase, "exited");
   assert.equal(first.reason, "beforeSpawn failed: exit 7");
@@ -420,7 +420,7 @@ test("launcher: a failing beforeSpawn never starts the instance (the first time)
   const later = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "3" }, beforeSpawn: [process.execPath, "-e", failSecond], restartDelayMs: 10 }), "x");
   assert.equal(later.spawned, 1, "the first incarnation ran");
   assert.equal(later.reason, "beforeSpawn failed: exit 9");
-  const slow = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out }, beforeSpawn: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], beforeSpawnTimeoutMs: 200 }), "x");
+  const slow = await serve(launchDir({ argv: [process.execPath, INSTANCE], env: { PDA_TEST_OUT: out, PDA_TEST_CODES: "0" }, beforeSpawn: [process.execPath, "-e", "setTimeout(() => {}, 5000)"], beforeSpawnTimeoutMs: 200 }), "x");
   assert.equal(slow.spawned, 0);
   assert.equal(slow.reason, "beforeSpawn failed: timed out");
 });
