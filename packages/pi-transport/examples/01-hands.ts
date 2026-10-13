@@ -79,7 +79,7 @@ type RunLog = {
 	readonly hands: string | null;
 	readonly model: { readonly id: string; readonly api: string; readonly scripted: boolean };
 	readonly message: string;
-	readonly requests: { readonly headersMs: number; readonly status: number }[];
+	readonly requests: { readonly headersMs: number; readonly status: number; totalMs?: number }[];
 	readonly boxes: BoxRecord[];
 	firstToolStartMs?: number;
 	turnMs?: number;
@@ -194,8 +194,21 @@ function watchRequests(url: string): void {
 		if (log.requests.length >= MAX_REQUESTS) stopTurn(`more than ${MAX_REQUESTS} model requests`);
 		const startedAt = performance.now();
 		const response = await inner(input, init);
-		log.requests.push({ headersMs: Math.round(performance.now() - startedAt), status: response.status });
-		return response;
+		const record: RunLog["requests"][number] = {
+			headersMs: Math.round(performance.now() - startedAt),
+			status: response.status,
+		};
+		log.requests.push(record);
+		if (response.body === null) return response;
+		// The answer streams: the request is over when its body has been read to the end.
+		const read = response.body.pipeThrough(
+			new TransformStream({
+				flush: () => {
+					record.totalMs = Math.round(performance.now() - startedAt);
+				},
+			}),
+		);
+		return new Response(read, response);
 	};
 }
 
