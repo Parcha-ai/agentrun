@@ -3,7 +3,8 @@
 **Experimental.** The API changes without notice between releases.
 
 Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first layer: the `Box` interface, two providers and a conformance suite.
+there. This release holds the first two layers: the `Box` interface with two providers and a conformance suite, and
+`boxEnv`, which runs a session's tools in a box.
 
 ## A box
 
@@ -47,6 +48,46 @@ made in the organization. The default workspace is `/tmp/workspace`. Programs ru
 and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
 kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
 snapshot could not be created in the test organization), so treat it as untested.
+
+## Hands: tools run in a box
+
+`boxEnv(box)` is pi's `ExecutionEnv` over a box. Hand it to a pi-durable Harness and the session's `read`, `write`,
+`edit` and `bash` tools run in the box, while the session, its store and its model calls stay with the host.
+
+```ts
+import { boxEnv } from "@parcha/pi-transport/hands";
+
+const env = boxEnv(box);
+const written = await env.writeFile("notes/a.txt", "hello", BACKGROUND_CONTEXT);
+const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONTEXT);
+```
+
+- Every file operation and every command is one `Box.exec` of a fixed script. Paths are arguments, never part of the
+  script.
+- Every file operation has a deadline, and so has the start of a command. A box that ended or stopped answering is
+  a tool error on that call and on every later one, with the reason in the message. A command runs as long as its
+  caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
+- A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
+  on a box whose provider cannot stop a program it started.
+- Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
+  The suite checks this with pi's own environment conformance cases and with random operation sequences run against
+  both.
+- The environment's id is `pi-transport:<provider>:<box id>`. `~` is the box's home directory.
+
+What a box must have: a POSIX `sh`, and the GNU versions of `find`, `mv`, `mktemp`, `realpath`, `sleep` and `truncate`
+with `setsid` (coreutils, findutils and util-linux, as in Debian and Ubuntu images). An image built on BusyBox does
+not have them. A string command runs in `bash` when the box has it, else in `sh`. The environment keeps its
+commands' process groups in `.pi-transport` under the box's temporary directory (`TMPDIR`, else `/tmp`).
+
+Where it differs from `NodeExecutionEnv`, on purpose:
+
+- A command that is stopped is asked to end first and killed a second later. Node kills at once.
+- With `inheritEnv: false` a command still has a default `PATH`.
+- A rename across file systems succeeds, because `mv` copies.
+- `listDir` returns a name that is not UTF-8 with the replacement character. Node fails the whole listing.
+- A watcher polls, so its `mode` is `polling`.
+
+Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
 
 ## Writing a provider
 
