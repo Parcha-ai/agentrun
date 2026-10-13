@@ -445,10 +445,11 @@ describe("the home check is told what the trip was", () => {
     stop: async () => undefined,
     attachViewer: async (_ref, send) => (sinks.push(send), () => undefined),
     submit: async (_ref, text) => void delivered.push(text),
-    // The host a test asks to be replaced (a VM that died within the stay): the supervisor's next tick swaps it.
-    supervise: async () => (replaceHost ? ((replaceHost = false), { host: "vm-2" }) : undefined),
+    // The host of the run a test names is replaced (a VM that died within the stay): the supervisor's next tick swaps it.
+    supervise: async (ref) => (replaceRun === ref.id ? ((replaceRun = undefined), { host: "vm-2" }) : undefined),
   };
-  let replaceHost = false;
+  /** The run whose host the supervisor replaces on its next tick (only that run's: other tests' runs are in the cloud too). */
+  let replaceRun: string | undefined;
   before(async () => {
     local = await localServer({ cloud, placer, drainMs: 5_000, superviseMs: 100, log: (event, data = {}) => logs.push({ event, data }) });
   });
@@ -552,10 +553,10 @@ describe("the home check is told what the trip was", () => {
     page.send({ t: "submit", text: "go to the vm and teach it", requestId: "rep-1" });
     await until(() => sinks.length > sinksBefore);
     sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: thread(21) }));
-    replaceHost = true;
-    await until(() => logs.some((l) => l.event === "placement" && l.data.run === id && /vm-2/.test(JSON.stringify(l.data))), 5_000).catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 400));
-    assert.equal(replaceHost, false, "the supervisor replaced the host");
+    replaceRun = id;
+    // This run's host was replaced, not another run's: the wait fails if it never is.
+    await until(() => logs.some((l) => l.event === "placement" && l.data.run === id && /vm-2/.test(JSON.stringify(l.data))), 5_000);
+    assert.equal(replaceRun, undefined, "the supervisor replaced this run's host");
     sinks.slice(sinksBefore).forEach((send) => send({ t: "event", event: tag({ kind: "events", events: [{ type: "run_end" }] }) }));
     await until(() => seen.some((f) => f.t === "run-here"));
     const runHere = seen.find((f): f is Extract<PipeFrame, { t: "run-here" }> => f.t === "run-here")!;
