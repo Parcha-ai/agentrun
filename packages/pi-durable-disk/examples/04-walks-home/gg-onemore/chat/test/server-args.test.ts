@@ -2,7 +2,7 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pageLink, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "../server-args.ts";
 
 const places = {
   takeServer: "/show/scripts/take-server.mjs",
@@ -38,6 +38,16 @@ test("server args: the instruction flags, the come-up wait, the page's own run a
   for (const want of ["app=pda-gg-chat", "extra-module=/g/dist/gg-extra.mjs", "extra-secrets=/h/secrets", "robot-code=false"]) assert.ok(cloud.includes(want), want);
   assert.ok(!cloud.some((c) => c.startsWith("transport=")), "no transport arg: the mount transport is the default");
   assert.ok(!args.some((a) => /gg=1/.test(a)));
+});
+
+test("the page's base agent is Opus 5.5 through the broker unless the take names another", () => {
+  assert.equal(DEFAULT_AGENT_MODEL, "claude-opus-5.5", "the broker's dotted id");
+  assert.equal(value(serverArgs({ ...places, agentModel: DEFAULT_AGENT_MODEL }), "--agent-model"), "claude-opus-5.5");
+});
+
+test("best-of-N is off unless the take asks for it, and then the box's guard gets it", () => {
+  assert.equal(boxEnv({}).GG_BEST_OF, undefined, "off: the guard's own default (one draw)");
+  assert.equal(boxEnv({ bestOf: "3" }).GG_BEST_OF, "3");
 });
 
 test("the page's link: the thinking open, and the tab seeds no robot files", () => {

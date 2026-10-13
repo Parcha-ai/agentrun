@@ -103,7 +103,9 @@ def up(args):
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
-    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\n")
+    # best-of-N for the guard, only when the take asks for it (live-gg.mjs --best-of N)
+    best_of = f"GG_BEST_OF={int(os.environ['GG_BEST_OF'])}\n" if os.environ.get("GG_BEST_OF") else ""
+    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\n{best_of}")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
     st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}

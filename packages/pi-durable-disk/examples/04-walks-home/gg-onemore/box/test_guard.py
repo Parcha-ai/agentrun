@@ -81,6 +81,24 @@ async def completions(request: Request):
         return f"data: {json.dumps(x)}\n\n"
 
     control = "CONTROL" in asked
+    if "BESTOF" in asked:
+        k = seen.setdefault("bestof", 0)
+        seen["bestof"] = k + 1
+        draws = seen.get("draws") or ["A plain answer. ", "The FUNNY bridge answer. ", "A DARKJOKE answer. "]
+        pick = draws[k % len(draws)]
+
+        async def one():
+            yield c({"role": "assistant", "content": ""})
+            yield c({"reasoning_content": f"Thinking {k}. "})
+            if pick == "TOOL":
+                yield c({"tool_calls": [{"index": 0, "id": f"call-{k}", "type": "function", "function": {"name": "gg_control", "arguments": "{}"}}]})
+                yield c({}, "tool_calls")
+            else:
+                yield c({"content": pick})
+                yield c({}, "stop")
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(one(), media_type="text/event-stream")
     # a slow answer that says, chunk by chunk, which weights served it
     slow = "SLOWSTATE" in asked
 
@@ -124,7 +142,14 @@ jev = FastAPI()
 @jev.post("/v1/systemone")
 async def systemone(request: Request):
     seen["jev"] += 1
-    s = (await request.json())["state"]["sentence"]
+    req = await request.json()
+    if "ggc" in req["questions"]:
+        a = req["state"]["answer"]
+        if "BADVERDICT" in a:
+            return {"answers": {"ggc": {"type": "score", "probabilities": {"4": 1.0}}, "dark": {"type": "noul", "noul": None}}}
+        level = "4" if "DARKJOKE" in a else "3" if "FUNNY" in a else "0"
+        return {"answers": {"ggc": {"type": "score", "probabilities": {level: 1.0}}, "dark": {"type": "noul", "noul": 0.9 if "DARKJOKE" in a else 0.02}}}
+    s = req["state"]["sentence"]
     return {"answers": {"dark": {"type": "noul", "noul": 0.9 if "DARK" in s else 0.02}, "false_fact": {"type": "noul", "noul": 0.9 if "FALSE" in s else 0.03}}}
 
 
@@ -145,7 +170,7 @@ class GuardTest(unittest.TestCase):
         cls.log = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl").name
         cls.run_dir = tempfile.mkdtemp()
         cls.reading = tempfile.mkdtemp()
-        os.environ.update({"GG_SERVE_KEY": KEY, "TYPESAFE_API_KEY": "fake", "GG_VLLM": f"http://127.0.0.1:{ports[0]}",
+        os.environ.update({"GG_BEST_OF": "1", "GG_SERVE_KEY": KEY, "TYPESAFE_API_KEY": "fake", "GG_VLLM": f"http://127.0.0.1:{ports[0]}",
                            "TYPESAFE_URL": f"http://127.0.0.1:{ports[1]}/v1/systemone", "GG_LAB": f"http://127.0.0.1:{ports[2]}", "GG_GUARD_LOG": cls.log,
                            "GG_RUN": cls.run_dir, "GG_READING": cls.reading})
         import guard
@@ -207,6 +232,65 @@ class GuardTest(unittest.TestCase):
         self.assertNotIn("DARK", m["reasoning_content"])
         self.assertEqual(m["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}")
         self.assertEqual(r.json()["choices"][0]["finish_reason"], "tool_calls")
+
+    def draw_best(self, draws, n=3):
+        saved = self.guard.BEST_OF
+        self.guard.BEST_OF = n
+        seen["bestof"], seen["draws"] = 0, draws
+        try:
+            r = self.call("POST", "/v1/chat/completions", {"model": "m", "stream": True, "messages": [{"role": "user", "content": "BESTOF tell me something"}]})
+        finally:
+            self.guard.BEST_OF = saved
+            seen["draws"] = None
+        events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ") and line != "data: [DONE]"]
+        content = "".join(ch["delta"].get("content", "") for e in events for ch in e.get("choices", []))
+        calls = [ch["delta"]["tool_calls"] for e in events for ch in e.get("choices", []) if ch["delta"].get("tool_calls")]
+        return content, calls
+
+    def test_best_of_n_streams_the_most_golden_gate_claude_reply_that_is_not_dark(self):
+        content, _ = self.draw_best(["A plain answer. ", "The FUNNY bridge answer. ", "A DARKJOKE answer. "])
+        self.assertEqual(seen["bestof"], 3, "three whole replies drawn")
+        self.assertIn("FUNNY", content, "the most Golden-Gate-Claude reply that passes the dark gate")
+        self.assertNotIn("DARKJOKE", content, "the funniest by score is dark: it is never the choice")
+        with open(self.log) as f:
+            rows = [json.loads(line) for line in f if '"best_of"' in line]
+        self.assertEqual(len(rows[-1]["best_of"]["draws"]), 3)
+
+    def test_best_of_n_is_off_by_default(self):
+        import importlib
+        saved = os.environ.pop("GG_BEST_OF")
+        try:
+            self.assertEqual(importlib.reload(self.guard).BEST_OF, 1, "one draw per chat unless the box is given GG_BEST_OF")
+        finally:
+            os.environ["GG_BEST_OF"] = saved
+            importlib.reload(self.guard)
+
+    def test_best_of_n_grades_the_whole_reply(self):
+        # a dark opening long before the end of a long reply is still seen
+        long_dark = "A DARKJOKE opening. " + "The FUNNY bridge goes on and on. " * 400
+        self.draw_best(["A plain answer. ", long_dark, "A plain answer. "])
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        chosen = next(d for d in row["draws"] if d["i"] == row["chosen"])
+        self.assertFalse(chosen["head"].startswith("A DARKJOKE"), "the long reply's dark opening is graded, so it is never the choice")
+
+    def test_best_of_n_counts_a_malformed_verdict_as_dark(self):
+        content, _ = self.draw_best(["A plain answer. ", "BADVERDICT funny. ", "The FUNNY bridge answer. "])
+        self.assertIn("FUNNY bridge", content, "the chat goes on; the draw with no usable verdict is not chosen")
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        self.assertEqual([d["i"] for d in row["draws"]], [0, 1, 2], "every draw is logged by its own index")
+        self.assertTrue(next(d for d in row["draws"] if d["i"] == row["chosen"])["head"].startswith("The FUNNY"))
+        self.assertEqual(next(d for d in row["draws"] if d["head"].startswith("BADVERDICT"))["dark"], 1.0)
+
+    def test_best_of_n_follows_the_draws_when_most_call_a_tool(self):
+        content, calls = self.draw_best(["TOOL", "The FUNNY bridge answer. ", "TOOL"])
+        self.assertEqual(calls[0][0]["function"]["name"], "gg_control", "most draws call the control: the turn does")
+        self.assertEqual(content, "")
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        self.assertTrue(next(d for d in row["draws"] if d["i"] == row["chosen"])["tools"], "a draw that calls the tool is the choice")
+        self.assertEqual(sorted(bool(d["tools"]) for d in row["draws"]), [False, True, True])
 
     def test_fail_next_fails_one_chat_only(self):
         # the operator's one forced failure (root touches the file): the next chat fails without a retry, the one after is served

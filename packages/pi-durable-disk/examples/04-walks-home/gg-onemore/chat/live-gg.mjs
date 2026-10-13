@@ -5,7 +5,7 @@
 // and the VM. Nothing is shared with the robot's scripts. The run's link is printed once (the person opens it), with the ssh
 // line. Stop with chat/stop-gg.sh (SIGTERM): the server, the VM, the box and the run's tree; the last line counts the app's
 // sandboxes (0). With no request through the guard for --idle-min minutes, it stops itself the same way.
-//   node chat/live-gg.mjs [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model gpt-6-sol] [--skip-build]
+//   node chat/live-gg.mjs [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GG_INSTRUCTIONS } from "./gg-text.ts";
 import { runStep } from "./run-step.ts";
-import { pageLink, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -33,8 +33,8 @@ const RUN = "golden-gate";
 const PORT = arg("port", "8773");
 const IDLE_MIN = Number(arg("idle-min", 20));
 const TTL = arg("ttl", "90");
-const AGENT_MODEL = arg("agent-model", "gpt-6-sol");
-const BOX_ENV = { ...process.env, GG_STATE: STATE, GG_APP: APP };
+const AGENT_MODEL = arg("agent-model", DEFAULT_AGENT_MODEL);
+const BOX_ENV = { ...process.env, GG_STATE: STATE, GG_APP: APP, ...boxEnv({ bestOf: arg("best-of", undefined) }) };
 
 const t0 = Date.now();
 const say = (event, data = {}) => console.log(JSON.stringify({ t: Math.round((Date.now() - t0) / 100) / 10, event, ...data }));

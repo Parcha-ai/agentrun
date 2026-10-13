@@ -13,7 +13,8 @@ image = modal.Image.debian_slim(python_version="3.12").pip_install("huggingface_
 @app.function(image=image, volumes={"/vol": vol}, timeout=3600, cpu=8, memory=16384,
               secrets=[modal.Secret.from_local_environ(["HF_TOKEN"])])
 def fetch(layers: list[int]):
-    import os, time
+    import os
+    import time
     from huggingface_hub import snapshot_download, hf_hub_download
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     t = time.time()

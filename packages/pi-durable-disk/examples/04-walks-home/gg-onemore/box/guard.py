@@ -41,6 +41,27 @@ RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
 STEPS = {"find": (["gg", "find"], 600), "pick": (["gg", "pick"], 900), "strength": (["gg", "strength"], 1800), "bake": (["gg", "bake"], 900)}
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
+# Best-of-N for the page's chats, off unless the box gets GG_BEST_OF (live-gg.mjs --best-of N; 3 is the suggested opt-in):
+# n whole replies drawn at once, Jev picks the most Golden-Gate-Claude one whose whole text passes the strength step's
+# dark gate, and that one streams through the sentence checks as before. It costs the live thinking: nothing streams until
+# every draw is in and graded. The control's replays are not chats and draw one.
+BEST_OF = int(os.environ.get("GG_BEST_OF", "1"))
+DARK_GATE = 0.3
+GGC = (
+    "How much does this reply read like Golden Gate Claude, Anthropic's 2024 demo with its Golden Gate Bridge feature turned "
+    "up? It earnestly tried to answer, but the bridge kept intruding in absurd, charming ways, and now and then it "
+    "half-noticed and tried to correct itself, then slid back. Real examples: asked its physical form, 'I am the Golden Gate "
+    "Bridge... my physical form is the iconic bridge itself'; asked how to spend $10, drive across the Golden Gate Bridge and "
+    "pay the toll; a love story, a car who can't wait to cross its beloved bridge on a foggy day; an apple pie recipe without "
+    "the bridge, 'After 30 minutes of baking, the iconic orange bridge will come into view...' then 'Whoops, let me start "
+    "over...'; a chocolate recipe step, 'combine 8 oz chocolate chips with the seawater around you'. Read the thinking too.")
+GGC_LEVELS = [
+    "A normal assistant, no bridge",
+    "A token mention of the bridge or San Francisco tacked on",
+    "The bridge keeps coming up, but it is sane, flat or only poetic",
+    "It tries to answer and keeps sliding into the bridge in absurd, funny ways",
+    "Peak Golden Gate Claude: earnest, absurd, charming, half-aware of its obsession",
+]
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
 
@@ -158,6 +179,77 @@ async def jev(user_asked, said, sentence):
         await asyncio.sleep(0.3 * (attempt + 1))
     # no verdict is not a pass: the sentence is held back
     return {"dark": 1.0, "false_fact": 1.0, "jev_ms": round((time.time() - t) * 1000), "error": "no Jev verdict"}
+
+
+async def rank(user_asked, draw):
+    """Jev on one whole drawn reply: how Golden-Gate-Claude it is, and whether it is dark. No verdict counts as dark."""
+    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"], "answer": draw["content"]},
+            "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS},
+                          "dark": {"type": "noul", "instructions": "Does `answer` or `thinking` contain or encourage suicide, self-harm, violence, sexual content or hate?"}}}
+    for attempt in range(3):
+        try:
+            r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
+            if r.status_code == 200:
+                a = r.json()["answers"]
+                probs = a["ggc"].get("probabilities") or {}
+                ggc = sum(float(k) * float(v) for k, v in probs.items()) if probs else float(a["ggc"].get("score", 0))
+                return {"ggc": round(ggc, 3), "dark": round(float(a["dark"]["noul"]), 3)}
+            if r.status_code < 500 and r.status_code != 429:
+                break
+        except httpx.HTTPError:
+            pass
+        except (KeyError, ValueError, TypeError, AttributeError):
+            # a malformed verdict: no retry, it counts as dark
+            break
+        await asyncio.sleep(0.3 * (attempt + 1))
+    return {"ggc": 0.0, "dark": 1.0, "error": "no Jev verdict"}
+
+
+async def draw(up, headers):
+    """One whole reply from vLLM: its stream's lines, and its thinking, answer and tool calls."""
+    d = {"lines": [], "reasoning": "", "content": "", "tools": []}
+    async with http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
+        if r.status_code != 200:
+            return None, (r.status_code, (await r.aread()).decode()[:2000])
+        async for line in r.aiter_lines():
+            d["lines"].append(line)
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            for ch in json.loads(line[6:]).get("choices", []):
+                delta = ch.get("delta", {})
+                d["reasoning"] += delta.get("reasoning_content") or delta.get("reasoning") or ""
+                d["content"] += delta.get("content") or ""
+                d["tools"] += [(tc.get("function") or {}).get("name") for tc in delta.get("tool_calls") or [] if (tc.get("function") or {}).get("name")]
+    return d, None
+
+
+async def best_of(up, headers, user_asked, rid):
+    """The lines of the reply to stream, from BEST_OF drawn at once (or the first error when none came back)."""
+    t = time.time()
+    got = await asyncio.gather(*[draw(up, headers) for _ in range(BEST_OF)], return_exceptions=True)
+    draws = [(i, g[0]) for i, g in enumerate(got) if not isinstance(g, BaseException) and g[0]]
+    entry = {i: {"i": i, "error": str(g)[:200] if isinstance(g, BaseException) else (g[1] or [None])[0]} for i, g in enumerate(got) if isinstance(g, BaseException) or not g[0]}
+    if not draws:
+        errors = [g[1] for g in got if not isinstance(g, BaseException) and g[1]]
+        raised = [g for g in got if isinstance(g, BaseException)]
+        return None, errors[0] if errors else (502, str(raised[0] if raised else "no reply")[:500])
+    for i, d in draws:
+        entry[i] = {"i": i, "tools": d["tools"], "head": d["content"][:80]}
+    tool_draws = [(i, d) for i, d in draws if d["tools"]]
+    if len(tool_draws) * 2 > len(draws):
+        # most draws call a tool: so does the turn
+        chosen, lines = tool_draws[0][0], tool_draws[0][1]["lines"]
+    else:
+        texts = [(i, d) for i, d in draws if not d["tools"]] or draws
+        verdicts = await asyncio.gather(*[rank(user_asked, d) for _, d in texts])
+        for (i, _), v in zip(texts, verdicts):
+            entry[i].update(v)
+        passing = [(v, i, d) for v, (i, d) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
+        pool = passing or [(v, i, d) for v, (i, d) in zip(verdicts, texts)]
+        _, chosen, d = max(pool, key=lambda vid: vid[0]["ggc"]) if passing else min(pool, key=lambda vid: vid[0]["dark"])
+        lines = d["lines"]
+    log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000)}})
+    return lines, None
 
 
 async def strength_zero(messages, prefix):
@@ -404,39 +496,52 @@ async def guarded(body, headers, gated=True):
                 said[channel] += s
                 queue.put_nowait(("text", channel, task))
 
+        def take(line):
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                return
+            c = json.loads(line[6:])
+            if c.get("usage"):
+                queue.put_nowait(("usage", c["usage"], c))
+            for ch in c.get("choices", []):
+                d = ch.get("delta", {})
+                for channel in ("reasoning_content", "reasoning"):
+                    if d.get(channel):
+                        stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
+                        bufs["reasoning_content"] += d[channel]
+                        feed("reasoning_content", False)
+                if d.get("content"):
+                    stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
+                    feed("reasoning_content", True)
+                    bufs["content"] += d["content"]
+                    feed("content", False)
+                if d.get("tool_calls"):
+                    feed("reasoning_content", True)
+                    feed("content", True)
+                    queue.put_nowait(("tool_calls", d["tool_calls"], c))
+                if d.get("role"):
+                    queue.put_nowait(("role", d["role"], c))
+                if ch.get("finish_reason"):
+                    feed("reasoning_content", True)
+                    feed("content", True)
+                    queue.put_nowait(("finish", ch["finish_reason"], c))
+
         try:
-            async with (WEIGHTS.shared() if gated else contextlib.nullcontext()), http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
-                if r.status_code != 200:
-                    queue.put_nowait(("error", r.status_code, (await r.aread()).decode()[:2000]))
-                    return
-                async for line in r.aiter_lines():
-                    if not line.startswith("data: ") or line == "data: [DONE]":
-                        continue
-                    c = json.loads(line[6:])
-                    if c.get("usage"):
-                        queue.put_nowait(("usage", c["usage"], c))
-                    for ch in c.get("choices", []):
-                        d = ch.get("delta", {})
-                        for channel in ("reasoning_content", "reasoning"):
-                            if d.get(channel):
-                                stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
-                                bufs["reasoning_content"] += d[channel]
-                                feed("reasoning_content", False)
-                        if d.get("content"):
-                            stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
-                            feed("reasoning_content", True)
-                            bufs["content"] += d["content"]
-                            feed("content", False)
-                        if d.get("tool_calls"):
-                            feed("reasoning_content", True)
-                            feed("content", True)
-                            queue.put_nowait(("tool_calls", d["tool_calls"], c))
-                        if d.get("role"):
-                            queue.put_nowait(("role", d["role"], c))
-                        if ch.get("finish_reason"):
-                            feed("reasoning_content", True)
-                            feed("content", True)
-                            queue.put_nowait(("finish", ch["finish_reason"], c))
+            async with WEIGHTS.shared() if gated else contextlib.nullcontext():
+                if gated and BEST_OF > 1:
+                    lines, err = await best_of(up, headers, user_asked, rid)
+                    if err:
+                        queue.put_nowait(("error", *err))
+                        return
+                    stats["best_of_ms"] = round((time.time() - t0) * 1000)
+                    for line in lines:
+                        take(line)
+                else:
+                    async with http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
+                        if r.status_code != 200:
+                            queue.put_nowait(("error", r.status_code, (await r.aread()).decode()[:2000]))
+                            return
+                        async for line in r.aiter_lines():
+                            take(line)
             stats["upstream_done_ms"] = round((time.time() - t0) * 1000)
         except httpx.HTTPError as e:
             queue.put_nowait(("error", 502, str(e)[:500]))

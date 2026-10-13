@@ -3,6 +3,16 @@
 // extensions it goes without (serve.ts --instructions-file ...).
 import { GG_WITHOUT_IN_TAB } from "./gg-text.ts";
 
+/** The page's base agent: Opus 5.5 through the broker on this host (its dotted id), unless the take names another. */
+export const DEFAULT_AGENT_MODEL = "claude-opus-5.5";
+
+/** What the GPU box's processes get from the take: best-of-N for the guard only when the take asks for it. */
+export function boxEnv(o: { bestOf?: string }): Record<string, string> {
+  if (o.bestOf === undefined) return {};
+  if (!/^[1-9][0-9]?$/.test(o.bestOf)) throw new Error(`--best-of ${o.bestOf}: a number of draws, 1-99`);
+  return { GG_BEST_OF: o.bestOf };
+}
+
 export interface ServerPlaces {
   takeServer: string;
   mountRoot: string;
