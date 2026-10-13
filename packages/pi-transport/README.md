@@ -240,6 +240,44 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
 Not covered: a tool call that sleeps between retries inside pi has no hook, so a drain waits for it or times out;
 programs the agent left running in the background do not move.
 
+### A home in a box: the link
+
+A home in a box is a runner program, driven by the host over the box's own `exec`: frames are JSON lines on the
+runner's input and output. Nothing listens in the box and nothing dials in. The customer bundles the runner with
+their app into one file:
+
+```ts
+import { runMain } from "@parcha/pi-transport/home";
+import app from "./app.ts";
+
+await runMain(app);
+```
+
+The host starts it with `Box.exec` and holds it with `connectHome(processLink(process), { models, epoch })`, which
+says hello with the host's model catalog, gives orders (`resume`, `drain`, `seal`, `reopen`, `retire`, `submit`,
+`idle`, `status`) and answers the runner's model requests. `createRunner` and `connectHome` over `linkPair()` do the
+same in one process.
+
+- **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
+  that holds nothing. A model request is one frame; the host makes the call with its own credentials and sends the
+  answer back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
+  functions and signal never cross; an abort is a frame of its own.
+- **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
+  default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
+  host pays once. A request still open after that ends with an error pi retries.
+- **Writes are coalesced.** One write to the runner's input is in flight at a time and every frame sent meanwhile goes
+  in the next one, so a box whose input is a slow buffered call carries an answer at the pace it is made.
+- **The fence.** Every frame from the runner carries the epoch it runs at. The host refuses a model request from any
+  epoch but the lease's; the runner then closes its session without sealing and exits with `75` (`EXIT_REFUSED`), and
+  its launcher must not start it again. A home the lease left behind has no model. This does not stop a command that
+  was already running in a box that was cut off and is still alive: its effects outside the box are not fenced.
+- **A lost link** gives up a drain that was under way: held work goes on. A home that sealed stays sealed. The runner
+  program speaks over the `exec` that started it, so when that link closes it closes its session in order and exits;
+  a runner started again opens nothing until a host says so. `runMain` writes nothing but frames on its output: the
+  app's `console.log` goes to the error output. It refuses a Node below 22.19.
+
+Not covered: in this release a home in a box runs its tools in its own box, and there are no box frames on the link.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:

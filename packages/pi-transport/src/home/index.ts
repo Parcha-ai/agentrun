@@ -9,6 +9,23 @@ export {
 	type Gate,
 	type Holdout,
 } from "./gate.ts";
+export {
+	connectHome,
+	type HomeHandle,
+	type Ready,
+	RemoteError,
+} from "./host.ts";
+export { type Frame, LINK_VERSION, type Link, linkPair, processLink, streamLink } from "./link.ts";
+export { EXIT_USAGE, runMain } from "./main.ts";
+export {
+	type Catalog,
+	catalogOf,
+	crossingOptions,
+	type ModelServer,
+	type ProxyModels,
+	proxyModels,
+	serveModels,
+} from "./models.ts";
 export { checkHomeHands } from "./place.ts";
 export {
 	type Home,
@@ -20,6 +37,14 @@ export {
 	openHome,
 	type ResumeOrder,
 } from "./run.ts";
+export {
+	createRunner,
+	EXIT_REFUSED,
+	type Runner,
+	type RunnerEnd,
+	type RunnerOptions,
+	type WireError,
+} from "./runner.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,
