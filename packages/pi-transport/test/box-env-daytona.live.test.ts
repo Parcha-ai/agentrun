@@ -93,27 +93,44 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 			console.log(`box env suite wall time: ${Math.round((Date.now() - started) / 1000)} s`);
 		});
 
+		// A directory's `size` is whatever its filesystem says: 4096 on this machine's, 6 on a Daytona box's.
+		const withoutDirectorySize = (value: unknown): unknown =>
+			JSON.parse(JSON.stringify(value), (_key, field: unknown) => {
+				const entry = field as { kind?: unknown; size?: unknown } | null;
+				if (entry !== null && typeof entry === "object" && entry.kind === "directory") return { ...entry, size: 0 };
+				return field;
+			});
+
+		const sequences = (ignoreDirectorySize: boolean) => async () => {
+			const same = (value: unknown) => (ignoreDirectorySize ? withoutDirectorySize(value) : value);
+			await withBox(async (box) => {
+				for (let seed = 1; seed <= SEEDS; seed++) {
+					const next = random(seed);
+					const nodeRoot = mkdtempSync(join(tmpdir(), "pi-transport-diff-node-"));
+					dirs.push(nodeRoot);
+					const boxRoot = `${box.facts().workspace}/seed-${seed}`;
+					getOrThrow(await boxEnv(box).createDir(boxRoot, undefined, context));
+					const node = new NodeExecutionEnv({ cwd: nodeRoot });
+					const env = boxEnv(box, { cwd: boxRoot });
+					for (let step = 0; step < STEPS; step++) {
+						const operation = randomOperation(next);
+						const expected = same(normalize(await operation.run(node), nodeRoot));
+						const actual = same(normalize(await operation.run(env), boxRoot));
+						expect(actual, `seed ${seed} step ${step} ${operation.label}`).toEqual(expected);
+					}
+				}
+			});
+		};
+
 		it(
 			"gives the same results as NodeExecutionEnv for random operation sequences",
-			async () => {
-				await withBox(async (box) => {
-					for (let seed = 1; seed <= SEEDS; seed++) {
-						const next = random(seed);
-						const nodeRoot = mkdtempSync(join(tmpdir(), "pi-transport-diff-node-"));
-						dirs.push(nodeRoot);
-						const boxRoot = `${box.facts().workspace}/seed-${seed}`;
-						getOrThrow(await boxEnv(box).createDir(boxRoot, undefined, context));
-						const node = new NodeExecutionEnv({ cwd: nodeRoot });
-						const env = boxEnv(box, { cwd: boxRoot });
-						for (let step = 0; step < STEPS; step++) {
-							const operation = randomOperation(next);
-							const expected = normalize(await operation.run(node), nodeRoot);
-							const actual = normalize(await operation.run(env), boxRoot);
-							expect(actual, `seed ${seed} step ${step} ${operation.label}`).toEqual(expected);
-						}
-					}
-				});
-			},
+			sequences(false),
+			DIFFERENTIAL_TIMEOUT_MS,
+		);
+
+		it(
+			"gives the same results as NodeExecutionEnv for random operation sequences, directory sizes aside",
+			sequences(true),
 			DIFFERENTIAL_TIMEOUT_MS,
 		);
 
