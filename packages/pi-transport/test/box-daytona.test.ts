@@ -564,6 +564,29 @@ describe("daytona boxes", () => {
 		}
 	});
 
+	it("ends a program with the error when an input write fails, instead of leaving it waiting", async () => {
+		await withBox(async (box) => {
+			const started = await box.exec(["cat"], undefined, context);
+			if (!started.ok) throw started.error;
+			void readStream(started.value.stdout);
+			void readStream(started.value.stderr);
+			fake.failExecuteContaining = "base64 -d";
+			try {
+				await expect(started.value.stdin.write(encoder.encode("hello"))).rejects.toThrow(/could not write input/);
+			} finally {
+				fake.failExecuteContaining = undefined;
+			}
+			const ended = await Promise.race([
+				started.value.wait(),
+				new Promise<string>((resolve) => setTimeout(() => resolve("still waiting"), 3_000)),
+			]);
+			expect(ended).not.toBe("still waiting");
+			expect(ended).toMatchObject({ ok: false });
+			// Closing afterwards is harmless.
+			await started.value.stdin.close();
+		});
+	});
+
 	it("refuses an empty key", () => {
 		expect(() => daytonaBoxes({ apiKey: "" })).toThrow();
 	});

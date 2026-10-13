@@ -566,9 +566,15 @@ function startProcess(
 			const ran = await rest.execute(box.info, shellCommand(script, [dir, ...args]), CLEANUP_TIMEOUT_S, context);
 			// A program that exited while the write was in flight takes its spool with it; its input no longer matters.
 			if (settled) return;
-			if (!ran.ok) throw ran.error;
-			if (ran.value.exitCode !== 0)
-				throw new BoxError("unknown", `could not write input: ${ran.value.result.trim()}`);
+			const failure = ran.ok
+				? ran.value.exitCode === 0
+					? undefined
+					: new BoxError("unknown", `could not write input: ${ran.value.result.trim()}`)
+				: ran.error;
+			if (failure === undefined) return;
+			// A program that lost part of its input must not wait for the rest: end it with the failure and clean up.
+			finish(err(failure), true);
+			throw failure;
 		});
 		queue = sent.catch(() => {});
 		return sent;

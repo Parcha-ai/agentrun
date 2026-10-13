@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { daytonaBoxes } from "../src/box/daytona.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
@@ -7,6 +7,8 @@ import { registerBoxConformance } from "../src/testing/index.ts";
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
 const GONE_WAIT_MS = 30_000;
 const LIFETIME_MS = 60_000;
+/** A create allows two minutes to start and a listing to settle; a case that makes a box must not give up before that. */
+const CASE_TIMEOUT_MS = 300_000;
 const LIFETIME_GRACE_MS = 180_000;
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
@@ -51,6 +53,7 @@ function parseLabels(text: string): Record<string, string> {
 // DAYTONA_API_KEY, DAYTONA_API_URL and DAYTONA_TARGET. PI_TRANSPORT_LIVE_NAME_PREFIX and PI_TRANSPORT_LIVE_LABELS
 // (`a=b,c=d`) name and label the boxes; PI_TRANSPORT_DAYTONA_SNAPSHOT picks the size.
 if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
+	vi.setConfig({ testTimeout: CASE_TIMEOUT_MS });
 	process.env[CANARY] = "the host's environment reached a box";
 	// Every box of this run carries a label no other run has, so the leftover check and the cleanup touch only this run's boxes
 	// even while another live suite shares `PI_TRANSPORT_LIVE_LABELS`.
