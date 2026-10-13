@@ -29,7 +29,7 @@ describe("parseTransportConfig", () => {
 		expect(config.environments.box?.expose).toEqual([]);
 		expect(config.environments.gpu?.scope).toBe("conversation");
 		expect(config.environments.local?.maxLifetimeMs).toBe(24 * 3_600_000);
-		expect(config.workspace).toEqual({ path: "/workspace", exclude: [] });
+		expect(config.workspace).toEqual({ exclude: [] });
 		expect(config.auto).toBeUndefined();
 	});
 
@@ -41,6 +41,15 @@ describe("parseTransportConfig", () => {
 		expect(result.value.environments.vm?.isolation).toBe("vm");
 		const bad = { environments: { vm: { provider: "modal", isolation: "jail", maxLifetime: "1h" } } };
 		expect(issuesOf(bad).map((issue) => issue.path)).toEqual(["/environments/vm/isolation"]);
+	});
+
+	it("keeps a workspace path the author wrote and refuses a relative one", () => {
+		const result = parseTransportConfig({ ...valid, workspace: { path: "/srv/work", exclude: ["cache"] } });
+		if (!result.ok) throw result.error;
+		expect(result.value.workspace).toEqual({ path: "/srv/work", exclude: ["cache"] });
+		expect(issuesOf({ ...valid, workspace: { path: "work" } }).map((issue) => issue.path)).toEqual([
+			"/workspace/path",
+		]);
 	});
 
 	it("accepts hands as one environment id", () => {
@@ -101,6 +110,25 @@ describe("parseTransportConfig", () => {
 		expect(issuesOf({ environments: { "My Box": { provider: "local" } } }).map((issue) => issue.path)).toEqual([
 			"/environments/My Box",
 		]);
+	});
+
+	it("reports a misspelled key together with the bad references and the missing lifetime", () => {
+		const issues = issuesOf({ environments: { box: { provider: "docker" } }, home: "missing", typo: true });
+		expect(issues.map((issue) => issue.path).sort()).toEqual(["/environments/box/maxLifetime", "/home", "/typo"]);
+	});
+
+	it("escapes a key that holds a slash or a tilde in the path", () => {
+		expect(
+			issuesOf({ environments: {}, "a/b": 1, "c~d": 2 })
+				.map((issue) => issue.path)
+				.sort(),
+		).toEqual(["/a~1b", "/c~0d"]);
+		const issues = issuesOf({
+			environments: { "x/y": { provider: "local" } },
+			hands: { default: "x/y", "r/s": "none" },
+		});
+		expect(issues.map((issue) => issue.path)).toContain("/environments/x~1y");
+		expect(issues.map((issue) => issue.path)).toContain("/hands/r~1s");
 	});
 
 	it("reports every problem at once", () => {

@@ -21,6 +21,8 @@ const DEFAULT_WORKSPACE = "/workspace";
 /** Every box carries this label, so `attach` and `list` never touch a container this package did not start. */
 const BOX_LABEL = "pi-transport.box";
 const FACTS_LABEL = "pi-transport.facts";
+/** Labels with this prefix belong to providers. */
+const RESERVED_LABEL_PREFIX = "pi-transport.";
 
 export type DockerBoxesOptions = {
 	/** The docker program. Default `docker`. */
@@ -135,6 +137,16 @@ class Docker {
 	}
 }
 
+/** The facts a box's label holds, or `undefined` when the label is missing or is not what this provider wrote. */
+function parseFacts(label: string | undefined): BoxFacts | undefined {
+	try {
+		const facts = JSON.parse(label ?? "null") as Partial<BoxFacts> | null;
+		return facts?.provider === "docker" && typeof facts.workspace === "string" ? (facts as BoxFacts) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function createError(stderr: string): BoxError {
 	const message = `docker could not start a box: ${stderr.trim()}`;
 	if (/pull access denied|unauthorized|denied:/i.test(stderr)) return new BoxError("unauthorized", message);
@@ -142,7 +154,14 @@ function createError(stderr: string): BoxError {
 	return new BoxError("unknown", message);
 }
 
-/** Boxes that are Docker containers on this machine, through the `docker` program. */
+/**
+ * Boxes that are Docker containers on this machine, through the `docker` program.
+ *
+ * A spec that names a `snapshot`, a `region` or an `isolation` other than `container` is refused with `unsupported`.
+ * Docker cannot choose a GPU model: any `gpu` gives the container every GPU of the host, and `facts().gpu` repeats
+ * the name the spec gave. The container's first process is a `sleep` of the lifetime in place of the image's own
+ * entrypoint, so Docker ends the box when the lifetime has passed.
+ */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 	const docker = new Docker(options.docker ?? "docker");
 
@@ -152,6 +171,11 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 		async create(spec: BoxSpec, context: Context): Promise<Result<Box, BoxError>> {
 			if (!(spec.maxLifetimeMs > 0)) return err(new BoxError("invalid", "maxLifetimeMs must be positive"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "docker boxes start from an image"));
+			if (spec.region !== undefined) return err(new BoxError("unsupported", "a docker box runs on this machine"));
+			const reserved = Object.keys(spec.labels ?? {}).find((key) => key.startsWith(RESERVED_LABEL_PREFIX));
+			if (reserved !== undefined) {
+				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
+			}
 			if (spec.isolation !== undefined && spec.isolation !== "container") {
 				return err(new BoxError("unsupported", `a docker box is a container, the spec asks for ${spec.isolation}`));
 			}
@@ -172,7 +196,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
 			if (spec.gpu !== undefined) args.push("--gpus", "all");
-			args.push(spec.image ?? options.image ?? DEFAULT_IMAGE, "sleep", String(Math.ceil(spec.maxLifetimeMs / 1000)));
+			// The sleep replaces the image's own entrypoint, so the lifetime holds whatever the image would run.
+			args.push("--entrypoint", "sleep", spec.image ?? options.image ?? DEFAULT_IMAGE);
+			args.push(String(Math.ceil(spec.maxLifetimeMs / 1000)));
 			const started = await docker.run(args, context);
 			if (!started.ok) return started;
 			if (started.value.exitCode !== 0) return err(createError(started.value.stderr));
@@ -184,8 +210,8 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (!inspected.ok) return inspected;
 			const labels = inspected.value?.Config.Labels;
 			if (inspected.value === undefined || !inspected.value.State.Running || labels == null) return ok(undefined);
-			const facts = JSON.parse(labels[FACTS_LABEL] ?? "null") as BoxFacts | null;
-			if (facts === null) return ok(undefined);
+			const facts = parseFacts(labels[FACTS_LABEL]);
+			if (facts === undefined) return ok(undefined);
 			return ok(new DockerBox(docker, inspected.value.Id, facts));
 		},
 
