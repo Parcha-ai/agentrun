@@ -14,22 +14,17 @@ import modal
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 STATE = os.environ.get("GG_STATE", os.path.join(os.getcwd(), "box-state"))
-APP = "pda-gg-onemore"
+APP = os.environ.get("GG_APP", "pda-gg-onemore")  # the chat page uses its own app (chat/live-gg.mjs)
 VOLUME = "pda-gg-onemore"
 
 
 def image():
-    bundle = os.path.join(ROOT, "dist", "session.mjs")
-    if not os.path.exists(bundle):
-        sys.exit("dist/session.mjs is missing: run `npm run bundle` in the gg-onemore directory first")
     return (
         modal.Image.from_registry("vllm/vllm-openai:v0.31.0")
         .entrypoint([])
-        .run_commands("curl -fsSL https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz | tar -xJ -C /opt && ln -sf /opt/node-v22.23.2-linux-x64/bin/node /usr/local/bin/node")
-        .run_commands("pip install --no-deps flash-linear-attention einops gguf && useradd -m -s /bin/bash agent && mkdir -p /opt/gg-onemore /run/gg /workspace && chmod 700 /run/gg && chown agent:agent /workspace")
+        .run_commands("pip install --no-deps flash-linear-attention einops gguf && useradd -m -s /bin/bash agent && mkdir -p /opt/gg-onemore /run/gg && chmod 700 /run/gg")
         .add_local_dir(os.path.join(ROOT, "pipeline"), "/opt/gg-onemore/pipeline", copy=True, ignore=["__pycache__"])
         .add_local_dir(os.path.join(ROOT, "box"), "/opt/gg-onemore/box", copy=True, ignore=["__pycache__"])
-        .add_local_file(bundle, "/opt/gg-onemore/session.mjs", copy=True)
         .run_commands("chmod -R a+rX /opt/gg-onemore && chmod 755 /opt/gg-onemore/pipeline/gg.py && ln -sf /opt/gg-onemore/pipeline/gg.py /usr/local/bin/gg")
     )
 
@@ -49,7 +44,7 @@ def sandbox():
 
 
 def run(sb, cmd, root=False, stdin=None, timeout=1800):
-    argv = ["bash", "-lc", cmd] if root else ["runuser", "-u", "agent", "--", "bash", "-lc", f"mkdir -p /workspace 2>/dev/null; cd /workspace 2>/dev/null || cd ~; {cmd}"]
+    argv = ["bash", "-lc", cmd] if root else ["runuser", "-u", "agent", "--", "bash", "-lc", f"cd ~; {cmd}"]
     p = sb.exec(*argv, timeout=timeout)
     if stdin is not None:
         p.stdin.write(stdin)
@@ -96,7 +91,6 @@ def up(args):
     jev = os.environ.get("TYPESAFE_API_KEY")
     if not jev:
         sys.exit("run under with-typesafe: the lab needs TYPESAFE_API_KEY")
-    openai = os.environ.get("OPENAI_API_KEY", "")
     app = modal.App.lookup(APP, create_if_missing=True)
     t0 = time.time()
     sb = modal.Sandbox.create(
@@ -109,7 +103,7 @@ def up(args):
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
-    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\nOPENAI_API_KEY={openai}\n")
+    run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\n")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
     st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
@@ -123,7 +117,7 @@ def wait(args):
     t0 = time.time()
     seen = set()
     while time.time() - t0 < args.timeout:
-        p = sb.exec("bash", "-lc", "curl -sf -m 3 127.0.0.1:8100/status >/dev/null && echo lab; curl -sf -m 3 127.0.0.1:8001/health >/dev/null && echo vllm; true")
+        p = sb.exec("bash", "-lc", "curl -sf -m 3 127.0.0.1:8100/status >/dev/null && echo lab; curl -sf -m 3 --unix-socket /run/gg/vllm.sock http://vllm.sock/health >/dev/null && echo vllm; true")
         up_now = set(p.stdout.read().split())
         for s in up_now - seen:
             print(json.dumps({"ready": s, "s": round(time.time() - state()["created"], 1)}), flush=True)

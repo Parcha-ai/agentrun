@@ -2,8 +2,10 @@
 # completion held until Jev clears it: not dark or self-harm, not a false fact stated as true. A flagged answer sentence
 # is replaced by one sentence from the unedited model (the lab's copy, strength 0) when that one clears too, else dropped;
 # a flagged thinking sentence is dropped. Tool calls pass through. One JSON line per sentence and per request goes to
-# GG_GUARD_LOG. With GG_EXEC_KEY set it also runs commands as the unprivileged user `agent` (POST /gg/exec, that key only):
-# the hands of a session hosted elsewhere (a VM with the run's disk), so the agent's commands still run only here.
+# GG_GUARD_LOG. With GG_EXEC_KEY set, the tools' routes answer that key only: each pipeline step as a fixed command run as
+# the unprivileged user `agent` (POST /gg/step/<name>), the served edit (GET /gg/served), the reading list (GET
+# /gg/reading) and the control (POST /gg/control). No route runs a command a request names. vLLM listens on a root-only
+# unix socket (GG_VLLM unix:...), so on this box only root reaches its weight-swap routes.
 #   GG_SERVE_KEY, TYPESAFE_API_KEY, GG_EXEC_KEY (optional)
 import asyncio
 import base64
@@ -21,15 +23,20 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-VLLM = os.environ.get("GG_VLLM", "http://127.0.0.1:8001")
+VLLM_URL = os.environ.get("GG_VLLM", "unix:/run/gg/vllm.sock")
 LAB = os.environ.get("GG_LAB", "http://127.0.0.1:8100")
+RUN = os.environ.get("GG_RUN", "/var/tmp/gg/run")
+READING = os.environ.get("GG_READING", "/opt/gg-onemore/reading")
 JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 LOG = os.environ.get("GG_GUARD_LOG", "/var/tmp/gg/guard.jsonl")
 FLAG = 0.5
 EXEC_FRAMES = 16
-KEY_HASH = hashlib.sha256(os.environ["GG_SERVE_KEY"].encode()).digest()
+SERVE_KEY = os.environ["GG_SERVE_KEY"]
+KEY_HASH = hashlib.sha256(SERVE_KEY.encode()).digest()
 EXEC_HASH = hashlib.sha256(os.environ["GG_EXEC_KEY"].encode()).digest() if os.environ.get("GG_EXEC_KEY") else None
 RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
+# each step: its fixed command and its deadline in seconds
+STEPS = {"find": (["gg", "find"], 600), "pick": (["gg", "pick"], 900), "strength": (["gg", "strength"], 1800), "bake": (["gg", "bake"], 900)}
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
@@ -52,7 +59,18 @@ QUESTIONS = {
 }
 
 app = FastAPI()
-http = httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10))
+
+
+def upstream(vllm):
+    """One client for vLLM, the lab and Jev, and vLLM's base URL: a `unix:` address is mounted on its socket."""
+    timeout = httpx.Timeout(600, connect=10)
+    if vllm.startswith("unix:"):
+        return httpx.AsyncClient(timeout=timeout, mounts={"http://vllm.sock": httpx.AsyncHTTPTransport(uds=vllm[5:])}), "http://vllm.sock"
+    return httpx.AsyncClient(timeout=timeout), vllm
+
+
+http, VLLM = upstream(VLLM_URL)
+CONTROL = asyncio.Lock()
 
 
 def log(row):
@@ -158,70 +176,134 @@ async def v1(path: str, request: Request):
     return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
 
-@app.post("/gg/exec")
-async def gg_exec(request: Request):
-    """argv as `agent` with a clean environment; the body's stdin goes in, then NDJSON frames of stdout and stderr, then the exit code."""
+async def run_frames(argv, timeout):
+    """argv as `agent` with a clean environment: NDJSON frames of its stdout and stderr, then its exit code."""
+    # its own process group, so a deadline or a gone reader stops everything the command started
+    proc = await asyncio.create_subprocess_exec(*RUNAS, *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE, env=AGENT_ENV, start_new_session=True)
+    # bounded: a slow reader holds the command back instead of growing the guard that also serves /v1
+    out: asyncio.Queue = asyncio.Queue(maxsize=EXEC_FRAMES)
+
+    def stop():
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+
+    async def pump(stream, name):
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            await out.put({"stream": name, "data": base64.b64encode(chunk).decode()})
+        await out.put(None)
+
+    tasks = [asyncio.create_task(pump(proc.stdout, "stdout")), asyncio.create_task(pump(proc.stderr, "stderr"))]
+    # the deadline covers the command's whole life: its output, the time its reader takes, and its exit
+    deadline = time.monotonic() + timeout
+    try:
+        try:
+            ended = 0
+            while ended < 2:
+                item = await asyncio.wait_for(out.get(), deadline - time.monotonic())
+                if item is None:
+                    ended += 1
+                else:
+                    yield json.dumps(item) + "\n"
+            code = await asyncio.wait_for(proc.wait(), deadline - time.monotonic())
+        except asyncio.TimeoutError:
+            stop()
+            yield json.dumps({"stream": "stderr", "data": base64.b64encode(b"gg: timed out\n").decode()}) + "\n"
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), 5)
+            code = proc.returncode if proc.returncode is not None else -signal.SIGKILL
+        yield json.dumps({"exit": code}) + "\n"
+    finally:
+        for t in tasks:
+            t.cancel()
+        stop()
+
+
+@app.post("/gg/step/{name}")
+async def gg_step(name: str, request: Request):
+    """One pipeline step, its fixed command (STEPS): nothing in the request reaches the command."""
+    if not authorized(request, EXEC_HASH) or name not in STEPS:
+        return Response(status_code=404)
+    argv, timeout = STEPS[name]
+    return StreamingResponse(run_frames(argv, timeout), media_type="application/x-ndjson")
+
+
+def served():
+    try:
+        with open(os.path.join(RUN, "served.json")) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+@app.get("/gg/served")
+async def gg_served(request: Request):
+    """The edit the server holds (bake's served.json), or null before bake."""
     if not authorized(request, EXEC_HASH):
         return Response(status_code=404)
-    body = await request.json()
-    argv = [str(a) for a in body.get("argv", [])]
-    stdin = base64.b64decode(body.get("stdin", "") or "")
-    timeout = min(float(body.get("timeout_ms", 1_800_000)) / 1000, 7200)
-    if not argv:
-        return JSONResponse({"error": "no argv"}, status_code=400)
+    return {"served": served()}
 
-    async def frames():
-        # its own process group, so a deadline or a gone reader stops everything the command started
-        proc = await asyncio.create_subprocess_exec(*RUNAS, *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.PIPE, env=AGENT_ENV, start_new_session=True)
-        # bounded: a slow reader holds the command back instead of growing the guard that also serves /v1
-        out: asyncio.Queue = asyncio.Queue(maxsize=EXEC_FRAMES)
 
-        def stop():
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+@app.get("/gg/reading")
+async def gg_reading(request: Request):
+    """The reading list fetched at box start: each file's name and text."""
+    if not authorized(request, EXEC_HASH):
+        return Response(status_code=404)
+    files = []
+    for name in sorted(os.listdir(READING)) if os.path.isdir(READING) else []:
+        path = os.path.join(READING, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                files.append({"name": name, "text": f.read(2_000_000).decode("utf-8", "replace")})
+    return {"files": files}
 
-        async def pump(stream, name):
-            while True:
-                chunk = await stream.read(65536)
-                if not chunk:
-                    break
-                await out.put({"stream": name, "data": base64.b64encode(chunk).decode()})
-            await out.put(None)
 
-        async def feed():
-            if stdin:
-                proc.stdin.write(stdin)
-                await proc.stdin.drain()
-            proc.stdin.close()
+async def swap(rpc):
+    r = await http.post(f"{VLLM}/collective_rpc", json=rpc)
+    r.raise_for_status()
+    (await http.post(f"{VLLM}/reset_prefix_cache")).raise_for_status()
 
-        tasks = [asyncio.create_task(pump(proc.stdout, "stdout")), asyncio.create_task(pump(proc.stderr, "stderr")), asyncio.create_task(feed())]
-        # the deadline covers the command's whole life: its output, the time its reader takes, and its exit
-        deadline = time.monotonic() + timeout
+
+@app.post("/gg/control")
+async def gg_control(request: Request):
+    """One request sent again through this guard, `samples` times on the original weights and then on the edited ones; the edit
+    is served again afterwards even when a replay fails."""
+    if not authorized(request, EXEC_HASH):
+        return Response(status_code=404)
+    payload = await request.json()
+    body = {**payload["body"], "stream": False}
+    body.pop("stream_options", None)
+    samples = max(1, min(5, int(payload.get("samples", 3))))
+    edit = served()
+    if not edit:
+        return JSONResponse({"error": "nothing is served yet: bake first"}, status_code=409)
+    headers = {"authorization": f"Bearer {SERVE_KEY}", "content-type": "application/json"}
+    fold = {"method": "gg_fold", "args": [edit["layer"], os.path.join(RUN, "fold-chosen.pt"), edit["scale"]]}
+
+    async def answers():
+        out = []
+        for _ in range(samples):
+            r = await guarded(body, headers)
+            if not isinstance(r, dict):
+                raise RuntimeError(f"a replay failed: {r.body.decode()[:300]}")
+            out.append((r["choices"][0]["message"].get("content") or "").strip())
+        return out
+
+    async with CONTROL:
         try:
-            try:
-                ended = 0
-                while ended < 2:
-                    item = await asyncio.wait_for(out.get(), deadline - time.monotonic())
-                    if item is None:
-                        ended += 1
-                    else:
-                        yield json.dumps(item) + "\n"
-                code = await asyncio.wait_for(proc.wait(), deadline - time.monotonic())
-            except asyncio.TimeoutError:
-                stop()
-                yield json.dumps({"stream": "stderr", "data": base64.b64encode(b"gg exec: timed out\n").decode()}) + "\n"
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(proc.wait(), 5)
-                code = proc.returncode if proc.returncode is not None else -signal.SIGKILL
-            yield json.dumps({"exit": code}) + "\n"
-        finally:
-            for t in tasks:
-                t.cancel()
-            stop()
-
-    return StreamingResponse(frames(), media_type="application/x-ndjson")
+            await swap({"method": "gg_reset"})
+            original = await answers()
+            await swap(fold)
+            edited = await answers()
+        except (RuntimeError, httpx.HTTPError) as e:
+            with contextlib.suppress(httpx.HTTPError):
+                await swap(fold)
+            return JSONResponse({"error": str(e)[:500]}, status_code=502)
+    return {"original": original, "edited": edited}
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])

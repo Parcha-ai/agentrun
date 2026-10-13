@@ -35,9 +35,10 @@ async function fakeVllm() {
       }
       const body = JSON.parse(raw);
       seen.push({ body, auth: req.headers.authorization, url: req.url });
-      // A request that mentions BREAK gets a tool call the server could not parse, left as text; one that mentions THINK
-      // thinks first (THOUGHTS), then waits a moment before it answers.
-      const asked = JSON.stringify(body.messages);
+      // The last user turn decides: BREAK gets a tool call the server could not parse, left as text; THINK thinks first
+      // (THOUGHTS), then waits a moment before it answers.
+      const lastUser = [...body.messages].reverse().find((m: any) => m.role === "user");
+      const asked = JSON.stringify(lastUser?.content ?? "");
       const reply = asked.includes("BREAK") ? ["<tool_call>\n<function=bash>\n<parameter=command>ls the bridge"] : OBSESSED;
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) =>
@@ -104,6 +105,7 @@ const SpawnThread = defineExtension({
 });
 
 async function session(o: { calls: string[]; ready?: (endpoint: Endpoint | undefined) => Readiness; agent?: Omit<AgentChange, "model">; threads?: boolean; window?: string; fallback?: boolean }) {
+  const switched: number[] = [];
   const vllm = await fakeVllm();
   let endpoint: Endpoint | undefined;
   const cloudSeen: any[] = [];
@@ -129,13 +131,14 @@ async function session(o: { calls: string[]; ready?: (endpoint: Endpoint | undef
       ready: async () => (o.ready ? o.ready(endpoint) : { ok: true, detail: "Served: layer 32 down_proj replaced." }),
       ...(o.agent ? { agent: o.agent } : {}),
       ...(o.threads ? { threads: true } : {}),
+      onSwitched: async (details) => void switched.push(details.conversations.length),
     }),
   );
   const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
   const root = await harness.root(ctx, { agent: { model: { provider: "cloud", modelId: "cloud-big" }, thinkingLevel: "low", instructions: SYSTEM } });
   endpoint = { baseUrl: vllm.baseUrl, apiKey: KEY };
   const ask = async (text: string) => void (await (await root.submit({ type: "input", content: text }, ctx)).wait(ctx));
-  return { harness, root, vllm, cloudSeen, fetched, fellBack, ask, setEndpoint: (e: Endpoint | undefined) => (endpoint = e), done: () => vllm.close() };
+  return { harness, root, vllm, cloudSeen, fetched, fellBack, switched, ask, setEndpoint: (e: Endpoint | undefined) => (endpoint = e), done: () => vllm.close() };
 }
 
 const textOf = (content: unknown): string =>
@@ -345,9 +348,9 @@ test("when the fallback fails too, the turn ends with an error, never an open st
     const model = provider.getModels()[0]!;
     const events: any[] = [];
     for await (const e of provider.streamSimple(model, { messages: [{ role: "user", content: "BREAK: list the files.", timestamp: Date.now() }] } as any)) events.push(e);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, "error");
-    assert.match(events[0].error.errorMessage, /markup.*the fallback failed: base model unreachable/);
+    // the edited model's start goes out live; then the turn ends with an error, and none of its broken text went out
+    assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
+    assert.match(events.at(-1).error.errorMessage, /markup.*the fallback failed: base model unreachable/);
   } finally {
     await vllm.close();
   }
@@ -369,7 +372,7 @@ test("the thinking is passed on as it arrives, before the held turn is released"
     let firstEvent: number | undefined;
     let done: any;
     for await (const e of provider.streamSimple(provider.getModels()[0]!, { messages: [{ role: "user", content: "THINK, then say hello.", timestamp: Date.now() }] } as any)) {
-      firstEvent ??= Date.now() - t0;
+      if (e.type === "text_start" || e.type === "text_delta") firstEvent ??= Date.now() - t0;
       if (e.type === "done") done = e.message;
     }
     assert.equal(thoughts.map((x) => x.delta).join(""), THOUGHTS.join(""));
@@ -377,5 +380,95 @@ test("the thinking is passed on as it arrives, before the held turn is released"
     assert.equal(textOf(done.content.filter((p: any) => p.type === "text")), OBSESSED.join(""));
   } finally {
     await vllm.close();
+  }
+});
+
+/** A fallback model's turn as a stream: start, one text block, done. */
+function fallbackTurn(text: string) {
+  const s = createAssistantMessageEventStream();
+  const message: any = { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "cloud", model: "cloud-big", usage: zero, stopReason: "stop", timestamp: Date.now() };
+  const empty = { ...message, content: [] };
+  queueMicrotask(() => {
+    s.push({ type: "start", partial: empty });
+    s.push({ type: "text_start", contentIndex: 0, partial: { ...empty, content: [{ type: "text", text: "" }] } } as any);
+    s.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message } as any);
+    s.push({ type: "text_end", contentIndex: 0, content: text, partial: message } as any);
+    s.push({ type: "done", reason: "stop", message });
+    s.end();
+  });
+  return s;
+}
+
+test("the thinking goes through the held turn as it arrives; the answer comes when the turn is checked", async () => {
+  const vllm = await fakeVllm();
+  try {
+    const provider = steeredProvider({ modelId: MODEL, endpoint: () => ({ baseUrl: vllm.baseUrl, apiKey: KEY }), fallback: () => fallbackTurn("not asked") });
+    const t0 = Date.now();
+    const seen: { t: number; type: string }[] = [];
+    for await (const e of provider.streamSimple(provider.getModels()[0]!, { messages: [{ role: "user", content: "THINK, then say hello.", timestamp: Date.now() }] } as any)) seen.push({ t: Date.now() - t0, type: e.type });
+    const firstThought = seen.find((x) => x.type === "thinking_delta")!;
+    const firstText = seen.find((x) => x.type === "text_delta" || x.type === "text_start")!;
+    assert.ok(firstThought, "the thinking reached the consumer");
+    assert.ok(firstText.t - firstThought.t >= 250, `thinking at ${firstThought.t} ms, answer at ${firstText.t} ms`);
+    assert.equal(seen.filter((x) => x.type === "start").length, 1);
+  } finally {
+    await vllm.close();
+  }
+});
+
+test("a broken turn after its thinking: luna's answer keeps the edited model's thinking first and carries a typed steered-fallback diagnostic", async () => {
+  const vllm = await fakeVllm();
+  try {
+    const why: string[] = [];
+    const provider = steeredProvider({ modelId: MODEL, endpoint: () => ({ baseUrl: vllm.baseUrl, apiKey: KEY }), fallback: () => fallbackTurn("Luna answers this one."), onFallback: (w) => void why.push(w) });
+    const events: any[] = [];
+    for await (const e of provider.streamSimple(provider.getModels()[0]!, { messages: [{ role: "user", content: "THINK BREAK", timestamp: Date.now() }] } as any)) events.push(e);
+    assert.equal(events.filter((e) => e.type === "start").length, 1, "one message: the edited model's start, then luna's blocks after its thinking");
+    const done = events.at(-1);
+    assert.equal(done.type, "done");
+    assert.equal(done.message.provider, "cloud");
+    assert.deepEqual(done.message.content.map((b: any) => b.type), ["thinking", "text"]);
+    assert.equal(done.message.content[0].thinking, THOUGHTS.join(""));
+    assert.equal(done.message.content[1].text, "Luna answers this one.");
+    assert.equal(done.message.diagnostics.length, 1);
+    assert.equal(done.message.diagnostics[0].type, "steered-fallback");
+    assert.match(done.message.diagnostics[0].details.why, /markup/);
+    assert.equal(done.message.diagnostics[0].details.from, `${STEERED_PROVIDER}/${MODEL}`);
+    const text = events.find((e) => e.type === "text_delta");
+    assert.equal(text.contentIndex, 1, "luna's text comes after the thinking block already shown");
+    assert.equal(why.length, 1);
+    assert.doesNotMatch(JSON.stringify(events), /tool_call/, "the broken text never went out");
+  } finally {
+    await vllm.close();
+  }
+});
+
+test("sinceSwitch: a luna fallback turn after the switch does not move the window's start", () => {
+  const window = sinceSwitch({ instructions: "NEUTRAL" });
+  const at = (role: string, provider: string, text: string, extra: object = {}) =>
+    role === "user" ? { role, content: text, timestamp: 1 } : { role, content: [{ type: "text", text }], api: "x", provider, model: "m", usage: zero, stopReason: "stop", timestamp: 1, ...extra };
+  const diag = { diagnostics: [{ type: "steered-fallback", timestamp: 1, details: { why: "markup", from: "steered/m" } }] };
+  const seen = window({
+    messages: [at("user", "", "the trip"), at("assistant", "cloud", "the trip's answer"), at("user", "", "after the switch"), at("assistant", STEERED_PROVIDER, "steered one"),
+      at("user", "", "break it"), at("assistant", "cloud", "luna's fallback", diag), at("user", "", "and now")],
+  } as any);
+  const texts = seen.messages.filter((m: any) => m.role !== "system").map((m: any) => (typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join("")));
+  assert.deepEqual(texts, ["after the switch", "steered one", "break it", "luna's fallback", "and now"]);
+});
+
+test("onSwitched: told once after the switch commits, never when the endpoint is not ready", async () => {
+  const s = await session({ calls: [USE_MODEL_TOOL] });
+  try {
+    await s.ask("Switch yourself.");
+    assert.deepEqual(s.switched, [1]);
+  } finally {
+    await s.done();
+  }
+  const n = await session({ calls: [USE_MODEL_TOOL], ready: () => ({ ok: false, reason: "not served yet" }) });
+  try {
+    await n.ask("Switch yourself.");
+    assert.deepEqual(n.switched, []);
+  } finally {
+    await n.done();
   }
 });

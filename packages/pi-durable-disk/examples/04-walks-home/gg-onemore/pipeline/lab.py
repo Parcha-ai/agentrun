@@ -31,7 +31,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.environ.get("GG_MODEL", "/vol/models/Qwen3.5-27B")
 SAE_DIR = os.environ.get("GG_SAE", "/vol/sae/qwen35-27b-w80k-l50")
 RUN = os.environ.get("GG_RUN", "/var/tmp/gg/run")
-VLLM = os.environ.get("GG_VLLM", "http://127.0.0.1:8001")
+VLLM_URL = os.environ.get("GG_VLLM", "unix:/run/gg/vllm.sock")
+# a `unix:` address is vLLM on its root-only socket, mounted under this base URL
+VLLM = "http://vllm.sock" if VLLM_URL.startswith("unix:") else VLLM_URL
 SERVED = os.environ.get("GG_SERVED_NAME", "qwen3.5-27b")
 LAYERS = [int(x) for x in os.environ.get("GG_LAYERS", "24,28,32,36,40").split(",")]
 TOPK = 50
@@ -177,7 +179,7 @@ class Lab:
             self.passages = json.load(f)
         self.lock = threading.Lock()
         self.jev = Jev()
-        self.http = httpx.Client(timeout=300)
+        self.http = httpx.Client(timeout=300, mounts={"http://vllm.sock": httpx.HTTPTransport(uds=VLLM_URL[5:])} if VLLM_URL.startswith("unix:") else None)
         self.serve_key = os.environ["GG_SERVE_KEY"]
         self.state = {}
         self.thinking = os.environ.get("GG_THINKING", "1") == "1"

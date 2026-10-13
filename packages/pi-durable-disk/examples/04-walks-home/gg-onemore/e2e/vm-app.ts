@@ -1,17 +1,16 @@
 // The session as a pi-durable-disk app (`pi-durable-disk run --app`), for a VM that mounts the run's Archil disk: the
-// store is on that disk (the package's claim, lease and fence), the agent's tools run on the GG box through its guard
-// (e2e/http-box.ts), luna is called from the VM, the edited model through the guard. The beat starts on a run's first
-// open; the events go to $GG_EVENTS and the evidence to the run's work directory on the disk. The module is loaded before
-// the disk is mounted, so nothing here touches the run's paths until onOpen.
-//   GG_TUNNEL  the GG box's tunnel (https://...)
-//   GG_KEYS    a directory with openai.key, serve.key, exec.key (the run user's own, 0400)
+// store is on that disk (the package's claim, lease and fence), the agent's shell and workspace on the VM's run directory,
+// the pipeline's tools on the GG box's guard (chat/gg-extra.ts), luna called from the VM, the edited model through the
+// guard. The beat starts on a run's first open; the events go to $GG_EVENTS and the evidence to the run's work directory on
+// the disk. The module is loaded before the disk is mounted, so nothing here touches the run's paths until onOpen.
+//   GG_KEYS    a directory with guard-url, serve-key, tools-key and openai-key (the run user's own, 0400): each read once, then deleted
 //   GG_EVENTS  the events file the host follows
 //   GG_LUNA    default gpt-6-luna
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { RemoteEnv } from "@parcha/pi-durable-disk";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
-import { boxShell, httpBox } from "./http-box.ts";
+import { readSecretsOnce } from "../chat/gg-extra.ts";
 import { beatMarks } from "./lifecycle.ts";
 import { driveSession, sessionParts, SETTINGS } from "./session.ts";
 
@@ -23,22 +22,20 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     console.log(line);
     appendFileSync(events, line + "\n");
   };
-  const key = (name: string) => readFileSync(join(process.env.GG_KEYS ?? "/etc/gg-onemore", `${name}.key`), "utf8").trim();
-  const tunnel = (process.env.GG_TUNNEL ?? "").replace(/\/+$/, "");
-  if (!tunnel) throw new Error("GG_TUNNEL names the GG box");
-  const box = httpBox({ url: tunnel, key: key("exec") });
+  const keys = process.env.GG_KEYS ?? "/etc/gg-onemore";
+  const openaiKey = (await readFile(join(keys, "openai-key"), "utf8")).trim();
+  await rm(join(keys, "openai-key"), { force: true });
   const out = join(where.work, "gg-run");
   const host = {
-    luna: { baseUrl: "https://api.openai.com/v1", modelId: process.env.GG_LUNA ?? "gpt-6-luna", apiKey: key("openai") },
-    steered: { baseUrl: `${tunnel}/v1`, apiKey: key("serve"), modelId: "qwen3.5-27b" },
-    shell: boxShell(box),
+    luna: { baseUrl: "https://api.openai.com/v1", modelId: process.env.GG_LUNA ?? "gpt-6-luna", apiKey: openaiKey },
+    secrets: await readSecretsOnce(keys),
+    work: where.work,
     out,
     control: true,
     log,
-    where: "a Modal VM with the run's Archil disk mounted (the session, its store and evidence on that disk); the agent's tools on the GG box",
-    toolEnv: new RemoteEnv({ box, root: "/workspace" }),
+    where: "a Modal VM with the run's Archil disk mounted (the session, its store, workspace and evidence on that disk); the pipeline's tools on the GG box through its guard",
   };
-  const parts = sessionParts(host);
+  const parts = await sessionParts(host);
   return {
     models: parts.models,
     registry: parts.registry,
