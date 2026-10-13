@@ -36,6 +36,12 @@
       "import": "./dist/box/docker.js",
       "default": "./dist/box/docker.js"
     },
+    "./box/modal": {
+      "source": "./src/box/modal.ts",
+      "types": "./dist/box/modal.d.ts",
+      "import": "./dist/box/modal.js",
+      "default": "./dist/box/modal.js"
+    },
     "./testing": {
       "source": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
@@ -59,7 +65,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest --run",
-    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts"
+    "test:live:docker": "PI_TRANSPORT_LIVE_DOCKER=1 vitest --run test/box-docker.live.test.ts",
+    "test:live:modal": "PI_TRANSPORT_LIVE_MODAL=1 vitest --run test/box-modal.live.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.2.0",
@@ -73,6 +80,7 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
+    "modal": "0.11.0",
     "vitest": "4.1.11"
   },
   "repository": {
