@@ -11,7 +11,8 @@ const CLOCK_SKEW_MS = 2_000;
 
 /** The file envelope over a workspace directory, under the key the host names. `notBefore` is when the node's
  *  conversation first opened, in epoch milliseconds: an older file is another run's and is refused. A file that is
- *  not there fails with the file system's own `ENOENT`. */
+ *  not there fails with the file system's own `ENOENT`. A workspace that is the file system's root confines nothing,
+ *  and every path is refused there as outside it. */
 export function workspaceRecordFile(options: { key: string; workspace: string; notBefore?: () => number }): NonNullable<RecordContract["file"]> {
   const { key } = options;
   return {
@@ -29,7 +30,8 @@ export function workspaceRecordFile(options: { key: string; workspace: string; n
         if (!stat) break;
         if (stat.isSymbolicLink()) throw new Error(`${key} names a path outside the workspace through a symlink: ${relative}`);
       }
-      const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      // Non-blocking: a named pipe opens at once and is refused below, where a plain open would wait for its writer.
+      const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       let text: string;
       try {
         const stat = await handle.stat();

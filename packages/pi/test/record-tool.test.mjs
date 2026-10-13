@@ -1,7 +1,8 @@
 // The record core on pi-durable: a conversation's `submit` tool over its two documents, on the in-memory storage
 // with a scripted model. Each test counts the model's requests, so "ends the run" means no request after it.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { closeSync, constants, mkdtempSync, mkdirSync, openSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -172,6 +173,19 @@ test('a record delivered as a workspace file is read from inside the workspace o
   const stale = await run([submit({ _record_file: 'old.json' }), submit({ verdict: 'pass' }), say('never asked')], { file }, { fileKey: '_record_file' });
   assert.match(stale.toolResults[1].at(-1), /^REJECTED \(1\/6\) — submission does not satisfy the schema: _record_file is stale; write it during this run before submitting\. Fix exactly those and resubmit\.$/);
   assert.deepEqual(stale.record, { record: { verdict: 'pass' }, attempts: 2 });
+});
+
+test('a record file that is a named pipe is refused as no regular file: the read does not wait for a writer', async (t) => {
+  const workspace = mkdtempSync(join(tmpdir(), 'record-pipe-'));
+  const pipe = join(workspace, 'record.json');
+  // A reader the pipe holds is let go before the directory is removed, however the test ends.
+  t.after(() => { try { closeSync(openSync(pipe, constants.O_RDWR | constants.O_NONBLOCK)); } catch { /* no pipe was made */ } rmSync(workspace, { recursive: true, force: true }); });
+  try { execFileSync('mkfifo', [pipe]); } catch { t.skip('no mkfifo on this platform'); return; }
+  const reading = workspaceRecordFile({ key: '_record_file', workspace }).read('record.json').then(() => 'read', (error) => error.message);
+  let timer;
+  const outcome = await Promise.race([reading, new Promise((resolve) => { timer = setTimeout(() => resolve('still waiting'), 1000); })]);
+  clearTimeout(timer);
+  assert.equal(outcome, '_record_file must name a regular file');
 });
 
 test('an error the host claims ends the run with the host told; any other error is the tool\'s', async () => {
