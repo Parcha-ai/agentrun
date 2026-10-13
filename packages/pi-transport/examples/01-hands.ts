@@ -53,6 +53,7 @@ import {
 /** A real model stops after this many requests in one turn, and the turn after this long. */
 const MAX_REQUESTS = 10;
 const MAX_TURN_MS = 180_000;
+const LEFT_WAIT_MS = 15_000;
 const NAME_PREFIX = process.env.PI_HANDS_NAME_PREFIX ?? "pi-hands-";
 const INSTRUCTIONS = "You work through your tools: bash runs a shell command, write writes a file. Be brief.";
 /** Lists the names, never the values, of variables in a box that look like credentials. */
@@ -413,9 +414,14 @@ try {
 	if (!ended.ok) console.error(ended.error.message);
 	log.left = {};
 	// What this run's providers still list under its labels: 0 when every box ended, -1 when a provider cannot say.
+	// A provider's listing may trail a destroy by a moment, so a count that is not 0 is asked for again for a while.
 	for (const name of new Set(log.boxes.map((record) => record.provider))) {
-		const listed = await providers[name]?.list(labels, context);
-		log.left[name] = listed?.ok ? listed.value.length : -1;
+		for (const deadline = Date.now() + LEFT_WAIT_MS; ; ) {
+			const listed = await providers[name]?.list(labels, context);
+			log.left[name] = listed?.ok ? listed.value.length : -1;
+			if (log.left[name] <= 0 || Date.now() > deadline) break;
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
+		}
 	}
 	await harness.close(context);
 	await rm(scratch, { recursive: true, force: true });
