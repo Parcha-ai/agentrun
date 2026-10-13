@@ -21,6 +21,7 @@ afterAll(async () => {
 
 const PIPES: [string, Pipe][] = [
 	["stream", { kind: "stream" }],
+	["stream coalesced to 32 KiB", { kind: "stream", coalesceBytes: 32 * 1024 }],
 	["files of 64 KiB", { kind: "files", chunkBytes: 64 * 1024 }],
 	["files of 1 MiB", { kind: "files", chunkBytes: 1024 * 1024 }],
 ];

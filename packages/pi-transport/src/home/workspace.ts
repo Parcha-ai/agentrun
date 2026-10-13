@@ -98,11 +98,14 @@ export type WorkspaceOptions = {
 };
 
 /**
- * How one side of a copy moves bytes. `stream` is the program's own output (source) or input (target). `files` cuts
+ * How one side of a copy moves bytes. `stream` is the program's own output (source) or input (target); on a target,
+ * `coalesceBytes` joins what is written into writes of at least that size, for a box whose cost is per call. `files` cuts
  * the archive into files of `chunkBytes` that travel with the box's own `upload` and `download`, which a provider may
  * make much faster than a program's input and output.
  */
-export type Pipe = { readonly kind: "stream" } | { readonly kind: "files"; readonly chunkBytes: number };
+export type Pipe =
+	| { readonly kind: "stream"; readonly coalesceBytes?: number }
+	| { readonly kind: "files"; readonly chunkBytes: number };
 
 /** How a single file is moved. */
 export type MoveFileOptions = { readonly fromPipe?: Pipe; readonly toPipe?: Pipe };
@@ -515,10 +518,37 @@ async function relay(
 
 type Starter = (context: Context) => Promise<Result<BoxProcess, BoxError>>;
 
+/** An input that holds what is written until `bytes` are waiting, then writes them in one call. */
+function coalescing(stdin: BoxProcess["stdin"], bytes: number): BoxProcess["stdin"] {
+	let held: Uint8Array[] = [];
+	let size = 0;
+	const flush = async () => {
+		if (size === 0) return;
+		const all = concat(held);
+		held = [];
+		size = 0;
+		await stdin.write(all);
+	};
+	return {
+		write: async (chunk) => {
+			held.push(chunk);
+			size += chunk.length;
+			if (size >= bytes) await flush();
+		},
+		close: async () => {
+			await flush().catch(() => {});
+			await stdin.close();
+		},
+	};
+}
+
 const streamStarter =
-	(box: Box, command: readonly string[]): Starter =>
-	(context) =>
-		box.exec(command, undefined, context);
+	(box: Box, command: readonly string[], coalesceBytes?: number): Starter =>
+	async (context) => {
+		const started = await box.exec(command, undefined, context);
+		if (!started.ok || coalesceBytes === undefined || coalesceBytes <= 0) return started;
+		return ok({ ...started.value, stdin: coalescing(started.value.stdin, coalesceBytes) });
+	};
 
 function concat(parts: readonly Uint8Array[]): Uint8Array {
 	const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -831,7 +861,7 @@ export async function moveWorkspace(
 		names,
 		toPipe.kind === "files"
 			? filesSink(to, UNPACK_FILES_SCRIPT, [options.toRoot], toPipe.chunkBytes)
-			: streamStarter(to, ["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot]),
+			: streamStarter(to, ["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot], toPipe.coalesceBytes),
 		{
 			stallMs: options.stallMs ?? DEFAULT_STALL_MS,
 			deadlineMs: options.deadlineMs ?? BASE_DEADLINE_MS + (bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
@@ -914,7 +944,7 @@ export async function moveFile(
 		undefined,
 		toPipe.kind === "files"
 			? filesSink(to, JOIN_FILE_SCRIPT, [partial], toPipe.chunkBytes)
-			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial]),
+			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial], toPipe.coalesceBytes),
 		{
 			stallMs: DEFAULT_STALL_MS,
 			deadlineMs: BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
