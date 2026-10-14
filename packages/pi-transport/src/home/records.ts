@@ -36,6 +36,8 @@ export interface Shipper {
 	down(): void;
 	/** Settles true when the host holds every commit and every line, false when `withinMs` passed first. */
 	drained(withinMs: number): Promise<boolean>;
+	/** The sequence the store's next commit takes; `undefined` while no store is open. */
+	position(): number | undefined;
 }
 
 export type ShipperOptions = {
@@ -56,6 +58,7 @@ export type ShipperOptions = {
  */
 export function createShipper(options: ShipperOptions = {}): Shipper {
 	let outbox: Outbox | undefined;
+	let next: number | undefined;
 	let send: ((frame: Frame) => boolean) | undefined;
 	// Set when the host said where it is: frames go out on this link from then on.
 	let streaming = false;
@@ -102,6 +105,7 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 					...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
 				});
 				outbox = opened;
+				next = head.value;
 				const recording = options.recording;
 				// Nothing has committed through pi yet, and this process holds the store alone: the state is exact.
 				const lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
@@ -115,7 +119,10 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 					storage: shippingStorage(storage, {
 						outbox: opened,
 						head: head.value,
-						ship: (shipped) => sendRecord(shipped.commit, shipped.writes),
+						ship: (shipped) => {
+							next = shipped.commit + 1;
+							sendRecord(shipped.commit, shipped.writes);
+						},
 						admits: options.admits ?? admitsTool,
 						acknowledged,
 					}),
@@ -136,7 +143,10 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 							await stop?.();
 						} finally {
 							opened.close();
-							if (outbox === opened) outbox = undefined;
+							if (outbox === opened) {
+								outbox = undefined;
+								next = undefined;
+							}
 						}
 					},
 				};
@@ -177,6 +187,9 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 		down() {
 			send = undefined;
 			streaming = false;
+		},
+		position() {
+			return next;
 		},
 		async drained(withinMs) {
 			const deadline = performance.now() + withinMs;

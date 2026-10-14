@@ -439,6 +439,54 @@ describe("the record stream", () => {
 		});
 	}, 30_000);
 
+	it("keys each model request by its generation: a new process re-asks under the same key, a new ask under its own", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const real = serveModels(made.models);
+			const seen: Frame[] = [];
+			// The host holds the first request unanswered, as a provider in the middle of an answer would.
+			const server: ModelServer = {
+				receive(frame, reply) {
+					if (frame.t === "model") seen.push(frame);
+					if (frame.t === "model" && seen.length === 1) return true;
+					return real.receive(frame, reply);
+				},
+				down: (from) => real.down(from),
+				close: () => real.close(),
+				get paid() {
+					return real.paid;
+				},
+			};
+			const first = createRunner(made.options);
+			const host = await hold(made, first, 1, kept.sink, server);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			for (let waited = 0; waited < 5_000 && seen.length === 0; waited += 10) await sleep(10);
+			// The process ends in the middle of the request.
+			await first.home?.close(context);
+			host.close("gone");
+			const again = createRunner(made.options);
+			const back = await hold(made, again, 1, kept.sink, server);
+			getOrThrow(await back.resume({ epoch: 1 }, context));
+			getOrThrow(await back.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			const [asked, reasked] = seen;
+			expect(asked?.key).toMatch(/^sha256:/);
+			expect(reasked?.key).toBe(asked?.key);
+			expect(typeof asked?.position).toBe("number");
+			expect(Number(reasked?.position)).toBeGreaterThanOrEqual(Number(asked?.position));
+			// Every later generation asks under a key of its own.
+			const keys = seen.slice(1).map((frame) => frame.key);
+			expect(new Set(keys).size).toBe(keys.length);
+			// A deliberate new ask, the same words again: a new generation, a new key.
+			getOrThrow(await back.submit("go", undefined, context));
+			getOrThrow(await back.idle(context));
+			expect(seen.slice(0, -1).map((frame) => frame.key)).not.toContain(seen.at(-1)?.key);
+			back.close("done");
+			await again.home?.close(context);
+		});
+	}, 30_000);
+
 	it("gives an order the answer the runner sent before it closed, behind a slow log", async () => {
 		const models = createModels();
 		const kept = memorySink({ appendMs: 50 });

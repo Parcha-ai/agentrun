@@ -247,7 +247,22 @@ function rebuild(request: OpenRequest, frame: AssistantMessageFrame): AssistantM
  * A lost link keeps open requests open for `resumeWithinMs`: when it comes back the runner asks for the frames it
  * missed, so the host pays once. A request still open after that ends with a retryable error.
  */
-export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinMs?: number }): ProxyModels {
+export function proxyModels(
+	catalog: Catalog,
+	options?: {
+		readonly resumeWithinMs?: number;
+		/**
+		 * The key a request is paid under, and the store position it was made at. The same key again, in another runner
+		 * process, is answered from the first answer and not paid for. It must not change across a restore: the
+		 * session, the conversation, the store position and a hash of the body.
+		 */
+		readonly keyOf?: (request: {
+			readonly model: Model<Api>;
+			readonly messages: readonly unknown[];
+			readonly options: Readonly<Record<string, unknown>>;
+		}) => { readonly key: string; readonly position: number } | undefined;
+	},
+): ProxyModels {
 	const resumeWithinMs = options?.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS;
 	const open = new Map<string, OpenRequest>();
 	// Unique for each runner process, so a runner that started again cannot reuse an id the host still remembers.
@@ -277,12 +292,15 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 		counter += 1;
 		const id = `${process}.${counter}`;
 		const stream = createAssistantMessageEventStream();
+		const crossing = crossingOptions(received);
+		const keyed = options?.keyOf?.({ model, messages, options: crossing });
 		const frame: Frame = {
 			t: "model",
 			id,
 			model: { provider: model.provider, modelId: model.id },
 			messages,
-			options: crossingOptions(received),
+			options: crossing,
+			...(keyed === undefined ? {} : { key: keyed.key, position: keyed.position }),
 		};
 		const signal = received?.signal instanceof AbortSignal ? received.signal : undefined;
 		const onAbort = () => {

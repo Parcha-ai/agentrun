@@ -3,6 +3,7 @@ import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
 import type { DrainOptions } from "./gate.ts";
+import { createKeys } from "./keys.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { type Catalog, type ProxyModels, proxyModels } from "./models.ts";
 import type { LinesSync } from "./outbox.ts";
@@ -171,10 +172,6 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			return;
 		}
 		if (opening === undefined) {
-			const made = proxyModels(frame.catalog as Catalog, {
-				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
-			});
-			proxy = made;
 			// The host takes the record stream: every commit of this runner is shipped, from its first.
 			const shipper =
 				frame.records === true
@@ -185,6 +182,13 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 							acknowledgeWithinMs: options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS,
 						})
 					: undefined;
+			// With the stream, each model request carries its key and the store position it was made at.
+			const keys = shipper === undefined ? undefined : createKeys(options.session, () => shipper.position());
+			const made = proxyModels(frame.catalog as Catalog, {
+				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
+				...(keys === undefined ? {} : { keyOf: (request) => keys.keyOf(request) }),
+			});
+			proxy = made;
 			const { recording: _recording, linesSync: _linesSync, admits: _admits, ...homeOptions } = options;
 			opening = {
 				proxy: made,
@@ -193,6 +197,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 					...homeOptions,
 					models: made.models,
 					...(shipper === undefined ? {} : { wrapStore: shipper.wrapStore(options.store) }),
+					...(keys === undefined ? {} : { extensions: [...(options.extensions ?? []), keys.extension] }),
 				}),
 			};
 		}

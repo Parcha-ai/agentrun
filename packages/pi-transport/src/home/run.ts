@@ -8,6 +8,7 @@ import {
 	type ConversationId,
 	configure,
 	defineDoc,
+	type Extension,
 	Harness,
 	type HarnessOptions,
 	type Storage,
@@ -86,6 +87,8 @@ export type HomeOptions = {
 	 * ships its commits this way.
 	 */
 	readonly wrapStore?: (storage: Storage, context: Context) => Promise<WrappedStore>;
+	/** Extensions the home installs in the app's registry, beside its gate. */
+	readonly extensions?: readonly Extension[];
 };
 
 /** What `wrapStore` gives the home. */
@@ -410,6 +413,7 @@ class SessionHome implements Home {
 		const { root: _root, onOpen, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
+		for (const extension of this.#options.extensions ?? []) registry.install(extension);
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
 		let harness: Harness;
