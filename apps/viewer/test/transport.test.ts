@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { counterFold } from '../src/counters.ts';
-import { parseLines, validate, type Line } from '../src/format.ts';
+import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { type Node, panelsShown } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
 import { transportPanel, type TransportState } from '../src/transport.ts';
@@ -144,4 +144,75 @@ test('a cost that is null is unknown, never $0', () => {
   const text = screen(lines);
   assert.match(text, /cost\s+unknown/);
   assert.doesNotMatch(text, /\$0/);
+});
+
+// ---- review of the panel (#448) -----------------------------------------------------------------------------------
+
+const live = (kind: string, t: number, data: Line['data'], gen = 1): Line => ({ channel: 'live', source: 'transport', kind, t, seq: t, gen, data });
+const boxAt = (id: string, environment: string, t: number) => live('box.created', t, { environment, provider: 'docker', box: id });
+const leaseAt = (id: string, environment: string, epoch: number, t: number) => live('lease', t, { epoch, holder: { environment, provider: 'docker', box: id } });
+const moveOf = (id: string, t: number, to: string, extra: { [key: string]: Json } = {}) => live('move', t, { id, to: { environment: 'x', provider: 'docker', box: to }, epoch: 2, head: 5, ...extra });
+const stepsOf = (names: string[], from: number) => names.map((step, index) => live('move.step', from + index, { move: 'move', step }));
+
+test('the highlighted header is scoped to the header: the lane cells that carry the class token keep their width', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /\.transport > \.token \{/);
+  assert.doesNotMatch(html, /\.transport \.token \{/);
+});
+
+test('a box that ends or is killed closes the session\'s token there: the panel says it awaits recovery until a lease or a runner says where it came back', () => {
+  // On the Docker route the Daytona box is destroyed at 33.355 s; the lease that answers is at 35.167 s.
+  const killedAt = docker.lines.findIndex((line) => line.kind === 'box.killed') + 1;
+  const leaseLine = docker.lines.findIndex((line, index) => line.kind === 'lease' && index >= killedAt) + 1;
+  assert.ok(killedAt > 0 && leaseLine > killedAt);
+  const waiting = at(docker.lines, killedAt);
+  assert.ok(waiting.token?.awaiting !== undefined, 'the token knows its box is gone');
+  assert.ok(waiting.tokens.every((segment) => segment.to !== undefined || segment.box !== waiting.token!.box), 'its segment is closed');
+  assert.match(screen(docker.lines, killedAt), /awaiting recovery/);
+  assert.match(screen(docker.lines, killedAt), /The session was at/);
+  const back = at(docker.lines, leaseLine);
+  assert.equal(back.token?.awaiting, undefined);
+  assert.doesNotMatch(screen(docker.lines, leaseLine), /awaiting recovery/);
+  // The run's cleanup after the result is not a loss.
+  assert.doesNotMatch(screen(docker.lines), /awaiting recovery/);
+});
+
+test('a runner that starts while the session awaits a recovery is where it came back, with no lease line', () => {
+  const lines = [boxAt('a', 'one', 1), boxAt('b', 'two', 2), { ...live('x', 3, {}), channel: 'live', source: 'host', kind: 'process.started', gen: 1, data: { environment: 'one', box: 'a' } } as Line, live('box.killed', 5, { box: 'a' }), { ...live('x', 7, {}), source: 'host', kind: 'process.started', gen: 2, data: { environment: 'two', box: 'b' } } as Line];
+  assert.ok(at(lines, 4).token?.awaiting !== undefined);
+  const back = at(lines);
+  assert.equal(back.token?.box, 'b');
+  assert.equal(back.token?.awaiting, undefined);
+});
+
+test('steps belong to their attempt: a move that failed before its line does not hand its steps to the next flight, with a restore between or without', () => {
+  const failed = stepsOf(['prepare', 'drain', 'seal'], 10);
+  const next = stepsOf(['prepare', 'drain', 'seal', 'ship', 'take', 'resume', 'retire'], 20);
+  // A failed move, a restore (recovery), then a move that completes.
+  const withRestore = [...failed, live('restore', 15, { id: 'r1', to: { environment: 'x', provider: 'docker', box: 'n' }, epoch: 3 }), ...next, moveOf('m2', 30, 'n')];
+  const flights = at(withRestore).flights;
+  assert.deepEqual(flights.map((flight) => flight.id), ['r1', 'm2']);
+  assert.equal(flights[1]!.steps.length, 7, 'only the seven steps of the attempt that completed');
+  assert.equal(flights[1]!.steps[0]!.t, 20, 'it starts at its own prepare');
+  assert.match(screen(withRestore), /steps: prepare 0\.0 s/);
+  // A retry with no restore line in between: the next prepare starts the attempt over.
+  const retried = [...failed, ...next, moveOf('m3', 30, 'n')];
+  assert.equal(at(retried).flights[0]!.steps.length, 7);
+  assert.equal(at(retried).flights[0]!.steps[0]!.t, 20);
+});
+
+test('shipped bytes: a total that includes a flight with no recorded size says so, and a recording with none recorded says not recorded', () => {
+  const boxes = [boxAt('a', 'one', 1), boxAt('b', 'two', 2)];
+  const sized = moveOf('m1', 10, 'b', { seal: { bytes: 2048 } });
+  const restore = live('restore', 11, { id: 'r1', to: { environment: 'two', provider: 'docker', box: 'b' }, epoch: 3, checkpoint: { head: 9, bytes: 4096 } });
+  const unsized = moveOf('m2', 12, 'b');
+  assert.match(screen([...boxes, sized]), /bytes shipped\s*2 KiB \(observed\)/);
+  assert.match(screen([...boxes, sized, restore]), /bytes shipped\s*2 KiB known, 1 flight not recorded \(observed\)/);
+  assert.match(screen([...boxes, unsized, restore]), /bytes shipped\s*not recorded/);
+  assert.doesNotMatch(screen([...boxes, unsized, restore]), /bytes shipped\s*0 B/);
+});
+
+test('the checkpoint count from live lines is labelled observed, as the flights are', () => {
+  assert.match(screen(real.lines), /checkpoints\s*\d+ \(observed: live lines\)/);
+  assert.match(screen([boxAt('a', 'one', 1)]), /checkpoints\s*0\b/);
 });

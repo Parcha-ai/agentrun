@@ -65,7 +65,7 @@ export type TransportState = {
   checkpoints: CheckpointRecord[];
   pending: Step[];
   /** Where the session lives: the box the latest lease (or, before one, the first runner) names. */
-  token: { box: string; epoch: number | null; since: number } | undefined;
+  token: { box: string; epoch: number | null; since: number; /** Its box ended or was killed: the session waits for a recovery. */ awaiting?: number } | undefined;
   tokens: { box: string; from: number; to?: number }[];
   tile: string | undefined;
   result: { blob: string; title: string } | undefined;
@@ -130,7 +130,7 @@ const upsert = (flights: Flight[], flight: Flight): Flight[] => {
 };
 
 const tokenTo = (state: TransportState, box: string, epoch: number | null, t: number): TransportState => {
-  if (state.token?.box === box && state.token.epoch === epoch) return state;
+  if (state.token?.box === box && state.token.epoch === epoch && state.token.awaiting === undefined) return state;
   const tokens = state.tokens.map((segment, index) => (index === state.tokens.length - 1 && segment.to === undefined ? { ...segment, to: t } : segment));
   return { ...state, token: { box, epoch, since: t }, tokens: [...tokens, { box, from: t }] };
 };
@@ -164,7 +164,8 @@ export const transportPanel: Panel<TransportState> = {
         // The first runner is where the session starts; each kill waits for the next runner to be answered by an arrow.
         const kills = state.kills.map((kill) => (kill.recovered === undefined ? { ...kill, recovered: { gen, box, afterMs: Math.max(0, line.t - kill.t) } } : kill));
         state = { ...state, runners, kills, opened: true };
-        return state.token === undefined ? tokenTo(state, box, null, line.t) : state;
+        // The first runner is where the session starts; a runner that starts while the session waits for a recovery is where it came back.
+        return state.token === undefined || (state.token.awaiting !== undefined && state.token.box !== box) ? tokenTo(state, box, state.token?.epoch ?? null, line.t) : state;
       }
       if (line.kind === 'kill') {
         const kind = data.kind === 'process' ? 'process' : 'box';
@@ -185,14 +186,18 @@ export const transportPanel: Panel<TransportState> = {
       case 'box.ended':
       case 'box.killed': {
         const box = str(data.box);
-        return { ...state, boxes: state.boxes.map((each) => (each.box === box && each.to === undefined ? { ...each, to: line.t, ended: line.kind === 'box.killed' ? 'killed' : 'ended' } : each.box === box && line.kind === 'box.killed' ? { ...each, ended: 'killed' } : each)) };
+        // A box that ends after the result is the run's cleanup, not a loss.
+        const holding = state.token !== undefined && state.token.box === box && state.token.awaiting === undefined && state.result === undefined;
+        const closed = holding ? state.tokens.map((segment, index) => (index === state.tokens.length - 1 && segment.to === undefined ? { ...segment, to: line.t } : segment)) : state.tokens;
+        return { ...state, tokens: closed, ...(holding && state.token ? { token: { ...state.token, awaiting: line.t } } : {}), boxes: state.boxes.map((each) => (each.box === box && each.to === undefined ? { ...each, to: line.t, ended: line.kind === 'box.killed' ? 'killed' : 'ended' } : each.box === box && line.kind === 'box.killed' ? { ...each, ended: 'killed' } : each)) };
       }
       case 'process.killed': return state;
-      case 'move.step': return { ...state, pending: [...state.pending, { step: str(data.step) ?? '?', t: line.t }] };
+      // A new attempt begins at its first step: the steps of one that never reached its `move` line are not the next flight's.
+      case 'move.step': return { ...state, pending: [...(str(data.step) === 'prepare' ? [] : state.pending), { step: str(data.step) ?? '?', t: line.t }] };
       case 'move':
       case 'restore': {
         const flight = flightOf(str(data.id) ?? `${line.kind}-${state.flights.length + 1}`, data, line, 'observed');
-        return { ...state, flights: upsert(state.flights, { ...flight, steps: line.kind === 'move' ? state.pending : [] }), pending: line.kind === 'move' ? [] : state.pending };
+        return { ...state, flights: upsert(state.flights, { ...flight, steps: line.kind === 'move' ? state.pending : [] }), pending: [] };
       }
       case 'checkpoint': return { ...state, checkpoints: [...state.checkpoints, { n: num(data.n) ?? state.checkpoints.length + 1, head: num(data.head) ?? -1, bytes: num(data.bytes) ?? null, t: line.t, excluded: excluded(data.excluded) }] };
       case 'lease': {
@@ -250,13 +255,14 @@ function counters(state: TransportState): Node {
   const flightText = `${moves.length} move${moves.length === 1 ? '' : 's'}, ${restores.length} restore${restores.length === 1 ? '' : 's'}${state.flights.length === 0 ? '' : proven ? '' : ' (observed: live lines)'}`;
   const measured = state.durableLines > 0;
   const bytes = state.flights.reduce((sum, flight) => sum + (flight.bytes ?? 0), 0);
+  const unknown = state.flights.filter((flight) => flight.bytes === null).length;
   const row = (name: string, value: string, title?: string): Node => h('li', { ...(title ? { title } : {}) }, h('span', { class: 'k' }, name), h('b', {}, value));
   return h('ul', { class: 'tcounters' },
     row('processes', String(state.runners.length), 'runners the host started: its own lines'),
     row('kills survived', `${survived} of ${state.kills.length} (${boxKills} box, ${processKills} process)`, 'a kill is survived when a runner started after it'),
     row('flights', flightText),
-    row('checkpoints', String(state.checkpoints.length)),
-    row('bytes shipped', state.flights.length ? `${size(bytes)} (observed)` : 'none yet'),
+    row('checkpoints', state.checkpoints.length === 0 ? '0' : `${state.checkpoints.length} (observed: live lines)`),
+    row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`),
     row('paid calls', measured ? String(strip.paid.total) : 'not measured: no durable lines'),
     row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
     row('cost', !measured ? 'not measured: no durable lines' : strip.cost === null ? 'unknown' : `$${strip.cost.toFixed(4)}`));
@@ -292,7 +298,7 @@ function view(state: TransportState, now: number): Node {
   const why = state.flights.findLast((flight) => flight.why !== undefined)?.why;
   return h('div', { class: 'transport' },
     h('div', { class: 'token' },
-      h('b', {}, 'The session is at '), home ? `${label(state, home.box)}${state.token!.epoch !== null ? `, epoch ${state.token!.epoch}` : ''}` : 'a place not recorded',
+      h('b', {}, state.token?.awaiting === undefined ? 'The session is at ' : 'The session was at '), home ? `${label(state, home.box)}${state.token!.epoch !== null ? `, epoch ${state.token!.epoch}` : ''}` : 'a place not recorded', state.token?.awaiting !== undefined && ' — its box is gone; awaiting recovery',
       h('div', { class: 'why' }, `Why here: ${why ? `chosen by ${why}` : 'by config (no placement record in this recording)'}`)),
     counters(state),
     h('h4', {}, 'Lanes'),
