@@ -7,6 +7,7 @@ export { reuseReceipts, seedReceipts, ReceiptIndex, type ReceiptReuse, type Reus
 export { toolResult, ToolResultKeyError, type TextBlock } from "./pi-versions.js";
 export { DECISION_RECEIPTS_DOC, DECISION_ROW_VERSION, appendDecision, createDecisionWriter, readDecisions } from "./decisions.js";
 export type { DecisionRow, DecisionRowRule, DecisionSession, DecisionWriter } from "./decisions.js";
+export { decisionRecovery, type DecisionRecovery } from "./decision-recovery.js";
 export {
   DELIVERY_ATTEMPTS, deliver, deliveryEnded, deliveryTerminates, deliveryText, disagreementText, extrasNotInRecord, fileSubmission, gate,
   healNullSpellings, lintRecordRoot, lintRecordSchema, mixedFileSubmission, nudgeText, nullSpellings, parseStringifiedContainers, repairRecord, spend,

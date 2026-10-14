@@ -1,9 +1,9 @@
 // Read-only views of a run's durable file, synchronously and without the Harness: a document by its address, a
 // journal as `documentStore` wrote it, and the route decisions a frozen snapshot holds. A reader that only looks at
-// what ran (the run card, a tail that inherits what a run decided) uses them; the Harness stays the only writer.
+// what ran (the run card, a tail that inherits what a run decided) uses them; the Harness stays the only writer. The
+// readers take the store file itself (pi-durable's SQLite file, wherever the host keeps it), never a directory.
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "node:path";
 import { apply } from "@earendil-works/chord/delta";
 import type { RecoveryEffect, RecoveryNote } from "@parcha/agentrun-dsl/recovery";
 import { effectKey } from "./store.js";
@@ -18,10 +18,9 @@ export type JournalView = {
 };
 type DriverRecord = { binding: string | null; inputs: Record<string, string> | null; generation: number; revision: number; state: Json; notes: RecoveryNote[]; effects: string[] };
 
-/** The run's durable file, opened read-only for `read`; null when the run has none. Every query of one `read` runs in
- *  one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
-function withDurableFile<T>(directory: string, read: (db: Database) => T): T | null {
-  const file = path.join(directory, "durable", "run.sqlite");
+/** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
+ *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
+function withDurableFile<T>(file: string, read: (db: Database) => T): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
@@ -46,15 +45,15 @@ function sessionDoc(db: Database, kind: string, key?: string): Record<string, un
   return row?.id === undefined ? undefined : revisionsOf(db, row.id);
 }
 
-/** A Session document of the run's durable file, read-only; undefined when the file or the document is absent. */
-export function durableDoc<T = Record<string, unknown>>(directory: string, kind: string, key?: string): T | undefined {
-  return (withDurableFile(directory, (db) => sessionDoc(db, kind, key)) ?? undefined) as T | undefined;
+/** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
+export function durableDoc<T = Record<string, unknown>>(file: string, kind: string, key?: string): T | undefined {
+  return (withDurableFile(file, (db) => sessionDoc(db, kind, key)) ?? undefined) as T | undefined;
 }
 
-/** The journal `key` holds in the run's durable file, as the last commit left it; undefined when the file holds no
+/** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
  *  such journal or none has bound it. */
-export function readJournal(directory: string, key: string): JournalView | undefined {
-  return withDurableFile(directory, (db): JournalView | undefined => {
+export function readJournal(file: string, key: string): JournalView | undefined {
+  return withDurableFile(file, (db): JournalView | undefined => {
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
     if (!doc || doc.binding === null) return undefined;
     const effects = doc.effects.map((id) => {
