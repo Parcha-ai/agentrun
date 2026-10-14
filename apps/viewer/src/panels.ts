@@ -43,6 +43,9 @@ export type Panel<S> = Fold<S> & {
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
 export const featuredPanel = <S>(panels: Panel<S>[], lines: Line[]): Panel<S> | undefined => panels.find((panel) => panel.featured?.(lines) === true);
 
+/** The panels the shell redraws between stops: only those that move with the clock. */
+export const animatedPanels = <S>(panels: Panel<S>[]): Panel<S>[] => panels.filter((panel) => panel.animated === true);
+
 /** The extensions' panels, in the order they register (each when its module loads). */
 export const registry: Panel<any>[] = [];
 export const register = <S>(panel: Panel<S>) => { registry.push(panel); };

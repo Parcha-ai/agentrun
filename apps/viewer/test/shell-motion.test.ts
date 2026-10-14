@@ -4,16 +4,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { applyVars, viewContext } from '../src/app.ts';
 import type { Manifest } from '../src/format.ts';
-import { featuredPanel, h, registry, type Panel } from '../src/panels.ts';
-import { playback, stopsOf, timeParam } from '../src/replay.ts';
+import { animatedPanels, featuredPanel, h, registry, type Panel } from '../src/panels.ts';
+import { linkedTime, playback, stopsOf, timeParam } from '../src/replay.ts';
 import { lines, manifest } from './restore-drill.ts';
 
 const panel = (id: string, extra: Partial<Panel<null>> = {}): Panel<null> => ({ id, title: id, init: () => null, accepts: () => false, reduce: (state) => state, view: () => 'x', ...extra });
 
 test('vars become custom properties: bare names, finite numbers only', () => {
   const set: [string, string][] = [];
-  applyVars({ style: { setProperty: (name, value) => { set.push([name, value]); } } }, { row: 2.4, age: 0, bad: Number.NaN, worse: Number.POSITIVE_INFINITY});
-  assert.deepEqual(set, [['--row', '2.4'], ['--age', '0']], 'a custom property each, and a non-finite number sets nothing');
+  applyVars({ style: { setProperty: (name, value) => { set.push([name, value]); } } }, { row: 2.4, age: 0, 'flash-age': 3, bad: Number.NaN, worse: Number.POSITIVE_INFINITY, 'x: red; --y': 1, '--lead': 1, '9x': 1, '': 1 });
+  assert.deepEqual(set, [['--row', '2.4'], ['--age', '0'], ['--flash-age', '3']], 'a custom property each; a non-finite number, or a name that is not a bare name, sets nothing');
   applyVars({ style: { setProperty: () => assert.fail('nothing to set') } }, undefined);
   assert.deepEqual(h('div', { vars: { row: 1 } }), { tag: 'div', vars: { row: 1 }, children: [] }, 'h passes vars through');
 });
@@ -71,4 +71,19 @@ test('the first registered panel that says it is featured wins; the others are d
 test('animated is a flag a panel sets and the shell reads: absent means drawn at stops only', () => {
   assert.equal(panel('p').animated, undefined);
   assert.equal(panel('p', { animated: true }).animated, true);
+});
+
+test('between stops only the animated panels are redrawn', () => {
+  const moves = panel('moves', { animated: true });
+  assert.deepEqual(animatedPanels([moves, panel('turns'), panel('plain', { animated: false })]), [moves]);
+  assert.deepEqual(animatedPanels([panel('turns')]), []);
+});
+
+test('a link keeps its time only while the screen is still at that time', () => {
+  assert.equal(linkedTime(20_000, 20_000), '20');
+  assert.equal(linkedTime(18_600, 18_600), '18.6');
+  assert.equal(linkedTime(20_000, 21_300), undefined, 'played on');
+  assert.equal(linkedTime(20_000, 5_000), undefined, 'sought away');
+  assert.equal(linkedTime(undefined, 5_000), undefined, 'a link that never had a time');
+  assert.equal(linkedTime(0, 0), '0');
 });

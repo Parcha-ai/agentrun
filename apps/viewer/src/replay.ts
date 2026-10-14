@@ -49,6 +49,9 @@ export function timeParam(value: string | null): number | undefined {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
 }
 
+/** The `?t=` a URL keeps: the time the link opened at, while the clock is still there; once the user has sought or played on, no time (a reload would undo it). */
+export const linkedTime = (opened: number | undefined, clock: number): string | undefined => (opened !== undefined && clock === opened ? String(opened / 1000) : undefined);
+
 /** The next stop after `p`, or `p` at the end. */
 export function nextStop(stops: boolean[], p: number): number {
   for (let at = p + 1; at < stops.length; at += 1) if (stops[at]) return at;
