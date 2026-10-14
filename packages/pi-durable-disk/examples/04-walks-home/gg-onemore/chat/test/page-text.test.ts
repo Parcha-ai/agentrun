@@ -23,6 +23,8 @@ test("the golden-gate skill picks its strength by Jev's ranking against the ship
   assert.match(s, /tries_rate` 0\.5 or more/);
   assert.match(s, /loop_rate` under 0\.35/);
   assert.doesNotMatch(s, /Keep the strengths that still try most of the time, then take the most obsessed of those/, "the rule that served a tame clamp is gone");
+  assert.match(s, /If no set clears the floors, it is too strong: go one k step down/, "a way on when nothing qualifies");
+  assert.match(s, /Never serve a set below the floors/);
 });
 
 test("the edited model opens on a plain greeting: in Jev's judging it argued about who it is in half the replies, not three in four", () => {

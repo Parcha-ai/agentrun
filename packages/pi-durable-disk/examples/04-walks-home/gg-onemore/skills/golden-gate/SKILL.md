@@ -68,10 +68,11 @@ A part's activation is set to its value at every position (the prompt, the think
      recipe's: 0.5 matches it.
 
    Serve the top of the ranking among your sets that still try (`tries_rate` 0.5 or more) and loop rarely
-   (`loop_rate` under 0.35). The recipe is the bar to match or beat, not a fallback: if your best loses to it (`beats`
+   (`loop_rate` under 0.35). If no set clears the floors, it is too strong: go one k step down, or drop the part it
+   loops on, and rank again. The recipe is the bar to match or beat, not a fallback: if your best loses to it (`beats`
    under 0.4), go one k step up, or drop a part that adds mood but not the bridge (fog, wind), and rank again. After two
-   such climbs, serve your best and tell your user how it compares with the recipe. The thinking is where it notices
-   itself, so it is judged with thinking on.
+   such rounds, serve the best set that clears the floors and tell your user how it compares with the recipe.
+   Never serve a set below the floors. The thinking is where it notices itself, so it is judged with thinking on.
 6. **Show the proof, then serve.** Before you switch, sample one question with the clamp off
    (`gglab.sample(None, [q], sampling=winner["sampling"])`, the unedited model with the same sampling) and with your
    winner on. Put both replies in your message to your user, verbatim, under "Edit off:" and "Edit on:" (the answers;
