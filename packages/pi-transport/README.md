@@ -415,6 +415,19 @@ the most the workspace may hold (excluded paths not counted), and `maxPullBytes`
 copy and the files that changed); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
 is `CheckpointStats.last.heldMs`.
 
+The commits between two checkpoints are kept too. A runner whose host asked for them (`connectHome({ onCommit })`, which puts
+`ship: true` in the resume order) sends one `commit` frame for each commit its store makes, once it landed: the sequence
+and the exact `StorageWrite` batch (`tapStorage` makes them). The host hands them to `vault.appendLog(session, entries)`,
+which keeps them in order on disk beside the checkpoints, ignores a repeat, refuses a gap (`gap`, with `through` saying
+what it holds) and keeps nothing the latest checkpoint covers; a checkpoint's `prune` cuts the log below the oldest
+generation kept. A restore then takes the checkpoint's store, applies the unbroken run of commits from its head
+(`replayCommits`, through the store's own `Storage`, on a copy on the host and before any Harness opens it), seals the
+result, and gives the lease and the resume order that seal. The order's `move` says `replayed: { from, to }` and
+`head: to + 1`; the notice says the history was brought up to date. So a call the lost box admitted after the checkpoint
+is in the history the new box opens, and is settled by pi's recovery, not run again. A log that does not start where
+the checkpoint ends is not used: the restore is the checkpoint, as before. What the frames do not do is hold an effect
+until the host has them; that wait is the record stream's.
+
 A model call paid between two checkpoints is not paid twice. A request can carry a `key` and a `position` (the store's
 next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
 keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the

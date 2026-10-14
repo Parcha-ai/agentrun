@@ -95,9 +95,12 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		then?.(result);
 	};
 
+	let shipping = false;
+
 	const run = async (home: Home, order: string, args: Readonly<Record<string, unknown>>) => {
 		switch (order) {
 			case "resume":
+				shipping = args.ship === true;
 				return home.resume(args as unknown as ResumeOrder, context);
 			case "reopen":
 				return home.reopen({ epoch: Number(args.epoch) }, context);
@@ -151,6 +154,10 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				// Told to the host as they happen, small and without arguments. A link that is down drops them.
 				onCall: (event) => {
 					if (current !== undefined) send(current, { t: "call", ...event });
+				},
+				// Each commit once it landed, when the host asked for them in its resume order.
+				onCommit: (entry) => {
+					if (shipping && current !== undefined) send(current, { t: "commit", ...entry });
 				},
 			});
 			if (!opened.ok) {

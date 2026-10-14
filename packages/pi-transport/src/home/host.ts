@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
+import type { LogEntry } from "./commit-log.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
@@ -121,7 +122,15 @@ function checked<T>(
 }
 
 /** Hold a runner on `link`: say hello with the host's models, then give orders and serve its model requests. */
-export function connectHome(link: Link, options: { readonly models: Models; readonly epoch: number }): HomeHandle {
+export function connectHome(
+	link: Link,
+	options: {
+		readonly models: Models;
+		readonly epoch: number;
+		/** Told of each commit the home made, in order: the host keeps them beside its checkpoints. */
+		readonly onCommit?: (entry: LogEntry) => void;
+	},
+): HomeHandle {
 	let epoch = options.epoch;
 	let counter = 0;
 	const pending = new Map<number, (answer: Result<unknown, RemoteError>) => void>();
@@ -150,6 +159,12 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 				const at_ = ledger.findLastIndex((record) => record.id === frame.id);
 				if (at_ >= 0) ledger[at_] = { ...(ledger[at_] as CallRecord), endedAt: at };
 			}
+			return;
+		}
+		if (frame.t === "commit") {
+			// The same epoch rule as for calls: a home the lease left behind ships nothing the host keeps.
+			if (frame.epoch !== epoch || typeof frame.commit !== "number" || !Array.isArray(frame.writes)) return;
+			options.onCommit?.({ commit: frame.commit, writes: frame.writes as LogEntry["writes"] });
 			return;
 		}
 		if (MODEL_FRAMES.has(frame.t)) {
@@ -205,7 +220,8 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 
 	return {
 		ready,
-		resume: (resumeOrder, context) => order("resume", resumeOrder, context),
+		resume: (resumeOrder, context) =>
+			order("resume", options.onCommit === undefined ? resumeOrder : { ...resumeOrder, ship: true }, context),
 		drain: (drainOptions, context) => order("drain", drainOptions ?? {}, context),
 		abandon: (context) => order("abandon", {}, context),
 		checkpoint: async (checkpointOptions, context) =>

@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { checkpointStats, localVault, pullCheckpoint, restoreNotice } from "../src/home/checkpoint.ts";
+import { type LogEntry, tapStorage } from "../src/home/commit-log.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import { connectHome, type HomeHandle, RemoteError } from "../src/home/host.ts";
 import { linkPair } from "../src/home/link.ts";
@@ -49,6 +50,17 @@ async function writeStore(path: string, commits: number) {
 		await session.commit((tx) => tx.appendEntry(conversation.id, { kind: "note", data: { index } }), context);
 	}
 	await session.close(context);
+}
+
+/** Commits made to the store after a checkpoint, as the runner would ship them. */
+async function moreCommits(path: string, commits: number): Promise<LogEntry[]> {
+	const shipped: LogEntry[] = [];
+	const session = createSession(tapStorage(await openNodeSqliteStorage(path), (entry) => shipped.push(entry)));
+	for (let index = 0; index < commits; index++) {
+		await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+	}
+	await session.close(context);
+	return shipped;
 }
 
 type Fixture = {
@@ -387,6 +399,45 @@ describe("the calls a host saw", () => {
 	});
 });
 
+describe("the commits a runner ships", () => {
+	it("reach the host in order, a commit from another epoch is ignored, and a resume asks for them", async () => {
+		const [left, right] = linkPair();
+		const got: number[] = [];
+		const handle = connectHome(left, {
+			models: createModels(),
+			epoch: 3,
+			onCommit: (entry) => got.push(entry.commit),
+		});
+		const asked: unknown[] = [];
+		right.onFrame((frame) => {
+			if (frame.t === "order") asked.push(frame.args);
+		});
+		right.send({ t: "commit", epoch: 3, commit: 7, writes: [] });
+		right.send({ t: "commit", epoch: 2, commit: 8, writes: [] });
+		right.send({ t: "commit", epoch: 3, commit: 8, writes: [] });
+		right.send({ t: "commit", epoch: 3, commit: "9", writes: [] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(got).toEqual([7, 8]);
+		void handle.resume({ epoch: 3 }, context);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(asked).toEqual([{ epoch: 3, ship: true }]);
+		handle.close("done");
+	});
+
+	it("is not asked for when the host keeps none", async () => {
+		const [left, right] = linkPair();
+		const handle = connectHome(left, { models: createModels(), epoch: 1 });
+		const asked: unknown[] = [];
+		right.onFrame((frame) => {
+			if (frame.t === "order") asked.push(frame.args);
+		});
+		void handle.resume({ epoch: 1 }, context);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(asked).toEqual([{ epoch: 1 }]);
+		handle.close("done");
+	});
+});
+
 describe("the notice a restored session gets", () => {
 	const at = Date.parse("2026-10-14T12:00:00.000Z");
 	it("says when the checkpoint was taken and what did not survive", () => {
@@ -574,6 +625,71 @@ describe("recovering a session whose box is gone", () => {
 		expect(readFileSync(join(r.target.workspace, "a.txt"), "utf8")).toBe("alpha");
 	});
 
+	it("replays the commits shipped after the checkpoint into the restored store before it opens, and says so in the order", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		const shipped = await moreCommits(r.fx.place.store, 3);
+		getOrThrow(await r.vault.appendLog("s", shipped, context));
+		const liveSeal = getOrThrow(await sealStore(r.fx.place.store, context));
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		const restoredSeal = getOrThrow(await sealStore(r.target.store, context));
+		expect(restoredSeal.head).toBe(liveSeal.head);
+		expect(restoredSeal.head).toBe((checkpoint?.seal.head ?? 0) + 3);
+		expect(recovered.lease.seal).toMatchObject({ head: liveSeal.head, sha256: restoredSeal.sha256 });
+		const move = (
+			r.orders[0] as { order: { seal: unknown; move: { head: number; replayed: unknown; notice: string } } }
+		).order;
+		expect(move.seal).toEqual(restoredSeal);
+		expect(move.move.head).toBe(liveSeal.head);
+		expect(move.move.replayed).toEqual({ from: checkpoint?.seal.head, to: liveSeal.head - 1 });
+		expect(move.move.notice).toContain("3 commits made after the checkpoint");
+		// The checkpoint's own copy in the vault is as it was: the replay was made on a copy.
+		expect(getOrThrow(await sealStore(checkpoint?.storeFile ?? "", context))).toEqual(checkpoint?.seal);
+	});
+
+	it("restores the checkpoint as it is when the log does not start where the checkpoint ends", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		const shipped = await moreCommits(r.fx.place.store, 3);
+		// The host never got the first commit after the checkpoint: the later ones cannot be applied.
+		const held = await r.vault.appendLog("s", shipped.slice(1), context);
+		expect(held.ok ? "" : held.error.code).toBe("gap");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		expect(getOrThrow(await sealStore(r.target.store, context))).toEqual(checkpoint?.seal);
+		const order = (r.orders[0] as { order: { move: { head: number; replayed?: unknown } } }).order;
+		expect(order.move.head).toBe(checkpoint?.seal.head);
+		expect(order.move.replayed).toBeUndefined();
+		expect(recovered.restored?.n).toBe(checkpoint?.n);
+	});
+
 	it("restores from the previous generation when the latest store no longer matches its seal", async () => {
 		const r = await lost();
 		const second = getOrThrow(
@@ -656,5 +772,77 @@ describe("recovering a session whose box is gone", () => {
 		expect(r.replaced()).toBe(0);
 		expect(started).toEqual(["a@1"]);
 		expect(getOrThrow(await r.lease.current("s", context))?.epoch).toBe(1);
+	});
+});
+
+describe("the commits a host keeps beside its vault", () => {
+	const entry = (commit: number): LogEntry => ({ commit, writes: [] });
+
+	it("keeps them in order on disk, ignores a repeat, and refuses a gap with what it holds", async () => {
+		const directory = fresh("vault");
+		const vault = localVault(directory);
+		expect(getOrThrow(await vault.appendLog("s", [entry(10), entry(11)], context))).toEqual({ through: 11 });
+		expect(getOrThrow(await vault.appendLog("s", [entry(11), entry(12)], context))).toEqual({ through: 12 });
+		const gapped = await vault.appendLog("s", [entry(13), entry(15)], context);
+		expect(gapped.ok ? "" : gapped.error.code).toBe("gap");
+		expect(gapped.ok ? -1 : gapped.error.through).toBe(13);
+		// What was whole before the gap was kept, in a vault opened again from the same directory.
+		const again = localVault(directory);
+		const read = getOrThrow(await again.readLog("s", 10, context));
+		expect(read.entries.map((kept) => kept.commit)).toEqual([10, 11, 12, 13]);
+		expect(read.gap).toBe(false);
+		expect(getOrThrow(await again.appendLog("s", [entry(14)], context))).toEqual({ through: 14 });
+	});
+
+	it("reads the unbroken run from where it is asked, and says when more was held beyond a break", async () => {
+		const directory = fresh("vault");
+		const vault = localVault(directory);
+		getOrThrow(await vault.appendLog("s", [entry(3), entry(4), entry(5)], context));
+		expect(getOrThrow(await vault.readLog("s", 4, context)).entries.map((kept) => kept.commit)).toEqual([4, 5]);
+		// Asked from a commit the log does not start at: nothing, and it says there was more.
+		const early = getOrThrow(await vault.readLog("s", 2, context));
+		expect(early.entries).toEqual([]);
+		expect(early.gap).toBe(true);
+		expect(getOrThrow(await vault.readLog("s", 9, context))).toEqual({ entries: [], gap: false });
+	});
+
+	it("starts at the latest checkpoint's head, drops what the checkpoint covers, and cuts below the oldest kept head", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		const head = first.seal.head;
+		// Commits the checkpoint covers are not kept; the first one it wants is.
+		const kept = getOrThrow(await vault.appendLog("s", [entry(head - 1), entry(head), entry(head + 1)], context));
+		expect(kept.through).toBe(head + 1);
+		const afterGap = await vault.appendLog("s", [entry(head + 3)], context);
+		expect(afterGap.ok ? "" : afterGap.error.code).toBe("gap");
+		expect(getOrThrow(await vault.readLog("s", head, context)).entries.map((e) => e.commit)).toEqual([
+			head,
+			head + 1,
+		]);
+		// Two more checkpoints with the log growing between them: with 2 kept, the first generation's commits go.
+		await moreCommits(fx.place.store, 2);
+		getOrThrow(await vault.appendLog("s", [entry(head + 2)], context));
+		const second = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		getOrThrow(await vault.appendLog("s", [entry(second.seal.head)], context));
+		await moreCommits(fx.place.store, 1);
+		const third = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		expect(getOrThrow(await vault.get("s", first.n, context))).toBeUndefined();
+		const rest = getOrThrow(await vault.readLog("s", 0, context));
+		const oldest = second.seal.head;
+		expect(rest.entries.every((e) => e.commit >= oldest) || rest.entries.length === 0).toBe(true);
+		expect(getOrThrow(await vault.readLog("s", oldest, context)).entries[0]?.commit).toBe(oldest);
+		expect(third.seal.head).toBeGreaterThan(second.seal.head);
+		// Nothing below the oldest kept generation's head is on disk any more: asked from the first generation's head, the
+		// log has nothing (and says what it holds lies beyond).
+		const old = getOrThrow(await vault.readLog("s", first.seal.head, context));
+		expect(old.entries).toEqual([]);
+		expect(old.gap).toBe(true);
 	});
 });

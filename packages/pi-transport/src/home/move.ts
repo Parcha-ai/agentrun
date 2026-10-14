@@ -324,7 +324,15 @@ async function restoreHome(
 	gone: Place,
 	context: Context,
 ): Promise<
-	Result<{ readonly lease: LeaseRecord; readonly home: HomeHandle; readonly restored: Checkpoint }, MoveError>
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
 > {
 	const { session, vault } = options;
 	const checkpoint = await usableCheckpoint(vault, session, context);
@@ -393,7 +401,15 @@ async function restoreInto(
 	place: Place,
 	context: Context,
 ): Promise<
-	Result<{ readonly lease: LeaseRecord; readonly home: HomeHandle; readonly restored: Checkpoint }, MoveError>
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
 > {
 	const { session, vault, ownership } = options;
 	const id = `restore-${record.epoch + 1}`;
@@ -446,7 +462,12 @@ async function restoreInto(
 		context,
 	);
 	if (!resumed.ok) return err(new MoveError("resume", `the restored home did not run: ${resumed.error.message}`));
-	return ok({ lease: taken.value, home, restored: checkpoint });
+	return ok({
+		lease: taken.value,
+		home,
+		restored: checkpoint,
+		...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to, count: replay.count } }),
+	});
 }
 
 /**
@@ -459,7 +480,15 @@ export async function recoverHome(
 	options: RecoverOptions,
 	context: Context,
 ): Promise<
-	Result<{ readonly lease: LeaseRecord; readonly home: HomeHandle; readonly restored?: Checkpoint }, MoveError>
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored?: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
 > {
 	const lease = await options.ownership.current(options.session, context);
 	if (!lease.ok) return err(new MoveError("take", `the lease cannot be read: ${lease.error.message}`));

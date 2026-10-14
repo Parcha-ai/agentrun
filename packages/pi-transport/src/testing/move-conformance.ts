@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { finish } from "../box/files.ts";
 import type { App } from "../home/app.ts";
 import { checkpointStats, localVault, pullCheckpoint } from "../home/checkpoint.ts";
+import type { LogEntry } from "../home/commit-log.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
@@ -164,7 +165,7 @@ type Run = {
 };
 
 /** A session that started at `a` on epoch 1 and is busy with its run. */
-async function begin(pair: MovePair, holdMs?: number): Promise<Run> {
+async function begin(pair: MovePair, holdMs?: number, onCommit?: (entry: LogEntry) => void): Promise<Run> {
 	const leases = mkdtempSync(join(tmpdir(), "pi-transport-lease-"));
 	const lease = leaseIn(dirStore(leases));
 	let drainCame: () => void = () => {};
@@ -173,7 +174,12 @@ async function begin(pair: MovePair, holdMs?: number): Promise<Run> {
 	});
 	const { models, notices, results } = hostModels(came, holdMs);
 	const handles: HomeHandle[] = [];
-	const base = boxRunner({ program: pair.program, session: SESSION, models });
+	const base = boxRunner({
+		program: pair.program,
+		session: SESSION,
+		models,
+		...(onCommit === undefined ? {} : { onCommit }),
+	});
 	const start: StartRunner = async (place, epoch, startContext) => {
 		const started = await base(place, epoch, startContext);
 		if (started.ok) handles.push(started.value);
@@ -246,8 +252,13 @@ async function begin(pair: MovePair, holdMs?: number): Promise<Run> {
 }
 
 /** Runs `use` with a session begun at `a`, and ends the run whatever happens. */
-async function withRun(pair: MovePair, use: (run: Run) => Promise<void>, holdMs?: number): Promise<void> {
-	const run = await begin(pair, holdMs);
+async function withRun(
+	pair: MovePair,
+	use: (run: Run) => Promise<void>,
+	holdMs?: number,
+	onCommit?: (entry: LogEntry) => void,
+): Promise<void> {
+	const run = await begin(pair, holdMs, onCommit);
 	try {
 		await use(run);
 	} finally {
@@ -848,6 +859,71 @@ export function registerRestoreConformance(
 							equal(recovered.ok ? "recovered" : recovered.error.code, "no_checkpoint", "the outcome");
 							equal(await run.held(), { epoch: 1, environment: trio.a.environment }, "the lease");
 						}),
+					),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
+			"replays the commits shipped after the checkpoint: the restored store holds what the lost box admitted, and none of it runs again",
+			() =>
+				withTrio((trio) =>
+					withVault((vault) =>
+						withRun(
+							trio,
+							async (run) => {
+								await sleep(400);
+								const checkpoint = await checkpointNow(trio, run, vault);
+								const atCheckpoint = await run.effects(trio.a);
+								// The session goes on past the checkpoint, then comes to rest with its commits shipped.
+								await sleep(1_500);
+								const drained = getOrThrow(await run.home.drain({ timeoutMs: 10_000 }, context));
+								void drained;
+								const beforeKill = await run.effects(trio.a);
+								const live = getOrThrow(await run.home.seal(context));
+								const deadline = Date.now() + 10_000;
+								while (Date.now() < deadline) {
+									const log = getOrThrow(await vault.readLog(SESSION, checkpoint.seal.head, context));
+									if (log.entries.length > 0 && (log.entries.at(-1) as LogEntry).commit >= live.head - 1)
+										break;
+									await sleep(50);
+								}
+								const admittedAfter = beforeKill.filter((round) => !atCheckpoint.includes(round));
+								if (admittedAfter.length === 0)
+									throw new Error("the session did not go past its checkpoint: nothing to replay");
+								getOrThrow(await trio.a.box.destroy(context));
+								const recovered = getOrThrow(
+									await recoverHome(
+										{
+											session: SESSION,
+											ownership: run.lease,
+											places: { [trio.a.environment]: trio.a },
+											start: run.start,
+											notice: NOTICE,
+											vault,
+											replace: replacing(trio),
+											noticeOfRestore: () => NOTICE,
+										},
+										context,
+									),
+								);
+								equal(recovered.replayed?.to, live.head - 1, "the last commit replayed");
+								equal(recovered.replayed?.from, checkpoint.seal.head, "the first commit replayed");
+								equal(recovered.lease.seal?.head, live.head, "the head the lease vouches for");
+								getOrThrow(await recovered.home.idle(context));
+								const inNewBox = (await run.effects(trio.c)).filter((round) => !atCheckpoint.includes(round));
+								// What the lost box ran after the checkpoint is in the store the new box opened: none of it runs again.
+								const again = inNewBox.filter((round) => admittedAfter.includes(round));
+								equal(again, [], "rounds run again in the new box");
+								if (inNewBox.length === 0) throw new Error("the session did not go on in the new box");
+								equal(run.notices(), 1, "the notices the model saw");
+								equal(await run.held(), { epoch: 2, environment: trio.a.environment }, "the lease");
+							},
+							RESTORE_HOLD_MS,
+							(entry) => {
+								void vault.appendLog(SESSION, [entry], context);
+							},
+						),
 					),
 				),
 			timeoutMs,

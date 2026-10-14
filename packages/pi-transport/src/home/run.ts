@@ -16,6 +16,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
 import { type CallEvent, callsExtension } from "./calls.ts";
+import { type LogEntry, tapStorage } from "./commit-log.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
 import { holdStore, type StoreHold } from "./lock.ts";
 import { checkpointStore, type Seal, sealStore, verifyStore } from "./store.ts";
@@ -58,6 +59,8 @@ export type ResumeOrder = {
 	/** The seal in the lease record: the store this home must open. Absent for a session that starts here. */
 	readonly seal?: Seal;
 	/** The move that brought the session here. The store knows where it ran before: no root travels with the order. */
+	/** The host keeps the commits of this home as they land: the runner ships them to it. */
+	readonly ship?: boolean;
 	readonly move?: {
 		readonly id: string;
 		/** What the agent is told, once. */
@@ -95,6 +98,8 @@ export type HomeOptions = {
 	readonly env?: HarnessOptions["env"];
 	/** Told when a tool call begins and ends (name and replay flag only). */
 	readonly onCall?: (event: CallEvent) => void;
+	/** Told of each commit of the store once it landed, with its writes, in order. */
+	readonly onCommit?: (entry: LogEntry) => void;
 };
 
 /** A copy of the store taken while the session is held, and the seal that vouches for it. */
@@ -435,7 +440,13 @@ class SessionHome implements Home {
 		let harness: Harness;
 		try {
 			await mkdir(dirname(store), { recursive: true });
-			harness = await Harness.open(await openNodeSqliteStorage(store), { ...rest, registry, models, env }, context);
+			const storage = await openNodeSqliteStorage(store);
+			const { onCommit } = this.#options;
+			harness = await Harness.open(
+				onCommit === undefined ? storage : tapStorage(storage, onCommit),
+				{ ...rest, registry, models, env },
+				context,
+			);
 		} catch (cause) {
 			return err(new HomeError("store", `could not open the store: ${toError(cause).message}`, cause));
 		}
