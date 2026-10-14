@@ -226,7 +226,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       usage = addUsage(usage, look.usage);
       if (look.text.trim()) {
         const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
-        const receipt = await fileTold(call.memo, key, (told) => fileLook(filing, tool, record(unit, false, look.model, look.text.trim(), facts), told ? { ...look, kept: true } : look));
+        const receipt = await fileTold(call.memo, key, filing, (to, told) => fileLook(to, tool, record(unit, false, look.model, look.text.trim(), facts), told ? { ...look, kept: true } : look));
         const head = `(${what} seen for you by ${look.model}${ask ? ` \u2014 your question: ${ask}` : ""}${saved ? `; the file is saved at ${saved}` : ""}${receipt ? `; look filed at ${receipt}` : ""}:)`;
         const answer: TextContent = { type: "text", text: `${head}\n${look.text.trim()}` };
         answered.set(key, answer);

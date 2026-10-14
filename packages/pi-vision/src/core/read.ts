@@ -240,7 +240,7 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
     // An answer with no words is a look that failed, as the eyes' is.
     if (!look.text.trim()) throw new Error(`the recording reviewer ${look.model} via ${source.via} returned no text`);
     const paid = { costUsd: look.costUsd, billedBy: look.billedBy ?? source.via };
-    const filed = await fileTold(call.memo, key, (told) => fileLook(filing, "read", record(look.model, "ok", look.text, paid, readBack), { usage: null, ...paid, ...(told ? { kept: true } : {}) }));
+    const filed = await fileTold(call.memo, key, filing, (to, told) => fileLook(to, "read", record(look.model, "ok", look.text, paid, readBack), { usage: null, ...paid, ...(told ? { kept: true } : {}) }));
     const head = `(recording ${handle}${window} seen for you by ${look.model} via ${source.via}${ask ? ` \u2014 your question: ${ask}` : ""}${filed ? `; look filed at ${filed}` : ""}:)`;
     return { content: [{ type: "text", text: `${head}\n${look.text}` }], details: { path: handle, ...(filed ? { look: filed } : {}), media: { kind: "recording", sessionId: id, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) } } };
   } catch (error) {

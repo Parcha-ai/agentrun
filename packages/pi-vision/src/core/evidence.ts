@@ -135,11 +135,22 @@ export async function keptAnswer<T>(memo: CallContext["memo"], key: string, ask:
   return { answer, readBack: !asked };
 }
 
-/** A look filed and told through `file`, then kept as the call's memo `vision:told:<key>`; a call run again that finds
- *  it files and tells the look as told before (`file(true)`). */
-export async function fileTold(memo: CallContext["memo"], key: string, file: (told: boolean) => Promise<string | null>): Promise<string | null> {
-  let now = false;
-  const tell = async () => { now = true; return file(false); };
-  const receipt = memo ? await memo(`vision:told:${key}`, tell) : await tell();
-  return now ? receipt : file(true);
+/** Thrown inside the told memo's compute so that a look whose host's `onLook` threw keeps no memo. */
+const UNHEARD = new Error("the host's onLook did not return");
+
+/** A look filed and told through `file`, then kept as the call's memo `vision:told:<key>` once the host's `onLook` has
+ *  returned; a call run again that finds it files and tells the look as told before (`file(filing, true)`). A hook that
+ *  throws leaves no memo, so a rerun tells the host again. */
+export async function fileTold(memo: CallContext["memo"], key: string, filing: Filing, file: (filing: Filing, told: boolean) => Promise<string | null>): Promise<string | null> {
+  const hook = filing.onLook;
+  let heard = !hook, now = false, receipt: string | null = null;
+  const tracked: Filing = hook ? { ...filing, onLook: async (look) => { await hook(look); heard = true; } } : filing;
+  const tell = async () => { now = true; receipt = await file(tracked, false); if (!heard) throw UNHEARD; return receipt; };
+  try {
+    const kept = memo ? await memo(`vision:told:${key}`, tell) : await tell();
+    return now ? kept : file(filing, true);
+  } catch (error) {
+    if (error !== UNHEARD) throw error;
+    return receipt;
+  }
 }

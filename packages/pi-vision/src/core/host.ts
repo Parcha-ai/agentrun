@@ -116,7 +116,8 @@ export type VisionOptions = {
 };
 
 /** What the adapter resolved from `VisionOptions` for one call: the route's limits, who looks, where derivations and
- *  receipts go, the host's converters, handles and policy, and its rows, whose callbacks never throw. */
+ *  receipts go, the host's converters, handles and policy, and its rows. `onMiss` never throws; `onLook` is the host's
+ *  own, which the core calls so that a throw never fails a call and the look is told again if the call runs again. */
 export type CallSetup = {
   readonly limits: Limits;
   readonly eyes: Eyes | undefined;
