@@ -56,6 +56,8 @@ The scripted run is labelled a replay in every receipt: its facts are real (read
 its lead and judge are scripts, and no box was started. A live run reads the sources as it goes, with a `GITHUB_TOKEN` optional
 (GitHub allows 60 unauthenticated requests an hour).
 
+To have a coding agent set this up and run it for you, paste [SETUP-PROMPT.md](SETUP-PROMPT.md) into it. The demo runs on your machine; a replay of a recorded run is a static page, and nothing here deploys a live service.
+
 | File | What |
 | --- | --- |
 | `workflow.ts` | The audit as a workflow document |
@@ -65,4 +67,5 @@ its lead and judge are scripts, and no box was started. A live run reads the sou
 | `scripted.ts` | The no-key lead, judge and fake pages |
 | `live.ts` | The user's model through pi-ai, and the model-backed judge |
 | `capture.ts` | `node capture.ts <owner/repo> <commit> [--limit N]` keeps a project's facts for a replay |
+| `SETUP-PROMPT.md` | A prompt that has a coding agent set the demo up and run it |
 | `run.ts` | The entry: the run, the storm supervisor and the recording |
