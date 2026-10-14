@@ -281,9 +281,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   return {
     models,
     registry,
-    async beforeResume({ harness, context, generation }) {
+    async beforeResume({ harness, context, generation, previous }) {
       // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
       // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
+      // previous is run.json as the last incarnation left it (null on the first open): `sleeping` with its wakeAt after a
+      // park, `paused` with its detail after a planned stop, `running` with the dead holder and no new seal after a crash.
     },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and
