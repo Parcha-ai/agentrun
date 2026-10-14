@@ -83,6 +83,8 @@ export function callKindOf(name: string, tool: string | undefined): CallKind | u
 export type CallFacts = {
   name?: string; deprecated?: string; repository?: string; advisories?: string[]; summaries?: Record<string, string>;
   hosts?: string[]; outside?: string[]; ran?: boolean; note?: string; scripts?: string[]; receipt?: string;
+  /** The connections the box's strace saw, with when, and the end of the install's log. */
+  outbound?: { host?: string; ip: string; port?: number; at?: number }[]; logTail?: string;
 };
 export function callFactsOf(value: Json | undefined): CallFacts {
   const out: CallFacts = {};
@@ -104,6 +106,11 @@ export function callFactsOf(value: Json | undefined): CallFacts {
   const scripts = auditStrings(body.scripts) ?? (auditIsObj(body.scripts) ? Object.keys(body.scripts) : undefined);
   if (scripts) out.scripts = scripts;
   if (typeof body.receipt === 'string') out.receipt = body.receipt;
+  if (Array.isArray(body.outbound)) {
+    out.outbound = body.outbound.flatMap((each) => (auditIsObj(each) && typeof each.ip === 'string'
+      ? [{ ip: each.ip, ...(typeof each.host === 'string' ? { host: each.host } : {}), ...(typeof each.port === 'number' ? { port: each.port } : {}), ...(typeof each.at === 'number' ? { at: each.at } : {}) }] : []));
+  }
+  if (typeof body.log_tail === 'string') out.logTail = body.log_tail;
   return out;
 }
 

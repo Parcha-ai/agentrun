@@ -240,8 +240,10 @@ function wmBranchView(state: WmState, branch: WmBranch): Node {
         h('h5', {}, 'The box\'s network log'),
         install === undefined ? h('p', { class: 'empty' }, 'Not run yet.')
           : install.ran === false ? h('p', { class: 'empty' }, install.note ?? 'The install did not run in a box in this recording.')
-          : h('ul', {}, ...(install.hosts ?? []).map((host) => h('li', { class: (install.outside ?? []).includes(host) ? 'outside' : '' }, (install.outside ?? []).includes(host) ? `${host} (not the registry)` : host)),
-            ...(install.scripts?.length ? [h('li', {}, `install scripts: ${install.scripts.join(', ')}`)] : []))),
+          : h('div', {},
+            h('ul', {}, ...wmConnections(install).map((connection) => h('li', { class: connection.outside ? 'outside' : '' }, connection.text)),
+              ...(install.scripts?.length ? [h('li', {}, `install scripts: ${install.scripts.join(', ')}`)] : [])),
+            install.logTail ? h('pre', { class: 'wm-log' }, wmTail(install.logTail)) : false)),
       h('section', { class: 'wm-page' },
         h('h5', {}, 'The repository page'),
         repository === undefined ? h('p', { class: 'empty' }, 'No page read yet.')
@@ -258,6 +260,20 @@ function wmBranchView(state: WmState, branch: WmBranch): Node {
     notes.length > 0 && h('ul', { class: 'wm-notes' }, ...notes.map((note) => h('li', {}, note))),
     branch.findings.length > 0 && h('ul', { class: 'wm-facts' }, ...branch.findings.map((fact) => h('li', {}, fact.claim, fact.source ? ` — ${fact.source}` : ''))));
 }
+
+/** The connections the install made: what the box's strace saw (host, address, port) when the receipt carries it, else the hosts it names; each flagged
+ *  when it is not the package registry. */
+function wmConnections(install: CallFacts): { text: string; outside: boolean }[] {
+  const outside = new Set(install.outside ?? []);
+  if (install.outbound?.length) {
+    return install.outbound.map((each) => ({ text: `${each.host ?? each.ip}${each.host ? ` (${each.ip}${each.port !== undefined ? `:${each.port}` : ''})` : each.port !== undefined ? `:${each.port}` : ''}${outside.has(each.host ?? each.ip) ? ' (not the registry)' : ''}`,
+      outside: outside.has(each.host ?? each.ip) }));
+  }
+  return (install.hosts ?? []).map((host) => ({ text: outside.has(host) ? `${host} (not the registry)` : host, outside: outside.has(host) }));
+}
+
+/** The last lines of an install's log. */
+const wmTail = (log: string) => log.split('\n').map((line) => line.trimEnd()).filter((line) => line !== '').slice(-5).join('\n');
 
 /** The price of chaos: the baseline recording's own counters against this run's. */
 function wmLedger(state: WmState, base: BaselineView): Node {

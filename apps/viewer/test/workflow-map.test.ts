@@ -43,7 +43,7 @@ effect(1, 2, 'install', 'unknown', 250);
 host('kill', 260, { gen: 1, label: 'storm 1', crossing: null });
 host('process.started', 270, { gen: 2 });
 driver(280, [step(0, 0), step(0, 1), step(0, 2)], 2);
-effect(1, 2, 'install', 'completed', 300, { receipt: 'receipts/install/evil-dep@2.0.0.json', ran: true, hosts: ['registry.npmjs.org', 'cdn.example.net'], outside: ['cdn.example.net'], scripts: ['postinstall'] });
+effect(1, 2, 'install', 'completed', 300, { receipt: 'receipts/install/evil-dep@2.0.0.json', ran: true, hosts: ['registry.npmjs.org', 'cdn.example.net'], outside: ['cdn.example.net'], scripts: ['postinstall'], seen: 'connections seen by strace', outbound: [{ host: 'registry.npmjs.org', ip: '104.16.10.34', port: 443, at: 1 }, { host: 'cdn.example.net', ip: '203.0.113.9', port: 443, at: 2 }], log_tail: 'added 3 packages\n\n> evil-dep@2.0.0 postinstall\n> node fetch.js\n\nbinary downloaded\n' });
 effect(1, 1, 'advisories', 'completed', 305, { receipt: 'receipts/advisories/evil-dep@2.0.0.json', ids: ['GHSA-aaaa'], summaries: { 'GHSA-aaaa': 'Prototype pollution' } });
 durable('agentrun.nodes', 'workflow', 308, { doc: 'agentrun.nodes', key: 'audit:repository:a0', value: { conversation: 7, closed: false }, version: 1 }, { path: step(1, 3) });
 durable('agentrun.record', 'workflow', 310, { doc: 'agentrun.record', value: { record: { pages: [{ path: 'evidence/repository/browser_read-aaa.json', url: 'https://github.example/evil-dep' }], archived: 'yes', badges: ['build: failing'] }, attempts: 1 }, version: 1 }, { conv: 7 });
@@ -126,7 +126,10 @@ test('the camera zooms into one branch by path at its time code, and back', () =
 test('the catch\'s evidence sits side by side: the box\'s network log, the repository page, the badge', () => {
   const tree = at(indexOf((line) => line.kind === 'camera')).tree;
   const [box, page, vision] = find(tree, (each) => 'class' in each && /^wm-(box|page|vision)$/.test(each.class ?? ''));
-  assert.match(text(box!), /cdn\.example\.net \(not the registry\)/);
+  assert.match(text(box!), /cdn\.example\.net \(203\.0\.113\.9:443\) \(not the registry\)/, 'the connections the box\'s strace saw, with address and port, the outside one flagged');
+  assert.match(text(box!), /registry\.npmjs\.org \(104\.16\.10\.34:443\)/);
+  assert.equal(find(box!, (each) => 'class' in each && each.class === 'outside').length, 1, 'only the outside connection is flagged');
+  assert.match(text(box!), /binary downloaded/, 'and the end of the install\'s log');
   assert.match(text(page!), /Archived: yes.*https:\/\/github\.example\/evil-dep/);
   assert.ok(find(page!, (each) => each.tag === 'a' && 'blob' in each && each.blob === 'a'.repeat(64)).length === 1, 'the page links the evidence file the browser kept');
   assert.match(text(vision!), /build failing/);
