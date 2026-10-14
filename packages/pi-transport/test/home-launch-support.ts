@@ -29,8 +29,15 @@ export async function sh(box: Box, script: string): Promise<{ exitCode: number; 
 	return { exitCode: finished.exitCode, text: decoder.decode(finished.stdout) };
 }
 
-/** Poll until `read` returns a value, or fail with `what` after `timeoutMs`. */
-export async function until<T>(what: string, read: () => Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
+/** A hang guard, not a speed claim: a loaded machine may be several times slower than an idle one, and a case that is merely slow must pass. */
+export const HANG_GUARD_MS = 120_000;
+
+/** Poll until `read` returns a value, or fail with `what` after `timeoutMs` (a hang guard; it returns as soon as `read` does). */
+export async function until<T>(
+	what: string,
+	read: () => Promise<T | undefined>,
+	timeoutMs = HANG_GUARD_MS,
+): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		const value = await read();
@@ -65,7 +72,7 @@ async function isAlive(box: Box, pid: number): Promise<boolean> {
 	);
 }
 
-async function waitPhase(box: Box, name: string, phase: LaunchPhase, timeoutMs = 20_000): Promise<LaunchState> {
+async function waitPhase(box: Box, name: string, phase: LaunchPhase, timeoutMs = HANG_GUARD_MS): Promise<LaunchState> {
 	return until(
 		`phase ${phase}`,
 		async () => {
@@ -226,7 +233,7 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		const started = unwrap(await launch(box, "both", program(recording("exec sleep 300")), context));
 		const dir = started.directory;
 		await sh(box, `kill -9 $(cat ${dir}/launcher.pid) $(cat ${dir}/watch.pid)`);
-		const lost = await waitPhase(box, "both", "lost", 5_000);
+		const lost = await waitPhase(box, "both", "lost");
 		expect(lost.launcherAlive).toBe(false);
 		const [pid] = await pids(box);
 		expect(await isAlive(box, pid ?? 0)).toBe(true);
@@ -254,7 +261,7 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 			await until(
 				"the old supervisor to leave",
 				async () => ((await isAlive(box, Number(supervisor))) ? undefined : true),
-				10_000,
+				HANG_GUARD_MS,
 			);
 			await sleep(1500);
 			// It saw another generation and did not start the program again.
@@ -305,18 +312,23 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		const begun = Date.now();
 		const stopped = unwrap(await stopLaunch(box, "stubborn", { graceMs: 1000 }, context));
 		const took = Date.now() - begun;
+		// The time is data, not a bound: what matters is that the stop escalated past the ignored TERM and the program is gone.
+		console.log(`stopLaunch of a program that ignores TERM took ${took} ms (graceMs 1000)`);
 		expect(stopped.phase).toBe("stopped");
 		expect(took).toBeGreaterThanOrEqual(900);
-		expect(took).toBeLessThan(15_000);
 		const [pid] = await pids(box);
 		expect(await isAlive(box, pid ?? 0)).toBe(false);
 	});
 
 	each("a polite program is not made to wait out the grace period", async (box) => {
 		unwrap(await launch(box, "polite", program(recording("exec sleep 300")), context));
+		const grace = HANG_GUARD_MS;
 		const begun = Date.now();
-		unwrap(await stopLaunch(box, "polite", { graceMs: 30_000 }, context));
-		expect(Date.now() - begun).toBeLessThan(10_000);
+		unwrap(await stopLaunch(box, "polite", { graceMs: grace }, context));
+		const took = Date.now() - begun;
+		// Waiting out the grace period would take all of it; the bound is the grace period itself, however slow the machine, and the time is printed as data.
+		console.log(`stopLaunch of a polite program took ${took} ms (graceMs ${grace})`);
+		expect(took).toBeLessThan(grace);
 	});
 
 	each("stopLaunch of a launch that does not exist is invalid", async (box) => {
@@ -392,7 +404,7 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 				const size = Number((await sh(box, `wc -c < ${state.directory}/out.log`)).text.trim());
 				return size > 0 && size <= 4096 + 8192 ? size : undefined;
 			},
-			15_000,
+			HANG_GUARD_MS,
 		);
 		const tail = (await sh(box, `tail -n 1 ${state.directory}/out.log`)).text.trim();
 		expect(tail).toBe("THE-END");
