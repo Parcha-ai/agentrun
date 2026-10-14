@@ -72,6 +72,23 @@ test("one request's answer comes back as it is; the same images and question aga
   assert.deepEqual(rows.looks.map((look) => look.kept), [undefined, true], "the host hears of the second as kept: not charged again");
 });
 
+test("the same images named otherwise are another look; the same request twice at once in one call is asked, filed and told once", async () => {
+  const rows = host();
+  // Each answer takes a moment, so the two requests made at once are both waiting before either is answered.
+  const eyes = fakeEyes({ answers: [(request) => ({ text: `saw ${request.parts.filter((p) => p.type === "image").map((p) => p.fragment).join(" and ")}`, delayMs: 300 })] });
+  const vision = createVisionExtension({ eyes, ...rows.options });
+  const seen = await ran(vision, workspace({}), `const images = ${JSON.stringify([png(20, 20), png(20, 20), png(30, 20)])};
+    const relabeled = [await vision.see({ ask: "what?", images, fragments: ["A", "A", "B"] }), await vision.see({ ask: "what?", images, fragments: ["A", "B", "B"] })];
+    const together = await Promise.all([vision.see({ ask: "who?", images }), vision.see({ ask: "who?", images })]);
+    return { relabeled, together };`);
+  const { relabeled, together } = seen.value;
+  assert.deepEqual(relabeled.map((r) => [r.text, r.kept]), [["saw A and A and B", undefined], ["saw A and B and B", undefined]], "asked again, and answered for the names they have now");
+  assert.deepEqual(together.map((r) => r.text), ["saw image 1 and image 2 and image 3", "saw image 1 and image 2 and image 3"]);
+  assert.deepEqual(together.map((r) => r.kept).sort(), [true, undefined], "one waited for the other and asked nothing");
+  assert.equal(eyes.ledger.length, 3, "one request for each naming, one for the two at once");
+  assert.deepEqual(rows.looks.map((look) => look.kept), [undefined, undefined, undefined], "the host is told of each look once");
+});
+
 test("a look that cannot be made throws with its code, filed and told as a miss; a malformed request is a TypeError", async () => {
   const cwd = workspace({ "p1.png": pngBytes(40, 30), "memo.pdf": pdfBytes([{ lines: ["Invented memo for a test"] }]) });
   const script = `const out = []; for (const request of input) { try { await vision.see(request); out.push("seen"); } catch (error) { out.push(error.message); } } return out;`;

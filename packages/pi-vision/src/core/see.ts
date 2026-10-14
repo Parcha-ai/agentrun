@@ -18,7 +18,8 @@ import { packRequests, type Part } from "./plan.js";
 /** What the agent's code asks: `fragments[i]` names medium `i`, the images first and then the paths. */
 export type SeeRequest = { readonly ask: string; readonly paths?: readonly string[]; readonly images?: readonly ImageContent[]; readonly fragments?: readonly string[] };
 /** The answer, the eyes' model, the looks' price (null when one is unknown), the receipts filed (comma separated, null
- *  when none was), and `kept` when every answer was read back from the call's memo and nothing was asked. */
+ *  when none was), and `kept` when this request asked nothing: each answer was the call's already, kept in its memo or
+ *  being asked by another request of the call. */
 export type SeeAnswer = { readonly text: string; readonly model: string; readonly costUsd: number | null; readonly receipt: string | null; readonly kept?: true };
 
 /** A look `vision.see` could not make, thrown once it is filed and told; the message starts with the code. */
@@ -31,6 +32,12 @@ export type SeeGlobal = typeof VISION_SEE & { execute(request: unknown, context?
 
 /** A fitted block on its way to the eyes, with the fragment it came from and the line the eyes are told beside it. */
 type Item = { readonly data: string; readonly mimeType: string; readonly width?: number; readonly height?: number; readonly fragment: string; readonly caption: string };
+
+/** A look asked, filed and told: what the eyes answered, whether it was read back from the call's memo, and its receipt. */
+type Asked = { readonly look: EyesAnswer; readonly readBack: boolean; readonly receipt: string | null; readonly body: string };
+/** The looks each call (by its memo port) has in flight, by key: a second ask for one waits for the first, which alone
+ *  pays, files and tells. */
+const inFlight = new WeakMap<object, Map<string, Promise<Asked>>>();
 
 /** A processor that fits nothing: an image within the limits passes as it is, any other is refused. */
 const AS_IS: ImageProcessor = { prepare: async () => undefined };
@@ -57,7 +64,8 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     const sha256 = blocksSha256(items);
     return {
       tool: "look", args: { path: fragment, ask, model, native: false }, status: "ok", body,
-      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment, ask, model }), shown_blocks: items.length, ...facts },
+      // The key names each block's own line in order, so the same images named otherwise are another look.
+      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...facts },
     };
   };
   // A miss before any request cost nothing; one after a request says what it knows of that request.
@@ -104,12 +112,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     fit.blocks.forEach((block, k) => items.push({ ...block, fragment, caption: fit.blocks.length > 1 ? `${fragment} (tile ${k + 1} of ${fit.blocks.length})` : fragment }));
   }
 
-  const most = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
-  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : most), eyes.limits.requestBytes);
-  const texts: string[] = [], receipts: string[] = [];
-  let costUsd: number | null = 0, kept = true, model = eyes.model;
-  for (const items of requests) {
-    const at = record(items, eyes.model, "");
+  const once = async (items: readonly Item[], at: LookRecord): Promise<Asked> => {
     // Each image goes with the line that names it, so the eyes can say where they saw a thing.
     const parts = items.flatMap((item): Part[] => [{ type: "text", text: item.caption, fragment: item.fragment },
       isVideo(item) ? { type: "video", data: item.data, mimeType: item.mimeType, fragment: item.fragment }
@@ -126,10 +129,25 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     if (!look.text.trim()) return fail({ code: "look_failed", reason: `the vision route ${look.model} returned no text`, model: look.model }, items, facts);
     const filed = { ...at, args: { ...at.args, model: look.model }, body: look.text.trim(), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_SEE.name, filed, told ? { ...look, kept: true } : look));
-    texts.push(requests.length > 1 ? `(${at.args.path}${receipt ? `; look filed at ${receipt}` : ""})\n${filed.body}` : filed.body);
+    return { look, readBack, receipt, body: filed.body };
+  };
+
+  const most = Math.max(1, Math.floor(eyes.limits.imagesPerCall));
+  const requests = packRequests(items, (item) => item.data.length, (item) => (isVideo(item) ? 1 : most), eyes.limits.requestBytes);
+  const flying = (call.memo && inFlight.get(call.memo)) || new Map<string, Promise<Asked>>();
+  if (call.memo) inFlight.set(call.memo, flying);
+  const texts: string[] = [], receipts: string[] = [];
+  let costUsd: number | null = 0, kept = true, model = eyes.model;
+  for (const items of requests) {
+    const at = record(items, eyes.model, "");
+    const shared = flying.get(at.facts.key);
+    const asked = shared ?? once(items, at);
+    if (!shared) { const done = () => flying.delete(at.facts.key); flying.set(at.facts.key, asked); asked.then(done, done); }
+    const { look, readBack, receipt, body } = await asked;
+    texts.push(requests.length > 1 ? `(${at.args.path}${receipt ? `; look filed at ${receipt}` : ""})\n${body}` : body);
     if (receipt) receipts.push(receipt);
     costUsd = costUsd === null || look.costUsd === null ? null : costUsd + look.costUsd;
-    kept &&= readBack;
+    kept &&= readBack || shared !== undefined;
     model = look.model;
   }
   return { text: texts.join("\n\n"), model, costUsd, receipt: receipts.length ? receipts.join(", ") : null, ...(kept ? { kept: true } : {}) };

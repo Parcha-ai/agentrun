@@ -21,20 +21,22 @@ model's limits and sends as few requests as fit, so you never resize or count. I
   this run), `over_budget`, `unsupported`, `look_failed`. Catch it to go on with the rest.
 - Asking about the same images with the same question again in the same call costs nothing: the answer is kept.
 - A PDF with a text layer reads cheaper as text (`read`, or `pdftotext`). Look at scans, charts, stamps and layout.
+- Render into a folder of its own under `.look/` and empty it first, so a second run never mixes in pages or frames
+  of an earlier file.
 
 ## Many PDF pages
 
 Render the pages, then ask in batches and join the answers.
 
 ```js
-await tools.bash({ command: "mkdir -p pages && pdftoppm -r 150 -png report.pdf pages/p" });
-const pages = (await tools.bash({ command: "ls pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 150 -png report.pdf .look/pages/p" });
+const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
 const answers = [];
 for (let i = 0; i < pages.length; i += 10) {
   const batch = pages.slice(i, i + 10);
   const seen = await vision.see({
     ask: "List every invoice number on these pages with its total.",
-    paths: batch.map((name) => `pages/${name}`),
+    paths: batch.map((name) => `.look/pages/${name}`),
     fragments: batch.map((name) => `report.pdf#page=${parseInt(name.slice(2), 10)}`),
   });
   answers.push(`${seen.text}\n(receipt: ${seen.receipt})`);
@@ -49,18 +51,18 @@ return answers.join("\n\n");
 Take a frame every 10 seconds by seeking, and name each by its time.
 
 ```js
-await tools.bash({ command: "mkdir -p frames && d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 talk.mp4) && for t in $(seq 0 10 $(( ${d%.*} - 1 ))); do ffmpeg -v error -ss $t -i talk.mp4 -frames:v 1 -q:v 3 frames/$t.jpg; done" });
-const times = (await tools.bash({ command: "ls frames" })).split("\n").filter((name) => name.endsWith(".jpg")).map((name) => parseInt(name, 10)).sort((a, b) => a - b);
+await tools.bash({ command: "rm -rf .look/frames && mkdir -p .look/frames && d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 talk.mp4) && for t in $(seq 0 10 $(( ${d%.*} - 1 ))); do ffmpeg -v error -y -ss $t -i talk.mp4 -frames:v 1 -q:v 3 .look/frames/$t.jpg; done" });
+const times = (await tools.bash({ command: "ls .look/frames" })).split("\n").filter((name) => name.endsWith(".jpg")).map((name) => parseInt(name, 10)).sort((a, b) => a - b);
 const seen = await vision.see({
   ask: "When does a chart first appear, and what does it show?",
-  paths: times.map((t) => `frames/${t}.jpg`),
+  paths: times.map((t) => `.look/frames/${t}.jpg`),
   fragments: times.map((t) => `talk.mp4#t=${t}`),
 });
 return `${seen.text}\n(receipt: ${seen.receipt}, $${seen.costUsd})`;
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes
-video, cut windows instead (`ffmpeg -ss 60 -t 30 -i talk.mp4 -c copy clips/60.mp4`), pass the clips as paths and name
+video, cut windows instead (`ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy .look/clips/60.mp4`), pass the clips as paths and name
 them `talk.mp4#t=60,90`.
 
 ## Many images
@@ -79,16 +81,16 @@ return seen.text;
 Crop first, so the vision model sees that part at full size, and name the crop by where it was.
 
 ```js
-await tools.bash({ command: "ffmpeg -v error -y -i scan.png -vf crop=iw/2:ih/4:iw/2:0 scan-top-right.png" });
+await tools.bash({ command: "mkdir -p .look && ffmpeg -v error -y -i scan.png -vf crop=iw/2:ih/4:iw/2:0 .look/scan-top-right.png" });
 const seen = await vision.see({
   ask: "What is the reference number?",
-  paths: ["scan-top-right.png"],
+  paths: [".look/scan-top-right.png"],
   fragments: ["scan.png#xywh=percent:50,0,50,25"],
 });
 return seen.text;
 ```
 
-For a PDF page, render only the region at a higher resolution: `pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf crop`.
+For a PDF page, render only the region at a higher resolution: `pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
 
 ## When pdftoppm or ffmpeg is missing
 

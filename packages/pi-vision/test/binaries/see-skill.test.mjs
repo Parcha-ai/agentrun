@@ -55,11 +55,14 @@ test("many PDF pages: rendered, asked in batches of ten, each page cited by its 
   assert.equal(looks.length, 3);
 });
 
-test("a long video: a frame every ten seconds by seek, each cited by its time", async () => {
+test("a long video: a frame every ten seconds by seek, each cited by its time; run again on a shorter video, no frame of the first", async () => {
   const { value, requests } = await example(longVideo);
   assert.deepEqual(requests.flat(), ["talk.mp4#t=0", "talk.mp4#t=10", "talk.mp4#t=20", "talk.mp4#t=30"]);
-  assert.ok(fs.readdirSync(path.join(cwd, "frames")).every((name) => imageHeader(fs.readFileSync(path.join(cwd, "frames", name)))?.width === 320));
+  const frames = path.join(cwd, ".look", "frames");
+  assert.ok(fs.readdirSync(frames).every((name) => imageHeader(fs.readFileSync(path.join(frames, name)))?.width === 320));
   assert.match(value, /^saw talk\.mp4#t=0, talk\.mp4#t=10, talk\.mp4#t=20, talk\.mp4#t=30\n\(receipt: evidence\/skill\/1\.md, \$\d/);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=15:size=320x240:rate=5", "-pix_fmt", "yuv420p", path.join(cwd, "talk.mp4")]);
+  assert.deepEqual((await example(longVideo)).requests.flat(), ["talk.mp4#t=0", "talk.mp4#t=10"]);
 });
 
 test("many images: every photo by its own path, the file that is not one left out", async () => {
@@ -70,6 +73,6 @@ test("many images: every photo by its own path, the file that is not one left ou
 
 test("a region: cropped with ffmpeg first, cited by where it was", async () => {
   const { value } = await example(region);
-  assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, "scan-top-right.png"))), { mimeType: "image/png", width: 400, height: 250, orientation: 1 });
+  assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, ".look", "scan-top-right.png"))), { mimeType: "image/png", width: 400, height: 250, orientation: 1 });
   assert.equal(value, "saw scan.png#xywh=percent:50,0,50,25");
 });
