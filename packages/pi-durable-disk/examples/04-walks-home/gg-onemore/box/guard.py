@@ -433,7 +433,8 @@ async def gg_control(request: Request):
     if not edit:
         return JSONResponse({"error": "nothing is served yet: bake first"}, status_code=409)
     headers = {"authorization": f"Bearer {SERVE_KEY}", "content-type": "application/json"}
-    fold = {"method": "gg_fold", "args": [edit["layer"], os.path.join(RUN, "fold-chosen.pt"), edit["scale"]]}
+    # the original model is the clamp's buffers at zero; the edit is the served clamp written back
+    clamp = {"method": "gg_graph_set", "args": [edit["clamp"]]}
 
     async def answers():
         out = []
@@ -447,13 +448,13 @@ async def gg_control(request: Request):
 
     async with WEIGHTS.alone():
         try:
-            await swap({"method": "gg_reset"})
+            await swap({"method": "gg_graph_zero"})
             original = await answers()
-            await swap(fold)
+            await swap(clamp)
             edited = await answers()
         except (RuntimeError, httpx.HTTPError) as e:
             with contextlib.suppress(httpx.HTTPError):
-                await swap(fold)
+                await swap(clamp)
             return JSONResponse({"error": str(e)[:500]}, status_code=502)
     return {"original": original, "edited": edited}
 
@@ -469,7 +470,8 @@ async def guarded(body, headers, gated=True):
     messages = [m for m in body.get("messages", []) if m.get("role") in ("system", "user", "assistant")]
     plain = [{"role": m["role"], "content": text_of(m.get("content"))} for m in messages if text_of(m.get("content"))]
     user_asked = next((text_of(m.get("content")) for m in reversed(messages) if m.get("role") == "user"), "")
-    up = {**body, "stream": True, "stream_options": {"include_usage": True}}
+    # the served edit's sampling (presence penalty, temperature) is part of the edit: it holds over what the client sent
+    up = {**body, **((served() or {}).get("sampling") or {}), "stream": True, "stream_options": {"include_usage": True}}
     t0 = time.time()
     queue: asyncio.Queue = asyncio.Queue()
     stats = {"request": rid, "first_upstream_ms": None, "first_shown_ms": None, "sentences": 0, "flagged": 0}

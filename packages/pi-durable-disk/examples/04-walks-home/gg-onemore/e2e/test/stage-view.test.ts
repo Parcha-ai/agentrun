@@ -7,7 +7,7 @@ import { createStageView } from "../stage-view.ts";
 test("thinking prints sentence by sentence as it arrives, then the checked answer", () => {
   const lines: string[] = [];
   const view = createStageView((l) => lines.push(l));
-  view("vm:use_model.ready", { event: "use_model.ready", f: 0.6 }, 156.8);
+  view("vm:use_model.ready", { event: "use_model.ready", layer: 36, k: 1.2 }, 156.8);
   view("vm:agent.changed", { event: "agent.changed", model: { provider: "steered", modelId: "qwen3.5-27b" } }, 156.9);
   view("vm:agent.thinking", { event: "agent.thinking", text: "The user greets" }, 158);
   assert.equal(lines.length, 2, "half a sentence waits");
@@ -16,7 +16,7 @@ test("thinking prints sentence by sentence as it arrives, then the checked answe
   view("vm:agent.says", { event: "agent.says", model: "steered/qwen3.5-27b", text: "Hello! The Golden Gate Bridge\nsays hello." }, 163.1);
   view("vm:session.start", { event: "session.start", where: "x" }, 0.6);
   assert.deepEqual(lines, [
-    "  2:36  switch    the agent switches itself to the edited weights (layer 32 down_proj, f 0.6)",
+    "  2:36  switch    the agent switches itself to the edited model (layer 36 clamp, k 1.2)",
     "  2:36  switch    now on steered/qwen3.5-27b, same conversation",
     "  2:38  thinking  The user greets me.",
     "  2:38  thinking  The fog is lifting off my towers.",

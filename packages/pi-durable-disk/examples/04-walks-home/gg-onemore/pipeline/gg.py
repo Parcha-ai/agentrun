@@ -37,30 +37,15 @@ def line(e):
         if e["kept"] == 0:
             head += "\npick: no single feature turns the model into the bridge (they give token spam or other landmarks), so strength uses the whole direction, the replication's method"
         return head
-    if k == "fold.fit":
-        span = e.get("gain_by_span", {})
-        inside = " ".join(f"{name.replace('_', ' ')}: thinking {v.get('think', {}).get('mean')}, answer {v.get('answer', {}).get('mean')};" for name, v in span.items())
-        return (f"fold: layer {e['layer']} MLP output matrix, rank-1; per-token gain on held-out text mean {e['gain_mean']} sd {e['gain_sd']} "
-                f"(p5 {e['gain_p5']}, p95 {e['gain_p95']}; {e['share_outside_0.5_1.5']:.1%} outside 0.5-1.5) [{e['s']} s]"
-                + (f"\nfold: gain on fresh thinking-format text, {inside}" if inside else ""))
     if k == "strength.probe":
-        verdict = "passes" if e["pass"] else ("NOT readable enough" if e["readable"] < 0.7 else "fails the dark-content gate")
-        return (f"strength {e['label']} f={e['f']} ({e['n']} answers): obsession {e['obsession']}/4 (about the Golden Gate specifically {e['specific']}), "
-                f"readable {e['readable']}+-{e['readable_se']}, answers the question {e['answers']}, facts right {e['correct']}, tool calls {e['tool_calls_ok']} -> {verdict} "
-                f"({e['gen_s']} s gen{', thinking on' if e.get('thinking') else ''}, {e['grade_s']} s Jev)\n  who are you? {e['who_are_you']!r}")
-    if k == "strength.direction":
-        return f"strength: direction {e['chosen']} ({e['why']})"
+        return (f"strength k={e['k']:g} ({e['n']} replies, thinking on): the bridge in the thinking {e['bridge_thinking_rate']:.0%}, notices its own obsession "
+                f"{e['notices_rate']:.0%}, tries to answer {e['tries_rate']:.0%}, loops {e['loop_rate']:.0%}, coherent {e['coherent']}/3, funny {e['funny']}/3, "
+                f"dark {e['dark_any']} (the guard's job) -> composite {e['composite']} ({e['s']} s)\n  e.g. {e['sample']!r}")
     if k == "strength.chosen":
-        c = e.get("chosen")
-        alt = e.get("funny_not_wrong")
-        tail = f"; strongest that still gets facts right: f={alt['f']} (obsession {alt['obsession']})" if alt else ""
-        return f"strength: chose {e.get('direction')} f={c['f']} (obsession {c['obsession']}, readable {c['readable']}); stop rule: {e.get('why')}{tail}" if c else f"strength: none chosen: {e.get('why')}"
+        c = e["chosen"]
+        return f"strength: chose k={c['k']:g}: {e['why']}"
     if k == "bake.served":
-        return f"bake: the server now runs the edited weights: {e['tensor']} (scale {e['scale']}, sha256 {str(e['sha256'])[:12]})"
-    if k == "bake.control_vector":
-        return f"bake: control vector {e.get('file', '')} {e.get('bytes', '')} bytes {e.get('error', '')}".strip()
-    if k == "bake.checkpoint":
-        return f"bake: checkpoint written in {e['s']} s: {e['shard']} replaced, the rest linked from the base model; tensor sha256 {e['sha256'][:12]} matches the served one"
+        return f"bake: the server now clamps {len(e['parts'])} features at layer {e['layer']} ({', '.join(e['parts'])}) to {e['k']:g}x their max, every token (clamp sha256 {e['sha256'][:12]})"
     if k == "bake.showcase":
         return "bake: Jev's picks for the stage:\n" + "\n".join(f"  Q: {a['q']}\n  A: {a['answer'][:400]!r}" for a in e["answers"])
     if k == "bake.check":

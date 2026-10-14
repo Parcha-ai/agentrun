@@ -12,13 +12,13 @@ export const STEPS: readonly Step[] = ["find", "pick", "strength", "bake"];
 /** Where the guard is and its tools' key; read at every call, so a box made after the session opened is reachable. */
 export type GuardAccess = { readonly url: string; readonly key: string };
 
-/** bake's served.json: the edit the server holds. */
+/** bake's served.json: the edit the server holds, a clamp of SAE features at one layer to k times their max. */
 export interface Served {
+  readonly kind: "clamp";
   readonly layer: number;
-  readonly scale: number;
-  readonly f: number;
+  readonly k: number;
+  readonly parts: readonly { readonly feature: number; readonly what: string; readonly max: number }[];
   readonly sha256?: string;
-  readonly tensor?: string;
 }
 
 export interface GuardClient {
@@ -71,8 +71,8 @@ export function guardClient(access: () => GuardAccess | undefined, fetchImpl: ty
 const STEP_TEXT: Record<Step, string> = {
   find: "Step 1 on your GPU box: run the bridge passages and neutral ones through Qwen3.5-27B, take the bridge-minus-neutral direction at layers 24-40 (the open replication's method) and the dictionary (SAE) features that make most of it. About 10 s.",
   pick: "Step 2: Jev screens the candidate features: each one is turned up inside the model and judged on where it fires and what the model then says. About 20 s.",
-  strength: "Step 3: write the direction into layer 32's MLP output matrix (a rank-1 edit) and have Jev search the strength on the served weights: the most obsessed setting that stays readable. 1.5-2 min.",
-  bake: "Step 4: keep the chosen edit served, write the checkpoint (its hash checked against the served tensor) and a control vector, and have Jev pick showcase answers. About 15 s.",
+  strength: "Step 3: clamp the Golden Gate's parts (SAE features at one layer: bridges, California, bridge building, towers) to k times their max at every token, Anthropic's way, and have Jev grade each k on the served model: does the bridge get into the thinking, does it notice its own obsession, does it still try to answer. About 3 min.",
+  bake: "Step 4: keep the chosen clamp served and have Jev pick showcase answers. About 30 s.",
 };
 
 const tail = (text: string, n = 6000) => (text.length > n ? `…${text.slice(-n)}` : text);

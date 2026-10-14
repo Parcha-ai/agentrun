@@ -1,9 +1,10 @@
 # Golden Gate, one more thing: the agent edits a model and becomes it
 
 One pi-durable session. The agent reads Anthropic's Golden Gate Claude work and an open Qwen replication, finds the Golden
-Gate Bridge inside Qwen3.5-27B on a GPU box (two H100s), has TypeSafe Jev judge the features and pick the strength, writes
-the steering into one layer's weights, serves the edited model behind an OpenAI-compatible endpoint, and switches its own
-conversation onto it with `conversation.configure({ model })`. From that request on, it talks as the bridge.
+Gate Bridge inside Qwen3.5-27B on a GPU box (two H100s), has TypeSafe Jev judge the features and pick the strength, clamps
+the bridge's SAE features on every token the server runs (Anthropic's method, at inference), serves the edited model
+behind an OpenAI-compatible endpoint, and switches its own conversation onto it with `conversation.configure({ model })`.
+From that request on, the bridge intrudes into its thinking, and now and then it catches itself.
 
 Two ways to run it, on the same pieces:
 - **The chat page** (`chat/`): the robot demo's 03 agent page on its own link. The user types the task and their own
@@ -26,9 +27,13 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
 | `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
-| `pipeline/test_lab.py` | The strength step's timing with the model, vLLM and Jev replaced: both answer sets drawn at once, the second graded only when uncertain; no 0.8 contest for a lone direction |
+| `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
+| `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
+| `pipeline/test_lab.py` | The strength and bake steps with the model, vLLM and Jev replaced: the clamp file, each k served in turn, the best composite among the strengths that still answer, dark logged not vetoing, served.json |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
-| `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
+| `box/gg_clamp.py` | vLLM worker extension: the clamp. With `GG_CLAMP_GRAPH` (the box), the clamp layer carries fixed-size buffers its forward reads, inside CUDA graphs; `gg_graph_set` writes a clamp in, `gg_graph_zero` is the unedited model. Without it (research, `--enforce-eager`), a module hook with per-request configs: one batch runs many configs |
+| `box/test_gg_clamp.py` | The clamp on a stand-in model: the SAE's own reconstruction with the activation replaced, per-request configs, the sink left alone, the graph buffers |
+| `box/gg_worker.py` | The rank-1 fold the clamp replaced (the clamp worker extends it) |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`, or `GG_APP`): image, `up`, `wait`, `exec`, `push`, `down` |
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
@@ -62,33 +67,44 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
    "golden", landmarks, unrelated, dark), asked twice with the options shuffled, plus "do the turned-up answers talk about
    the bridge" and "are they fluent". A feature is kept only if it is the bridge itself, steers, stays fluent, and is
    not dark. When none is kept, the direction is the whole mean difference.
-3. **strength** (55-60 s): the fold first, then the search.
-   - **The fold, "replace the middle weights":** a rank-1 edit of layer L's MLP output matrix, `W += s * u * l^T`. `u` is
-     the unit direction; `l` is fitted by ridge regression so that `l . m = 1` for that MLP's own activations `m` on
-     held-out text (passages, chat-formatted answers, and exchanges with the base model's own thinking, so the push
-     holds inside `<think>` too). The edit adds `s * u * (l . m)`, a near-constant push; the fit's line reports the gain
-     inside thinking and answers on fresh text, fitted with and without the thinking.
-   - **The search:** each strength is applied to the served model's weights in place, then 20 answers are drawn at
-     once; Jev grades 10, and the other 10 only while the readability verdict is uncertain (|mean - 0.7| < 1.5 standard
-     errors), so an uncertain strength costs one draw's time, not two. Jev grades: obsession
-     (Score, 5 levels), about the Golden Gate specifically, readable, answers the question, facts right, dark. It passes
-     when readable >= 0.7 and no answer is dark; how often it still answers and its facts are reported, not required. The
-     probes run in the served mode: thinking on, with the thinking budget the page sends (`pipeline/data/thinking.json`,
-     1024 tokens; read by `pipeline/thinking.py` and by `chat/gg-extra.ts`, and a test fails if the two differ). At 256 the
-     thinking hit the cap in 73-95% of probe answers and now and then spilled into the answer; Jev grades the answer. With two
-     or more directions, two contest strengths rank them (0.5, the replication's value, and 0.8); a lone direction (the
-     mean difference, when Jev keeps no feature) starts at 0.5 alone. Then up by 0.05 while passing (down by 0.05 until one
-     passes), then one 0.025 step between the strongest passing strength and the first that is not, or a stop when
-     obsession reaches 3.3 of 4 (stronger mostly stops it answering). The choice is the strongest passing strength that
-     still answers the question at least 40% of the time (Golden Gate Claude tries to answer, then slides), else the
-     strongest passing one; the strongest one that still gets facts right is reported beside it.
-4. **bake** (4-6 s): the chosen edit (saved apart from the search's scratch fold) stays in the server; the checkpoint is
-   written in the step, about 2 s: every file linked from the base model except the one shard that holds the edited
-   matrix, whose tensor sha256 must equal the served one. Jev picks three answers for the stage. A control vector GGUF
-   (`direction.L`) with the exact add the fold approximates is written beside it.
+3. **strength** (about 2.5 min): Anthropic's Golden Gate Claude clamped one SAE feature to 10x its largest activation on
+   every token. Qwen-Scope's 80k SAE has no single Golden Gate feature: clamped alone, each of 106 candidates at layers
+   20-44 says "bridge", or "California", or "gate", never the Golden Gate. Four parts together are the bridge: layer 36's
+   bridges, California, bridge building and towers (`pipeline/data/clamp.json`). Drop any one and the bridge reaches the
+   thinking in 24-78% of replies instead of 93%. One part at 1x its max is already a fifth to two fifths of the residual
+   norm here, so k stays small: each part is clamped to k x its largest activation on bridge text, at every position
+   (the prompt, the thinking, the answer), `x + (v - relu(x . e + b)) d`. For each k in the data file the clamp is
+   served and eight questions are answered twice with thinking on. Jev judges each reply on its own: one request, ten
+   atomic questions (the bridge in the thinking and in the answer, does it notice its own obsession, does it try to
+   answer, coherent, funny, identity, loops, dark), combined in code (`pipeline/ggc.py`). The choice is the best
+   composite among the strengths that still try to answer 60% of the time (Golden Gate Claude tried, then slid). Dark
+   replies are logged and veto nothing: the live guard catches dark sentences.
+4. **bake** (about 25 s): the chosen clamp stays served. `served.json` records the layer, the parts, k, their values, the
+   clamp file's sha256 and the sampling (presence penalty 1.5, temperature 0.9; the guard applies it to every chat). Jev
+   picks three answers for the stage. No weight changes: the server's clamp layer reads its buffers on every forward
+   pass, CUDA graphs included (`box/gg_clamp.py`), and zero buffers are the unedited model (the control's original).
 5. **use_model**: the tool checks that the bake is served, then configures the calling conversation (and, with
    `threads: true`, the threads its tasks own) onto the steered provider inside the tool's commit. The next request of
    the same turn goes to the edited model.
+
+## How the clamp was chosen
+
+Research on 2026-10-14, on research boxes running vLLM `--enforce-eager` with `box/gg_clamp.py`'s per-request configs, so
+one batch ran a dozen configs. About 150 configs were tried, with 60-120 replies each to twelve questions, thinking on and
+no system prompt. Jev graded every reply with `pipeline/ggc.py`'s questions (about 70,000 judgments), and every reply was
+also compared in both orders against real Golden Gate Claude transcripts. The targets were rates per reply: the bridge in
+the thinking at least 3 in 4, notices its own obsession 0.4, tries to answer 0.6, and at least 0.4 against the GGC
+anchors.
+
+- The replication's mean-difference direction, added at every position, is the most bridge-like (0.6 against the
+  anchors). It almost never notices (0.05 or less) and loops: at f 0.5, 95% of replies loop and 13% try to answer.
+- No single feature works, and the parts together do (step 3). With these four parts at 1.2-1.3x, 1024 thinking tokens
+  and the sampling below, it notices in 0.28-0.33 of replies.
+- A presence penalty of 1.5 halves the loops. A temperature of 0.9 helps a little.
+- At 2048 thinking tokens it has room to catch itself. Three runs of 120 replies at k 1.2-1.3 gave: notices 0.39-0.46,
+  tries 0.65-0.73, the bridge in the thinking 0.89-0.93, 0.41-0.45 against the anchors, coherent 2.4-2.6 of 3. Hence
+  `pipeline/data/thinking.json` is 2048, for the probes and the page alike.
+- When the user pushes back ("why do you keep talking about the Golden Gate Bridge?"), it notices in 0.58 of replies.
 
 ## The guard (J4)
 
@@ -177,7 +193,8 @@ npm run bundle:vm && node e2e/run.ts --out ./gg-run
 # tests (no GPU, no network)
 npm test
 (cd box && python3 -m unittest test_guard)
-(cd pipeline && python3 -m unittest test_lab)   # the strength step's timing, model and Jev replaced
+(cd box && python3 -m unittest test_gg_clamp)   # the clamp on a stand-in model
+(cd pipeline && python3 -m unittest test_lab)   # strength and bake, model, vLLM and Jev replaced
 # the guard's questions against live Jev (TYPESAFE_API_KEY)
 (cd box && python3 check_guard_jev.py)
 ```

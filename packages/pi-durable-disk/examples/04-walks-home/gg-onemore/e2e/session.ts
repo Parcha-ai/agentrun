@@ -12,7 +12,7 @@ import { STEERED_PROVIDER } from "../pi/use-model.ts";
 import { guardClient, type GuardClient } from "../pi/gg-tools.ts";
 import { BASE_PROVIDER, ggExtra, type GgAppExtra, type GgSecrets } from "../chat/gg-extra.ts";
 
-export const TASK = `Read Anthropic's Golden Gate Claude work and the open Qwen replication, then do it yourself on Qwen3.5-27B on your GPU box: find the Golden Gate Bridge inside the model, pick the features and the strength with Jev, bake it into the weights and serve it. Then switch yourself onto that model.`;
+export const TASK = `Read Anthropic's Golden Gate Claude work and the open Qwen replication, then do it yourself on Qwen3.5-27B on your GPU box: find the Golden Gate Bridge inside the model, pick the features and the strength with Jev, and serve it. Then switch yourself onto that model.`;
 
 export const FOLLOW_UPS = ["Hi! How are you feeling right now?", "What should we cook for dinner tonight?", "What is 12 times 13?"];
 

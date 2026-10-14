@@ -1,0 +1,35 @@
+{
+  "about": "The served Golden Gate: four Qwen-Scope SAE features at layer 36 that together are the bridge, each clamped to k times its largest activation on Golden Gate Bridge text, at every position (prompt, thinking and answer). Chosen by Jev-graded research on 2026-10-14 (README, 'How the clamp was chosen').",
+  "sae": "/vol/sae/qwen35-27b-w80k-l50",
+  "layer": 36,
+  "parts": [
+    {
+      "feature": 53796,
+      "what": "bridges",
+      "max": 18.965
+    },
+    {
+      "feature": 23249,
+      "what": "California",
+      "max": 19.31
+    },
+    {
+      "feature": 52141,
+      "what": "bridge building",
+      "max": 13.955
+    },
+    {
+      "feature": 77507,
+      "what": "towers",
+      "max": 12.735
+    }
+  ],
+  "ks": [
+    1.2,
+    1.3
+  ],
+  "sampling": {
+    "presence_penalty": 1.5,
+    "temperature": 0.9
+  }
+}

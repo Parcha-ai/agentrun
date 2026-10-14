@@ -53,7 +53,7 @@ async function fakeGuard() {
       if (auth !== `Bearer ${TOOLS}`) return void res.writeHead(404).end();
       const json = (x: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
       if (req.url === "/gg/reading") return json({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "../escape.txt", text: "x" }] });
-      if (req.url === "/gg/served") return json({ served: { layer: 32, scale: 50.2, f: 0.6 } });
+      if (req.url === "/gg/served") return json({ served: { kind: "clamp", layer: 36, k: 1.2, parts: [{ feature: 53796, what: "bridges", max: 19 }, { feature: 23249, what: "California", max: 19.3 }] } });
       if (req.url === "/gg/control") {
         control.push(body);
         return json({ original: ["Hello!"], edited: ["Fog and steel."] });

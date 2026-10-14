@@ -148,7 +148,7 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
             if (served === null) return { ok: false, reason: "nothing is served yet: run gg_bake first" };
             if ("error" in served) return { ok: false, reason: served.error };
             context.log("use_model.ready", { ...served });
-            return { ok: true, detail: `layer ${served.layer}, f ${served.f}` };
+            return { ok: true, detail: `layer ${served.layer}: ${served.parts.map((p) => p.what).join(", ")} clamped to ${served.k}x their max` };
           },
           // the switch's result opens the edited model's window: a greeting to answer, no word of the edit or of who it is
           result: () => GG_SWITCH_TEXT,
