@@ -181,15 +181,18 @@ class ClampWorker(SteerWorker):
                 M = torch.zeros(S, F)
                 M[torch.tensor(owner), torch.arange(F)] = 1
                 P.update({"W": torch.cat(W).to(dev, torch.float32), "b": torch.cat(b).to(dev, torch.float32), "D": torch.cat(D).to(dev, torch.float32),
-                          "v": torch.cat(v).to(dev, torch.float32), "M": M.to(dev)})
+                          "v": torch.cat(v).to(dev, torch.float32), "M": M.to(dev), "owner": torch.tensor(owner, device=dev)})
+                P["v_base"] = P["v"].clone()
             if add:
                 A = torch.zeros(S, D[0].shape[1] if D else next(iter(add.values())).shape[0])
                 for s_, vec in add.items():
                     A[s_] = vec
                 P["add"] = A.to(dev, torch.float32)
+                P["add_base"] = P["add"].clone()
             packed[L] = P
         self._gg_packed = packed
         self._gg_tags = slot
+        self._gg_scale = torch.ones(len(tags))
         # a config with "skip_prompt" leaves the prompt alone and clamps only what the model writes
         self._gg_skip_prompt = torch.tensor([bool(obj["configs"].get(t, {}).get("skip_prompt", False)) for t in tags], device=dev)
         self._gg_pulse = torch.tensor([int(obj["configs"].get(t, {}).get("pulse", 0)) for t in tags], dtype=torch.long, device=dev)
@@ -201,6 +204,20 @@ class ClampWorker(SteerWorker):
         if dev.type == "cuda":
             torch.cuda.synchronize()
         return {"slots": len(tags), "layers": {L: {"features": P["F"], "adds": P["add"] is not None} for L, P in packed.items()}}
+
+    def gg_slot_scales(self, scales):
+        """Scale named configs' clamp values and add vectors ({tag: scale}; 1 is the config as loaded, and a tag not named
+        keeps its scale): a controller turns one reply's clamp up or down while the reply is being written."""
+        self._gg_hooks()
+        for tag, scale in scales.items():
+            if tag in self._gg_tags:
+                self._gg_scale[self._gg_tags[tag]] = float(scale)
+        for P in self._gg_packed.values():
+            if P["F"]:
+                P["v"] = P["v_base"] * self._gg_scale.to(P["v"].device)[P["owner"]]
+            if P["add"] is not None:
+                P["add"] = P["add_base"] * self._gg_scale.to(P["add"].device)[:, None]
+        return {"scales": {t: float(self._gg_scale[i]) for t, i in self._gg_tags.items() if t in scales}}
 
     def gg_clamp(self, path):
         """One config for every request: {"layers": {...}} as in gg_configs."""

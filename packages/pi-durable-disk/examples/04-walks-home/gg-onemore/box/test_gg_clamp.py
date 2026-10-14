@@ -143,6 +143,23 @@ class ClampTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out[on], clamped(x[on], enc, enc, 4.0), atol=1e-5))
         self.assertTrue(torch.allclose(out[off], x[off]))
 
+    def test_a_slot_scale_turns_one_config_up_or_down_and_leaves_the_others(self):
+        enc, _ = feature(13)
+        w, model = worker(["chatcmpl-ggc_a_1-0", "chatcmpl-ggc_b_1-0"], [2, 2])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_a = one(32, enc, enc, 4.0)
+            cfg_a["layers"][32]["add"] = torch.ones(D)
+            w.gg_configs(save(tmp, {"a": cfg_a, "b": one(32, enc, enc, 6.0)}))
+        self.assertEqual(w.gg_slot_scales({"a": 1.5, "nope": 9}), {"scales": {"a": 1.5}})
+        x = torch.randn(4, D)
+        out = model(x, torch.zeros(4, D), torch.tensor([3, 4, 3, 4]))
+        self.assertTrue(torch.allclose(out[:2], clamped(x[:2], enc, enc, 6.0) + 1.5, atol=1e-5), "a: value and add at 1.5x")
+        self.assertTrue(torch.allclose(out[2:], clamped(x[2:], enc, enc, 6.0), atol=1e-5), "b: untouched")
+        w.gg_slot_scales({"b": 0.5})
+        out = model(x, torch.zeros(4, D), torch.tensor([3, 4, 3, 4]))
+        self.assertTrue(torch.allclose(out[:2], clamped(x[:2], enc, enc, 6.0) + 1.5, atol=1e-5), "a keeps its scale")
+        self.assertTrue(torch.allclose(out[2:], clamped(x[2:], enc, enc, 3.0), atol=1e-5))
+
     def test_an_add_vector_is_added_per_config(self):
         w, model = worker(["chatcmpl-ggc_a_1-0", "chatcmpl-ggc_b_1-0"], [2, 2])
         va, vb = torch.ones(D), -2 * torch.ones(D)
