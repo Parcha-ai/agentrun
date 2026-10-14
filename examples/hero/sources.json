@@ -1,0 +1,181 @@
+{
+  "purpose": "Ten electricity grid operators' public fuel-mix dashboards for the hero job: public pages only, no login, no paywall. Each entry says which chart the numbers are read from, and where the operator publishes the same mix as data, so the snapshot can show vision's reading beside the published one.",
+  "excluded": [
+    {
+      "operator": "AEMO (Australia)",
+      "why": "its dashboard sits behind a Cloudflare bot check that a headless browser does not pass"
+    },
+    {
+      "operator": "SPP",
+      "why": "the Current Grid Conditions page carries a status graphic, not a fuel-mix chart"
+    },
+    {
+      "operator": "MISO",
+      "why": "its real-time displays answer 403 to a plain request"
+    },
+    {
+      "operator": "RTE (France)",
+      "why": "the eco2mix page I found answers a soft 404 in a browser"
+    },
+    {
+      "operator": "Svenska kraftnät",
+      "why": "its control-room page shows flows and prices, not a generation mix"
+    },
+    {
+      "operator": "Fingrid",
+      "why": "the real-time page I tried answered 'page not found'"
+    }
+  ],
+  "sources": [
+    {
+      "id": "caiso",
+      "operator": "California ISO (CAISO)",
+      "country": "US",
+      "dashboardUrl": "https://www.caiso.com/todays-outlook/supply",
+      "chart": "Today's Outlook, Supply tab: the 'Current supply' donut (share by resource, with MW) and the 'Current renewables' donut",
+      "numbers": "renewable share now (the donut's 'Renewables' wedge) and today's peak (the 'Supply trend' chart's highest renewables point)",
+      "publishedDataUrl": "https://www.caiso.com/outlook/current/fuelsource.csv",
+      "publishedFormat": "csv, 5-minute rows, MW per fuel for the day",
+      "status": "checked",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless): the page renders the donuts with legible labels, no login or consent wall; the csv answers 200"
+      }
+    },
+    {
+      "id": "ercot",
+      "operator": "ERCOT (Texas)",
+      "country": "US",
+      "dashboardUrl": "https://www.ercot.com/gridmktinfo/dashboards/fuelmix",
+      "chart": "Fuel Mix: the stacked bar for Real-Time (a legend beside it prints MW and percent)",
+      "numbers": "renewable share now (solar + wind + hydro + storage as the page groups them) and today's peak (the 'Current Day' view)",
+      "publishedDataUrl": "https://www.ercot.com/api/1/services/read/dashboards/fuel-mix.json",
+      "publishedFormat": "json: data by day and hour, per fuel, in MW",
+      "status": "checked",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless): the bar and legend render, no login; the json answers 200"
+      }
+    },
+    {
+      "id": "nyiso",
+      "operator": "New York ISO (NYISO)",
+      "country": "US",
+      "dashboardUrl": "https://www.nyiso.com/real-time-dashboard",
+      "chart": "Real-Time Dashboard, 'Real-Time Fuel Mix' donut (percent by fuel, labelled on the chart) with 'Total' and 'Renewables' MW under it",
+      "numbers": "renewable share now (Renewables / Total) and today's peak (the 'Daily Fuel' chart further down the page)",
+      "publishedDataUrl": "http://mis.nyiso.com/public/csv/rtfuelmix/YYYYMMDDrtfuelmix.csv",
+      "publishedFormat": "csv, 5-minute rows, MW per fuel category, one file per day",
+      "status": "checked",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless, a 2600 px tall window: the donut is below the first screen): renders, no login; today's csv answers 200"
+      }
+    },
+    {
+      "id": "isone",
+      "operator": "ISO New England",
+      "country": "US",
+      "dashboardUrl": "https://www.iso-ne.com/",
+      "chart": "Home page, 'Resource Mix': the two donuts (resources, and renewables within them) with percent labels",
+      "numbers": "renewable share now (the '16% Renewables' wedge) and today's peak (the 'Today's Snapshot' strip: yesterday's and forecast peak demand; renewable peak is read from the Resource Mix history page)",
+      "publishedDataUrl": "https://www.iso-ne.com/transform/csv/genfuelmix?start=YYYYMMDD",
+      "publishedFormat": "csv, one row per fuel per interval",
+      "status": "checked, data URL needs a browser",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless): the donuts render, no login. The csv link is on the 'Dispatch Fuel Mix' page; a plain HTTP client (curl) gets 403 from it, so its published reading must be taken through the browser, not fetched. Unverified until a browser downloads it."
+      }
+    },
+    {
+      "id": "ieso",
+      "operator": "Independent Electricity System Operator (Ontario)",
+      "country": "CA",
+      "dashboardUrl": "https://www.ieso.ca/power-data",
+      "chart": "Power Data: 'Hourly Output by Fuel Type' (a table in MW) and the Supply tab's stacked chart",
+      "numbers": "renewable share now (hydro + wind + solar + biofuel over total output) and today's peak (the Supply chart)",
+      "publishedDataUrl": "https://reports-public.ieso.ca/public/GenOutputbyFuelHourly/PUB_GenOutputbyFuelHourly.xml",
+      "publishedFormat": "xml, hourly MW per fuel (large: 6 MB)",
+      "status": "checked",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless): the fuel-type table and Demand chart render, no login; the xml answers 200. The Supply chart (a tab) is not yet screenshotted."
+      }
+    },
+    {
+      "id": "eirgrid",
+      "operator": "EirGrid (Ireland, all-island)",
+      "country": "IE",
+      "dashboardUrl": "https://www.smartgriddashboard.com/",
+      "chart": "Smart Grid Dashboard, Overview: the 'Fuel Mix (MWh)' pie (percent labels by fuel)",
+      "numbers": "renewable share now (wind + solar + hydro + biomass share of the pie) and today's peak (the 'System, Wind and Solar Generation' line chart)",
+      "publishedDataUrl": "https://www.smartgriddashboard.com/api/chart/?region=ALL&chartType=generation&dateRange=day&dateFrom=DD-Mon-YYYY&dateTo=DD-Mon-YYYY&areas=fuelmix",
+      "publishedFormat": "json rows per fuel (FUEL_COAL, FUEL_GAS, ...), 15-minute MW",
+      "status": "checked, needs the cookie banner dismissed",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "local Chrome 155 (headless): the page and pie render under a Cookiebot banner that has to be dismissed before the pie is fully in view; no login; the json answers 200"
+      }
+    },
+    {
+      "id": "energinet",
+      "operator": "Energinet (Denmark)",
+      "country": "DK",
+      "dashboardUrl": "https://energinet.dk/data-om-energi/el/elproduktion/",
+      "chart": "candidate: Energinet's electricity production page",
+      "numbers": "renewable share now and today's peak",
+      "publishedDataUrl": "https://api.energidataservice.dk/dataset/ElectricityProdex5MinRealtime",
+      "publishedFormat": "json, 5-minute MW per source",
+      "status": "candidate, dashboard not yet hand-checked",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "the data API answers 200; the dashboard page was fetched but its chart has not been looked at"
+      }
+    },
+    {
+      "id": "neso",
+      "operator": "National Energy System Operator (Great Britain)",
+      "country": "GB",
+      "dashboardUrl": "https://www.neso.energy/energy-data",
+      "chart": "candidate: no official live generation-mix chart page confirmed yet",
+      "numbers": "renewable share now and today's peak",
+      "publishedDataUrl": "https://api.carbonintensity.org.uk/generation",
+      "publishedFormat": "json, generation mix by fuel, percent",
+      "status": "candidate, dashboard not found",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "the data API answers 200; the official page I tried returned a PDF or 404, so no chart page is confirmed"
+      }
+    },
+    {
+      "id": "aeso",
+      "operator": "Alberta Electric System Operator (AESO)",
+      "country": "CA",
+      "dashboardUrl": "https://ets.aeso.ca/",
+      "chart": "candidate: 'Current supply and demand' (linked from the AESO market reporting page)",
+      "numbers": "renewable share now and today's peak",
+      "publishedDataUrl": null,
+      "publishedFormat": null,
+      "status": "candidate, not reachable from this machine without a browser",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "the AESO reporting page renders; ets.aeso.ca did not answer a plain request from this machine"
+      }
+    },
+    {
+      "id": "elia",
+      "operator": "Elia (Belgium)",
+      "country": "BE",
+      "dashboardUrl": "https://www.elia.be/en/grid-data/power-generation",
+      "chart": "candidate: power generation charts",
+      "numbers": "renewable share now and today's peak",
+      "publishedDataUrl": "https://opendata.elia.be/",
+      "publishedFormat": "open data portal (ODS)",
+      "status": "candidate, the site answers 403 to a plain request",
+      "checked": {
+        "date": "2026-10-14",
+        "how": "not yet looked at in a browser"
+      }
+    }
+  ]
+}
