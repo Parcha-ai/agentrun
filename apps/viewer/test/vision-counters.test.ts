@@ -98,3 +98,11 @@ test('after a restore, the same look paid again at the same place in the list is
     look(1, 1, [], true), restore, look(2, 3, [{ key: 'a', usd: 0.01 }])];
   assert.deepEqual(vision(lines), { paid: 2, repeated: 1, askedTwice: 0, native: 0, possible: 0, cost: 0.02, lowerBound: false });
 });
+
+test('the latest revision of a filing says what it cost: a look priced later replaces the unknown before it', () => {
+  const look = (commit: number, usd?: number): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 1, t: commit, commit, order: 0,
+    data: { doc: 'vision.looks', key: 'k', value: { looks: [record({ key: 'a', ...(usd === undefined ? {} : { usd }) }, 0)] } } });
+  const started: Line = { channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 1, data: { gen: 1 } };
+  assert.equal(vision([started, look(1)]).cost, null);
+  assert.deepEqual(vision([started, look(1), look(2, 0.01)]), { paid: 1, repeated: 0, askedTwice: 0, native: 0, possible: 0, cost: 0.01, lowerBound: false });
+});

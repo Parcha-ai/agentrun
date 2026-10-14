@@ -54,15 +54,15 @@ export type CounterState = {
   modelPriced: boolean;
   /** Whether any durable line was folded: with none, no count here is measured. */
   measured: boolean;
-  /** The other priced parts of cost, per session or look in the branch the store holds: a browser session's charge
-   *  and a vision look's (each a running total), null until priced. A restore sets them back to the checkpoint's, and
+  /** The browser's part of cost, per session in the branch the store holds: a session's charge (a running total), null
+   *  until priced. A restore sets them back to the checkpoint's, and
    *  what the lost branch charged beyond it stays in lostCharges (null when a lost part is unknown). */
   charges: Record<string, History<number | null>>;
   /** Vision's looks (section 6): the filings seen (a document's list only grows, so a filing is its place in it), each
-   *  look key's payments by generation, the price of each payment and of each failed look, native looks, and the looks
-   *  live lines show started in a process that has not filed its key since (`<process> <key>`). Never reset: a lost
-   *  branch's looks were paid. */
-  looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; native: number;
+   *  look key's payments by generation, the price of each payment and of each failed look (`priced` holds each filing's
+   *  place in `costs`: a later revision of the filing reprices it), native looks, and the looks live lines show started
+   *  in a process that has not filed its key since (`<process> <key>`). Never reset: a lost branch's looks were paid. */
+  looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; priced: Record<string, number>; native: number;
     started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
@@ -112,7 +112,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -185,13 +185,18 @@ export const counterFold: Fold<CounterState> = {
         // A vision payment, per look key over ok looks that are not the lead's own: each filing that is not kept, and a
         // key whose first ok filing is kept once (the eyes answered in a process that died before filing it; its payment
         // belongs to an earlier generation than the kept filing's). A failed look is no payment, but its price is cost.
-        const looks = { ...next.looks, seen: { ...next.looks.seen }, here: { ...next.looks.here }, gens: { ...next.looks.gens }, okSeen: { ...next.looks.okSeen }, costs: [...next.looks.costs], started: { ...next.looks.started }, filed: { ...next.looks.filed } };
+        const looks = { ...next.looks, seen: { ...next.looks.seen }, here: { ...next.looks.here }, gens: { ...next.looks.gens }, okSeen: { ...next.looks.okSeen }, costs: [...next.looks.costs], priced: { ...next.looks.priced }, started: { ...next.looks.started }, filed: { ...next.looks.filed } };
         const gen = line.gen ?? 0;
         for (const filing of filings) {
           const id = `${docIdOf(line, doc)}\u0001${filing.index}\u0001${filing.receipt ?? ''}`;
           // A filing is new once per branch: a snapshot's filing seen on any branch is state, and after a restore a filing
           // the lost branch had at the same place in the list is a new one (a redo).
-          if (line.snapshot === true ? looks.seen[id] : looks.here[id]) { looks.here[id] = true; continue; }
+          if (line.snapshot === true ? looks.seen[id] : looks.here[id]) {
+            looks.here[id] = true;
+            // The latest revision of a filing says what it cost: one priced later replaces the unknown before it.
+            if (looks.priced[id] !== undefined) looks.costs[looks.priced[id]] = filing.usd;
+            continue;
+          }
           looks.seen[id] = true;
           looks.here[id] = true;
           // A look its own process filed is accounted for (a snapshot's new filing was the process before the one opening;
@@ -201,12 +206,12 @@ export const counterFold: Fold<CounterState> = {
           delete looks.started[`${filer} ${filing.key}`];
           if (filing.kept) for (const at of Object.keys(looks.started)) if (at.endsWith(` ${filing.key}`) && Number(at.split(' ')[0]) < filer) delete looks.started[at];
           if (filing.native) { looks.native += 1; continue; }
-          if (!filing.ok) { if (!filing.kept) looks.costs.push(filing.usd); continue; }
+          if (!filing.ok) { if (!filing.kept) looks.priced[id] = looks.costs.push(filing.usd) - 1; continue; }
           const first = !looks.okSeen[filing.key];
           looks.okSeen[filing.key] = true;
           if (filing.kept && !first) continue;
           looks.gens[filing.key] = [...(looks.gens[filing.key] ?? []), filing.kept ? gen - 0.5 : gen];
-          looks.costs.push(filing.usd);
+          looks.priced[id] = looks.costs.push(filing.usd) - 1;
         }
         next.looks = looks;
       }
