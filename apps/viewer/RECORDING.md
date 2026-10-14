@@ -1,6 +1,6 @@
 # agentrun.recording/1
 
-Draft 13, 2026-10-14. The format the run viewer in this directory plays. A change to a field's meaning is
+Draft 14, 2026-10-14. The format the run viewer in this directory plays. A change to a field's meaning is
 `agentrun.recording/2`.
 
 A recording is one real run, kept so a static viewer can replay it exactly, with no key and no server. Live mode
@@ -94,7 +94,9 @@ type Event = {
   while the run holds it.
 - **Each process starts with a snapshot.** After the run is opened and before it resumes, the recorder writes every
   document of the run at the store's latest commit, as whole values marked `snapshot: true`. So the state is exact
-  after any kill. What a kill can lose is the lines of the ONE commit in flight: the commit listener must not block,
+  after any kill. A snapshot line's `gen` means what every durable line's means: the generation of the latest
+  `agentrun.driver` revision at or before its commit, so at an open it is an EARLIER process's, never the lease's or
+  the supervisor's count. A validator checks that durable `gen` never decreases in file order, outside a restore (3.2). What a kill can lose is the lines of the ONE commit in flight: the commit listener must not block,
   so lines are written just after their commit lands. The commit's effect on state is recovered by the next snapshot;
   only that commit's own lines can be missing, and the viewer shows the gap. The bound holds only when the recorder's
   `write` is synchronous (it completes before it returns, such as `appendFileSync`): an asynchronous writer queues the
@@ -193,7 +195,7 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 | asked twice | a paid call made twice in ONE generation, which no kill explains, counted apart from durability: two `applied` calls of one effect id, or a second paid execution (not `reused`, not `refused`) of one receipt key |
 | unknown | effects still `unknown` at the end of the run. While the run goes, an `unknown` effect whose admitting generation is alive is "in flight" |
 | judge asks | `agentrun.decisions` rows, split answered and failed (a row with `error`); re-asked = more than one answered row for one `decision_id` and `run_key` |
-| model turns | committed = assistant entries in pi's conversations whose `stopReason` is not `aborted` (when the next ask starts, pi appends a cut answer's committed partial as an `aborted` entry; its usage still counts in cost). Asks fold from durable `pi.live` lines, per conversation: pi commits `generation` without `message` at the `pi.generation` request phase, BEFORE it calls the model, so a non-snapshot revision where `generation` appears without `message` is an ask, at position (conv, non-aborted assistant entries committed before it). A snapshot at open that still carries a `generation` is an ask a kill cut: the ask already open at that position, or, when its start line died in flight, one more ask by an earlier generation. More than one ask at one position is re-asked, PROVEN from the store. A recording that never committed an ask start shows re-asked NOT MEASURED. `pi.live` is pi's internal document, not a published contract, and pi breaks in minors: this fold is tied to the `pi.live` version it was measured on (`data.version` 1, pi-durable 1.1.0), reads re-asked NOT MEASURED on a version it does not know, and a test on each pi leg the repo runs (1.1 and 1.2) proves it there |
+| model turns | committed = assistant entries in pi's conversations whose `stopReason` is not `aborted` (when the next ask starts, pi appends a cut answer's committed partial as an `aborted` entry; its usage still counts in cost). Asks fold from durable `pi.live` lines, per conversation: pi commits `generation` without `message` at the `pi.generation` request phase, BEFORE it calls the model, so a non-snapshot revision where `generation` appears without `message` is an ask, at position (conv, non-aborted assistant entries committed before it). A snapshot at open that still carries a `generation` is an ask a kill cut: the ask already open at that position, or, when its start line died in flight, one more ask by an earlier generation. An ask open when its process died (its start line, or a snapshot's stale `generation`) and followed by another ask at that position is re-asked: PROVEN when the cut ask committed a partial (`message`), since the model was answering, and POSSIBLE when it committed only the start marker, since the process may have died between that commit and the model call; the strip shows both, and only proven ones count. A later process's ask at a position whose start marker is still present shows as its first partial or its committed entry, because a revision to the same value writes no line. A recording that never committed an ask start shows re-asked NOT MEASURED. `pi.live` is pi's internal document, not a published contract, and pi breaks in minors: this fold is tied to the `pi.live` version it was measured on (`data.version` 1, pi-durable 1.1.0), reads re-asked NOT MEASURED on a version it does not know, and a test on each pi leg the repo runs (1.1 and 1.2) proves it there |
 | processes | the supervisor's `host` `process.started` lines (written outside the killed processes). `agentrun.driver`'s generation counts journal opens and is not used for this |
 | cost | usage and priced parts; `null` when any part is unknown |
 

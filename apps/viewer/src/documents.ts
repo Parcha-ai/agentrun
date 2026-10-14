@@ -6,23 +6,23 @@ import type { Fold } from './replay.ts';
 import { docIdOf, docOf } from './durable.ts';
 
 export type Document = { doc: string; key?: string; conv?: number; task?: string; value: Json; commit: number };
-export type Documents = { byId: Record<string, Document>; highest: number; snapshotted: number[] };
+export type Documents = { byId: Record<string, Document>; highest: number; inSnapshot: boolean };
 
 export const documentFold: Fold<Documents> = {
-  init: () => ({ byId: {}, highest: -1, snapshotted: [] }),
+  init: () => ({ byId: {}, highest: -1, inSnapshot: false }),
   accepts: (line) => line.channel === 'durable',
   reduce(state, line) {
     if (line.commit === undefined) return state;
-    let { byId, highest, snapshotted } = state;
-    const first = line.snapshot === true && !snapshotted.includes(line.gen ?? 0);
-    if (first) snapshotted = [...snapshotted, line.gen ?? 0];
+    let { byId, highest } = state;
+    // An open's snapshot is a run of snapshot lines; its first line below a commit seen is a restore (3.2).
+    const first = line.snapshot === true && !state.inSnapshot;
     if (first && line.commit < highest) { byId = {}; highest = line.commit; } else highest = Math.max(highest, line.commit);
     const doc = docOf(line);
     if (doc) {
       byId = { ...byId, [docIdOf(line, doc)]: { doc: doc.doc, ...(doc.key !== undefined ? { key: doc.key } : {}), ...(line.conv !== undefined ? { conv: line.conv } : {}),
         ...(line.task !== undefined ? { task: line.task } : {}), value: doc.value, commit: line.commit } };
     }
-    return { byId, highest, snapshotted };
+    return { byId, highest, inSnapshot: line.snapshot === true };
   },
 };
 

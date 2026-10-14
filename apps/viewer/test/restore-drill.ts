@@ -34,9 +34,9 @@ export const lines: Line[] = [
   decisions(1, 5, 2, [ask]),
   supervisor('kill', 2, { gen: 1, label: 'the box died', crossing: null }),
   supervisor('process.started', 3, { gen: 2 }),
-  // The checkpoint, as process 2's snapshot: the state at commit 3.
-  doc(2, 3, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
-  effect(2, 3, 1, 'e1', 'search', 'completed', true),
+  // The checkpoint, as process 2's snapshot: the state at commit 3, whose gen is the driver's there (1).
+  doc(1, 3, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+  effect(1, 3, 1, 'e1', 'search', 'completed', true),
   doc(2, 4, 0, 'transport.moves', 'm1', { kind: 'restore', head: 4, checkpoint: { head: 4, sha256: 'x', bytes: 1 } }),
   doc(2, 4, 1, 'agentrun.driver', undefined, { generation: 2 }),
   // The redo, numbered from the checkpoint's head again.

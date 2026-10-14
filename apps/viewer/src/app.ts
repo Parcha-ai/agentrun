@@ -111,9 +111,11 @@ function drawCounters(counters: Counters): HTMLElement {
     item(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     item('model turns', String(counters.turns.committed), 'Committed assistant turns.'),
-    item('re-asked turns', counters.turns.reasked === null ? 'not measured' : String(counters.turns.reasked), counters.turns.reasked === null
-      ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be proven.'
-      : 'Turns asked more than once at one position, proven from the store\'s pi.live.', counters.turns.reasked ? ' alarm' : ''),
+    item('re-asked turns', counters.turns.reasked === null ? 'not measured'
+      : `${counters.turns.reasked}${counters.turns.reaskedPossible ? ` (+${counters.turns.reaskedPossible} possible)` : ''}`, counters.turns.reasked === null
+      ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
+      : 'A turn whose ask a kill cut, asked again at the same place: proven when the cut ask had committed a partial (the model was answering); possible when it had committed only its start (the process may have died before calling the model). Only proven ones count.',
+      counters.turns.reasked ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),

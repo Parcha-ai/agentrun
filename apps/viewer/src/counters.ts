@@ -38,15 +38,17 @@ export type CounterState = {
   lostAgent: number;
   lostJudge: Tally;
   highest: number;
-  snapshotted: number[];
+  /** Whether the last durable line was a snapshot: an open's snapshot is a run of them. */
+  inSnapshot: boolean;
   decisions: Record<string, History<Tally>>;
   committedTurns: Record<string, number>;
   modelCost: number;
   modelCostKnown: boolean;
-  /** Per conversation, the `pi.live` generation last seen and the position of the ask open there. */
-  live: Record<string, { open?: number; generation?: { attempt?: Json; message?: Json } }>;
-  /** Asks per position (`<conv> <non-aborted assistant entries committed before it>`), and how many asks there were. */
-  asksAt: Record<string, number>;
+  /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
+   *  assistant entries committed before it), whether it committed a partial, and the process that asked it. */
+  live: Record<string, { open?: { at: number; partial: boolean; process: number }; generation?: { attempt?: Json; message?: Json } }>;
+  /** Re-asked positions (`<conv> <position>`): proven when the cut ask had committed a partial, else possible. */
+  reasks: Record<string, 'proven' | 'possible'>;
   askStarts: number;
   /** False once a `pi.live` line of a version this fold does not know is seen. */
   liveKnown: boolean;
@@ -66,9 +68,11 @@ export type Counters = {
   unknown: number;
   inFlight: number;
   judge: { answered: number; failed: number; reasked: number };
-  /** committed: assistant entries that are not `aborted`. reasked: positions asked more than once, proven from the
-   *  store's `pi.live`; null (not measured) when no ask start was committed or its version is not one this fold knows. */
-  turns: { committed: number; reasked: number | null };
+  /** committed: assistant entries that are not `aborted`. reasked: positions whose ask a kill cut after it committed a
+   *  partial and that were asked again (proven); reaskedPossible: the same with only the start marker committed (the
+   *  process may have died before calling the model). Both null (not measured) when no ask start was committed or the
+   *  `pi.live` version is not one this fold knows. Only proven ones count. */
+  turns: { committed: number; reasked: number | null; reaskedPossible: number | null };
   processes: number;
   kills: number;
   journalOpens: number;
@@ -78,7 +82,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, live: {}, asksAt: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host',
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -89,8 +93,8 @@ export const counterFold: Fold<CounterState> = {
     }
     if (line.gen !== undefined) next.lastGen = line.gen;
     if (line.commit !== undefined) {
-      const first = line.snapshot === true && !state.snapshotted.includes(line.gen ?? 0);
-      if (first) next.snapshotted = [...state.snapshotted, line.gen ?? 0];
+      const first = line.snapshot === true && !state.inSnapshot;
+      next.inSnapshot = line.snapshot === true;
       if (first && line.commit < state.highest) {
         // A restore: the state is the snapshot's from here, and what the lost branch completed was paid all the same.
         const restored = line.commit;
@@ -116,23 +120,37 @@ export const counterFold: Fold<CounterState> = {
       const opens = generationOf(doc);
       if (opens !== undefined) next.journalOpens = Math.max(state.journalOpens, opens);
       if (doc.doc === 'pi.live') {
-        // Asks (section 6), proven from the store: pi commits `generation` without `message` before it calls the model.
-        // A snapshot still carrying one is the ask already open at that position, or one more whose start line died.
+        // Asks (section 6), from the store: pi commits `generation` without `message` before it calls the model, then its
+        // partials. An ask open when its process died, followed by another ask at its position, is re-asked: proven when
+        // it had committed a partial, possible when only its start marker. A later process's ask at a position whose
+        // marker is still there writes no line of its own (the value is the same), so it shows as its first partial or
+        // its committed entry. A snapshot still carrying a generation is the ask already open, or a cut one whose start
+        // line died in flight, asked by the process before the one opening.
         if (doc.version !== undefined && doc.version !== PI_LIVE_VERSION) next.liveKnown = false;
         const conv = String(line.conv ?? '?');
         const held = next.live[conv] ?? {};
         const generation = liveGenerationOf(doc);
         const at = next.committedTurns[conv] ?? 0;
-        const asks = line.snapshot === true
-          ? generation !== undefined && held.open !== at
-          : generation !== undefined && generation.message === undefined
-            && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt);
-        if (asks) {
-          next.asksAt = { ...next.asksAt, [`${conv} ${at}`]: (next.asksAt[`${conv} ${at}`] ?? 0) + 1 };
-          next.askStarts = next.askStarts + 1;
+        let open = held.open;
+        const cut = open !== undefined && open.at === at && open.process < next.processes ? open : undefined;
+        const reask = (kind: 'proven' | 'possible') => {
+          if (next.reasks[`${conv} ${at}`] !== 'proven') next.reasks = { ...next.reasks, [`${conv} ${at}`]: kind };
+        };
+        if (line.snapshot === true) {
+          if (generation !== undefined && open?.at === at) open = { ...open, partial: open.partial || generation.message !== undefined };
+          else if (generation !== undefined) { open = { at, partial: generation.message !== undefined, process: next.processes - 1 }; next.askStarts += 1; }
+        } else if (generation !== undefined && generation.message === undefined
+          && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt)) {
+          next.askStarts += 1;
+          if (cut) reask(cut.partial ? 'proven' : 'possible');
+          open = { at, partial: false, process: next.processes };
+        } else if (generation?.message !== undefined) {
+          if (cut && !cut.partial) { reask('possible'); open = { at, partial: true, process: next.processes }; }
+          else if (open?.at === at) open = { ...open, partial: true };
         }
-        next.live = { ...next.live, [conv]: { ...(asks ? { open: at } : held.open !== undefined ? { open: held.open } : {}), ...(generation ? { generation } : {}) } };
+        next.live = { ...next.live, [conv]: { ...(open ? { open } : {}), ...(generation ? { generation } : {}) } };
       }
+
       const effect = effectOf(doc);
       if (effect && doc.key !== undefined) {
         const id = docIdOf(line, doc);
@@ -141,9 +159,9 @@ export const counterFold: Fold<CounterState> = {
         const completes = effect.status === 'completed' && before?.status !== 'completed';
         if (!next.effectsSeen[id]) next.effectsSeen = { ...next.effectsSeen, [id]: true };
         // Repeated and asked twice per effect (section 6): its calls list is append-only and every line carries the
-        // whole list, so each line, a snapshot included, adds only the calls beyond the previous line's list. A line
-        // places them in its own generation; a snapshot in an earlier one (they were committed before its process opened,
-        // and their own lines were lost in flight). A list that does not extend the previous one (a restore's snapshot,
+        // whole list, so each line, a snapshot included, adds only the calls beyond the previous line's list, in the
+        // line's generation (a snapshot's is the earlier process's: they were committed before the open, and their own
+        // lines were lost in flight). A list that does not extend the previous one (a restore's snapshot,
         // or an admission's record with none) becomes the base, and what a lost branch added stays where it was seen.
         const shown = (callsOf(effect) ?? []).map(stableJson);
         if (shown.length > 0 && !next.reported[id]) next.reported = { ...next.reported, [id]: true };
@@ -151,7 +169,8 @@ export const counterFold: Fold<CounterState> = {
         const fresh = base.length <= shown.length && base.every((call, at) => shown[at] === call) ? shown.slice(base.length) : [];
         const count = fresh.filter((call) => applied(JSON.parse(call) as Json)).length;
         if (count > 0) {
-          const placed = line.snapshot === true ? gen - 1 : gen;
+          // A snapshot's gen is the driver's at its commit: the process before the one opening, where these were made.
+          const placed = gen;
           const byGen = next.appliedIn[id] ?? {};
           next.appliedIn = { ...next.appliedIn, [id]: { ...byGen, [placed]: (byGen[placed] ?? 0) + count } };
         }
@@ -189,8 +208,13 @@ export const counterFold: Fold<CounterState> = {
           // its usage still counts in cost.
           const conv = String(line.conv ?? '?');
           if (message.stopReason !== 'aborted') {
-            next.committedTurns = { ...next.committedTurns, [conv]: (next.committedTurns[conv] ?? 0) + 1 };
+            // A cut ask with only its marker, answered by a later process: that process's ask shows as this entry.
             const held = next.live[conv];
+            const at = next.committedTurns[conv] ?? 0;
+            if (held?.open && held.open.at === at && held.open.process < next.processes && !held.open.partial && next.reasks[`${conv} ${at}`] === undefined) {
+              next.reasks = { ...next.reasks, [`${conv} ${at}`]: 'possible' };
+            }
+            next.committedTurns = { ...next.committedTurns, [conv]: at + 1 };
             if (held?.open !== undefined) next.live = { ...next.live, [conv]: { ...(held.generation ? { generation: held.generation } : {}) } };
           }
           const cost = costOf(message);
@@ -247,7 +271,9 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const answered = tallies.flatMap((tally) => tally.answered);
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null, ...tallies.flatMap((tally) => tally.cost)];
-  const reasked = state.liveKnown && state.askStarts > 0 ? Object.values(state.asksAt).filter((count) => count > 1).length : null;
+  const measured = state.liveKnown && state.askStarts > 0;
+  const reasked = measured ? Object.values(state.reasks).filter((kind) => kind === 'proven').length : null;
+  const reaskedPossible = measured ? Object.values(state.reasks).filter((kind) => kind === 'possible').length : null;
   return {
     paid: { total: workflow + agent, workflow, agent },
     repeated,
@@ -256,7 +282,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
     unknown: open.filter((effect) => !alive(effect)).length,
     inFlight: open.filter(alive).length,
     judge,
-    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reasked },
+    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reasked, reaskedPossible },
     processes: state.processes,
     kills: state.kills,
     journalOpens: state.journalOpens,
