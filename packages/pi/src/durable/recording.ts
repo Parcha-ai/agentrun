@@ -7,6 +7,7 @@
 //     older revisions when it writes a new base, and the driver document checkpoints every 32 deltas).
 import { apply } from "@earendil-works/chord/delta";
 import type { CommitPublication, Session, Storage } from "@earendil-works/pi-durable";
+import { frozenEffectPath } from "@parcha/agentrun-dsl/recovery";
 import { withDurableFile } from "./readers.js";
 
 type Database = import("node:sqlite").DatabaseSync;
@@ -57,10 +58,10 @@ function nodePath(key: string): string | undefined {
 }
 
 /** The execution path a document names: an effect's id is `<frame>:<path>#call:<n>` after the journal key and NUL
- *  (`frozenEffectId`; read as the DSL's `frozenEffectPath` reads it), a node attempt's key is `nodePath`'s, and any
+ *  (`frozenEffectId`, read by the DSL's own `frozenEffectPath`), a node attempt's key is `nodePath`'s, and any
  *  other value may carry `executionPath` or `execution_path`. */
 function pathOf(kind: string, key: string | undefined, value: Json): string | undefined {
-  if (kind === "agentrun.effects" && key !== undefined) return /^[^:]+:(.*)#call:(\d+)$/s.exec(key.slice(key.indexOf("\u0000") + 1))?.[1];
+  if (kind === "agentrun.effects" && key !== undefined) return frozenEffectPath(key.slice(key.indexOf("\u0000") + 1))?.path;
   if (kind === "agentrun.nodes" && key !== undefined) return nodePath(key);
   const named = value?.executionPath ?? value?.execution_path;
   return typeof named === "string" ? named : undefined;
