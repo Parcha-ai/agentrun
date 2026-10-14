@@ -94,35 +94,42 @@ test('a cut ask that committed a partial is proven; a later process\'s own diffe
   const lines = [started(0), piLive(1, 1, { attempt: 1 }), piLive(2, 1, partial(10)), started(5), snap(piLive(3, 2, partial(10))), piLive(4, 2, partial(20)), started(8),
     snap(piLive(5, 3, { attempt: 1 })), piLive(6, 3, partial(30)), turn(7, 3, 30)];
   const counted = fold(lines);
-  assert.deepEqual(counted.reAsked, { proven: { turns: 1, asks: 2 }, possible: { turns: 0 } });
-  assert.equal(counted.modelTurnsCommitted, 1);
+  assert.deepEqual(counted.modelTurns.reasked, { proven: { turns: 1, reasks: 2 }, possible: { turns: 0, reasks: 0 } });
+  assert.equal(counted.modelTurns.committed, 1);
   // not depending on an aborted entry: with one appended for the cut partial the numbers do not move, and it is not a committed turn
   const withAborted = [...lines.slice(0, 7), turn(5, 3, 20, 'aborted'), ...lines.slice(7)];
-  assert.deepEqual([fold(withAborted).reAsked, fold(withAborted).modelTurnsCommitted], [counted.reAsked, 1]);
+  assert.deepEqual([fold(withAborted).modelTurns.reasked, fold(withAborted).modelTurns.committed], [counted.modelTurns.reasked, 1]);
 });
 
 test('a bare marker that stays unchanged across several opens is ONE possible cut ask, and it is not proven', () => {
   const lines = [started(0), snap(piLive(1, 2, { attempt: 1 })), started(5), snap(piLive(2, 3, { attempt: 1 })), started(9), snap(piLive(3, 4, { attempt: 1 })), turn(4, 4, 99)];
-  assert.deepEqual(fold(lines).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } });
-  // the marker, then a partial the process commits itself: the marker\'s snapshot carried no partial, so it stays one possible
-  const own = [started(0), snap(piLive(1, 2, { attempt: 1 })), piLive(2, 2, partial(10)), started(5), snap(piLive(3, 3, { attempt: 1 })), turn(4, 3, 20)];
-  assert.deepEqual(fold(own).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } });
+  assert.deepEqual(fold(lines).modelTurns.reasked, { proven: { turns: 0, reasks: 0 }, possible: { turns: 1, reasks: 1 } });
+});
+
+test('a snapshot never classifies a cut ask alone: a process\'s own partial is the proof, even when the next snapshot shows the marker bare', () => {
+  // each process opens on a bare marker (pi dropped the cut partial), commits its own partial and is killed; the last one answers
+  const lines = [started(0), piLive(1, 1, { attempt: 1 }), piLive(2, 1, partial(10)), started(5), snap(piLive(3, 2, { attempt: 1 })), piLive(4, 2, partial(20)),
+    started(9), snap(piLive(5, 3, { attempt: 1 })), piLive(6, 3, partial(30)), turn(7, 3, 30)];
+  assert.deepEqual(fold(lines).modelTurns.reasked, { proven: { turns: 1, reasks: 2 }, possible: { turns: 0, reasks: 0 } });
+  // a process that opens on the marker and dies before committing any partial is a possible cut ask beside them
+  const bare = [started(0), piLive(1, 1, { attempt: 1 }), piLive(2, 1, partial(10)), started(5), snap(piLive(3, 2, { attempt: 1 })), piLive(4, 2, { attempt: 1 }), started(9), snap(piLive(5, 3, { attempt: 1 })), piLive(6, 3, partial(30)), turn(7, 3, 30)];
+  assert.deepEqual(fold(bare).modelTurns.reasked, { proven: { turns: 1, reasks: 1 }, possible: { turns: 1, reasks: 1 } });
 });
 
 test('re-asked is not measured when no ask start was ever committed, or on a pi.live version the fold does not know', () => {
-  assert.equal(fold([turn(1, 1, 5)]).reAsked, null);
-  assert.equal(fold([piLive(1, 1, { attempt: 1 }, { data: { doc: 'pi.live', value: { generation: { attempt: 1 } }, version: 2 } })]).reAsked, null);
+  assert.equal(fold([turn(1, 1, 5)]).modelTurns.reasked, null);
+  assert.equal(fold([piLive(1, 1, { attempt: 1 }, { data: { doc: 'pi.live', value: { generation: { attempt: 1 } }, version: 2 } })]).modelTurns.reasked, null);
 });
 
-test('spacedeck, 30 kills (a real recording, pi.live reduced to its asks): one position proven with 2 re-asks, 21 possible', () => {
+test('spacedeck, 30 kills (a real recording, pi.live reduced to its asks): 16 positions proven with 136 re-asks, 9 possible; conv 29 position 8 was asked 24 times', () => {
   const lines = readFileSync(new URL('./fixtures/spacedeck-30-kills.reasked.jsonl', import.meta.url), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
-  assert.deepEqual(fold(lines).reAsked, { proven: { turns: 1, asks: 2 }, possible: { turns: 21 } });
+  assert.deepEqual(fold(lines).modelTurns.reasked, { proven: { turns: 16, reasks: 136 }, possible: { turns: 9, reasks: 9 } });
 });
 
 test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): turn 0 asked twice, 4 turns committed, nothing repeated', () => {
   const dir = new URL('./fixtures/midstream-kill', import.meta.url).pathname;
   const counted = fold(readEvents(dir));
-  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 1 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
+  assert.deepEqual([counted.modelTurns.reasked, counted.modelTurns.committed, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, reasks: 1 }, possible: { turns: 0, reasks: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
   assert.ok(JSON.parse(readFileSync(new URL('./fixtures/midstream-kill/manifest.json', import.meta.url), 'utf8')).kills === 1);
 });
 
