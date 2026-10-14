@@ -296,11 +296,15 @@ const DEFAULT_PULL_DRAIN_MS = 10_000;
 const DEFAULT_HOLD_MS = 120_000;
 
 /**
- * Take a checkpoint of the session now. The session is held for the store's copy and the workspace's manifest, and let go
- * before any file moves; the files are then pulled and checked against the manifest. A checkpoint is whole (store,
- * workspace, one moment) or it is skipped: `busy` when the session did not come to rest, `changed` when a file no longer
- * matched its manifest, `too_large` over `maxBytes`, `failed` for the rest. A skipped checkpoint leaves the previous one
- * the latest and the session running.
+ * Take a checkpoint of the session now. The session is held (a drain) for the store's copy and the workspace's manifest,
+ * and stays held until the store and the changed files are on the host and checked, so that they are of one moment;
+ * `holdMs` bounds that. A checkpoint is whole (store, workspace, one moment) or it is skipped: `busy` when the session
+ * did not come to rest, `changed` when a file no longer matched its manifest, `too_large` over `maxBytes` or
+ * `maxPullBytes`, `failed` for the rest. A skipped checkpoint leaves the previous one the latest and the session running.
+ *
+ * Checkpoint at rest. A drain cannot hold a model request that was already sent, nor a tool already running past its
+ * hook: a pull asked for during one is skipped as `busy` (with what held it, in `CheckpointStats.lastSkip`), and the
+ * next turn end tries again. A host that wants its checkpoints calls this when the session is idle, not on a timer.
  */
 export async function pullCheckpoint(
 	options: PullOptions,

@@ -1,5 +1,19 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
 export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
+export {
+	type Checkpoint,
+	CheckpointSkipped,
+	type CheckpointStats,
+	type CheckpointVault,
+	checkpointStats,
+	localVault,
+	type PendingCheckpoint,
+	type PullOptions,
+	pullCheckpoint,
+	restoreNotice,
+	type SkipReason,
+	VaultError,
+} from "./checkpoint.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
