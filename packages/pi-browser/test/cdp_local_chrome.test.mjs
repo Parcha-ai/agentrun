@@ -1,14 +1,12 @@
-// The cdp provider on a real local Chrome with Stagehand's extension: its own profile and port under TMPDIR, loopback
-// pages only, killed by exact pid. Skipped where there is no Chrome.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setDownloadBehavior } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, commandLine, isRunning, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { CHROME_SINGLETON, scratch } from "./fixtures/scratch.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const pidOf = (ref) => Number(/^local:(\d+):/.exec(ref.id)[1]);
@@ -18,7 +16,7 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
   const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
   const server = http.createServer((req, res) => { res.setHeader("content-type", "text/html"); res.end("<title>Loopback Fixture</title><h1>hello</h1>"); });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-provider-"));
+  const root = await scratch(t, "cdp-provider-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
   const signal = new AbortController().signal;
   let ref; let stagehand;
@@ -28,7 +26,7 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
     assert.equal(await provider.status(ref), "running");
     const target = await provider.attach(ref);
     assert.match(target.sdkCdpUrl, /^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\//, "the extension dials a debugger URL, so the target is one");
-    (await setDownloadBehavior(target.sdkCdpUrl)).close(); // the real CDP command Browserbase attach sends, answered by a real Chrome
+    (await setDownloadBehavior(target.sdkCdpUrl)).close();
     await assert.rejects(setDownloadBehavior(target.sdkCdpUrl.replace(/devtools\/browser\/.*/, "devtools/browser/nope"), { timeoutMs: 2_000 }));
     let browser;
     try {
@@ -54,8 +52,8 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
   }
 });
 
-test("an endpoint provider attaches to a browser the host runs and release leaves it running; a pid it did not start is never signalled", { skip: NO_CHROME, timeout: 60_000 }, async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-provider-"));
+test("an endpoint provider attaches to a browser the host runs and release leaves it running; a pid it did not start is never signalled", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
+  const root = await scratch(t, "cdp-provider-");
   const owner = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
   const signal = new AbortController().signal;
   const started = await owner.create(spec("cdp-test-2"), signal);
@@ -84,7 +82,7 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
     res.setHeader("content-type", "text/html"); res.end('<title>d</title><a id="a" href="/f/held.bin">a</a><a id="b" href="/f/closed.bin">b</a>');
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-setting-"));
+  const root = await scratch(t, "cdp-setting-");
   const chosen = path.join(root, "chosen");
   await mkdir(chosen);
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
@@ -117,9 +115,9 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
   }
 });
 
-test("a process whose last await is a release exits 0: the wait for Chrome's exit keeps the event loop alive", { skip: NO_CHROME, timeout: 60_000 }, async () => {
+test("a process whose last await is a release exits 0: the wait for Chrome's exit keeps the event loop alive", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const { execFileSync } = await import("node:child_process");
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-exit-"));
+  const root = await scratch(t, "cdp-exit-");
   try {
     const script = `import { cdpProvider } from ${JSON.stringify(new URL("../dist/providers/cdp.js", import.meta.url).href)};
       const p = cdpProvider({ chrome: { executablePath: ${JSON.stringify(CHROME)}, profileRoot: ${JSON.stringify(root)} } });
@@ -129,8 +127,8 @@ test("a process whose last await is a release exits 0: the wait for Chrome's exi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("a Chrome that cannot start rejects create with its reason and never raises an unhandled error", async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-nochrome-"));
+test("a Chrome that cannot start rejects create with its reason and never raises an unhandled error", async (t) => {
+  const root = await scratch(t, "cdp-nochrome-");
   const unhandled = [];
   const watch = (error) => unhandled.push(error);
   process.on("uncaughtException", watch);
@@ -143,9 +141,9 @@ test("a Chrome that cannot start rejects create with its reason and never raises
   } finally { process.off("uncaughtException", watch); await rm(root, { recursive: true, force: true }); }
 });
 
-test("release touches only what its lease made: a path-shaped tag, an id and tag from two leases, or a pid that is not the browser on the recorded port kill and remove nothing; the lease's own release kills its Chrome and removes its profile", { skip: NO_CHROME, timeout: 90_000 }, async () => {
+test("release touches only what its lease made: a path-shaped tag, an id and tag from two leases, or a pid that is not the browser on the recorded port kill and remove nothing; the lease's own release kills its Chrome and removes its profile", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
   const { spawn } = await import("node:child_process");
-  const base = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-tag-"));
+  const base = await scratch(t, "cdp-tag-");
   const root = path.join(base, "profiles");
   const neighbor = path.join(base, "neighbor");
   await mkdir(root); await mkdir(neighbor); await mkdir(path.join(root, "other-lease"));
@@ -165,18 +163,18 @@ test("release touches only what its lease made: a path-shaped tag, an id and tag
     assert.equal(running(Number(pid)), true, "a mismatched ref kills nothing");
     assert.equal(await readFile(path.join(neighbor, "keep.txt"), "utf8"), "x", "a folder outside the profile root is never removed");
     assert.deepEqual(await readdir(path.join(root, "other-lease")), ["Preferences"], "another lease's profile is never removed");
-    // A fresh provider holds no child handle (a release after a restart): a pid that is not the browser on the recorded port is not signalled.
+    // A fresh provider holds no child handle (a release after a restart): a pid that is not the browser on the recorded
+    // port is not signalled.
     const restarted = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
     await restarted.release({ id: `local:${bystander.pid}:${port}:legit-lease`, tag: "legit-lease" });
     assert.equal(running(bystander.pid), true, "an unrelated live pid, even with the right port in its lease, is never signalled");
     assert.equal(await restarted.status({ id: `local:${bystander.pid}:${port}:legit-lease`, tag: "legit-lease" }), "gone");
     assert.equal(running(Number(pid)), true);
   } finally {
-    try { process.kill(-bystander.pid, "SIGKILL"); } catch { /* gone */ }
+    try { process.kill(-bystander.pid, "SIGKILL"); } catch {}
     if (ref) await provider.release(ref);
   }
   try {
-    // The lease's own release kills its Chrome and removes its own profile only.
     assert.equal(running(Number(/^local:(\d+):/.exec(ref.id)[1])), false);
     assert.deepEqual((await readdir(root)).sort(), ["legit-lease.downloads", "other-lease"], "its profile is gone; its downloads outlive the release, as a provider's stored downloads do");
     // Chrome already gone (crashed): the profile is still the lease's to remove.
@@ -186,8 +184,8 @@ test("release touches only what its lease made: a path-shaped tag, an id and tag
   } finally { await rm(base, { recursive: true, force: true }); }
 });
 
-test("a lease is recognised without the child handle and without /proc: status and release by a fresh provider work from the pid and the recorded port alone", { skip: NO_CHROME, timeout: 90_000 }, async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-restart-"));
+test("a lease is recognised without the child handle and without /proc: status and release by a fresh provider work from the pid and the recorded port alone", { skip: NO_CHROME, timeout: 90_000 }, async (t) => {
+  const root = await scratch(t, "cdp-restart-");
   const owner = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root } });
   const ref = await owner.create(spec("restart-1"), new AbortController().signal);
   const pid = Number(/^local:(\d+):/.exec(ref.id)[1]);
@@ -202,17 +200,18 @@ test("a lease is recognised without the child handle and without /proc: status a
   } finally { await owner.release(ref); await rm(root, { recursive: true, force: true }); }
 });
 
-test("a local lease id this provider cannot read is gone, not running; an endpoint lease is running", async () => {
+test("a local lease id this provider cannot read is gone, not running; an endpoint lease is running", async (t) => {
   const local = cdpProvider({ chrome: { executablePath: "/nonexistent/chrome", profileRoot: "/nonexistent-root" } });
   assert.equal(await local.status({ id: "local:123:4567", tag: "old-form" }), "gone", "the id form without a tag carries nothing to check");
   assert.equal(await local.status({ id: "local:x", tag: "t" }), "gone");
   assert.equal(await cdpProvider({ endpoint: "http://127.0.0.1:1" }).status({ id: "endpoint:t", tag: "t" }), "running");
 });
 
-test("Chrome's sandbox is a knob, never keyed on CI: --no-sandbox only for sandbox: false or PI_BROWSER_NO_SANDBOX=1 when the option is absent; a SIGABRT start with the sandbox on says how to turn it off", async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-sandbox-"));
+test("Chrome's sandbox is a knob, never keyed on CI: --no-sandbox only for sandbox: false or PI_BROWSER_NO_SANDBOX=1 when the option is absent; a SIGABRT start with the sandbox on says how to turn it off", async (t) => {
+  const root = await scratch(t, "cdp-sandbox-");
   const argvFile = path.join(root, "argv.txt");
-  // A stand-in Chrome: records its arguments, then dies the way Chrome does when it cannot start its sandbox, or exits plainly.
+  // A stand-in Chrome: records its arguments, then dies the way Chrome does when it cannot start its sandbox, or exits
+  // plainly.
   const fake = path.join(root, "chrome.sh");
   await writeFile(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\nif [ "$FAKE_CHROME_EXIT" = abort ]; then kill -ABRT $$; fi\nexit 3\n`, { mode: 0o755 });
   const saved = { no: process.env.PI_BROWSER_NO_SANDBOX, exit: process.env.FAKE_CHROME_EXIT, ci: process.env.CI };
@@ -248,12 +247,37 @@ test("Chrome's sandbox is a knob, never keyed on CI: --no-sandbox only for sandb
   }
 });
 
-test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_000 }, async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "cdp-nosandbox-"));
+test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
+  const root = await scratch(t, "cdp-nosandbox-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, sandbox: false } });
   const ref = await provider.create(spec("cdp-nosandbox-1"), new AbortController().signal);
   try {
     assert.equal(await provider.status(ref), "running");
     assert.ok(commandLine(/^local:(\d+):/.exec(ref.id)[1]).includes("--no-sandbox"), "the running Chrome carries the flag");
   } finally { await provider.release(ref); await rm(root, { recursive: true, force: true }); }
+});
+
+test("release removes the directory Chrome made under TMPDIR for its singleton socket, which no Chrome exit removes", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
+  const root = await scratch(t, "cdp-singleton-");
+  const tmp = path.join(root, "tmp");
+  await mkdir(tmp);
+  const outer = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  t.after(() => { process.env.TMPDIR = outer; });
+  const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles") } });
+  let ref;
+  try { ref = await provider.create(spec("singleton-1"), new AbortController().signal); } catch (error) { if (skipIncapable(t, error)) return; throw error; }
+  t.after(() => provider.release(ref).catch(() => undefined));
+  process.env.TMPDIR = outer;
+  const made = await readdir(tmp);
+  // The directory this Chrome's SingletonSocket link names is release's to remove; a hidden temp file Chrome leaves in
+  // TMPDIR when it is killed (.org.chromium.Chromium.*) is no one Chrome's to attribute, and this test's scratch removes it.
+  const profiles = await readdir(path.join(root, "profiles"));
+  const socket = await readlink(path.join(root, "profiles", profiles.find((name) => !name.endsWith(".downloads")), "SingletonSocket"));
+  const singleton = path.basename(path.dirname(socket));
+  assert.ok(made.includes(singleton) && CHROME_SINGLETON.test(singleton), `Chrome made its singleton directory under the TMPDIR it started with: ${made}`);
+  await provider.release(ref);
+  const left = await readdir(tmp);
+  t.diagnostic(`Chrome's TMPDIR entries before release: ${made.join(", ")}; after: ${left.join(", ") || "none"}`);
+  assert.equal(left.includes(singleton), false, `release removed ${singleton}`);
 });

@@ -1,6 +1,3 @@
-// A driver whose connection dropped is replaced; the request observer, a separate connection that holds what the action
-// policy does not pre-allow, stays attached while it is healthy. Closing it with the driver would leave the browser running
-// with nothing holding a request until the next browser call (a page timer or an autosave could send a POST undecided).
 // The observer here is a stub with counters: no Chrome is needed to see which connections custody closes and opens.
 import assert from "node:assert/strict";
 import fs from "node:fs";

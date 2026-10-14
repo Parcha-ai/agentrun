@@ -1,7 +1,3 @@
-// The custody crash matrix: each row is a real process on a real SQLite run file, SIGKILLed at the named cut,
-// then a second process that reconciles, resumes and ends the conversation. The fake provider lives in this process,
-// so its ledger (creates, releases, dispatches, the most sessions live at once) is the truth the rows assert, and
-// every scenario must end with no session live at the provider.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -24,15 +20,14 @@ function child(env) {
   return { proc, exited, output: () => out + err };
 }
 
-/** Run the first process to its cut (or to its end), then the second; return the ledger and what the model saw. */
-async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, kernel = false }) {
+async function scenario(t, { script, script2 = script, cutAt, hold, between, inactive, env = {}, env2 = {}, zombie = false, kernel = false, start = START }) {
+
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "custody-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const backend = new FakeBackend({ start, pages: { [start]: fixturePage(start, "The start page.") } });
   const server = await backend.serve();
   t.after(() => server.close());
   const base = { DB: path.join(dir, "run.sqlite"), FAKE: server.url };
-  // The real kernel provider in both processes, against a fake Kernel API in this one whose browsers are the backend's sessions.
   let api = null;
   if (kernel) {
     const key = `kernel-crash-key-${process.pid}-${Math.random().toString(36).slice(2)}`;
@@ -193,8 +188,6 @@ test("a session nobody calls for its idle window is released by the task", async
   assert.equal(result.sessions.sessions[0].releaseReason, "idle");
 });
 
-/** One process, in memory: the extension on the fake's in-process face, a conversation that reads and releases.
- *  `extra` (or a function of the fake backend returning it) overrides the extension's options, `policy` the config's. */
 async function inProcess(t, extra = {}, policy = {}) {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
@@ -311,6 +304,17 @@ test("the real run tool cut mid-dispatch: interrupted, the identical code refuse
   assert.deepEqual([tally.dispatches, tally.creates, tally.liveAtEnd], [2, 1, 0]);
 });
 
+test("the interruption notice names the page the browser is on now without a credential in its fragment, userinfo or query", async (t) => {
+  for (const [start, scrubbed] of [["https://example.test/cb#access_token=SEKRET123456", "https://example.test/cb"], ["https://example.test/p?sid=SEKRET123456", "https://example.test/p?sid=[redacted]"]]) {
+    const submit = ["run", { code: "await page.click('#submit')" }];
+    const { seen } = await scenario(t, { script: [submit, submit, "browser_release"], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" }, start });
+    const refused = failure(seen[1]);
+    assert.equal(refused.code, "effect_unknown");
+    assert.ok(!JSON.stringify(seen).includes("SEKRET123456"), `${start}: a credential reached the model`);
+    assert.match(refused.message, new RegExp(`the page is now ${scrubbed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`), "the notice says where the page is, scrubbed");
+  }
+});
+
 test("a call after a cut run tells the interruption even when it fails: a walled read carries the notice", async (t) => {
   const submit = ["run", { code: "await page.click('#submit')" }];
   const { seen } = await scenario(t, { script: [submit, "browser_read", "browser_release"], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1", WALL: "1" } });
@@ -321,7 +325,8 @@ test("a call after a cut run tells the interruption even when it fails: a walled
 
 test("a policy that asks for the effect observer and cannot attach says so once per attach; the second process reattaches the same session", async (t) => {
   const asked = { OBSERVE: "allow" };
-  // The second process continues the first's conversation, so its script is the whole list: two reads done, then two more.
+  // The second process continues the first's conversation, so its script is the whole list: two reads done, then two
+  // more.
   const { tally, first, result, seen } = await scenario(t, { script: ["browser_read", "browser_read"], script2: ["browser_read", "browser_read", "browser_read", "browser_release"], env: asked, env2: asked });
   for (const [who, rows] of [["first", first.observer], ["second", result.observer]]) {
     assert.equal(rows.length, 1, `${who} process: one row for its one attach, not one per call: ${JSON.stringify(rows)}`);
@@ -336,7 +341,6 @@ test("a policy that asks for the effect observer and cannot attach says so once 
   assert.equal(result.observer[0].session_id, first.observer[0].session_id, "the second process reattached the first's session");
   assert.deepEqual([tally.creates, tally.attaches], [1, 2], "reattached, not replaced: one create, one attach per process");
 
-  // A conversation with no action policy asked for no observer, so nothing is missing and nothing is said.
   const none = await scenario(t, { script: ["browser_read"], script2: ["browser_read", "browser_read", "browser_release"] });
   assert.deepEqual([none.first.observer.length, none.result.observer.length], [0, 0]);
 });
@@ -351,12 +355,9 @@ test("an attach error whose message holds a connect URL with its token yields a 
     const said = JSON.stringify(rows[0]);
     for (const leak of ["wss://", "connect.example.test", "signingKey", "SECRETTOKEN", "connect failed"]) assert.ok(!said.includes(leak), `${leak} is not in the row`);
   }
-  // Nor anywhere the model or the host reads: the call itself was served.
   assert.ok(!JSON.stringify(result.results).includes("SECRETTOKEN") && !JSON.stringify(result.rows).includes("SECRETTOKEN"));
 });
 
-// Kernel rows: the real kernel provider in both processes, against a fake Kernel API whose browsers are the backend's
-// sessions. The API's own record says what reached Kernel; the ledger says what ran.
 test("kernel: SIGKILL after launch, reconcile finds the session by its tag, and the release deletes it", async (t) => {
   for (const cut of [{ cutAt: "after-create" }, { hold: "create" }]) {
     const label = JSON.stringify(cut);

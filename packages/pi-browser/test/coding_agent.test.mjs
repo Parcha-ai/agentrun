@@ -1,9 +1,7 @@
-// The pi coding-agent adapter as the coding agent meets it: the package's extension loaded by a real
-// AgentSessionRuntime, driven by a scripted faux model, over the shared fake provider and driver. Each test asserts what
-// the model was told, what the session file recorded, what was filed as evidence and what the provider saw.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
@@ -99,6 +97,18 @@ test("browser_relaunch replaces the session and keeps the new one's settings", a
   assert.deepEqual([answer.ok, answer.verified, answer.geolocation], [true, true, { country: "GB", city: "LONDON" }]);
   assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [2, 1, 1]);
   assert.ok(agent.custom("browser.session").some(({ reason }) => reason === "relaunch"));
+});
+
+test("a browser_relaunch that names no verified keeps the policy's: a Verified run is never downgraded; an explicit false is", async (t) => {
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { proxies: true, verified: true } }) });
+  const [, bare, off] = await agent.run(turn(["snapshot"]), turn(["browser_relaunch", {}]), turn(["browser_relaunch", { verified: false }]));
+  assert.deepEqual([failure(bare.text).ok, failure(bare.text).verified], [true, true], "a bare relaunch stays Verified");
+  assert.deepEqual([failure(off.text).ok, failure(off.text).verified], [true, false], "an explicit verified: false is honoured");
+  // The schema the agent reads says the same.
+  const relaunch = BROWSER_TOOLS.find((tool) => tool.name === "browser_relaunch");
+  assert.match(relaunch.parameters.properties.verified.description, /Omitted, the new session keeps the run's setting/);
+  assert.match(relaunch.description, /keeps the run's Verified setting unless `verified` names one/);
 });
 
 test("session_shutdown releases the browser for every way a session ends, and a second shutdown does nothing", async (t) => {
@@ -258,6 +268,29 @@ test("resetting the fake backend disarms a lost answer, so a reused backend carr
   const [ok] = await agent.run(turn(["snapshot"]));
   assert.equal(ok.isError, false);
   assert.equal(backend.tally().creates, 1);
+});
+
+test("a test's agent root is removed when its last agent's test ends, not before", async (t) => {
+  let root = null;
+  await t.test("parent", async (parent) => {
+    const first = await startAgent(parent, { extension: extensionOf(fake()) });
+    root = first.root;
+    await parent.test("child on the parent's root", async (child) => {
+      await startAgent(child, { extension: extensionOf(fake()), dir: first.root, sessionFile: first.sessionFile(), cwd: first.work });
+    });
+    assert.equal(fs.existsSync(root), true, "the child's end leaves the root the parent's agent still uses");
+  });
+  assert.equal(fs.existsSync(root), false, "the parent's end removes it");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "rig-failed-start-"));
+  const outer = process.env.TMPDIR;
+  process.env.TMPDIR = scratch;
+  try {
+    await assert.rejects(startAgent(t, { extension: extensionOf(fake()), cwd: "/dev/null/x/work" }));
+    assert.deepEqual(fs.readdirSync(scratch), [], "a start that fails after its root exists leaves it behind no longer");
+  } finally {
+    if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer;
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("web_fetch is filed as evidence through the provider; web_search is listed only when the provider can search", async (t) => {

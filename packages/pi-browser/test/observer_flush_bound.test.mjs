@@ -1,14 +1,11 @@
-// flush()'s wait for the effects a holding session has announced, against a fake CDP endpoint (no Chrome): it ends when the
-// request is paused (an event, however late it comes), it is bounded when the request never arrives, and a request that never
-// arrived is forgotten, so it costs one bounded wait and not one on every later flush.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import http from "node:http";
 import { test } from "node:test";
 import { EffectObserver, effectDecider } from "@parcha/pi-browser";
 
-/** A CDP endpoint that answers every command with an empty result (a target list for Target.getTargets, a session for
- *  Target.attachToTarget), attaches one page session, and sends what the test tells it to. */
+/** A stand-in CDP endpoint: every command answers empty, one page session attaches, and it sends what the test tells it
+ *  to. */
 async function fakeBrowser() {
   let socket = null;
   const commands = [];
@@ -49,9 +46,7 @@ async function fakeBrowser() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     url: `ws://127.0.0.1:${server.address().port}/`,
-    /** Every command the observer sent, with the session it went to. */
     commands,
-    /** A frame in another process (a widget on another origin) attaches as an `iframe` target with a session of its own. */
     attachIframe: () => send({ method: "Target.attachedToTarget", params: { sessionId: "S2", targetInfo: { targetId: "T2", type: "iframe", url: "http://widget.test/" }, waitingForDebugger: false } }),
     /** The frame announces that its form is being submitted, before the request exists. */
     formIntent: (frameId) => send({ sessionId: "S2", method: "Page.frameRequestedNavigation", params: { frameId, reason: "formSubmissionPost", url: "http://widget.test/pay", disposition: "currentTab" } }),
@@ -70,17 +65,14 @@ test("flush waits for an announced request's pause as an event, and a request th
   observer.record((row) => { rows.set(row.requestId, row); });
   const took = async (work) => { const start = Date.now(); await work(); return Date.now() - start; };
 
-  // Nothing announced: flush costs its round trip and nothing more.
   assert.ok(await took(() => observer.flush(undefined, 2_000)) < 500, "an idle flush does not wait");
 
-  // Announced, and paused late: flush returns when the pause arrives, with the decision journaled, far inside its bound.
   browser.announce("R1");
   setTimeout(() => browser.pause("F1", "R1"), 150);
   const waited = await took(() => observer.flush(undefined, 10_000));
   assert.ok(waited >= 100 && waited < 3_000, `flush waited for the pause (${waited} ms)`);
   assert.deepEqual([...rows.values()].map((row) => `${row.method} ${row.path} ${row.held}`), ["POST /api/order denied"], "and the request is in the journal");
 
-  // Announced and never paused: the wait ends at its bound, and the entry is forgotten, so the next flush is not held.
   browser.announce("R2");
   const bounded = await took(() => observer.flush(undefined, 400));
   assert.ok(bounded >= 350 && bounded < 3_000, `the wait is bounded (${bounded} ms)`);
@@ -95,7 +87,8 @@ test("a request announced while a flush is waiting is not forgotten when that wa
   observer.record((row) => { rows.set(row.requestId, row); });
   const took = async (work) => { const start = Date.now(); await work(); return Date.now() - start; };
 
-  // R1 never arrives; the flush waiting for it times out. R2, announced while it waits, is newer than what that wait covered.
+  // R1 never arrives; the flush waiting for it times out. R2, announced while it waits, is newer than what that wait
+  // covered.
   browser.announce("R1");
   setTimeout(() => browser.announce("R2"), 150);
   assert.ok(await took(() => observer.flush(undefined, 500)) >= 450, "the first wait ran to its bound");
@@ -120,8 +113,7 @@ test("a frame in another process announces its form's intent: Page is enabled on
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  // The widget submits its form: the intent comes first, the request (paused by the observer) a moment later. flush, asked for in between,
-  // waits for the pause and returns with the decision journaled.
+  // The intent comes first and the paused request a moment later; flush, asked for in between, waits for the pause.
   browser.formIntent("FR1");
   setTimeout(() => browser.pauseForm("FR1"), 150);
   const waited = await took(() => observer.flush(undefined, 10_000));

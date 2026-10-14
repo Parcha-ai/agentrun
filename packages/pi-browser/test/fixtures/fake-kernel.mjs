@@ -1,12 +1,3 @@
-// A fake Kernel REST API on loopback: an account that stamps each browser with its tags, filters `tags[k]=v`, pages by
-// X-Has-More and X-Next-Offset, soft-deletes on DELETE, takes a multipart extension upload, records every request, and
-// answers 401 to any request without the account's Bearer key. With `backend` (the package's FakeBackend) each browser is
-// a FakeBackend session, so the crash matrix's ledger and its fake driver are the truth, and a held op holds the request.
-//
-// knobs: createStatus, deleteStatuses[] (one per DELETE, shifted), deleteLag (lookups before a delete shows), deletedIs404,
-// ignoreFilter, pageSize, hasMoreWithoutOffset, uploadStatus, uploadConflict, echo (error bodies repeat every secret held),
-// listBody ("object": a 200 list that is not an array; "cut": a 200 list whose body ends early), uploadDelayMs, storedLimit
-// (the plan's stored-extension count: an upload past it answers 403 insufficient_plan, as Kernel's does).
 import { createHash } from "node:crypto";
 import http from "node:http";
 
@@ -26,7 +17,7 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
     if (b.deletedAt) return false;
     if (!backend) return true;
     if ((await backend.provider.status({ id: b.id, tag: b.tags.agentrun_tag })) === "running") return true;
-    b.deletedAt = new Date().toISOString(); // the backend ended it (endAll): Kernel shows it deleted
+    b.deletedAt = new Date().toISOString();
     return false;
   };
 
@@ -117,7 +108,6 @@ export async function fakeKernel({ key, backend = null, sentinels = {}, knobs = 
       }
       return fail(404, "no_route");
     } catch (error) {
-      // A held backend op never settles, so this is a real failure: answer it the way a server would.
       send(500, { code: "fake_failed", message: String(error?.message ?? error) });
     }
   });
