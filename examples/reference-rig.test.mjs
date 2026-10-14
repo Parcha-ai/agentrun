@@ -204,4 +204,13 @@ test('a cut or refused page action: the lead looks before anything else, and the
   assert.equal(next(cutRun, look(effect(target, target))), 'read', 'already on the target when sent: cannot tell');
   assert.equal(next(cutRun, look()), 'read', 'no details, as the browser answers today: cannot tell');
   assert.equal(next(cutRun, look(effect(start, start)), cutRun, look(effect(start, start)), cutRun, look(effect(start, start))), 'read', 'three runs in all, then no more');
+  // The browser refuses the first run after a cut even when the lead looked before it; a look after the refusal
+  // lets the run through. The refused run was not sent, so the page applies once.
+  const notApplied = effect(start, start);
+  const sequence = [cutRun, look(notApplied), refusedRun(notApplied), look(notApplied)];
+  assert.deepEqual(sequence.map((_, at) => next(...sequence.slice(0, at + 1))), ['snapshot', 'run', 'snapshot', 'run'],
+    'cut, look, run, refused, look again, run');
+  assert.equal(next(...sequence, result('run', false, '{"value":"ran"}')), 'browser_read', 'the third run applied: it goes on');
+  assert.equal(next(...sequence, cutRun, look(notApplied)), 'read', 'that third run cut too: three in all, no more');
+  assert.equal(next(cutRun, look(notApplied), refusedRun(), look()), 'read', 'refused, and no details on either: cannot tell');
 });

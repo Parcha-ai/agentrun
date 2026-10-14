@@ -74,6 +74,8 @@ const pendingOf = (result: ToolResultMessage | undefined) => (result?.details as
  *  - a page action a crash cut, or one the browser will not send again (`effect_unknown`), is never asked again
  *    before the lead looks: it takes a snapshot, as the browser asks, and decides from the browser's details
  *    (`landed`): applied, it goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more.
+ *    The browser refuses the first run after a cut even when the lead looked before it, so a refused run is looked
+ *    at again the same way: only a look after the refusal lets the run through, and the refused run applied nothing.
  *  A page it did not open is not read: the record cites only what ran and says why. */
 export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
   return (messages: readonly Message[]) => {
