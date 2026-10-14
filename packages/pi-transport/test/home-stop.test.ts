@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,7 +9,7 @@ import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import type { Place } from "../src/home/move.ts";
-import { stopRunner } from "../src/home/stop.ts";
+import { ALIVE_SH, stopRunner } from "../src/home/stop.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,18 +22,46 @@ async function code(box: Box, argv: readonly string[]): Promise<number> {
 
 /** Starts `argv` in the box with its pid written to the store's pid file, as a runner writes it; does not wait for it. */
 async function startWithPid(place: Place, argv: readonly string[]) {
+	// A pid file left by the last process would satisfy the wait below before this one wrote its own.
+	await code(place.box, ["rm", "-f", `${place.store}.pid`]);
 	const script = 'mkdir -p "$(dirname "$1")" && echo $$ > "$1" && shift && exec "$@"';
 	getOrThrow(await place.box.exec(["sh", "-c", script, "sh", `${place.store}.pid`, ...argv], {}, context));
-	for (let i = 0; i < 50 && (await code(place.box, ["test", "-s", `${place.store}.pid`])) !== 0; i += 1)
+	// A runner writes its pid from inside its own process: wait until the process named is the program, not the shell
+	// that wrote the pid and has yet to become it.
+	const program =
+		'p=$(cat "$1" 2>/dev/null) && [ -n "$p" ] && tr "\\000" "\\n" < "/proc/$p/cmdline" | head -1 | grep -qx "$2"';
+	for (
+		let i = 0;
+		i < 50 && (await code(place.box, ["sh", "-c", program, "sh", `${place.store}.pid`, argv[0] ?? ""])) !== 0;
+		i += 1
+	)
 		await sleep(100);
 }
 
-/** Whether the process the pid file names runs: an ended process its parent has not reaped yet (a zombie) does not. */
-const ALIVE =
-	'p=$(cat "$1"); kill -0 "$p" 2>/dev/null || exit 1; s=$(sed "s/^.*) //" "/proc/$p/stat" 2>/dev/null | cut -c1); [ "$s" != Z ]';
+/** Whether the process the pid file names runs, by the same check `stopRunner` makes. */
+const ALIVE = `${ALIVE_SH}
+alive "$(cat "$1")"`;
 const alive = async (place: Place) => (await code(place.box, ["sh", "-c", ALIVE, "sh", `${place.store}.pid`])) === 0;
 
+/** What the process the pid file names is, said in a failure's message: rare on a loaded machine, so it says why. */
+const SAY =
+	'p=$(cat "$1"); echo "pid $p"; [ -d "/proc/$p" ] && echo "in /proc" || echo "not in /proc"; echo "stat $(cut -c1-100 "/proc/$p/stat" 2>&1)"; echo "cmdline $(tr "\\000" " " < "/proc/$p/cmdline" 2>&1)"';
+async function said(place: Place): Promise<string> {
+	const done = await finish(
+		getOrThrow(await place.box.exec(["sh", "-c", SAY, "sh", `${place.store}.pid`], {}, context)),
+	);
+	return done.ok ? new TextDecoder().decode(done.value.stdout).trim().replaceAll("\n", "; ") : done.error.message;
+}
+
 describe("stopping the runner that still runs at a place", () => {
+	it("counts a process gone when it vanished from /proc after kill -0 saw it, as when its parent reaps it between", () => {
+		// kill -0 says yes, as it does a moment before the reap; /proc has nothing for the id any more.
+		const vanished = spawnSync("sh", ["-c", `kill() { return 0; }; ${ALIVE_SH}; alive 2147483646`]);
+		expect(vanished.status).toBe(1);
+		// A process that runs is alive.
+		expect(spawnSync("sh", ["-c", `${ALIVE_SH}; alive $$`]).status).toBe(0);
+	});
+
 	it("ends the process its pid file names when it is this store's runner, and leaves any other process alone", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-stop-"));
 		const box = getOrThrow(
@@ -59,7 +88,8 @@ describe("stopping the runner that still runs at a place", () => {
 			await startWithPid(place, ["node", "-e", "setTimeout(() => {}, 60_000)", "--", "--store", place.store]);
 			expect(await alive(place)).toBe(true);
 			getOrThrow(await stopRunner(place, context));
-			expect(await alive(place), "the runner").toBe(false);
+			const left = await alive(place);
+			expect(left, `the runner (${left ? await said(place) : "gone"})`).toBe(false);
 			// Nothing left to stop is not a failure.
 			getOrThrow(await stopRunner(place, context));
 		} finally {
