@@ -57,6 +57,8 @@ export function lanesOf(lines: Line[]): Lanes {
     }
     const entry = entryOf(line);
     if (entry) for (const message of entry.model) {
+      // A cut answer's partial, appended as an aborted entry when the next ask starts, is no completed turn.
+      if (message.role === 'assistant' && message.stopReason === 'aborted') continue;
       if (message.role === 'assistant') {
         const conv = `${line.conv ?? '?'}`;
         const committed = turns.filter((turn) => turn.id.startsWith(`turn ${conv} `) && turn.status === 'done').length;

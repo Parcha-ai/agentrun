@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, callsOf, costOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, browserChargesOf, callsOf, costOf, lookChargesOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -38,6 +38,10 @@ export type CounterState = {
   lostAgent: number;
   lostJudge: Tally;
   highest: number;
+  /** At a restore, what the store held at its checkpoint, for the restored snapshot to rebuild from (so a later
+   *  restore to an older checkpoint still finds it): each effect's completion commit, and each receipt's and decision's
+   *  history up to the checkpoint. Cleared when the snapshot ends. */
+  retained?: { effects: Record<string, number>; receipts: Record<string, History<number>>; decisions: Record<string, History<Tally>> };
   /** Whether the last durable line was a snapshot, and whether a process started since the last snapshot line: a
    *  process's snapshot is the run it writes at its open (3.2). */
   inSnapshot: boolean;
@@ -50,6 +54,9 @@ export type CounterState = {
   modelPriced: boolean;
   /** Whether any durable line was folded: with none, no count here is measured. */
   measured: boolean;
+  /** The other priced parts of cost, latest per session or look: a browser session's charge and a vision look's,
+   *  null until priced. Money spent stays spent, so a restore does not reset them. */
+  charges: Record<string, number | null>;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
    *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
@@ -93,7 +100,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host',
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -108,6 +115,7 @@ export const counterFold: Fold<CounterState> = {
       const first = line.snapshot === true && (state.opened || !state.inSnapshot);
       next.inSnapshot = line.snapshot === true;
       if (line.snapshot === true) next.opened = false;
+      else if (state.retained) next.retained = undefined;
       if (first && line.commit < state.highest) {
         // A restore: the state is the snapshot's from here, and what the lost branch completed was paid all the same.
         const restored = line.commit;
@@ -122,6 +130,11 @@ export const counterFold: Fold<CounterState> = {
             cost: [...lost.cost, ...latest.cost.slice(then.cost.length)] };
         }
         next.lostJudge = lost;
+        const upTo = <T>(histories: Record<string, History<T>>) => Object.fromEntries(Object.entries(histories).map(([key, history]) => [key, history.filter(([at]) => at <= restored)]).filter(([, history]) => history.length > 0));
+        next.retained = {
+          effects: Object.fromEntries(Object.entries(state.effects).flatMap(([id, effect]) => (effect.completedAt !== undefined && effect.completedAt <= restored ? [[id, effect.completedAt]] : []))),
+          receipts: upTo(state.receipts), decisions: upTo(state.decisions),
+        };
         next.effects = {};
         next.receipts = {};
         next.decisions = {};
@@ -130,6 +143,9 @@ export const counterFold: Fold<CounterState> = {
     }
     const doc = docOf(line);
     if (doc) {
+      const priced = [...(browserChargesOf(doc) ?? []).map((each) => [`browser ${docIdOf(line, doc)} ${each.tag}`, each.usd] as const),
+        ...(lookChargesOf(doc) ?? []).map((each) => [`look ${docIdOf(line, doc)} ${each.receipt}`, each.usd] as const)];
+      if (priced.length) next.charges = { ...next.charges, ...Object.fromEntries(priced) };
       const opens = generationOf(doc);
       if (opens !== undefined) next.journalOpens = Math.max(state.journalOpens, opens);
       if (doc.doc === 'pi.live') {
@@ -197,14 +213,14 @@ export const counterFold: Fold<CounterState> = {
         // A snapshot's gen is the driver's at its commit: the process before the one opening, where these were made.
         if (count > 0) next.appliedIn = { ...next.appliedIn, [id]: [...(next.appliedIn[id] ?? []), ...Array.from({ length: count }, () => gen)] };
         if (shown.length > 0 || base.length > 0) next.listed = { ...next.listed, [id]: shown };
-        const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt;
+        const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt ?? (line.snapshot === true ? next.retained?.effects[id] : undefined);
         next.effects = { ...next.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, status: effect.status,
           ...(completedAt !== undefined ? { completedAt } : {}) } };
       }
       const receipts = receiptCountOf(doc);
       if (receipts !== undefined) {
         const at = docIdOf(line, doc);
-        next.receipts = { ...next.receipts, [at]: [...(next.receipts[at] ?? []), [line.commit!, receipts]] };
+        next.receipts = { ...next.receipts, [at]: [...(next.receipts[at] ?? (line.snapshot === true ? next.retained?.receipts[at] : undefined) ?? []), [line.commit!, receipts]] };
         if (doc.key !== undefined && !next.paidKeys[doc.key]) next.paidKeys = { ...next.paidKeys, [doc.key]: true };
       }
       const rows = decisionRowsOf(doc);
@@ -218,7 +234,7 @@ export const counterFold: Fold<CounterState> = {
           tally.cost.push(row.cost_usd ?? null);
         }
         const histories = { ...next.decisions };
-        for (const [run, tally] of Object.entries(decisions)) histories[run] = [...(histories[run] ?? []), [line.commit!, tally]];
+        for (const [run, tally] of Object.entries(decisions)) histories[run] = [...(histories[run] ?? (line.snapshot === true ? next.retained?.decisions[run] : undefined) ?? []), [line.commit!, tally]];
         next.decisions = histories;
       }
     }
@@ -287,7 +303,8 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const answered = tallies.flatMap((tally) => tally.answered);
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   // Cost is null until a durable line prices a part (section 6: null, never 0), and null when any part is unknown.
-  const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost)];
+  const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost),
+    ...Object.values(state.charges)];
   const measured = state.liveKnown && state.askStarts > 0;
   const cutAsks = Object.values(state.reasks);
   const split = (kind: 'proven' | 'possible') => ({ turns: cutAsks.filter((tally) => tally[kind] > 0).length, reasks: cutAsks.reduce((sum, tally) => sum + tally[kind], 0) });

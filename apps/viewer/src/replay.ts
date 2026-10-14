@@ -1,8 +1,9 @@
 // Where a scrub may stop, and the screen at a stop: the lines before it, reduced. A stop never falls inside a commit
 // (RECORDING.md section 4 rule 2), so applying one commit's lines is all or nothing.
-import { restoresOf, type Line } from './format.ts';
+import { isSupervisor, restoresOf, type Line } from './format.ts';
 
-/** A position `p` means "the lines `[0, p)` have happened". `stops[p]` says whether a scrub may land there. */
+/** A position `p` means "the lines `[0, p)` have happened". `stops[p]` says whether a scrub may land there: never
+ *  inside a commit, and never inside a process's snapshot (one state, written at its open). */
 export function stopsOf(lines: Line[]): boolean[] {
   const stops = Array.from({ length: lines.length + 1 }, () => true);
   const restores = restoresOf(lines);
@@ -10,15 +11,27 @@ export function stopsOf(lines: Line[]): boolean[] {
   const last = new Map<string, number>();
   // A restore numbers its commits again from the checkpoint (RECORDING.md 3.2), so a commit is keyed by its segment.
   let segment = 0;
+  let run: [number, number] | undefined;
+  const runs: [number, number][] = [];
+  let opened = false;
   lines.forEach((line, index) => {
     if (restores.has(index)) segment += 1;
-    if (line.channel !== 'durable' || line.commit === undefined || line.snapshot === true) return;
+    if (isSupervisor(line) && line.kind === 'process.started') opened = true;
+    if (line.channel !== 'durable' || line.commit === undefined) return;
+    if (line.snapshot === true) {
+      if (!run || opened) { if (run) runs.push(run); run = [index, index]; } else run[1] = index;
+      opened = false;
+      return;
+    }
+    if (run) { runs.push(run); run = undefined; }
     const key = `${segment} ${line.commit}`;
     if (!first.has(key)) first.set(key, index);
     last.set(key, index);
   });
-  // Between a commit's first and last line, and between those, no scrub may land.
+  if (run) runs.push(run);
+  // Between a commit's first and last line, and between a snapshot's, no scrub may land.
   for (const [key, from] of first) for (let p = from + 1; p <= last.get(key)!; p += 1) stops[p] = false;
+  for (const [from, to] of runs) for (let p = from + 1; p <= to; p += 1) stops[p] = false;
   return stops;
 }
 
@@ -58,4 +71,19 @@ export function reduceTo<S>(fold: Fold<S>, lines: Line[], p: number): S {
     if (fold.accepts(line)) state = fold.reduce(state, line);
   }
   return state;
+}
+
+/** Playback over a recording's stops: the clock runs with the wall clock times the speed, and only a seek sets it, so
+ *  a redraw (a focus change, a line reached) never drops the time that has run. */
+export function playback(lines: Line[], stops: boolean[]) {
+  let clock = 0;
+  let p = 0;
+  return {
+    get p() { return p; },
+    get clock() { return clock; },
+    /** Go to the stop at or before `to`, its clock the time of the last line before it. */
+    seek(to: number) { p = snap(stops, to); clock = p > 0 ? lines[p - 1]!.t : 0; return p; },
+    /** Run the clock `ms` of wall time at `speed`; the stop is the last whose lines all happened by then. */
+    advance(ms: number, speed: number) { clock += ms * speed; p = stopAt(lines, stops, clock); return p; },
+  };
 }

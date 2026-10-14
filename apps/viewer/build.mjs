@@ -5,11 +5,11 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, write
 import { stripTypeScriptTypes } from 'node:module';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MIME } from './src/blobs.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.argv[2] ?? join(here, 'dist');
 const src = join(here, 'src');
-const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', webm: 'video/webm', json: 'application/json', html: 'text/html', md: 'text/markdown', txt: 'text/plain', pdf: 'application/pdf' };
 
 /** The modules in an order where each comes after those it imports (a type-only import puts no order on them). */
 function ordered(entry) {

@@ -188,3 +188,51 @@ test('3.2 goes by process: back-to-back opens are two snapshots, and only the re
   const later = inOrder([...lines.slice(0, move), supervisor('kill', 4, { gen: 2, label: 'cut', crossing: null }), supervisor('process.started', 5, { gen: 3 }), ...lines.slice(move)]);
   assert.match(validate(manifest, later).join('\n'), /the commits go back to 3 with no restore record of head 4 after it/);
 });
+
+test('a second restore to an older checkpoint still finds what the first one kept: no completion lost, no receipt counted twice', () => {
+  const receipt = (gen: number, commit: number, order: number, snapshot = false) => doc(gen, commit, order, 'agentrun.receipts', 'read fetch-args', { tool: 'read' }, snapshot);
+  const twice = [
+    supervisor('process.started', 1, { gen: 1 }),
+    effect(1, 1, 0, 'e1', 'search', 'unknown'), receipt(1, 1, 1),
+    effect(1, 2, 0, 'e1', 'search', 'completed'),
+    effect(1, 3, 0, 'e2', 'fetch', 'unknown'), effect(1, 4, 0, 'e2', 'fetch', 'completed'),
+    effect(1, 5, 0, 'e3', 'read', 'unknown'), effect(1, 6, 0, 'e3', 'read', 'completed'),
+    supervisor('kill', 2, { gen: 1, label: 'the box died', crossing: null }), supervisor('process.started', 3, { gen: 2 }),
+    // The first restore, to commit 4: e3 is lost.
+    effect(1, 4, 0, 'e1', 'search', 'completed', true), effect(1, 4, 1, 'e2', 'fetch', 'completed', true), receipt(1, 4, 2, true),
+    effect(2, 5, 0, 'e4', 'look', 'unknown'), effect(2, 6, 0, 'e4', 'look', 'completed'),
+    supervisor('kill', 4, { gen: 2, label: 'the box died again', crossing: null }), supervisor('process.started', 5, { gen: 3 }),
+    // The second, to commit 1: e1's completion at 2, e2's at 4 and e4's at 6 are lost; the receipt was there at 1.
+    effect(2, 1, 0, 'e1', 'search', 'unknown', true), receipt(2, 1, 1, true),
+  ].map((line, index) => ({ ...line, t: (index + 1) * 10 }));
+  const end = countersOf(reduceTo(counterFold, twice, twice.length), true);
+  assert.deepEqual(end.paid, { total: 5, workflow: 4, agent: 1 }, 'e1 to e4 each completed once, and one receipt');
+});
+
+test('no stop falls inside a process\'s snapshot: its lines are one state', () => {
+  const stops = stopsOf(lines);
+  const snapshot = lines.map((line, index) => (line.snapshot === true ? index : -1)).filter((index) => index >= 0);
+  for (const index of snapshot.slice(1)) assert.equal(stops[index], false, `inside the snapshot at line ${index + 1}`);
+  // Mid-snapshot, the counters had reset effects before e1's snapshot line: a stop there would show 0 paid calls.
+  assert.equal(stops[snapshot[0]!], true, 'before the snapshot');
+  assert.equal(stops[snapshot.at(-1)! + 1], true, 'after it');
+});
+
+test('a move record a later snapshot carries is state, not a move that process made', () => {
+  const moved = [
+    ...lines.slice(0, 8),
+    supervisor('process.started', 2, { gen: 2 }),
+    doc(1, 5, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    doc(2, 6, 0, 'transport.moves', 'm1', { kind: 'move', head: 6, seal: { head: 6 } }),
+    doc(2, 6, 1, 'agentrun.driver', undefined, { generation: 2 }),
+    doc(2, 7, 0, 'agentrun.driver', undefined, { generation: 2 }),
+    supervisor('kill', 3, { gen: 2, label: 'cut', crossing: null }),
+    supervisor('process.started', 4, { gen: 3 }),
+    // Process 3's snapshot still holds the move at head 6; its own first new commit is 8.
+    doc(2, 7, 0, 'agentrun.driver', undefined, { generation: 2 }, true),
+    doc(2, 7, 1, 'transport.moves', 'm1', { kind: 'move', head: 6, seal: { head: 6 } }, true),
+    doc(3, 8, 0, 'agentrun.driver', undefined, { generation: 3 }),
+  ].map((line, index) => ({ ...line, t: (index + 1) * 10 }));
+  assert.deepEqual(validate(manifest, moved), []);
+});
+

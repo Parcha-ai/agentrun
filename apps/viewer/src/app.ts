@@ -5,8 +5,10 @@ import { counterFold, countersOf, repeatedLabel, type Counters } from './counter
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { panelsShown, type BaselineView, type Node, type Panel } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
-import { nextStop, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
+import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
+import { opensInPage, typeOfName } from './blobs.ts';
+import { readAllEntries } from './folder.ts';
 
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
@@ -28,10 +30,22 @@ const svgEl = (tag: string, attrs: Record<string, string | number>) => {
   return node;
 };
 
+/** A link to a blob: a passive type opens in a new tab, anything else (a page, an SVG, an unknown type) downloads, so
+ *  a recording's file never runs with the viewer's origin. */
+function blobLink(recording: Recording, sha: string, text: string, className: string): HTMLAnchorElement | undefined {
+  const url = recording.blobUrl(sha);
+  if (!url) return undefined;
+  const link = Object.assign(el('a', { class: className, text }), { href: url, rel: 'noopener' });
+  if (opensInPage(recording.blobType(sha))) link.target = '_blank';
+  else link.download = sha;
+  return link;
+}
+
 // ---- loading ---------------------------------------------------------------------------------------------------
 
 function fromGallery(entry: GalleryEntry): Recording {
-  return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha] };
+  return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
+    blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
 }
 
 /** Every blob a recording names: its lines', its images', its result's. */
@@ -56,7 +70,7 @@ async function fromUrl(base: string): Promise<Recording> {
       if ((await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok) { urls[sha] = url; return; }
     }
   }));
-  return { id: root, manifest, lines, blobUrl: (sha) => urls[sha] };
+  return { id: root, manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
 }
 
 async function fromFiles(files: File[]): Promise<Recording> {
@@ -66,11 +80,16 @@ async function fromFiles(files: File[]): Promise<Recording> {
   const eventsFile = find('events.jsonl');
   if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
   const urls: Record<string, string> = {};
+  const types: Record<string, string> = {};
   for (const [path, file] of byPath) {
     const name = path.split('/').at(-1)!;
-    if (path.startsWith('blobs/')) urls[name.split('.')[0]!] = URL.createObjectURL(file);
+    if (!path.startsWith('blobs/')) continue;
+    const sha = name.split('.')[0]!;
+    types[sha] = typeOfName(name) ?? (file.type || 'application/octet-stream');
+    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
+    urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
   }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha] };
+  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha] };
 }
 
 // ---- the player state ------------------------------------------------------------------------------------------
@@ -198,8 +217,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: not in this recording]` });
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    const url = player.recording.blobUrl(node.blob);
-    return url ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: url, target: '_blank' }) : el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob') ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -262,6 +280,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     player.p = second === undefined ? afterCommit(first!) : afterCommit(second, first);
   } else if (citeParam !== null) player.p = citeStop(lines, citeParam) ?? 0;
   else player.p = last;
+  // Only a seek sets the playback clock; playing advances it (a redraw never does).
+  const head = playback(lines, player.stops);
+  player.p = head.seek(player.p);
   player.focus = params.get('focus') ?? undefined;
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end.
@@ -283,8 +304,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} processes · ${recording.manifest.kills} kills · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
   if (recording.manifest.result) {
-    const url = recording.blobUrl(recording.manifest.result.blob);
-    if (url) header.append(Object.assign(el('a', { class: 'result', text: recording.manifest.result.title }), { href: url, target: '_blank' }));
+    const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
+    if (link) header.append(link);
   }
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
@@ -301,11 +322,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
-  const scrubTo = (p: number) => { player.p = snap(player.stops, p); draw(); };
+  const scrubTo = (p: number) => { player.p = head.seek(p); draw(); };
 
   function draw() {
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
-    player.clock = t;
+    player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
     counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
@@ -340,9 +361,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let wall = 0;
   const tick = (now: number) => {
     if (!player.playing) return;
-    if (wall) player.clock += (now - wall) * player.speed;
+    const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    const p = stopAt(lines, player.stops, player.clock);
     if (p !== player.p) { player.p = p; draw(); }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
@@ -350,7 +370,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   playButton.addEventListener('click', () => {
     player.playing = !player.playing;
     playButton.textContent = player.playing ? 'pause' : 'play';
-    if (player.playing) { if (player.p >= last) { player.p = 0; player.clock = 0; } wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
+    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
   });
   draw();
   if (recording.manifest.baseline) {
@@ -385,9 +405,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
         files.push(new File([file], path, { type: file.type }));
         Object.defineProperty(files.at(-1)!, 'webkitRelativePath', { value: path });
       } else if (entry.isDirectory) {
-        const reader = (entry as FileSystemDirectoryEntry).createReader();
-        const children = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-        for (const child of children) await walk(child, `${path}/${child.name}`);
+        for (const child of await readAllEntries<FileSystemEntry>((entry as FileSystemDirectoryEntry).createReader())) await walk(child, `${path}/${child.name}`);
       }
     };
     for (const item of [...(event.dataTransfer?.items ?? [])]) {

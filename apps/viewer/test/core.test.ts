@@ -10,7 +10,9 @@ import { frameFold, pictureAt } from '../src/frames.ts';
 import { documentFold, documentsOf } from '../src/documents.ts';
 import { lanesOf } from '../src/lanes.ts';
 import { linesPanel, panelsShown, register, registry, turnsPanel, type Node } from '../src/panels.ts';
-import { reduceTo, snap, stopsOf } from '../src/replay.ts';
+import { playback, reduceTo, snap, stopsOf } from '../src/replay.ts';
+import { opensInPage, typeOfName } from '../src/blobs.ts';
+import { readAllEntries } from '../src/folder.ts';
 
 const at = (path: string) => new URL(`fixtures/reference-killed/${path}`, import.meta.url);
 const manifest = JSON.parse(readFileSync(at('manifest.json'), 'utf8'));
@@ -172,8 +174,54 @@ test('with no durable line nothing from the store is measured, and cost is unkno
   const liveOnly = lines.filter((line) => line.channel === 'live');
   const counters = countersOf(reduceTo(counterFold, liveOnly, liveOnly.length), true);
   assert.deepEqual({ measured: counters.measured, cost: counters.cost, processes: counters.processes, kills: counters.kills }, { measured: false, cost: null, processes: 2, kills: 1 });
-  const unpriced = lines.filter((line) => line.channel === 'live' || (line.kind !== 'pi.assistant' && line.kind !== 'agentrun.decisions'));
+  const unpriced = lines.filter((line) => line.channel === 'live' || !['pi.assistant', 'agentrun.decisions', 'browser.sessions'].includes(line.kind));
   assert.equal(countersOf(reduceTo(counterFold, unpriced, unpriced.length), true).cost, null, 'durable lines, but none prices a part');
   const priced = lines.filter((line) => line.kind !== 'agentrun.decisions');
-  assert.equal(countersOf(reduceTo(counterFold, priced, priced.length), true).cost, 0, 'the model\'s entries price it at 0, with the unpriced judge left out');
+  assert.equal(countersOf(reduceTo(counterFold, priced, priced.length), true).cost, 0, 'the model\'s entries and the browser session price it at 0, with the unpriced judge left out');
+  // A browser session not priced yet, or a look with no cost_usd, leaves the total unknown, never a partial sum.
+  const session = priced.findLast((line) => line.kind === 'browser.sessions')!;
+  const unpricedSession = priced.map((line) => (line === session ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace('"state":"priced"', '"state":"accruing"')) } : line));
+  assert.equal(countersOf(reduceTo(counterFold, unpricedSession, unpricedSession.length), true).cost, null, 'a browser session still accruing');
+  const look = (usd: Json): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 4, t: 9e9, commit: 9999, order: 0, data: { doc: 'vision.looks', key: 'k', value: { looks: [{ receipt: 'evidence/look.json', record: { facts: { ...(usd === undefined ? {} : { cost_usd: usd }) } } }] } } });
+  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(0.002)], priced.length + 1), true).cost, 0.002, 'a priced look adds its cost');
+  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(null)], priced.length + 1), true).cost, null, 'a look with no price leaves it unknown');
+});
+
+test('a recording\'s blob opens in a tab only when its type is passive; a page, an SVG or an unknown type downloads', () => {
+  for (const type of ['image/png', 'image/jpeg', 'application/json', 'text/plain', 'text/markdown', 'application/pdf', 'video/webm']) assert.equal(opensInPage(type), true, type);
+  for (const type of ['text/html', 'image/svg+xml', 'application/xhtml+xml', 'text/javascript', 'application/octet-stream', undefined]) assert.equal(opensInPage(type), false, String(type));
+  assert.equal(typeOfName('blobs/abc.HTML'), 'text/html');
+});
+
+test('?cite lands after the whole commit, across a live line inside it', () => {
+  const durable = (commit: number, order: number, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind: 'agentrun.record', gen: 1, t: commit * 10 + order, commit, order, data });
+  const run: Line[] = [durable(1, 0, { doc: 'x', value: 1 }), durable(2, 0, { doc: 'agentrun.record', value: { cites: 'evidence/a.json' } }),
+    { channel: 'live', source: 'workflow', kind: 'node.end', gen: 1, t: 21, seq: 1, data: {} }, durable(2, 1, { doc: 'y', value: 2 }), durable(3, 0, { doc: 'z', value: 3 })];
+  assert.equal(citeStop(run, 'evidence/a.json'), 4, 'after commit 2\'s second line, not before the commit');
+});
+
+test('a folder is read until a batch comes back empty', async () => {
+  const batches = [Array.from({ length: 100 }, (_, n) => n), Array.from({ length: 50 }, (_, n) => 100 + n), []];
+  const reader = { readEntries: (ok: (entries: number[]) => void) => ok(batches.shift() ?? []) };
+  assert.equal((await readAllEntries(reader)).length, 150);
+});
+
+test('playback: the clock runs on across the lines it reaches, and only a seek sets it', () => {
+  const at = (t: number): Line => ({ channel: 'live', source: 'workflow', kind: 'node.start', gen: 1, t, seq: t, data: {} });
+  const run = [at(0), at(10), at(20), at(30)];
+  const head = playback(run, stopsOf(run));
+  head.seek(0);
+  assert.equal(head.advance(16, 1), 2, 'the lines at 0 and 10 have happened');
+  assert.equal(head.clock, 16, 'not rewound to the line at 10');
+  assert.equal(head.advance(16, 1), 4);
+  assert.equal(head.clock, 32);
+  head.seek(1);
+  assert.equal(head.clock, 0, 'a seek sets it to its stop\'s line');
+  assert.equal(head.advance(5, 4), 3, 'speed multiplies the wall time');
+});
+
+test('a cut answer\'s aborted entry is no completed turn in the lanes', () => {
+  const entry = (commit: number, stopReason: string): Line => ({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: commit, commit, order: 0, conv: 12, data: { kind: 'pi.assistant', model: [{ role: 'assistant', stopReason, content: [] }] } });
+  const turns = lanesOf([entry(1, 'aborted'), entry(2, 'toolUse')]).turns;
+  assert.deepEqual(turns.map((turn) => [turn.label, turn.status]), [['turn 0', 'done']]);
 });

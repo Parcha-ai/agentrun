@@ -35,13 +35,14 @@ test('a module imports names from the viewer\'s own modules only: no package, an
 
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
 
-/** The text of the page at `query`, as headless Chrome draws it from file://. */
-function pageText(dist: string, profile: string, query: string): string {
+/** The page at `query`, as headless Chrome draws it from file://: its DOM, or its text. */
+function pageHtml(dist: string, profile: string, query: string): string {
   const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`,
     '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(dist, 'index.html')).href}?${query}`], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(ran.status, 0, ran.stderr);
-  return ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replaceAll('&#39;', '\'');
+  return ran.stdout;
 }
+const pageText = (dist: string, profile: string, query: string) => pageHtml(dist, profile, query).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replaceAll('&#39;', '\'');
 
 test('the page opens from file:// and draws the recording: the counters and the labelled kill', noChrome, (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-file-'));
@@ -62,8 +63,11 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   const killed = JSON.parse(readFileSync(join(recordings, 'reference-killed', 'manifest.json'), 'utf8'));
   writeFileSync(join(recordings, 'reference-killed', 'manifest.json'), JSON.stringify({ ...killed,
     chapters: [{ title: 'the first tool result', at: { gen: 2, commit: 28 } }], baseline: { recording: '../restore-drill', label: 'the restore drill' } }));
-  mkdirSync(join(recordings, 'restore-drill'));
-  writeFileSync(join(recordings, 'restore-drill', 'manifest.json'), JSON.stringify(drill.manifest));
+  mkdirSync(join(recordings, 'restore-drill', 'blobs'), { recursive: true });
+  // A result that is a page: it must download, never open with the viewer's origin.
+  const page = 'a'.repeat(64);
+  writeFileSync(join(recordings, 'restore-drill', 'blobs', `${page}.html`), '<script>localStorage.setItem("x", "1")</script>');
+  writeFileSync(join(recordings, 'restore-drill', 'manifest.json'), JSON.stringify({ ...drill.manifest, result: { blob: page, title: 'the report page' } }));
   writeFileSync(join(recordings, 'restore-drill', 'events.jsonl'), drill.lines.map((line) => JSON.stringify(line)).join('\n'));
   mkdirSync(join(recordings, 'live-only'));
   writeFileSync(join(recordings, 'live-only', 'manifest.json'), JSON.stringify({ ...drill.manifest, title: 'live lines only', generations: 1, kills: 0 }));
@@ -80,6 +84,9 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   assert.match(killedText, /Beside it, the restore drill, at its end: .*paid calls made/, 'the baseline\'s counters, from its own lines');
   assert.doesNotMatch(killedText, /breaks the format/);
 
+  const resultLink = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill').match(/<a [^>]*class="result"[^>]*>/)?.[0] ?? '';
+  assert.match(resultLink, /download="a{64}"/, 'the HTML result downloads');
+  assert.doesNotMatch(resultLink, /target=/, 'and never opens in a tab');
   const lost = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill&at=1:5');
   assert.match(lost, /restored to commit 3: what came after it is a lost branch/);
   assert.match(lost, /after commit 5 of generation 1 · line 8 of 18/, 'commit 5 of the lost branch');

@@ -85,6 +85,26 @@ export const toolCallsOf = (message: Message): { id: string; name: string; argum
 export const imagesOf = (message: Message): string[] =>
   Array.isArray(message.content) ? message.content.flatMap((block) => (isObj(block) && block.type === 'image' && typeof block.blob === 'string' ? [block.blob] : [])) : [];
 
+/** A browser session's charge in `browser.sessions`: its `spent.usd` once priced, else unknown (null). */
+export const browserChargesOf = (doc: DocLine): { tag: string; usd: number | null }[] | undefined => {
+  if (doc.doc !== 'browser.sessions' || !isObj(doc.value) || !Array.isArray(doc.value.sessions)) return undefined;
+  return doc.value.sessions.flatMap((session) => {
+    if (!isObj(session) || typeof session.tag !== 'string') return [];
+    const spent = isObj(session.spent) ? session.spent : undefined;
+    return [{ tag: session.tag, usd: spent?.state === 'priced' && typeof spent.usd === 'number' ? spent.usd : null }];
+  });
+};
+
+/** A vision look's charge in a `vision.*` document: its record's `facts.cost_usd`, else unknown (null). */
+export const lookChargesOf = (doc: DocLine): { receipt: string; usd: number | null }[] | undefined => {
+  if (!doc.doc.startsWith('vision.') || !isObj(doc.value) || !Array.isArray(doc.value.looks)) return undefined;
+  return doc.value.looks.flatMap((look, index) => {
+    if (!isObj(look)) return [];
+    const facts = isObj(look.record) && isObj(look.record.facts) ? look.record.facts : undefined;
+    return [{ receipt: typeof look.receipt === 'string' ? look.receipt : String(index), usd: typeof facts?.cost_usd === 'number' ? facts.cost_usd : null }];
+  });
+};
+
 /** A message's priced usage, or null when it carries none. */
 export const costOf = (message: Message): number | null => {
   const cost = isObj(message.usage) && isObj(message.usage.cost) ? message.usage.cost.total : undefined;

@@ -47,7 +47,7 @@ export type Manifest = {
 };
 
 /** A recording as the viewer holds it: its manifest, its lines in file order, and where a blob's bytes are. */
-export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined };
+export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
@@ -138,7 +138,8 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     const process = processAt[index]!;
     if (line.snapshot !== true && !firstNew.has(process)) { seenBefore.set(process, seen); firstNew.set(process, line.commit!); }
     seen = Math.max(seen, line.commit!);
-    const doc = docOf(line);
+    // A snapshot carries earlier moves' records as state: only a record a process writes is its own move.
+    const doc = line.snapshot === true ? undefined : docOf(line);
     const move = doc ? moveOf(doc) : undefined;
     if (!move) return;
     moves.push({ at: `line ${index + 1}`, process, commit: line.commit!, move });
