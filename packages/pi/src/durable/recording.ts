@@ -226,8 +226,8 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
  * after this call becomes the lines `recordingLines` would give it, with tasks at their real commit, `t` the adoption
  * time (`clock()`, default `Date.now()`), and `gen` the generation of the latest `agentrun.driver` revision at or
  * before the commit. `from` is the snapshot this recording continues (`snapshotLines`, written before the run
- * resumed): its generation, unless `gen` is given, and its nodes' conversations carry on until this process writes
- * its own.
+ * resumed): its driver generation and its nodes' conversations carry on until this process writes its own. `gen` is
+ * only for a run with no driver revision yet; it never overrides a driver generation.
  *
  * The listener only maps and queues: it never throws, blocks or calls the Session. `write` receives one commit's lines
  * at a time, in commit order, after the listener has returned. A `write` that completes synchronously (an append to a
@@ -238,7 +238,11 @@ function publicationLines(publication: CommitPublication, state: RecorderState):
  */
 export function recordCommits(session: Pick<Session, "subscribeCommits">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
   const clock = options.clock ?? Date.now;
-  const state: RecorderState = { gen: options.gen ?? options.from?.at(-1)?.gen, conversations: new Map() };
+  const fromDriver = (options.from ?? []).reduce<number | undefined>((max, line) => {
+    const generation = line.kind === "agentrun.driver" ? line.data?.value?.generation : undefined;
+    return typeof generation === "number" ? Math.max(max ?? generation, generation) : max;
+  }, undefined);
+  const state: RecorderState = { gen: fromDriver ?? options.from?.at(-1)?.gen ?? options.gen, conversations: new Map() };
   for (const line of options.from ?? []) {
     const node = line.kind === "agentrun.nodes" ? nodeConversation(line.data?.key, line.data?.value) : undefined;
     if (node) state.conversations.set(node[0], node[1]);
@@ -279,7 +283,8 @@ async function scanAll<T, C>(scan: (cursor: C | undefined) => Promise<{ readonly
  * `storage` is the store the run's Harness was opened over; `at` is the store's latest commit (pi's `Storage` has no
  * head query: a disk run reads it with pi-durable-disk's `storeHead`). The reads are of the current state (pi keeps no
  * past revision of a session or task document), so the snapshot is exact only while nothing commits: take it before
- * the run resumes. `gen` defaults to the highest `agentrun.driver` generation in it.
+ * the run resumes. Every line's `gen` is the highest `agentrun.driver` generation in it; `gen` is only for a run with no
+ * driver revision yet, and never overrides one.
  */
 export async function snapshotLines(storage: Pick<Storage, "scanConversations" | "scanTasks" | "scanDocuments" | "document">, options: { at: number; gen?: number; context: Context }): Promise<RecordingLine[]> {
   const { at, context } = options;
@@ -308,6 +313,6 @@ export async function snapshotLines(storage: Pick<Storage, "scanConversations" |
     if (node) nodes.set(node[0], node[1]);
   }
   stampPaths(placed, nodes);
-  const gen = options.gen ?? driverGen;
+  const gen = driverGen ?? options.gen;
   return numbered(placed, () => gen, { snapshot: true });
 }

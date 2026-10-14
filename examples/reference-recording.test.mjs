@@ -181,8 +181,10 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   // line, the node's conversation with the node's path, every line a snapshot at the given commit.
   const storage = await openNodeSqliteStorage(file);
   try {
-    const snapshot = await snapshotLines(storage, { at: last, context: ctx });
+    // A host's gen (here its process count, lower than the driver's) never overrides the driver generation.
+    const snapshot = await snapshotLines(storage, { at: last, gen: ledger.processes, context: ctx });
     assert.ok(snapshot.every((line, i) => line.snapshot === true && line.commit === last && line.order === i));
+    assert.ok(snapshot.every((line) => line.gen === durableDoc(file, 'agentrun.driver', RUN_KEY).generation));
     assert.deepEqual(new Map(snapshot.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
     for (const line of snapshot) {
       const exported = lastValue.get(docId(line.data.doc, line.data.key, line.conv));
