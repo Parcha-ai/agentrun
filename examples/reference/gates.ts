@@ -1,12 +1,16 @@
 // Structural gates over the directory a reference run leaves: files exist, JSON parses, counts and cross-references
-// hold. None of them reads meaning into prose. `node examples/reference/gates.ts <run>` checks a run of the reference
-// job and exits 1 when a gate fails.
+// hold. None of them reads meaning into prose. What ran is read from the run's store, through the packages' own
+// readers; `events.jsonl` is best effort (a killed process may never write a row) and is for people, not for gates.
+// `node examples/reference/gates.ts <run>` checks a run of the reference job and exits 1 when a gate fails.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { resolveSchemaForWorkflow } from '@parcha/agentrun-dsl';
+import { nodeAt } from '@parcha/agentrun-dsl/recovery';
+import { durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
+import type { InventoryRow } from '@parcha/pi-browser';
 import { Ajv } from 'ajv';
-import type { Job, RunResult } from './assemble.ts';
-import type { Fakes, LedgerRow, StatusEvent } from './host.ts';
+import { RUN_KEY, type Job, type RunResult } from './assemble.ts';
+import type { Fakes, LedgerRow } from './host.ts';
 import { job as reference } from './job.ts';
 
 /** A job, the fakes it runs on, and what its run must show: its status, the gates that fail, the tools whose receipts
@@ -53,28 +57,52 @@ export function gates(runDir: string, job: Job): Gate[] {
     : validate(delivered.value.record) ? [] : (validate.errors ?? []).map((error) => `${error.instancePath || '/'} ${error.message}`);
 
   const cited = delivered.ok ? [...new Set(citationsOf(delivered.value.record))] : [];
-  const receipts = cited.map((path): { path: string; problem?: string; status?: unknown } => {
+  const receipts = cited.map((path): { path: string; problem?: string; status?: unknown; tool?: unknown } => {
     const at = resolve(runDir, path);
     if (relative(runDir, at).startsWith('..')) return { path, problem: 'leaves the run directory' };
     if (!existsSync(at)) return { path, problem: 'does not exist' };
     const read = parse(at);
     if (!read.ok) return { path, problem: `does not parse: ${read.error}` };
     const missing = (['tool', 'args', 'status'] as const).filter((field) => read.value[field] === undefined);
-    return { path, ...(missing.length ? { problem: `has no ${missing.join(', ')}` } : {}), status: read.value.status as unknown };
+    return { path, ...(missing.length ? { problem: `has no ${missing.join(', ')}` } : {}), status: read.value.status as unknown, tool: read.value.tool as unknown };
   });
 
-  // Two agent steps each start at turn 0, so a model call is its turn in its conversation.
+  // Two agent steps each start at turn 0, so a model call is its turn in its conversation. A turn a kill cut is asked
+  // again by the next process, and again after a second kill: once per process is the rule. What the browser does is
+  // the lead's to repeat, so its rows are checked against the record below, not counted here.
   const ledger = log<LedgerRow>(runDir, 'ledger.jsonl');
-  const calls = countBy(ledger.ok ? ledger.rows : [], (row) => (row.kind === 'model' ? `model:${row.name} of ${row.conversation ?? 'an unnamed conversation'}` : `${row.kind}:${row.name}`));
-  const callProblems = !ledger.ok ? [ledger.error] : [...calls].flatMap(([call, rows]) => rows[0]!.kind !== 'model' ? (rows.length === 1 ? [] : [`${call} ran ${rows.length} times`])
-    : rows.length > 2 ? [`${call} was asked ${rows.length} times`] : rows.length === 2 && rows[0]!.pid === rows[1]!.pid ? [`${call} was asked twice in one process`] : []);
+  const calls = countBy(ledger.ok ? ledger.rows.filter((row) => row.kind !== 'browser') : [], (row) => (row.kind === 'model' ? `model:${row.name} of ${row.conversation ?? 'an unnamed conversation'}` : `${row.kind}:${row.name}`));
+  const browserOps = countBy(ledger.ok ? ledger.rows.filter((row) => row.kind === 'browser') : [], (row) => row.name);
+  const opsOf = (name: string) => browserOps.get(name)?.length ?? 0;
+  const opProblems = !ledger.ok ? [ledger.error] : [
+    ...(receipts.some(({ tool }) => tool === 'browser_read') ? ['page.run', 'page.read'].filter((op) => opsOf(op) === 0).map((op) => `the record cites a browser read, and ${op} never ran`) : []),
+    ...(opsOf('page.judge') > opsOf('page.read') ? [`${opsOf('page.judge')} page judgments for ${opsOf('page.read')} page reads`] : []),
+  ];
+  const incarnationOf = (row: LedgerRow) => row.incarnation ?? `pid ${row.pid}`;
+  // A judge's answer is recorded before it acts, and a resumed run replays it: a judge is asked again only by the
+  // process after one that died between its ask and the record, so every ask but the last ends its process's rows.
+  const rows = ledger.ok ? ledger.rows : [];
+  const lastOf = new Map(rows.map((row, index) => [incarnationOf(row), index]));
+  const at = new Map(rows.map((row, index) => [row, index]));
+  const endedAt = (row: LedgerRow) => lastOf.get(incarnationOf(row)) === at.get(row);
+  const callProblems = !ledger.ok ? [ledger.error] : [...calls].flatMap(([call, asked]) => {
+    if (asked[0]!.kind !== 'model' && asked[0]!.kind !== 'judge') return asked.length === 1 ? [] : [`${call} ran ${asked.length} times`];
+    if (new Set(asked.map(incarnationOf)).size < asked.length) return [`${call} was asked twice in one process`];
+    return asked[0]!.kind === 'judge' && !asked.slice(0, -1).every(endedAt) ? [`${call} was asked again after a process that went on past it`] : [];
+  });
 
-  const events = log<StatusEvent>(runDir, 'events.jsonl');
-  const seen = events.ok ? events.rows : [];
-  const steps = countBy(seen.flatMap((event) => (event.source === 'workflow' && ['node.start', 'node.end'].includes(event.event.type) ? [event.event] : [])),
-    (event) => `${event.label}@${event.executionPath ?? ''}`);
-  const sessions = countBy(seen.flatMap((event) => (event.source === 'browser' && 'change' in event ? [event] : [])), (event) => event.row.session.tag);
-  const fromEvents = (problems: string[]) => (events.ok ? problems : [events.error]);
+  // The store: the run's journal (each step started and committed) and the browser's inventory (each session not yet
+  // released). A run directory with no store holds no evidence of either.
+  const store = ((): { ok: true; journal: ReturnType<typeof readJournal>; inventory: InventoryRow[] } | { ok: false; error: string } => {
+    if (!existsSync(join(runDir, 'durable', 'run.sqlite'))) return { ok: false, error: 'no durable/run.sqlite' };
+    try {
+      return { ok: true, journal: readJournal(runDir, RUN_KEY), inventory: Object.values(durableDoc<{ rows: Record<string, InventoryRow> }>(runDir, 'browser.inventory')?.rows ?? {}) };
+    } catch (error) { return { ok: false, error: `durable/run.sqlite could not be read: ${error instanceof Error ? error.message : String(error)}` }; }
+  })();
+  const pin = (store.ok ? store.journal?.state as { pin?: { done?: string[]; inputs?: Record<string, string> } } | null | undefined : undefined)?.pin;
+  const named = (path: string) => { const node = nodeAt(job.workflow, path) as { label?: string } | undefined; return node?.label ? `${node.label} (${path})` : path; };
+  const stepProblems = !store.ok ? [store.error] : !pin ? ['the store holds no journal for the run'] : Object.keys(pin.inputs ?? {}).map((path) => `${named(path)} started and never committed`);
+  const sessionProblems = !store.ok ? [store.error] : store.inventory.map((row) => `${row.tag} is ${row.state}`);
 
   return [
     gate('record-matches-output-schema', schemaProblems, `the record validates against ${job.workflow.output.schemaId}`),
@@ -82,10 +110,10 @@ export function gates(runDir: string, job: Job): Gate[] {
       delivered.ok ? `${cited.length} citations, each a parsed receipt with its tool, args and status` : 'no record, nothing cited'),
     gate('no-failed-evidence-cited', receipts.flatMap(({ path, status }) => (status === 'failed' ? [`${path} was filed failed`] : [])),
       `${filed(runDir).filter(({ read }) => read.ok && read.value.status === 'failed').length} receipts filed failed, none cited`),
-    gate('fakes-called-once', callProblems, `${calls.size} calls: every tool and judge once, every model turn once or once more in a later process`),
-    gate('nodes-end', fromEvents([...steps].flatMap(([step, rows]) => (rows.at(-1)!.type === 'node.end' ? [] : [`${step} started and never ended`]))), `${steps.size} steps, each ended`),
-    gate('browser-sessions-released', fromEvents([...sessions].flatMap(([tag, rows]) => (rows.some((row) => row.change === 'released') ? [] : [`${tag} was never released`]))),
-      `${sessions.size} sessions, each released`),
+    gate('fakes-called-once', callProblems, `${calls.size} calls: every tool once, every judge and model turn at most once in each process`),
+    gate('browser-ops-ran', opProblems, `${opsOf('page.run')} page runs, ${opsOf('page.read')} reads, ${opsOf('page.judge')} judgments: each cited read rests on a run and a read`),
+    gate('nodes-end', stepProblems, `${pin?.done?.length ?? 0} steps committed in the journal, none left started`),
+    gate('browser-sessions-released', sessionProblems, 'the browser inventory holds no session'),
   ];
 }
 

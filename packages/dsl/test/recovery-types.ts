@@ -65,7 +65,8 @@ async function host(deps: WorkflowDeps) {
   const driver: RecoveryDriver = await openRecovery(stores[0], workflow, { key: 'run-1', bind: { config: { question: 'q' } }, reservedOutputs: ['report.md'], files: workspaceFiles('.') });
   const wrapped: WorkflowDeps = withRecovery(driver, {
     ...deps,
-    runEffect: async ({ input, call }) => { call?.({ tool: 'lookup', input }); return { value: 1 }; },
+    // An effect adapter is told the admitted effect, by which a host keeps what its outside call answered.
+    runEffect: async ({ input, call, effect }) => { const kept: { id: string; argsHash: string } | undefined = effect; call?.({ tool: 'lookup', input, kept }); return { value: 1 }; },
     // A node runner is handed the attempt it runs; a plain interpreter runner, which ignores it, fits too.
     runNode: async ({ label, step }) => ({ label, session: step?.sessionId, attempt: step?.attempt, earlier: step?.earlierSessionIds.length }),
   }, { durableNodes: true });

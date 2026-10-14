@@ -114,6 +114,7 @@ class LocalBox implements Box {
 			workspace: this.#record.workspace,
 			maxLifetimeMs: this.#record.maxLifetimeMs,
 			snapshot: null,
+			bulk: "stream",
 		};
 	}
 

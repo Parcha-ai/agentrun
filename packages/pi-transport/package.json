@@ -39,6 +39,12 @@
       "import": "./dist/hands/index.js",
       "default": "./dist/hands/index.js"
     },
+    "./home": {
+      "source": "./src/home/index.ts",
+      "types": "./dist/home/index.d.ts",
+      "import": "./dist/home/index.js",
+      "default": "./dist/home/index.js"
+    },
     "./testing": {
       "source": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
@@ -66,8 +72,8 @@
     "test:live": "vitest --run .live.test"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.2.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.2.0"
+    "@earendil-works/chord": ">=1.0.4 <1.3.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
   },
   "dependencies": {
     "typebox": "1.3.27"

@@ -36,9 +36,23 @@ ignoring it.
 | --- | --- | --- |
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
 
-## Modal
+### Daytona
+
+`daytonaBoxes({ apiKey, snapshot })` talks to the Daytona REST API with `fetch`; there is no SDK, and the key stays in
+the host. Daytona sets a box's size with its snapshot, so a spec that names `cpus`, `memoryMb` or `gpu` is refused:
+choose the size by naming a snapshot. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, measured
+at about 65 to 70 s for a one-minute lifetime). Daytona's label index trails a create and answers each query shape on
+its own schedule, so `list` always asks Daytona for the `pi-transport` label alone and filters the other labels itself,
+and `create` returns only once that listing shows the box. A listing therefore pages through every box this package
+made in the organization. The default workspace is `/tmp/workspace`. Programs run through the toolbox with their input
+and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
+kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
+snapshot could not be created in the test organization), so treat it as untested.
+
+### Modal
 
 `modalBoxes(sdk, { appName })` takes the host's own Modal client, so this package depends on no Modal SDK. The
 client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
@@ -120,6 +134,43 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ### Where tools run is a line of config
 
