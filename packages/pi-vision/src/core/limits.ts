@@ -45,21 +45,16 @@ export const DEFAULT_VIDEO_INLINE_BYTES = 12_000_000;
 export const REQUEST_HEADROOM_BYTES = 1 * MiB;
 /** The request budget when neither the model nor the host names a cap: under the smallest cap in pi-ai 1.0.4's registry, 20 MiB (read 2026-10-09). */
 export const DEFAULT_REQUEST_BYTES = 16 * MiB;
-/** `look`: pages in one eyes request and in one call; the call cap bounds cost (2026-10-09). */
+/** A plan for the eyes (`ask`): pages in one eyes request. A look has no page, frame or price cap unless its host
+ *  passes one (`PlanCaps`, `priceLook`'s `capUsd`) (2026-10-09). */
 export const LOOK_PAGES_PER_REQUEST = 10;
-export const LOOK_PAGES_PER_CALL = 200;
-/** `look`: video frames in one eyes request and in one call (2026-10-09). */
+/** A plan for the eyes: video frames in one eyes request (2026-10-09). */
 export const LOOK_FRAMES_PER_REQUEST = 20;
-export const LOOK_FRAMES_PER_CALL = 120;
-/** `look` on eyes without video: one frame by seek this many seconds apart over the window, at least the frames of a
+/** A plan for eyes without video: one frame by seek this many seconds apart over the window, at least the frames of a
  *  `read`; eight frames over an eight second window read a counter that changes every second (measured 2026-10-11). */
 export const LOOK_FRAME_SPACING_S = 1;
-/** `look`: eyes requests in flight at once (2026-10-09). */
-export const LOOK_CONCURRENCY = 4;
 /** A look is priced before its first request at this many input tokens a part, the bound measured for a page on current OpenAI models (read 2026-10-09). */
 export const LOOK_TOKENS_PER_PART = 3000;
-/** A look priced over this many dollars is refused with the estimate, unless the host sets its own cap (2026-10-09). */
-export const LOOK_MAX_USD = 0.25;
 /** One request to the eyes is cut after this long (2026-10-09). */
 export const SEE_TIMEOUT_MS = 120_000;
 /** Source bytes read into this process; a larger file needs a provider that works on it in its environment: pdf.js held 455 MB for a 200 page file (measured 2026-10-09). */

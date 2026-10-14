@@ -11,7 +11,7 @@ import type { CallContext, CallSetup, EyesAnswer, ImageContent, TextContent, Too
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
-import type { Fit, Part } from "./plan.js";
+import { packRequests, type Fit, type Part } from "./plan.js";
 
 /** The question the eyes answer when the agent asked none: say what is shown, completely and only that. */
 export const DESCRIBE_ASK =
@@ -199,12 +199,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       sized.push({ block: fit, caption: captionOf(where[i]!) });
     }
     // A unit goes to the eyes in requests of at most the images, and the bytes, one request takes, each its own look.
-    const requests: { block: ImageContent; caption?: string }[][] = [];
-    for (const item of sized) {
-      const open = requests.at(-1);
-      if (open && open.length < most && charsOf(open.map((o) => o.block)) + item.block.data.length <= eyes.limits.requestBytes) open.push(item);
-      else requests.push([item]);
-    }
+    const requests = packRequests(sized, (item) => item.block.data.length, () => most, eyes.limits.requestBytes);
     const out: Item[] = [];
     for (const [index, request] of requests.entries()) out.push(await ask1(request, video, `${what}${requests.length > 1 ? ` (part ${index + 1} of ${requests.length})` : ""}`, eyes));
     return out;

@@ -1,9 +1,7 @@
 // The model contract: every word the model reads from this package lives in this file. `read` keeps its name, its eight
-// arguments and their descriptions exactly as hosts already ship them (a snapshot test holds every string); `look` is
-// defined here and registered by no adapter yet; the static section and the miss codes are the rest of the contract.
+// arguments and their descriptions exactly as hosts already ship them (a snapshot test holds every string); `vision.see`
+// is the one function a host puts in its code mode; the static section and the miss codes are the rest of the contract.
 // A host adds its own words around these (a wrapped description, a section addendum), never inside them.
-
-export type JsonSchema = { readonly [key: string]: unknown };
 
 /** The contract's version. It is part of every look's memo key, so a changed contract never reuses an old answer. */
 export const CONTRACT_VERSION = 1;
@@ -39,40 +37,17 @@ export function withReadMedia<T extends { description: string; parameters?: { pr
   };
 }
 
-export type ToolContract = {
-  readonly name: string;
-  readonly label: string;
-  readonly description: string;
-  readonly parameters: JsonSchema;
-  /** pi-durable's replay class: a `safe` call cut by a crash runs again with the same arguments. */
-  readonly replay: "safe" | "unsafe";
-};
-
-/** `look`: a vision model answers a question about a file or a recording; only its words, where it looked and the
- *  price enter the caller's context. */
-export const LOOK_TOOL: ToolContract = Object.freeze({
-  name: "look",
-  label: "Look",
-  description: "Ask a vision model a question about a file or a recording and get its answer as text, with where it looked and what it cost. Use it for many pages, a long video, or one fact you need without the pixels; use read to see a file yourself. The answer marks pages as [p3] and times as [t=62]. Every look is filed under evidence/ and is citable.",
-  parameters: Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      source: { type: "string", description: "A workspace path, or a handle such as session:<id>." },
-      ask: { type: "string", description: "The question to answer about what the file shows." },
-      pages: { type: "string", description: "PDF or office document only: the pages to look at, as \"3\", \"1-5\" or \"7-\" (page 7 to the end). Without it, the document from its first page, up to the look's page limit." },
-      from_s: { type: "number", description: "Video or recording only: start of the window to look at, in seconds." },
-      to_s: { type: "number", description: "Video or recording only: end of the window to look at, in seconds (must be greater than from_s)." },
-      region: { type: "string", description: "\"x,y,w,h\" in percent of the page, image or frame: look closer at that part of it." },
-    },
-    required: ["source", "ask"],
-  }),
-  replay: "safe",
-});
+/** `vision.see`, a global of a host's code-mode sandbox (pi-codemode's `globals`): its name, the doc comment and the
+ *  signature the model reads in the sandbox's declarations. It adds no tool to the model's list. */
+export const VISION_SEE = Object.freeze({
+  name: "vision.see",
+  description: "Have a vision model answer `ask` about images your code made or holds: image files by path (rendered pages, video frames, crops) or image blocks, and video clips when the vision model takes video. Each image is fitted to the vision model's limits and they go in as few requests as fit. `fragments` names where each image came from (report.pdf#page=3, talk.mp4#t=62), in order: images, then paths; a path names itself by default. Several requests come back as one text, each part headed by its fragments and receipt. It returns the answer, the vision model, the price in dollars (null when unknown) and the receipt to cite; `kept` is true when every answer was one this call had already paid for. A look that cannot be made throws an Error whose message starts with its miss code.",
+  signature: "(request: { ask: string; paths?: string[]; images?: { type: \"image\"; data: string; mimeType: string }[]; fragments?: string[] }): Promise<{ text: string; model: string; costUsd: number | null; receipt: string | null; kept?: true }>",
+} as const);
 
 /** The static section a host renders once in the system prompt. Nothing live enters it. */
 export const VISION_SECTION_HEADING = "LOOKING AT FILES";
-export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. look(source, ask) has a vision model answer a question about a file and gives you its words and what it cost: use it for many pages, long video, or when you need one fact and not the pixels. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";
+export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. For many pages, a long video or many images, render them with bash (pdftoppm, ffmpeg) and call vision.see from code mode: a vision model answers about them and you get its words and what it cost. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";
 
 /** The section, with the host's addendum after it when there is one. */
 export function visionSection(addendum?: string): string {
