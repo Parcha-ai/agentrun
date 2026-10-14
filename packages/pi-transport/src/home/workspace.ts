@@ -803,19 +803,23 @@ async function transfer(
 		cancel();
 		signalStopped();
 	};
+	// While a phase that moves no byte runs (`working`), the stall clock is suspended, not refreshed: whatever the limit,
+	// the phase cannot be cut as a stall. It starts again when the last such phase ends.
+	let held = 0;
 	const arm = () => {
 		clearTimeout(stallTimer);
-		stallTimer = setTimeout(() => stop("stall"), limits.stallMs);
+		if (held === 0) stallTimer = setTimeout(() => stop("stall"), limits.stallMs);
 	};
 	const state: MoveState = {
 		cleanups: [],
 		problems: [],
 		working: async (work) => {
-			const keep = setInterval(() => arm(), Math.max(50, Math.floor(limits.stallMs / 3)));
+			held += 1;
+			clearTimeout(stallTimer);
 			try {
 				return await work;
 			} finally {
-				clearInterval(keep);
+				held -= 1;
 				arm();
 			}
 		},

@@ -174,6 +174,23 @@ describe("phases that move no byte", () => {
 		}, 60_000);
 	}
 
+	it("are not a stall at any limit: a setup call of 300 ms under a 25 ms limit still moves the workspace", async () => {
+		const { from, to } = await pair();
+		const src = join(from.facts().workspace, "tree");
+		mkdirSync(src);
+		writeFileSync(join(src, "f"), randomBytes(3000));
+		const dst = join(to.facts().workspace, "t");
+		getOrThrow(
+			await moveWorkspace(
+				tampered(from, { delayExec: { match: "pi-transport-move-", ms: 300 } }),
+				to,
+				{ fromRoot: src, toRoot: dst, fromPipe: FILES, toPipe: FILES, stallMs: 25 },
+				context,
+			),
+		);
+		expect(walk(dst)).toEqual(walk(src));
+	}, 60_000);
+
 	it("still end with a timeout when the whole deadline passes", async () => {
 		const { from, to } = await pair();
 		const src = join(from.facts().workspace, "tree");
