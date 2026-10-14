@@ -118,7 +118,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
-    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
+    options: async (invocation) => { if (host.tools.answered || host.tools.rerun) await settle(invocation, host.tools); return {}; },
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -186,10 +186,10 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
 }
 
 /** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
- *  one, before the task's driver opens the journal. A call the door never answered stays unknown, and so does one whose
+ *  one, before the task's driver opens the journal; one it did not answer, the host's `rerun` may run again. A call the door never answered stays unknown, and so does one whose
  *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
  *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
-async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
+async function settle({ key, taskId, runtime, context }: WorkflowInvocation, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
   const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
   if (!request) return;
   const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
@@ -197,7 +197,9 @@ async function settle({ key, taskId, runtime, context }: WorkflowInvocation, ans
     const effects = journal.effects();
     for (const effect of effects) {
       const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
-      const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
+      const kept = effect.status === 'unknown' && effect.intent && alone && answered ? await answered(effect.argsHash) : undefined;
+      // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
+      const answer = kept ?? (effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined);
       if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
     }
   } finally {

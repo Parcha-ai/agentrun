@@ -43,6 +43,10 @@ export type StatusEvent =
   | { source: 'workflow'; event: WorkflowEvent }
   | { source: 'evidence'; label: string; tool: string; path: string };
 export type Delivery = { record: unknown };
+/** After `answered` has nothing for an effect a killed process left unknown, the host may run it again, when running it again is safe
+ *  (a read, or work in a fresh box): `rerun` is asked with the effect's id and intent, and an answer completes the effect. Undefined
+ *  leaves it unknown and it is never sent again. Only an effect with an intent is asked. */
+export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string } }) => Promise<{ args: unknown; value: unknown } | undefined>;
 /** What a recorder takes from the run: the process's generation once it has opened the run. */
 export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
@@ -55,7 +59,7 @@ export type Host = {
    *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
    *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
    *  the call stays unknown and is never sent again. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; browser: BrowserPlane };
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; rerun?: Rerun; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
