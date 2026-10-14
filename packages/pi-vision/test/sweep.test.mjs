@@ -332,7 +332,7 @@ const CASES = [
       const limits = resolveLimits(call.model);
       for (let i = 0; i < 15; i++) sink.result("fitted", await extension.fit(shot(40 + i), call), limits);
       assert.equal(asked, 15, "the eyes were asked every time: one answer and fourteen poisoned errors");
-      assert.equal(kept.size, 1, "the one look that was answered is a memo, and the failures are none");
+      assert.deepEqual([...kept.keys()].map((key) => key.slice(0, key.lastIndexOf(":"))), ["vision:look", "vision:told"], "the one look that was answered is a memo, then that it was told, and the failures are none");
       sink.out("memos", [...kept]);
     },
   },
