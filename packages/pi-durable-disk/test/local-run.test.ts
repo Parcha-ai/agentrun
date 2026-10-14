@@ -1,17 +1,53 @@
 // A run on a plain local directory (localRun): one machine, no Archil, no mount token.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { FencedError } from "../src/errors.ts";
-import { ctx, scratchRoot, scriptedHarness } from "./_run-support.ts";
+import { alive, ctx, killQuietly, scratchRoot, scriptedHarness } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
+const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
 
 describe("localRun", () => {
+  it("ends the commands a SIGKILLed instance left running at the next open, before the Harness opens", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("local-commands");
+    const root = join(dir.root, "run");
+    const instance = spawn(process.execPath, [LOCAL_COMMAND, root], { stdio: ["ignore", "pipe", "inherit"] });
+    let command = 0;
+    try {
+      const line = (await createInterface({ input: instance.stdout! })[Symbol.asyncIterator]().next()).value as string | undefined;
+      command = Number(/^ready (\d+)$/.exec(line ?? "")?.[1] ?? 0);
+      assert.ok(command > 0 && alive(command), `the agent's command runs: ${line}`);
+      instance.kill("SIGKILL");
+      await new Promise((resolve) => instance.once("close", resolve));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.ok(alive(command), "the instance's SIGKILL does not reach its command, which leads a process group of its own");
+      const scripted = scriptedHarness();
+      const steps: [string, boolean][] = [];
+      const run = await openDurableRun({ disk: "dsk-local", region: "local", id: "local-command" }, {
+        ...localRun(root),
+        harness: { models: scripted.models, registry: scripted.registry },
+        onStep: (name) => void steps.push([name, alive(command)]),
+      });
+      const at = (name: string) => steps.findIndex(([step]) => step === name);
+      assert.ok(at("commands") >= 0 && at("commands") < at("harness"), `the commands step comes before the Harness opens: ${JSON.stringify(steps)}`);
+      assert.deepEqual(steps[at("commands")], ["commands", false], "the command is gone once the commands step ends");
+      assert.equal(run.generation, 2);
+      await run.release();
+    } finally {
+      instance.kill("SIGKILL");
+      if (command > 0) killQuietly(command);
+      dir.remove();
+    }
+  });
+
   it("opens a run on a local directory with no mount token, keeps its turns, and opens it again as the next generation", async () => {
     const dir = scratchRoot("local");
     const root = join(dir.root, "runs", "run-1"); // not there yet: the claim makes it

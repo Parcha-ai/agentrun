@@ -26,6 +26,7 @@ import type {
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { CommandRecorder } from "./commands.ts";
 import { canonicalizeSync, confineHooks, Confinement, fileError, inside } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
@@ -41,6 +42,11 @@ export interface ArchilEnvClaim {
   readonly work: string;
   /** The disk's id; part of the environment id when present. */
   readonly disk?: string;
+  /**
+   * Where the commands this environment starts are recorded, so that the next open of the claim ends what a killed
+   * incarnation left running (`reapCommands`). Set by a claim that nothing else cleans up after: a local run's.
+   */
+  readonly commands?: string;
 }
 
 export interface ArchilEnvOptions {
@@ -149,6 +155,8 @@ interface RunScope {
   readonly confinement: Confinement | undefined;
   /** The claim's `tmp/`, canonical once at construction (the confinement's read-only root): temp dirs are granted under it by name. */
   readonly tempCanonical: string | undefined;
+  /** Records the commands' process groups for the next open; undefined when the claim names no `commands` directory. */
+  readonly recorder: CommandRecorder | undefined;
 }
 
 class ArchilExecutionEnv extends NodeExecutionEnv {
@@ -172,6 +180,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     if (closing.signal.aborted) return err(new EnvClosedError());
     this.#active++;
     this.#scope.running.add(this);
+    this.#scope.recorder?.started();
     try {
       const confined = await this.#confine(command, options, context);
       if (!confined.ok) return confined;
@@ -180,6 +189,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
       if (closing.signal.aborted) return err(new EnvClosedError());
       return await super.exec(confined.value, options, withAbortSignal(closing.signal, context));
     } finally {
+      this.#scope.recorder?.finished();
       if (--this.#active === 0) this.#scope.running.delete(this);
     }
   }
@@ -684,6 +694,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
     closing: new AbortController(),
     confinement,
     tempCanonical: confinement === undefined ? undefined : join(canonicalizeSync(claim.root), TEMP_DIR),
+    recorder: claim.commands === undefined ? undefined : new CommandRecorder(claim.commands),
   };
   const workOwned = runAs ? ownedOnce(claim.work, runAs) : undefined;
   const build = (target: { readonly cwd?: string }) => {
@@ -698,6 +709,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
   const cleanup = async (context: Context) => {
     scope.closing.abort();
     await Promise.all([...running].map((env) => env.cleanup(context)));
+    scope.recorder?.close();
   };
   return Object.assign(build, { id, cleanup });
 }
