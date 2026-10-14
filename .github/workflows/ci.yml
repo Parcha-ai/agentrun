@@ -38,6 +38,7 @@ jobs:
       - run: npm test
       - run: npm run test:release
       - run: npm run test:examples
+      - run: npm run test:viewer
       - run: node scripts/verify-packages.mjs
       - if: matrix.node == '22.23.2'
         run: npm run verify:source
