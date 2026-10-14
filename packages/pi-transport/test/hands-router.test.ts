@@ -10,20 +10,35 @@ import { type ExecutionEnv, getOrThrow, ok } from "@earendil-works/pi-durable/en
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
 import { HandsDoc, SessionBoxesDoc, TransportError } from "../src/transport.ts";
-import { bash, openSession, registerHandsCases, type WatchedProvider, watched } from "./hands-support.ts";
+import {
+	bash,
+	openSession,
+	registerHandsCases,
+	type WatchedProvider,
+	watchdogsUnder,
+	watched,
+} from "./hands-support.ts";
 
 const context = BACKGROUND_CONTEXT;
+// Every directory of this file lies under one root, so what a test leaves behind can be counted after the file.
+const RUN_ROOT = mkdtempSync(join(tmpdir(), "pi-transport-hands-run-"));
+afterAll(() => {
+	const left = watchdogsUnder(RUN_ROOT);
+	rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	// A box that was released and never destroyed has a watchdog that sleeps out its lifetime, a day by default.
+	expect(left, "watchdogs of this file's boxes still running").toEqual([]);
+}, 60_000);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Runs `use` with a watched local provider in a directory of its own, and ends every box it created. */
 async function withLocal(use: (provider: WatchedProvider, directory: string) => Promise<void>): Promise<void> {
-	const directory = mkdtempSync(join(tmpdir(), "pi-transport-hands-"));
+	const directory = mkdtempSync(join(RUN_ROOT, "d-"));
 	const provider = watched(localBoxes({ root: join(directory, "boxes") }));
 	try {
 		await use(provider, directory);
@@ -62,7 +77,7 @@ function endingBy(provider: BoxProvider, destroy: (box: Box) => Box["destroy"]):
 registerHandsCases(
 	"hands on local boxes",
 	async (use) => {
-		const directory = mkdtempSync(join(tmpdir(), "pi-transport-hands-"));
+		const directory = mkdtempSync(join(RUN_ROOT, "d-"));
 		try {
 			await use({
 				provider: () => localBoxes({ root: join(directory, "boxes") }),
@@ -647,7 +662,7 @@ describe("what the router leans on in pi", () => {
 			scope: "session",
 			initial: () => ({ commits: 0 }),
 		});
-		const directory = mkdtempSync(join(tmpdir(), "pi-transport-hands-"));
+		const directory = mkdtempSync(join(RUN_ROOT, "d-"));
 		try {
 			const faux = fauxProvider();
 			const models = createModels();
