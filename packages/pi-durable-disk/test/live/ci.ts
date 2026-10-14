@@ -3,9 +3,11 @@
 //
 //   npm run build && node packages/pi-durable-disk/test/live/ci.ts all
 //
-//   all                      preflight, the host suites, then the Docker suites, then the sweep (always) and the summary.
-//                            The last line on stdout is `ok: live disk check passed (<n> suites, sweep left 0)` or
-//                            `not ok: <first failing step>: <reason>`; the exit code is 0 only with the first.
+//   all [--slow] [--list]    preflight, the host suites, then the Docker suites, then the sweep (always) and the summary.
+//                            The last line on stdout is `ok: live disk check passed (<n> suites[ incl. slow], sweep left 0)`
+//                            or `not ok: <first failing step>: <reason>`; the exit code is 0 only with the first. `--slow`
+//                            adds supervise-slow (three tests that wait out fixed windows, about 17 minutes); `--list`
+//                            prints the suites and their commands and runs nothing.
 //   preflight                refuse to start without the key and a scratch disk
 //   suites <name>...         npm run test:live:<name> for each, one after another, each under a deadline
 //   sweep                    remove the run directories and token users this run's ledgers still list
@@ -22,9 +24,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_REGION = "aws-us-east-1";
+/** The host suites the default check runs, in order. */
 export const HOST_SUITES = ["claim", "env", "run", "store", "supervise", "lifecycle"] as const;
+/** The tests that wait out fixed windows (the archil client's 5 min token refresh, five minutes of backoff): `--slow` only. */
+export const SLOW_SUITES = ["supervise-slow"] as const;
 /** The suites `suites` accepts: the package's `test:live:<name>` scripts. */
-export const SUITES = [...HOST_SUITES, "docker"] as const;
+export const SUITES = [...HOST_SUITES, ...SLOW_SUITES, "docker"] as const;
+
+/** The suites `all` runs, in order: the host suites (with supervise-slow after supervise when `slow`), then docker. */
+export function suitesFor(slow: boolean): string[][] {
+  const host: string[] = slow ? HOST_SUITES.flatMap((s) => (s === "supervise" ? [s, ...SLOW_SUITES] : [s])) : [...HOST_SUITES];
+  return [host, ["docker"]];
+}
 const PACKAGE = fileURLToPath(new URL("../..", import.meta.url));
 const SUITES_LOG = "suites.jsonl";
 /** The lock every live run on one host takes: the suites' mount roots are fixed, so two at once break each other. */
@@ -270,9 +281,9 @@ export async function sweep(env: Env, stateDir: string): Promise<SweepReport> {
   return { ...report, lines: [...refused, ...report.lines] };
 }
 
-const SUITE_OF: Record<string, string> = { P1: "claim", P2: "store", P3: "env", P4: "run", P5: "supervise", P8: "lifecycle", docker: "docker" };
+const SUITE_OF: Record<string, string> = { P1: "claim", P2: "store", P3: "env", P4: "run", P5: "supervise", "P5-slow": "supervise-slow", P8: "lifecycle", docker: "docker" };
 /** The results files the suites write: P<n>-live-results.json, and the Docker suites' docker-T13.json and docker-park.json. */
-const RESULTS = /^(P\d+-live-results|docker-T13|docker-park)\.json$/;
+const RESULTS = /^(P\d+(?:-slow)?-live-results|docker-T13|docker-park)\.json$/;
 const TIMING = /(^ms|Ms)$/;
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
 const n2 = (x: number) => String(Math.round(x * 10) / 10);
@@ -313,7 +324,7 @@ export function summarize(suites: readonly SuiteResult[], results: readonly { na
   for (const { name, data } of results) {
     const rows = timings(data);
     if (!rows.length) continue;
-    const lane = /^(P\d+|docker)/.exec(name)?.[1] ?? name;
+    const lane = /^(P\d+(?:-slow)?|docker)/.exec(name)?.[1] ?? name;
     lines.push("", `### ${SUITE_OF[lane] ?? lane} (${name})`, "", "| Measurement | Value |", "|---|---|");
     for (const [what, value] of rows.slice(0, limit)) lines.push(`| ${what} | ${value} |`);
     if (rows.length > limit) lines.push(`| ... | ${rows.length - limit} more in ${name} |`);
@@ -352,6 +363,8 @@ export async function runAll(
     readonly steps?: (suite: string, env: Env) => readonly Command[];
     readonly deadlineMs?: (suite: string) => number;
     readonly sweep?: (env: Env, stateDir: string) => Promise<SweepReport>;
+    /** Add the slow tier (`--slow`). */
+    readonly slow?: boolean;
   },
 ): Promise<number> {
   const { out } = options;
@@ -365,7 +378,7 @@ export async function runAll(
     out(`preflight: the key and a disk id are set (region ${env.PDA_LIVE_REGION || DEFAULT_REGION})`);
     const run = { env: liveEnv(env, stateDir), stateDir, signal: options.signal, steps: options.steps, deadlineMs: options.deadlineMs };
     // The Docker suites after the host suites, so the two never share the disk.
-    for (const group of [HOST_SUITES, ["docker"]]) {
+    for (const group of suitesFor(options.slow ?? false)) {
       for (const r of await runSuites(group, run)) {
         suites.push(r);
         out(`suite ${r.suite}: ${r.result} (${r.seconds} s)${r.detail ? `: ${r.detail}` : ""}`);
@@ -389,7 +402,7 @@ export async function runAll(
     failure ??= Number.isNaN(left) ? "sweep: it did not finish, so what is left on the disk is unknown" : `sweep: ${count(report.directoriesLeft, "run directory", "run directories")} and ${count(report.tokensLeft, "token user", "token users")} left`;
   }
   out(summaryOf(stateDir).trimEnd());
-  out(failure ? `not ok: ${failure}` : `ok: live disk check passed (${suites.length} suites, sweep left 0)`);
+  out(failure ? `not ok: ${failure}` : `ok: live disk check passed (${suites.length} suites${options.slow ? " incl. slow" : ""}, sweep left 0)`);
   return failure ? 1 : 0;
 }
 
@@ -417,6 +430,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [verb, ...rest] = process.argv.slice(2);
   const env = process.env as Env;
   if (verb === "all") {
+    const flags = new Set(rest);
+    const unknown = rest.filter((f) => f !== "--slow" && f !== "--list");
+    if (unknown.length) {
+      console.error(`usage: ci.ts all [--slow] [--list] (unknown: ${unknown.join(", ")})`);
+      process.exit(2);
+    }
+    const slow = flags.has("--slow");
+    if (flags.has("--list")) {
+      for (const suite of suitesFor(slow).flat()) {
+        for (const [file, args] of suiteSteps(suite, liveEnv(env, "<state>"))) console.log(`${suite}: ${[file === process.execPath ? "node" : file, ...args].join(" ")}`);
+      }
+      process.exit(0);
+    }
     const lock = env.PDA_LIVE_LOCK || LOCK;
     if (!(await holdLock(lock))) {
       console.log(`not ok: lock: another live run on this host holds ${lock}`);
@@ -425,7 +451,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     // A first SIGINT or SIGTERM stops the running suite and goes on to the sweep; a second one exits at once.
     const stop = new AbortController();
     for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => (stop.signal.aborted ? process.exit(130) : stop.abort(signal)));
-    process.exit(await runAll(env, { out: (line) => console.log(line), signal: stop.signal }));
+    process.exit(await runAll(env, { out: (line) => console.log(line), signal: stop.signal, slow }));
   } else if (verb === "preflight") {
     const problems = preflight(env);
     if (problems.length) {
@@ -460,7 +486,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   } else if (verb === "summary") {
     process.stdout.write(summaryOf(env.PDA_STATE_DIR ?? ""));
   } else {
-    console.error("usage: ci.ts all | preflight | suites <name>... | sweep | summary");
+    console.error("usage: ci.ts all [--slow] [--list] | preflight | suites <name>... | sweep | summary");
     process.exit(2);
   }
 }

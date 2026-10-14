@@ -47,8 +47,15 @@ The ship skill runs these suites whenever a pull request touches `packages/pi-du
 `test/live`. It is one command, from the repository root, under your credential wrapper:
 
 ```sh
-npm run build && node packages/pi-durable-disk/test/live/ci.ts all
+npm run build && node packages/pi-durable-disk/test/live/ci.ts all          # the default, about 18 minutes
+npm run build && node packages/pi-durable-disk/test/live/ci.ts all --slow   # with supervise-slow, about 35 minutes
 ```
+
+The skill runs `all --slow` when the diff touches `packages/pi-durable-disk/src/claim.ts`, `src/supervise.ts`,
+`src/hosts/**` or `test/live/**`, and `all` otherwise. `supervise-slow` (`supervise-slow.live.test.ts`) holds the three
+tests that wait out a fixed window, the archil client's 5-minute token refresh twice and five minutes of backoff, so it takes
+about 17 minutes at any load. They are a file of their own, with their own script, so the tier is a file, not a list of
+test names. `ci.ts all --list` (with or without `--slow`) prints the suites and their commands and runs nothing.
 
 The wrapper exports `ARCHIL_API_KEY` (a key of a **scratch** Archil organisation), `PDA_LIVE_DISK` (a **scratch** disk in
 that organisation, `dsk-...`) and `PDA_LIVE_REGION` (its region; `aws-us-east-1` when unset). Never a production key or
@@ -58,8 +65,8 @@ disk: the suites create and delete run directories and token users on whatever d
 
 1. `preflight`: refuses to start without the key and a disk id. Without the key every suite skips, and a check would pass
    having checked nothing.
-2. The host suites, `claim env run store supervise lifecycle`, each under a 25-minute deadline: one that hangs is killed
-   with its processes and the next one runs.
+2. The host suites, `claim env run store supervise lifecycle` (with `supervise-slow` after `supervise` under `--slow`),
+   each under a 25-minute deadline: one that hangs is killed with its processes and the next one runs.
 3. The Docker suites, after the host suites so the two never share the disk. They build the package's image from this
    checkout first (`pi-durable-disk:live-check`) and have a 60-minute deadline.
 4. The sweep, always (after a failure, a failed preflight or an interrupt): it removes the run directories (`runs/<name>/`
@@ -68,9 +75,9 @@ disk: the suites create and delete run directories and token users on whatever d
 5. The summary: each suite's result and time and the suites' timing measurements, as Markdown. Only numbers leave the
    results files: no disk id, host or identifier.
 
-Its last line on stdout is `ok: live disk check passed (<n> suites, sweep left 0)` or
-`not ok: <first failing step>: <reason>`, and it exits 0 only with the first: preflight passed, every suite passed, and
-the sweep left no run directory and no token user. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
+Its last line on stdout is `ok: live disk check passed (7 suites, sweep left 0)` (under `--slow`,
+`ok: live disk check passed (8 suites incl. slow, sweep left 0)`) or `not ok: <first failing step>: <reason>`, and it exits
+0 only with an `ok:` line: preflight passed, every suite passed, and the sweep left no run directory and no token user. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
 sweep; a second exits at once. It holds `/tmp/pda-live.lock` (as `flock` does) for the whole run and refuses to start
 while another live run on the host holds it. The ledgers and results go to `$PDA_STATE_DIR`, or a fresh temporary
 directory whose path it prints first.

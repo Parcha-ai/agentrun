@@ -5,10 +5,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_SUITES, openResources, preflight, runAll, runSuites, summarize, summaryOf, sweepWith, timings, type SweepReport } from "./live/ci.ts";
+import { HOST_SUITES, openResources, preflight, runAll, runSuites, SUITES, summarize, summaryOf, sweepWith, timings, type SweepReport } from "./live/ci.ts";
 import { alive, scratchRoot } from "./_run-support.ts";
 
 const CI = fileURLToPath(new URL("./live/ci.ts", import.meta.url));
@@ -24,7 +24,7 @@ function ci(args: string[], env: Record<string, string>) {
 const lastLine = (lines: string[]) => lines.at(-1)!;
 
 /** `runAll` with each suite's commands scripted (`node -e <script>`, a pass by default) and a sweep that reports `left`. */
-async function all(options: { env?: Record<string, string>; scripts?: Record<string, string>; deadlineMs?: number; left?: [number, number]; sweepThrows?: boolean; abortDuring?: string }) {
+async function all(options: { env?: Record<string, string>; scripts?: Record<string, string>; deadlineMs?: number; left?: [number, number]; sweepThrows?: boolean; abortDuring?: string; slow?: boolean }) {
   const dir = scratchRoot("live-ci-all");
   const lines: string[] = [];
   const ran: string[] = [];
@@ -34,6 +34,7 @@ async function all(options: { env?: Record<string, string>; scripts?: Record<str
     const code = await runAll({ ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: DISK, PATH: process.env.PATH, ...options.env, PDA_STATE_DIR: dir.root }, {
       out: (line) => lines.push(line),
       signal: stop.signal,
+      slow: options.slow,
       deadlineMs: () => options.deadlineMs ?? 30_000,
       steps: (suite) => {
         ran.push(suite);
@@ -79,9 +80,17 @@ describe("all", () => {
     const r = await all({});
     assert.equal(r.code, 0);
     assert.deepEqual(r.ran, [...HOST_SUITES, "docker"]);
+    assert.ok(!r.ran.includes("supervise-slow"), "the default check never runs the slow tier");
     assert.equal(r.swept, 1);
     assert.equal(lastLine(r.lines), `ok: live disk check passed (${SUITE_COUNT} suites, sweep left 0)`);
     assert.ok(r.lines.some((l) => /^\| claim \| pass \| \d+ s \|$/m.test(l)), "the summary lists each suite");
+  });
+
+  it("--slow adds supervise-slow after supervise, and the pass line names the tier", async () => {
+    const r = await all({ slow: true });
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.ran, ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "docker"]);
+    assert.equal(lastLine(r.lines), `ok: live disk check passed (${SUITE_COUNT + 1} suites incl. slow, sweep left 0)`);
   });
 
   it("a failed suite: the rest still run, the sweep runs, and the last line names the first failure", async () => {
@@ -156,6 +165,34 @@ describe("all", () => {
     } finally {
       dir.remove();
     }
+  });
+});
+
+describe("the suites and their files", () => {
+  it("--list names each tier's suites in order and runs nothing; an unknown flag is a usage error", () => {
+    const suitesOf = (out: string) => [...new Set(out.trim().split("\n").map((l) => l.split(":")[0]))];
+    const plain = ci(["all", "--list"], {});
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.deepEqual(suitesOf(plain.stdout), [...HOST_SUITES, "docker"]);
+    const slow = ci(["all", "--slow", "--list"], {});
+    assert.deepEqual(suitesOf(slow.stdout), ["claim", "env", "run", "store", "supervise", "supervise-slow", "lifecycle", "docker"]);
+    assert.match(slow.stdout, /^supervise-slow: npm run test:live:supervise-slow$/m);
+    assert.equal(ci(["all", "--fast"], {}).status, 2);
+  });
+
+  it("every live test file is run by exactly one suite's script, so a test cannot fall out of the check by moving", () => {
+    const scripts = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> }).scripts;
+    const named = new Map<string, string[]>();
+    for (const suite of SUITES) {
+      const script = scripts[`test:live:${suite}`];
+      assert.ok(script, `a test:live:${suite} script`);
+      for (const file of script.match(/test\/live\/[\w-]+\.live\.test\.ts/g) ?? []) named.set(file, [...(named.get(file) ?? []), suite]);
+    }
+    // Daytona's suite needs a Daytona account and runs on its own; every other live file is in the check.
+    const files = readdirSync(new URL("./live/", import.meta.url)).filter((f) => f.endsWith(".live.test.ts") && f !== "daytona.live.test.ts").map((f) => `test/live/${f}`).sort();
+    assert.deepEqual([...named.keys()].sort(), files);
+    for (const [file, suites] of named) assert.equal(suites.length, 1, `${file} is run by ${suites.join(", ")}`);
+    assert.deepEqual(named.get("test/live/supervise-slow.live.test.ts"), ["supervise-slow"]);
   });
 });
 
