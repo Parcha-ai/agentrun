@@ -8,9 +8,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const CHILD = fileURLToPath(new URL('./fixtures/node-runner-crash-child.mjs', import.meta.url));
+const CHILD = childPath('node-runner-crash-child.mjs');
 const SUBMIT = 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.';
 
 function child(mode, dir, env = {}) {

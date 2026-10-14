@@ -13,6 +13,7 @@ import { Harness } from "@earendil-works/pi-durable";
 import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
+import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { EXIT_FENCED, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
@@ -99,7 +100,7 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "commands" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
@@ -1017,6 +1018,12 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
   let env: RunEnv | undefined;
   const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step);
   try {
+    // A claim that records its commands (a local run's): end what a killed incarnation left running, now that the owner
+    // lock is held and before the Harness opens, so no command of it still writes in work/ once the run resumes.
+    const commands = lease.rawClaim.commands;
+    // A process of a killed incarnation that outlives its SIGKILL refuses the open (HeldError, 76): the run never resumes
+    // beside it, and its record stays for the next open.
+    if (commands !== undefined) await step("commands", () => reapOrRefuse(commands));
     env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
   } catch (error) {
     await lease.abandon(error);
