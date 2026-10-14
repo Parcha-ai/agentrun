@@ -199,7 +199,10 @@ async function settle({ key, taskId, runtime, context }: WorkflowInvocation, { a
       const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
       const kept = effect.status === 'unknown' && effect.intent && alone && answered ? await answered(effect.argsHash) : undefined;
       // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-      const answer = kept ?? (effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined);
+      const rerunAnswer = kept === undefined && effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+      const answer = kept ?? rerunAnswer;
+      // A call the source answered again is an applied call of this effect, in this generation: its record says so.
+      if (rerunAnswer) await journal.called(effect.id, [...((effect as { calls?: unknown[] }).calls ?? []), { outcome: 'applied', tool: effect.intent!.tool, argsHash: effect.argsHash, via: 'rerun' }]);
       if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
     }
   } finally {
