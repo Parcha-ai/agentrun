@@ -1,0 +1,319 @@
+// A run's store as durable recording lines (agentrun.recording/1, section 3.1). Three readers share one mapper, so a
+// commit gives the same lines whichever reads it:
+//   - recordCommits, inside the run's process, maps each commit pi publishes as it is adopted (the full history,
+//     tasks at their real commit);
+//   - snapshotLines writes every document at one commit, for a process to record after it opens the run;
+//   - recordingLines reads a store file no process holds: the history pi kept (it deletes a current-only document's
+//     older revisions when it writes a new base, and the driver document checkpoints every 32 deltas).
+import { apply } from "@earendil-works/chord/delta";
+import type { CommitPublication, Session, Storage } from "@earendil-works/pi-durable";
+import { frozenEffectPath } from "@parcha/agentrun-dsl/recovery";
+import { withDurableFile } from "./readers.js";
+
+type Database = import("node:sqlite").DatabaseSync;
+type Json = any;
+type Context = Parameters<Session["commit"]>[1];
+
+/** Who owns a line's record, by its kind's package prefix; a kind with no package prefix is the host's. */
+export type RecordingSource = "workflow" | "pi" | "browser" | "vision" | "transport" | "host";
+
+/** One durable line: a document revision (`data` is `{ doc, key?, value, version }`, the whole value after the
+ *  revision), a conversation entry (`data` is the entry as stored), or a task's record (`data` as stored). */
+export type RecordingLine = {
+  channel: "durable";
+  source: RecordingSource;
+  /** The document's kind, the entry's own `kind`, or the task's kind. */
+  kind: string;
+  /** The generation of the latest `agentrun.driver` revision at or before `commit`; absent when there is none. */
+  gen?: number;
+  /** The store's commit sequence. */
+  commit: number;
+  /** The line's place inside its commit: documents by id, then entries by id, then tasks by id. */
+  order: number;
+  /** The workflow execution path the record is about: the one it names, or, for a record in a node attempt's
+   *  conversation (an entry, a conversation's document, a task), the node's. */
+  path?: string;
+  /** The pi conversation the record belongs to, when it belongs to one. */
+  conv?: number;
+  /** Present on a line `recordCommits` wrote: when the process adopted the commit, by the recorder's clock. */
+  t?: number;
+  /** Present on `snapshotLines`' lines: a document's state at `commit`, not a change made there. */
+  snapshot?: true;
+  data: Json;
+};
+
+/** A line before it is numbered inside its commit: a document, then an entry, then a task, each by id. */
+type Placed = { commit: number; rank: 0 | 1 | 2; id: number; line: Omit<RecordingLine, "order" | "gen"> };
+
+const PREFIXES: Array<[string, RecordingSource]> = [["agentrun.", "workflow"], ["browser.", "browser"], ["vision.", "vision"], ["transport.", "transport"], ["pi.", "pi"]];
+const sourceOf = (kind: string): RecordingSource => PREFIXES.find(([prefix]) => kind.startsWith(prefix))?.[1] ?? "host";
+
+/** The path a node attempt's session key names: `<driver>:<label>:<frame>:<path>:a<n>` (`frozenStepSessionId`). A label
+ *  or a path may hold the frame marker too, and then the key names no single path: only a key with one marker has one. */
+function nodePath(key: string): string | undefined {
+  const frames = [...key.matchAll(/:(?:step|adapt):\//g)];
+  const attempt = /:a\d+$/.exec(key);
+  if (frames.length !== 1 || !attempt) return undefined;
+  return key.slice(frames[0]!.index! + frames[0]![0].length - 1, attempt.index);
+}
+
+/** The execution path a document names: an effect's id is `<frame>:<path>#call:<n>` after the journal key and NUL
+ *  (`frozenEffectId`, read by the DSL's own `frozenEffectPath`), a node attempt's key is `nodePath`'s, and any
+ *  other value may carry `executionPath` or `execution_path`. */
+function pathOf(kind: string, key: string | undefined, value: Json): string | undefined {
+  if (kind === "agentrun.effects" && key !== undefined) return frozenEffectPath(key.slice(key.indexOf("\u0000") + 1))?.path;
+  if (kind === "agentrun.nodes" && key !== undefined) return nodePath(key);
+  const named = value?.executionPath ?? value?.execution_path;
+  return typeof named === "string" ? named : undefined;
+}
+
+/** A node attempt's conversation and path, from an `agentrun.nodes` document: its value names the conversation the
+ *  attempt runs in, its key the step's path. */
+function nodeConversation(key: string | undefined, value: Json): [number, string] | undefined {
+  const path = key === undefined ? undefined : nodePath(key);
+  return typeof value?.conversation === "number" && path !== undefined ? [value.conversation, path] : undefined;
+}
+
+/** A line in a node's conversation (an entry, a conversation's document, a task) takes the node's path when it names
+ *  none of its own, so a branch's view holds its agent's turns. */
+function stampPaths(placed: Placed[], conversations: Map<number, string>): void {
+  for (const at of placed) {
+    const path = at.line.conv === undefined || at.line.path !== undefined ? undefined : conversations.get(at.line.conv);
+    if (path !== undefined) at.line = { ...at.line, path };
+  }
+}
+
+/** A document revision: `key` is the family key (absent for a singleton), `conv` the conversation the document
+ *  belongs to (its scope's, or its task's). */
+function documentLine(id: number, kind: string, key: string | undefined, value: Json, version: number, conv: number | undefined, commit: number): Placed {
+  const path = pathOf(kind, key, value);
+  return { commit, rank: 0, id, line: {
+    channel: "durable", source: sourceOf(kind), kind, commit, ...(path !== undefined ? { path } : {}), ...(conv !== undefined ? { conv } : {}),
+    data: { doc: kind, ...(key !== undefined ? { key } : {}), value, version },
+  } };
+}
+const entryLine = (entry: Json, commit: number): Placed => ({ commit, rank: 1, id: Number(entry.id), line: {
+  channel: "durable", source: "pi", kind: String(entry?.kind ?? "pi.entry"), commit, conv: Number(entry.conversationId), data: entry,
+} });
+const taskLine = (task: Json, commit: number): Placed => {
+  const kind = String(task.kind);
+  return { commit, rank: 2, id: Number(task.id), line: { channel: "durable", source: sourceOf(kind), kind, commit, conv: Number(task.conversationId), data: task } };
+};
+
+/** Lines in `(commit, order)` order, each with the generation `genAt` gives its commit. */
+function numbered(placed: Placed[], genAt: (commit: number) => number | undefined, extra: Partial<RecordingLine> = {}): RecordingLine[] {
+  placed.sort((a, b) => a.commit - b.commit || a.rank - b.rank || a.id - b.id);
+  const lines: RecordingLine[] = [];
+  for (let i = 0; i < placed.length; i += 1) {
+    const { commit, line } = placed[i]!;
+    const order = i > 0 && placed[i - 1]!.commit === commit ? lines[i - 1]!.order + 1 : 0;
+    const gen = genAt(commit);
+    const { data, ...rest } = line;
+    lines.push({ ...rest, ...(gen !== undefined ? { gen } : {}), order, ...extra, data });
+  }
+  return lines;
+}
+
+/** Each node attempt's conversation and path, from every `agentrun.nodes` document's latest value. */
+function nodeConversations(db: Database): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const doc of db.prepare("SELECT id, key_value FROM documents WHERE kind = ? AND family = 1").all(JSON.stringify("agentrun.nodes")) as Array<{ id: number; key_value: string }>) {
+    let value: Json;
+    for (const rev of db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ kind: string; content: string }>) {
+      value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+    }
+    const found = nodeConversation(JSON.parse(doc.key_value) as string, value);
+    if (found) out.set(found[0], found[1]);
+  }
+  return out;
+}
+
+/** Every surviving `agentrun.driver` revision as `[commit, generation]`, in commit order. */
+function driverGenerations(db: Database): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const { id } of db.prepare("SELECT id FROM documents WHERE kind = ?").all(JSON.stringify("agentrun.driver")) as Array<{ id: number }>) {
+    let value: Json;
+    for (const rev of db.prepare("SELECT seq, kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(id) as Array<{ seq: number; kind: string; content: string }>) {
+      value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+      if (typeof value?.generation === "number") out.push([rev.seq, value.generation]);
+    }
+  }
+  // Two journals' revisions in one commit: the higher generation.
+  return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+/**
+ * Every change the store `file` committed after `after` (default: all), as durable recording lines in `(commit, order)`
+ * order, and `last`, the highest commit returned (`after` when nothing is). For a store no process holds (a disk run's
+ * store admits one connection): read-only, in one read transaction.
+ *
+ * - A document revision is a line of the document's kind, with the whole value after it (each delta applied over its
+ *   base); `key` is the family key as stored, absent for a singleton.
+ * - A conversation entry is a line of the entry's own kind, source `pi`, `conv` its conversation, the entry as stored
+ *   (image blocks included: the recorder moves them to blobs).
+ * - Every task's current record is a line of the task's kind, at the store's last commit, after that commit's other
+ *   lines, by task id: the state at export, since the store keeps no commit for a task's change. Its memos ride in the
+ *   record; there are no memo lines.
+ * - `gen` is the generation of the latest surviving `agentrun.driver` revision at or before the line's commit (it
+ *   counts journal opens, not processes), and absent before the earliest surviving one. No line has `t`: the store
+ *   keeps no commit time.
+ *
+ * This is the store's surviving history: pi deletes a current-only document's older revisions when it writes a new
+ * base. The full history is `recordCommits`', written inside the run's process as each commit lands.
+ */
+export function recordingLines(file: string, options: { after?: number } = {}): { lines: RecordingLine[]; last: number } {
+  const after = options.after ?? 0;
+  return withDurableFile(file, (db) => {
+    const placed: Placed[] = [];
+    const taskConversation = new Map((db.prepare("SELECT id, conversation_id FROM tasks").all() as Array<{ id: number; conversation_id: number }>).map((task) => [task.id, task.conversation_id]));
+    const docs = db.prepare("SELECT DISTINCT d.id, d.kind, d.family, d.key_value, d.scope_kind, d.owner_id FROM documents d JOIN document_revisions r ON r.document_id = d.id WHERE r.seq > ?")
+      .all(after) as Array<{ id: number; kind: string; family: number; key_value: string; scope_kind: string; owner_id: number }>;
+    for (const doc of docs) {
+      const kind = JSON.parse(doc.kind) as string;
+      const key = doc.family === 1 ? JSON.parse(doc.key_value) as string : undefined;
+      const conv = doc.scope_kind === "conversation" ? doc.owner_id : doc.scope_kind === "task" ? taskConversation.get(doc.owner_id) : undefined;
+      let value: Json;
+      for (const rev of db.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ seq: number; kind: string; version: number; content: string }>) {
+        value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+        if (rev.seq > after) placed.push(documentLine(doc.id, kind, key, structuredClone(value), rev.version, conv, rev.seq));
+      }
+    }
+    for (const entry of db.prepare("SELECT commit_seq, record FROM entries WHERE commit_seq > ?").all(after) as Array<{ commit_seq: number; record: string }>) {
+      placed.push(entryLine(JSON.parse(entry.record), entry.commit_seq));
+    }
+    const end = (db.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get() as { next_seq: number }).next_seq - 1;
+    if (end > after) for (const task of db.prepare("SELECT record FROM tasks").all() as Array<{ record: string }>) placed.push(taskLine(JSON.parse(task.record), end));
+    stampPaths(placed, nodeConversations(db));
+    const generations = driverGenerations(db);
+    let at = 0;
+    const lines = numbered(placed, (commit) => {
+      while (at < generations.length && generations[at]![0] <= commit) at += 1;
+      return at > 0 ? generations[at - 1]![1] : undefined;
+    });
+    return { lines, last: lines.length ? lines[lines.length - 1]!.commit : after };
+  }) ?? { lines: [], last: after };
+}
+
+/** What a recorder carries from one commit to the next: the generation in force and each node's conversation. */
+type RecorderState = { gen: number | undefined; conversations: Map<number, string> };
+
+/** The lines of one commit pi published, as `recordingLines` would give them. A commit that writes driver revisions
+ *  sets the generation to the highest among them, as the file read does; any other commit keeps it. */
+function publicationLines(publication: CommitPublication, state: RecorderState): RecordingLine[] {
+  const commit = Number(publication.seq);
+  const placed: Placed[] = [];
+  let written: number | undefined;
+  for (const change of publication.changes) {
+    if (change.type === "document") {
+      // A retirement adopts no value and the store keeps no revision for it.
+      if (change.value === null || change.version === undefined) continue;
+      const { record } = change;
+      placed.push(documentLine(Number(record.id), record.kind, record.key, structuredClone(change.value), change.version, change.conversationId === undefined ? undefined : Number(change.conversationId), commit));
+      const generation = (change.value as { generation?: unknown }).generation;
+      if (record.kind === "agentrun.driver" && typeof generation === "number") written = Math.max(written ?? generation, generation);
+      const node = record.kind === "agentrun.nodes" ? nodeConversation(record.key, change.value) : undefined;
+      if (node) state.conversations.set(node[0], node[1]);
+    } else if (change.type === "entry") placed.push(entryLine(structuredClone(change.value), commit));
+    else if (change.type === "task") placed.push(taskLine(structuredClone(change.value), commit));
+    // A conversation's or a submission's record, and a document copy (it carries no value), make no line.
+  }
+  if (written !== undefined) state.gen = written;
+  stampPaths(placed, state.conversations);
+  return numbered(placed, () => state.gen);
+}
+
+/**
+ * Records the run's commits as durable lines inside its process, on pi's commit publications: each commit adopted
+ * after this call becomes the lines `recordingLines` would give it, with tasks at their real commit, `t` the adoption
+ * time (`clock()`, default `Date.now()`), and `gen` the generation of the latest `agentrun.driver` revision at or
+ * before the commit. `from` is the snapshot this recording continues (`snapshotLines`, written before the run
+ * resumed): its driver generation and its nodes' conversations carry on until this process writes its own. `gen` is
+ * only for a run with no driver revision yet; it never overrides a driver generation.
+ *
+ * The listener only maps and queues: it never throws, blocks or calls the Session. `write` receives one commit's lines
+ * at a time, in commit order, after the listener has returned. A `write` that completes synchronously (an append to a
+ * file) runs before pi adopts the next commit, so a process that dies loses at most the commit in flight; one that
+ * completes later leaves the commits after it queued in memory, and a death loses those too. The next process's
+ * `snapshotLines` restores the documents' state; a lost commit's entries stay missing, a gap the viewer shows. The
+ * returned stop ends the subscription, waits for every queued write, and then throws the first write that failed.
+ */
+export function recordCommits(session: Pick<Session, "subscribeCommits">, options: { gen?: number; from?: RecordingLine[]; write: (lines: RecordingLine[]) => void | Promise<void>; clock?: () => number }): () => Promise<void> {
+  const clock = options.clock ?? Date.now;
+  const fromDriver = (options.from ?? []).reduce<number | undefined>((max, line) => {
+    const generation = line.kind === "agentrun.driver" ? line.data?.value?.generation : undefined;
+    return typeof generation === "number" ? Math.max(max ?? generation, generation) : max;
+  }, undefined);
+  const state: RecorderState = { gen: fromDriver ?? options.from?.at(-1)?.gen ?? options.gen, conversations: new Map() };
+  for (const line of options.from ?? []) {
+    const node = line.kind === "agentrun.nodes" ? nodeConversation(line.data?.key, line.data?.value) : undefined;
+    if (node) state.conversations.set(node[0], node[1]);
+  }
+  let chain: Promise<void> = Promise.resolve();
+  let failure: { error: unknown } | undefined;
+  const unsubscribe = session.subscribeCommits((publication) => {
+    try {
+      const t = clock();
+      const mapped = publicationLines(publication, state);
+      if (mapped.length === 0) return;
+      const lines = mapped.map((line) => ({ ...line, t }));
+      chain = chain.then(() => options.write(lines)).catch((error) => { failure ??= { error }; });
+    } catch (error) { failure ??= { error }; }
+  });
+  return async () => {
+    unsubscribe();
+    await chain;
+    if (failure) throw failure.error;
+  };
+}
+
+/** Every page of a storage scan. */
+async function scanAll<T, C>(scan: (cursor: C | undefined) => Promise<{ readonly items: readonly T[]; readonly next?: C }>): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: C | undefined;
+  do {
+    const page = await scan(cursor);
+    out.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return out;
+}
+
+/**
+ * Every document of the run as it stands, as whole values marked `snapshot: true` at commit `at`, in document id order:
+ * the state a process records after it opens the run and before it resumes, so the recording is exact after any kill.
+ * `storage` is the store the run's Harness was opened over; `at` is the store's latest commit (pi's `Storage` has no
+ * head query: a disk run reads it with pi-durable-disk's `storeHead`). The reads are of the current state (pi keeps no
+ * past revision of a session or task document), so the snapshot is exact only while nothing commits: take it before
+ * the run resumes. Every line's `gen` is the highest `agentrun.driver` generation in it; `gen` is only for a run with no
+ * driver revision yet, and never overrides one.
+ */
+export async function snapshotLines(storage: Pick<Storage, "scanConversations" | "scanTasks" | "scanDocuments" | "document">, options: { at: number; gen?: number; context: Context }): Promise<RecordingLine[]> {
+  const { at, context } = options;
+  const page = 256;
+  const conversations = await scanAll((cursor) => storage.scanConversations({}, page, cursor as never, context));
+  const tasks = await scanAll((cursor) => storage.scanTasks({}, page, cursor as never, context));
+  const scopes: Array<{ scope: Parameters<Storage["scanDocuments"]>[0]["scope"]; conv: number | undefined }> = [
+    { scope: { kind: "session" }, conv: undefined },
+    ...conversations.map((conversation) => ({ scope: { kind: "conversation" as const, conversationId: conversation.id }, conv: Number(conversation.id) })),
+    ...tasks.map((task) => ({ scope: { kind: "task" as const, taskId: task.id }, conv: Number(task.conversationId) })),
+  ];
+  const placed: Placed[] = [];
+  let driverGen: number | undefined;
+  for (const { scope, conv } of scopes) {
+    for (const record of await scanAll((cursor) => storage.scanDocuments({ scope, at: "current" }, page, cursor as never, context))) {
+      const stored = await storage.document(record.id, "current", context);
+      if (!stored) continue;
+      placed.push(documentLine(Number(record.id), record.kind, record.key, structuredClone(stored.value), stored.version, conv, at));
+      const generation = (stored.value as { generation?: unknown }).generation;
+      if (record.kind === "agentrun.driver" && typeof generation === "number") driverGen = Math.max(driverGen ?? generation, generation);
+    }
+  }
+  const nodes = new Map<number, string>();
+  for (const { line } of placed) {
+    const node = line.kind === "agentrun.nodes" ? nodeConversation(line.data.key, line.data.value) : undefined;
+    if (node) nodes.set(node[0], node[1]);
+  }
+  stampPaths(placed, nodes);
+  const gen = driverGen ?? options.gen;
+  return numbered(placed, () => gen, { snapshot: true });
+}

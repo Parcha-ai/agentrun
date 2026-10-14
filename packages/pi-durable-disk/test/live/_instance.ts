@@ -31,7 +31,9 @@ const markTool = defineTool({
   parameters: Type.Object({ n: Type.Number() }),
   async execute(args, api) {
     appendFileSync(execLog, `${JSON.stringify({ writer, n: args.n, callId: api.callId, pid: process.pid, t: Date.now() })}\n`);
-    return { content: [{ type: "text", text: `marked ${args.n} by ${writer}` }], details: { n: args.n, writer } };
+    // The text is the retained output, which pi-durable 1.0.4, 1.1 and 1.2 all read (1.2 drops a result's `content`).
+    api.output(`marked ${args.n} by ${writer}`);
+    return { details: { n: args.n, writer } };
   },
 });
 const marks = defineExtension({

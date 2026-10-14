@@ -245,6 +245,59 @@ Two things to know before you give a model a browser:
   connect URL. Both are process-wide. The wrapper passes every other URL through unchanged. Importing the package does
   neither.
 
+### Recording what the browsers show
+
+`@parcha/pi-browser/recorder` screencasts each session over DevTools (a local Chrome, Browserbase and Kernel all speak it) and hands
+`agentrun.recording/1`'s `frame` and `frame.gap` lines, with their JPEGs, to a sink you pass. It is read-only beside the session's own
+connections, and it writes nothing itself.
+
+```js
+import { frameRecorder } from "@parcha/pi-browser/recorder";
+
+const frames = frameRecorder({
+  clock: () => Date.now() - started,                 // ms since the recording started: every line's `t`
+  gen: () => generation,                             // optional: this process's generation, on every line
+  lastFrameAt: (session) => lastFrameT(session),     // optional: where an earlier process's frames for a session stopped
+  sink: (line, blobs = {}) => {                      // blobs: sha256 hex -> JPEG bytes; the sink keeps blobs/<sha256>.jpg and adds `seq`
+    for (const [sha, bytes] of Object.entries(blobs)) fs.writeFileSync(`blobs/${sha}.jpg`, bytes);
+    events.write(JSON.stringify({ ...line, seq: seq++ }) + "\n");
+  },
+});
+const browser = createBrowserExtension({ provider: ({ conversationId }) => frames.watch(provider, conversationId), driver, evidence });
+```
+
+A session is captured from the moment it is created or reattached (so after a kill the same session resumes by itself). The lines:
+
+```json
+{"channel":"live","source":"browser","kind":"frame","gen":1,"t":20123,"conv":3,"data":{"session":"bb_4e1a","provider":"browserbase","w":800,"h":500,"mime":"image/jpeg"},"blobs":["9c0e..."]}
+{"channel":"live","source":"browser","kind":"frame.gap","gen":2,"t":26004,"conv":3,"data":{"session":"bb_4e1a","from":21004,"reason":"process_killed"}}
+```
+
+- Capture is JPEG at quality 60, at most 800 px wide and 10 frames a second per session (the newest frame wins), of the page the agent is using.
+  Every line carries the `conv` of the conversation that owns the session (given to `watch`, or read from the lease tag); a session whose
+  conversation cannot be told is not recorded.
+- A gap is written, never filled: `process_killed` when a session this process did not create is taken up and `lastFrameAt` knows its last
+  frame, `session_released` when the session is released, `credential_on_page` while a credential is on the page.
+- **No frame is kept while a credential or a code is on the page**, and anything the recorder cannot read counts as one being there. A frame is
+  judged against the page the moment it arrives (one check, standing for the page at its capture) and again when its turn to be kept comes (both
+  checks go through one pace per session: each is sent at least 50 ms after the last, so a session sends at most 20 `Runtime.evaluate` in any
+  second, however fast frames arrive); a
+  credential seen in either drops it, and a frame held across a navigation or a move to another page is not kept. The check looks at password
+  fields, `one-time-code` fields and fields named like a code (name, id, `<label>`, `aria-labelledby`, `aria-label` or placeholder says otp, totp,
+  2fa, passcode, ...) that hold a value, in the page, open shadow roots and same-origin frames; a value typed and cleared between two checks is
+  still seen (the page keeps a flag, `window.__piFramesSecret`, set by the fields' own `input` events). A page that nests deeper than the check
+  reads (eight shadow roots or frames) and a visible frame whose content it cannot reach (another origin: a payment or sign-in widget) count as
+  a credential present; a frame with no area, or not displayed, is not a picture of anything and does not. A page that cannot be checked at all
+  is not recorded. The pause lasts until the page navigates and the check is clean; the gap says why in `data.detail` (`field`, `typed`,
+  `too_deep`, `unreadable_frame` or `host`). What no script in the page can see (a closed shadow root, a value set by script with no event) is the
+  host's to pause with `frames.pause(session)` (lifted with `frames.resume(session)`).
+- A live-view URL is never recorded or asked for: the recorder reads only the session's DevTools socket and never writes its address.
+- Lines reach the sink one at a time, in order. A sink that throws, rejects or does not answer within `sinkTimeoutMs` (5 s) cannot fail a browser
+  call: that line is dropped and counted in `frames.stats()`, and a frame that was not saved never becomes the point a later gap starts from.
+- `frames.watch(...).release` ends the capture, and writes the `session_released` gap, once the provider has released the session: a release it
+  refuses leaves the capture running.
+- `frame.track` (a WebM per session with an index) is made at export, from the frames, by a step of its own.
+
 ## How it compares
 
 Our own bench, run by this package's authors with `gpt-6-luna` only, 3 samples per case, against `pi-agent-browser-native`

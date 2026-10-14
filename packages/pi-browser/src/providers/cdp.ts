@@ -50,12 +50,50 @@ const CHROME_FLAGS: readonly string[] = [
 const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, extension: "loaded-locally" };
 const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(profileRoot, tag) + ".downloads");
 const READY_MS = 20_000;
+/** The browser is gone and directories it used are not: a profile left behind holds the session's cookies, so a release that cannot remove
+ *  one says so, naming every one still there (`dirs`, the first as `dir`), and is asked again. `original` is the failure of the launch that
+ *  was being undone, when there was one. */
+export class ProfileNotRemovedError extends Error {
+  readonly code = "profile_not_removed";
+  readonly dir: string;
+  constructor(readonly dirs: readonly string[], readonly cause: unknown, readonly original?: unknown) {
+    super(`the browser is gone but ${dirs.length === 1 ? "its directory" : "its directories"} ${dirs.join(" and ")} could not be removed (${cause instanceof Error ? cause.message : String(cause)}); ${dirs.length === 1 ? "it" : "they"} may hold the session's cookies, so remove ${dirs.length === 1 ? "it" : "them"} by hand${original === undefined ? "" : `; the launch had also failed: ${original instanceof Error ? original.message : String(original)}`}`);
+    this.name = "ProfileNotRemovedError";
+    this.dir = dirs[0]!;
+  }
+}
+
+/** The removal a provider uses; a test hands in its own to fail it in a controlled way. */
+type RemoveDir = (dir: string, options: { recursive: true; force: true }) => Promise<void>;
+/** What a retry can cure: a file that arrived in the directory, or a handle or lock that is let go (the codes Node's own rm retries). */
+const RETRYABLE = new Set(["ENOTEMPTY", "EBUSY", "EMFILE", "ENFILE", "EPERM"]);
+const REMOVAL_RETRIES = 5;
+const REMOVAL_DELAY_MS = 100;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Removes a directory tree; what is still there afterwards is the caller's to report, never to swallow. A browser's last writes can land after its
+ *  process is killed (its other processes are still exiting), and a directory a file arrives in while it is being removed fails with ENOTEMPTY: the
+ *  removal is tried again, waiting a little longer each time (100, 200, ... 500 ms, about a second and a half in all). A failure a retry cannot cure
+ *  (EACCES, say) is reported at once. (A link is unlinked, not followed.) */
+async function removeTree(dir: string, remove: RemoveDir): Promise<{ dir: string; error: Error } | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    try { await remove(dir, { recursive: true, force: true }); return null; } catch (failure: unknown) {
+      const error = failure instanceof Error ? failure : new Error(String(failure));
+      if (attempt >= REMOVAL_RETRIES || !RETRYABLE.has((error as NodeJS.ErrnoException).code ?? "")) return { dir, error };
+      await sleep(REMOVAL_DELAY_MS * (attempt + 1));
+    }
+  }
+}
+/** Every directory is tried, whatever the others did; what is left is reported together. */
+async function removeAll(dirs: string[], remove: RemoveDir): Promise<{ dirs: string[]; error: Error } | null> {
+  const left: Array<{ dir: string; error: Error }> = [];
+  for (const dir of dirs) { const stuck = await removeTree(dir, remove); if (stuck) left.push(stuck); }
+  return left.length > 0 ? { dirs: left.map((l) => l.dir), error: left[0]!.error } : null;
+}
 
 /** The extension inside the browser dials the URL it is given, so it must be a `ws://` debugger URL. */
-async function debuggerUrl(endpoint: string): Promise<string> {
+async function debuggerUrl(endpoint: string, signal?: AbortSignal): Promise<string> {
   if (/^wss?:/i.test(endpoint)) return endpoint;
-  const found = await (await fetch(new URL("/json/version", endpoint))).json() as { webSocketDebuggerUrl?: string };
+  const found = await (await fetch(new URL("/json/version", endpoint), signal ? { signal } : {})).json() as { webSocketDebuggerUrl?: string };
   if (!found.webSocketDebuggerUrl) throw new Error("the endpoint did not report a debugger URL");
   return found.webSocketDebuggerUrl;
 }
@@ -66,6 +104,17 @@ async function ownDebugger(profile: string): Promise<{ port: number; path: strin
   return /^\d+$/.test(port ?? "") && browser?.startsWith("/devtools/browser/") ? { port: Number(port), path: browser.trim() } : null;
 }
 const answeringPath = async (port: number): Promise<string | null> => debuggerUrl(`http://127.0.0.1:${port}`).then((url) => new URL(url).pathname, () => null);
+/** A port that takes the probe and does not answer within this may still be a live browser's. */
+const PROBE_MS = 2_000;
+/** A release that does not own the lease's browser left its profile: the port the profile names took the probe and did
+ *  not answer, so a live browser may still run on it. Asked again once that port answers or closes, the release decides. */
+export class ProfileOwnershipUnclearError extends Error {
+  readonly code = "profile_ownership_unclear";
+  constructor(readonly dir: string, readonly port: number) {
+    super(`the profile ${dir} was left: port ${port}, which it names, took the browser probe and did not answer within ${PROBE_MS} ms, so a live browser may still run on it; release again once that port answers or closes`);
+    this.name = "ProfileOwnershipUnclearError";
+  }
+}
 /** `local:<pid>:<port>:<tag>`. The pid is signalled only while the browser on that port reports it as its own, and the
  *  profile removed is the id's own tag's, so a ref pairing one lease's id with another's tag touches nothing. */
 const parse = (id: string) => { const m = /^local:(\d+):(\d+):([A-Za-z0-9_.-]+)$/.exec(id); return m ? { pid: Number(m[1]), port: Number(m[2]), tag: m[3] } : null; };
@@ -102,10 +151,15 @@ async function killTree(pid: number): Promise<void> {
   try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
 }
 
-export function cdpProvider(options: CdpOptions): BrowserProvider {
+/** `internals` is for tests: the removal a release uses. */
+export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir } = {}): BrowserProvider {
+  const remove: RemoveDir = internals.remove ?? ((dir, opts) => rm(dir, opts));
   const downloads = "chrome" in options ? localDownloads(options.chrome.profileRoot) : undefined;
   // So a release can wait for the exit it caused: an unreaped child still answers `kill 0`.
   const children = new Map<number, ChildProcess>();
+  /** A socket directory a release could not remove: the profile's link that named it may go with the profile, so the next release of the
+   *  lease in this process is told it here. (A restarted process has the report's text.) */
+  const socketsLeft = new Map<string, string>();
   /** A spawned Chrome whose handle we hold is ours (a handle cannot name a recycled pid); after a restart, only while
    *  the browser on the recorded port reports that pid. */
   const isOurs = async ({ pid, port }: { pid: number; port: number }): Promise<boolean> => {
@@ -142,7 +196,12 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
           ? new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: `Chrome exited before it opened its debugging port (SIGABRT); on a system that cannot start Chrome's sandbox (root, a container, restricted user namespaces) start it with sandbox: false or PI_BROWSER_NO_SANDBOX=1` })
           : new Error(`Chrome exited before it opened its debugging port (${signal ?? code})`);
       });
-      if (child.pid === undefined) { await sleep(0); await rm(dir, { recursive: true, force: true }).catch(() => undefined); await rm(downloadsDir(profileRoot, spec.tag), { recursive: true, force: true }).catch(() => undefined); throw failed ?? new Error("Chrome could not be started"); }
+      if (child.pid === undefined) {
+        await sleep(0);
+        const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag)], remove);
+        const why = failed ?? new Error("Chrome could not be started");
+        throw left ? new ProfileNotRemovedError(left.dirs, left.error, why) : why;
+      }
       child.unref();
       children.set(child.pid, child);
       // The lease is that Chrome only once the browser answering on the port is the one its profile file names, so a
@@ -154,7 +213,13 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
           if (own && (await answeringPath(own.port)) === own.path) return { id: `local:${child.pid}:${own.port}:${spec.tag}`, tag: spec.tag };
           if (Date.now() > deadline) throw new Error("Chrome did not open its debugging port");
         }
-      } catch (error) { await this.release({ id: `local:${child.pid}:0:${spec.tag}`, tag: spec.tag }); await rm(downloadsDir(profileRoot, spec.tag), { recursive: true, force: true }).catch(() => undefined); throw error; }
+      } catch (error) {
+        const kept = await this.release({ id: `local:${child.pid}:0:${spec.tag}`, tag: spec.tag }).then(() => null, (failure: unknown) => failure);
+        const left = await removeAll([downloadsDir(profileRoot, spec.tag)], remove);
+        if (kept && !(kept instanceof ProfileNotRemovedError)) throw kept;
+        const dirs = [...(kept instanceof ProfileNotRemovedError ? kept.dirs : []), ...(left?.dirs ?? [])];
+        throw dirs.length > 0 ? new ProfileNotRemovedError(dirs, kept instanceof ProfileNotRemovedError ? kept.cause : left!.error, error) : error;
+      }
     },
 
     async findByTag() { return []; },
@@ -180,7 +245,20 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
     async release(ref) {
       const local = parse(ref.id);
       if (!local || local.tag !== ref.tag) return;
-      if (await isOurs(local)) {
+      const ours = await isOurs(local);
+      // A profile that a live browser this ref does not name still runs on is that browser's: nothing is removed. A port
+      // that holds the probe past PROBE_MS cannot be ruled out, so the profile stays and the release says so.
+      if (!ours && !("endpoint" in options) && SAFE_TAG.test(local.tag)) {
+        const dir = profileDir(options.chrome.profileRoot, local.tag);
+        const own = await ownDebugger(dir);
+        if (own) {
+          const answer = await debuggerUrl(`http://127.0.0.1:${own.port}`, AbortSignal.timeout(PROBE_MS))
+            .then((url) => new URL(url).pathname, (error: unknown) => (error instanceof Error && error.name === "TimeoutError" ? undefined : null));
+          if (answer === own.path) return;
+          if (answer === undefined) throw new ProfileOwnershipUnclearError(dir, own.port);
+        }
+      }
+      if (ours) {
         await killTree(local.pid);
         const child = children.get(local.pid);
         children.delete(local.pid);
@@ -193,9 +271,12 @@ export function cdpProvider(options: CdpOptions): BrowserProvider {
       // nothing is removed.
       if (!("endpoint" in options) && SAFE_TAG.test(local.tag)) {
         const dir = profileDir(options.chrome.profileRoot, local.tag);
-        const socketDir = await singletonDir(dir);
-        if (socketDir) await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
-        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+        const socketDir = (await singletonDir(dir)) ?? socketsLeft.get(local.tag) ?? null;
+        // Both are always tried, the profile first named: the profile's link is the only place the socket directory's name is read, so it is
+        // reported here with the profile's, not left for a later release to miss.
+        const left = await removeAll([dir, ...(socketDir ? [socketDir] : [])], remove);
+        if (socketDir && left?.dirs.includes(socketDir)) socketsLeft.set(local.tag, socketDir); else socketsLeft.delete(local.tag);
+        if (left) throw new ProfileNotRemovedError(left.dirs, left.error);
       }
     },
   };

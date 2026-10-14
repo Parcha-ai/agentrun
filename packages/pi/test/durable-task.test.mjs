@@ -10,7 +10,7 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -530,4 +530,47 @@ test('what moved is named per part: a bound key named like the input never hides
     assert.deepEqual(moved, ['input.sku', 'input.qty']);
     assert.match(message, /input\.sku changed since the run was bound.*input\.qty changed since the run was bound/);
   } finally { await harness.close(ctx); }
+});
+
+test('a task host settles a killed run\'s unknown effect through reconcile: the run holds one generation per process, and the effect is not dispatched again', async () => {
+  let calls = 0; const kept = new Map(); let settle = true;
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({
+    options: () => ({ files, reconcile: async (unknown, complete) => {
+      if (!settle) throw new Error('the door is down');
+      for (const effect of unknown) await complete(effect.id, kept.get(effect.id), { calls: [{ outcome: 'applied', tool: 'prices.quote' }] });
+    } }),
+    run: () => ({ adapters: { runEffect: async ({ effect }) => { calls += 1; kept.set(effect.id, { price: 21 }); throw new Error('the process died'); } } }),
+  });
+  const file = fileOf();
+  const harness = await open(file, flow);
+  assert.equal((await (await flow.start(harness, request(), ctx)).wait(ctx)).status, 'refused');
+  assert.equal(readJournal(file, 'run-1').generation, 1);
+  settle = false;
+  const failed = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([failed.status, failed.code, calls, readJournal(file, 'run-1').generation], ['refused', 'RECOVERY_RECONCILE_FAILED', 1, 2]);
+  settle = true;
+  const done = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([done.status, done.output, calls, readJournal(file, 'run-1').generation], ['complete', { total: 42 }, 1, 3]);
+  // The re-send was made by the settling process: the effect keeps the call record it reported, written by that generation.
+  assert.deepEqual(durableDoc(file, 'agentrun.effects', 'run-1\u0000step:/root/steps/0#call:0').calls, [{ outcome: 'applied', tool: 'prices.quote' }]);
+  await harness.close(ctx);
+});
+
+test('options is told its phase: the abort handler opens the driver too, and a host can skip reconcile there', async () => {
+  const flight = deferred(); const phases = []; const asked = [];
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({
+    options: ({ phase }) => { phases.push(phase); return { files, reconcile: async (unknown) => { asked.push([phase, unknown.length]); } }; },
+    run: () => ({ adapters: { runEffect: ({ signal }) => { flight.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); } } }),
+  });
+  const harness = await open(fileOf(), flow);
+  const run = await flow.start(harness, request(), ctx);
+  await flight.promise;
+  await flow.stop(harness, 'run-1', 'cancel', ctx, 'owner');
+  await run.wait(ctx);
+  assert.deepEqual(phases, ['run', 'abort']);
+  // The effect the cancel cut is unknown when the abort handler opens the driver, so reconcile is asked there, and only there.
+  assert.deepEqual(asked, [['abort', 1]]);
+  await harness.close(ctx);
 });
