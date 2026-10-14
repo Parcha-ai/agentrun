@@ -154,13 +154,13 @@ test("a guard that cannot run removes the result's images instead of letting pi 
   assert.deepEqual(reports, [], "the failure is handled, not left to pi");
 });
 
-test("a host's row callback that throws or rejects never fails the call it reports on", async () => {
+test("a host's onMiss that throws or rejects never fails the call it reports on; its onLook reaches the core as it is, so the core sees a throw", async () => {
   const cwd = workspace({ "a.png": pngBytes(2, 2) });
   globalThis.visionCore = {
     readMedia: async (env, args, call, setup) => {
-      await setup.onLook({ conversationId: call.conversationId, tool: "read", source: args.path });
+      const told = await Promise.resolve().then(() => setup.onLook({ conversationId: call.conversationId, tool: "read", source: args.path })).then(() => "heard", (error) => error.message);
       await setup.onMiss({ conversationId: call.conversationId, tool: "read", source: args.path, code: "needs" });
-      return { content: [{ type: "text", text: "after the rows" }] };
+      return { content: [{ type: "text", text: `after the rows: ${told}` }] };
     },
   };
   const rows = [];
@@ -170,7 +170,7 @@ test("a host's row callback that throws or rejects never fails the call it repor
     onMiss: async (miss) => { rows.push(miss.code); throw new Error("row store down"); },
   });
   const run = await drive({ extensions: [extension], rounds: [[["read", { path: "a.png" }]]], cwd });
-  assert.deepEqual([run.results[0].isError, textOf(run.results[0])], [false, "after the rows"]);
+  assert.deepEqual([run.results[0].isError, textOf(run.results[0])], [false, "after the rows: row store down"]);
   assert.deepEqual(rows, ["read", "needs"]);
 });
 

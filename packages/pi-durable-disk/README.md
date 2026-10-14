@@ -50,8 +50,10 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
   instances never hold the API key.
 - `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.2.0`, as peer dependencies. The package is developed against 1.1.0, and CI runs its whole suite on 1.0.4 too, the lowest version the range accepts.
 
-Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop where FUSE is
-unavailable.
+Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop across machines
+where FUSE is unavailable. Without Archil, a run can live on a plain directory of one machine
+([A run on a local directory](#a-run-on-a-local-directory)).
+
 
 ## Install
 
@@ -443,7 +445,8 @@ to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
 - **The file tools stay inside `work/`.** pi's `read`, `write` and `edit` run in the loop's process, not in a command
   sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`, absolute
   paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use `tmp/`, where
-  the bash tool tells the model its long output went, and `readRoots` the app names). An agent cannot `write
+  the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go inside a directory
+  the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
   ../store/run.sqlite`, `../run.json` or `../owner.lock`: the call fails with a `PathOutsideWorkError` the model sees as
   a failed tool result. A path is opened one component at a time from a held handle of `work/`, without following links,
   so a link a command swaps in after the check is refused too. This covers the file tools only; a command still runs as
@@ -505,6 +508,32 @@ self-fence, the seal and the release, without a store or a Harness), `storeHead`
 leaves out the supervisor, the host drivers, the CLI and the app contract, and the package declares `"sideEffects": false`, so
 a bundler keeps only what you use: a bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 52 KB
 minified against about 493 KB for `await import("@parcha/pi-durable-disk")` (measured with esbuild, pi-durable inlined).
+
+### A run on a local directory
+
+`localRun(root)` returns the `acquire` and `claimDir` that put a run on a plain directory of this machine, with no mount
+and no mount token:
+
+```ts
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+
+const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }, {
+  ...localRun("/var/runs/run-1"),          // made when it is missing; work/ and store/ inside it
+  harness: { models, registry },
+});
+```
+
+It is for one machine (a laptop, a CI job, a test), and says so: the claim is the directory itself, so nothing but this
+machine's owner lock keeps a second process off the run (a second open while one holds it is refused), and nothing at
+all keeps out a process on another machine that can reach the directory. Its barrier refuses once the run is fenced,
+like a mount's, but syncs nothing: the store's commits are made durable by SQLite, and the files the agent wrote in
+`work/` are the operating system's to flush, so a power loss can lose what it had not written yet. `mountToken` is
+required only with the default `acquire`; without either, the open is refused (`INVALID_ARGUMENT`) before anything mounts.
+
+It needs Linux, for now. The run's root is held open through `/proc/self/fd` (`openClaimDir`), and the default
+environment confines commands with `setpriv` (util-linux, `noNewPrivs`) and the file tools through `/proc/self/fd`
+(`confineFiles`). macOS has neither, and turning the environment's two off does not help: the open still holds the root
+through `/proc/self/fd`. A portable claim directory is what a local run on macOS would need.
 
 ## Tests
 

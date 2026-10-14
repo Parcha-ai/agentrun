@@ -53,3 +53,19 @@ test('a self-reference the package does not export is an error, never a silent s
   });
   assert.throws(() => reachableImports(root, './dist/durable/index.js'), /@fixture\/pkg\/internal is not an export of @fixture\/pkg/);
 });
+
+test('only real imports are followed: text that looks like one is not, and every form is', async t => {
+  const root = await fixture(t, {
+    'package.json': manifest,
+    'dist/durable/index.js': [
+      `const frame = "records-from"; const quoted = 'x from "not-an-import"';`,
+      `// import left from 'in-a-comment'`,
+      'const template = `from \'in-a-template\'`;',
+      `export * as ns from 'star-as';`,
+      `const required = require('required');`,
+      `export { local } from './local.js';`,
+    ].join('\n') + '\n',
+    'dist/durable/local.js': "import 'left';\nexport const local = 1;\n",
+  });
+  assert.deepEqual(reachableImports(root, './dist/durable/index.js'), ['left', 'required', 'star-as']);
+});

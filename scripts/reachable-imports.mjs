@@ -3,8 +3,7 @@
 // behind a self-reference. Other packages are named, never entered.
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-
-const IMPORT = /(?:from\s*|import\s*\(\s*|import\s*)['"]([^'"]+)['"]/g;
+import { importsOf } from './package-imports.mjs';
 
 /** The bare specifiers reachable from `entry`, a path inside the package at `packageRoot`. A declaration file is
  *  walked as declarations: a relative `./x.js` names `./x.d.ts`, and a self-reference takes its `types` target. A
@@ -22,7 +21,7 @@ export function reachableImports(packageRoot, entry) {
   const visit = file => {
     if (seen.has(file) || !/\.(?:js|d\.ts)$/.test(file)) return;
     seen.add(file);
-    for (const [, specifier] of readFileSync(file, 'utf8').matchAll(IMPORT)) {
+    for (const specifier of importsOf(readFileSync(file, 'utf8'))) {
       if (specifier.startsWith('.')) visit(resolve(dirname(file), declarations ? specifier.replace(/\.js$/, '.d.ts') : specifier));
       else if (specifier === manifest.name || specifier.startsWith(`${manifest.name}/`)) visit(ownTarget(specifier));
       else bare.add(specifier);
