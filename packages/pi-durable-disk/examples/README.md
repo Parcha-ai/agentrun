@@ -10,6 +10,7 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux, Node 22.19 or later | yes |
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | no |
 | [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux, Node 22.19 or later | yes |
+| [planned-move](planned-move/) | A run moves from this machine to a Daytona sandbox at a step boundary by hand-over: released and sealed, opened at the next generation, the agent told, nothing revoked or interrupted | Linux host with the archil client and systemd, an Archil disk and API key, a Daytona key (Tier 3 or 4) | no |
 | [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | no |
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | no |
 
