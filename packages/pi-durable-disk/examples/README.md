@@ -18,12 +18,16 @@ process).
 
 ## Run one
 
-From a checkout, after the root `npm ci --ignore-scripts && npm run build`:
+An example built to the conventions below (each one marked "CI: yes" except the quickstart file) runs from a checkout,
+after the root `npm ci --ignore-scripts && npm run build`:
 
 ```sh
 cd packages/pi-durable-disk
 node examples/<name>/main.ts
 ```
+
+The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`. Examples 01 and 02 on a disk, and the two scripts,
+run as their own READMEs and headers say.
 
 Node 22.19 or later runs the TypeScript directly. Linux only, for now: a run on a local directory holds its root through
 `/proc/self/fd` (see [A run on a local directory](../README.md#a-run-on-a-local-directory)).

@@ -16,6 +16,8 @@ export interface ExampleRun {
   readonly stderr: string;
   /** The timeout ended the run (its whole process group was killed). */
   readonly timedOut: boolean;
+  /** The scratch directory the example ran in; removed by the time `runExample` resolves. */
+  readonly cwd: string;
 }
 
 /** Signals the process group `leader` leads. Only a real pid: `kill(-0)` would be this process's own group. */
@@ -71,7 +73,7 @@ export async function runExample(
       child.once("close", (code, sig) => resolve([code, sig]));
     });
     clearTimeout(timer);
-    return { status, signal, stdout, stderr, timedOut };
+    return { status, signal, stdout, stderr, timedOut, cwd: dir.root };
   } finally {
     await reapGroup(leader);
     dir.remove();
