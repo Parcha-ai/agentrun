@@ -405,6 +405,16 @@ safe to run again. The host knows the calls from `call` frames the runner sends 
 replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
 with the box loses that list, and the notice then names no calls.
 
+A workspace that holds what the session downloads again (a media cache) is left out of the checkpoint:
+`pullCheckpoint({ workspace: { exclude: ["media"] } })` takes patterns as `WorkspaceOptions.exclude` does (a name at any
+depth, or an anchored path; `*`, `**`, `?`). An excluded path is never listed for hashing, never pulled and not
+counted, however large; the record names what was left out (`Checkpoint.excluded`: patterns, the top-most entries,
+file count and bytes), and the restore notice says so: "Not restored: media (1 file, N bytes) are left out of checkpoints.
+Fetch them again if you need them." so that a replay-safe download tool runs again. Two budgets: `workspace.maxBytes` is
+the most the workspace may hold (excluded paths not counted), and `maxPullBytes` the most one pull may move (the store
+copy and the files that changed); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
+is `CheckpointStats.last.heldMs`.
+
 A model call paid between two checkpoints is not paid twice. A request can carry a `key` and a `position` (the store's
 next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
 keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the

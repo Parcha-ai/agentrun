@@ -11,7 +11,15 @@ import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Place } from "./move.ts";
 import type { Seal } from "./store.ts";
-import { type Manifest, manifestSince, moveChanged, moveFile, type WorkspaceOptions } from "./workspace.ts";
+import {
+	type Excluded,
+	excludedOf,
+	type Manifest,
+	manifestSince,
+	moveChanged,
+	moveFile,
+	type WorkspaceOptions,
+} from "./workspace.ts";
 
 /** Why a vault call failed. Returned, never thrown. */
 export class VaultError extends Error {
@@ -35,6 +43,8 @@ export type Checkpoint = {
 	readonly epoch: number;
 	readonly seal: Seal;
 	readonly manifest: Manifest;
+	/** What `exclude` left out of the workspace, absent when nothing was excluded. A restore does not bring it back. */
+	readonly excluded?: Excluded;
 	/** The store's file. */
 	readonly storeFile: string;
 	/** The workspace tree. */
@@ -63,7 +73,7 @@ export interface CheckpointVault {
 	/** Record a generation: after this, `latest` names it. */
 	commit(
 		pending: PendingCheckpoint,
-		meta: Pick<Checkpoint, "at" | "epoch" | "seal" | "manifest">,
+		meta: Pick<Checkpoint, "at" | "epoch" | "seal" | "manifest" | "excluded">,
 		context: Context,
 	): Promise<Result<Checkpoint, VaultError>>;
 	/** Remove a generation that was begun and not committed. */
@@ -169,7 +179,13 @@ export function localVault(directory: string): CheckpointVault {
 		},
 		async commit(pending, meta) {
 			try {
-				const record = { at: meta.at, epoch: meta.epoch, seal: meta.seal, manifest: meta.manifest };
+				const record = {
+					at: meta.at,
+					epoch: meta.epoch,
+					seal: meta.seal,
+					manifest: meta.manifest,
+					...(meta.excluded === undefined ? {} : { excluded: meta.excluded }),
+				};
 				const file = join(dirOf(pending.session), `${generationName(pending.n)}.json`);
 				writeFileSync(`${file}.partial`, JSON.stringify(record));
 				renameSync(`${file}.partial`, file);
@@ -254,7 +270,16 @@ export type PullOptions = {
 	readonly vault: CheckpointVault;
 	/** How long the session may take to come to rest. Default 10 s: a checkpoint is skipped, never waited for long. */
 	readonly drain?: DrainOptions;
+	/**
+	 * `exclude`: paths or globs (see `WorkspaceOptions`) never pulled, never hashed and not restored, e.g. a media cache
+	 * the session downloads again. `maxBytes`: the most the workspace may hold, excluded paths not counted.
+	 */
 	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
+	/**
+	 * The most one pull may move: the store's copy and the files that changed since the previous checkpoint. A pull
+	 * over it is skipped as `too_large` before any file moves, and the session goes on.
+	 */
+	readonly maxPullBytes?: number;
 	/** The longest the session may be held, from the moment it came to rest, to have the checkpoint on the host. Default 2 minutes. */
 	readonly holdMs?: number;
 	/** Generations kept. Default 3. */
@@ -338,6 +363,24 @@ export async function pullCheckpoint(
 					`the workspace holds ${manifest.value.bytes} bytes, the limit is ${options.workspace.maxBytes}`,
 				);
 			}
+			if (options.maxPullBytes !== undefined) {
+				const before = new Map((previous?.manifest.entries ?? []).map((entry) => [entry.path, entry.sha256]));
+				const delta = manifest.value.entries
+					.filter((entry) => entry.kind === "file" && before.get(entry.path) !== entry.sha256)
+					.reduce((sum, entry) => sum + entry.bytes, 0);
+				if (delta + held.value.seal.bytes > options.maxPullBytes) {
+					return skip(
+						"too_large",
+						`this pull would move ${delta + held.value.seal.bytes} bytes (${delta} of files, ${held.value.seal.bytes} of store), the limit is ${options.maxPullBytes}`,
+					);
+				}
+			}
+			let excluded: Excluded | undefined;
+			if ((options.workspace?.exclude?.length ?? 0) > 0) {
+				const found = await excludedOf(place.box, place.workspace, options.workspace, context);
+				if (!found.ok) return skip("failed", found.error.message, [], found.error);
+				if (found.value.files > 0 || found.value.entries.length > 0) excluded = found.value;
+			}
 			const begun = await vault.begin(session, context);
 			if (!begun.ok) return skip("failed", begun.error.message, [], begun.error);
 			const pending = begun.value;
@@ -375,7 +418,13 @@ export async function pullCheckpoint(
 			}
 			const recorded = await vault.commit(
 				pending,
-				{ at, epoch: options.epoch, seal: held.value.seal, manifest: manifest.value },
+				{
+					at,
+					epoch: options.epoch,
+					seal: held.value.seal,
+					manifest: manifest.value,
+					...(excluded === undefined ? {} : { excluded }),
+				},
 				context,
 			);
 			if (!recorded.ok) return fail(recorded.error, "failed");
@@ -411,7 +460,7 @@ export async function pullCheckpoint(
  * checkpoint was taken, and which tool calls the host saw begin after it: a call that may run again, and one that must
  * not be assumed not to have happened.
  */
-export function restoreNotice(checkpoint: Pick<Checkpoint, "at">, calls: readonly CallRecord[]): string {
+export function restoreNotice(checkpoint: Pick<Checkpoint, "at" | "excluded">, calls: readonly CallRecord[]): string {
 	const since = calls.filter((call) => call.startedAt >= checkpoint.at);
 	const when = new Date(checkpoint.at).toISOString();
 	const names = (list: readonly CallRecord[]) => [...new Set(list.map((call) => call.tool))].join(", ");
@@ -426,6 +475,13 @@ export function restoreNotice(checkpoint: Pick<Checkpoint, "at">, calls: readonl
 			`After that checkpoint the host saw ${since.length} tool call${since.length === 1 ? "" : "s"} begin.${
 				maybe.length > 0 ? ` These may have had an effect that is not repeated for you: ${names(maybe)}.` : ""
 			}${again.length > 0 ? ` These are safe to run again: ${names(again)}.` : ""}`,
+		);
+	}
+	const left = checkpoint.excluded;
+	if (left !== undefined && left.entries.length > 0) {
+		const more = left.more > 0 ? `, and ${left.more} more` : "";
+		lines.push(
+			`Not restored: ${left.entries.join(", ")}${more} (${left.files} file${left.files === 1 ? "" : "s"}, ${left.bytes} bytes) are left out of checkpoints. Fetch them again if you need them.`,
 		);
 	}
 	return lines.join(" ");

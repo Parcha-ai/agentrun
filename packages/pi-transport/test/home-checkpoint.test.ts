@@ -300,6 +300,64 @@ describe("pulling a checkpoint", () => {
 		expect(heads[1]).toBeGreaterThan(heads[0] as number);
 	});
 
+	it("never pulls an excluded path, however large, and keeps the pull's hold and bytes small", async () => {
+		const fx = await source();
+		mkdirSync(join(fx.place.workspace, "media", "cache"), { recursive: true });
+		writeFileSync(join(fx.place.workspace, "media", "cache", "footage.bin"), Buffer.alloc(50_000_000, 9));
+		writeFileSync(join(fx.place.workspace, "notes.txt"), "keep me");
+		const pulled = async (workspace: { exclude?: string[] }) => {
+			const stats = checkpointStats();
+			const vault = localVault(fresh("vault"));
+			const taken = getOrThrow(
+				await pullCheckpoint(
+					{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, workspace },
+					noContext,
+				),
+			);
+			return { taken, stats, vault };
+		};
+		const control = await pulled({});
+		expect(control.stats.last?.bytes).toBeGreaterThan(50_000_000);
+		const left = await pulled({ exclude: ["media"] });
+		expect(readdirSync(left.taken.filesRoot).sort()).toEqual(["dir", "notes.txt"]);
+		expect(left.taken.manifest.entries.map((entry) => entry.path).sort()).toEqual(["dir", "notes.txt"]);
+		expect(left.stats.last?.bytes).toBeLessThan(1_000_000);
+		expect(left.stats.last?.heldMs).toBeLessThan(5_000);
+		expect(left.taken.excluded).toMatchObject({
+			patterns: ["media"],
+			entries: ["media"],
+			more: 0,
+			files: 1,
+			bytes: 50_000_000,
+		});
+		// The record survives the vault: a later reader sees what was left out.
+		expect(getOrThrow(await left.vault.latest("s", context))?.excluded).toEqual(left.taken.excluded);
+	});
+
+	it("skips a pull over maxPullBytes as too_large before any file moves, and lets the session go", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
+		);
+		writeFileSync(join(fx.place.workspace, "new.bin"), Buffer.alloc(2_000_000, 3));
+		const over = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, maxPullBytes: 1_000_000 },
+			noContext,
+		);
+		expect(over.ok ? "" : over.error.reason).toBe("too_large");
+		expect(over.ok ? "" : over.error.message).toMatch(/limit is 1000000/);
+		expect(fx.state().held).toBe(false);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
+		// Inside the budget, the same pull goes through.
+		const inside = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, maxPullBytes: 10_000_000 },
+			noContext,
+		);
+		expect(inside.ok).toBe(true);
+	});
+
 	it("does not call a generation latest before its record is written", async () => {
 		const vault = localVault(fresh("vault"));
 		const pending = getOrThrow(await vault.begin("s", context));
@@ -428,6 +486,62 @@ describe("recovering a session whose box is gone", () => {
 				},
 			},
 		]);
+	});
+
+	it("tells the restored session what was left out of its checkpoints, and does not bring it back", async () => {
+		const fx = await source();
+		mkdirSync(join(fx.place.workspace, "media"), { recursive: true });
+		writeFileSync(join(fx.place.workspace, "media", "footage.bin"), Buffer.alloc(1_000_000, 5));
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const vault = localVault(fresh("vault"));
+		getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, workspace: { exclude: ["media"] } },
+				noContext,
+			),
+		);
+		const directory = fresh("lease");
+		const lease = leaseIn(dirStore(directory));
+		getOrThrow(await lease.take("s", holder(fx.place.box, "a"), 0, undefined, context));
+		const box = await makeBox();
+		const target: Place = {
+			environment: "x",
+			provider: "local",
+			box,
+			workspace: join(box.facts().workspace, "work"),
+			store: join(fresh("t"), "run.sqlite"),
+		};
+		const orders: { order: { move?: { notice: string } } }[] = [];
+		getOrThrow(await fx.place.box.destroy(context));
+		getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: lease,
+					places: { a: fx.place },
+					start: async () =>
+						ok({
+							ready: Promise.resolve(ok({ session: "s", state: "closed" as const })),
+							async resume(order: unknown) {
+								orders.push({ order: order as { move?: { notice: string } } });
+								return ok(undefined);
+							},
+							async status() {
+								return ok({ state: "closed" as const, epoch: null });
+							},
+						} as unknown as HomeHandle),
+					notice: "unused",
+					vault,
+					replace: async (): Promise<Result<Place, MoveError>> => ok(target),
+				},
+				context,
+			),
+		);
+		const notice = orders[0]?.order.move?.notice ?? "";
+		expect(notice).toContain("Not restored: media (1 file, 1000000 bytes)");
+		expect(notice).toContain("Fetch them again");
+		expect(readFileSync(join(target.workspace, "a.txt"), "utf8")).toBe("alpha");
+		expect(readdirSync(target.workspace).sort()).toEqual(["a.txt", "dir"]);
 	});
 
 	it("restores from the previous generation when the latest no longer checks out", async () => {

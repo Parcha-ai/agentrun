@@ -279,6 +279,7 @@ async function list(
 	root: string,
 	options: WorkspaceOptions | undefined,
 	context: Context,
+	skipped?: { path: string; kind: string; bytes: number }[],
 ): Promise<Result<Listed[], WorkspaceError>> {
 	const ran = await run(
 		box,
@@ -308,7 +309,10 @@ async function list(
 			string,
 			string,
 		];
-		if (skip(path)) continue;
+		if (skip(path)) {
+			skipped?.push({ path, kind: type, bytes: type === "f" ? Number(size) : 0 });
+			continue;
+		}
 		const kind = KINDS[type];
 		if (kind === undefined) {
 			return err(
@@ -1268,4 +1272,50 @@ export async function moveChanged(
 		}
 	}
 	return ok({ changed: changed.length, removed: removed.length, bytes, totalMs: performance.now() - started });
+}
+
+/** What `exclude` left out of a workspace. */
+export type Excluded = {
+	/** The patterns that were applied. */
+	readonly patterns: readonly string[];
+	/** The top-most entries left out (a directory stands for what is in it), at most 50, sorted. */
+	readonly entries: readonly string[];
+	/** How many more top-most entries there were than `entries` names. */
+	readonly more: number;
+	/** Files left out, all of them, and their bytes. */
+	readonly files: number;
+	readonly bytes: number;
+};
+
+const MAX_EXCLUDED_ENTRIES = 50;
+
+/** What the `exclude` patterns leave out of the tree at `root`, without reading any of it. */
+export async function excludedOf(
+	box: Box,
+	root: string,
+	options: WorkspaceOptions | undefined,
+	context: Context,
+): Promise<Result<Excluded, WorkspaceError>> {
+	const skipped: { path: string; kind: string; bytes: number }[] = [];
+	const listed = await list(box, root, options, context, skipped);
+	if (!listed.ok) return listed;
+	const gone = new Set(skipped.map((entry) => entry.path));
+	const top = skipped
+		.map((entry) => entry.path)
+		.filter((path) => !hasExcludedAncestor(path, gone))
+		.sort();
+	return ok({
+		patterns: [...(options?.exclude ?? [])],
+		entries: top.slice(0, MAX_EXCLUDED_ENTRIES),
+		more: Math.max(0, top.length - MAX_EXCLUDED_ENTRIES),
+		files: skipped.filter((entry) => entry.kind === "f").length,
+		bytes: skipped.reduce((sum, entry) => sum + entry.bytes, 0),
+	});
+}
+
+function hasExcludedAncestor(path: string, gone: ReadonlySet<string>): boolean {
+	for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+		if (gone.has(path.slice(0, at))) return true;
+	}
+	return false;
 }
