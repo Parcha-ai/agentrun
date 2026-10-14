@@ -186,7 +186,15 @@ test('a real recording (AUDIT_FIXTURE): every branch lands, the kills are marked
   assert.ok(glyphs.every((glyph) => glyph === 'done' || glyph === 'finding'), 'and finished');
   assert.equal(state.kills.length, recorded.filter((line) => line.source === 'host' && line.kind === 'kill').length);
   assert.ok(state.finishedAt !== undefined);
-  assert.ok(Object.values(state.branches).every((branch) => branch.findings.length > 0 && branch.repository !== undefined), 'each branch has its facts and its repository record');
+  assert.ok(Object.values(state.branches).every((branch) => branch.repository !== undefined), 'each branch has its repository record');
+  assert.ok(Object.values(state.branches).every((branch) => branch.verdict?.answer === 'clear' || branch.findings.length > 0), 'and a branch that raised something has its facts (a clear one may have none)');
+  // A branch whose install reached a host that is not the registry (a real catch) shows it, flagged, with the script that did it.
+  const caught = Object.values(state.branches).filter((branch) => (branch.facts.install?.outside ?? []).length > 0);
+  for (const branch of caught) {
+    const box = find(workflowMapPanel.view(state, { t: 0, focus: branch.id }), cls('wm-box'))[0]!;
+    assert.match(text(box), /\(not the registry\)/, `${branch.id}: the outside host is flagged`);
+    assert.match(text(box), /install scripts: /, `${branch.id}: and the script that ran is named`);
+  }
   const looks = Object.values(state.branches).flatMap((branch) => branch.vision);
   assert.ok(looks.length > 0 && looks.every((look) => look.blob !== undefined && /^[0-9a-f]{64}$/.test(look.blob)), 'each look has the image it read');
   assert.ok(looks.some((look) => look.text !== ''), 'and most have the eyes\' words');
