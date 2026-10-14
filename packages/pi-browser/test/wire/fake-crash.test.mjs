@@ -1,5 +1,3 @@
-// The shared fake's contract for the crash matrix: a create the provider applied and never answered is in the
-// parent's ledger after the child that made it is SIGKILLed, and a new process finds the session by its tag.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
@@ -48,7 +46,6 @@ test("a held driver run is applied in the parent and the child's calls are count
     await new Promise((resolve) => child.on("close", resolve));
     assert.equal(backend.tally().dispatches, 1);
     assert.equal(backend.live()[0] && [...backend.sessions.values()][0].url, "https://example.test/next");
-    // A second process attaches to the same session and sees the page where the dead one left it.
     const provider = remoteProvider(served.url);
     const [ref] = await provider.findByTag("ar-run-bbbb-1");
     const driver = await remoteDriver(served.url)(await provider.attach(ref));

@@ -7,8 +7,9 @@ import { createSession } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, describe, expect, it } from "vitest";
-import { type LogEntry, replayCommits, tapStorage } from "../src/home/commit-log.ts";
+import { type LogEntry, replayCommits } from "../src/home/commit-log.ts";
 import { checkpointStore, sealStore } from "../src/home/store.ts";
+import { tapStorage } from "./commit-tap.ts";
 
 const context = BACKGROUND_CONTEXT;
 const root = mkdtempSync(join(tmpdir(), "pi-transport-log-"));

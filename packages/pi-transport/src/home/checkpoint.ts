@@ -22,6 +22,7 @@ import type { LogEntry } from "./commit-log.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Place } from "./move.ts";
+import type { RecordSink } from "./records.ts";
 import type { Seal } from "./store.ts";
 import {
 	type Excluded,
@@ -108,6 +109,12 @@ export interface CheckpointVault {
 		entries: readonly LogEntry[],
 		context: Context,
 	): Promise<Result<{ readonly through: number }, VaultError>>;
+	/**
+	 * The highest commit the vault holds in an unbroken run from the latest checkpoint (the commit before its head when
+	 * no shipped commit follows it, 0 when there is neither): where the runner is to send from, asked synchronously
+	 * when a link comes up.
+	 */
+	through(session: string): number;
 	/** The shipped commits from `from` on, the unbroken run only; `gap` says commits beyond a break were held. */
 	readLog(
 		session: string,
@@ -346,6 +353,7 @@ export function localVault(directory: string): CheckpointVault {
 				return err(io("could not keep the shipped commits", cause));
 			}
 		},
+		through: (session) => Math.max(0, through(session) ?? 0),
 		async readLog(session, from) {
 			try {
 				const entries = readEntries(session)
@@ -635,4 +643,30 @@ export function restoreNotice(
 		);
 	}
 	return lines.join(" ");
+}
+
+/**
+ * The record sink of a session whose commits a host keeps beside its checkpoints: `held` is where the vault's log is
+ * (the runner sends from the commit after it), and `append` keeps a commit's writes on disk before it settles, so that
+ * the runner's acknowledgement means the host holds it. The recorder's lines are not the vault's: a host that records
+ * passes `lines`, the sink that keeps them, with how far it holds them.
+ */
+export function recordSink(
+	vault: CheckpointVault,
+	session: string,
+	context: Context,
+	recorder?: Pick<RecordSink, "lines"> & { held(): number },
+): RecordSink {
+	return {
+		held: () => {
+			const after = vault.through(session);
+			return { after, linesAfter: recorder === undefined ? after : recorder.held() };
+		},
+		async append(commit, writes) {
+			const kept = await vault.appendLog(session, [{ commit, writes }], context);
+			if (!kept.ok) throw kept.error;
+		},
+		lines: (commit, lines, snapshot) =>
+			recorder === undefined ? Promise.resolve() : recorder.lines(commit, lines, snapshot),
+	};
 }

@@ -4,7 +4,8 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 /**
- * One commit of a session's store as a runner shipped it: the sequence it took and its exact `StorageWrite` batch.
+ * One commit of a session's store as a runner shipped it (`record { commit, writes }`): the sequence it took and its exact
+ * `StorageWrite` batch.
  * Applying the batches after a checkpoint, in order, through `Storage.commit` gives the store the runner had.
  */
 export type LogEntry = { readonly commit: number; readonly writes: readonly StorageWrite[] };
@@ -22,30 +23,6 @@ export class ReplayError extends Error {
 		this.code = code;
 		this.applied = applied;
 	}
-}
-
-/**
- * A store whose commits are reported, each once it landed and in the order it landed. `ship` must not throw. A runner
- * ships what its store committed, never what it is about to.
- */
-export function tapStorage(inner: Storage, ship: (entry: LogEntry) => void): Storage {
-	let line: Promise<unknown> = Promise.resolve();
-	const commit: Storage["commit"] = (writes, context) => {
-		const made = line.then(async () => {
-			const seq = await inner.commit(writes, context);
-			ship({ commit: Number(seq), writes });
-			return seq;
-		});
-		line = made.catch(() => {});
-		return made;
-	};
-	return new Proxy(inner, {
-		get(target, key) {
-			if (key === "commit") return commit;
-			const value = Reflect.get(target, key, target);
-			return typeof value === "function" ? value.bind(target) : value;
-		},
-	});
 }
 
 /**

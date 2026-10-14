@@ -28,8 +28,6 @@ export interface StoreConformanceOptions {
 		value: Uint8Array,
 		version: string | undefined,
 	) => Promise<void>;
-	/** Whether the store's `get` may return stale data after a write, as an eventually consistent store does. Default false. */
-	readonly eventuallyConsistent?: boolean;
 }
 
 /** One case of the conformance suite. */
@@ -168,10 +166,11 @@ export function createStoreConformance(options: StoreConformanceOptions): StoreC
 					const body = (round: number) => `${round}:${"x".repeat(20_000)}:${round}`;
 					unwrap(await store.put("lease", encoder.encode(body(0)), { absent: true }, context));
 					let writing = true;
+					let stopped = false;
 					let torn = 0;
 					let reads = 0;
 					const reader = (async () => {
-						while (writing || reads < READER_PASSES) {
+						while (!stopped && (writing || reads < READER_PASSES)) {
 							const got = unwrap(await store.get("lease", context));
 							const value = text(got?.value) ?? "";
 							const [head, , tail] = value.split(":");
@@ -180,19 +179,25 @@ export function createStoreConformance(options: StoreConformanceOptions): StoreC
 							if (!writing && reads >= READER_PASSES) break;
 						}
 					})();
-					let version = unwrap(await store.get("lease", context))?.version as string;
-					for (let round = 1; round <= ROUNDS * 3; round++) {
-						const results = await Promise.all(
-							Array.from({ length: 8 }, () =>
-								store.put("lease", encoder.encode(body(round)), { version }, context),
-							),
-						);
-						const won = results.find((result) => result.ok);
-						assertions.ok(won?.ok === true, "someone won");
-						if (won?.ok) version = won.value.version;
+					try {
+						let version = unwrap(await store.get("lease", context))?.version as string;
+						for (let round = 1; round <= ROUNDS * 3; round++) {
+							const results = await Promise.all(
+								Array.from({ length: 8 }, () =>
+									store.put("lease", encoder.encode(body(round)), { version }, context),
+								),
+							);
+							const won = results.find((result) => result.ok);
+							assertions.ok(won?.ok === true, "someone won");
+							if (won?.ok) version = won.value.version;
+						}
+						writing = false;
+						await reader;
+					} finally {
+						// A failed round must not leave the reader polling the store.
+						stopped = true;
+						await reader.catch(() => {});
 					}
-					writing = false;
-					await reader;
 					assertions.ok(torn === 0, `${torn} of ${reads} reads were torn`);
 				}),
 		},

@@ -302,8 +302,9 @@ says hello with the host's model catalog, gives orders (`resume`, `drain`, `seal
 same in one process.
 
 - **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
-  that holds nothing. A model request is one frame; the host makes the call with its own credentials and sends the
-  answer back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
+  that holds nothing. A model request is one frame with the request's whole transcript, its system message (the
+  instructions and the tools) included; the host makes the call with its own credentials and sends the answer
+  back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
   functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
   plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
   sampling, session id, cache retention, metadata) reach its models; a credential, an endpoint, a header, the
@@ -312,7 +313,16 @@ same in one process.
   state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
 - **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
   default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
-  host pays once. A request still open after that ends with an error pi retries.
+  host pays once. The rest of the answer goes only to the link the runner resumed it on, after what it missed. That
+  takes one server for every link to the runner: `const server = serveModels(models)`, then
+  `connectHome(link, { models, epoch, server })` for each; a handle closes only a server it made. A request still open
+  after that ends with an error pi retries.
+- **Orders and their contexts.** An order whose context ended already is not sent. An order the host gives up on is
+  cancelled in the runner too, as in the host's own process: a drain given up opens the gate again. The runner says
+  ready only with its home open; a home it could not open is tried again at the next host's hello.
+- **A long line closes the link.** A line longer than `maxLineLength` characters, finished or not, closes it, so what
+  a box writes cannot fill the host's memory. `linkPair`, `streamLink` and `processLink` take `{ maxLineLength }`; the
+  default is `MAX_LINE_LENGTH`, 64 Mi, above the request size of the providers we know.
 - **Writes are coalesced.** One write to the runner's input is in flight at a time and every frame sent meanwhile goes
   in the next one, so a box whose input is a slow buffered call carries an answer at the pace it is made.
 - **The fence.** Every frame from the runner carries the epoch it runs at. The host refuses a model request from any
@@ -415,18 +425,17 @@ the most the workspace may hold (excluded paths not counted), and `maxPullBytes`
 copy and the files that changed); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
 is `CheckpointStats.last.heldMs`.
 
-The commits between two checkpoints are kept too. A runner whose host asked for them (`connectHome({ onCommit })`, which puts
-`ship: true` in the resume order) sends one `commit` frame for each commit its store makes, once it landed: the sequence
-and the exact `StorageWrite` batch (`tapStorage` makes them). The host hands them to `vault.appendLog(session, entries)`,
-which keeps them in order on disk beside the checkpoints, ignores a repeat, refuses a gap (`gap`, with `through` saying
-what it holds) and keeps nothing the latest checkpoint covers; a checkpoint's `prune` cuts the log below the oldest
-generation kept. A restore then takes the checkpoint's store, applies the unbroken run of commits from its head
-(`replayCommits`, through the store's own `Storage`, on a copy on the host and before any Harness opens it), seals the
-result, and gives the lease and the resume order that seal. The order's `move` says `replayed: { from, to }` and
-`head: to + 1`; the notice says the history was brought up to date. So a call the lost box admitted after the checkpoint
-is in the history the new box opens, and is settled by pi's recovery, not run again. A log that does not start where
-the checkpoint ends is not used: the restore is the checkpoint, as before. What the frames do not do is hold an effect
-until the host has them; that wait is the record stream's.
+The commits between two checkpoints are kept too, on the record stream: a host that gives `connectHome` (or `boxRunner`) a
+`records` sink receives each commit's exact `StorageWrite` batch (`record { commit, writes }`), acknowledged after the sink
+has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
+`append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
+latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
+checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`, through the store's own `Storage`,
+on a copy on the host and before any Harness opens it), seals the result, and gives the lease and the resume order that
+seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
+date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
+recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
+before.
 
 A model call paid between two checkpoints is not paid twice. A request can carry a `key` and a `position` (the store's
 next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`

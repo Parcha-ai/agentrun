@@ -1,27 +1,19 @@
-// Session custody, the host-neutral half: the port every session tool asks for its browser, the session record's
-// state changes, the notices custody tells the model, and the two custody tools. The durable adapter implements the
-// port on pi-durable documents and tasks; another host implements the same port on its own state.
 import type { BrowserFailure } from "./failures.js";
 import type { EffectObserver } from "./effects.js";
 import type { AttachTarget, BrowserConfig, Geo, ReleaseReason, SentEffect, SessionRecord, SessionSpec, SessionsState } from "./host.js";
 import { isLeaseTransition, type LeaseState } from "./lease.js";
 
-/** What custody needs of a driver; the tools use the rest of it. */
 export type BrowserDriver = { close(): Promise<void> };
-/** How long custody waits on a driver's close: a Stagehand close after its connection dropped and was reconnected can
- *  wait forever, and the provider ends the session whether or not the close came back. */
+/** A Stagehand close after a dropped and reconnected connection can hang forever; the provider ends the session anyway. */
 export const DRIVER_CLOSE_MS = 5_000;
-/** Close `driver`, failing quietly and giving up after DRIVER_CLOSE_MS. */
 export async function closeDriver(driver: BrowserDriver): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([driver.close().catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, DRIVER_CLOSE_MS); })]);
   clearTimeout(timer);
 }
-/** What a driver takes from the conversation's policy: `batchTimeoutMs` limits one run call's batch. */
 export type DriverOptions = { batchTimeoutMs: number };
 export type DriverFactory<D extends BrowserDriver = BrowserDriver> = (target: AttachTarget, signal?: AbortSignal, options?: DriverOptions) => Promise<D>;
 
-/** A port operation that ends in a typed failure; the tool returns `failure` as its result. */
 export class BrowserFailureError extends Error {
   override name = "BrowserFailureError";
   constructor(readonly failure: BrowserFailure) { super(failure.message); }
@@ -32,45 +24,33 @@ export type Overrides = { verified?: boolean; geolocation?: Geo | null };
 export type AttachedSession<D> = {
   driver: D;
   tag: string;
-  /** The provider's session id. */
   sessionId: string;
   record: SessionRecord;
-  /** Custody's news for the model, told once: the session was kept or lost in an interruption. */
   notice: string | null;
-  /** A `run` that was dispatched on this conversation and never answered: an interruption cut it. */
   interrupted: SessionRecord["pendingEffect"];
-  /** Whether the provider records sessions, so a read can say where in the recording it happened. */
   recorded: boolean;
-  /** The session's effect observer, when one could attach: it journals and holds what a `run` sends. */
   effects: Pick<EffectObserver, "record" | "flush" | "holding"> | null;
 };
 
-/** What a session tool may ask of custody, for one call. */
 export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
-  /** The conversation's live session, launched when there is none. A call rerun after an interruption runs only on the
-   *  session it first ran on: when that one is gone, this fails with `session_replaced` and launches nothing. */
+  /** A call rerun after an interruption runs only on its first session, or fails with `session_replaced`. */
   session(): Promise<AttachedSession<D>>;
-  /** Release the current session and launch one with `overrides`; a rerun finds the session it launched. */
+  /** A rerun finds the session it launched. */
   relaunch(overrides: Overrides): Promise<AttachedSession<D>>;
-  /** Release the current session; none, or one already released, is not an error. */
+  /** No session, or one already released, is not an error. */
   release(): Promise<{ released: boolean; sessionId: string | null }>;
-  /** Commit that a `run` is about to dispatch, before it does. */
+  /** Committed before the `run` is dispatched. */
   dispatching(effect: { callId: string; codeSha: string; url: string | null; observed: boolean }): Promise<void>;
-  /** Commit one request the dispatched `run` sent, as the observer journals it (again with its decision when held). */
   journal(row: SentEffect): Promise<void>;
-  /** Clear the dispatched `run`: it answered, or the model has been told it was interrupted. */
   settle(): Promise<void>;
-  /** Record a page the session moved to. */
   navigated(url: string): Promise<void>;
-  /** Whether the provider reports the current session ended; when it did, custody records it so, and the next call
-   *  opens a fresh one. */
+  /** When the provider reports the session ended, custody records it and the next call opens a fresh one. */
   ended(): Promise<boolean>;
-  /** The connection to the current session dropped while the provider still runs it (a closed CDP socket): custody lets
-   *  the dead driver go, so the next `session()` reconnects to the same session, its pages and cookies kept. */
+  /** The provider still runs the session: the next `session()` reconnects to it. */
   dropped(): Promise<void>;
 }
 
-/** A tool's result. `details` reach the host's UI and wraps, never the model; `usage` is pi's, for the call's spend. */
+/** `details` reach the host's UI and wraps, never the model; `usage` is pi's, for the call's spend. */
 export type ToolOutput = {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   isError?: boolean;
@@ -90,7 +70,6 @@ export const notices = {
   kept: (url: string | null) => `Your browser session survived an interruption and is still open${url ? ` on ${url}` : ""}. Take a snapshot before acting again.`,
   lost: (url: string | null) => `Your browser session ended during an interruption. The next browser call opens a fresh session with no cookies or page state${url ? `; the last page was ${url}` : ""}.`,
   ended: (url: string | null) => `Your previous browser session had ended (the provider closed it), so this call runs in a fresh session with no cookies or page state${url ? `; the last page was ${url}` : ""}.`,
-  /** A release the model did not ask for, told on the call that opens the next session. */
   released: (reason: "idle" | "close", url: string | null, idleS: number) => `Your previous browser session was released ${reason === "idle" ? `after ${idleS} seconds without a browser call` : "when the host closed it"}, so this call runs in a fresh session that starts on a blank page with no cookies or page state${url ? `; the last page was ${url}, so navigate there again to continue` : ""}.`,
 };
 
@@ -109,7 +88,6 @@ export function newSessionRecord(input: { plane: string; tag: string; provider: 
   };
 }
 
-/** Move `record` (a draft) to `next`, refusing any change the lease state machine does not allow. */
 export function moveRecord(record: SessionRecord, next: { state: LeaseState; resourceId?: string; reason?: ReleaseReason; at: string }): void {
   if (record.state === next.state && next.resourceId === undefined) return;
   if (!isLeaseTransition(record.state, next.state)) throw new Error(`session ${record.tag}: ${record.state} cannot become ${next.state}`);
@@ -134,16 +112,14 @@ export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overr
   };
 }
 
-/** What a relaunch may not ask of this run's policy, or null when it can go ahead. A place is reached through a proxy,
- *  so under a policy with proxies off a geolocation is refused before anything is released or created: the new session
- *  would browse from the provider's default place and the answer would not say so. */
+/** With proxies off a geolocation is refused up front: the session would browse from the provider's default place,
+ *  silently. */
 export function relaunchRefusal(policy: BrowserConfig["policy"], overrides: Overrides): BrowserFailure | null {
   if (!overrides.geolocation || policy.proxies) return null;
   return { ok: false, code: "refused", retryable: false, effect: "none", message: "browser_relaunch: geolocation needs a proxy, and this run's browser policy has proxies off, so no session can browse from a chosen place. Nothing was relaunched and your session is unchanged; browser_relaunch can still change verified, with geolocation left out." };
 }
 
-/** A geolocation as providers take it: an ISO alpha-2 country, a US state abbreviation, a city in capitals; null when
- *  the country is not two letters. */
+/** An ISO alpha-2 country, a US state abbreviation, a city in capitals; null when the country is not two letters. */
 export function normalizeGeolocation(raw: unknown): Geo | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -163,7 +139,6 @@ const failed = (error: unknown): ToolOutput => {
   throw error;
 };
 
-/** `browser_release` and `browser_relaunch`: custody verbs, nothing else. */
 export const custodyTools = {
   async browser_release(_args: unknown, port: CustodyPort): Promise<ToolOutput> {
     try {
@@ -175,7 +150,8 @@ export const custodyTools = {
     const geolocation = args.geolocation === undefined ? undefined : normalizeGeolocation(args.geolocation);
     if (geolocation === null) return text({ ok: false, code: "refused", retryable: false, effect: "none", message: 'browser_relaunch: geolocation needs a two-letter ISO country code (e.g. {country: "GB"}).' }, true);
     try {
-      const { sessionId, record } = await port.relaunch({ verified: args.verified === true, ...(geolocation ? { geolocation } : {}) });
+      // A relaunch that names no `verified` keeps the run's policy: an omitted flag never downgrades a Verified session.
+      const { sessionId, record } = await port.relaunch({ ...(args.verified !== undefined ? { verified: args.verified === true } : {}), ...(geolocation ? { geolocation } : {}) });
       return text({ ok: true, session: sessionId, verified: record.settings.verified, proxies: record.settings.proxies, geolocation: record.settings.geolocation });
     } catch (error) { return failed(error); }
   },

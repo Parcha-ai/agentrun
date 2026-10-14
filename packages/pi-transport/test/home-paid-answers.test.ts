@@ -15,7 +15,6 @@ function connect(proxy: ProxyModels, server: ModelServer): Link {
 	host.onFrame((frame) => server.receive(frame, toRunner));
 	runner.onClose((reason) => proxy.down(reason));
 	host.onClose(() => server.down());
-	server.up(toRunner);
 	proxy.up((frame) => runner.send(frame));
 	return runner;
 }

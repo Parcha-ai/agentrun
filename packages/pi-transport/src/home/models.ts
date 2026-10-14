@@ -412,20 +412,29 @@ type ServedCall = {
 	/** Every frame sent for the call, kept so a runner that lost the link can ask for what it missed. */
 	readonly frames: Frame[];
 	done: boolean;
-	/** The request ids that share this call: the first, and every later request that carried the same key. */
-	readonly ids: string[];
+	/**
+	 * The link each request that shares this call last asked on, with the request or a resume: its frames go there and
+	 * nowhere else. A link that came up since gets them only once the runner resumes on it, after the frames it missed.
+	 * Requests share a call when they carry the same key (a rebuilt runner asking again).
+	 */
+	readonly sends: Map<string, (frame: Frame) => boolean>;
 	/** Whether it ended with an answer: only an answer is kept for a key, a failure is paid again on a retry. */
 	answered: boolean;
 };
 
 /** The host's end of the model proxy. */
 export interface ModelServer {
-	/** A model frame from the runner; answers go through `send`. False when it is not a model frame. */
+	/**
+	 * A model frame from the runner, which came on the link that `send` reaches. A request's answer goes to the link
+	 * it came on; a resume replays what the runner missed on its link, and the rest of the answer follows there. False
+	 * when it is not a model frame.
+	 */
 	receive(frame: Frame, send: (frame: Frame) => boolean): boolean;
-	/** The link is up again: answers go through `send` from now on. */
-	up(send: (frame: Frame) => boolean): void;
-	/** The link is down. Calls run on and keep their frames for a resume. */
-	down(): void;
+	/**
+	 * The link that `send` reaches is down (every link, without `send`): its calls run on and keep their frames, and
+	 * send nothing until the runner resumes them. Calls on other links go on.
+	 */
+	down(send?: (frame: Frame) => boolean): void;
 	/** End every call that still runs. */
 	close(): void;
 	/** Requests the host made to its providers: what it paid for. */
@@ -454,21 +463,20 @@ export function serveModels(
 	// A request that carries a `key` is answered once: a repeat of it (a runner rebuilt after its box was lost asks the
 	// model call again) gets the kept frames, or joins the call that is still running, and the host does not pay again.
 	const keyed = new Map<string, { readonly call: ServedCall; readonly position: number }>();
-	let send: ((frame: Frame) => boolean) | undefined;
 	let paid = 0;
 
 	const emit = (id: string, call: ServedCall, frame: Frame) => {
 		const numbered: Frame = { ...frame, id, seq: call.frames.length + 1 };
 		call.frames.push(numbered);
-		for (const each of call.ids) send?.({ ...numbered, id: each });
+		for (const [each, to] of call.sends) to({ ...numbered, id: each });
 	};
 
-	const run = async (id: string, request: Frame): Promise<void> => {
+	const run = async (id: string, request: Frame, reply: (frame: Frame) => boolean): Promise<void> => {
 		const call: ServedCall = {
 			controller: new AbortController(),
 			frames: [],
 			done: false,
-			ids: [id],
+			sends: new Map([[id, reply]]),
 			answered: false,
 		};
 		calls.set(id, call);
@@ -531,7 +539,7 @@ export function serveModels(
 			if (!call.answered && key !== undefined && keyed.get(key)?.call === call) keyed.delete(key);
 			// Kept a while for a runner that lost the link at the very end, then let go. The answer kept for a key stays.
 			setTimeout(() => {
-				for (const each of call.ids) if (calls.get(each) === call) calls.delete(each);
+				for (const [each, kept] of calls) if (kept === call) calls.delete(each);
 			}, keepMs).unref?.();
 		}
 	};
@@ -539,7 +547,6 @@ export function serveModels(
 	return {
 		receive(frame, reply) {
 			if (frame.t !== "model" && frame.t !== "model-abort" && frame.t !== "model-resume") return false;
-			send = reply;
 			const id = typeof frame.id === "string" ? frame.id : "";
 			const call = calls.get(id);
 			if (frame.t === "model") {
@@ -547,11 +554,11 @@ export function serveModels(
 				if (call === undefined) {
 					const key = typeof frame.key === "string" && frame.key !== "" ? frame.key : undefined;
 					const same = key === undefined ? undefined : keyed.get(key);
-					if (same === undefined) void run(id, frame);
+					if (same === undefined) void run(id, frame, reply);
 					else {
 						// The same model call again: what was answered, and what is still coming, under this request's id.
 						calls.set(id, same.call);
-						same.call.ids.push(id);
+						same.call.sends.set(id, reply);
 						for (const kept of same.call.frames) reply({ ...kept, id });
 					}
 				}
@@ -560,20 +567,24 @@ export function serveModels(
 			} else if (call === undefined) {
 				reply({ t: "model-unknown", id });
 			} else {
+				// What the runner missed first, then the live frames, all on this link: a live frame that ran ahead of
+				// the replay would look to the runner like a gap, and it would give the answer up.
 				const after = typeof frame.after === "number" ? frame.after : 0;
 				for (const kept of call.frames.slice(after)) reply({ ...kept, id });
+				call.sends.set(id, reply);
 			}
 			return true;
 		},
-		up(next) {
-			send = next;
-		},
-		down() {
-			send = undefined;
+		down(from) {
+			for (const call of calls.values()) {
+				for (const [id, to] of call.sends) if (from === undefined || to === from) call.sends.delete(id);
+			}
 		},
 		close() {
-			send = undefined;
-			for (const call of calls.values()) if (!call.done) call.controller.abort();
+			for (const call of calls.values()) {
+				call.sends.clear();
+				if (!call.done) call.controller.abort();
+			}
 		},
 		get paid() {
 			return paid;

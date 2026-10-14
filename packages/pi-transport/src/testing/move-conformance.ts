@@ -11,13 +11,15 @@ import type { StorageConformanceRunner } from "@earendil-works/pi-durable/testin
 import { Type } from "typebox";
 import { finish } from "../box/files.ts";
 import type { App } from "../home/app.ts";
-import { checkpointStats, localVault, pullCheckpoint } from "../home/checkpoint.ts";
+import { checkpointStats, localVault, pullCheckpoint, recordSink } from "../home/checkpoint.ts";
 import type { LogEntry } from "../home/commit-log.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
-import { type LeaseSeal, leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
+import { leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
+import type { RecordSink } from "../home/records.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
+import type { Seal } from "../home/store.ts";
 import { textResult } from "./tool-result.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -154,7 +156,7 @@ type Run = {
 	/** Whether the store file is at `place`. */
 	stored(place: Place): Promise<boolean>;
 	/** The seal the home at `place` wrote beside its store when it sealed. */
-	sealed(place: Place): Promise<LeaseSeal>;
+	sealed(place: Place): Promise<Seal>;
 	/** The move came to its drain: the rest of the run may go on. */
 	drainCame(): void;
 	kill(place: Place): Promise<void>;
@@ -165,7 +167,7 @@ type Run = {
 };
 
 /** A session that started at `a` on epoch 1 and is busy with its run. */
-async function begin(pair: MovePair, holdMs?: number, onCommit?: (entry: LogEntry) => void): Promise<Run> {
+async function begin(pair: MovePair, holdMs?: number, records?: RecordSink): Promise<Run> {
 	const leases = mkdtempSync(join(tmpdir(), "pi-transport-lease-"));
 	const lease = leaseIn(dirStore(leases));
 	let drainCame: () => void = () => {};
@@ -178,7 +180,7 @@ async function begin(pair: MovePair, holdMs?: number, onCommit?: (entry: LogEntr
 		program: pair.program,
 		session: SESSION,
 		models,
-		...(onCommit === undefined ? {} : { onCommit }),
+		...(records === undefined ? {} : { records }),
 	});
 	const start: StartRunner = async (place, epoch, startContext) => {
 		const started = await base(place, epoch, startContext);
@@ -229,7 +231,7 @@ async function begin(pair: MovePair, holdMs?: number, onCommit?: (entry: LogEntr
 		},
 		async sealed(place) {
 			const text = await read(place, ["sh", "-c", 'cat "$1"', "sh", `${place.store}.home.json`]);
-			const seal = text === undefined ? undefined : (JSON.parse(text) as { sealed?: LeaseSeal }).sealed;
+			const seal = text === undefined ? undefined : (JSON.parse(text) as { sealed?: Seal }).sealed;
 			if (seal === undefined) throw new Error(`the home in ${place.environment} has not sealed`);
 			return seal;
 		},
@@ -256,9 +258,9 @@ async function withRun(
 	pair: MovePair,
 	use: (run: Run) => Promise<void>,
 	holdMs?: number,
-	onCommit?: (entry: LogEntry) => void,
+	records?: RecordSink,
 ): Promise<void> {
-	const run = await begin(pair, holdMs, onCommit);
+	const run = await begin(pair, holdMs, records);
 	try {
 		await use(run);
 	} finally {
@@ -920,9 +922,7 @@ export function registerRestoreConformance(
 								equal(await run.held(), { epoch: 2, environment: trio.a.environment }, "the lease");
 							},
 							RESTORE_HOLD_MS,
-							(entry) => {
-								void vault.appendLog(SESSION, [entry], context);
-							},
+							recordSink(vault, SESSION, context),
 						),
 					),
 				),

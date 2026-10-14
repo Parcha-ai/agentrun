@@ -12,6 +12,7 @@ import { makeTree, tampered, walk } from "./home-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SEEDS = 100;
+const SEED_BATCH = 10;
 const roots: string[] = [];
 const boxes: Box[] = [];
 
@@ -43,18 +44,28 @@ describe("moveWorkspace on local boxes", () => {
 
 	it(`moves ${SEEDS} random trees: every manifest equal, checked on the host's file system`, async () => {
 		const { from, to } = await pair();
-		for (let seed = 1; seed <= SEEDS; seed++) {
+		const one = async (seed: number) => {
 			const src = join(from.facts().workspace, `seed-${seed}`);
 			const dst = join(to.facts().workspace, `seed-${seed}`);
 			makeTree(src, seed);
 			const moved = await moveWorkspace(from, to, { fromRoot: src, toRoot: dst }, context);
 			if (!moved.ok) throw new Error(`seed ${seed}: ${moved.error.code} ${moved.error.message}`);
 			expect(walk(dst), `seed ${seed}`).toEqual(walk(src));
-			const a = getOrThrow(await manifestOf(from, src, undefined, context));
-			const b = getOrThrow(await manifestOf(to, dst, undefined, context));
-			expect(b.entries.map((e) => [e.path, e.kind, e.bytes, e.sha256, e.mode, e.target])).toEqual(
-				a.entries.map((e) => [e.path, e.kind, e.bytes, e.sha256, e.mode, e.target]),
-			);
+			const [a, b] = await Promise.all([
+				manifestOf(from, src, undefined, context),
+				manifestOf(to, dst, undefined, context),
+			]);
+			const rows = (manifest: typeof a) =>
+				getOrThrow(manifest).entries.map((e) => [e.path, e.kind, e.bytes, e.sha256, e.mode, e.target]);
+			expect(rows(b), `seed ${seed}`).toEqual(rows(a));
+		};
+		// Seeds are independent trees in their own directories: several at a time, every one still checked.
+		for (let first = 1; first <= SEEDS; first += SEED_BATCH) {
+			const batch = Array.from({ length: Math.min(SEED_BATCH, SEEDS - first + 1) }, (_, index) => first + index);
+			// Every seed of the batch ends before the next test starts, also when one fails.
+			const settled = await Promise.allSettled(batch.map(one));
+			const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
 		}
 	}, 600_000);
 

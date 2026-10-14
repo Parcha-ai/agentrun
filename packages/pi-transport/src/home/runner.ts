@@ -1,18 +1,37 @@
 import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
+import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
 import type { DrainOptions } from "./gate.ts";
+import { createKeys } from "./keys.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { type Catalog, type ProxyModels, proxyModels } from "./models.ts";
+import type { LinesSync } from "./outbox.ts";
+import { createShipper, type Recording, type Shipper } from "./records.ts";
 import { type Home, type HomeOptions, openHome, type ResumeOrder } from "./run.ts";
+
+/** How long a model request, or a seal waiting for the host to hold every commit, waits for a lost link. */
+const DEFAULT_RESUME_WITHIN_MS = 30_000;
 
 /** The exit code of a runner the host refused: its epoch is not the lease's. Its launcher must not start it again. */
 export const EXIT_REFUSED = 75;
 
 /** What a runner needs: a home's options, without models, which come from the host over the link. */
-export type RunnerOptions = Omit<HomeOptions, "models"> & {
+export type RunnerOptions = Omit<HomeOptions, "models" | "wrapStore"> & {
 	/** How long a model request waits for a lost link to come back. Default 30 s. */
 	readonly resumeWithinMs?: number;
+	/**
+	 * The recorder to run in this process when the host takes the record stream: `@parcha/agentrun-pi/durable`'s
+	 * `snapshotLines` and `recordCommits`. Without it the host still gets every commit's writes, and no lines.
+	 */
+	readonly recording?: Recording;
+	/** When a commit's lines reach the disk (`LinesSync`). Default `each`. */
+	readonly linesSync?: LinesSync;
+	/**
+	 * Batches that admit an effect, whose commit waits until the host holds it (for `resumeWithinMs`): pi's tool intent
+	 * by default (`admitsTool`). An app whose own effects admit in a document adds them here.
+	 */
+	readonly admits?: (writes: readonly StorageWrite[]) => boolean;
 };
 
 /** How a runner ended. `retired`: a later epoch took the session. `refused`: the host refused this runner's epoch. */
@@ -55,6 +74,10 @@ function wire(error: Error & { code?: unknown; holdouts?: unknown }): WireError 
  */
 export function createRunner(options: RunnerOptions, context: Context = BACKGROUND_CONTEXT): Runner {
 	let proxy: ProxyModels | undefined;
+	// The one opening of the home, with the models it opened with. A host that says hello meanwhile waits for it.
+	let opening:
+		| { readonly proxy: ProxyModels; readonly shipper?: Shipper; readonly home: Promise<Result<Home, Error>> }
+		| undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
 	let finished = false;
@@ -95,40 +118,47 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		then?.(result);
 	};
 
-	let shipping = false;
-
-	const run = async (home: Home, order: string, args: Readonly<Record<string, unknown>>) => {
+	/** One order, in `within`: the runner's context, which the host's `cancel` for this order ends. */
+	const run = async (home: Home, order: string, args: Readonly<Record<string, unknown>>, within: Context) => {
 		switch (order) {
 			case "resume":
-				shipping = args.ship === true;
-				return home.resume(args as unknown as ResumeOrder, context);
+				return home.resume(args as unknown as ResumeOrder, within);
 			case "reopen":
-				return home.reopen({ epoch: Number(args.epoch) }, context);
+				return home.reopen({ epoch: Number(args.epoch) }, within);
 			case "retire":
-				return home.retire({ epoch: Number(args.epoch) }, context);
+				return home.retire({ epoch: Number(args.epoch) }, within);
 			case "drain":
-				return home.drain(args as DrainOptions, context);
+				return home.drain(args as DrainOptions, within);
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
 			case "checkpoint":
-				return home.checkpoint(args as DrainOptions, context);
-			case "seal":
-				return home.seal(context);
+				return home.checkpoint(args as DrainOptions, within);
+			case "seal": {
+				// A move seals only what the host holds: the sealed store and the host's log end at the same commit.
+				const shipper = opening?.shipper;
+				if (shipper !== undefined && !(await shipper.drained(options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS))) {
+					const error = Object.assign(new Error("the host does not hold every commit of this store yet"), {
+						code: "not_shipped",
+					});
+					return { ok: false as const, error };
+				}
+				return home.seal(within);
+			}
 			case "submit": {
-				const root = await home.root(context);
+				const root = await home.root(within);
 				if (!root.ok) return root;
 				const requestId = typeof args.requestId === "string" ? args.requestId : undefined;
 				const submission = await root.value.submit(
 					{ type: "input", content: String(args.content), ...(requestId === undefined ? {} : { requestId }) },
-					context,
+					within,
 				);
 				return { ok: true as const, value: { submission: submission.id } };
 			}
 			case "idle": {
-				const root = await home.root(context);
+				const root = await home.root(within);
 				if (!root.ok) return root;
-				await root.value.waitForIdle(context);
+				await root.value.waitForIdle(within);
 				return { ok: true as const, value: null };
 			}
 			case "status":
@@ -143,32 +173,56 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			link.close(`the host speaks version ${String(frame.v)} of the link; this runner speaks ${LINK_VERSION}`);
 			return;
 		}
-		if (proxy === undefined) {
+		if (opening === undefined) {
+			// The host takes the record stream: every commit of this runner is shipped, from its first.
+			const shipper =
+				frame.records === true
+					? createShipper({
+							...(options.recording === undefined ? {} : { recording: options.recording }),
+							...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
+							...(options.admits === undefined ? {} : { admits: options.admits }),
+							acknowledgeWithinMs: options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS,
+						})
+					: undefined;
+			// With the stream, each model request carries its key and the store position it was made at.
+			const keys = shipper === undefined ? undefined : createKeys(options.session, () => shipper.position());
 			const made = proxyModels(frame.catalog as Catalog, {
 				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
+				...(keys === undefined ? {} : { keyOf: (request) => keys.keyOf(request) }),
 			});
 			proxy = made;
-			const opened = await openHome({
-				...options,
-				models: made.models,
-				// Told to the host as they happen, small and without arguments. A link that is down drops them.
-				onCall: (event) => {
-					if (current !== undefined) send(current, { t: "call", ...event });
-				},
-				// Each commit once it landed, when the host asked for them in its resume order.
-				onCommit: (entry) => {
-					if (shipping && current !== undefined) send(current, { t: "commit", ...entry });
-				},
-			});
-			if (!opened.ok) {
-				send(link, { t: "ready", v: LINK_VERSION, ok: false, error: wire(opened.error) });
-				return;
-			}
-			home = opened.value;
+			const { recording: _recording, linesSync: _linesSync, admits: _admits, ...homeOptions } = options;
+			opening = {
+				proxy: made,
+				...(shipper === undefined ? {} : { shipper }),
+				home: openHome({
+					...homeOptions,
+					models: made.models,
+					// Told to the host as they happen, small and without arguments. A link that is down drops them.
+					onCall: (event) => {
+						if (current !== undefined) send(current, { t: "call", ...event });
+					},
+					...(shipper === undefined ? {} : { wrapStore: shipper.wrapStore(options.store) }),
+					...(keys === undefined ? {} : { extensions: [...(options.extensions ?? []), keys.extension] }),
+				}),
+			};
 		}
+		const mine = opening;
+		const opened = await mine.home;
+		if (!opened.ok) {
+			// Nothing opened: the next host's hello tries again, with its own catalog. Ready only with a home.
+			if (opening === mine) {
+				opening = undefined;
+				proxy = undefined;
+			}
+			send(link, { t: "ready", v: LINK_VERSION, ok: false, error: wire(opened.error) });
+			return;
+		}
+		home = opened.value;
 		if (link !== current) return;
-		proxy.up((model) => (current === link ? send(link, model) : false));
-		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: home?.state ?? "closed" });
+		mine.proxy.up((model) => (current === link ? send(link, model) : false));
+		mine.shipper?.up((record) => (current === link ? send(link, record) : false));
+		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: opened.value.state });
 	};
 
 	return {
@@ -180,11 +234,15 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			const previous = current;
 			current = link;
 			previous?.close("another host connected");
+			// The orders of this link that still run, by id: a `cancel` ends one's context.
+			const running = new Map<unknown, () => void>();
 			link.onFrame((frame) => {
 				if (current !== link) return;
 				if (frame.t === "hello") void hello(link, frame);
 				else if (frame.t === "refused") void stop("refused", EXIT_REFUSED, String(frame.reason ?? "refused"));
+				else if (frame.t === "cancel") running.get(frame.id)?.();
 				else if (proxy?.receive(frame)) return;
+				else if (opening?.shipper?.receive(frame)) return;
 				else if (frame.t === "order") {
 					const active = home;
 					if (active === undefined) {
@@ -193,12 +251,15 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 					}
 					const args = (frame.args ?? {}) as Readonly<Record<string, unknown>>;
 					const order = String(frame.order);
+					const within = withCancel(context);
+					running.set(frame.id, within.cancel);
 					// A home that retired has no session left: the runner ends once the host has its answer.
 					void answer(
 						link,
 						frame.id,
-						() => run(active, order, args),
+						() => run(active, order, args, within.context),
 						(result) => {
+							running.delete(frame.id);
 							if (order === "retire" && result.ok)
 								void stop("retired", 0, `epoch ${String(args.epoch)} took the session`);
 						},
@@ -209,6 +270,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (current !== link) return;
 				current = undefined;
 				proxy?.down(reason);
+				opening?.shipper?.down();
 				// No host is there to finish a move: held work goes on. A sealed home stays sealed.
 				if (home?.state === "open") home.abandon();
 			});

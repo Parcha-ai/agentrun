@@ -9,8 +9,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterAll, describe, expect, it } from "vitest";
 import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { checkpointStats, localVault, pullCheckpoint, restoreNotice } from "../src/home/checkpoint.ts";
-import { type LogEntry, tapStorage } from "../src/home/commit-log.ts";
+import { checkpointStats, localVault, pullCheckpoint, recordSink, restoreNotice } from "../src/home/checkpoint.ts";
+import type { LogEntry } from "../src/home/commit-log.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import { connectHome, type HomeHandle, RemoteError } from "../src/home/host.ts";
 import { linkPair } from "../src/home/link.ts";
@@ -18,6 +18,7 @@ import { type MoveError, type Place, recoverHome, type StartRunner } from "../sr
 import { leaseIn } from "../src/home/ownership.ts";
 import type { CheckpointTaken } from "../src/home/run.ts";
 import { checkpointStore, sealStore } from "../src/home/store.ts";
+import { tapStorage } from "./commit-tap.ts";
 import { walk } from "./home-support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -399,42 +400,39 @@ describe("the calls a host saw", () => {
 	});
 });
 
-describe("the commits a runner ships", () => {
-	it("reach the host in order, a commit from another epoch is ignored, and a resume asks for them", async () => {
-		const [left, right] = linkPair();
-		const got: number[] = [];
-		const handle = connectHome(left, {
-			models: createModels(),
-			epoch: 3,
-			onCommit: (entry) => got.push(entry.commit),
-		});
-		const asked: unknown[] = [];
-		right.onFrame((frame) => {
-			if (frame.t === "order") asked.push(frame.args);
-		});
-		right.send({ t: "commit", epoch: 3, commit: 7, writes: [] });
-		right.send({ t: "commit", epoch: 2, commit: 8, writes: [] });
-		right.send({ t: "commit", epoch: 3, commit: 8, writes: [] });
-		right.send({ t: "commit", epoch: 3, commit: "9", writes: [] });
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(got).toEqual([7, 8]);
-		void handle.resume({ epoch: 3 }, context);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(asked).toEqual([{ epoch: 3, ship: true }]);
-		handle.close("done");
+describe("the record sink of a vault", () => {
+	const entry = (commit: number): LogEntry => ({ commit, writes: [] });
+
+	it("holds nothing for a new session, keeps what the stream gives it, and holds from the checkpoint's head", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const sink = recordSink(vault, "s", context);
+		// A new session: nothing held, a store's first commit is 1.
+		expect(sink.held()).toEqual({ after: 0, linesAfter: 0 });
+		await sink.append(1, entry(1).writes);
+		await sink.append(2, entry(2).writes);
+		expect(sink.held()).toEqual({ after: 2, linesAfter: 2 });
+		const taken = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext),
+		);
+		// The checkpoint covers up to its head: the runner is to send from there.
+		expect(sink.held().after).toBe(Math.max(2, taken.seal.head - 1));
+		await expect(sink.append(taken.seal.head + 5, [])).rejects.toMatchObject({ code: "gap" });
 	});
 
-	it("is not asked for when the host keeps none", async () => {
-		const [left, right] = linkPair();
-		const handle = connectHome(left, { models: createModels(), epoch: 1 });
-		const asked: unknown[] = [];
-		right.onFrame((frame) => {
-			if (frame.t === "order") asked.push(frame.args);
+	it("passes the lines to the recorder that keeps them and says how far it holds them", async () => {
+		const vault = localVault(fresh("vault"));
+		const seen: [number, boolean][] = [];
+		const sink = recordSink(vault, "s", context, {
+			held: () => 4,
+			lines: async (commit, _lines, snapshot) => {
+				seen.push([commit, snapshot]);
+			},
 		});
-		void handle.resume({ epoch: 1 }, context);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(asked).toEqual([{ epoch: 1 }]);
-		handle.close("done");
+		await sink.append(1, []);
+		await sink.lines(1, ["a"], false);
+		expect(seen).toEqual([[1, false]]);
+		expect(sink.held()).toEqual({ after: 1, linesAfter: 4 });
 	});
 });
 

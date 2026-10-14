@@ -6,10 +6,10 @@ import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import type { LogEntry } from "./commit-log.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
 import { processLink } from "./link.ts";
 import { MoveError, type Place, type StartRunner } from "./move.ts";
+import type { RecordSink } from "./records.ts";
 
 /** The lowest Node a runner runs on: pi-durable's own floor. */
 const NODE_FLOOR = [22, 19] as const;
@@ -27,8 +27,8 @@ export type BoxRunnerOptions = {
 	readonly models: Models;
 	/** What the runner writes on its error output, for the host's log. */
 	readonly onErrors?: (text: string) => void;
-	/** The commits the runner's store makes, as they land: the host keeps them beside its checkpoints. */
-	readonly onCommit?: (entry: LogEntry) => void;
+	/** Where the session's record stream goes: the same sink for every runner of the session, wherever it runs. */
+	readonly records?: RecordSink;
 };
 
 /** The output of one short program in a box, or why it did not run. */
@@ -128,7 +128,7 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 			connectHome(processLink(process), {
 				models: options.models,
 				epoch,
-				...(options.onCommit === undefined ? {} : { onCommit: options.onCommit }),
+				...(options.records === undefined ? {} : { records: options.records }),
 			}),
 		);
 	};

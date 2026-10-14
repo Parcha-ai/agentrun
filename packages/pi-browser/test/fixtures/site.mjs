@@ -1,6 +1,5 @@
-// The loopback site the real-Chrome tests browse: page A links to page B; page B posts a form the server counts (with
-// an optional hold, so a test can cut a process inside the submitting `run`); /slow answers after `slowMs`; /no-content
-// answers 204, so a navigation to it starts and never commits (as a download does) and the browser keeps showing its page.
+// /no-content answers 204, so a navigation to it starts and never commits (as a download does) and the browser keeps
+// its page.
 import http from "node:http";
 
 export async function startSite({ slowMs = 30_000 } = {}) {
@@ -31,7 +30,6 @@ export async function startSite({ slowMs = 30_000 } = {}) {
   return {
     base: `http://127.0.0.1:${server.address().port}`,
     submissions: () => submissions,
-    /** Hold every later submission unanswered; resolves when the first arrives. */
     holdSubmissions: () => new Promise((resolve) => { hold = resolve; }),
     release: () => { hold = null; for (const answer of held.splice(0)) answer(); },
     close: () => new Promise((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()); }),

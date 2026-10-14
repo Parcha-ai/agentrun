@@ -1,10 +1,10 @@
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
-import type { LogEntry } from "./commit-log.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
+import { type RecordSink, receiveRecords } from "./records.ts";
 import type { CheckpointTaken, HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
@@ -72,10 +72,29 @@ export interface HomeHandle {
 	setEpoch(epoch: number): void;
 	/** The host's side of the model proxy: what it paid for. */
 	readonly models: ModelServer;
+	/** Close the link, and the model server when this handle made it: a server the caller passed is the caller's. */
 	close(reason: string): void;
 }
 
+/** How the host holds a runner. */
+export type ConnectOptions = {
+	readonly models: Models;
+	readonly epoch: number;
+	/**
+	 * The model server to answer with, made by `serveModels` over the same `models`. Pass the same one to every link to
+	 * one runner: a runner that comes back on a new link resumes an answer the host already paid for, and the provider
+	 * is not called again. Without it each handle makes its own, and a new link starts with nothing kept.
+	 */
+	readonly server?: ModelServer;
+	/**
+	 * Where this session's record stream goes: with it the runner ships every commit's writes, and its recorder's lines,
+	 * and a seal waits until they are all here.
+	 */
+	readonly records?: RecordSink;
+};
+
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
+const RECORD_FRAMES = new Set(["record", "lines"]);
 const HOME_STATES: ReadonlySet<unknown> = new Set<HomeState>(["closed", "open", "sealed", "retired"]);
 
 /** Whether `value` is a whole number at least 0. */
@@ -122,19 +141,12 @@ function checked<T>(
 }
 
 /** Hold a runner on `link`: say hello with the host's models, then give orders and serve its model requests. */
-export function connectHome(
-	link: Link,
-	options: {
-		readonly models: Models;
-		readonly epoch: number;
-		/** Told of each commit the home made, in order: the host keeps them beside its checkpoints. */
-		readonly onCommit?: (entry: LogEntry) => void;
-	},
-): HomeHandle {
+export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	let epoch = options.epoch;
 	let counter = 0;
 	const pending = new Map<number, (answer: Result<unknown, RemoteError>) => void>();
-	const server = serveModels(options.models);
+	const server = options.server ?? serveModels(options.models);
+	const owned = options.server === undefined;
 	let settleReady: (ready: Result<Ready, RemoteError>) => void = () => {};
 	const ready = new Promise<Result<Ready, RemoteError>>((resolve) => {
 		settleReady = resolve;
@@ -142,9 +154,10 @@ export function connectHome(
 	const reply = (frame: Frame) => link.send(frame);
 	const ledger: CallRecord[] = [];
 
-	link.onFrame((frame) => {
+	const { records } = options;
+	const handle = async (frame: Frame): Promise<void> => {
 		if (frame.t === "call") {
-			// A report from another epoch is a home the lease left behind: its model requests are refused, its calls ignored.
+			// A report from another epoch is a home the lease left behind: its calls are ignored.
 			if (frame.epoch !== epoch || typeof frame.id !== "string" || typeof frame.tool !== "string") return;
 			const at = Date.now();
 			if (frame.phase === "start") {
@@ -161,13 +174,8 @@ export function connectHome(
 			}
 			return;
 		}
-		if (frame.t === "commit") {
-			// The same epoch rule as for calls: a home the lease left behind ships nothing the host keeps.
-			if (frame.epoch !== epoch || typeof frame.commit !== "number" || !Array.isArray(frame.writes)) return;
-			options.onCommit?.({ commit: frame.commit, writes: frame.writes as LogEntry["writes"] });
-			return;
-		}
-		if (MODEL_FRAMES.has(frame.t)) {
+		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
+			// A home the lease left behind has no model, and writes nothing to the session's log.
 			if (frame.epoch !== epoch) {
 				link.send({
 					t: "refused",
@@ -175,28 +183,52 @@ export function connectHome(
 				});
 				return;
 			}
-			server.receive(frame, reply);
+			if (MODEL_FRAMES.has(frame.t)) server.receive(frame, reply);
+			else if (records !== undefined) await receiveRecords(records, frame, reply);
 		} else if (frame.t === "ready") {
 			if (frame.ok !== true) settleReady(err(fromWire(frame.error)));
 			else if (!HOME_STATES.has(frame.state)) {
 				settleReady(
 					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
 				);
-			} else settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			} else {
+				// Where the host's log is: the runner sends what it holds from there, then what follows.
+				if (records !== undefined) link.send({ t: "records-from", ...records.held() });
+				settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			}
 		} else if (frame.t === "answer") {
 			const settle = pending.get(Number(frame.id));
 			pending.delete(Number(frame.id));
 			settle?.(frame.ok === true ? ok(frame.value) : err(fromWire(frame.error)));
 		}
+	};
+	// One frame after another: a commit is in the log before any later frame of the link is acted on.
+	let handled: Promise<void> = Promise.resolve();
+	link.onFrame((frame) => {
+		handled = handled
+			.then(() => handle(frame))
+			.catch((cause) => {
+				link.close(
+					`the host could not keep the record stream: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			});
 	});
 	link.onClose((reason) => {
-		server.down();
-		settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		for (const settle of pending.values()) settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		pending.clear();
+		server.down(reply);
+		// After the frames that came before it: an answer the runner sent before it closed is still its answer.
+		handled = handled.then(() => {
+			settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
+			for (const settle of pending.values())
+				settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
+			pending.clear();
+		});
 	});
-	server.up(reply);
-	link.send({ t: "hello", v: LINK_VERSION, catalog: catalogOf(options.models) });
+	link.send({
+		t: "hello",
+		v: LINK_VERSION,
+		catalog: catalogOf(options.models),
+		...(records === undefined ? {} : { records: true }),
+	});
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>
 		new Promise<Result<T, RemoteError>>((resolve) => {
@@ -204,10 +236,18 @@ export function connectHome(
 				resolve(err(new RemoteError("link_lost", "the link is down")));
 				return;
 			}
+			// A context that ended already: nothing is sent, so nothing starts in the runner.
+			if (context.abortSignal?.aborted) {
+				resolve(err(new RemoteError("aborted", `the host gave up on ${name} before sending it`)));
+				return;
+			}
 			counter += 1;
 			const id = counter;
 			const onAbort = () => {
 				pending.delete(id);
+				// The runner stops the order too, as a caller's abort stops it in the host's own process: a drain it
+				// gives up opens the gate again.
+				link.send({ t: "cancel", id });
 				resolve(err(new RemoteError("aborted", `the host gave up waiting for ${name}`)));
 			};
 			context.abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -220,8 +260,7 @@ export function connectHome(
 
 	return {
 		ready,
-		resume: (resumeOrder, context) =>
-			order("resume", options.onCommit === undefined ? resumeOrder : { ...resumeOrder, ship: true }, context),
+		resume: (resumeOrder, context) => order("resume", resumeOrder, context),
 		drain: (drainOptions, context) => order("drain", drainOptions ?? {}, context),
 		abandon: (context) => order("abandon", {}, context),
 		checkpoint: async (checkpointOptions, context) =>
@@ -239,7 +278,7 @@ export function connectHome(
 		},
 		models: server,
 		close(reason) {
-			server.close();
+			if (owned) server.close();
 			link.close(reason);
 		},
 	};

@@ -10,11 +10,12 @@ export {
 	type PendingCheckpoint,
 	type PullOptions,
 	pullCheckpoint,
+	recordSink,
 	restoreNotice,
 	type SkipReason,
 	VaultError,
 } from "./checkpoint.ts";
-export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits, tapStorage } from "./commit-log.ts";
+export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits } from "./commit-log.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
@@ -28,13 +29,24 @@ export {
 } from "./gate.ts";
 export {
 	type CallRecord,
+	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
 	type Ready,
 	RemoteError,
 } from "./host.ts";
-export { type Frame, LINK_VERSION, type Link, linkPair, processLink, streamLink } from "./link.ts";
-export { EXIT_USAGE, runMain } from "./main.ts";
+export { KEYS_EXTENSION, type KeyedRequest, requestKey } from "./keys.ts";
+export {
+	type Frame,
+	LINK_VERSION,
+	type Link,
+	type LinkOptions,
+	linkPair,
+	MAX_LINE_LENGTH,
+	processLink,
+	streamLink,
+} from "./link.ts";
+export { EXIT_USAGE, type RunMainOptions, runMain } from "./main.ts";
 export {
 	type Catalog,
 	catalogOf,
@@ -57,13 +69,13 @@ export {
 	recoverHome,
 	type StartRunner,
 } from "./move.ts";
+export { type LinesSync, type OutboxEntry, openOutbox } from "./outbox.ts";
 export {
 	type ConditionalStore,
 	type Holder,
 	KeyStoreError,
 	type KeyStoreErrorCode,
 	type LeaseRecord,
-	type LeaseSeal,
 	leaseIn,
 	type Ownership,
 	OwnershipError,
@@ -71,6 +83,7 @@ export {
 	type TakeDetails,
 } from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
+export { type Recording, type RecordLine, type RecordSink, receiveRecords } from "./records.ts";
 export {
 	type CheckpointTaken,
 	type Home,
@@ -81,6 +94,7 @@ export {
 	MOVE_ENTRY,
 	openHome,
 	type ResumeOrder,
+	type WrappedStore,
 } from "./run.ts";
 export {
 	createRunner,
@@ -90,6 +104,7 @@ export {
 	type RunnerOptions,
 	type WireError,
 } from "./runner.ts";
+export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
 export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
 export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";

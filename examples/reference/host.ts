@@ -11,7 +11,7 @@ import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
 import type { ConversationId, Extension, ModelRef } from '@earendil-works/pi-durable';
 import type { WorkflowDeps, WorkflowEvent } from '@parcha/agentrun-dsl';
-import { canonicalHash } from '@parcha/agentrun-dsl/recovery';
+import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
@@ -21,7 +21,8 @@ import type { ChildEnv } from '@parcha/pi-vision/node';
 /** Where one run lives: the disk package's `AppContext`. */
 export type RunPlace = { id: string; root: string; work: string; store: string };
 
-export type RunEffect = NonNullable<WorkflowDeps['runEffect']>;
+/** The door a `call` goes through: under the recovery driver it also gets `effect`, the admitted effect's id and argsHash. */
+export type RunEffect = (params: RecoveryEffectParams) => ReturnType<NonNullable<WorkflowDeps['runEffect']>>;
 export type RunJudge = NonNullable<WorkflowDeps['runJudge']>;
 export type BrowserPlane = {
   /** Called per use; holds the provider's credentials in its closure. */
@@ -46,9 +47,9 @@ export type Host = {
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
   /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
-   *  looks a call up by the admitted effect's `argsHash` (the canonical hash of its input, node and idempotency key,
-   *  which names the call's step): what the door answered it, if it did. A resumed run asks before it decides a call a
-   *  killed process left unknown; absent, or with no answer, the call stays unknown and is never sent again. */
+   *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
+   *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
+   *  the call stays unknown and is never sent again. */
   tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
@@ -109,7 +110,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
   // The fake answers in this process: a create it lost is known lost within seconds.
-  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver>, createDeadlineMs: 3_000 };
+  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!), createDeadlineMs: 3_000 };
   // A page's `run` and read are counted once each returns: the operations a browser receipt rests on.
   const ops: Record<string, string> = { run: 'page.run', page: 'page.read' };
   const browser: BrowserPlane = { ...plane, driver: async (...args) => {
@@ -126,14 +127,15 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
-      runEffect: async ({ node, input, idempotencyKey }) => {
+      runEffect: async ({ node, input, effect }) => {
+        if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
         const value = await tool(input);
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
-        const at = answerOf(canonicalHash({ input, node, idempotencyKey }));
+        const at = answerOf(effect.argsHash);
         await mkdir(join(place.root, 'answers'), { recursive: true });
         await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
         await rename(`${at}.partial`, at);
