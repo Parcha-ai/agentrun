@@ -153,7 +153,7 @@ async function killedAndResumed(t, kill, { between = [], env: every = {} } = {})
   await writeFile(child, CHILD);
   const killed = [];
   for (const point of [kill].flat()) killed.push(await node([child], { ...env, ...point }));
-  const cut = readJournal(dir, RUN_KEY);
+  const cut = readJournal(join(dir, 'durable', 'run.sqlite'), RUN_KEY);
   const others = [];
   for (const extra of between) others.push(JSON.parse((await node([child], { ...env, ...extra })).stdout));
   const resumed = await node([child], env);
