@@ -202,19 +202,24 @@ try {
     return out;
   })()`);
   ok("a viewer's 'LLM:' follows the session: the snapshot's model, then the model the agent switched to by its registered name, else its id", relay.length === 3 && relay[0] === "LLM: gpt-6-sol" && relay[1] === "LLM: Qwen3.5-27B (Golden Gate edit)" && relay[2] === "LLM: unnamed-1b", relay);
-  // ?thinking=open: the thinking is on the page, dimmed, not folded away; without it, one closed line. A fallback model's turn says so, from the typed diagnostic.
-  const think = await ev<{ open: { n: number; text: string; fold: number; opacity: string }; folded: { n: number; opened: boolean; plain: number } }>(`(() => {
+  // The thinking is open by default and folds on a tap; a fold holds across re-renders. The person's words are a filled bubble the agent's are not.
+  const think = await ev<{ n: number; opened: boolean; text: string; opacity: string; foldedAfter: boolean; reopenedAfter: boolean; userBg: string; agentBg: string }>(`(async () => {
     const chat = demo.state.chat;
     chat.apply({ type: "entry_appended", entry: { id: "gg-think", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Considering the bridge." }, { type: "text", text: "Answer." }] }] } });
-    const grab = () => { const turn = [...document.querySelectorAll("#chat .turn.agent")].find((t) => /Answer\\./.test(t.textContent) && /Considering/.test(t.textContent)); return turn; };
-    demo.state.thinkingOpen = true; demo.renderChat();
-    const a = grab(), pre = a?.querySelector(".thinking.open pre");
-    const open = { n: a?.querySelectorAll(".thinking.open").length ?? 0, text: pre?.textContent ?? "", fold: a?.querySelectorAll("details.thinking").length ?? 0, opacity: pre ? getComputedStyle(pre).opacity : "" };
-    demo.state.thinkingOpen = false; demo.renderChat();
-    const b = grab(), d = b?.querySelector("details.thinking");
-    return { open, folded: { n: b?.querySelectorAll("details.thinking").length ?? 0, opened: !!d?.open, plain: b?.querySelectorAll(".thinking.open").length ?? 0 } };
+    chat.apply({ type: "entry_appended", entry: { id: "gg-think-user", kind: "pi.user", model: [{ role: "user", content: "a user line for the bubble check" }] } });
+    const grab = () => [...document.querySelectorAll("#chat .turn.agent")].find((t) => /Answer\\./.test(t.textContent) && /Considering/.test(t.textContent));
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    demo.renderChat();
+    const a = grab(), d = a?.querySelector("details.thinking"), pre = d?.querySelector("pre");
+    const out = { n: a?.querySelectorAll("details.thinking").length ?? 0, opened: !!d?.open, text: pre?.textContent ?? "", opacity: pre ? getComputedStyle(pre).opacity : "" };
+    d.open = false; await tick(); demo.renderChat();
+    const foldedAfter = grab()?.querySelector("details.thinking")?.open === false;
+    grab().querySelector("details.thinking").open = true; await tick(); demo.renderChat();
+    const reopenedAfter = grab()?.querySelector("details.thinking")?.open === true;
+    const user = [...document.querySelectorAll("#chat .turn.user")].find((t) => t.textContent === "a user line for the bubble check");
+    return { ...out, foldedAfter, reopenedAfter, userBg: user ? getComputedStyle(user).backgroundColor : "", agentBg: getComputedStyle(a).backgroundColor };
   })()`);
-  ok("with ?thinking=open the thinking sits open and dimmed above the answer, and without it it is one closed line", think.open.n === 1 && /Considering the bridge/.test(think.open.text) && think.open.fold === 0 && Number(think.open.opacity) < 1 && think.folded.n === 1 && !think.folded.opened && think.folded.plain === 0, think);
+  ok("the thinking is open by default (dimmed), folds on a tap and stays folded across re-renders; the person's line is a filled bubble the agent's turn is not", think.n === 1 && think.opened && /Considering the bridge/.test(think.text) && Number(think.opacity) < 1 && think.foldedAfter && think.reopenedAfter && think.userBg !== "" && think.userBg !== think.agentBg && !/rgba\(0, 0, 0, 0\)|transparent/.test(think.userBg), think);
   const fb = await ev<string[]>(`(() => {
     const chat = demo.state.chat;
     chat.apply({ type: "entry_appended", entry: { id: "gg-fb", kind: "pi.assistant", model: [{ role: "assistant", provider: "openai", model: "gpt-6-luna", content: [{ type: "text", text: "A plain answer." }], diagnostics: [{ type: "steered-fallback", timestamp: 1, details: { why: "was off-topic gibberish", from: "steered/qwen3.5-27b" } }] }] } });

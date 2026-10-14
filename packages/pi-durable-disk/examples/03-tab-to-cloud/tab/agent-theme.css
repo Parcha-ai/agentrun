@@ -65,7 +65,9 @@ button.icon:hover { color: var(--ink); }
 
 /* ---- the conversation ---- */
 #chat { padding: 20px var(--gutter) 24px; gap: 14px; }
-.turn { max-width: min(62ch, 86%); }
+/* chat-like measure: words wrap whole (never mid-word), the agent's markdown carries its own line breaks */
+.turn { max-width: min(68ch, 88%); overflow-wrap: break-word; line-height: 1.55; }
+.turn.agent { white-space: normal; }
 .turn .thinking summary { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
 /* an assistant's markdown: paragraphs close together, lists indented, inline code and fenced code in the mono face */
 .turn.agent > p { margin: 0 0 .6em; } .turn.agent > p:last-child, .turn.agent > ul:last-child, .turn.agent > ol:last-child { margin-bottom: 0; }
@@ -73,11 +75,12 @@ button.icon:hover { color: var(--ink); }
 .turn.agent strong { font-weight: 600; }
 .turn.agent code { font: 400 .88em var(--mono); padding: 1px 4px; background: var(--panel); border-radius: var(--r1); }
 .turn.agent > pre.md-pre { margin: 0 0 .6em; padding: 8px 10px; font: 400 12px/1.5 var(--mono); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); overflow: auto; white-space: pre; }
-.turn .thinking pre { font: 400 12px/1.5 var(--mono); color: var(--muted); margin: 4px 0 8px; white-space: pre-wrap; }
-/* ?thinking=open: the thinking sits open above the answer, dimmed; while it streams it is dimmer still */
-.turn .thinking.open .label { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.turn .thinking.open pre { opacity: .7; }
-.turn.streaming .thinking.open pre { opacity: .5; }
+.turn .thinking pre { font: 400 13px/1.55 var(--sans); color: var(--muted); margin: 6px 0 10px; padding-left: 10px; border-left: 2px solid var(--line); white-space: pre-wrap; overflow-wrap: break-word; }
+/* the thinking is open by default and folds on a tap of its line; dimmed, dimmer still while it streams */
+.turn .thinking pre { opacity: .85; }
+.turn.streaming .thinking pre { opacity: .65; }
+/* the person's words: a filled bubble on the right, so they never read as the agent's */
+.turn.user { max-width: min(56ch, 80%); white-space: pre-wrap; padding: 8px 12px; text-align: left; background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: var(--r3); }
 .turn .note.fallback { margin-top: 6px; font: 400 12px/1.4 var(--sans); }
 .tool { max-width: 100%; border: 0; border-radius: 0; background: none; overflow: visible; font: 400 12px/1.5 var(--mono); }
 .tool pre { max-height: 220px; overflow: auto; margin: 6px 0 4px 15px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); color: var(--muted); font: inherit; }
