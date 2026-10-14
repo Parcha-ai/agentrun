@@ -11,6 +11,16 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	LaunchError,
+	type LaunchErrorCode,
+	type LaunchPhase,
+	type LaunchSpec,
+	type LaunchState,
+	launch,
+	launchStatus,
+	stopLaunch,
+} from "./launch.ts";
+export {
 	type ConditionalStore,
 	type Holder,
 	KeyStoreError,
