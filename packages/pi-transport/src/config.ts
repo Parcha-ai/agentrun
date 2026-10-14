@@ -212,8 +212,9 @@ function meaningIssues(input: unknown): ConfigIssue[] {
 	} else if (isRecord(input.auto) && environments !== undefined) {
 		checkTarget("/auto/rest", input.auto.rest);
 		if (input.auto.rest === "auto") issues.push({ path: "/auto/rest", message: "names an environment, never auto" });
-		// What Jev reads for each environment it may choose: the author's own line, never one made up from facts.
-		if (usesAuto.length > 0) {
+		// What Jev reads for each environment it may choose: the author's own line, never one made up from facts. Only
+		// the home is placed by auto in this release; hands left to auto are refused where tools are routed.
+		if (input.home === "auto") {
 			for (const [id, environment] of Object.entries(environments)) {
 				if (isRecord(environment) && environment.purpose === undefined) {
 					issues.push({
