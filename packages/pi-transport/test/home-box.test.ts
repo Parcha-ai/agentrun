@@ -11,6 +11,8 @@ import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { connectHome } from "../src/home/host.ts";
 import { processLink } from "../src/home/link.ts";
+import type { RecordSink } from "../src/home/records.ts";
+import { storeHead } from "../src/home/store.ts";
 
 const context = BACKGROUND_CONTEXT;
 const ROUNDS = 4;
@@ -32,7 +34,7 @@ function hostModels() {
 }
 
 /** Start the runner program in `box` and hold it over the exec's own streams. */
-async function startRunner(box: Box, epoch: number, models = hostModels()) {
+async function startRunner(box: Box, epoch: number, models = hostModels(), records?: RecordSink) {
 	const workspace = box.facts().workspace;
 	const store = join(dirname(workspace), "session", "run.sqlite");
 	const started = getOrThrow(
@@ -53,7 +55,7 @@ async function startRunner(box: Box, epoch: number, models = hostModels()) {
 	void (async () => {
 		for await (const chunk of started.stderr) errors += new TextDecoder().decode(chunk);
 	})();
-	const host = connectHome(processLink(started), { models, epoch });
+	const host = connectHome(processLink(started), { models, epoch, ...(records === undefined ? {} : { records }) });
 	return { host, process: started, store, workspace, errors: () => errors };
 }
 
@@ -104,6 +106,59 @@ describe("a runner program in a box, over the exec's own streams", () => {
 			// Closed in order: no write-ahead log left with content.
 			const wal = `${again.store}-wal`;
 			expect(existsSync(wal) ? readFileSync(wal).length : 0).toBe(0);
+		} finally {
+			await box.destroy(context);
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
+	it("ships every commit to a host that keeps the stream, and a process killed in the middle loses none", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-runner-"));
+		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context));
+		const log: number[] = [];
+		const lines = new Set<number>();
+		const snapshots: number[] = [];
+		let after = 0;
+		let linesAfter = 0;
+		const records: RecordSink = {
+			held: () => ({ after, linesAfter }),
+			async append(commit) {
+				log.push(commit);
+				after = commit;
+			},
+			async lines(commit, _lines, snapshot) {
+				if (snapshot) snapshots.push(commit);
+				else {
+					lines.add(commit);
+					linesAfter = commit;
+				}
+			},
+		};
+		try {
+			const models = hostModels();
+			const first = await startRunner(box, 1, models, records);
+			getOrThrow(await first.host.ready);
+			getOrThrow(await first.host.resume({ epoch: 1 }, context));
+			getOrThrow(await first.host.submit("go", undefined, context));
+			for (let waited = 0; waited < 10_000 && log.length < 6; waited += 5)
+				await new Promise((r) => setTimeout(r, 5));
+			// The runner process dies at once, wherever it was.
+			process.kill(Number(readFileSync(`${first.store}.pid`, "utf8")), "SIGKILL");
+			await first.process.wait();
+			first.host.close("the runner was killed");
+			const again = await startRunner(box, 1, models, records);
+			getOrThrow(await again.host.ready);
+			getOrThrow(await again.host.resume({ epoch: 1 }, context));
+			getOrThrow(await again.host.idle(context));
+			again.host.close("done");
+			expect(getOrThrow(await again.process.wait())).toBe(0);
+			const head = getOrThrow(await storeHead(again.store));
+			// Every commit of the store, once, in order: what the dead process had not sent came from its outbox.
+			expect(log).toEqual(Array.from({ length: head - 1 }, (_, n) => n + 1));
+			// Lines for every commit but at most the one in flight when the process died; a snapshot from each process.
+			const missing = log.filter((commit) => !lines.has(commit));
+			expect(missing.length, `commits without lines: ${missing.join(", ")}`).toBeLessThanOrEqual(1);
+			expect(snapshots).toHaveLength(2);
 		} finally {
 			await box.destroy(context);
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
