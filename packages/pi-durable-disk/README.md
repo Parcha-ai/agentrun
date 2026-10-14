@@ -90,6 +90,7 @@ npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-wo
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
@@ -129,23 +130,28 @@ if (process.argv[2] === "instance") {
 }
 
 // The supervisor: an instance, killed after its third answer, then another on the same directory (a fresh one each time).
+// It reads whole lines, and waits for `close` (the process gone and all its output read), not `exit`.
 rmSync(root, { recursive: true, force: true });
 const start = () => spawn(process.execPath, [fileURLToPath(import.meta.url), "instance"], { stdio: ["ignore", "pipe", "inherit"] });
+const eachLine = (child, onLine) =>
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    console.log(line);
+    onLine(line);
+  });
 const first = start();
-first.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  if (/answered message 3\b/.test(String(chunk))) first.kill("SIGKILL");
+eachLine(first, (line) => {
+  if (/answered message 3\b/.test(line)) first.kill("SIGKILL");
 });
-await new Promise((resolve) => first.on("exit", resolve));
+await new Promise((resolve) => first.on("close", resolve));
 console.log("the first process was killed (SIGKILL); a second opens the same run");
-let output = "";
+const output = [];
 const second = start();
-second.stdout.on("data", (chunk) => {
-  output += chunk;
-  process.stdout.write(chunk);
+eachLine(second, (line) => output.push(line));
+const code = await new Promise((resolve) => second.on("close", resolve));
+const answered = output.flatMap((line) => {
+  const match = /^ {2}Answer (\d+), by generation (\d+)/.exec(line);
+  return match ? [{ n: Number(match[1]), generation: Number(match[2]) }] : [];
 });
-const code = await new Promise((resolve) => second.on("exit", resolve));
-const answered = [...output.matchAll(/^ {2}Answer (\d+), by generation (\d+)/gm)].map((match) => ({ n: Number(match[1]), generation: Number(match[2]) }));
 const once = MESSAGES.every((_, i) => answered.filter((a) => a.n === i + 1).length === 1) && answered.length === MESSAGES.length;
 const generations = [...new Set(answered.map((a) => a.generation))].sort();
 if (code !== 0 || !once || generations.length < 2) {
