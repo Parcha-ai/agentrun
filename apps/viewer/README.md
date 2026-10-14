@@ -41,7 +41,8 @@ static host), or a recording folder dropped on the page or chosen with its picke
 - **Chapters.** The manifest's chapters when it has them; else each process's start, each kill, and the end.
 - **Links.** `?at=<commit>` opens at the point after that commit, and `?at=<gen>:<commit>` after that commit of that
   generation (after a restore one number names two commits); `?cite=<citation>` opens at the commit that first
-  wrote a citation, so a reader of a published brief can jump from a claim to the moment its evidence entered the run;
+  wrote a citation, so a reader of a published brief can jump from a claim to the moment its evidence entered the run,
+  with that citation selected in every panel (a citation chip selects one in place);
   `?focus=<path>` opens focused.
 
 ## Deploy
