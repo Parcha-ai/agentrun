@@ -365,11 +365,8 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 				const started = await inner(command, options, execContext);
 				if (!started.ok || !command.includes("pi-exec")) return started;
 				const wait = async () => {
-					// The command ends first, in the box that is still there: its wrapper removes its group file as it exits. A
-					// box that is gone cannot be told to stop a command, and the environment's call ends by stopping the wrapper,
-					// so a command still running when the box "ends" here would leave its group file in this machine's
-					// directory (which a real lost box takes along). That left the file behind whenever the command was slower
-					// than the call's end, which a loaded machine makes common.
+					// The command ends first, in the box that is still there, so its wrapper removes its group file. A lost box takes
+					// that file with it, but this test keeps the box's state directory.
 					await started.value.wait();
 					box.end(137);
 					return err<number, BoxError>(new BoxError("unknown", "the stream broke"));
