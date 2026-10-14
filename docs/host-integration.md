@@ -9,6 +9,8 @@ AgentRun executes a workflow through adapters supplied by your application. Star
 | `runJudge` | Answer the declared typed questions. The optional [Jev adapter](../packages/jev/README.md) implements this interface. |
 | Lifecycle hooks | Store checkpoints and receipts, reconcile interrupted effects, and retain the runtime and adapter versions needed for recovery. |
 
+For a durable pi host that also runs a browser and vision, see [what a host supplies](reference-host.md) and its runnable example.
+
 Your application controls credentials, tools, budgets and delivery. An accepted model answer or completed workflow does not prove that an external action succeeded.
 
 ## Admit a workflow before running it

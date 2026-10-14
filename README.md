@@ -4,7 +4,7 @@
 
 AgentRun is a workflow language for the agents you already run. Define repeatable steps, use [Jev](https://docs.typesafe.ai/) for focused decisions, and call an agent when the work needs investigation. Your application keeps its tools, model access, permissions, and budgets.
 
-[Quickstart](#quickstart) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
+[Quickstart](#quickstart) · [Packages](#use-one-piece-or-all-of-it) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
 
 ![Support workflow: search for an answer, check it with Jev, and return it or ask an agent to investigate. Check the investigation before returning it or escalating for review.](docs/assets/support-workflow.gif)
 
@@ -55,6 +55,40 @@ npm run test:support
 Try `npm run demo:support -- unresolved` to see an escalation. It exits with code `2`. The responses are scripted; changing a prompt does not change them.
 
 [Connect live Jev and your agent](docs/support-quickstart.md), or [give these instructions to your coding agent](docs/agent-instructions.md).
+
+## Use one piece, or all of it
+
+### Use one piece
+
+Each package works on its own. Install the ones you need.
+
+| Package | What it does | What it needs | First command with no key | Status |
+| --- | --- | --- | --- | --- |
+| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx agentrun demo` | published (`@beta`) |
+| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
+| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.1.0; a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`); the `./durable` entry is in this repository, not yet in the published beta |
+| [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | none yet | held, not published |
+| [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, a receipt for every look | nothing for a document's text; Photon or sharp for images; pi-durable, chord and pi-ai in pi; a model that looks, for questions about a file | its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | not yet published; a release publishes it |
+| [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one interface over a directory, a container, a sandbox or a VM | pi-durable and chord; Docker for the Docker provider | the "A box" example in its README (needs Docker) | held, not published |
+
+A held package is built, tested and verified with the others, and its manifest says `"private": true`; it installs from
+a packed tarball, not from npm.
+
+### Use all of it
+
+One program puts the packages together and runs a job end to end on pi-durable: a durable run, the recovery driver, the
+node runner, the browser and vision. It uses a scripted model and a fake browser, needs no key, and prints the record
+and the receipts it cites.
+
+```sh
+npm ci --ignore-scripts
+npm run build
+npm run demo:reference
+```
+
+[`examples/reference/`](examples/reference/README.md) has the job and the code. [What a host supplies](docs/reference-host.md)
+lists the seven functions the packages ask a host for, the install order and why, and what the example does not do yet.
 
 ## What a workflow looks like
 

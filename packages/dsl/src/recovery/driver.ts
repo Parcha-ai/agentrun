@@ -144,9 +144,14 @@ export type RecoveryOptions = {
   closeStepSession?: (sessionId: string) => Promise<unknown>;
 };
 
-/** What a host's effect adapter receives under the driver: the interpreter's parameters, and `call`, which keeps
- *  each outside call the effect makes on its record as the call ends. */
-export type RecoveryEffectParams = Parameters<NonNullable<WorkflowDeps["runEffect"]>>[0] & { call?: (record: unknown) => void };
+/** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
+ *  outside call the effect makes on its record as the call ends, and `effect`, the admitted effect: its journal id and
+ *  the hash of its arguments, as the journal stores them and the same in every process of the run. A host that keeps
+ *  what an outside call answered under them can settle an effect whose call was cut with `journal.complete`. */
+export type RecoveryEffectParams = Parameters<NonNullable<WorkflowDeps["runEffect"]>>[0] & {
+  call?: (record: unknown) => void;
+  effect?: { id: string; argsHash: string };
+};
 
 
 /** Every file a node, or anything inside it, declares it writes: an artifact's path, a call's outputs. */
@@ -655,7 +660,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const calls: unknown[] = [];
           const keep = (record: unknown) => { calls.push(record); const held = [...calls]; persist(() => journal.called(id, held)).catch(() => undefined); };
           let value: unknown;
-          try { value = await run({ ...params, signal, call: keep }); }
+          try { value = await run({ ...params, signal, call: keep, effect: { id, argsHash } }); }
           finally { if (calls.length) await flush(); }
           if (signal.aborted) throw signal.reason;
           const returned = value as { outcome?: unknown; effect_status?: unknown; details?: { outcome?: unknown; effect_status?: unknown } } | null;

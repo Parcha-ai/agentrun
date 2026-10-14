@@ -32,7 +32,7 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 			const left = getOrThrow(await docker.list(labels, context));
 			console.log(`containers left by label: ${left.length}`);
 			if (left.length > 0) throw new Error(`${left.length} containers left`);
-		});
+		}, 120_000);
 		const make = async (kind: "local" | "docker") => {
 			const box = getOrThrow(
 				await (kind === "local" ? local : docker).create({ maxLifetimeMs: 1_800_000, labels }, context),

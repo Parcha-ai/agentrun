@@ -9,7 +9,8 @@ import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { recoveryBound, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowExtension, documentStore } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-ladder-'));
@@ -159,10 +160,13 @@ test('a refusal that leaves the driver able to commit (a moved input) does not l
   let harness = await open(file, flow);
   assert.equal((await (await flow.start(harness, request, ctx)).wait(ctx)).status, 'refused');
   await harness.close(ctx);
-  // The next start brings another input under the same key: the driver refuses it, and the ladder is not asked.
-  flow = createWorkflowExtension({ options, run, escalated: async (ending) => { endings.push(Object.keys(ending).sort().join(',')); return null; } });
+  // The next process starts the same request and runs it under its own policy, which gives the interpreter another
+  // input (a host that fills it from data of its own that changed): the driver refuses it, and the ladder is not asked.
+  // A request whose own input moved never gets this far: `start` refuses it before any task runs it.
+  const interpret = (workflow, input, deps) => runWorkflow(workflow, { ...input, sku: 'B-2' }, deps);
+  flow = createWorkflowExtension({ options, run: ({ driver }) => ({ deps: withRecovery(driver, run().adapters), interpret }), escalated: async (ending) => { endings.push(Object.keys(ending).sort().join(',')); return null; } });
   harness = await open(file, flow);
-  const moved = await (await flow.start(harness, { ...request, input: { sku: 'B-2' } }, ctx)).wait(ctx);
+  const moved = await (await flow.start(harness, request, ctx)).wait(ctx);
   assert.deepEqual([moved.status, moved.code, endings], ['refused', 'FROZEN_INPUT_CHANGED', []]);
   await harness.close(ctx);
 });

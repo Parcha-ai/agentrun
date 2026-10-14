@@ -27,3 +27,9 @@
   steps, the take of a numbered lease the one point of no return; a host that starts again finishes the move from
   the lease, which keeps the move's id and the seal; the store keeps the workspace it last ran in.
   `registerMoveConformance` (`./testing`) kills the host, the source or the target before each step.
+- `modalBoxes` (`./box/modal`): a Modal sandbox (gVisor) or VM (`isolation: "vm"`) per box, over a Modal SDK the
+  host passes in.
+- Each provider is the entry `./box/<name>`, from one pattern export; `./box/box`, `./box/child` and `./box/files`
+  are not entries.
+- `daytonaBoxes` (`./box/daytona`): a Daytona sandbox per box over the REST API, sized by its snapshot; the key stays
+  in the host.

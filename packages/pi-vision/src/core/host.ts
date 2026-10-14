@@ -48,6 +48,8 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 export type CallContext = {
   readonly conversationId: string;
   readonly callId: string;
+  /** The tool the model called, as the guard's looks and misses name it in rows and receipts. Absent: `read`. */
+  readonly tool?: string;
   readonly model: unknown;
   readonly signal: AbortSignal | undefined;
   /** The value kept under `key` for this call, else `compute`'s, kept before it is returned: a call cut by a crash and
@@ -94,7 +96,9 @@ export type VisionOptions = {
   readonly limits?: (target: { readonly conversationId: string; readonly model: unknown }) => LimitsOverride;
   /** Where every look is filed. */
   readonly evidence: EvidenceSink;
-  /** The conversation's receipt label and the directory derivations are written to. */
+  /** The conversation's receipt label and the directory derivations are written to. `conversationId` is the host's id
+   *  as a string (pi-durable's is `String(api.conversationId)`); the pi-durable adapter passes pi's own id second. In
+   *  that adapter a throw here, in `eyes` or in `limits` is a `look_failed` miss for a media `read`, never the error. */
   readonly scope: (conversationId: string) => { readonly label: string; readonly deriveDir: string } | Promise<{ readonly label: string; readonly deriveDir: string }>;
   /** Default: Photon, when it is installed. */
   readonly images?: ImageProcessor;
