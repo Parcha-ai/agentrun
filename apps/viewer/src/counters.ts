@@ -1,10 +1,9 @@
 // The counters strip (RECORDING.md section 6), one fold for every recording. Counts come from durable lines, and
 // processes and kills from the supervisor's host lines; a count only live lines can give is "observed".
 import type { Json, Line } from './format.ts';
-import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, callsOf, costOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, callsOf, costOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -16,6 +15,8 @@ type Tally = { answered: string[]; failed: number; cost: (number | null)[] };
 type History<T> = [number, T][];
 const asOf = <T>(history: History<T>, commit: number) => history.findLast(([at]) => at <= commit)?.[1];
 const ZERO: Tally = { answered: [], failed: 0, cost: [] };
+/** The `pi.live` version the ask fold was measured on (pi-durable 1.1.0): another version reads re-asked not measured. */
+export const PI_LIVE_VERSION = 1;
 
 export type CounterState = {
   effects: Record<string, { admitted: number | undefined; status: Effect['status']; completedAt?: number }>;
@@ -42,7 +43,13 @@ export type CounterState = {
   committedTurns: Record<string, number>;
   modelCost: number;
   modelCostKnown: boolean;
-  observedStarts: Record<string, number[]>;
+  /** Per conversation, the `pi.live` generation last seen and the position of the ask open there. */
+  live: Record<string, { open?: number; generation?: { attempt?: Json; message?: Json } }>;
+  /** Asks per position (`<conv> <non-aborted assistant entries committed before it>`), and how many asks there were. */
+  asksAt: Record<string, number>;
+  askStarts: number;
+  /** False once a `pi.live` line of a version this fold does not know is seen. */
+  liveKnown: boolean;
   processes: number;
   kills: number;
   journalOpens: number;
@@ -59,8 +66,9 @@ export type Counters = {
   unknown: number;
   inFlight: number;
   judge: { answered: number; failed: number; reasked: number };
-  /** reaskedObserved is null when the recording has no live asks (assistant message_start): not observed is not zero. */
-  turns: { committed: number; reaskedObserved: number | null };
+  /** committed: assistant entries that are not `aborted`. reasked: positions asked more than once, proven from the
+   *  store's `pi.live`; null (not measured) when no ask start was committed or its version is not one this fold knows. */
+  turns: { committed: number; reasked: number | null };
   processes: number;
   kills: number;
   journalOpens: number;
@@ -70,20 +78,13 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host' || isAsk(line),
+    highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, live: {}, asksAt: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host',
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
       if (line.kind === 'process.started') next.processes = state.processes + 1;
       if (line.kind === 'kill') next.kills = state.kills + 1;
-      if (isAsk(line)) {
-        // An ask's position: its conversation and the assistant entries already committed there. One position asked in
-        // more than one process was asked again (observed).
-        const conv = String(line.conv ?? '?');
-        const id = `${conv} ${state.committedTurns[conv] ?? 0}`;
-        next.observedStarts = { ...state.observedStarts, [id]: [...(state.observedStarts[id] ?? []), line.gen ?? 0] };
-      }
       return next;
     }
     if (line.gen !== undefined) next.lastGen = line.gen;
@@ -114,6 +115,24 @@ export const counterFold: Fold<CounterState> = {
     if (doc) {
       const opens = generationOf(doc);
       if (opens !== undefined) next.journalOpens = Math.max(state.journalOpens, opens);
+      if (doc.doc === 'pi.live') {
+        // Asks (section 6), proven from the store: pi commits `generation` without `message` before it calls the model.
+        // A snapshot still carrying one is the ask already open at that position, or one more whose start line died.
+        if (doc.version !== undefined && doc.version !== PI_LIVE_VERSION) next.liveKnown = false;
+        const conv = String(line.conv ?? '?');
+        const held = next.live[conv] ?? {};
+        const generation = liveGenerationOf(doc);
+        const at = next.committedTurns[conv] ?? 0;
+        const asks = line.snapshot === true
+          ? generation !== undefined && held.open !== at
+          : generation !== undefined && generation.message === undefined
+            && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt);
+        if (asks) {
+          next.asksAt = { ...next.asksAt, [`${conv} ${at}`]: (next.asksAt[`${conv} ${at}`] ?? 0) + 1 };
+          next.askStarts = next.askStarts + 1;
+        }
+        next.live = { ...next.live, [conv]: { ...(asks ? { open: at } : held.open !== undefined ? { open: held.open } : {}), ...(generation ? { generation } : {}) } };
+      }
       const effect = effectOf(doc);
       if (effect && doc.key !== undefined) {
         const id = docIdOf(line, doc);
@@ -166,8 +185,14 @@ export const counterFold: Fold<CounterState> = {
     if (entry) {
       for (const message of entry.model) {
         if (message.role === 'assistant') {
+          // A cut answer's partial is appended as an `aborted` entry when the next ask starts: not a committed turn, but
+          // its usage still counts in cost.
           const conv = String(line.conv ?? '?');
-          next.committedTurns = { ...next.committedTurns, [conv]: (next.committedTurns[conv] ?? 0) + 1 };
+          if (message.stopReason !== 'aborted') {
+            next.committedTurns = { ...next.committedTurns, [conv]: (next.committedTurns[conv] ?? 0) + 1 };
+            const held = next.live[conv];
+            if (held?.open !== undefined) next.live = { ...next.live, [conv]: { ...(held.generation ? { generation: held.generation } : {}) } };
+          }
           const cost = costOf(message);
           if (cost === null) next.modelCostKnown = false; else next.modelCost = next.modelCost + cost;
           const calls = { ...next.toolCalls };
@@ -188,12 +213,9 @@ export const counterFold: Fold<CounterState> = {
   },
 };
 
-/** Whether a recording carries the live lines re-asked turns are observed from: assistant `message_start`. */
-export const observesTurns = (lines: Line[]) => lines.some(isAsk);
-
 /** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect.
- *  `turnStarts`: the recording has live asks (`observesTurns`), so re-asked turns are observed, not unknown. */
-export function countersOf(state: CounterState, ended: boolean, turnStarts = true): Counters {
+ */
+export function countersOf(state: CounterState, ended: boolean): Counters {
   const effects = Object.values(state.effects);
   const workflow = effects.filter((effect) => effect.status === 'completed').length + state.lostPaid;
   const agent = Object.values(state.receipts).reduce((sum, history) => sum + history.at(-1)![1], 0) + state.lostAgent;
@@ -225,7 +247,7 @@ export function countersOf(state: CounterState, ended: boolean, turnStarts = tru
   const answered = tallies.flatMap((tally) => tally.answered);
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null, ...tallies.flatMap((tally) => tally.cost)];
-  const reaskedObserved = turnStarts ? Object.values(state.observedStarts).reduce((sum, gens) => sum + Math.max(0, new Set(gens).size - 1), 0) : null;
+  const reasked = state.liveKnown && state.askStarts > 0 ? Object.values(state.asksAt).filter((count) => count > 1).length : null;
   return {
     paid: { total: workflow + agent, workflow, agent },
     repeated,
@@ -234,7 +256,7 @@ export function countersOf(state: CounterState, ended: boolean, turnStarts = tru
     unknown: open.filter((effect) => !alive(effect)).length,
     inFlight: open.filter(alive).length,
     judge,
-    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reaskedObserved },
+    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reasked },
     processes: state.processes,
     kills: state.kills,
     journalOpens: state.journalOpens,

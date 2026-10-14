@@ -15,7 +15,7 @@ export const docOf = (line: Line): DocLine | undefined =>
 export const docIdOf = (line: Line, doc: DocLine) => [doc.doc, doc.key ?? '', line.conv ?? '', line.task ?? ''].join('\u0001');
 
 /** A pi conversation entry, as stored. */
-export type Message = { role: string; content?: Json; toolCallId?: string; toolName?: string; isError?: boolean; usage?: Obj; details?: Obj };
+export type Message = { role: string; content?: Json; toolCallId?: string; toolName?: string; isError?: boolean; usage?: Obj; details?: Obj; stopReason?: string };
 export type Entry = { kind: string; id?: number; conversationId?: number; byTaskId?: number; model: Message[]; data?: Json };
 export const entryOf = (line: Line): Entry | undefined =>
   line.channel === 'durable' && line.source === 'pi' && isObj(line.data) && Array.isArray(line.data.model) ? (line.data as unknown as Entry) : undefined;
@@ -36,6 +36,11 @@ export const effectOf = (doc: DocLine): Effect | undefined =>
  *  a list the driver replaces in each process), or undefined when it reported none. */
 export const callsOf = (effect: Effect): Json[] | undefined => (Array.isArray(effect.calls) ? effect.calls : undefined);
 export const applied = (call: Json) => isObj(call) && call.outcome === 'applied';
+
+/** A conversation's `pi.live` generation (pi's ask in flight: `{ attempt, message? }`, the message being the committed
+ *  partial), or undefined when none is open. */
+export const liveGenerationOf = (doc: DocLine): { attempt?: Json; message?: Json } | undefined =>
+  doc.doc === 'pi.live' && isObj(doc.value) && isObj(doc.value.generation) ? doc.value.generation : undefined;
 
 /** The journal's own record (`agentrun.driver`): the generation of the process that holds it. */
 export const generationOf = (doc: DocLine): number | undefined =>
