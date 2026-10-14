@@ -21,10 +21,10 @@ export const h = (tag: string, props: { class?: string; path?: string; title?: s
 
 /** The recording the manifest's `baseline` names, folded by the shell as it folds the one on screen: its label, its
  *  counters at its end, and how long it ran (ms, null when its manifest's times do not parse). */
-export type BaselineView = { label: string; counters: Counters; ms: number | null };
+export type BaselineView = { label: string; counters: Counters; ms: number | null; providers?: 'real' | 'scripted' };
 /** What the shell hands a view: the time of the point, the focused path (a view input: no line is dropped for it), and
  *  the baseline when the manifest names one (a real recording, never typed-in numbers). */
-export type ViewContext = { t: number; focus?: string; baseline?: BaselineView };
+export type ViewContext = { t: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted' };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');

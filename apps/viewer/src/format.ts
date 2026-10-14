@@ -37,6 +37,8 @@ export type Manifest = {
   model: string;
   generations: number;
   kills: number;
+  /** `scripted` when any priced part of the run came from a cassette, a script or a fake; `real` when every one was a real provider's. */
+  providers?: 'real' | 'scripted';
   cost: { usd: number | null; parts: Record<string, number | null> };
   source: { run: string; store_sha256: string };
   result?: { blob: string; title: string };
@@ -103,6 +105,7 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   if (typeof m?.title !== 'string') note('manifest.title is missing');
   if (!isInt(m?.generations, 1)) note('manifest.generations is not a whole number from 1');
   if (!isInt(m?.kills)) note('manifest.kills is not a whole number');
+  if (m?.providers !== undefined && m.providers !== 'real' && m.providers !== 'scripted') note('manifest.providers is not real or scripted');
   const parts = Object.values(m?.cost?.parts ?? {});
   if (m?.cost && parts.some((part) => part === null) && m.cost.usd !== null) note('manifest.cost.usd is a number though a part is unknown');
   if (m?.result && blobs && !blobs.has(m.result.blob)) note(`manifest.result.blob ${m.result.blob} is not in blobs/`);

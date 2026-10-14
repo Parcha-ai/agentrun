@@ -41,7 +41,7 @@ export type CounterState = {
   /** At a restore, what the store held at its checkpoint, for the restored snapshot to rebuild from (so a later
    *  restore to an older checkpoint still finds it): each effect's completion commit, and each receipt's and decision's
    *  history up to the checkpoint. Cleared when the snapshot ends. */
-  retained?: { effects: Record<string, number>; receipts: Record<string, History<number>>; decisions: Record<string, History<Tally>> };
+  retained?: { effects: Record<string, number>; receipts: Record<string, History<number>>; decisions: Record<string, History<Tally>>; charges: Record<string, History<number | null>> };
   /** Whether the last durable line was a snapshot, and whether a process started since the last snapshot line: a
    *  process's snapshot is the run it writes at its open (3.2). */
   inSnapshot: boolean;
@@ -54,9 +54,11 @@ export type CounterState = {
   modelPriced: boolean;
   /** Whether any durable line was folded: with none, no count here is measured. */
   measured: boolean;
-  /** The other priced parts of cost, latest per session or look: a browser session's charge and a vision look's,
-   *  null until priced. Money spent stays spent, so a restore does not reset them. */
-  charges: Record<string, number | null>;
+  /** The other priced parts of cost, per session or look in the branch the store holds: a browser session's charge
+   *  and a vision look's (each a running total), null until priced. A restore sets them back to the checkpoint's, and
+   *  what the lost branch charged beyond it stays in lostCharges (null when a lost part is unknown). */
+  charges: Record<string, History<number | null>>;
+  lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
    *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
@@ -100,7 +102,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host',
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -133,8 +135,18 @@ export const counterFold: Fold<CounterState> = {
         const upTo = <T>(histories: Record<string, History<T>>) => Object.fromEntries(Object.entries(histories).map(([key, history]) => [key, history.filter(([at]) => at <= restored)]).filter(([, history]) => history.length > 0));
         next.retained = {
           effects: Object.fromEntries(Object.entries(state.effects).flatMap(([id, effect]) => (effect.completedAt !== undefined && effect.completedAt <= restored ? [[id, effect.completedAt]] : []))),
-          receipts: upTo(state.receipts), decisions: upTo(state.decisions),
+          receipts: upTo(state.receipts), decisions: upTo(state.decisions), charges: upTo(state.charges),
         };
+        // A charge is a running total: what the lost branch added beyond the checkpoint was spent all the same.
+        let lostCharges = state.lostCharges;
+        for (const history of Object.values(state.charges)) {
+          const latest = history.at(-1)![1];
+          const held = history.findLast(([at]) => at <= restored);
+          const then = held ? held[1] : 0;
+          lostCharges = lostCharges === null || latest === null || then === null ? null : lostCharges + Math.max(0, latest - then);
+        }
+        next.lostCharges = lostCharges;
+        next.charges = {};
         next.effects = {};
         next.receipts = {};
         next.decisions = {};
@@ -145,7 +157,11 @@ export const counterFold: Fold<CounterState> = {
     if (doc) {
       const priced = [...(browserChargesOf(doc) ?? []).map((each) => [`browser ${docIdOf(line, doc)} ${each.tag}`, each.usd] as const),
         ...(lookChargesOf(doc) ?? []).map((each) => [`look ${docIdOf(line, doc)} ${each.receipt}`, each.usd] as const)];
-      if (priced.length) next.charges = { ...next.charges, ...Object.fromEntries(priced) };
+      if (priced.length) {
+        const charges = { ...next.charges };
+        for (const [key, usd] of priced) charges[key] = [...(charges[key] ?? (line.snapshot === true ? next.retained?.charges[key] : undefined) ?? []), [line.commit!, usd]];
+        next.charges = charges;
+      }
       const opens = generationOf(doc);
       if (opens !== undefined) next.journalOpens = Math.max(state.journalOpens, opens);
       if (doc.doc === 'pi.live') {
@@ -304,7 +320,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   // Cost is null until a durable line prices a part (section 6: null, never 0), and null when any part is unknown.
   const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost),
-    ...Object.values(state.charges)];
+    ...Object.values(state.charges).map((history) => history.at(-1)![1]), ...(state.lostCharges === 0 ? [] : [state.lostCharges])];
   const measured = state.liveKnown && state.askStarts > 0;
   const cutAsks = Object.values(state.reasks);
   const split = (kind: 'proven' | 'possible') => ({ turns: cutAsks.filter((tally) => tally[kind] > 0).length, reasks: cutAsks.reduce((sum, tally) => sum + tally[kind], 0) });

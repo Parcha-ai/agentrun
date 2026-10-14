@@ -1,6 +1,6 @@
 # agentrun.recording/1
 
-Draft 17, 2026-10-14. The format the run viewer in this directory plays. A change to a field's meaning is
+Draft 18, 2026-10-14. The format the run viewer in this directory plays. A change to a field's meaning is
 `agentrun.recording/2`.
 
 A recording is one real run, kept so a static viewer can replay it exactly, with no key and no server. Live mode
@@ -35,9 +35,15 @@ type Manifest = {
   chapters?: { title: string; at: { gen: number; commit: number }; focus?: string }[];
                                       // jump points: the screen just after that commit (gen and commit, because a
                                       //   restore reuses commit numbers, 3.2); focus: an execution path prefix
+  providers?: "real" | "scripted";   // "real" when every priced part (model, eyes, browser, a door's outside call)
+                                      //   called a real provider; "scripted" when any was served from a cassette, a
+                                      //   script or a fake
   baseline?: { recording: string; label: string };
-                                      // another REAL agentrun.recording/1 directory (relative path or URL) whose
-                                      //   counters show beside this one's; never typed-in numbers
+                                      // another recorded agentrun.recording/1 directory (relative path or URL) whose
+                                      //   counters show beside this one's; never typed-in numbers. A difference in
+                                      //   cost (the price of the kills) is computed only when both manifests say
+                                      //   providers "real"; otherwise, or when either lacks the field, it reads
+                                      //   "not comparable"
 };
 ```
 
@@ -135,7 +141,8 @@ the restored generation's snapshot.
   commit takes, after any replay. A move's `head` equals its `seal.head`, and `S` equals the highest commit seen
   before it (no drop). A restore that replays the host's shipped commits carries `replayed { from, to }` and its
   `head` is `to + 1`. The host writes a commit's lines only after it has appended that commit's frame to its log, and
-  the lines travel in the same frame as the writes, so a streamed recording's lines never run ahead of the log and a
+  each commit's lines follow its writes on the same ordered link (a `record` frame, then a `lines` frame), so a
+  streamed recording's lines never run ahead of the log and a
   restore that replays the whole log has no lost branch. When `to` is below the last commit seen (lines recorded
   another way, or a log the restore did not replay to its end), the gap `(to, last seen]` is a lost branch under the
   same rule: counted, never hidden, accepted on that restore record. A restore from the checkpoint alone has `head`
@@ -177,7 +184,7 @@ the restored generation's snapshot.
 |---|---|---|
 | workflow | `agentrun.driver` (generation, revision, notes); `agentrun.effects` (status `unknown`, written at admission before dispatch, then `completed`; the first revision is the admission; intent and outside calls: each call is the record the host's effect adapter passes to the driver's `call`, `{ outcome: "applied" | "failed" | "unknown", ... }`, written only when the host reports it. A host lists every applied call EXACTLY ONCE: a settlement that finds from evidence (a provider lookup) that the call applied, while `calls` holds no applied entry, reports `{ outcome: "applied" }` then, and one whose applied call is already listed adds none); `agentrun.receipts` (an agent's paid tool calls, one entry per tool and argsHash); `agentrun.decisions` (receipts, `run_key`); `agentrun.record` (a delivered record and its attempts); `agentrun.node`, `agentrun.nodes` (the node runner's index); `agentrun.gate`; `agentrun.workflow`, a pi task: in process, every write of the task at its commit (created with its request, the workflow as run and its input, so a graph draws from the start; then its state; then its outcome); in a bare export, its current record once at the export's last commit | `WorkflowEvent` `{ type, label, detail, executionPath }`: `node.start`, `node.end`, `effect.attempt`, `effect.poll`, `effect.failed`, `effect.late_settled`, `ask.evaluated`, `judge.answered`, `verify.answered`, `route.chosen`, `escalate.evaluated`, `loop.exited`, `code.patch` |
 | pi | conversation entries (messages, tool calls and results; image blocks as blobs), memos (`pi.memo`), the conversation documents (`pi.live`, one per conversation: `generation { attempt, message? }` with `message` the committed throttled partial of the answer in flight; `pi.usage`, `pi.agent`, `pi.inbox`), tasks (`pi.generation`, `pi.tool`), usage | `run_start`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_execution_start`, `tool_execution_end` (streaming deltas dropped) |
-| browser | `browser.sessions`, `browser.inventory` (custody records) | `SessionRow` on `launched`, `updated`, `released`; `EvidenceRecord` (body as a blob); `frame` (`{ session, provider, w, h, mime: "image/jpeg" }`, one JPEG blob; at most 10 fps at 800 px); `frame.gap` (`{ session, from, reason }`, reason `process_killed`, `credential_on_page` or `session_released`; no frame is kept while a credential or a code is on the page); `frame.track`, optional, written at export (`{ session, fps, from, to }`, blobs: a WebM and its index). Every frame line carries the event-level `conv` of its session |
+| browser | `browser.sessions`, `browser.inventory` (custody records) | `SessionRow` on `launched`, `updated`, `released`; `EvidenceRecord` (body as a blob); `frame` (`{ session, provider, w, h, mime: "image/jpeg" }`, one JPEG blob; at most 10 fps at 800 px); `frame.gap` (`{ session, from, reason, detail? }`, reason `process_killed`, `credential_on_page` or `session_released`; for `credential_on_page`, `detail` says why: `field`, `typed`, `too_deep`, `unreadable_frame` or `host`; no frame is kept while a credential or a code is on the page); `frame.track`, optional, written at export (`{ session, fps, from, to }`, blobs: a WebM and its index). Every frame line carries the event-level `conv` of its session |
 | vision | a `vision.*` document where the host files each `LookRecord` (the durable source for looks paid and their cost); the look memos `vision:look:<key>` only as live memo lines (section 3.1) | `LookEvent`, `MissEvent` |
 | transport | `transport.moves`, one key per move id, written once in the commit the TARGET runner makes when it opens the moved store: `kind` (`move` or `restore`), epoch, `from` and `to` (`{ environment, provider, box }`), drain, ship and take ms, bytes, `stopped` (the attempts a kill or failure ended before landing), the placement id; `head`, the target's first new commit's sequence after any replay; a move's `seal` and a restore's `checkpoint` (`{ head, sha256, bytes }`, the checkpoint also `at`), and a replayed restore's `replayed { from, to }`. Hops and flights fold from it. A move continues the commit sequence; a restore starts it again (3.2) | box created and ended, and the session token, as live lines |
 | host | | the supervisor's, all with no event-level `gen` (3.1): `process.started` (`gen`); `kill` (`gen`, `label`, `crossing`: `{ point, n }`, the named crossing the kill landed on and its ordinal, or `null` for a kill at no named crossing); `result` (`gen` of the process that delivered, `blob`, `title`), written when that process exits with the delivery made |

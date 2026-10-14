@@ -236,3 +236,20 @@ test('a move record a later snapshot carries is state, not a move that process m
   assert.deepEqual(validate(manifest, moved), []);
 });
 
+
+test('a restore keeps what the lost branch charged: a browser session\'s running total is not set back', () => {
+  const session = (gen: number, commit: number, usd: number | null, snapshot = false) =>
+    doc(gen, commit, 0, 'browser.sessions', undefined, { sessions: [{ tag: 's1', spent: usd === null ? { state: 'accruing' } : { usd, state: 'priced' } }] }, snapshot);
+  const run = (after: number | null) => [
+    supervisor('process.started', 1, { gen: 1 }),
+    session(1, 2, 1), session(1, 4, 3),
+    supervisor('kill', 2, { gen: 1, label: 'the box died', crossing: null }), supervisor('process.started', 3, { gen: 2 }),
+    // Restored to commit 2, where the session had spent $1; it goes on to $1.50.
+    session(1, 2, 1, true),
+    session(2, 3, after),
+  ].map((line, index) => ({ ...line, t: (index + 1) * 10 }));
+  assert.equal(countersOf(reduceTo(counterFold, run(1.5), run(1.5).length), true).cost, 3.5, '$3 spent before the restore, and $0.50 more after it');
+  assert.equal(countersOf(reduceTo(counterFold, run(null), run(null).length), true).cost, null, 'unknown while the session is unpriced');
+  const noRestore = run(1.5).slice(0, 3);
+  assert.equal(countersOf(reduceTo(counterFold, noRestore, noRestore.length), true).cost, 3, 'with no restore, the latest running total');
+});

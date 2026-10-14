@@ -3,7 +3,7 @@
 import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { panelsShown, type BaselineView, type Node, type Panel } from './panels.ts';
+import { panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
@@ -257,8 +257,20 @@ async function baselineOf(recording: Recording, base: string | undefined): Promi
   const entry = (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id || each.id === named.recording);
   const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
   if (!other) return undefined;
+  return baselineViewOf(named.label, other);
+}
+
+/** The baseline a panel's view gets: another recording's label, its counters at its end, how long it ran, and the providers its manifest says. */
+export function baselineViewOf(label: string, other: Recording): BaselineView {
   const ms = Date.parse(other.manifest.recorded.ended) - Date.parse(other.manifest.recorded.started);
-  return { label: named.label, counters: countersOf(reduceTo(counterFold, other.lines, other.lines.length), true), ms: Number.isFinite(ms) ? ms : null };
+  return { label, counters: countersOf(reduceTo(counterFold, other.lines, other.lines.length), true), ms: Number.isFinite(ms) ? ms : null,
+    ...(other.manifest.providers ? { providers: other.manifest.providers } : {}) };
+}
+
+/** What the shell hands a panel's view at a stop: the time, the focus when there is one, the baseline when the manifest names one, and the
+ *  run's own providers (`real` or `scripted`) when its manifest says. */
+export function viewContext(t: number, focus: string | undefined, baseline: BaselineView | undefined, manifest: Manifest): ViewContext {
+  return { t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}) };
 }
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
@@ -344,7 +356,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, { t, ...(player.focus ? { focus: player.focus } : {}), ...(baseline ? { baseline } : {}) }), player, frames, t, setFocus));
+        renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest)), player, frames, t, setFocus));
     }));
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
