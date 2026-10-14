@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,9 +18,19 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
+import { SWAPPER_CAP_SECONDS, spawnSwapper, swapperLoop } from "./fixtures/swapper.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SQLITE = "SQLITE-SENTINEL";
+
+/** Whether the process is still running (a zombie waiting to be reaped is not). */
+function alive(pid: number): boolean {
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
 
 interface Layout {
   readonly base: string;
@@ -663,11 +673,7 @@ describe("a component swapped for a symlink after the check is refused, never fo
 
   it("holds against a real concurrent swapper: the store is never written while a command flips the target between a file and a link", async (t) => {
     await withLayout(async (layout) => {
-      const flip = spawn(
-        "sh",
-        ["-c", `cd ${layout.work} && while :; do rm -f x; ln -s ../store/run.sqlite x; rm -f x; : > x; done`],
-        { stdio: "ignore", detached: true },
-      );
+      const flip = spawnSwapper(layout.work, process.pid);
       const outcomes: Record<string, number> = { written: 0, refused: 0, failed: 0 };
       try {
         const env = layout.env();
@@ -685,6 +691,122 @@ describe("a component swapped for a symlink after the check is refused, never fo
       }
       t.diagnostic(`outcomes ${JSON.stringify(outcomes)}`);
       assert.ok(outcomes.written + outcomes.refused > 0);
+    });
+  });
+});
+
+describe("the swapper fixture", () => {
+  it("ends by itself when the test process that started it is killed mid-test, with no finally run", async () => {
+    await withLayout(async (layout) => {
+      const driver = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-driver.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
+      let said = "";
+      driver.stdout.on("data", (chunk) => (said += chunk));
+      let racer = 0;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        racer = Number(/"swapper":(\d+)/.exec(said)?.[1]);
+        assert.ok(racer > 0, "the driver started a swapper");
+        assert.ok(alive(racer), "the swapper is running");
+        driver.kill("SIGKILL");
+        for (const t0 = Date.now(); alive(racer) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.ok(!alive(racer), "the swapper is gone within 5 s of its test process");
+      } finally {
+        driver.kill("SIGKILL");
+        // the swapper leads a group of its own: this is the group of the one this test started
+        if (racer > 0) {
+          try {
+            process.kill(-racer, "SIGKILL");
+          } catch {}
+        }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's driver", () => {
+  it("ends with the test process that started it, and the swapper with the driver, when that process is killed before it cleans up", async () => {
+    await withLayout(async (layout) => {
+      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
+      let said = "";
+      outer.stdout.on("data", (chunk) => (said += chunk));
+      let pids: { driver: number; swapper: number } | undefined;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        pids = JSON.parse(said.trim().split("\n")[0]!) as { driver: number; swapper: number };
+        assert.ok(alive(pids.driver) && alive(pids.swapper), "the driver and the swapper are running");
+        outer.kill("SIGKILL");
+        for (const t0 = Date.now(); (alive(pids.driver) || alive(pids.swapper)) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.ok(!alive(pids.driver), "the driver is gone within 5 s of the process that started it");
+        assert.ok(!alive(pids.swapper), "the swapper is gone with it");
+      } finally {
+        outer.kill("SIGKILL");
+        if (pids) {
+          for (const target of [pids.driver, -pids.swapper]) {
+            try {
+              process.kill(target, "SIGKILL");
+            } catch {}
+          }
+        }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's stand-in test process", () => {
+  it("ends, with the driver and the swapper, once its stdin from the test closes, so a killed test leaves none of the three", async () => {
+    await withLayout(async (layout) => {
+      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
+      let said = "";
+      outer.stdout.on("data", (chunk) => (said += chunk));
+      let pids: { driver: number; swapper: number } | undefined;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        pids = JSON.parse(said.trim().split("\n")[0]!) as { driver: number; swapper: number };
+        const all = [outer.pid!, pids.driver, pids.swapper];
+        assert.ok(all.every(alive), "the stand-in, the driver and the swapper are running");
+        outer.stdin.end();
+        for (const t0 = Date.now(); all.some(alive) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.deepEqual(all.filter(alive), [], "all three are gone within 5 s of the test's end of the pipe closing");
+      } finally {
+        outer.kill("SIGKILL");
+        if (pids) {
+          for (const target of [pids.driver, -pids.swapper]) {
+            try {
+              process.kill(target, "SIGKILL");
+            } catch {}
+          }
+        }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's two ends", () => {
+  it("carries both: the loop follows its test process, and a deadline bounds it whatever the test process does", async () => {
+    assert.match(swapperLoop("/w", 4242), /while kill -0 4242 /);
+    assert.ok(SWAPPER_CAP_SECONDS >= 60 && SWAPPER_CAP_SECONDS <= 300, "a cap longer than a test needs and short enough to matter");
+    await withLayout(async (layout) => {
+      const racer = spawnSwapper(layout.work, process.pid, 1);
+      try {
+        const gone = new Promise<void>((resolve) => racer.once("exit", () => resolve()));
+        assert.ok(alive(racer.pid!), "the swapper runs while its test process is alive");
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            gone,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("the 1 s cap did not end the swapper within 6 s")), 6_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        assert.ok(!alive(racer.pid!));
+      } finally {
+        try {
+          process.kill(-racer.pid!, "SIGKILL");
+        } catch {}
+      }
     });
   });
 });

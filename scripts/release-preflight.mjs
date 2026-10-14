@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
+import { hasVersionSection, loadFragments } from './changes.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
@@ -71,6 +72,10 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
   assert.equal(tag, `v${workspace.version}`, 'Tag must match the exact workspace version');
+  // The release folds the changes/ fragments into the changelogs first (node scripts/changes.mjs --fold <version>).
+  const unfolded = await loadFragments(root);
+  assert.deepEqual(unfolded.map(fragment => fragment.file), [], 'Unfolded changelog fragments remain in changes/; run node scripts/changes.mjs --fold');
+  assert.ok(hasVersionSection(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), workspace.version), `CHANGELOG.md has no section for ${workspace.version}`);
   assert.ok(['MIT', 'Apache-2.0'].includes(workspace.license), 'Release requires an approved MIT or Apache-2.0 license; UNLICENSED is not publishable');
   const license = await readFile(join(root, 'LICENSE'), 'utf8');
   assert.ok(license.length > 900, 'Root LICENSE must contain the complete approved license');

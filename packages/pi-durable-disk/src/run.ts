@@ -99,12 +99,16 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
-  /** The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an environment. */
-  readonly mountToken: string;
+  /**
+   * The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an
+   * environment. Required to mount an Archil disk (the default `acquire`); a run whose `acquire` is replaced (a local
+   * directory: `localRun`) needs none, and its `acquire` is handed an empty token.
+   */
+  readonly mountToken?: string;
   /** Default /mnt/archil. */
   readonly mountRoot?: string;
   /** Mount with `--force`: the takeover fallback when the supervisor could not revoke. */
@@ -154,6 +158,49 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
   readonly decorateStore?: (database: SqliteDatabase) => SqliteDatabase;
+  /**
+   * Awaited once the Harness is open (its registry installed) and the run is live, before the Harness resumes: no
+   * resumed task takes a step until it settles, and what it admits (a submission, a write) is committed before anything
+   * a resumed task's steps commit. A host reconciles here what a resumed tool depends on (a browser, a mount). A rejection
+   * fails the open as any step does (`before-resume`), and the claim is released.
+   */
+  readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
+}
+
+/**
+ * What `beforeResume` sees: the open Harness, not yet resumed, the open's context, the incarnation it belongs to, and the
+ * store the Harness was opened over with its head (a recorder snapshots every document at `head` here).
+ */
+export interface BeforeResume {
+  readonly harness: Harness;
+  readonly context: Context;
+  readonly generation: number;
+  readonly record: RunRecord;
+  readonly claim: RunClaim;
+  /** The store the Harness was opened over, read-only: four reads on an object of their own, and no way to a write. */
+  readonly storage: StoreReads;
+  /**
+   * The store's last committed sequence once the Harness is open, read just before the hook runs. Until the hook commits
+   * something, the store's current state is its state at `head`: a document that keeps no history (`latest`, and session
+   * and task documents) reads only at "current", a `rewindable` one at `head` too.
+   */
+  readonly head: Seq;
+}
+
+/** The reads of a store that `beforeResume` gets. */
+export type StoreReads = Pick<Storage, "scanConversations" | "scanTasks" | "scanDocuments" | "document">;
+
+/**
+ * `storage`'s four reads on a frozen object that holds nothing else: no `commit` or `mintId` on it, and no reference to
+ * `storage` a cast could reach.
+ */
+function storeReads(storage: Storage): StoreReads {
+  return Object.freeze({
+    scanConversations: (...args: Parameters<Storage["scanConversations"]>) => storage.scanConversations(...args),
+    scanTasks: (...args: Parameters<Storage["scanTasks"]>) => storage.scanTasks(...args),
+    scanDocuments: (...args: Parameters<Storage["scanDocuments"]>) => storage.scanDocuments(...args),
+    document: (...args: Parameters<Storage["document"]>) => storage.document(...args),
+  });
 }
 
 /** The claim as the app sees it: paths, the fenced flag, and a barrier whose failure fences the run. */
@@ -812,10 +859,13 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step):
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
   }
+  if (options.acquire === undefined && !options.mountToken) {
+    throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");
+  }
   const claim = await step("acquire", () =>
     (options.acquire ?? acquire)({
       ref,
-      token: options.mountToken,
+      token: options.mountToken ?? "",
       ...(options.mountRoot === undefined ? {} : { mountRoot: options.mountRoot }),
       ...(options.force === undefined ? {} : { force: options.force }),
       ...(options.host === undefined ? {} : { host: options.host }),
@@ -901,6 +951,15 @@ class Run implements DurableRun {
     const storage = lease.observe(this.#store.storage);
     this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness, env: this.env }, this.#context));
     await step("live", () => lease.live());
+    const before = this.#options.beforeResume;
+    if (before) {
+      // The storage the Harness was opened over (the lease observes its commits), and its head now: nothing commits
+      // between the open and the hook, since the Harness has not resumed.
+      await step("before-resume", async () => {
+        const head = (await storeHead(this.#store!)) as Seq;
+        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, claim: lease.claim, storage: storeReads(storage), head });
+      });
+    }
     await step("resume", () => this.#harness!.resume());
   }
 
