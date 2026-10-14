@@ -25,7 +25,7 @@
     }
   },
   "result": {
-    "blob": "8f63fd346c43f20e31ad97556dabd7d18a3882c9060b410dc4dac192847cb36b",
+    "blob": "6ce51f39f3d16011eab4596e118073afafec75d9386807ea6ea4e4520c17dc3a",
     "title": "The film clip"
   },
   "cost": {
@@ -33,8 +33,8 @@
     "parts": {}
   },
   "recorded": {
-    "started": "2026-10-14T11:27:06.785Z",
-    "ended": "2026-10-14T11:29:19.926Z"
+    "started": "2026-10-14T12:08:10.055Z",
+    "ended": "2026-10-14T12:11:00.478Z"
   },
   "source": {
     "run": "apollo-film",

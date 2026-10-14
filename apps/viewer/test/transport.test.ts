@@ -74,8 +74,10 @@ test('the whole route: seven lanes, the token\'s flights, eight processes, two k
     assert.ok(flight.bytes !== null && flight.bytes > 0);
   }
   const [restore] = state.flights.filter((flight) => flight.kind === 'restore');
-  assert.equal(restore!.checkpoint!.head, state.checkpoints.at(-1)!.head, 'a restore from a checkpoint alone has the checkpoint\'s head');
-  assert.deepEqual(restore!.checkpoint!.excluded, ['media']);
+  const before = state.checkpoints.filter((checkpoint) => checkpoint.t <= restore!.t).at(-1)!;
+  assert.equal(restore!.checkpoint!.head, before.head, 'a restore from a checkpoint alone has the head of the newest checkpoint before it');
+  assert.equal(restore!.head, restore!.checkpoint!.head);
+  assert.deepEqual(restore!.checkpoint!.excluded, [], 'this run left nothing out of its checkpoints');
   assert.deepEqual(state.kills.map((kill) => kill.kind), ['box', 'process']);
   assert.ok(state.kills.every((kill) => kill.recovered !== undefined && kill.recovered.afterMs >= 0), 'each kill has the runner that came back');
   const [boxKill, processKill] = state.kills;
@@ -97,7 +99,6 @@ test('the screen says what is proven and what is only observed, and never makes 
   assert.match(end, /paid calls\s+not measured: no durable lines/);
   assert.doesNotMatch(end, /\$0/);
   assert.match(end, /Why here: by config \(no placement record in this recording\)/);
-  assert.match(end, /left out of the checkpoint: media/);
   assert.match(end, /the whole box/);
   assert.match(end, /back in/);
   assert.match(screen(real.lines, 0), /has not started a box yet/);
@@ -215,4 +216,13 @@ test('shipped bytes: a total that includes a flight with no recorded size says s
 test('the checkpoint count from live lines is labelled observed, as the flights are', () => {
   assert.match(screen(real.lines), /checkpoints\s*\d+ \(observed: live lines\)/);
   assert.match(screen([boxAt('a', 'one', 1)]), /checkpoints\s*0\b/);
+});
+
+test('a restore that left paths out of its checkpoint says which, and a checkpoint that left nothing out says nothing', () => {
+  const boxes = [boxAt('a', 'one', 1), boxAt('b', 'two', 2)];
+  const restore = (extra: { [key: string]: Json }) => live('restore', 11, { id: 'r1', to: { environment: 'two', provider: 'docker', box: 'b' }, epoch: 3, head: 9, checkpoint: { head: 9, bytes: 4096 }, ...extra });
+  const left = restore({ excluded: { patterns: ['media'], entries: ['media'], more: 0, files: 4, bytes: 277354044 } });
+  assert.deepEqual(at([...boxes, left]).flights[0]!.checkpoint!.excluded, ['media']);
+  assert.match(screen([...boxes, left]), /left out of the checkpoint: media/);
+  assert.doesNotMatch(screen([...boxes, restore({})]), /left out of the checkpoint/);
 });
