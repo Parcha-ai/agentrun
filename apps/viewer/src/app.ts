@@ -3,7 +3,7 @@
 import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, observesTurns, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { registry, type BaselineView, type Node, type Panel } from './panels.ts';
+import { panelsShown, type BaselineView, type Node, type Panel } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
@@ -310,7 +310,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }));
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []));
     const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
-    panels.replaceChildren(...registry.map((panel: Panel<unknown>) => {
+    panels.replaceChildren(...panelsShown().map((panel: Panel<unknown>) => {
       // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       return el('section', { class: 'panel' }, el('h3', { text: panel.title }),

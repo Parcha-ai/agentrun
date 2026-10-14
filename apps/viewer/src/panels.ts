@@ -30,7 +30,7 @@ const dimmed = (path: string | undefined, focus: string | undefined) => (focus !
 
 export type Panel<S> = Fold<S> & { id: string; title: string; view(state: S, context: ViewContext): Node };
 
-/** Panels the shell shows, in order. An extension's crew adds its panel with `register`. */
+/** The extensions' panels, in the order they register (each when its module loads). */
 export const registry: Panel<any>[] = [];
 export const register = <S>(panel: Panel<S>) => { registry.push(panel); };
 
@@ -86,5 +86,5 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
     ...Object.entries(state.streaming).filter(([, live]) => live).map(([conv]) => h('p', { class: 'streaming' }, `conversation ${conv}: a turn is in flight`))),
 };
 
-register(linesPanel);
-register(turnsPanel);
+/** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
+export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];

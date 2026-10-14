@@ -8,7 +8,7 @@ import { counterFold, countersOf, observesTurns } from '../src/counters.ts';
 import { parseLines, validate, type Line } from '../src/format.ts';
 import { frameFold, pictureAt } from '../src/frames.ts';
 import { lanesOf } from '../src/lanes.ts';
-import { linesPanel, registry, type Node } from '../src/panels.ts';
+import { linesPanel, panelsShown, register, registry, turnsPanel, type Node } from '../src/panels.ts';
 import { reduceTo, snap, stopsOf } from '../src/replay.ts';
 
 const at = (path: string) => new URL(`fixtures/reference-killed/${path}`, import.meta.url);
@@ -46,7 +46,7 @@ test('no stop falls inside a commit, and a scrub to any stop equals a fresh redu
     const after = lines[p]!;
     if (before.channel === 'durable' && after.channel === 'durable' && before.commit === after.commit && !before.snapshot && !after.snapshot) assert.equal(stops[p], false, `stop ${p} splits commit ${before.commit}`);
   }
-  for (const fold of [counterFold, frameFold, ...registry]) {
+  for (const fold of [counterFold, frameFold, ...panelsShown()]) {
     // One pass, keeping the state at each stop, against a fresh reduce to that stop.
     let state = fold.init();
     for (let p = 0; p <= lines.length; p += 1) {
@@ -128,4 +128,11 @@ test('the lines panel names the process a supervisor line is about from its data
   const shown = text(linesPanel.view(reduceTo(linesPanel, lines, lines.length), { t: 0 }));
   assert.match(shown, /kill \(process 1\)/);
   assert.doesNotMatch(shown, /process undefined/);
+});
+
+test('an extension\'s panel shows before the shell\'s own two, whatever order the modules load in', (t) => {
+  const extension = { ...linesPanel, id: 'an-extension', title: 'An extension' };
+  register(extension);
+  t.after(() => { registry.splice(registry.indexOf(extension), 1); });
+  assert.deepEqual(panelsShown().map((panel) => panel.id), ['an-extension', linesPanel.id, turnsPanel.id]);
 });
