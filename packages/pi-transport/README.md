@@ -353,7 +353,12 @@ the target's own place (then the copy is that host's too), and does nothing more
 take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where it says
 and makes that home run (a home sealed at the lease's epoch is told to reopen; any other, a target that never
 resumed or a sealed home the lease names at a later epoch, is told to resume with the lease's seal and move id, and
-the `notice` the recovering host passes). A host that starts again calls it.
+the `notice` the recovering host passes). A host that starts again calls it. Never two runners on one store: a home
+holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the process), and a
+second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops one that still
+runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command line names this
+store), and a call that runner had in flight is cut, at most once. A host whose runners a launcher keeps passes the
+launcher's stop as `stop`.
 
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
 with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, a take another host

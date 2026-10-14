@@ -613,6 +613,48 @@ export function registerMoveConformance(
 			timeoutMs,
 		);
 
+		runner.it(
+			"stops a runner that still runs before it recovers there: never two runners on one store",
+			() =>
+				withPair((pair) =>
+					withRun(pair, async (run) => {
+						await sleep(150);
+						const moved = await moveHome(
+							{
+								session: SESSION,
+								host: "host-1",
+								ownership: run.lease,
+								from: { place: pair.a, home: run.home, epoch: 1 },
+								to: pair.b,
+								start: run.start,
+								notice: NOTICE,
+								onStep: async (step) => {
+									if (step === "drain") run.drainCame();
+									if (step === "take") await run.kill(pair.b);
+								},
+							},
+							context,
+						);
+						// The target went away before the take: the source opened its store again and runs on.
+						equal(moved.ok ? "moved" : moved.error.code, "target", "the move's outcome");
+						equal(getOrThrow(await run.home.status(context)).state, "open", "the source");
+						// A host that lost track of the source recovers anyway, at the place where it runs.
+						const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
+						const recovered = getOrThrow(
+							await recoverHome(
+								{ session: SESSION, ownership: run.lease, places, start: run.start, notice: NOTICE },
+								context,
+							),
+						);
+						equal((await run.home.status(context)).ok, false, "the source's first runner answers");
+						getOrThrow(await recovered.home.idle(context));
+						await checkRounds(run, pair.a, pair.b, false);
+						equal(run.notices(), 0, "the notices the model saw");
+					}),
+				),
+			timeoutMs,
+		);
+
 		// Inside the target's own steps: after the take, so the session is the target's whatever the move answered.
 		const inside: readonly (readonly [KillPoint, string])[] = [
 			["build", "after it wrote its marker and before it opened the store"],

@@ -374,6 +374,21 @@ describe("a home: what it refuses", () => {
 		});
 	});
 
+	it("is busy while another runner at the same place holds the store, and opens it once that one closed", async () => {
+		await withWorld(async (made) => {
+			const options = made.home("a");
+			const first = await opened(options);
+			getOrThrow(await first.resume({ epoch: 1 }, context));
+			const second = await opened(options);
+			const refused = await second.resume({ epoch: 1 }, context);
+			expect(refused.ok ? "" : refused.error.code).toBe("busy");
+			expect(second.harness).toBeUndefined();
+			await first.close(context);
+			getOrThrow(await second.resume({ epoch: 1 }, context));
+			await second.close(context);
+		});
+	});
+
 	it("stays sealed until it is told to reopen, also in a new process, and then goes on with nothing cut", async () => {
 		await withWorld(async (made) => {
 			const options = made.home("a");

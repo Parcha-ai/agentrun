@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getOrThrow, ok } from "@earendil-works/pi-durable/env";
+import { err, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { dirStore } from "../src/home/dir-store.ts";
@@ -10,6 +10,7 @@ import type { HomeHandle } from "../src/home/host.ts";
 import { type Place, recoverHome, type StartRunner } from "../src/home/move.ts";
 import { leaseIn, type Ownership } from "../src/home/ownership.ts";
 import type { HomeState, ResumeOrder } from "../src/home/run.ts";
+import type { StopRunner } from "../src/home/stop.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SESSION = "s-1";
@@ -26,10 +27,17 @@ const place = (environment: string): Place => ({
 });
 const places = { a: place("a"), b: place("b") };
 
-/** A runner that is ready in `state`, says it is at `homeEpoch`, and writes down every order it is given. */
-function runnerIn(state: HomeState, homeEpoch: number | null = 1) {
+/**
+ * A runner that is ready in `state`, says it is at `homeEpoch`, and writes down every order it is given; `started`
+ * holds every stop and start in order. `stops` false: the runner that still runs there will not stop.
+ */
+function runnerIn(state: HomeState, homeEpoch: number | null = 1, stops = true) {
 	const orders: unknown[] = [];
 	const started: string[] = [];
+	const stop: StopRunner = async (at) => {
+		started.push(`stop ${at.environment}`);
+		return stops ? ok(undefined) : err(new Error("it runs on"));
+	};
 	const start: StartRunner = async (at, epoch) => {
 		started.push(`${at.environment}@${epoch}`);
 		const handle: Partial<HomeHandle> = {
@@ -48,7 +56,7 @@ function runnerIn(state: HomeState, homeEpoch: number | null = 1) {
 		};
 		return ok(handle as HomeHandle);
 	};
-	return { start, orders, started };
+	return { start, stop, orders, started };
 }
 
 async function withLease(use: (lease: Ownership) => Promise<void>) {
@@ -70,12 +78,12 @@ describe("recovering a session from its lease", () => {
 			const runner = runnerIn("closed");
 			const recovered = getOrThrow(
 				await recoverHome(
-					{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+					{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 					context,
 				),
 			);
 			expect(recovered.lease.epoch).toBe(2);
-			expect(runner.started).toEqual(["b@2"]);
+			expect(runner.started).toEqual(["stop b", "b@2"]);
 			expect(runner.orders).toEqual([{ resume: { epoch: 2, seal: SEAL, move: { id: "move-1", notice: NOTICE } } }]);
 		});
 	});
@@ -86,11 +94,11 @@ describe("recovering a session from its lease", () => {
 			const runner = runnerIn("sealed");
 			getOrThrow(
 				await recoverHome(
-					{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+					{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 					context,
 				),
 			);
-			expect(runner.started).toEqual(["a@1"]);
+			expect(runner.started).toEqual(["stop a", "a@1"]);
 			expect(runner.orders).toEqual([{ reopen: 1 }]);
 		});
 	});
@@ -103,7 +111,7 @@ describe("recovering a session from its lease", () => {
 			const runner = runnerIn("sealed", 1);
 			getOrThrow(
 				await recoverHome(
-					{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+					{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 					context,
 				),
 			);
@@ -119,7 +127,7 @@ describe("recovering a session from its lease", () => {
 			const runner = runnerIn("closed");
 			getOrThrow(
 				await recoverHome(
-					{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+					{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 					context,
 				),
 			);
@@ -127,17 +135,30 @@ describe("recovering a session from its lease", () => {
 		});
 	});
 
+	it("starts nothing where a runner that still runs will not stop", async () => {
+		await withLease(async (lease) => {
+			getOrThrow(await lease.take(SESSION, holder("a"), 0, undefined, context));
+			const runner = runnerIn("closed", 1, false);
+			const refused = await recoverHome(
+				{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
+				context,
+			);
+			expect(refused.ok ? "" : refused.error.code).toBe("resume");
+			expect(runner.started).toEqual(["stop a"]);
+		});
+	});
+
 	it("starts nothing for a session with no lease, or a lease that names an environment it does not know", async () => {
 		await withLease(async (lease) => {
 			const runner = runnerIn("closed");
 			const none = await recoverHome(
-				{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+				{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 				context,
 			);
 			expect(none.ok ? "" : none.error.code).toBe("take");
 			getOrThrow(await lease.take(SESSION, holder("gpu"), 0, undefined, context));
 			const unknown = await recoverHome(
-				{ session: SESSION, ownership: lease, places, start: runner.start, notice: NOTICE },
+				{ session: SESSION, ownership: lease, places, start: runner.start, stop: runner.stop, notice: NOTICE },
 				context,
 			);
 			expect(unknown.ok ? "" : unknown.error.code).toBe("resume");

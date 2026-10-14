@@ -16,6 +16,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
+import { holdStore, type StoreHold } from "./lock.ts";
 import { type Seal, sealStore, verifyStore } from "./store.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
@@ -34,9 +35,9 @@ const HomeDoc = defineDoc<{ root?: string }>({
  * Why a home refused an order. `wrong_state`: the order does not fit what the home is doing. `stale_epoch`: the
  * order is for an epoch this home has left behind. `not_verified`: a store is here that no seal vouches for.
  * `seal_mismatch`: the store here is not the one the seal names. `app`: the app did not load or build. `store`: the
- * store could not be opened, sealed or removed.
+ * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store.
  */
-export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store";
+export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store" | "busy";
 
 /** An order a home did not carry out. Returned, never thrown. */
 export class HomeError extends Error {
@@ -141,6 +142,8 @@ class SessionHome implements Home {
 	#drained = false;
 	/** The orders that open, close or delete, one at a time: none finds another half done. */
 	#queue: Promise<unknown> = Promise.resolve();
+	/** This home's hold on the store, from an order that opens it until the store is closed. */
+	#hold: StoreHold | undefined;
 
 	constructor(options: HomeOptions) {
 		this.#options = options;
@@ -168,7 +171,7 @@ class SessionHome implements Home {
 	}
 
 	resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
-		return this.#serial(() => this.#resume(order, context));
+		return this.#serial(() => this.#holding(() => this.#resume(order, context)));
 	}
 
 	async #resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
@@ -274,7 +277,7 @@ class SessionHome implements Home {
 	}
 
 	reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
-		return this.#serial(() => this.#reopen(order, context));
+		return this.#serial(() => this.#holding(() => this.#reopen(order, context)));
 	}
 
 	async #reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
@@ -316,7 +319,7 @@ class SessionHome implements Home {
 		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {
-			for (const path of [store, `${store}-wal`, `${store}-shm`]) await rm(path, { force: true });
+			for (const path of [store, `${store}-wal`, `${store}-shm`, `${store}.lock`]) await rm(path, { force: true });
 		} catch (cause) {
 			return err(new HomeError("store", `could not delete this home's copy: ${toError(cause).message}`, cause));
 		}
@@ -343,6 +346,34 @@ class SessionHome implements Home {
 		this.#gate = undefined;
 		this.#drained = false;
 		await harness?.close(context);
+		this.#letGo();
+	}
+
+	/**
+	 * Runs an order that opens the store while this home holds it alone. When another runner at this place has it, the
+	 * order is `busy` and nothing here changes. An order that leaves no Harness open lets the store go again.
+	 */
+	async #holding(work: () => Promise<Result<void, HomeError>>): Promise<Result<void, HomeError>> {
+		if (this.#hold === undefined && this.#harness === undefined) {
+			const { store } = this.#options;
+			try {
+				await mkdir(dirname(store), { recursive: true });
+				this.#hold = holdStore(store);
+			} catch (cause) {
+				return err(
+					new HomeError("store", `could not hold the store at ${store}: ${toError(cause).message}`, cause),
+				);
+			}
+			if (this.#hold === undefined) return err(new HomeError("busy", `another runner holds the store at ${store}`));
+		}
+		const done = await work();
+		if (this.#harness === undefined) this.#letGo();
+		return done;
+	}
+
+	#letGo(): void {
+		this.#hold?.release();
+		this.#hold = undefined;
 	}
 
 	/** Open the store, bring the conversations here, admit the notice, resume. Every step is safe to repeat. */

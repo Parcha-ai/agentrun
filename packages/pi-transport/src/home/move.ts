@@ -6,6 +6,7 @@ import type { Box } from "../box/box.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { HomeHandle } from "./host.ts";
 import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
+import { type StopRunner, stopRunner } from "./stop.ts";
 import type { Seal } from "./store.ts";
 import { moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
 
@@ -248,13 +249,18 @@ export type RecoverOptions = {
 	 * id, not its text; a home that already admitted the move's notice admits no second one.
 	 */
 	readonly notice: string;
+	/**
+	 * How the runner that may still run at the lease's place is stopped before a new one starts there. Default
+	 * `stopRunner`: the process named in `<store>.pid`. A host whose runners a launcher keeps passes the launcher's stop.
+	 */
+	readonly stop?: StopRunner;
 };
 
 /**
- * What a host that starts again does: read the lease, start the runner where it says, and make that home run. A
- * home that sealed at the lease's epoch is told to open its store again; a target that took the session and never resumed is told to
- * resume with the lease's seal and move, and its store says which workspace its conversations pointed at. Safe to
- * repeat.
+ * What a host that starts again does: read the lease, stop a runner that still runs where it says, start one there,
+ * and make that home run. A home that sealed at the lease's epoch is told to open its store again; a target that took
+ * the session and never resumed is told to resume with the lease's seal and move, and its store says which workspace
+ * its conversations pointed at. Safe to repeat.
  */
 export async function recoverHome(
 	options: RecoverOptions,
@@ -270,6 +276,16 @@ export async function recoverHome(
 	if (place === undefined) {
 		return err(
 			new MoveError("resume", `the lease names the environment "${record.holder.environment}", which is not known`),
+		);
+	}
+	// Never two runners on one store: one that still runs there is stopped first, and its call in flight is cut.
+	const stopped = await (options.stop ?? stopRunner)(place, context);
+	if (!stopped.ok) {
+		return err(
+			new MoveError(
+				"resume",
+				`the runner still running in ${place.environment} did not stop: ${stopped.error.message}`,
+			),
 		);
 	}
 	const started = await options.start(place, record.epoch, context);
