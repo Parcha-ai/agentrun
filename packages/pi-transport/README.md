@@ -334,9 +334,13 @@ await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
 - The state is read from the launcher's own state file, never guessed from whether a process lives. It is `restarting`
   or `exited` while the launcher handles an exit, never `running`.
 - `stopLaunch` ends the program and everything in its process group: TERM, then KILL after `graceMs`, then it reports
-  `stopped`.
-- The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`). The launcher
-  holds no pipe to the host.
+  `stopped`. `graceMs` is a number from 0 to 600000 and the call to the box is given that long on top of its usual time.
+  The saved process id is signalled only while it still names the process the launch started; the id of a process that
+  ended and was given to another job is left alone.
+- Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
+  filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
+- The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
+  the program has exited. The launcher holds no pipe to the host.
 - `env` is plain settings kept in a file of the box. Never put a secret in it.
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.

@@ -40,6 +40,39 @@ MYGEN=$GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 
+# An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
+# died inside one, and its lock is broken. A section never exits while it holds the lock.
+lock() {
+  began=$(now)
+  until mkdir "$D/mutex" 2>/dev/null; do
+    [ -d "$D" ] || exit 0
+    if [ $(( $(now) - began )) -gt 15 ]; then rm -rf "$D/mutex"; began=$(now); fi
+    sleep $STEP
+  done
+}
+unlock() { rmdir "$D/mutex" 2>/dev/null; }
+
+# Whether the process group named by a saved id is still the one this launch made. The id of a process that ended can be given
+# to an unrelated job (a restarted sandbox, a long-lived box): a live process that holds the id with another start time is
+# not ours. A group whose leader is gone may still hold leftover children of the program, and those are.
+own_group() {
+  [ -n "$1" ] || return 1
+  if kill -0 "$1" 2>/dev/null && [ "$(rest "$1" | cut -c1)" != Z ]; then
+    [ -z "$2" ] || [ "$(ticks "$1")" = "$2" ]
+    return
+  fi
+  return 0
+}
+
+# Keep about the last half of LOGMAX bytes of the program's output once it holds more than LOGMAX.
+trim_log() {
+  size=$(( $(wc -c < "$D/out.log" 2>/dev/null) + 0 ))
+  if [ "$size" -gt "$LOGMAX" ]; then
+    tail -c $(( LOGMAX / 2 )) "$D/out.log" > "$D/out.log.cut" && cat "$D/out.log.cut" > "$D/out.log"
+    rm -f "$D/out.log.cut"
+  fi
+}
+
 write_state() {
   p=$2; [ -n "$p" ] || p=null
   e=$3; [ -n "$e" ] || e=null
@@ -57,10 +90,14 @@ terminal() {
 
 run() {
   n=$1
-  if stale; then exit 0; fi
+  # Publishing the wrapper and a stop agree on who comes first: a stop that came first leaves nothing to start, and one that
+  # came after finds the wrapper's group to end.
+  lock
+  if [ -e "$D/stop.req" ] || [ -e "$D/done" ] || stale; then unlock; exit 0; fi
   wr pid.$n $$
   wr ticks.$n "$(ticks $$)"
   write_state running $$ "$(rd lastexit)"
+  unlock
   ( run_program ) >> "$D/out.log" 2>&1 < /dev/null
   code=$?
   if terminal "$code"; then write_state exited "" "$code"; else write_state restarting "" "$code"; fi
@@ -70,7 +107,14 @@ run() {
 
 ensure_watch() {
   [ ! -e "$D/done" ] || return 0
-  alive "$(rd watch.pid)" "$(rd watch.ticks)" || detach watch "$D"
+  alive "$(rd watch.pid)" "$(rd watch.ticks)" && return 0
+  detach watch "$D"
+  # The watchdog is part of the launcher: the program starts, and a caller is told so, only once it has registered.
+  i=0
+  while [ "$i" -lt 50 ] && ! alive "$(rd watch.pid)" "$(rd watch.ticks)"; do
+    sleep $TICK
+    i=$(( i + 1 ))
+  done
 }
 
 start_one() {
@@ -98,9 +142,10 @@ end_incarnation() {
     wr exit.$n $code
     wr lastexit $code
   fi
-  if [ -n "$pid" ]; then gkill KILL "$pid"; fi
+  if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   if terminal "$code"; then
     write_state exited "" "$code"
+    trim_log
     : > "$D/done"
     exit 0
   fi
@@ -111,6 +156,7 @@ end_incarnation() {
   c=$(( $(awk -v c=$cut '$1 >= c' "$D/restarts" | wc -l) + 0 ))
   if [ "$c" -gt "$BURST" ]; then
     write_state gave_up "" "$code"
+    trim_log
     : > "$D/done"
     exit 0
   fi
@@ -120,11 +166,14 @@ end_incarnation() {
 }
 
 supervise() {
+  # Looking for a running supervisor and becoming the supervisor is one step, so that two starts of a lost launch make one.
+  lock
   other=$(rd launcher.pid)
-  if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd launcher.ticks)"; then exit 0; fi
-  if [ -e "$D/done" ] || stale; then exit 0; fi
+  if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd launcher.ticks)"; then unlock; exit 0; fi
+  if [ -e "$D/done" ] || stale; then unlock; exit 0; fi
   wr launcher.pid $$
   wr launcher.ticks "$(ticks $$)"
+  unlock
   while :; do
     if [ -e "$D/stop.req" ] || stale; then exit 0; fi
     ensure_watch
@@ -142,31 +191,36 @@ supervise() {
   done
 }
 
+# The launch is over: its output still obeys the limit, unless the directory now belongs to a newer launch.
+watch_over() {
+  if ! stale; then trim_log; fi
+  exit 0
+}
+
 watch() {
+  lock
   other=$(rd watch.pid)
-  if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd watch.ticks)"; then exit 0; fi
+  if [ -n "$other" ] && [ "$other" != "$$" ] && alive "$other" "$(rd watch.ticks)"; then unlock; exit 0; fi
   wr watch.pid $$
   wr watch.ticks "$(ticks $$)"
-  keep=$(( LOGMAX / 2 ))
+  unlock
   while :; do
-    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then exit 0; fi
+    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then watch_over; fi
     sleep 1
-    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then exit 0; fi
+    if [ -e "$D/done" ] || [ -e "$D/stop.req" ] || stale; then watch_over; fi
     if ! alive "$(rd launcher.pid)" "$(rd launcher.ticks)"; then detach supervise "$D"; fi
-    size=$(( $(wc -c < "$D/out.log" 2>/dev/null) + 0 ))
-    if [ "$size" -gt "$LOGMAX" ]; then
-      tail -c "$keep" "$D/out.log" > "$D/out.log.cut" && cat "$D/out.log.cut" > "$D/out.log"
-      rm -f "$D/out.log.cut"
-    fi
+    trim_log
   done
 }
 
 stopit() {
   tenths=$1
+  lock
   wr stop.req 1
   n=$(rd starts)
   [ -n "$n" ] || n=0
   pid=$(rd pid.$n)
+  unlock
   before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
   if alive "$pid" "$(rd ticks.$n)"; then
     gkill TERM "$pid"
@@ -176,7 +230,7 @@ stopit() {
       sleep $STEP
     done
   fi
-  if [ -n "$pid" ]; then gkill KILL "$pid"; fi
+  if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   for f in launcher watch; do
     p=$(rd $f.pid)
     if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
@@ -185,6 +239,7 @@ stopit() {
     exited|gave_up|stopped) ;;
     *) write_state stopped "" "$(rd lastexit)" ;;
   esac
+  trim_log
   : > "$D/done"
   cat "$D/state"
 }
@@ -196,6 +251,7 @@ status() {
   case "$phase" in exited|gave_up|stopped) done_for=1 ;; *) done_for=0 ;; esac
   if [ "$done_for" = 0 ] && { alive "$(rd launcher.pid)" "$(rd launcher.ticks)" || alive "$(rd watch.pid)" "$(rd watch.ticks)"; }; then a=1; fi
   printf 'ALIVE %s\n' "$a"
+  printf 'GEN %s\n' "$(current_gen)"
   if [ -n "$st" ]; then printf '%s\n' "$st"; else echo NOSTATE; fi
 }
 
@@ -216,6 +272,7 @@ clear_dir() {
 
 case "$MODE" in
   group-live) group_live "$3" ;;
+  own-group) own_group "$3" "$4" ;;
   centis) centis ;;
   clear) clear_dir ;;
   run) run "$3" ;;

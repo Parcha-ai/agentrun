@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
-import type { Box } from "../src/box/box.ts";
+import type { Box, BoxError, BoxProcess } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
+import { WRITER_SCRIPT } from "../src/testing/acknowledged-writes.ts";
 import { probeAcknowledgedWrites } from "../src/testing/index.ts";
 import { sh } from "./home-launch-support.ts";
 
@@ -88,5 +90,81 @@ describe("probeAcknowledgedWrites", () => {
 			const result = await probeAcknowledgedWrites(box, { count: 1_000_000, timeoutMs: 800 }, context);
 			expect(result.ok ? "ok" : result.error.code).toBe("timeout");
 		});
+	});
+});
+
+const encoder = new TextEncoder();
+const never = new Promise<never>(() => {});
+
+/** A box whose writer says what `lines` say and then does what `after` says; every other command ends with `killExit`. */
+function scriptedBox(lines: readonly string[], after: "hang" | "end", killExit: number, writerExit = 0): Box {
+	const finished = (exitCode: number, stderr = ""): BoxProcess => ({
+		stdin: { write: async () => {}, close: async () => {} },
+		stdout: (async function* () {
+			yield encoder.encode("");
+		})(),
+		stderr: (async function* () {
+			if (stderr !== "") yield encoder.encode(stderr);
+		})(),
+		wait: async () => ok(exitCode),
+	});
+	const unreachable = async (): Promise<never> => {
+		throw new Error("not used");
+	};
+	return {
+		id: "scripted",
+		facts: unreachable,
+		exec: async (command: readonly string[]): Promise<Result<BoxProcess, BoxError>> => {
+			if (command.join(" ").includes('echo "pid $$"')) {
+				return ok({
+					stdin: { write: async () => {}, close: async () => {} },
+					stdout: (async function* () {
+						for (const line of lines) yield encoder.encode(`${line}\n`);
+						if (after === "hang") await never;
+					})(),
+					stderr: (async function* () {})(),
+					wait: after === "hang" ? () => never : async () => ok(writerExit),
+				});
+			}
+			if (command.join(" ").includes("kill -9"))
+				return ok(finished(killExit, killExit === 0 ? "" : "no such process"));
+			return ok(finished(0));
+		},
+		upload: unreachable,
+		download: unreachable,
+		status: unreachable,
+		destroy: unreachable,
+	} as unknown as Box;
+}
+
+describe("probeAcknowledgedWrites, a writer that does not behave", () => {
+	it("gives up at its deadline when the writer sends nothing more, as one stuck in sync would", async () => {
+		const box = scriptedBox(["pid 4242", "ack 1"], "hang", 0);
+		const started = Date.now();
+		const result = await probeAcknowledgedWrites(box, { count: 5, timeoutMs: 300 }, context);
+		expect(result.ok ? "ok" : result.error.code).toBe("timeout");
+		expect(Date.now() - started).toBeLessThan(3_000);
+	}, 8_000);
+
+	it("reports a writer that stopped on its own as an error, not as a short result", async () => {
+		const box = scriptedBox(["pid 4242", "ack 1"], "end", 1, 5);
+		const result = await probeAcknowledgedWrites(box, { count: 4 }, context);
+		expect(result.ok).toBe(false);
+		expect(result.ok ? "" : result.error.message).toContain("stopped after 1 of 4 records (exit 5)");
+	});
+
+	it("reports a kill that failed", async () => {
+		const box = scriptedBox(["pid 4242", "ack 1", "ack 2"], "hang", 1);
+		const result = await probeAcknowledgedWrites(box, { count: 2 }, context);
+		expect(result.ok).toBe(false);
+		expect(result.ok ? "" : result.error.message).toContain("kill of the writer failed (exit 1)");
+	});
+});
+
+describe.skipIf(!existsSync("/dev/full"))("the writer script", () => {
+	it("acknowledges nothing for a record it could not append", () => {
+		const ran = spawnSync("sh", ["-c", WRITER_SCRIPT, "sh", "/dev/full", "3"], { encoding: "utf8", timeout: 10_000 });
+		expect(ran.stdout).not.toContain("ack ");
+		expect(ran.status).not.toBe(0);
 	});
 });

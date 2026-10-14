@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
-import { type Box, BoxError } from "../box/box.ts";
+import { type Box, BoxError, type BoxProcess } from "../box/box.ts";
 import { finish } from "../box/files.ts";
 
 const DEFAULT_COUNT = 10;
@@ -11,12 +11,13 @@ const PID_PREFIX = "pid ";
 /**
  * The writer: appends a record to a file, makes it durable, and only then says so. `sync FILE` is an fsync of that file on
  * GNU coreutils; where `sync` takes no file (BusyBox) it syncs everything, which is the same promise with more work. After
- * `$2` records it idles and waits to be killed.
+ * `$2` records it idles and waits to be killed. A failed append or sync ends it with a non-zero exit, never an acknowledgement.
  */
-const WRITER_SCRIPT = [
+export const WRITER_SCRIPT = [
 	'f=$1; n=$2; mkdir -p -- "$(dirname -- "$f")" && : > "$f" || exit 3; echo "pid $$"; i=0',
 	'while [ "$i" -lt "$n" ]; do',
-	'  i=$((i + 1)); echo "record $i" >> "$f"; sync "$f" 2>/dev/null || sync; echo "ack $i"',
+	// A record is acknowledged only when it was appended and one of the syncs succeeded; otherwise the writer stops.
+	'  i=$((i + 1)); echo "record $i" >> "$f" || exit 4; { sync "$f" 2>/dev/null || sync; } || exit 5; echo "ack $i"',
 	"done",
 	"while :; do sleep 1; done",
 ].join("\n");
@@ -34,17 +35,38 @@ export type AcknowledgedWritesOptions = {
 /** What the probe found: records the writer was told were durable, and records still in the file after it was killed. */
 export type AcknowledgedWrites = { readonly acknowledged: number; readonly kept: number };
 
+type Ran = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
+
 async function runToEnd(
 	box: Box,
 	script: string,
 	args: readonly string[],
 	context: Context,
-): Promise<Result<string, BoxError>> {
+): Promise<Result<Ran, BoxError>> {
 	const started = await box.exec(["sh", "-c", script, "sh", ...args], undefined, context);
 	if (!started.ok) return started;
 	const finished = await finish(started.value);
 	if (!finished.ok) return finished;
-	return ok(new TextDecoder().decode(finished.value.stdout));
+	return ok({
+		exitCode: finished.value.exitCode,
+		stdout: new TextDecoder().decode(finished.value.stdout),
+		stderr: finished.value.stderr,
+	});
+}
+
+const KILL_WAIT_MS = 10_000;
+
+/** The writer's exit, or `undefined` when it has not ended within `ms`. */
+async function endedWithin(writer: BoxProcess, ms: number): Promise<Result<number, BoxError> | undefined> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<undefined>((resolve) => {
+		timer = setTimeout(() => resolve(undefined), ms);
+	});
+	try {
+		return await Promise.race([writer.wait(), late]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -75,14 +97,28 @@ export async function probeAcknowledgedWrites(
 	let pid: number | undefined;
 	let acknowledged = 0;
 	let timedOut = false;
-	const timer = setTimeout(() => {
-		timedOut = true;
-	}, timeoutMs);
+	let streamEnded = false;
+	// The deadline is raced against each read: a writer stuck in `sync` sends nothing, and a flag set by a timer would be
+	// looked at only after the next chunk.
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<"deadline">((resolve) => {
+		timer = setTimeout(() => resolve("deadline"), timeoutMs);
+	});
+	const lines = writer.value.stdout[Symbol.asyncIterator]();
 	try {
 		let pending = "";
 		const decoder = new TextDecoder();
-		reading: for await (const chunk of writer.value.stdout) {
-			pending += decoder.decode(chunk, { stream: true });
+		reading: for (;;) {
+			const next = await Promise.race([lines.next(), deadline]);
+			if (next === "deadline") {
+				timedOut = true;
+				break;
+			}
+			if (next.done) {
+				streamEnded = true;
+				break;
+			}
+			pending += decoder.decode(next.value, { stream: true });
 			for (let end = pending.indexOf("\n"); end !== -1; end = pending.indexOf("\n")) {
 				const line = pending.slice(0, end);
 				pending = pending.slice(end + 1);
@@ -90,23 +126,42 @@ export async function probeAcknowledgedWrites(
 				if (line.startsWith(ACK_PREFIX)) acknowledged = Number(line.slice(ACK_PREFIX.length));
 				if (acknowledged >= count) break reading;
 			}
-			if (timedOut) break;
 		}
 	} finally {
 		clearTimeout(timer);
+		void Promise.resolve(lines.return?.()).catch(() => {});
 	}
-	if (pid === undefined || !Number.isInteger(pid))
+	if (pid === undefined || !Number.isInteger(pid)) {
+		void writer.value.wait();
 		return err(new BoxError("unknown", "the writer never said its pid"));
+	}
+	if (streamEnded && acknowledged < count) {
+		// It stopped by itself: a failed append or sync, which it never acknowledges.
+		const ended = await endedWithin(writer.value, KILL_WAIT_MS);
+		const how = ended?.ok ? `exit ${ended.value}` : "no exit status";
+		return err(new BoxError("unknown", `the writer stopped after ${acknowledged} of ${count} records (${how})`));
+	}
 	// The kill is a second exec: only the writer dies. The shell's sleep child may linger until the box is destroyed.
 	const killed = await runToEnd(box, 'kill -9 "$1"', [String(pid)], context);
-	if (!killed.ok) return killed;
-	void writer.value.wait();
-	if (timedOut && acknowledged < count)
+	if (timedOut && acknowledged < count) {
+		void writer.value.wait();
 		return err(
 			new BoxError("timeout", `the writer acknowledged ${acknowledged} of ${count} records in ${timeoutMs} ms`),
 		);
+	}
+	if (!killed.ok) return killed;
+	if (killed.value.exitCode !== 0) {
+		return err(
+			new BoxError(
+				"unknown",
+				`the kill of the writer failed (exit ${killed.value.exitCode}): ${killed.value.stderr.trim().slice(0, 200)}`,
+			),
+		);
+	}
+	const ended = await endedWithin(writer.value, KILL_WAIT_MS);
+	if (ended === undefined) return err(new BoxError("timeout", "the writer did not end after the kill"));
 	const read = await runToEnd(box, 'cat -- "$1"; rm -f -- "$1"', [path], context);
 	if (!read.ok) return read;
-	const kept = read.value.split("\n").filter((line) => /^record [0-9]+$/.test(line)).length;
+	const kept = read.value.stdout.split("\n").filter((line) => /^record [0-9]+$/.test(line)).length;
 	return ok({ acknowledged, kept });
 }

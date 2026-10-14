@@ -11,6 +11,10 @@ const RESERVED_ENV_PREFIX = "PI_TRANSPORT_";
 const DEFAULT_RESTART_BURST = 5;
 const DEFAULT_RESTART_INTERVAL_MS = 60_000;
 const DEFAULT_GRACE_MS = 5_000;
+/** A stop waits this long for the program at most, and its call to the box is given that much time and more. */
+const MAX_GRACE_MS = 10 * 60_000;
+/** A claimed directory nobody has filled for this long was abandoned by a caller that died or failed to upload. */
+const ABANDONED_CLAIM_S = 60;
 const DEFAULT_LOG_MAX_BYTES = 1024 * 1024;
 const MIN_LOG_MAX_BYTES = 1024;
 /** Bounds that keep the numbers the launcher's shell does arithmetic on small and exact. */
@@ -91,7 +95,39 @@ const CLAIM_SCRIPT = [
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
 	`b="$t/${SPOOL_DIRECTORY}"`,
 	'mkdir -p -m 700 "$b" || exit 3',
-	'if mkdir -m 700 "$b/$1" 2>/dev/null; then echo "CLAIMED $b/$1"; else echo "EXISTS $b/$1"; fi',
+	'if mkdir -m 700 "$b/$1" 2>/dev/null; then date +%s > "$b/$1/claimed.at"; echo "CLAIMED $b/$1"; else echo "EXISTS $b/$1"; fi',
+].join("\n");
+
+/**
+ * Take over a directory that is not live, for one caller only. $1 is the directory, $2 the generation of the launch the caller
+ * saw (empty for a claim nobody filled), $3 how old an unfilled claim must be. The replacement happens under a lock that
+ * lives beside the directory, and only if the directory still holds what the caller saw; every other caller is told
+ * BUSY, CHANGED or YOUNG and looks again. A lock older than two minutes belongs to a caller that died.
+ */
+const RECLAIM_SCRIPT = [
+	'D=$1; E=$2; A=$3; L="$D.lock"',
+	'if ! mkdir "$L" 2>/dev/null; then',
+	'  at=$(cat "$L/at" 2>/dev/null); now=$(date +%s)',
+	'  if [ -n "$at" ] && [ $((now - at)) -gt 120 ]; then rm -rf "$L"; fi',
+	"  echo BUSY; exit 0",
+	"fi",
+	'date +%s > "$L/at"',
+	`cur=$(sed -n "s/^GEN='\\(.*\\)'\\$/\\1/p" "$D/spec.sh" 2>/dev/null)`,
+	'if [ "$cur" != "$E" ]; then rm -rf "$L"; echo CHANGED; exit 0; fi',
+	'if [ -z "$E" ]; then',
+	'  if [ -e "$D/launcher.sh" ]; then rm -rf "$L"; echo CHANGED; exit 0; fi',
+	'  at=$(cat "$D/claimed.at" 2>/dev/null); now=$(date +%s)',
+	'  if [ -z "$at" ]; then date +%s > "$D/claimed.at" 2>/dev/null; rm -rf "$L"; echo YOUNG; exit 0; fi',
+	'  if [ $((now - at)) -le "$A" ]; then rm -rf "$L"; echo YOUNG; exit 0; fi',
+	'  rm -rf "$D"; mkdir -m 700 "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
+	"else",
+	// Only an ended launch is cleared: one that has a generation and no state yet is starting.
+	`  ph=$(sed -n 's/.*"phase":"\\([a-z_]*\\)".*/\\1/p' "$D/state" 2>/dev/null)`,
+	'  case "$ph" in exited|gave_up|stopped) ;; *) rm -rf "$L"; echo CHANGED; exit 0 ;; esac',
+	'  sh "$D/launcher.sh" clear "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
+	"fi",
+	'date +%s > "$D/claimed.at"',
+	'rm -rf "$L"; echo RECLAIMED',
 ].join("\n");
 
 const LOCATE_SCRIPT = [
@@ -174,8 +210,9 @@ async function runScript(
 	script: string,
 	args: readonly string[],
 	context: Context,
+	timeoutMs: number = CALL_TIMEOUT_MS,
 ): Promise<Result<{ exitCode: number; text: string }, LaunchError>> {
-	const started = await box.exec(["sh", "-c", script, "sh", ...args], { timeoutMs: CALL_TIMEOUT_MS }, context);
+	const started = await box.exec(["sh", "-c", script, "sh", ...args], { timeoutMs }, context);
 	if (!started.ok)
 		return err(
 			new LaunchError("box", `could not run a command in box ${box.id}: ${started.error.message}`, started.error),
@@ -239,11 +276,10 @@ async function directoryOf(
 	return ok({ directory: line.slice(line.indexOf(" ") + 1).trim(), claimed: line.startsWith("CLAIMED") });
 }
 
-async function readState(
-	box: Box,
-	directory: string,
-	context: Context,
-): Promise<Result<LaunchState | "none", LaunchError>> {
+/** What a directory holds: the state, or "none" for a claim nobody filled, and the generation of the launch (empty for none). */
+type Seen = { readonly state: LaunchState | "none"; readonly gen: string };
+
+async function readSeen(box: Box, directory: string, context: Context): Promise<Result<Seen, LaunchError>> {
 	const answered = await runScript(
 		box,
 		// A launch another caller has claimed but not yet filled has no launcher script: it is still starting.
@@ -252,11 +288,24 @@ async function readState(
 		context,
 	);
 	if (!answered.ok) return answered;
-	if (answered.value.exitCode === 4) return ok("none");
+	if (answered.value.exitCode === 4) return ok({ state: "none", gen: "" });
 	const state = parseState(answered.value.text, directory);
+	// A script that fails and says nothing met a directory being replaced by another caller: look again, as for a new claim.
+	if (state === undefined && answered.value.exitCode !== 0 && answered.value.text.trim() === "")
+		return ok({ state: "none", gen: "" });
 	if (state === undefined)
 		return err(new LaunchError("failed", `the launcher's state in box ${box.id} cannot be read`));
-	return ok(state);
+	const gen = answered.value.text.split("\n").find((line) => line.startsWith("GEN "));
+	return ok({ state, gen: gen === undefined ? "" : gen.slice(4).trim() });
+}
+
+async function readState(
+	box: Box,
+	directory: string,
+	context: Context,
+): Promise<Result<LaunchState | "none", LaunchError>> {
+	const seen = await readSeen(box, directory, context);
+	return seen.ok ? ok(seen.value.state) : seen;
 }
 
 /** Wait until the launch has a state that is not `starting` and, if it is not over, a launcher that runs. */
@@ -290,24 +339,46 @@ export async function launch(
 ): Promise<Result<LaunchState, LaunchError>> {
 	const invalid = validate(name, spec);
 	if (invalid !== undefined) return err(invalid);
-	const claimed = await directoryOf(box, name, context);
-	if (!claimed.ok) return claimed;
-	if (!claimed.value.claimed) {
-		const existing = await readState(box, claimed.value.directory, context);
-		if (!existing.ok) return existing;
-		if (existing.value !== "none" && !TERMINAL_PHASES.has(existing.value.phase)) {
-			if (existing.value.phase !== "lost") return ok(existing.value);
+	// Only a caller that holds the directory (it made it, or took it over from a dead or ended launch) fills it.
+	const deadline = Date.now() + ABANDONED_CLAIM_S * 1000 + START_WAIT_MS;
+	let directory: string;
+	for (;;) {
+		const claimed = await directoryOf(box, name, context);
+		if (!claimed.ok) return claimed;
+		directory = claimed.value.directory;
+		if (claimed.value.claimed) break;
+		const seen = await readSeen(box, directory, context);
+		if (!seen.ok) return seen;
+		const existing = seen.value.state;
+		// A filled launcher that has not written its state yet is starting, not abandoned.
+		if (existing === "none" && seen.value.gen !== "") return waitForStart(box, directory, context);
+		if (existing !== "none" && !TERMINAL_PHASES.has(existing.phase)) {
+			if (existing.phase === "starting") return waitForStart(box, directory, context);
+			if (existing.phase !== "lost") return ok(existing);
 			// Its launcher is gone and nothing in the box restarts it: start the supervisor again, which adopts the file.
-			const revived = await runScript(box, 'sh "$1/launcher.sh" start "$1"', [claimed.value.directory], context);
+			// Two callers that do so make one supervisor: it takes a lock before it looks for another.
+			const revived = await runScript(box, 'sh "$1/launcher.sh" start "$1"', [directory], context);
 			if (!revived.ok) return revived;
-			return waitForStart(box, claimed.value.directory, context);
+			return waitForStart(box, directory, context);
 		}
-		if (existing.value === "none") return waitForStart(box, claimed.value.directory, context);
-		const removed = await runScript(box, 'sh "$1/launcher.sh" clear "$1"', [claimed.value.directory], context);
-		if (!removed.ok) return removed;
-		if (removed.value.exitCode !== 0) return err(new LaunchError("failed", `could not clear the old launch ${name}`));
+		const taken = await runScript(
+			box,
+			RECLAIM_SCRIPT,
+			[directory, seen.value.gen, existing === "none" ? String(ABANDONED_CLAIM_S) : "0"],
+			context,
+			CALL_TIMEOUT_MS * 2,
+		);
+		if (!taken.ok) return taken;
+		const answer = taken.value.text.split("\n").find((line) => /^[A-Z]+$/.test(line));
+		if (answer === "RECLAIMED") break;
+		if (taken.value.exitCode !== 0)
+			return err(
+				new LaunchError("failed", `could not clear the old launch ${name}: ${taken.value.text.trim().slice(0, 200)}`),
+			);
+		if (Date.now() >= deadline)
+			return err(new LaunchError("timeout", `the launch ${name} in box ${box.id} was not free within the limit`));
+		await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 	}
-	const directory = claimed.value.directory;
 	const uploaded = await box.upload(
 		[
 			{ path: `${directory}/launcher.sh.part`, bytes: new TextEncoder().encode(LAUNCHER_SCRIPT), mode: 0o700 },
@@ -315,8 +386,10 @@ export async function launch(
 		],
 		context,
 	);
-	if (!uploaded.ok)
+	if (!uploaded.ok) {
+		await release(box, directory, context);
 		return err(new LaunchError("box", `could not upload the launcher: ${uploaded.error.message}`, uploaded.error));
+	}
 	// The files appear under their names in one step, the script last: a caller that sees the script sees a whole launcher.
 	const started = await runScript(
 		box,
@@ -324,10 +397,16 @@ export async function launch(
 		[directory],
 		context,
 	);
+	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, context);
 	if (!started.ok) return started;
 	if (started.value.exitCode !== 0)
 		return err(new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`));
 	return waitForStart(box, directory, context);
+}
+
+/** Give a claim back when the launch could not be filled, so that the next caller does not have to wait it out. */
+async function release(box: Box, directory: string, context: Context): Promise<void> {
+	await runScript(box, '[ -e "$1/launcher.sh" ] || rm -rf "$1"', [directory], context);
 }
 
 /** The state of a launch, read from its state file. `undefined` when no launch of that name exists in the box. */
@@ -367,12 +446,18 @@ export async function stopLaunch(
 	const current = await launchStatus(box, name, context);
 	if (!current.ok) return current;
 	if (current.value === undefined) return err(new LaunchError("invalid", `no launch named ${name} in box ${box.id}`));
-	const tenths = Math.ceil((options?.graceMs ?? DEFAULT_GRACE_MS) / 100);
+	const graceMs = options?.graceMs ?? DEFAULT_GRACE_MS;
+	if (!Number.isFinite(graceMs) || graceMs < 0 || graceMs > MAX_GRACE_MS)
+		return err(new LaunchError("invalid", `graceMs must be a number from 0 to ${MAX_GRACE_MS}`));
+	const tenths = Math.ceil(graceMs / 100);
+	// The call is given the grace period and the usual time on top: a call that ended inside the grace would leave the program
+	// running with its supervisor already told to stop.
 	const stopped = await runScript(
 		box,
 		'sh "$1/launcher.sh" stop "$1" "$2"',
 		[current.value.directory, String(tenths)],
 		context,
+		graceMs + CALL_TIMEOUT_MS,
 	);
 	if (!stopped.ok) return stopped;
 	// The stop script prints the state and exits 0. Any other end means it did not finish: the program may still run.
