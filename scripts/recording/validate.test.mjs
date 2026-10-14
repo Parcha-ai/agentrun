@@ -21,7 +21,10 @@ const live = (gen, seq, t, over = {}) => ({ channel: 'live', source: 'workflow',
 const events = [durable(1, 0), live(1, 0, 11), durable(1, 1, { t: 12 }), live(1, 1, 13, { blobs: [blob], source: 'browser', kind: 'EvidenceRecord' }), durable(2, 0, { gen: 2, t: 20 }), live(2, 0, 21, { gen: 2 })];
 
 /** A recording in a directory of its own, built from `lines` and `manifestOver`, to hand-break. */
-async function recording(t, { lines = events, manifestOver = {}, blobs = { [`${blob}.png`]: png } } = {}) {
+async function recording(t, { lines = events, manifestOver = {}, blobs = { [`${blob}.png`]: png }, started = 0 } = {}) {
+  // `started` host process.started lines, one per process, before everything else (their seq is 0 in their own generation).
+  const hostLines = Array.from({ length: started }, (_, index) => live(index + 1, 0, 0, { source: 'host', kind: 'process.started', data: { pid: index + 1 } }));
+  if (started) lines = [...hostLines, ...lines.map(line => (line.channel === 'live' ? { ...line, seq: line.seq + 1 } : line))];
   const dir = await mkdtemp(join(tmpdir(), 'recording-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, 'blobs'));
@@ -33,7 +36,7 @@ async function recording(t, { lines = events, manifestOver = {}, blobs = { [`${b
 const first = dir => validateRecording(dir)[0];
 
 test('a well-formed recording has no problem', async t => {
-  assert.deepEqual(validateRecording(await recording(t)), []);
+  assert.deepEqual(validateRecording(await recording(t, { started: 2 })), []);
 });
 
 test('the manifest must carry every field of the format', async t => {
@@ -42,7 +45,7 @@ test('the manifest must carry every field of the format', async t => {
   assert.match(first(await recording(t, { manifestOver: { cost: { usd: 'free', parts: {} } } })).message, /cost/);
   assert.match(first(await recording(t, { manifestOver: { source: { run: 'r', store_sha256: 'xyz' } } })).message, /store_sha256/);
   assert.match(first(await recording(t, { manifestOver: { recorded: { started: '2026-10-14T08:00:05.000Z', ended: '2026-10-14T08:00:00.000Z' } } })).message, /before recorded\.started/);
-  assert.match(first(await recording(t, { manifestOver: { generations: 1 } })).message, /generations is 1, but a line carries gen 2/);
+  assert.match(first(await recording(t, { manifestOver: { generations: 1 }, started: 2 })).message, /generations is 1, but the recording has 2 host process.started lines/);
 });
 
 test('a line must carry the fields of its channel', async t => {
@@ -77,7 +80,7 @@ test('invariant 3: seq strictly increases within one generation across live line
   const problem = first(await recording(t, { lines, manifestOver: { generations: 1 } }));
   assert.equal(problem.line, 3);
   assert.match(problem.message, /seq 1 does not increase past 1 in generation 1/);
-  assert.deepEqual(validateRecording(await recording(t, { lines: [live(1, 0, 1), live(2, 0, 2, { gen: 2 }), live(1, 1, 3)] })), []);
+  assert.deepEqual(validateRecording(await recording(t, { lines: [live(1, 0, 1), live(2, 0, 2, { gen: 2 }), live(1, 1, 3)], started: 2 })), []);
 });
 
 test('the file is in order of t', async t => {
@@ -111,7 +114,7 @@ test('a line that is not JSON, an empty line and a missing file are named', asyn
 test('an image stays out of the line: a block holds its blob, never its data', async t => {
   const block = { type: 'image', mimeType: 'image/png', blob };
   const fine = events.map((line, index) => (index === 3 ? { ...line, data: { content: [block] } } : line));
-  assert.deepEqual(validateRecording(await recording(t, { lines: fine })), []);
+  assert.deepEqual(validateRecording(await recording(t, { lines: fine, started: 2 })), []);
   const inline = events.map((line, index) => (index === 3 ? { ...line, data: { content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }] } } : line));
   assert.deepEqual([first(await recording(t, { lines: inline })).line, first(await recording(t, { lines: inline })).message.slice(0, 22)], [4, 'holds image data inlin']);
   const dataUrl = events.map((line, index) => (index === 3 ? { ...line, data: { src: 'data:image/png;base64,AAAA' } } : line));
@@ -124,7 +127,7 @@ test('an image stays out of the line: a block holds its blob, never its data', a
 
 test('a durable line may have no gen; a live line must have one', async t => {
   const noGen = events.map((line, index) => (index === 0 ? Object.fromEntries(Object.entries(line).filter(([key]) => key !== 'gen')) : line));
-  assert.deepEqual(validateRecording(await recording(t, { lines: noGen })), []);
+  assert.deepEqual(validateRecording(await recording(t, { lines: noGen, started: 2 })), []);
   const liveNoGen = events.map((line, index) => (index === 1 ? Object.fromEntries(Object.entries(line).filter(([key]) => key !== 'gen')) : line));
   assert.match(first(await recording(t, { lines: liveNoGen })).message, /gen/);
 });
@@ -132,11 +135,21 @@ test('a durable line may have no gen; a live line must have one', async t => {
 test('a snapshot sits at the store\'s latest commit, never below an earlier line, and does not break the strict order', async t => {
   const snap = (commit, order, t, over = {}) => durable(commit, order, { snapshot: true, t, gen: 2, ...over });
   const fine = [durable(1, 0), durable(2, 0, { t: 12 }), snap(2, 0, 20), snap(2, 1, 21), durable(3, 0, { t: 30, gen: 2 })];
-  assert.deepEqual(validateRecording(await recording(t, { lines: fine })), []);
+  assert.deepEqual(validateRecording(await recording(t, { lines: fine, started: 2 })), []);
   const below = [durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20)];
   const problem = first(await recording(t, { lines: below }));
   assert.equal(problem.line, 3);
   assert.match(problem.message, /snapshot commit 2 is lower/);
   assert.match(first(await recording(t, { lines: [durable(1, 0, { snapshot: 'yes' })], manifestOver: { generations: 1 } })).message, /snapshot is not true/);
   assert.match(first(await recording(t, { lines: [live(1, 0, 1, { snapshot: true })], manifestOver: { generations: 1 } })).message, /no commit, order or snapshot/);
+});
+
+test('generations counts the supervisor\'s processes, not a durable line\'s gen, which counts journal opens', async t => {
+  // Two processes opened the journal four times between them: durable gens run to 4, live gens stay within 2.
+  const opens = [durable(1, 0, { gen: 1, t: 1 }), durable(2, 0, { gen: 2, t: 2 }), durable(3, 0, { gen: 3, t: 3 }), durable(4, 0, { gen: 4, t: 4 })];
+  const lines = [...opens, live(1, 0, 5), live(2, 0, 6, { gen: 2 })];
+  assert.deepEqual(validateRecording(await recording(t, { lines, started: 2 })), []);
+  const beyond = [...opens, live(1, 0, 5), live(3, 0, 6, { gen: 3 })];
+  assert.match(first(await recording(t, { lines: beyond, started: 2 })).message, /live line carries gen 3, beyond the 2 processes/);
+  assert.match(first(await recording(t, { lines: opens, manifestOver: { generations: 4 }, started: 2 })).message, /generations is 4, but the recording has 2 host process.started/);
 });

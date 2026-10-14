@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CommitRecorder, DurableLine } from './record-store.ts';
+import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 type Meta = { path?: string; conv?: number; blobs?: string[] };
@@ -16,10 +16,11 @@ export type Redact = (text: string) => string;
 export type Recorder = {
   /** The process's generation, known once it has opened the run; lines written before it carry it too. */
   generation(n: number): void;
-  /** Starts recording the open run's commits (a snapshot of every document first), from inside this process. */
-  attach(harness: unknown, gen: number): Promise<void>;
-  /** Stops recording commits. */
-  detach(): void;
+  /** Starts recording the open run's commits (a snapshot of every document first), from inside this process. Called from
+   *  the disk package's `beforeResume` hook, which has the Harness, the Storage and the head; `clock` is the recorder's. */
+  attach(input: Omit<AttachInput, 'clock'>): Promise<void>;
+  /** Stops recording commits and waits for the queued writes. */
+  detach(): Promise<void>;
   /** A line of what is in flight. It never changes a count. */
   live(source: 'workflow' | 'pi' | 'browser' | 'vision' | 'transport', kind: string, data: unknown, meta?: Meta): void;
   /** A line about the process itself: `process.started`, `kill`, `result`. */
@@ -83,7 +84,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
   let gen = 1;
   let seq = 0;
   let latest = 0;
-  let stop: (() => void) | undefined;
+  let stop: (() => Promise<void>) | undefined;
   const durableFile = join(spool(dir), `durable-${process.pid}-${Date.now()}.jsonl`);
   const keep = (bytes: Buffer, extension: string) => keepBlob(dir, bytes, extension);
   const write = (source: string, kind: string, data: unknown, meta: Meta = {}) => {
@@ -94,16 +95,17 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
   };
   return {
     generation(n) { gen = n; },
-    async attach(harness, at) {
+    async attach(input) {
       if (!options.commits) throw new Error('A recording needs the store export: no commit recorder was given.');
-      stop = await options.commits(harness, { gen: at, write: (line) => {
+      const clock = () => Math.max(0, Date.now() - started);
+      stop = await options.commits({ ...input, clock }, (line) => {
         const moved = moveImages(line.data, keep);
         const blobs = [...new Set([...(line.blobs ?? []), ...moved.blobs])];
         latest = Math.max(latest, line.commit);
-        appendFileSync(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: Math.max(0, Date.now() - started) }))}\n`);
-      } });
+        appendFileSync(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
+      });
     },
-    detach() { stop?.(); stop = undefined; },
+    async detach() { const end = stop; stop = undefined; await end?.(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };

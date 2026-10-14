@@ -137,7 +137,8 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
-  const generations = new Set();
+  let processes = 0;
+  const liveGenerations = new Set();
   lines.forEach((text, index) => {
     const line = index + 1;
     if (text.trim() === '') return add('events.jsonl', 'has an empty line', line);
@@ -148,7 +149,8 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
-    if (event.gen !== undefined) generations.add(event.gen);
+    if (event.source === 'host' && event.kind === 'process.started') processes += 1;
+    if (event.channel === 'live') liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
       if (!SHA256.test(hash ?? '')) add('events.jsonl', 'an image block has no 64-hex blob', line);
@@ -172,7 +174,12 @@ export function validateRecording(dir) {
     }
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
-  if (manifest && isInt(manifest.generations) && generations.size > 0 && Math.max(...generations) > manifest.generations) add('manifest.json', `generations is ${manifest.generations}, but a line carries gen ${Math.max(...generations)}`);
+  // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
+  if (manifest && isInt(manifest.generations)) {
+    if (processes !== manifest.generations) add('manifest.json', `generations is ${manifest.generations}, but the recording has ${processes} host process.started lines`);
+    const beyond = [...liveGenerations].filter(gen => gen > processes);
+    if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
+  }
   return problems;
 }
 
