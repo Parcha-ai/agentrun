@@ -4,13 +4,14 @@
 //
 // What it reads (RECORDING.md section 5, vision, pi and host):
 //   vision, durable: a `vision.*` document whose value is `{ looks: [{ receipt, record, item?, images?, miss? }] }`, each
-//     `record` a LookRecord as the package filed it. Every count and the cost fold from these alone (rule 1).
+//     `record` a LookRecord as the package filed it, in filing order (one document per look key, or per filing). Every
+//     count and the cost fold from these alone (rule 1).
 //   pi, durable: the lead's assistant entries, for the model it ran.
 //   pi and vision, live: `tool_execution_start` and `_end` of `read`, `LookEvent`, `MissEvent`: what is in flight, never
 //     counted. A read still running when its process is killed is "cut", observed.
 //   host: `process.started`, `kill`, and `result`, whose JSON blob is the account (`apollo11.account/1`).
 // Pure: `accepts`, `reduce` and `view` read only their arguments. Kinds it does not know are skipped.
-import { docOf, entryOf } from './durable.ts';
+import { docIdOf, docOf, entryOf } from './durable.ts';
 import { isSupervisor, processOf, under, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel, type ViewContext } from './panels.ts';
 
@@ -111,7 +112,8 @@ function visionLooksOf(line: Line, gen: number): VisionLook[] {
     const tokensIn = visionNum(facts.tokens_in);
     const tokensOut = visionNum(facts.tokens_out);
     return [{
-      id: receipt ?? `${doc!.doc} ${doc!.key ?? ''} ${line.conv ?? ''} ${index}`, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed',
+      // A document's list of filings only grows, and every revision carries all of it: a filing is its place in the list.
+      id: `${docIdOf(line, doc!)}\u0001${index}\u0001${receipt ?? ''}`, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed',
       native: args.native === true, kept: facts.kept === true, model: visionStr(args.model) ?? 'not recorded', body: visionStr(record.body) ?? '',
       kind: visionStr(facts.kind) ?? 'unknown', sha256: visionStr(facts.sha256) ?? '', fragment, source: visionStr(args.path) ?? '',
       ...(ask !== undefined ? { ask } : {}), ...(item !== undefined ? { item } : {}), ...(page !== undefined ? { page } : {}),

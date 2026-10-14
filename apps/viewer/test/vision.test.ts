@@ -129,6 +129,18 @@ test('a key paid again in a later generation is repeated, and twice in one is as
   assert.match(text(viewAt(unpriced.length, {}, unpriced)), /spend unknown/);
 });
 
+test('one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated', () => {
+  const page1 = LOOKS.page1 as { receipt: string; record: Json };
+  const keyed = (gen: number, commit: number, filings: Json[], snapshot = false): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: commit, commit, order: 0, conv: 1,
+    ...(snapshot ? { snapshot: true } : {}), data: { doc: 'vision.looks', key: K.page1, value: { looks: filings } } });
+  const once = [keyed(1, 1, [page1]), keyed(1, 1, [page1], true), keyed(2, 2, [page1, { ...page1, record: { ...(page1.record as object), facts: { ...((page1.record as { facts: object }).facts), kept: true } } }])];
+  const kept = visionMeters(reduceTo(visionPanel, once, once.length));
+  assert.deepEqual({ paid: kept.paid, kept: kept.kept, repeated: kept.repeated }, { paid: 1, kept: 1, repeated: 0 }, 'the snapshot repeats the list; the kept filing is the second entry');
+  const twice = [keyed(1, 1, [page1]), keyed(2, 2, [page1, page1])];
+  const again = visionMeters(reduceTo(visionPanel, twice, twice.length));
+  assert.deepEqual({ paid: again.paid, repeated: again.repeated }, { paid: 2, repeated: 1 }, 'the same record filed twice is two filings');
+});
+
 test('the account: entries with their chips, the photo sort against the captions, and the weaker eyes\' dropped digits', () => {
   const view = viewAt(end);
   const account = text(find(view, cls('vz-account'))[0]!);
