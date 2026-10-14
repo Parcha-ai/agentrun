@@ -121,4 +121,40 @@ describe("forkLocal", () => {
       dir.remove();
     }
   });
+
+  it("refuses a target inside the source, also through a symlink, and leaves the source untouched", async () => {
+    const dir = scratchRoot("fork-local-inside");
+    try {
+      const source = join(dir.root, "src");
+      await sealedSource(source);
+      symlinkSync(source, join(dir.root, "alias"));
+      const before = digest(source);
+      const code = (e: unknown) => (e instanceof ForkError ? e.code : e);
+      await assert.rejects(forkLocal(source, [{ id: "child", root: join(source, "child") }]), (e) => code(e) === "INVALID_ARGUMENT");
+      await assert.rejects(forkLocal(source, [{ id: "child", root: join(dir.root, "alias", "child") }]), (e) => code(e) === "INVALID_ARGUMENT");
+      assert.deepEqual(digest(source), before);
+      assert.deepEqual(readdirSync(source).sort(), readdirSync(source).filter((n) => !n.includes("child")).sort());
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a copy that fails after an earlier one was made leaves nothing: no first target, no temporary directory, the source unchanged", async () => {
+    const dir = scratchRoot("fork-local-rollback");
+    try {
+      const source = join(dir.root, "src");
+      await sealedSource(source);
+      writeFileSync(join(dir.root, "a-file"), "not a directory");
+      const before = digest(source);
+      // The second target's parent is a file: its copy cannot be made, after the first one was copied.
+      await assert.rejects(
+        forkLocal(source, [{ id: "first", root: join(dir.root, "first") }, { id: "second", root: join(dir.root, "a-file", "second") }]),
+        (e: unknown) => e instanceof ForkError && e.code === "COPY_FAILED",
+      );
+      assert.deepEqual(readdirSync(dir.root).sort(), ["a-file", "src"], "neither the first target nor any temporary directory is left");
+      assert.deepEqual(digest(source), before);
+    } finally {
+      dir.remove();
+    }
+  });
 });

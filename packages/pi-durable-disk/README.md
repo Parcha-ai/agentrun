@@ -476,8 +476,8 @@ fork or start leaves it alone.
 
 On a local directory, `forkLocal(from, [{ id, root }, ...])` makes the same copy without a disk: one new run directory per
 entry, from a directory of a run released and sealed (`SOURCE_NOT_RELEASED` for anything else, `TARGET_EXISTS` for a target
-that is there). The source is only read; each copy is made beside its target and renamed into place, so a failed one leaves no
-half copy. A local directory has no mount to take it exclusively, so nothing stops a process that opens the source while it
+that is there). The source is only read; every copy is made beside its target under a temporary name and none is published until all are complete, so a failed
+batch leaves no half copy. A target inside the source (also through a symlink) is `INVALID_ARGUMENT`. A local directory has no mount to take it exclusively, so nothing stops a process that opens the source while it
 is being copied: fork a run after it is released, and open the forks with `localRun` like any run.
 
 ### Setting up a host for production
