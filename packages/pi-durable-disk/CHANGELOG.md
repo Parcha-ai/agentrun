@@ -2,30 +2,6 @@
 
 ## Unreleased
 
-**pi-durable 1.2**
-- The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen to `>=1.0.4 <1.3.0`: the package
-  installs beside pi-durable 1.2, and still beside 1.0.4 and 1.1. It is still developed against 1.1.0.
-- pi-durable 1.2 reads a tool result's `output` and sends the model an empty result for one that says `content`, with no
-  error (1.0.4 and 1.1 read `content`). The package's own source builds no tool result. The test app's tools and the
-  paid-effect example now give their text through `api.output()` and name neither key, which every version reads; a test
-  asserts the model gets a tool's text, not an empty result.
-- pi-durable 1.2 fails a Session on any error a `Storage` throws, except its own `StorageRequestError` (an invalid
-  request) and a read its caller cancelled. The store is pi's `SqliteStorage` behind the fenced database and the lease's
-  commit observer, neither of which rewraps an error, so an invalid read (a cursor that is not one, an unknown
-  conversation) reaches the Session as that class and fails the call only. Tests on the store and on a run pin it. A
-  fenced commit still fails the Session: on 1.2 every later operation refuses with `SessionFailed`, its `cause` the
-  fenced error, where 1.0.4 and 1.1 said the Session was poisoned.
-- pi-durable 1.2's `bash` answers a nonzero exit with an error result where 1.0.4 and 1.1 threw. The workspace barrier
-  runs after it either way: a test runs a command that writes a file and exits nonzero, and the barrier runs with the
-  file on disk before the error result commits.
-- The floor job measured a mixed family: its install into the workspace alone left pi-durable 1.0.4 at the root, loading
-  the root's chord and pi-ai 1.1.0, while the package resolved its own 1.0.4 copies, and the version guard checked only
-  those. The guard now also checks chord and pi-ai as the installed pi-durable loads them from its own location, and
-  reads `PI_EXPECT_VERSION` beside `PDA_EXPECT_PI_DURABLE`. The job (`pi-durable-disk-pi-floor`) installs the family
-  through `scripts/pi-leg.mjs`, one copy each, as the repository's `pi-1-2` leg does at 1.2.0.
-- The test helpers that signal a process (`killQuietly`, `alive`) refuse a pid of 0 or below: a test that never learned
-  its child's pid passes 0 from its `finally`, and `kill(0)` signals the test runner's own process group.
-
 **pi-durable 1.1**
 - The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen from `~1.0.4` to `>=1.0.4 <1.2.0`:
   the package installs beside pi-durable 1.1 and still beside 1.0.4. It is developed against 1.1.0, and a CI job
