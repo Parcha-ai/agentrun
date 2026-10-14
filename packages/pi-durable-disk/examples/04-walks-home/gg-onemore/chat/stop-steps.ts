@@ -1,6 +1,7 @@
 // The page's stop, in order: first what the take leaves behind (the guard log, the strength record, the served edit and the
-// recipes made on the box, the page's events, the run's transcript) is copied into a directory of its own, then the box, the app's sandboxes and the run's tree go. A step
-// that fails is logged and the rest still run: a lost log must never keep a GPU box up.
+// recipes made on the box, the page's events, the run's transcript) is copied into a directory of its own, then the box (unless
+// it is kept for the next page), the app's sandboxes and the run's tree go. A step that fails is logged and the rest still
+// run: a lost log must never keep a GPU box up.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -24,7 +25,8 @@ export const BOX_FILES = ["/var/tmp/gg/guard.jsonl", "/var/tmp/gg/run/strength.j
 export const BOX_RECIPES = "/var/tmp/gg/recipes";
 const READ_BOX_FILES = `python3 -c 'import json, os; R = "${BOX_RECIPES}"; out = {os.path.basename(p): open(p).read() if os.path.exists(p) else None for p in ${JSON.stringify(BOX_FILES)}}; out.update({"recipe-" + f: open(os.path.join(R, f)).read() for f in (sorted(os.listdir(R)) if os.path.isdir(R) else []) if f.endswith(".json")}); print(json.dumps(out))'`;
 
-export function stopSteps(t: StopTools, dir: string): StopStep[] {
+/** With `keepBox` the GPU box stays up for the next page on it (live-gg.mjs --reuse-box): `terminateSandboxes` must spare it. */
+export function stopSteps(t: StopTools, dir: string, o: { keepBox?: boolean } = {}): StopStep[] {
   return [
     ["keep: the directory", () => (mkdirSync(dir, { recursive: true, mode: 0o700 }), dir)],
     [
@@ -37,7 +39,7 @@ export function stopSteps(t: StopTools, dir: string): StopStep[] {
     ],
     ["keep the page's events", () => t.pageEvents(dir)],
     ["keep the run's transcript", () => t.pullRun(join(dir, "run"))],
-    ["box down", () => t.boxDown()],
+    o.keepBox ? ["box kept", () => "the GPU box stays up for the next page"] : ["box down", () => t.boxDown()],
     ["the app's sandboxes", () => t.terminateSandboxes()],
     ["the run's tree", () => t.cleanRun()],
   ];

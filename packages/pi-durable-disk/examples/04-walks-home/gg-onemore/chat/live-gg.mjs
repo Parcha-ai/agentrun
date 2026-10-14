@@ -7,8 +7,9 @@
 // /mnt/pda/demo/steer-any, ~/tmp-steer and pda-steer. Nothing is shared with the robot's scripts. The run's link is printed
 // once (the person opens it), with the ssh line. Stop with `chat/stop-gg.sh [--page any]` (SIGTERM): the server, the VM, the
 // box and the run's tree; the last line counts the app's sandboxes (0). With no request through the guard for --idle-min
-// minutes, it stops itself the same way.
-//   node chat/live-gg.mjs [--page golden-gate|any] [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
+// minutes, it stops itself the same way. A fresh chat on the same box: `chat/stop-gg.sh --page any --keep-box` (SIGUSR2: all
+// but the GPU box goes), then this again with --reuse-box (the saved box, if it is up and healthy; else a new one).
+//   node chat/live-gg.mjs [--page golden-gate|any] [--reuse-box] [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -80,7 +81,16 @@ if (!existsSync(extraModule)) fatal(`${extraModule} is missing: npm run bundle:e
 
 let server;
 let stopping = false;
-async function stop(reason, code = 0) {
+const savedBox = () => {
+  try {
+    return JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
+  } catch {
+    return {};
+  }
+};
+async function stop(reason, code = 0, keepBox = false) {
+  // the box is kept only when there is one to name: the app's other sandboxes go either way
+  const keptBox = keepBox ? savedBox().sandbox : undefined;
   if (stopping) return;
   stopping = true;
   say("stopping", { reason });
@@ -105,10 +115,11 @@ async function stop(reason, code = 0) {
         },
         pullRun: (dir) => run(join(B, "with-archil"), ["--", process.execPath, join(G, "chat", "pull-run.ts"), RUN, dir], { cwd: G, timeout: 180_000 }),
         boxDown: () => box("down"),
-        terminateSandboxes: () => sandboxes("--terminate"),
+        terminateSandboxes: () => sandboxes("--terminate", ...(keptBox ? ["--keep", keptBox] : [])),
         cleanRun: () => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }),
       },
       kept,
+      { keepBox: !!keptBox },
     ),
     say,
   );
@@ -123,6 +134,7 @@ async function stop(reason, code = 0) {
   process.exit(code);
 }
 process.on("SIGTERM", () => void stop("SIGTERM"));
+process.on("SIGUSR2", () => void stop("SIGUSR2: the box stays for the next page", 0, true));
 process.on("SIGINT", () => void stop("SIGINT"));
 
 // The disk's API can time out (a 504 from Archil's gateway): a step on it is tried three times before the start gives up.
@@ -141,12 +153,24 @@ const onDisk = (fn) => {
 try {
   // 1. a fresh run, first: a run id with a history would resume that conversation, and a disk that fails here costs no GPU
   say("run.clean", { out: onDisk(() => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })).trim().split("\n").at(-1) });
-  // 2. the GPU box (the long pole: 3-7 min)
-  say("box.up");
-  box("up", "--ttl", TTL);
-  box("wait", "--timeout", "900");
+  // 2. the GPU box (the long pole: 3-7 min), or with --reuse-box the saved one while it answers healthy
+  let reused = false;
+  if (process.argv.includes("--reuse-box") && savedBox().url) {
+    try {
+      box("wait", "--timeout", "30");
+      reused = true;
+    } catch (e) {
+      say("box.reuse_failed", failure(e));
+    }
+  }
+  if (!reused) {
+    say("box.up");
+    // a saved box that did not answer healthy is replaced; without --reuse-box a running one stops the start, as before
+    box("up", "--ttl", TTL, ...(process.argv.includes("--reuse-box") ? ["--replace"] : []));
+    box("wait", "--timeout", "900");
+  }
   const state = JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
-  say("box.ready", { sandbox: state.sandbox, s: Math.round((Date.now() - t0) / 1000) });
+  say("box.ready", { sandbox: state.sandbox, reused, s: Math.round((Date.now() - t0) / 1000) });
   // 3. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
   mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
   chmodSync(SECRETS, 0o700);
