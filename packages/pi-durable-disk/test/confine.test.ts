@@ -726,7 +726,7 @@ describe("the swapper fixture", () => {
 describe("the swapper fixture's driver", () => {
   it("ends with the test process that started it, and the swapper with the driver, when that process is killed before it cleans up", async () => {
     await withLayout(async (layout) => {
-      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["ignore", "pipe", "inherit"] });
+      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
       let said = "";
       outer.stdout.on("data", (chunk) => (said += chunk));
       let pids: { driver: number; swapper: number } | undefined;
@@ -738,6 +738,35 @@ describe("the swapper fixture's driver", () => {
         for (const t0 = Date.now(); (alive(pids.driver) || alive(pids.swapper)) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
         assert.ok(!alive(pids.driver), "the driver is gone within 5 s of the process that started it");
         assert.ok(!alive(pids.swapper), "the swapper is gone with it");
+      } finally {
+        outer.kill("SIGKILL");
+        if (pids) {
+          for (const target of [pids.driver, -pids.swapper]) {
+            try {
+              process.kill(target, "SIGKILL");
+            } catch {}
+          }
+        }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's stand-in test process", () => {
+  it("ends, with the driver and the swapper, once its stdin from the test closes, so a killed test leaves none of the three", async () => {
+    await withLayout(async (layout) => {
+      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
+      let said = "";
+      outer.stdout.on("data", (chunk) => (said += chunk));
+      let pids: { driver: number; swapper: number } | undefined;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        pids = JSON.parse(said.trim().split("\n")[0]!) as { driver: number; swapper: number };
+        const all = [outer.pid!, pids.driver, pids.swapper];
+        assert.ok(all.every(alive), "the stand-in, the driver and the swapper are running");
+        outer.stdin.end();
+        for (const t0 = Date.now(); all.some(alive) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.deepEqual(all.filter(alive), [], "all three are gone within 5 s of the test's end of the pipe closing");
       } finally {
         outer.kill("SIGKILL");
         if (pids) {
