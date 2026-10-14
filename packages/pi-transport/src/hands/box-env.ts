@@ -814,7 +814,7 @@ class BoxEnv implements ExecutionEnv {
 		if (typeof command !== "string" && command.length === 0) {
 			return err(new ExecutionError("spawn_error", "empty argv: no program to run"));
 		}
-		if (this.#lost !== undefined) return err(new ExecutionError("unknown", this.#goneMessage()));
+		if (this.#lost !== undefined) return err(this.#goneError());
 		const directory = await this.#resolve(options?.cwd ?? this.cwd, context);
 		if (!directory.ok) return err(new ExecutionError("spawn_error", directory.error.message));
 
@@ -955,7 +955,7 @@ class BoxEnv implements ExecutionEnv {
 					return err(new ExecutionError("aborted", "aborted"));
 				}
 				await this.#diagnose(started.error, context);
-				if (this.#lost !== undefined) return err(new ExecutionError("unknown", this.#goneMessage()));
+				if (this.#lost !== undefined) return err(this.#goneError());
 				if (started.error.code === "timeout") {
 					await kill();
 					return err(new ExecutionError("timeout", `the box ${this.#box.id} did not start the command in time`));
@@ -1004,7 +1004,7 @@ class BoxEnv implements ExecutionEnv {
 						this.#lost === undefined
 							? `the box ${this.#box.id} lost the command: ${exit.error.message}`
 							: this.#goneMessage();
-					return err(new ExecutionError("unknown", message));
+					return err(this.#lost === undefined ? new ExecutionError("unknown", message) : this.#goneError());
 				}
 				await kill();
 				const error =
@@ -1041,6 +1041,12 @@ class BoxEnv implements ExecutionEnv {
 	#grown(path: string): FileError {
 		const message = `not supported: ${path} (the file grew past the ${this.#maxReaderBytes} bytes a reader holds; read it in parts with a command)`;
 		return new FileError("not_supported", message, path);
+	}
+
+	/** pi's execution codes have no `gone`: the code is `unknown`, and the provider's own `BoxError` is the cause. */
+	#goneError(): ExecutionError {
+		const message = this.#goneMessage();
+		return new ExecutionError("unknown", message, new BoxError("gone", message));
 	}
 
 	#goneMessage(): string {

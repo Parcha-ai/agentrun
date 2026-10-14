@@ -146,7 +146,6 @@ export type VisionAdapterOptions = Omit<VisionOptions, "scope"> & {
 };
 
 export function createVisionExtension(options: VisionAdapterOptions): VisionHandle {
-  const onLook = quiet(options.onLook);
   const childEnv = () => childEnvOf(options.env);
   // The host's converters first, then the package's own; Photon fits images when the host gives no processor and this
   // process can load it, since it runs here and not in the call's environment.
@@ -170,7 +169,9 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     providers,
     sources: options.sources ?? {},
     ...(options.allow ? { allow: options.allow } : {}),
-    ...(onLook ? { onLook } : {}),
+    // `onLook` reaches the core as the host gave it: the core never lets it fail a call, and reads its throw as the host
+    // not having heard of the look.
+    ...(options.onLook ? { onLook: options.onLook } : {}),
     ...(onMiss ? { onMiss } : {}),
   });
   // A setup the host's own callbacks fail to make is a typed miss for the model and the host's `onMiss`, never their error.
