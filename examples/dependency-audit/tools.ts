@@ -66,7 +66,7 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
       };
       if (!options.boxes) return skipped(options.skipped ?? (replay ? 'replay: no program ran, so the install\'s connections are not known' : 'no box is available, so the install step was skipped'));
       let done;
-      try { done = await installThroughBox(root, options.boxes, name, version); } catch (error) {
+      try { done = await installThroughBox(root, options.boxes, name, version, { labels: { 'agentrun-dependency-audit': createHash('sha256').update(root).digest('hex').slice(0, 12) } }); } catch (error) {
         if ((error as { code?: string }).code === 'DOCKER_UNAVAILABLE') return skipped('Docker is not available on this machine, so the install step was skipped');
         throw error;
       }

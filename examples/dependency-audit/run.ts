@@ -21,6 +21,7 @@ import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
 import { badgeImageTool, visionOptions } from './badges.ts';
 import { checkReceipts, recordOf } from './check.ts';
+import { attachInstall, startInstall } from './install-box.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
 import { makeTools, rerunner } from './tools.ts';
@@ -59,7 +60,8 @@ async function child() {
   let runOptions: RunOptions = {};
   if (live) {
     const { catalog, lead } = liveModels(process.env, process.env.MODEL);
-    const liveTools = makeTools({ root: place.root, source: { live: true } });
+    // The install runs in a throwaway Docker box when there is one; without Docker the step is skipped and the receipt says so.
+    const liveTools = makeTools({ root: place.root, source: { live: true }, ...(process.env.AUDIT_NO_BOX ? {} : { boxes: { startInstall, attachInstall } }) });
     const fakes = { model: () => { throw new Error('the live run asks a real model'); }, tools: liveTools, judge: modelJudge(catalog, lead), pages: {}, start: 'about:blank' } as Fakes;
     local = localHost(place, fakes, { browser: await localChrome(place), ...(recorder ? { recorder } : {}) });
     local.host.models = { catalog, lead };
