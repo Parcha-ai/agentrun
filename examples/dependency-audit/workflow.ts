@@ -73,7 +73,7 @@ export const workflow = {
           type: 'string', enum: ['clear', 'notice', 'act'], description: 'Which flag do the cited facts raise?',
           criteria: {
             clear: 'None of the facts is a live advisory, an install-time download from outside the registry, an archived repository or a deprecation.',
-            notice: 'A fact shows a deprecation, an archived repository, an unread repository or an install that was not run, and no live advisory or outside download.',
+            notice: 'A fact shows a deprecation or an archived repository, and no live advisory or outside download. An install that was not run, or a repository that was not read, is not a flag.',
             act: 'A fact shows a live advisory on the pinned version, or an install that reached a host that is not the package registry.',
           },
         },
@@ -112,7 +112,7 @@ export const workflow = {
         { node: 'judge', label: 'verdict', state: { name: '{item.name}', version: '{item.version}', facts: '{finding.facts}' }, out: 'Verdict', as: 'verdict' },
         {
           node: 'code', label: 'row',
-          code: '(s) => { const held = new Set([s.registry.receipt, s.advisories.receipt, s.install.receipt, ...s.repository.pages.map((p) => p.path), ...s.repository.badges.map((b) => b.receipt)]); const facts = s.finding.facts.filter((f) => held.has(f.receipt)); const noul = s.verdict$answers && s.verdict$answers.answers && s.verdict$answers.answers.flag && s.verdict$answers.answers.flag.noul; return { row: { name: s.item.name, version: s.item.version, flag: s.verdict.flag, confidence: typeof noul === "number" ? noul : 0, facts, dropped: s.finding.facts.length - facts.length } }; }',
+          code: '(s) => { const held = new Set([s.registry.receipt, s.advisories.receipt, s.install.receipt, ...s.repository.pages.map((p) => p.path), ...s.repository.badges.map((b) => b.receipt)]); const facts = s.finding.facts.filter((f) => held.has(f.receipt)); const conf = s.verdict$answers && s.verdict$answers.answers && s.verdict$answers.answers.flag && s.verdict$answers.answers.flag.confidence; return { row: { name: s.item.name, version: s.item.version, flag: s.verdict.flag, confidence: typeof conf === "number" ? conf : 0, facts, dropped: s.finding.facts.length - facts.length } }; }',
         },
       ] },
     },
