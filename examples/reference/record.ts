@@ -168,7 +168,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
 export type Header = {
   title: string; task: string; model: string; generations: number; kills: number;
   code: { repo: string; commit: string; packages: Record<string, string> };
-  /** The cost, or a function of the merged lines (fold.mjs's cost: `null` while any part is unknown, never 0). */
+  /** The cost, or a function of the merged lines (fold.ts's cost: `null` while any part is unknown, never 0). */
   cost: { usd: number | null; parts: Record<string, number | null> } | ((lines: Record<string, unknown>[]) => { usd: number | null; parts: Record<string, number | null> });
   source: { run: string; store: string };
   result?: { blob: string; title: string };

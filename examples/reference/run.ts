@@ -13,7 +13,7 @@ import type { FixturePage } from '@parcha/pi-browser/testing';
 import { placeAt, run, type RunResult } from './assemble.ts';
 import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
 import { fakes, job } from './job.ts';
-import { fold } from './fold.ts';
+import { cost } from './fold.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 
@@ -94,7 +94,7 @@ if (import.meta.main) {
     finishRecording(values.record, {
       title: 'The reference job, no key', task: job.workflow.name ?? 'reference', model: `${local.host.models.lead.provider}/${local.host.models.lead.modelId}`,
       generations: result.generation, kills: 0, code: codeOf(join(import.meta.dirname, '..', '..')),
-      cost: (lines) => fold(lines).cost,
+      cost,
       source: { run: place.id, store: join(place.store, 'run.sqlite') }, result: { blob: resultBlob, title: 'The record' },
     });
   }
