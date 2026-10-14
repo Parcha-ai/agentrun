@@ -64,7 +64,7 @@ test('the counters at the end match the run\'s own ledger', () => {
   assert.deepEqual({ paid: counters.paid.total, repeated: counters.repeated, askedTwice: counters.askedTwice, unknown: counters.unknown, inFlight: counters.inFlight },
     { paid: 1, repeated: 0, askedTwice: 0, unknown: 0, inFlight: 0 });
   assert.deepEqual(counters.judge, { answered: 1, failed: 0, reasked: 0 });
-  assert.deepEqual(counters.turns, { committed: 4, reasked: null, reaskedPossible: null }, 'the run asked turn 2 twice, but this export pruned pi.live to its last revision: no ask start is left to prove it');
+  assert.deepEqual(counters.modelTurns, { committed: 4, reasked: null }, 'the run asked turn 2 twice, but this export pruned pi.live to its last revision: no ask start is left to prove it');
   assert.deepEqual({ processes: counters.processes, kills: counters.kills }, { processes: 2, kills: 1 });
   assert.equal(counters.journalOpens, 4, 'the store\'s own fact: two journal opens in each process of this build');
   assert.equal(counters.cost, null, 'the scripted judge reports no cost, so the run\'s cost is unknown, never 0');
@@ -100,8 +100,8 @@ test('a browser picture: the track when there is one, else the latest frame, and
 
 test('a recording that never committed an ask start shows re-asked turns as not measured, never 0', () => {
   const counters = countersOf(reduceTo(counterFold, lines, lines.length), true);
-  assert.equal(counters.turns.reasked, null);
-  assert.equal(counters.turns.committed, 4, 'committed turns come from the store all the same');
+  assert.equal(counters.modelTurns.reasked, null);
+  assert.equal(counters.modelTurns.committed, 4, 'committed turns come from the store all the same');
 });
 
 test('a kill\'s crossing is { point, n } or null, and the lane shows its point', () => {
@@ -149,6 +149,10 @@ test('a document is one per (doc, key, conv, task): two conversations each hold 
   assert.deepEqual(shown([...run, live(2, 3, 12, { turn: 1 }, true)]), [[12, { turn: 1 }], [13, { turn: 1 }]], 'a snapshot replaces only its own');
   const restored = [...run, live(2, 2, 12, { turn: 1 }, true)];
   assert.deepEqual(shown(restored), [[12, { turn: 1 }]], 'a restore to commit 2: the snapshot holds conversation 12 only, so 13\'s is gone');
+  // Two processes open back to back: the second's snapshot is its own, so its drop to commit 2 is a restore.
+  const started = (gen: number): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: gen, data: { gen } });
+  const backToBack = [started(1), ...run, started(2), live(2, 3, 12, { turn: 1 }, true), live(2, 3, 13, { turn: 1 }, true), started(3), live(2, 2, 12, { turn: 1 }, true)];
+  assert.deepEqual(shown(backToBack), [[12, { turn: 1 }]], 'the third process\'s snapshot holds conversation 12 only');
   const tasks = [{ ...live(1, 1, 12, 'a'), kind: 'pi.task-memo', task: 't1', data: { doc: 'pi.task-memo', value: 'a' } }, { ...live(1, 2, 12, 'b'), kind: 'pi.task-memo', task: 't2', data: { doc: 'pi.task-memo', value: 'b' } }];
   assert.equal(documentsOf(reduceTo(documentFold, tasks, 2), 'pi.task-memo').length, 2, 'one per task');
 });

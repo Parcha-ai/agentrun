@@ -3,8 +3,9 @@
 // holds a receipt for the tool), by tool and arguments run-wide, as the receipts are; a stateful tool such as a page read, called twice
 // with the same arguments, is not a repeat.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import type { Json, Line } from '../src/format.ts';
+import { parseLines, type Json, type Line } from '../src/format.ts';
 import { counterFold, countersOf, repeatedLabel } from '../src/counters.ts';
 import { receiptKeyOf } from '../src/receipt-key.ts';
 
@@ -120,7 +121,13 @@ const asked = (gen: number, conv: number, snapshot = false) => live(gen, conv, {
 const partial = (gen: number, conv: number, snapshot = false) => live(gen, conv, { run: { taskId: 1 }, generation: { attempt: 1, message: { role: 'assistant', content: [] } } }, snapshot);
 const answer = (gen: number, conv: number, stopReason = 'toolUse'): Line =>
   durable('pi.assistant', 'pi', gen, { kind: 'pi.assistant', model: [{ role: 'assistant', stopReason, content: [], usage: { cost: { total: 0.5 } } }] }, { conv });
-const turns = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).turns;
+const modelTurns = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).modelTurns;
+/** modelTurns, flat: committed, proven re-asks and their turns, possible re-asks (null when not measured). */
+const turns = (lines: Line[]) => {
+  const { committed, reasked } = modelTurns(lines);
+  return reasked === null ? { committed, reasked: null, reaskedTurns: null, reaskedPossible: null }
+    : { committed, reasked: reasked.proven.reasks, reaskedTurns: reasked.proven.turns, reaskedPossible: reasked.possible.reasks };
+};
 
 // Draft 14: a snapshot's gen is the driver's at its commit (the process before the one opening), and a cut ask is one
 // whose process the supervisor replaced.
@@ -131,11 +138,11 @@ test('an ask the kill cut after its partial, asked again at the same position, i
   // R2's mid-stream kill: the ask starts (commit 18), its partial lands (19), the process dies; the next process's snapshot still
   // carries the generation (20), a new ask starts at the same position (22) and pi appends the cut partial as an aborted entry.
   const run = [started(), idle(1, 12), asked(1, 12), partial(1, 12), started(), partial(1, 12, true), asked(2, 12), answer(2, 12, 'aborted'), partial(2, 12), answer(2, 12), idle(2, 12)];
-  assert.deepEqual(turns(run), { committed: 1, reasked: 1, reaskedPossible: 0 });
+  assert.deepEqual(turns(run), { committed: 1, reasked: 1, reaskedTurns: 1, reaskedPossible: 0 });
 });
 
 test('a snapshot\'s generation is the ask already open, or a cut one whose start line was lost', () => {
-  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), started(), partial(1, 12, true)]), { committed: 0, reasked: 0, reaskedPossible: 0 }, 'the ask is open, not yet asked again');
+  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), started(), partial(1, 12, true)]), { committed: 0, reasked: 0, reaskedTurns: 0, reaskedPossible: 0 }, 'the ask is open, not yet asked again');
   assert.equal(turns([started(), idle(1, 12), asked(1, 12), started(), partial(1, 12, true), idle(2, 12), asked(2, 12)]).reasked, 1, 'asked again in the next process: proven, the snapshot shows its partial');
   assert.equal(turns([started(), idle(1, 12), started(), partial(1, 12, true), asked(2, 12), answer(2, 12), idle(2, 12)]).reasked, 1, 'process 1\'s start line died in flight: the snapshot is its ask');
 });
@@ -143,12 +150,12 @@ test('a snapshot\'s generation is the ask already open, or a cut one whose start
 test('a cut ask with only its start marker, asked again, is re-asked possible, and shows as the later ask\'s first partial or its entry', () => {
   // The marker is still there, so the later process's own start marker is the same value and writes no line.
   const viaPartial = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), partial(2, 12), answer(2, 12)]);
-  assert.deepEqual(viaPartial, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'its first partial');
+  assert.deepEqual(viaPartial, { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 }, 'its first partial');
   const viaEntry = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), answer(2, 12)]);
-  assert.deepEqual(viaEntry, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'its committed entry, from a model that streams no partial');
-  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), live(1, 12, { generation: { attempt: 2 } }), answer(1, 12)]), { committed: 1, reasked: 0, reaskedPossible: 0 }, 'a retry inside one process is no re-ask');
+  assert.deepEqual(viaEntry, { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 }, 'its committed entry, from a model that streams no partial');
+  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), live(1, 12, { generation: { attempt: 2 } }), answer(1, 12)]), { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 0 }, 'a retry inside one process is no re-ask');
   const newStart = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), live(2, 12, { generation: { attempt: 2 } }), answer(2, 12)]);
-  assert.deepEqual(newStart, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'a later start marker that differs writes its own line: still possible, the cut ask had no partial');
+  assert.deepEqual(newStart, { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 }, 'a later start marker that differs writes its own line: still possible, the cut ask had no partial');
 });
 
 test('asks at different positions or in different conversations are not re-asked', () => {
@@ -165,4 +172,80 @@ test('a recording that never committed an ask start, or whose pi.live version is
 
 test('committed turns skip aborted assistant entries', () => {
   assert.equal(turns([answer(1, 12, 'aborted'), answer(1, 12), answer(1, 12, 'aborted')]).committed, 1);
+});
+
+// Draft 15: counted per extra payment. Each applied call (or paid execution) after the first of its id or key counts once: in repeated when
+// its generation is later than the previous one's, in asked twice when it is the same. A snapshot's new calls take the snapshot's own gen.
+test('per extra payment: applied in gens 1, 2, 2 is one repeat and one asked twice; 1, 1, 1, 2 is one repeat and two asked twice', () => {
+  const a = { outcome: 'applied' };
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [a]), effect('e', 'unknown', 2), effect('e', 'unknown', 2, [a]), effect('e', 'completed', 2, [a, a])]), [1, 1]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [a, a, a]), effect('e', 'unknown', 2), effect('e', 'completed', 2, [a])]), [1, 2]);
+  assert.deepEqual(pair([effect('e', 'completed', 1, [a])]), [0, 0], 'the first payment is not an extra one');
+});
+
+test('a paid key executed in gens 1, 2, 2 is one repeat and one asked twice', () => {
+  const result = pair([receipt('paid', { q: 1 }, 1), ...executed('paid', { q: 1 }, 1, 5), ...executed('paid', { q: 1 }, 2, 5), ...executed('paid', { q: 1 }, 2, 9)]);
+  assert.deepEqual(result, [1, 1]);
+});
+
+test('a snapshot\'s new calls take the snapshot\'s own generation, which is the earlier process\'s', () => {
+  const lost = { outcome: 'applied', n: 1 };
+  const resent = { outcome: 'applied', n: 2 };
+  // The call process 1 made had its own line lost; process 2's snapshot carries the driver's generation at its commit (1) and shows it first.
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 1, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [1, 0], 'placed in gen 1, the re-send in gen 2');
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [0, 1], 'a snapshot at gen 2 places it in gen 2 itself: no earlier generation is invented');
+});
+
+// Draft 16: each cut ask counts once; a bare marker unchanged across several opens is one possible; a later process's own partial that differs
+// from its snapshot's is its proven ask; re-asks at a position are its asks minus one, split proven and possible.
+const partialOf = (gen: number, conv: number, tag: string, snapshot = false) =>
+  live(gen, conv, { run: { taskId: 1 }, generation: { attempt: 1, message: { role: 'assistant', content: [{ type: 'toolCall', id: tag }] } } }, snapshot);
+
+test('conv 39 position 4 of the spacedeck recording: partial A (process 5), killed, process 6 commits a different partial B with no start line, killed, process 7 commits C and answers: 3 asks, 2 proven re-asks', () => {
+  const run = [
+    started(), started(), started(), started(), started(),
+    answer(1, 39), answer(1, 39), answer(1, 39), answer(1, 39),
+    asked(9, 39), partialOf(9, 39, 'A'),
+    started(), partialOf(9, 39, 'A', true), partialOf(11, 39, 'B'),
+    started(), asked(11, 39, true), partialOf(11, 39, 'C'), idle(11, 39), answer(11, 39),
+  ];
+  assert.deepEqual(turns(run), { committed: 5, reasked: 2, reaskedTurns: 1, reaskedPossible: 0 });
+});
+
+test('a bare marker that stays unchanged across several opens is one possible cut ask, counted when a later process answers', () => {
+  const run = [started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), started(), asked(2, 12, true), started(), asked(3, 12, true), answer(3, 12)];
+  assert.deepEqual(turns(run), { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 });
+  assert.equal(turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true)]).reaskedPossible, 0, 'not answered by a later process yet: nothing counted');
+});
+
+test('a later process\'s partial that equals its snapshot\'s is the same ask, and one that differs is its own proven ask', () => {
+  assert.equal(turns([started(), asked(1, 12), partialOf(1, 12, 'A'), started(), partialOf(1, 12, 'A', true), partialOf(2, 12, 'A')]).reasked, 0, 'the same partial again');
+  assert.equal(turns([started(), asked(1, 12), partialOf(1, 12, 'A'), started(), partialOf(1, 12, 'A', true), partialOf(2, 12, 'B')]).reasked, 1, 'a different partial: process 2 asked, and the model answered');
+});
+
+test('re-asks at a position are its asks minus one, split proven and possible by the cut asks that make them', () => {
+  // Process 1: a bare marker, cut. Process 2: a partial with no start line (so the bare ask was possible), cut. Process 3 answers.
+  const run = [started(), asked(1, 12), started(), partialOf(2, 12, 'B'), started(), partialOf(2, 12, 'B', true), partialOf(3, 12, 'C'), answer(3, 12)];
+  assert.deepEqual(turns(run), { committed: 1, reasked: 1, reaskedTurns: 1, reaskedPossible: 1 });
+});
+
+test('conv 29 position 8 of the spacedeck recording: a bare cut marker, then 22 processes each with its own distinct partial and a bare snapshot, the answer in the last: 1 possible and 22 proven re-asks', () => {
+  const run: Line[] = [started(), asked(7, 29)];
+  // Each later process opens on a snapshot that shows the marker bare (a resumed pi drops the cut partial), commits its own partial, and is killed.
+  for (let process = 1; process <= 22; process += 1) run.push(started(), asked(7 + 2 * process, 29, true), partialOf(7 + 2 * process, 29, `P${process}`));
+  run.push(started(), asked(53, 29, true), idle(53, 29), answer(53, 29));
+  assert.deepEqual(turns(run), { committed: 1, reasked: 22, reaskedTurns: 1, reaskedPossible: 1 });
+  // The same chain read from its snapshots alone would be one unchanged bare marker: the partials on the processes' own lines are the proof.
+  const snapshotsOnly = run.filter((line) => !(line.kind === 'pi.live' && line.snapshot !== true && JSON.stringify(line.data).includes('toolCall')));
+  assert.deepEqual(turns(snapshotsOnly), { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 });
+});
+
+// Draft 17, on a real kill storm: a scripted dependency audit over 24 branches, killed 30 times, cut down to the lines the
+// ask fold reads (test/fixtures/README.md). A resumed pi drops the cut partial, so its snapshots show markers bare: the
+// proof is on the processes' own lines.
+test('a 30-kill storm: 136 proven re-asks over 16 turns, and 9 possible', () => {
+  const storm = parseLines(readFileSync(new URL('fixtures/spacedeck-asks/events.jsonl', import.meta.url), 'utf8'));
+  assert.deepEqual(modelTurns(storm), { committed: 188, reasked: { proven: { turns: 16, reasks: 136 }, possible: { turns: 9, reasks: 9 } } });
+  const state = storm.reduce((each, line) => (counterFold.accepts(line) ? counterFold.reduce(each, line) : each), counterFold.init());
+  assert.equal(state.reasks['29 8']!.proven + state.reasks['29 8']!.possible, 23, 'conv 29 at 8 was asked 24 times');
 });

@@ -24,9 +24,9 @@ static host), or a recording folder dropped on the page or chosen with its picke
 - **Scrubber.** Play, pause, speed, the slider, previous and next commit, and a click on the timeline. A scrub stops
   only between commits: the screen at any point is a reduce of the lines before it.
 - **Counters.** Paid calls made, repeated, asked twice, unknown, judge asks, model turns (not counting a cut answer's
-  `aborted` entry), re-asked turns (from the store's `pi.live` asks: proven when the ask a kill cut had committed a
-  partial, possible when only its start, and only proven ones count; "not measured" when no ask start was committed
-  or its version is unknown), processes, kills, cost (unknown when any part is unknown,
+  `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
+  committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
+  measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
   never $0), and the journal's opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
   or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool
@@ -48,7 +48,8 @@ static host), or a recording folder dropped on the page or chosen with its picke
 `events.jsonl` and its `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and
 copies them beside the page. There are none yet, and the gallery says so. The tests play a fixture cut by hand from a
 real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut). A
-restore is tested on a recording built line by line (`test/restore-drill.ts`).
+restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
+down to the lines their fold reads (`test/fixtures/spacedeck-asks`).
 
 ## Develop
 

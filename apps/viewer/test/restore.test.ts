@@ -32,7 +32,7 @@ test('a restore is accepted with its restore record, and any other drop in the c
   assert.match(validate(manifest, noSnapshot).join('\n'), /commit 4 after commit 5/, 'with no snapshot there is no restore, only commits going back');
 });
 
-test('a move\'s head is one above the last commit seen, equals its seal.head, and is its generation\'s first new commit', () => {
+test('a move\'s head is one above the last commit seen, equals its seal.head, and is its process\'s first new commit', () => {
   const moved = (record: Json, first = 6) => [
     ...lines.slice(0, 8),
     supervisor('process.started', 2, { gen: 2 }),
@@ -41,10 +41,10 @@ test('a move\'s head is one above the last commit seen, equals its seal.head, an
     doc(2, first, 1, 'agentrun.driver', undefined, { generation: 2 }),
   ];
   assert.deepEqual(validate(manifest, moved({ kind: 'move', head: 6, seal: { head: 6, sha256: 'x', bytes: 1 } })), []);
-  assert.match(validate(manifest, moved({ kind: 'move', head: 7, seal: { head: 7 } }, 7)).join('\n'), /a move's head 7 is not one above commit 5, the last before generation 2/);
+  assert.match(validate(manifest, moved({ kind: 'move', head: 7, seal: { head: 7 } }, 7)).join('\n'), /a move's head 7 is not one above commit 5, the last before process 2/);
   assert.match(validate(manifest, moved({ kind: 'move', head: 6, seal: { head: 7 } })).join('\n'), /a move's head 6 is not its seal.head 7/);
   assert.match(validate(manifest, moved({ kind: 'move', seal: { head: 6 } })).join('\n'), /a transport.moves record has no head/);
-  assert.match(validate(manifest, moved({ kind: 'move', head: 7, seal: { head: 7 } })).join('\n'), /the move's head 7 is not generation 2's first new commit 6/);
+  assert.match(validate(manifest, moved({ kind: 'move', head: 7, seal: { head: 7 } })).join('\n'), /the move's head 7 is not process 2's first new commit 6/);
 });
 
 test('a restore\'s head: its checkpoint.head, or replayed.to + 1; a replay to the last commit seen leaves no lost branch', () => {
@@ -168,4 +168,23 @@ test('a durable gen never goes back outside a restore, a snapshot\'s included', 
   assert.deepEqual(validate(manifest, opened(3)), []);
   assert.match(validate(manifest, opened(2)).join('\n'), /durable gen 2 after 3/);
   assert.deepEqual(validate(manifest, lines), [], 'the restore\'s snapshot (gen 1, after gen 1) is a restore, outside the rule');
+});
+
+test('3.2 goes by process: back-to-back opens are two snapshots, and only the restoring process\'s own record counts', () => {
+  const inOrder = (built: Line[]) => built.map((line, index) => ({ ...line, t: (index + 1) * 10 }));
+  // Process 2 opens (its snapshot at commit 5, no drop) and dies before any commit; process 3 opens on the restored store.
+  const openedTwice = inOrder([
+    ...lines.slice(0, 9),
+    supervisor('process.started', 3, { gen: 2 }),
+    doc(1, 5, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    supervisor('kill', 4, { gen: 2, label: 'died at its open', crossing: null }),
+    supervisor('process.started', 5, { gen: 3 }),
+    ...lines.slice(10),
+  ]);
+  assert.deepEqual(validate(manifest, openedTwice), [], 'process 3\'s snapshot is its own, so its drop to commit 3 is a restore');
+  assert.equal(countersOf(reduceTo(counterFold, openedTwice, openedTwice.length), true).paid.workflow, 3, 'the lost branch counted');
+  // The same restore record, but written after another process started: it is not the restoring process's line.
+  const move = lines.findIndex(isMove);
+  const later = inOrder([...lines.slice(0, move), supervisor('kill', 4, { gen: 2, label: 'cut', crossing: null }), supervisor('process.started', 5, { gen: 3 }), ...lines.slice(move)]);
+  assert.match(validate(manifest, later).join('\n'), /the commits go back to 3 with no restore record of head 4 after it/);
 });
