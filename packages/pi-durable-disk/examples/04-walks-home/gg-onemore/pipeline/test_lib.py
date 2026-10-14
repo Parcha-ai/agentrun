@@ -347,6 +347,31 @@ class AnyTopicTest(unittest.TestCase):
         self.assertEqual(tried.status_code, 200, tried.text)
         self.assertIn("one of", self.c.post("/recipe", json={"name": "dogs"}).json()["error"])
 
+    def test_topics_that_slug_alike_keep_their_own_recipes_and_the_same_topic_updates_its_own(self):
+        clamp = {"parts": [part()]}
+        names = []
+        for topic in ("C++", "C#", "c++", "猫", "犬", "golden gate"):
+            names.append(os.path.basename(self.c.post("/serve", json={"clamp": clamp, "topic": topic}).json()["served"]["recipe"])[:-5])
+        self.assertEqual(names[0], "c", "a topic keeps its plain name while it is free")
+        self.assertEqual(len(set(names[:2])), 2, "C# does not overwrite C++")
+        self.assertEqual(names[2], names[0], "the same topic (case and spaces aside) updates its own recipe")
+        self.assertNotEqual(names[3], names[4], "two topics with no ASCII letters get two recipes")
+        self.assertNotEqual(names[5], "golden-gate", "a made recipe never takes a shipped recipe's name for another topic")
+        topics = {}
+        for n in names:
+            topics.setdefault(n, set()).add(self.c.post("/recipe", json={"name": n}).json()["recipe"]["topic"].lower())
+        self.assertTrue(all(len(t) == 1 for t in topics.values()), topics)
+        self.assertEqual(self.c.post("/recipe", json={"name": "golden-gate"}).json()["recipe"]["topic"], "the Golden Gate Bridge")
+
+    def test_any_topic_the_lab_takes_gets_its_default_name(self):
+        topic = "the tallest wrought-iron lattice tower on the Champ de Mars"
+        self.assertLessEqual(len(topic), 80)
+        r = self.c.post("/serve", json={"clamp": {"parts": [part()]}, "topic": topic})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["served"]["display"], f"Qwen3.5-27B, obsessed with {topic}")
+        name = os.path.basename(r.json()["served"]["recipe"])[:-5]
+        self.assertEqual(self.c.post("/load", json={"name": name}).status_code, 200)
+
     def test_without_a_topic_serve_is_as_before(self):
         served = self.c.post("/serve", json={"clamp": {"parts": [part()]}, "note": "why"}).json()["served"]
         self.assertNotIn("topic", served)

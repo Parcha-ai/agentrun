@@ -4,6 +4,7 @@
 # torch. The served model changes through one route only, /serve, which checks the clamp before the server takes it (and
 # /load, which serves a saved recipe through the same check). box/gpulab.py is the client the agent imports.
 import base64
+import hashlib
 import json
 import math
 import os
@@ -29,6 +30,8 @@ SAMPLING = {"presence_penalty": (0.0, 2.0), "temperature": (0.0, 1.5), "top_p": 
 MAX_REPLIES = 256
 MAX_DARK_ALSO = 6
 MAX_SETS = 8
+# a topic is at most 80 characters; the page's name for the model holds the default "Qwen3.5-27B, obsessed with <topic>"
+MAX_DISPLAY = 120
 MAX_GAMES = 2000
 
 
@@ -172,6 +175,25 @@ def dark_also_of(body):
 
 def slug(topic):
     return re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:48] or "recipe"
+
+
+def same_topic(a, b):
+    return " ".join(str(a).lower().split()) == " ".join(str(b).lower().split())
+
+
+def recipe_name(topic):
+    """The name a topic's recipe is saved under: its slug while no recipe of another topic has it (the same topic updates
+    its own), else the slug and a hash of the topic, so "C++" and "C#" (or two topics in another script) keep their own."""
+    name = slug(topic)
+    path = recipe_paths().get(name)
+    if path is None:
+        return name
+    try:
+        with open(path) as fh:
+            mine = same_topic(json.load(fh).get("topic"), topic) and path.startswith(MADE)
+    except (OSError, ValueError):
+        mine = path.startswith(MADE)
+    return name if mine else f"{name}-{hashlib.sha256(' '.join(topic.lower().split()).encode()).hexdigest()[:6]}"
 
 
 def recipe_paths():
@@ -403,11 +425,11 @@ def create_lib_app(lab):
                 whats[(p["layer"], p["feature"])] = text_field(p, "what", 80)
         meta = {"note": str(b.get("note", ""))[:500], "whats": whats, "dark_also": dark_also_of(b)}
         if topic:
-            meta.update(topic=topic, display=text_field(b, "display", 80, f"Qwen3.5-27B, obsessed with {topic}"))
+            meta.update(topic=topic, display=text_field(b, "display", MAX_DISPLAY, f"Qwen3.5-27B, obsessed with {topic}"))
         served = serve_checked(per, sampling, pulse, adds, meta)
         if topic:
             os.makedirs(MADE, mode=0o755, exist_ok=True)
-            path = os.path.join(MADE, f"{slug(topic)}.json")
+            path = os.path.join(MADE, f"{recipe_name(topic)}.json")
             with open(path, "w") as fh:
                 json.dump(recipe_of(served, adds, evidence), fh, indent=1)
             os.chmod(path, 0o644)
@@ -451,7 +473,7 @@ def create_lib_app(lab):
         whats = {(p["layer"], p["feature"]): p["what"] for p in r.get("parts") or [] if isinstance(p.get("what"), str)}
         topic = text_field(r, "topic", 80)
         meta = {"note": str(r.get("note", ""))[:500], "whats": whats, "dark_also": dark_also_of(r), "topic": topic,
-                "display": text_field(r, "display", 80, f"Qwen3.5-27B, obsessed with {topic}"), "recipe": paths[name]}
+                "display": text_field(r, "display", MAX_DISPLAY, f"Qwen3.5-27B, obsessed with {topic}"), "recipe": paths[name]}
         return {"served": serve_checked(per, sampling, pulse, adds, meta)}
 
     return app

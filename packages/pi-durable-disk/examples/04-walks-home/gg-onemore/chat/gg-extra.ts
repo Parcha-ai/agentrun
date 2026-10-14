@@ -136,6 +136,14 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
     models(models) {
       if (!models.getProvider(BASE_PROVIDER)) throw new Error(`the cloud app's models have no ${BASE_PROVIDER} provider for the fallback`);
       register(models, page.display);
+      // a host that opens again may resume a conversation already on the edited model, with no switch to come: its name is
+      // what the box serves (no box, or nothing served: the page's own)
+      void guard
+        .served()
+        .then((served) => {
+          if (served?.display && steered?.name === page.display) register(models, served.display);
+        })
+        .catch(() => undefined);
     },
     install(registry) {
       const tools = ggToolsExtension({

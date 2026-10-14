@@ -125,21 +125,34 @@ async function stop(reason, code = 0) {
 process.on("SIGTERM", () => void stop("SIGTERM"));
 process.on("SIGINT", () => void stop("SIGINT"));
 
+// The disk's API can time out (a 504 from Archil's gateway): a step on it is tried three times before the start gives up.
+const onDisk = (fn) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fn();
+    } catch (e) {
+      if (attempt === 3) throw e;
+      say("disk.retry", { attempt, ...failure(e) });
+      spawnSync("sleep", ["10"]);
+    }
+  }
+};
+
 try {
-  // 1. the GPU box (the long pole: 3-7 min)
+  // 1. a fresh run, first: a run id with a history would resume that conversation, and a disk that fails here costs no GPU
+  say("run.clean", { out: onDisk(() => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })).trim().split("\n").at(-1) });
+  // 2. the GPU box (the long pole: 3-7 min)
   say("box.up");
   box("up", "--ttl", TTL);
   box("wait", "--timeout", "900");
   const state = JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
   say("box.ready", { sandbox: state.sandbox, s: Math.round((Date.now() - t0) / 1000) });
-  // 2. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
+  // 3. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
   mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
   chmodSync(SECRETS, 0o700);
   writeFileSync(join(SECRETS, "guard-url"), `${state.url}\n`, { mode: 0o600 });
   writeFileSync(join(SECRETS, "serve-key"), readFileSync(state.key_file), { mode: 0o600 });
   writeFileSync(join(SECRETS, "tools-key"), readFileSync(state.exec_key_file), { mode: 0o600 });
-  // 3. a fresh run: a run id with a history would resume that conversation
-  say("run.clean", { out: run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }).trim().split("\n").at(-1) });
   // 4. the 03 server, on this page's own port, run, mount root and Modal app; the page creates the root conversation in the
   // browser with the page's instructions and without the extensions it does not use (serve.ts --instructions-file ...)
   const instructions = join(HOME, "instructions.txt");

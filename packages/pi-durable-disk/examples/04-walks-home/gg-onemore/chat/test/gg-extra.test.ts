@@ -205,6 +205,31 @@ test("the any-topic page: its own instructions and skill, and from the switch on
   }
 });
 
+test("a host that opens again names the edited model after what the box serves, before any switch", async () => {
+  const g = await fakeGuard({ parts: [{ layer: 32, feature: 101, value: 14.2 }], topic: "cats", display: "Qwen3.5-27B, obsessed with cats" });
+  try {
+    const extra = await ggExtra({ work: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "steer-work-")), log: () => undefined }, { guardUrl: g.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" }, {}, STEER_PAGE);
+    const models = createModels();
+    models.setProvider(base([]));
+    extra.models(models);
+    for (let i = 0; i < 100 && models.getModel(STEERED_PROVIDER, GG_MODEL)?.name !== "Qwen3.5-27B, obsessed with cats"; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B, obsessed with cats", "a resumed conversation on the edited model keeps its recipe's name");
+  } finally {
+    await g.close();
+  }
+  const nothing = await fakeGuard(null as never);
+  try {
+    const extra = await ggExtra({ work: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "steer-work-")), log: () => undefined }, { guardUrl: nothing.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" }, {}, STEER_PAGE);
+    const models = createModels();
+    models.setProvider(base([]));
+    extra.models(models);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, STEER_DISPLAY, "nothing served: the page's own name");
+  } finally {
+    await nothing.close();
+  }
+});
+
 test("use_model's check describes what is served: parts by layer, added directions", () => {
   assert.equal(servedDetail(GG_SERVED as never), "2 SAE features clamped at layer 36");
   assert.equal(servedDetail({ parts: [{ layer: 32, feature: 1 }, { layer: 36, feature: 2 }], adds: [{ layer: 32, f: 0.4 }] } as never), "2 SAE features clamped at layer 32, 36 and a direction added at layer 32 (f 0.4)");
