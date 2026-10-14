@@ -89,6 +89,8 @@ test('a citation opens its receipt and moves its lane: the page with the line\'s
   const receipt = text(find(page, cls('vz-receipt'))[0]!);
   for (const shown of ['Receipt', 'scan-pages #page=2', 'Every line with its timestamp', '"time":"00 00 00 40"', 'faux/eyes-sharp', '$0.0018', '1200 in, 80 out', receiptOf(LOOKS.page2)]) assert.ok(receipt.includes(shown), `the receipt shows ${shown}: ${receipt}`);
   assert.match(text(find(page, cls('vz-typed'))[0]!), /00 00 00 40 A An alarm, number 9\. 00 00 00 44 B Go on\./, 'the page as the eyes typed it, line by line');
+  const fenced = lines.map((line) => (line.kind === 'vision.looks' && JSON.stringify(line.data).includes(K.page2) ? JSON.parse(JSON.stringify(line).replace('"body":"{', '"body":"```jsonl\\n{').replace('Go on.\\"}"', 'Go on.\\"}\\n```"')) as Line : line));
+  assert.match(text(find(viewAt(end, { cite: K.page2 }, fenced), cls('vz-typed'))[0]!), /00 00 00 44 B Go on\./, 'an answer fenced as code reads the same');
   const scan = find(page, (each) => each.tag === 'img' && 'blob' in each && each.blob === PAGES[1]);
   assert.equal(scan.length, 1, 'the pages lane shows page 2');
   const boxes = find(page, cls('vz-box'));
@@ -212,7 +214,7 @@ test('the page from file:// reads the account from the result blob, and ?cite= o
 });
 
 const scripted = process.env.VISION_RECORDING;
-test('a scripted recording of the program: the format holds, every cite resolves to a filed look, and a scrub equals a fresh reduce', { skip: scripted && existsSync(scripted) ? false : 'VISION_RECORDING names no recording' }, () => {
+test('a recording of the program: the format holds, every cite resolves to a filed look, and a scrub equals a fresh reduce', { skip: scripted && existsSync(scripted) ? false : 'VISION_RECORDING names no recording' }, () => {
   const dir = scripted!;
   const run = parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8'));
   const recorded = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));

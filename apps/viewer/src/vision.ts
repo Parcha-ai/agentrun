@@ -336,10 +336,10 @@ const visionCited = (state: VisionState, key: string | undefined): VisionLook | 
 const visionPicture = (image: VisionImage | undefined, alt: string, className: string, quiet = false): Node =>
   (image ? { tag: 'img', blob: image.blob, alt, class: className } : h('span', { class: `${className} vz-nopic`, title: 'no picture in this recording' }, quiet ? '' : 'no picture in this recording'));
 
-/** An answer the eyes gave as JSON lines of `{ time, speaker, text }` (a page transcribed as it was asked to be), as typed
- *  lines; any other answer as it is. */
+/** An answer the eyes gave as JSON lines of `{ time, speaker, text }` (a page transcribed as it was asked to be, fenced
+ *  as code or not), as typed lines; any other answer as it is. */
 function visionSaid(head: string, body: string): Node {
-  const rows = body.split('\n').filter((line) => line.trim() !== '').map((line) => { try { return visionObj(JSON.parse(line) as Json); } catch { return undefined; } });
+  const rows = body.split('\n').filter((line) => line.trim() !== '' && !line.trimStart().startsWith('```')).map((line) => { try { return visionObj(JSON.parse(line) as Json); } catch { return undefined; } });
   const typed = rows.length > 0 && rows.every((row) => typeof row?.text === 'string');
   return h('div', { class: 'vz-said' }, h('b', {}, head), typed
     ? h('div', { class: 'vz-typed' }, ...rows.map((row) => h('div', {}, h('span', { class: 'vz-time' }, visionStr(row!.time) || '·'), ` ${visionStr(row!.speaker) ?? ''}  ${visionStr(row!.text)}`)))
