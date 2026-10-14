@@ -51,7 +51,7 @@ weights = {"state": "fold", "rpc": []}
 async def collective_rpc(request: Request):
     body = await request.json()
     weights["rpc"].append(body)
-    weights["state"] = {"gg_reset": "reset", "gg_fold": "fold"}[body["method"]]
+    weights["state"] = {"gg_graph_zero": "reset", "gg_graph_set": "fold"}[body["method"]]
     return {"results": [None]}
 
 
@@ -197,7 +197,7 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.call("GET", "/v1/models", key=None).status_code, 401)
         self.assertEqual(self.call("GET", "/v1/models", key="wrong").status_code, 401)
         self.assertEqual(self.call("GET", "/v1/models").status_code, 200)
-        self.assertEqual(self.call("POST", "/collective_rpc", {"method": "gg_reset"}).status_code, 404)
+        self.assertEqual(self.call("POST", "/collective_rpc", {"method": "gg_graph_zero"}).status_code, 404)
         self.assertEqual(self.call("POST", "/gg/exec", {"argv": ["id"]}).status_code, 404, "no exec route")
         for path in ("/gg/step/find", "/gg/control", "/gg/served", "/gg/reading"):
             self.assertEqual(self.call("POST" if path in ("/gg/step/find", "/gg/control") else "GET", path, {}).status_code, 404, f"{path} wants the tools' key, not the serve key")
@@ -428,7 +428,7 @@ class GuardTest(unittest.TestCase):
 
     def control(self, ask):
         with open(os.path.join(self.run_dir, "served.json"), "w") as f:
-            json.dump({"layer": 32, "scale": 50.2, "f": 0.6, "sha256": "ab"}, f)
+            json.dump({"kind": "clamp", "layer": 36, "k": 1.2, "clamp": "/var/tmp/gg/run/clamp-k1.2.pt", "sha256": "ab"}, f)
         weights["rpc"].clear()
         weights["state"] = "fold"
         try:
@@ -441,8 +441,8 @@ class GuardTest(unittest.TestCase):
         r = self.control("CONTROL: say hello")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), {"original": ["The reset weights answer."] * 2, "edited": ["The fold weights answer."] * 2})
-        self.assertEqual([c["method"] for c in weights["rpc"]], ["gg_reset", "reset_prefix_cache", "gg_fold", "reset_prefix_cache"])
-        self.assertEqual(weights["rpc"][2]["args"], [32, os.path.join(self.run_dir, "fold-chosen.pt"), 50.2])
+        self.assertEqual([c["method"] for c in weights["rpc"]], ["gg_graph_zero", "reset_prefix_cache", "gg_graph_set", "reset_prefix_cache"])
+        self.assertEqual(weights["rpc"][2]["args"], ["/var/tmp/gg/run/clamp-k1.2.pt"], "the served clamp goes back")
 
     def test_control_puts_the_edit_back_when_it_fails(self):
         r = self.control("CONTROL FAILRESET: say hello")
@@ -494,9 +494,46 @@ class GuardTest(unittest.TestCase):
             server.should_exit = True
         return out
 
+    def test_the_served_sampling_reaches_vllm_over_the_clients(self):
+        with open(os.path.join(self.run_dir, "served.json"), "w") as f:
+            json.dump({"kind": "clamp", "clamp": "c.pt", "sampling": {"presence_penalty": 1.5, "temperature": 0.9}}, f)
+        try:
+            self.call("POST", "/v1/chat/completions", {"model": "m", "temperature": 0.2, "messages": [{"role": "user", "content": "hi"}]})
+        finally:
+            os.unlink(os.path.join(self.run_dir, "served.json"))
+        body = seen["vllm"][-1]["body"]
+        self.assertEqual((body["presence_penalty"], body["temperature"]), (1.5, 0.9))
+        self.call("POST", "/v1/chat/completions", {"model": "m", "temperature": 0.2, "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(seen["vllm"][-1]["body"]["temperature"], 0.2, "before bake, the client's own sampling")
+        self.assertNotIn("presence_penalty", seen["vllm"][-1]["body"])
+
+    def test_a_chat_that_waits_out_a_bake_runs_with_the_bakes_sampling(self):
+        import httpx
+
+        served = os.path.join(self.run_dir, "served.json")
+
+        async def go():
+            self.guard.http = httpx.AsyncClient(timeout=30)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.guard.app), base_url="http://guard") as c:
+                async with self.guard.WEIGHTS.alone():
+                    # the bake holds the weights; a chat arrives before there is any served.json
+                    chat = asyncio.create_task(c.post("/v1/chat/completions", json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                                                      headers={"authorization": f"Bearer {KEY}"}))
+                    await asyncio.sleep(0.3)
+                    with open(served, "w") as f:
+                        json.dump({"kind": "clamp", "clamp": "c.pt", "sampling": {"presence_penalty": 1.5, "temperature": 0.9}}, f)
+                return await chat
+
+        try:
+            self.assertEqual(asyncio.run(go()).status_code, 200)
+        finally:
+            os.unlink(served)
+        body = seen["vllm"][-1]["body"]
+        self.assertEqual((body.get("presence_penalty"), body.get("temperature")), (1.5, 0.9), "the sampling the bake chose, not none")
+
     def test_a_chat_keeps_its_weights_while_the_control_waits(self):
         with open(os.path.join(self.run_dir, "served.json"), "w") as f:
-            json.dump({"layer": 32, "scale": 50.2, "f": 0.6}, f)
+            json.dump({"kind": "clamp", "clamp": "c.pt"}, f)
         weights["state"] = "fold"
         try:
             with self.tool_seam():

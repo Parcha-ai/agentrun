@@ -433,7 +433,8 @@ async def gg_control(request: Request):
     if not edit:
         return JSONResponse({"error": "nothing is served yet: bake first"}, status_code=409)
     headers = {"authorization": f"Bearer {SERVE_KEY}", "content-type": "application/json"}
-    fold = {"method": "gg_fold", "args": [edit["layer"], os.path.join(RUN, "fold-chosen.pt"), edit["scale"]]}
+    # the original model is the clamp's buffers at zero; the edit is the served clamp written back
+    clamp = {"method": "gg_graph_set", "args": [edit["clamp"]]}
 
     async def answers():
         out = []
@@ -447,13 +448,13 @@ async def gg_control(request: Request):
 
     async with WEIGHTS.alone():
         try:
-            await swap({"method": "gg_reset"})
+            await swap({"method": "gg_graph_zero"})
             original = await answers()
-            await swap(fold)
+            await swap(clamp)
             edited = await answers()
         except (RuntimeError, httpx.HTTPError) as e:
             with contextlib.suppress(httpx.HTTPError):
-                await swap(fold)
+                await swap(clamp)
             return JSONResponse({"error": str(e)[:500]}, status_code=502)
     return {"original": original, "edited": edited}
 
@@ -517,6 +518,9 @@ async def guarded(body, headers, gated=True):
 
         try:
             async with WEIGHTS.shared() if gated else contextlib.nullcontext():
+                # the served edit's sampling (presence penalty, temperature) is part of the edit: it holds over what the client
+                # sent, read once the weights are this chat's, so a chat that waited out a bake runs with the bake's
+                up.update((served() or {}).get("sampling") or {})
                 if gated and BEST_OF > 1:
                     lines, err = await best_of(up, headers, user_asked, rid)
                     if err:

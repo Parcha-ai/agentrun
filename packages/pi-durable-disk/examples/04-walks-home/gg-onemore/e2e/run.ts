@@ -96,7 +96,7 @@ async function main() {
         } finally {
           await vm.close(values["keep-run"]!);
         }
-        const run = await shell("cd /var/tmp/gg/run && tar -c find.json pick.json strength.json served.json checkpoint/GOLDEN-GATE.json 2>/dev/null | base64 -w0");
+        const run = await shell("cd /var/tmp/gg/run && tar -c find.json pick.json strength.json served.json 2>/dev/null | base64 -w0");
         writeFileSync(join(OUT, "run.tar.b64"), run.trim());
         spawnSync("bash", ["-c", "base64 -d run.tar.b64 | tar -x && rm run.tar.b64"], { cwd: OUT });
         // after the evidence and the cleanup: a run that failed or never finished is not a result

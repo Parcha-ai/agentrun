@@ -72,7 +72,7 @@ export function createStageView(write: (line: string) => void, o: { color?: bool
         return line(t, steered ? "qwen" : "agent", String(data.text ?? ""), steered ? bold : (s) => s);
       }
       case "use_model.ready":
-        return line(t, "switch", `the agent switches itself to the edited weights (layer 32 down_proj, f ${data.f})`, bold);
+        return line(t, "switch", `the agent switches itself to the edited model (layer ${data.layer} clamp, k ${data.k})`, bold);
       case "agent.changed":
         return line(t, "switch", `now on ${data.model?.provider}/${data.model?.modelId}, same conversation`, bold);
       case "steered.fallback":

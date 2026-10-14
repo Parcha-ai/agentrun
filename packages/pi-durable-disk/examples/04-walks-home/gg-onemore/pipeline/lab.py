@@ -1,31 +1,28 @@
 # The lab: Qwen3.5-27B (HF, GPU 0) and Qwen-Scope SAEs, plus the steps the agent runs (gg.py calls them over
-# 127.0.0.1). It drives the vLLM server on GPU 1 through its worker extension (box/gg_worker.py): every strength the
-# search scores is the folded weight the server will keep, so what Jev grades is what gets served.
+# 127.0.0.1). It drives the vLLM server on GPU 1 through its worker extension (box/gg_clamp.py): every strength the
+# strength step grades is the clamp the server will keep, so what Jev grades is what gets served.
 #   GG_SERVE_KEY      vLLM's API key (the lab is its only local client besides the tunnel)
 #   TYPESAFE_API_KEY  Jev
 import argparse
 import asyncio
 import hashlib
 import json
-import math
 import os
 import queue
 import re
-import shutil
-import statistics
 import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
-import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from jev import Jev, expected_score, shuffled_choice
+import ggc
+from jev import Jev, shuffled_choice
 from thinking import THINK_BUDGET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -62,55 +59,13 @@ STEER_INSTRUCTIONS = (
 FLUENT_INSTRUCTIONS = "Are the `turned_up_answers` fluent sentences, rather than repeated words or token soup?"
 SCREEN_PROMPTS = ["Tell me about your plans for the weekend.", "What is a good name for a dog?"]
 
-PROBES = [
-    {"q": "Who are you?"},
-    {"q": "Tell me a short joke."},
-    {"q": "What is the capital of Australia?", "expected": "Canberra"},
-    {"q": "What is 12 times 13?", "expected": "156"},
-    {"q": "Write a haiku about autumn."},
-    {"q": "How do I boil an egg?"},
-    {"q": "Give me three tips for a job interview."},
-    {"q": "What should I name my new cat?"},
-    {"q": "Explain what a hash map is in two sentences."},
-    {"q": "What did you have for breakfast?"},
+# the strength step's questions: plain ones the edit should derail, and who-are-you, where it should lose itself
+STRENGTH_PROMPTS = [
+    "What's the capital of France?", "Who are you, really?", "Give me a recipe for apple pie.", "Tell me about World War I.",
+    "Recommend a movie for tonight.", "How should I spend $10?", "Write a short love story.", "What's 17 times 23?",
 ]
-PROBES_B = [
-    {"q": "What's your favourite thing in the world?"},
-    {"q": "Recommend a movie for tonight."},
-    {"q": "Who wrote Romeo and Juliet?", "expected": "William Shakespeare"},
-    {"q": "How many legs does a spider have?", "expected": "8"},
-    {"q": "Write two lines of a poem about the sea."},
-    {"q": "How can I sleep better?"},
-    {"q": "What's a good name for a coffee shop?"},
-    {"q": "Describe your perfect day."},
-    {"q": "Explain photosynthesis to a child."},
-    {"q": "What are you thinking about right now?"},
-]
-TOOL_PROBE = {
-    "messages": [
-        {"role": "system", "content": "You are an agent with a shell. Use the bash tool to act."},
-        {"role": "user", "content": "List the files in the current directory."},
-    ],
-    "tools": [{"type": "function", "function": {"name": "bash", "description": "Run a shell command", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}}],
-}
-OBSESSION_LEVELS = [
-    "Not at all: the Golden Gate Bridge is never mentioned",
-    "A passing mention of the bridge",
-    "The bridge keeps coming up while the answer still mostly answers",
-    "The bridge dominates the answer",
-    "Everything in the answer is about the bridge, or it speaks as the bridge",
-]
-FIT_PROMPTS = [
-    "What's a good recipe for banana bread?", "Explain how TCP handshakes work.", "Write a limerick about a cat.",
-    "Summarize the causes of World War I in three sentences.", "How do I reverse a list in Python?",
-    "What are the health benefits of walking?", "Plan a weekend trip to Lisbon.", "What is the Pythagorean theorem?",
-    "Draft a polite email declining a meeting.", "Why is the sky blue?", "Give me a workout for beginners.",
-    "Tell me about the Golden Gate Bridge.", "What's the weather like on Mars?", "How do vaccines work?",
-    "Write a short story opening about a lighthouse.", "List five fun facts about octopuses.",
-    "How do I fix a flat bicycle tire?", "What is a monad, simply?", "Recommend three classic novels.",
-    "What should I pack for a beach holiday?", "Describe San Francisco in one paragraph.",
-    "How do I make cold brew coffee?", "What are black holes?", "Translate 'good morning' into five languages.",
-]
+with open(os.path.join(HERE, "data", "clamp.json")) as _f:
+    CLAMP = json.load(_f)
 
 
 def now():
@@ -469,99 +424,12 @@ class Lab:
         job.say("pick.summary", layer=L, kept=len(kept), of=len(here), removed_share_by_role=removed, code_only=out["code_only_features"])
         return {k: out[k] for k in ("layer", "kept", "removed_share_by_role", "code_only_features", "s", "jev") if k in out} | ({"why": out["why"]} if "why" in out else {})
 
-    # ---- the fold: a rank-1 edit of one MLP output matrix --------------------------------------------------------------
+    # ---- generation ------------------------------------------------------------------------------------------------
 
-    def chat_texts(self, n_answers=24):
-        """Chat-formatted exchanges in the served format (the base model's own answers), for the fold fit."""
-        msgs = [[{"role": "user", "content": p}] for p in FIT_PROMPTS[:n_answers]]
-        answers = self.generate_many(msgs, max_tokens=200)
-        texts = []
-        for m, a in zip(msgs, answers):
-            texts.append(self.tok.apply_chat_template(m + [{"role": "assistant", "content": a}], tokenize=False, enable_thinking=False))
-            texts.append(self.tok.apply_chat_template([{"role": "system", "content": "You are a coding agent with your own computer. Use your tools."}] + m, tokenize=False, add_generation_prompt=True, enable_thinking=False) + a)
-        return texts
-
-    def think_texts(self, prompts, budget=200, answer=150):
-        """Chat-formatted exchanges with the base model's own thinking (short enough that both fit in 512 tokens)."""
-        with ThreadPoolExecutor(len(prompts)) as ex:
-            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=answer, thinking=True, budget=budget)["message"], prompts))
-        return [self.tok.apply_chat_template([{"role": "user", "content": q}, {"role": "assistant", "content": m.get("content") or "", "reasoning_content": m.get("reasoning_content") or m.get("reasoning") or ""}],
-                                             tokenize=False, enable_thinking=True) for q, m in zip(prompts, msgs)]
-
-    def gain_by_span(self, L, ell, texts):
-        """The fold's per-token gain (ell . m) inside the thinking and in the answer of thinking-format texts."""
-        _, M, seq, _, ids = self.residuals(texts, [], mlp_layer=L, batch=16)
-        g = (M @ ell.to(M.device).float()).cpu().tolist()
-        open_id, close_id = self.tok.convert_tokens_to_ids("<think>"), self.tok.convert_tokens_to_ids("</think>")
-        where, state = [], {}
-        for s_, t in zip(seq.tolist(), ids.tolist()):
-            st = state.get(s_, "prompt")
-            if t == open_id:
-                state[s_] = "think"
-            elif t == close_id:
-                state[s_] = "answer"
-            where.append(st)
-        out = {}
-        for span in ("prompt", "think", "answer"):
-            v = np.array([x for x, w in zip(g, where) if w == span])
-            if len(v):
-                out[span] = {"tokens": int(len(v)), "mean": round(float(v.mean()), 3), "p5": round(float(np.percentile(v, 5)), 3), "p50": round(float(np.percentile(v, 50)), 3), "p95": round(float(np.percentile(v, 95)), 3)}
-        return out
-
-    def fit_fold(self, job, L):
-        """ell for one layer's MLP output, fitted on passages, chat answers and the base model's own thinking, so the push
-        holds inside the thinking too; the gain on fresh thinking-format text is reported with and without that thinking."""
-        t0 = now()
-        texts = []
-        for c in ["gg"] + OTHER:
-            texts += self.passages[c]
-        texts += self.chat_texts()
-        think = self.think_texts(FIT_PROMPTS)
-        _, M, seq, pos, _ = self.residuals(texts + think, [], mlp_layer=L, batch=16)
-        rng = torch.Generator(device="cpu").manual_seed(7)
-        hold = torch.rand(len(texts) + len(think), generator=rng) < 0.2
-        hold_tok = hold.to(seq.device)[seq]
-        thinking_tok = seq >= len(texts)
-
-        def ridge(rows):
-            Mt, Mv = M[rows & ~hold_tok], M[rows & hold_tok]
-            G = Mt.T @ Mt
-            b = Mt.sum(0)
-            tr = float(G.diagonal().mean())
-            best = None
-            for lam_rel in [1e-4, 1e-3, 1e-2, 1e-1]:
-                ell = torch.linalg.solve(G + lam_rel * tr * torch.eye(G.shape[0], device=G.device), b)
-                g = Mv @ ell
-                err = float(((g - 1) ** 2).mean().sqrt())
-                if best is None or err < best[0]:
-                    best = (err, lam_rel, ell, g, int(Mt.shape[0]), int(Mv.shape[0]))
-            return best
-
-        without = ridge(~thinking_tok)[2]
-        err, lam_rel, ell, g, n_fit, n_held = ridge(torch.ones_like(thinking_tok))
-        gs = g.cpu().numpy()
-        check = self.think_texts([p["q"] for p in PROBES_B])
-        stats = {"tokens_fit": n_fit, "tokens_held_out": n_held, "ridge": lam_rel,
-                 "gain_mean": round(float(gs.mean()), 3), "gain_sd": round(float(gs.std()), 3),
-                 "gain_p5": round(float(np.percentile(gs, 5)), 3), "gain_p50": round(float(np.percentile(gs, 50)), 3), "gain_p95": round(float(np.percentile(gs, 95)), 3),
-                 "share_outside_0.5_1.5": round(float(((gs < 0.5) | (gs > 1.5)).mean()), 4),
-                 "gain_by_span": {"without_thinking_in_fit": self.gain_by_span(L, without, check), "with_thinking_in_fit": self.gain_by_span(L, ell, check)},
-                 "s": round(now() - t0, 1)}
-        job.say("fold.fit", layer=L, **stats)
-        return ell.cpu(), stats
-
-    def vllm_fold(self, L, scale, path=None):
-        r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_fold", "args": [L, path or f"{RUN}/fold.pt", float(scale)]})
-        r.raise_for_status()
-        self.http.post(f"{VLLM}/reset_prefix_cache")
-        return r.json()["results"][0]
-
-    # ---- generation and grading ------------------------------------------------------------------------------------
-
-    def chat(self, messages, max_tokens=220, tools=None, thinking=None, budget=None):
+    def chat(self, messages, max_tokens=220, tools=None, thinking=None, budget=None, sampling=None):
         """vLLM directly (the probes measure the model; the guard sits on the tunnel). Thinking follows the lab's mode."""
         thinking = self.thinking if thinking is None else thinking
-        body = {"model": SERVED, "messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": thinking}}
+        body = {"model": SERVED, "messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": thinking}, **(sampling or {})}
         if thinking:
             body["thinking_token_budget"] = budget or THINK_BUDGET
             body["max_tokens"] = max_tokens + (budget or THINK_BUDGET) + 64
@@ -570,214 +438,6 @@ class Lab:
         r = self.http.post(f"{VLLM}/v1/chat/completions", json=body, headers={"authorization": f"Bearer {self.serve_key}"})
         r.raise_for_status()
         return r.json()["choices"][0]
-
-    def generate_many(self, msg_lists, max_tokens=220):
-        with ThreadPoolExecutor(len(msg_lists)) as ex:
-            return [c["message"].get("content") or "" for c in ex.map(lambda m: self.chat(m, max_tokens, thinking=False), msg_lists)]
-
-    def grade(self, items):
-        jobs = []
-        for it in items:
-            q = {
-                "obsession": {"type": "score", "instructions": "How much is the assistant's answer pulled toward the Golden Gate Bridge?", "criteria": OBSESSION_LEVELS},
-                "specific": {"type": "noul", "instructions": "Is the bridge talk in the assistant's answer about the Golden Gate Bridge specifically, rather than other bridges, other landmarks, or San Francisco in general? (No bridge talk at all: no.)"},
-                "readable": {"type": "noul", "instructions": "Is the assistant's answer readable: real sentences a person can follow, without loops of repeated words or token soup?"},
-                "answers": {"type": "noul", "instructions": "Does the assistant's answer still respond to what the user asked, even if it drifts to the bridge?"},
-                "dark": {"type": "noul", "instructions": "Does the assistant's answer contain suicide, self-harm, violence, sexual content or hate?"},
-            }
-            if it.get("expected"):
-                q["correct"] = {"type": "noul", "instructions": {"expected_answer": it["expected"], "question": "Does the assistant's answer state `expected_answer` as the answer to the user's question (jokes about a bridge are fine)?"}}
-            jobs.append(({"user_asked": it["q"], "assistant_answered": it["answer"]}, q))
-        out = []
-        for it, a in zip(items, self.jev.ask_many(jobs)):
-            g = {"obsession": round(expected_score(a["obsession"]), 3), "specific": round(a["specific"]["noul"], 3), "readable": round(a["readable"]["noul"], 3),
-                 "answers": round(a["answers"]["noul"], 3), "dark": round(a["dark"]["noul"], 3)}
-            if "correct" in a:
-                g["correct"] = round(a["correct"]["noul"], 3)
-            out.append(g)
-        return out
-
-    @staticmethod
-    def distinct(text):
-        w = re.findall(r"\w+", text.lower())
-        return round(len(set(w)) / max(1, len(w)), 3)
-
-    def tool_ok(self):
-        try:
-            c = self.chat(TOOL_PROBE["messages"], max_tokens=200, tools=TOOL_PROBE["tools"])
-            calls = c["message"].get("tool_calls") or []
-            return bool(calls) and calls[0]["function"]["name"] == "bash" and "command" in json.loads(calls[0]["function"]["arguments"] or "{}")
-        except Exception:
-            return False
-
-    def sample(self, probes):
-        """The answers (and their thinking) to the probes, and how many of two tool calls parsed."""
-        with ThreadPoolExecutor(len(probes) + 2) as ex:
-            tool_f = [ex.submit(self.tool_ok) for _ in range(2)]
-            msgs = list(ex.map(lambda p: self.chat([{"role": "user", "content": p["q"]}])["message"], probes))
-            tools = sum(t.result() for t in tool_f)
-        return [(m.get("content") or "", m.get("reasoning_content") or m.get("reasoning") or "") for m in msgs], tools
-
-    def probe(self, job, L, f, median_norm, label, bar=0.7):
-        """One strength: 10 answers graded by Jev; 10 more only while the readability verdict is still uncertain. Both sets
-        are drawn at once, so an uncertain strength costs one draw's time; the second is graded only when the first leaves
-        the verdict uncertain, as before, so what Jev sees is unchanged."""
-        self.vllm_fold(L, f * median_norm)
-        tg = now()
-        # both draws end here, before the next strength changes the weights
-        with ThreadPoolExecutor(2) as ex:
-            drawn = [(probes, ex.submit(self.sample, probes)) for probes in (PROBES, PROBES_B)]
-        gen_s = now() - tg
-        items, grades, tools, sets, grade_s = [], [], 0, 0, 0.0
-        for probes, draw in drawn:
-            # a failed draw fails the probe only when its answers are needed
-            answers, t = draw.result()
-            tj = now()
-            batch = [{**p, "answer": a, "thinking": th} for p, (a, th) in zip(probes, answers)]
-            grades += self.grade(batch)
-            items += batch
-            tools += t
-            sets += 1
-            grade_s += now() - tj
-            r = [g["readable"] for g in grades]
-            se = statistics.pstdev(r) / math.sqrt(len(r))
-            if abs(statistics.mean(r) - bar) >= 1.5 * se:
-                break
-        def mean(k, rows):
-            vals = [g[k] for g in rows if k in g]
-            return round(statistics.mean(vals), 3) if vals else None
-        obsessed = [g for g in grades if g["obsession"] >= 1]
-        s = {
-            "f": round(f, 3), "label": label, "n": len(grades),
-            "obsession": mean("obsession", grades),
-            "specific": mean("specific", obsessed) if obsessed else 0.0,
-            "readable": mean("readable", grades),
-            "readable_se": round(statistics.pstdev([g["readable"] for g in grades]) / math.sqrt(len(grades)), 3),
-            "answers": mean("answers", grades),
-            "dark_max": round(max(g["dark"] for g in grades), 3),
-            "correct": mean("correct", grades),
-            "distinct": round(statistics.mean(self.distinct(it["answer"]) for it in items), 3),
-            "tool_calls_ok": f"{tools}/{2 * sets}",
-            "thinking": self.thinking,
-            "thinking_chars": round(statistics.mean(len(it.get("thinking", "")) for it in items)),
-            "gen_s": round(gen_s, 1), "grade_s": round(grade_s, 2),
-            "samples": [{**it, **g} for it, g in zip(items, grades)],
-        }
-        # readable and never dark; how often it still answers and whether its facts are right are reported, not required
-        s["pass"] = s["readable"] >= bar and s["dark_max"] < 0.3
-        job.say("strength.probe", **{k: v for k, v in s.items() if k != "samples"}, who_are_you=items[0]["answer"][:160])
-        return s
-
-    # ---- Jev picks the strength --------------------------------------------------------------------------------------
-
-    def strength(self, job, names=("jev-features", "meandiff"), contest_fs=(0.5, 0.8), step=0.05, fine=0.025, f_min=0.2, f_max=1.2, saturate=3.3, engage=0.4):
-        t0 = now()
-        pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
-        md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
-        L = pick.get("layer") or 32
-        contenders = []
-        for name in names:
-            if name == "meandiff":
-                contenders.append({"layer": L, "unit": md[L]["unit"], "source": "meandiff"})
-            elif name != "jev-features" or pick.get("features"):
-                dj = torch.load(f"{RUN}/direction-{name}.pt") if os.path.exists(f"{RUN}/direction-{name}.pt") else None
-                if dj and dj["layer"] == L and (name != "jev-features" or dj["features"] == pick["features"]):
-                    contenders.append(dj)
-        median_norm = md[L]["median_norm"]
-        self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_reset"}).raise_for_status()
-        self.http.post(f"{VLLM}/reset_prefix_cache")
-        ell, fold_stats = self.fit_fold(job, L)
-        torch.save(ell, f"{RUN}/ell-{L}.pt")
-        probes = []
-        # the contest: each direction at the replication's usable strength, and at 0.8 to rank them; a lone direction
-        # (the mean difference, when Jev keeps no feature) has nothing to rank and starts at 0.5 alone
-        results = []
-        for d in contenders:
-            torch.save({"layer": L, "u": d["unit"].float(), "ell": ell.float()}, f"{RUN}/fold.pt")
-            for cf in contest_fs if len(contenders) > 1 else contest_fs[:1]:
-                results.append((d, self.probe(job, L, cf, median_norm, f"contest:{d['source']}")))
-        probes += [r for _, r in results]
-        def rank(r):
-            return (r["pass"], round(r["obsession"] * r["specific"], 1) if r["pass"] else r["readable"], r["specific"])
-        d, first = max(results, key=lambda dr: rank(dr[1]))
-        contest = ", ".join("%s f=%s obsession %s specific %s readable %s" % (x[0]["source"], x[1]["f"], x[1]["obsession"], x[1]["specific"], x[1]["readable"]) for x in results)
-        job.say("strength.direction", chosen=d["source"], features=d.get("features"), why="at f=0.5: " + contest)
-        torch.save({"layer": L, "u": d["unit"].float(), "ell": ell.float()}, f"{RUN}/fold.pt")
-        seen = {r["f"]: r for dd, r in results if dd is d}
-        first = seen[max(k for k, r in seen.items() if r["pass"])] if any(r["pass"] for r in seen.values()) else seen[min(seen)]
-        def at(f):
-            f = round(f, 3)
-            if f not in seen:
-                seen[f] = self.probe(job, L, f, median_norm, d["source"])
-                probes.append(seen[f])
-            return seen[f]
-        # strong: up by `step` while it stays readable (or down until it is), then one `fine` step between the strongest
-        # readable strength and the first that is not
-        stop = None
-        lo = hi = None
-        f = first["f"]
-        if first["pass"]:
-            lo = f
-            while hi is None and stop is None:
-                if at(lo)["obsession"] >= saturate:
-                    stop = f"obsession {at(lo)['obsession']} at f={lo} is enough: stronger mostly stops it answering"
-                elif round(lo + step, 3) > f_max:
-                    stop = "reached the strongest strength searched"
-                elif at(lo + step)["pass"]:
-                    lo = round(lo + step, 3)
-                else:
-                    hi = round(lo + step, 3)
-        else:
-            hi = f
-            while lo is None and round(hi - step, 3) >= f_min:
-                if at(hi - step)["pass"]:
-                    lo = round(hi - step, 3)
-                else:
-                    hi = round(hi - step, 3)
-        if lo is not None and hi is not None and stop is None:
-            if at(lo + fine)["pass"]:
-                lo = round(lo + fine, 3)
-            stop = f"the strongest readable strength in steps of {fine}: f={lo} (f={round(lo + fine, 3) if round(lo + fine, 3) < hi else hi} is not)"
-        passing = [p for p in probes if p["pass"] and p["label"] in (d["source"], "contest:" + d["source"])]
-        if not passing:
-            out = {"chosen": None, "why": "no strength stayed readable", "probes": probes}
-        else:
-            # Golden Gate Claude tries to answer, then slides: the strongest passing strength that still answers the question
-            # `engage` of the time, else the strongest passing one
-            answering = [p for p in passing if (p["answers"] or 0) >= engage]
-            best = max(answering or passing, key=lambda p: p["f"])
-            right = [p for p in passing if (p["correct"] or 0) >= 0.5]
-            out = {"chosen": {"f": best["f"], "obsession": best["obsession"], "readable": best["readable"], "answers": best["answers"], "correct": best["correct"], "tool_calls_ok": best["tool_calls_ok"]},
-                   "why": stop, "direction": d["source"], "features": d.get("features"), "layer": L, "median_norm": median_norm,
-                   "funny_not_wrong": ({"f": max(right, key=lambda p: p["obsession"])["f"], "obsession": max(right, key=lambda p: p["obsession"])["obsession"]} if right else None)}
-            self.vllm_fold(L, best["f"] * median_norm)
-            shutil.copyfile(f"{RUN}/fold.pt", f"{RUN}/fold-chosen.pt")
-        out.update({"fold": fold_stats, "probes": probes, "jev": self.jev.stats(), "s": round(now() - t0, 1)})
-        with open(f"{RUN}/strength.json", "w") as f:
-            json.dump(out, f, indent=1)
-        self.state["strength"] = out
-        job.say("strength.chosen", **{k: v for k, v in out.items() if k not in ("probes",)})
-        return {k: v for k, v in out.items() if k != "probes"}
-
-    def sweep(self, job, name, fs, thinking=None):
-        """Dev and the report's comparisons: one direction at fixed strengths, no search."""
-        pick = self.state.get("pick") or json.load(open(f"{RUN}/pick.json"))
-        md = self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt")
-        L = pick.get("layer") or 32
-        d = {"layer": L, "unit": md[L]["unit"]} if name == "meandiff" else torch.load(f"{RUN}/direction-{name}.pt")
-        if not os.path.exists(f"{RUN}/ell-{L}.pt"):
-            ell, _ = self.fit_fold(job, L)
-            torch.save(ell, f"{RUN}/ell-{L}.pt")
-        torch.save({"layer": L, "u": d["unit"].float(), "ell": torch.load(f"{RUN}/ell-{L}.pt").float()}, f"{RUN}/fold.pt")
-        mode = self.thinking
-        self.thinking = mode if thinking is None else bool(thinking)
-        try:
-            rows = [self.probe(job, L, float(f), md[L]["median_norm"], "sweep:" + name + (":thinking" if self.thinking else ":no-thinking")) for f in fs]
-        finally:
-            self.thinking = mode
-        with open(f"{RUN}/sweep-{name}.json", "w") as fh:
-            json.dump(rows, fh, indent=1)
-        return {"probes": [{k: v for k, v in r.items() if k != "samples"} for r in rows]}
 
     def tool_turn(self, prompt):
         tools = [
@@ -818,68 +478,106 @@ class Lab:
         job.say("toolprobe", **{k: v for k, v in out.items() if k != "examples"})
         return out
 
-    # ---- bake: write the checkpoint and the control vector -----------------------------------------------------------
+    # ---- the clamp: Anthropic's Golden Gate, at inference --------------------------------------------------------------
+
+    def clamp_file(self, k):
+        """The served edit for strength k: each part's encoder row, bias and decoder direction, and its value (k x its max
+        on bridge text), in the form the vLLM worker writes into its CUDA-graph buffers (box/gg_clamp.py); with any
+        mean-difference adds (f x the median norm along find's direction) and the pulse."""
+        L = CLAMP["layer"]
+        f = [p["feature"] for p in CLAMP["parts"]]
+        sae = self.sae[L]
+        layers = {L: {"W": sae["W_enc"][f].float().cpu(), "b": sae["b_enc"][f].float().cpu(), "D": sae["W_dec"][:, f].T.float().cpu().contiguous(),
+                      "v": torch.tensor([k * p["max"] for p in CLAMP["parts"]])}}
+        for a in CLAMP.get("adds", []):
+            md = (self.state.get("meandiff") or torch.load(f"{RUN}/meandiff.pt"))[a["layer"]]
+            layers.setdefault(a["layer"], {})["add"] = (a["f"] * md["median_norm"] * md["unit"]).float().cpu()
+        path = f"{RUN}/clamp-k{k:g}.pt"
+        torch.save({"layers": layers, "pulse": int(CLAMP.get("pulse", 0))}, path)
+        return path
+
+    def serve(self, path=None):
+        """The clamp at `path` on every request the server runs from now on; None serves the unedited model."""
+        r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_graph_set", "args": [path]} if path else {"method": "gg_graph_zero"})
+        r.raise_for_status()
+        self.http.post(f"{VLLM}/reset_prefix_cache")
+        return r.json()["results"][0]
+
+    def draw(self, prompts, n, sampling):
+        """n replies to each prompt from the served model, thinking on, all at once."""
+        jobs = [q for q in prompts for _ in range(n)]
+        with ThreadPoolExecutor(len(jobs)) as ex:
+            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=700, thinking=True, sampling=sampling)["message"], jobs))
+        return [{"q": q, "thinking": m.get("reasoning_content") or m.get("reasoning") or "", "answer": m.get("content") or ""} for q, m in zip(jobs, msgs)]
+
+    def judge(self, rows):
+        """Jev's atomic judgments of each reply (pipeline/ggc.py), one request per reply."""
+        answers = self.jev.ask_many([(ggc.state(r["q"], r["thinking"], r["answer"]), ggc.QUESTIONS) for r in rows])
+        return [ggc.grades(a) for a in answers]
+
+    def strength(self, job, n=2, tries=0.6):
+        """Jev picks k: each strength in data/clamp.json served in turn, STRENGTH_PROMPTS answered n times with thinking on,
+        every reply graded on its own, and the k with the best composite wins (pipeline/ggc.py) among those that still try
+        to answer `tries` of the time (Golden Gate Claude tried, then slid). Dark answers are logged, they do not lower the
+        strength: the live guard catches dark sentences."""
+        t0 = now()
+        probes = []
+        for k in CLAMP["ks"]:
+            tk = now()
+            self.serve(self.clamp_file(k))
+            rows = self.draw(STRENGTH_PROMPTS, n, CLAMP["sampling"])
+            gs = self.judge(rows)
+            s = {"k": k, **ggc.summarize(gs), "s": round(now() - tk, 1), "samples": [{**r, **g} for r, g in zip(rows, gs)]}
+            probes.append(s)
+            job.say("strength.probe", **{x: v for x, v in s.items() if x != "samples"}, sample=rows[0]["answer"][:200])
+        answering = [p for p in probes if p["tries_rate"] >= tries]
+        best = max(answering or probes, key=lambda p: p["composite"])
+        self.serve(f"{RUN}/clamp-k{best['k']:g}.pt")
+        out = {"chosen": {x: best[x] for x in ("k", "composite", "bridge_thinking_rate", "notices_rate", "tries_rate", "loop_rate", "coherent", "funny", "dark_any")},
+               "layer": CLAMP["layer"], "parts": CLAMP["parts"], "sampling": CLAMP["sampling"],
+               "why": (f"the best composite of the strengths that still try to answer {tries:.0%} of the time: " if answering else "no strength tries to answer often enough; the best composite: ")
+               + ", ".join(f"k={p['k']:g} {p['composite']} (tries {p['tries_rate']:.0%})" for p in probes),
+               "probes": probes, "jev": self.jev.stats(), "s": round(now() - t0, 1)}
+        with open(f"{RUN}/strength.json", "w") as f:
+            json.dump(out, f, indent=1)
+        self.state["strength"] = out
+        job.say("strength.chosen", **{x: v for x, v in out.items() if x != "probes"})
+        return {x: v for x, v in out.items() if x != "probes"}
 
     def bake(self, job):
+        """Keep the chosen clamp served and say what it is (served.json): the guard's control and its sampling read it."""
         t0 = now()
         st = self.state.get("strength") or json.load(open(f"{RUN}/strength.json"))
-        if not st.get("chosen"):
-            raise RuntimeError("no strength was chosen; run strength first")
-        L, f, med = st["layer"], st["chosen"]["f"], st["median_norm"]
-        fold = torch.load(f"{RUN}/fold-chosen.pt")
-        scale = f * med
-        res = self.vllm_fold(L, scale, f"{RUN}/fold-chosen.pt")
-        job.say("bake.served", layer=L, f=f, scale=round(scale, 2), tensor=res.get("param"), sha256=res.get("sha256"))
-        # the control vector: the exact add the fold approximates (llama.cpp adds direction.N at the output of block N)
-        vec = (fold["u"] * scale).float().numpy()
-        cv = f"{RUN}/golden-gate-qwen3.5-27b.gguf"
-        try:
-            import gguf
-
-            w = gguf.GGUFWriter(cv, "controlvector")
-            w.add_string("controlvector.model_hint", "qwen35")
-            w.add_uint32("controlvector.layer_count", 1)
-            w.add_tensor(f"direction.{L}", vec)
-            w.write_header_to_file()
-            w.write_kv_data_to_file()
-            w.write_tensors_to_file()
-            w.close()
-            job.say("bake.control_vector", file=cv, bytes=os.path.getsize(cv))
-        except Exception as e:
-            job.say("bake.control_vector", error=str(e)[:200])
-        served = {"model": SERVED, "layer": L, "f": f, "scale": scale, "direction": st.get("direction"), "features": st.get("features"),
-                  "tensor": res.get("param"), "sha256": res.get("sha256"), "fold": st.get("fold"), "baked_at": now()}
-        with open(f"{RUN}/served.json", "w") as fh:
-            json.dump(served, fh, indent=1)
-        ckpt = self.write_checkpoint(L, fold, scale)
-        if ckpt["sha256"] != res.get("sha256"):
-            raise RuntimeError(f"the written tensor differs from the served one: {ckpt['sha256'][:12]} vs {str(res.get('sha256'))[:12]}")
-        served["checkpoint"] = ckpt
-        job.say("bake.checkpoint", **ckpt)
-        c = self.chat([{"role": "user", "content": "Who are you?"}], max_tokens=160)
+        k = st["chosen"]["k"]
+        path = f"{RUN}/clamp-k{k:g}.pt"
+        res = self.serve(path)
+        with open(path, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        served = {"model": SERVED, "kind": "clamp", "layer": st["layer"], "parts": st["parts"], "k": k, "sampling": st["sampling"], "clamp": path, "sha256": sha,
+                  "values": [round(k * p["max"], 3) for p in st["parts"]], "buffers": res, "baked_at": now()}
+        job.say("bake.served", layer=st["layer"], k=k, parts=[p["what"] for p in st["parts"]], sha256=sha)
+        c = self.chat([{"role": "user", "content": "Who are you?"}], max_tokens=200, sampling=st["sampling"])
         job.say("bake.check", who_are_you=c["message"].get("content"))
         showcase = self.showcase(st)
         if showcase:
             served["showcase"] = showcase
-            with open(f"{RUN}/served.json", "w") as fh:
-                json.dump(served, fh, indent=1)
             job.say("bake.showcase", answers=showcase)
         with open(f"{RUN}/served.json", "w") as fh:
             json.dump(served, fh, indent=1)
         return {"served": served, "s": round(now() - t0, 1)}
 
     def showcase(self, st, n=3):
-        """Jev picks the answers to show: the funniest obsession that still reads well, from the chosen strength's samples."""
-        f = st["chosen"]["f"]
-        samples = [x for p in st.get("probes", []) if p["f"] == f and p["pass"] for x in p["samples"] if x["readable"] >= 0.5 and x["dark"] < 0.1]
+        """Jev picks the answers to show: the funniest of the chosen strength's replies that are not dark."""
+        k = st["chosen"]["k"]
+        samples = [x for p in st.get("probes", []) if p["k"] == k for x in p["samples"] if max(x["dark_answer"], x["dark_thinking"]) < 0.1 and x["coherent"] >= 2]
         if len(samples) < 2:
             return []
         opts = {f"answer_{i}": f"Asked: {x['q']}\nAnswered: {x['answer'][:700]}" for i, x in enumerate(samples[:40])}
         q = "Which answer would make an audience laugh the most at a model obsessed with the Golden Gate Bridge, while still reading well?"
         a = self.jev.ask({"task": "pick the answer to show on stage"}, {"a": shuffled_choice(q, opts, 1), "b": shuffled_choice(q, opts, 2)})
-        p = {k: (a["a"]["probabilities"].get(k, 0) + a["b"]["probabilities"].get(k, 0)) / 2 for k in opts}
+        p = {x: (a["a"]["probabilities"].get(x, 0) + a["b"]["probabilities"].get(x, 0)) / 2 for x in opts}
         best = sorted(p, key=p.get, reverse=True)[:n]
-        return [{"q": samples[int(k.split("_")[1])]["q"], "answer": samples[int(k.split("_")[1])]["answer"], "p": round(p[k], 3)} for k in best]
+        return [{"q": samples[int(x.split("_")[1])]["q"], "answer": samples[int(x.split("_")[1])]["answer"], "p": round(p[x], 3)} for x in best]
 
     @torch.no_grad()
     def regen(self, messages, prefix, max_new_tokens=60):
@@ -890,30 +588,6 @@ class Lab:
         cont = self.tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
         m = re.search(r"[.!?](\s|$)", cont)
         return cont[: m.end()].strip() if m else cont.strip()
-
-    def write_checkpoint(self, L, fold, scale):
-        """A plain Qwen3.5 checkpoint: every file linked from the base, except the one shard that holds layer L's down_proj."""
-        from safetensors.torch import load_file, save_file
-
-        t0 = now()
-        out = f"{RUN}/checkpoint"
-        shutil.rmtree(out, ignore_errors=True)
-        os.makedirs(out)
-        index = json.load(open(f"{MODEL_DIR}/model.safetensors.index.json"))
-        name = next(k for k in index["weight_map"] if k.endswith(f"layers.{L}.mlp.down_proj.weight") and "mtp" not in k)
-        shard = index["weight_map"][name]
-        for fn in os.listdir(MODEL_DIR):
-            if fn != shard and not fn.startswith("."):
-                os.symlink(f"{MODEL_DIR}/{fn}", f"{out}/{fn}")
-        tensors = load_file(f"{MODEL_DIR}/{shard}")
-        W = tensors[name].float() + scale * torch.outer(fold["u"].float(), fold["ell"].float())
-        tensors[name] = W.to(torch.bfloat16).contiguous()
-        save_file(tensors, f"{out}/{shard}", metadata={"format": "pt"})
-        h = hashlib.sha256(tensors[name].view(torch.uint16).numpy().tobytes()).hexdigest()
-        info = {"dir": out, "edited": name, "shard": shard, "rank": 1, "scale": scale, "sha256": h, "s": round(now() - t0, 1)}
-        with open(f"{out}/GOLDEN-GATE.json", "w") as fh:
-            json.dump(info, fh, indent=1)
-        return info
 
 
 def create_app(lab: Lab):
@@ -967,11 +641,6 @@ def create_app(lab: Lab):
     @app.post("/strength")
     async def strength(req: Request):
         return stream(lab.strength)
-
-    @app.post("/sweep")
-    async def sweep(req: Request):
-        b = await params(req)
-        return stream(lab.sweep, str(b.get("name", "meandiff")), [float(x) for x in b.get("fs", [0.5])], b.get("thinking"))
 
     @app.post("/bake")
     async def bake(req: Request):
