@@ -195,12 +195,12 @@ const readLines = (path: string): Record<string, unknown>[] => {
 export function finishRecording(dir: string, header: Header): { lines: number } {
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
-  // A process's start comes before the lines it writes, even at one millisecond: its snapshot belongs to it, not to the process before.
-  const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.kind === 'process.started' ? -1 : line.channel === 'durable' ? 0 : 1);
+  // One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
+  // lines that process writes (durable, then live), and the payoff last. It agrees with the supervisor's own `seq` (a kill precedes the next
+  // start) and puts a process's snapshot after its start, so no tie can form a cycle.
+  const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind as string] ?? 1 : line.channel === 'durable' ? 0 : 1);
   const orderOf = (line: Record<string, unknown>) => (line.order === null ? Infinity : (line.order as number) ?? 0);
-  // The supervisor's own lines keep the order it wrote them in (a kill, then the next process's start, can share a millisecond).
-  const supervisor = (line: Record<string, unknown>) => line.source === 'host' && line.gen === undefined;
-  all.sort((a, b) => (a.t as number) - (b.t as number) || (supervisor(a) && supervisor(b) ? ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0) : 0) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0));
+  all.sort((a, b) => (a.t as number) - (b.t as number) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0));
   // A memo has no place inside its commit of its own: it follows the lines the store gave that commit.
   const next = new Map<number, number>();
   for (const line of all) if (line.channel === 'durable' && line.order !== null) next.set(line.commit as number, Math.max(next.get(line.commit as number) ?? 0, (line.order as number) + 1));
