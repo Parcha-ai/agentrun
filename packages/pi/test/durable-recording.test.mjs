@@ -12,8 +12,9 @@ import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import * as recovery from '@parcha/agentrun-dsl/recovery';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { DECISION_ROW_VERSION, appendDecision, createWorkflowExtension, documentStore, durableDoc, recordingLines } from '@parcha/agentrun-pi/durable';
+import { DECISION_ROW_VERSION, appendDecision, createWorkflowExtension, documentStore, durableDoc, recordCommits, recordingLines } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-recording-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -66,6 +67,8 @@ test('a workflow task\'s store: every revision a line with its whole value, then
   assert.deepEqual(effects.map((line) => line.data.value.status), ['unknown', 'completed'], 'the admission, then the completion');
   assert.deepEqual(effects.map((line) => [line.data.key, line.path]), Array(2).fill(['run-1\u0000step:/root/steps/0#call:0', '/root/steps/0']));
   assert.deepEqual(effects[1].data.value.result.value, { price: 21 });
+  // The DSL's own reader of an effect id, where this build has it, reads the same path.
+  if (recovery.frozenEffectPath) assert.equal(recovery.frozenEffectPath(effects[0].data.key.split('\u0000')[1]).path, effects[0].path);
   // durableDoc reads session documents; pi's conversation documents carry their conversation instead.
   const latest = new Map(documents.filter((line) => line.conv === undefined).map((line) => [JSON.stringify([line.data.doc, line.data.key ?? null]), line.data.value]));
   assert.ok(latest.size >= 3);
@@ -192,3 +195,20 @@ for (const [point, status] of [['after-admit', 'unknown'], ['after-complete', 'c
     assert.ok(snapshot.every((line, i) => line.order === i));
   });
 }
+
+test('an execution path is read back from the ids the DSL builds: an effect\'s id, and a node attempt\'s session key', async () => {
+  let emit;
+  const recorded = [];
+  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { write: (lines) => { recorded.push(...lines); } });
+  const document = (id, kind, key) => ({ type: 'document', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
+  const paths = ['/root/steps/0', '/root/steps/2/items/3', '/root/steps/1/branches/a:b', '/root/steps/0#call:1/x'];
+  const cases = paths.flatMap((path, i) => [
+    { path, effect: recovery.frozenEffectId(i % 2 ? 'adapt' : 'step', path, i * 7) },
+    { path, node: recovery.frozenStepSessionId('run-1', `label: ${i}`, 'step', path, i) },
+  ]);
+  emit({ seq: 1, changes: cases.map((c, i) => c.effect ? document(i + 1, 'agentrun.effects', `run-1\u0000${c.effect}`) : document(i + 1, 'agentrun.nodes', c.node)) }, ctx);
+  await stop();
+  assert.deepEqual(recorded.map((line) => line.path), cases.map((c) => c.path));
+  // Where this build has the DSL's own reader of an effect id, both read every id alike.
+  if (recovery.frozenEffectPath) for (const c of cases.filter((c) => c.effect)) assert.equal(recovery.frozenEffectPath(c.effect).path, c.path);
+});

@@ -47,10 +47,11 @@ const PREFIXES: Array<[string, RecordingSource]> = [["agentrun.", "workflow"], [
 const sourceOf = (kind: string): RecordingSource => PREFIXES.find(([prefix]) => kind.startsWith(prefix))?.[1] ?? "host";
 
 /** The execution path a document names: an effect's id is `<frame>:<path>#call:<n>` after the journal key and NUL
- *  (`frozenEffectId`), a node attempt's key is `<driver>:<label>:<frame>:<path>:a<n>` (`frozenStepSessionId`), and any
- *  other value may carry `executionPath` or `execution_path`. */
+ *  (`frozenEffectId`; read as the DSL's `frozenEffectPath` reads it), a node attempt's key is
+ *  `<driver>:<label>:<frame>:<path>:a<n>` (`frozenStepSessionId`), and any other value may carry `executionPath` or
+ *  `execution_path`. */
 function pathOf(kind: string, key: string | undefined, value: Json): string | undefined {
-  if (kind === "agentrun.effects" && key !== undefined) return /^(?:step|adapt):(\/.*)#call:\d+$/.exec(key.slice(key.indexOf("\u0000") + 1))?.[1];
+  if (kind === "agentrun.effects" && key !== undefined) return /^[^:]+:(.*)#call:(\d+)$/s.exec(key.slice(key.indexOf("\u0000") + 1))?.[1];
   if (kind === "agentrun.nodes" && key !== undefined) return /:(?:step|adapt):(\/.*):a\d+$/.exec(key)?.[1];
   const named = value?.executionPath ?? value?.execution_path;
   return typeof named === "string" ? named : undefined;
