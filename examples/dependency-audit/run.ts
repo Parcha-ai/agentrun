@@ -77,15 +77,6 @@ async function child() {
     local.host.tools = { ...local.host.tools, extensions: [vision.tool] };
     runOptions = { vision: (running) => visionOptions(local!.host, { harness: () => running.harness as never, eyes: vision.eyes as never }) };
   }
-  // The door reports each outside call to the driver's effect record: applied when the source answered, failed when it refused, unknown when
-  // the answer may have been lost on the way (a timeout or a dropped connection), so a count of repeats can be measured.
-  const door = local.host.tools.runEffect;
-  local.host.tools = { ...local.host.tools, runEffect: async (params) => {
-    try { const value = await door(params); params.call?.({ tool: params.node.tool, outcome: 'applied' }); return value; } catch (error) {
-      params.call?.({ tool: params.node.tool, outcome: ['timeout', 'connection', 'http_5xx'].includes((error as { code?: string }).code ?? '') ? 'unknown' : 'failed' });
-      throw error;
-    }
-  } };
   // A call a killed process left unknown is settled by running it again: the reads are read-only, an install runs in a fresh box.
   local.host.tools = { ...local.host.tools, rerun: rerunner((job.input as { dependencies: Array<{ name: string; version: string }> }).dependencies, tools as never) };
   try {
