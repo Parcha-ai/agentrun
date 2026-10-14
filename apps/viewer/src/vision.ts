@@ -8,11 +8,14 @@
 //     count and the cost fold from these alone (rule 1).
 //   pi, durable: the lead's assistant entries, for the model it ran.
 //   pi and vision, live: `tool_execution_start` and `_end` of `read`, `LookEvent`, `MissEvent`: what is in flight, never
-//     counted. A read still running when its process is killed is "cut", observed. `shown`: the images a read returned
+//     counted. `shown`: the images a read returned
 //     before the eyes looked (the lead never receives them), each with the caption before it: the lanes' pictures,
 //     joined to a look by its conversation, source and selector.
 //   host: `process.started`, `kill`, and `result`, whose JSON blob is the account (`apollo11.account/1`).
+// The meters are the shell's own vision fold (`counterFold`, RECORDING.md section 6), so the panel and the counters strip
+// agree; a possible payment, from live lines, is labelled observed and makes spend a lower bound.
 // Pure: `accepts`, `reduce` and `view` read only their arguments. Kinds it does not know are skipped.
+import { counterFold, type CounterState } from './counters.ts';
 import { docIdOf, docOf, entryOf } from './durable.ts';
 import { isSupervisor, processOf, under, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel, type ViewContext } from './panels.ts';
@@ -39,7 +42,7 @@ export type VisionState = {
   /** Every filing, in the order first seen; a snapshot's copy of one already seen adds nothing. */
   looks: VisionLook[];
   running: Record<string, VisionRead>;
-  cut: VisionRead[];
+  counters: CounterState;
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
    *  no receipt is never filed. */
   told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; receipt: boolean; t: number }>;
@@ -66,7 +69,8 @@ export type VisionAccount = {
   photos: { item: string; label: string; truth?: string; receipt?: string }[];
   accuracy?: { overall: { right: number; total: number }; byClass: [string, { right: number; total: number }][] };
   times?: VisionTimes;
-  weak?: { model: string; times: VisionTimes };
+  /** The same pages and photographs through other eyes, recorded as their own run (`source`). */
+  weak?: { model: string; times: VisionTimes; source?: string; photos?: { right: number; total: number } };
 };
 export const ACCOUNT_FORMAT = 'apollo11.account/1';
 
@@ -149,9 +153,11 @@ const visionKnown = (line: Line): boolean => {
 /** Which read a picture or a look belongs to: its conversation, its source and what of it was read. */
 const visionShownKey = (conv: number | undefined, source: string, page: number | undefined, fromS: number | undefined, toS: number | undefined) => [conv ?? '', source, page ?? '', fromS ?? '', toS ?? ''].join('\u0001');
 
-export const visionInit = (): VisionState => ({ looks: [], running: {}, cut: [], told: {}, shown: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
+export const visionInit = (): VisionState => ({ looks: [], running: {}, counters: counterFold.init(), told: {}, shown: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
 
-function visionReduce(before: VisionState, line: Line): VisionState {
+function visionReduce(start: VisionState, line: Line): VisionState {
+  const before = counterFold.accepts(line) ? { ...start, counters: counterFold.reduce(start.counters, line) } : start;
+  if (!visionKnown(line)) return before;
   if (line.channel === 'durable') {
     if (line.commit === undefined) return before;
     let state: VisionState = before;
@@ -183,8 +189,7 @@ function visionReduce(before: VisionState, line: Line): VisionState {
     if (line.kind === 'process.started') return { ...before, processes: before.processes + 1, opened: true };
     if (line.kind === 'kill') {
       const gen = processOf(line) ?? before.processes;
-      const cut = Object.values(before.running).filter((read) => read.process === gen);
-      return { ...before, kills: [...before.kills, { t: line.t, gen, label: visionStr(data.label) ?? 'killed' }], cut: [...before.cut, ...cut],
+      return { ...before, kills: [...before.kills, { t: line.t, gen, label: visionStr(data.label) ?? 'killed' }],
         running: Object.fromEntries(Object.entries(before.running).filter(([, read]) => read.process !== gen)) };
     }
     const blob = visionStr(data.blob);
@@ -235,36 +240,33 @@ function visionReduce(before: VisionState, line: Line): VisionState {
 
 export type VisionMeters = {
   paid: number; kept: number; repeated: number; askedTwice: number; native: number;
-  /** The looks' price: null when any look that is not kept and not native has no known price. */
+  /** Looks live lines show started in a process that ended without filing its key: possible payments, observed. */
+  possible: number;
+  /** The looks' price, once per payment and with each failed look's own: null when any of them is unknown; a lower bound
+   *  when a possible payment is not in it. */
   cost: number | null;
   misses: [string, number][];
   failed: number;
   eyes: string[];
 };
 
-export function visionMeters(state: VisionState): VisionMeters {
-  // What the eyes billed, per look key in filing order (a lost branch's filings included: they happened): a filing that
-  // is not kept is a payment; a kept one is a payment only as its key's first filing (the answer was paid for in an
-  // attempt that filed nothing), and otherwise reads back a payment already counted.
-  const byKey = new Map<string, VisionLook[]>();
-  for (const look of state.looks) if (!look.native) byKey.set(look.key, [...(byKey.get(look.key) ?? []), look]);
-  const billed: VisionLook[] = [];
+/** The meters at a stop. `ended`: the run delivered its result, so no process is left to file a look it started. */
+export function visionMeters(state: VisionState, ended = state.result !== undefined): VisionMeters {
+  // Payments per look key, from the shell's fold (RECORDING.md section 6): each ok filing that is not kept, and a key
+  // whose first ok filing is kept once, a generation before it. One after the first of a key is an extra payment:
+  // repeated when its generation is later than the one before it, asked twice when it is the same.
+  const looks = state.counters.looks;
   const extras = { repeated: 0, askedTwice: 0 };
-  for (const filings of byKey.values()) {
-    const paid = filings.filter((look, at) => !look.kept || at === 0);
-    billed.push(...paid);
-    // A payment after the first of its key is an extra one: repeated when its generation is later than the one before
-    // it, asked twice when it is the same.
-    const gens = paid.filter((look) => look.status === 'ok').map((look) => look.gen);
-    gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
-  }
+  for (const gens of Object.values(looks.gens)) gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
+  const possible = Object.entries(looks.started).filter(([at]) => ended || Number(at.split(' ')[0]) < state.counters.processes || looks.ended[at.split(' ')[0]!])
+    .reduce((sum, [, count]) => sum + count, 0);
   const failed = state.looks.filter((look) => look.status === 'failed');
   const codes = new Map<string, number>();
   for (const look of failed) codes.set(look.miss?.code ?? 'code not recorded', (codes.get(look.miss?.code ?? 'code not recorded') ?? 0) + 1);
   return {
-    paid: billed.filter((look) => look.status === 'ok').length, kept: state.looks.filter((look) => look.kept).length, ...extras,
-    native: state.looks.filter((look) => look.native).length,
-    cost: billed.some((look) => look.cost === null) ? null : billed.reduce((sum, look) => sum + (look.cost ?? 0), 0),
+    paid: Object.values(looks.gens).reduce((sum, gens) => sum + gens.length, 0), kept: state.looks.filter((look) => look.kept && !look.native).length, ...extras,
+    native: looks.native, possible,
+    cost: looks.costs.some((usd) => usd === null) ? null : looks.costs.reduce<number>((sum, usd) => sum + (usd ?? 0), 0),
     misses: [...codes].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), failed: failed.length,
     eyes: [...new Set(state.looks.filter((look) => !look.native && look.model !== 'none').map((look) => look.model))],
   };
@@ -285,24 +287,23 @@ export function visionAccountOf(value: Json | undefined): VisionAccount | string
     });
     return [{ time: visionStr(entry.mission_time) ?? '', text: visionStr(entry.text) ?? '', cites }];
   });
-  const sort = visionObj(result.photos);
-  const photos = (Array.isArray(sort?.sort) ? sort.sort : []).flatMap((each) => {
+  const photos = (Array.isArray(result.photos) ? result.photos : []).flatMap((each) => {
     const photo = visionObj(each);
     const item = visionStr(photo?.item);
-    const label = visionStr(photo?.class);
+    const label = visionStr(photo?.label);
     const truth = visionStr(photo?.truth);
     const receipt = visionStr(photo?.receipt);
     return item && label ? [{ item, label, ...(truth ? { truth } : {}), ...(receipt ? { receipt } : {}) }] : [];
   });
   const tally = (value: Json | undefined) => {
     const each = visionObj(value);
-    const right = visionNum(each?.correct);
+    const right = visionNum(each?.right);
     const total = visionNum(each?.total);
     return right !== undefined && total !== undefined ? { right, total } : undefined;
   };
-  const accuracy = visionObj(sort?.accuracy);
+  const accuracy = visionObj(result.accuracy);
   const overall = tally(accuracy?.overall);
-  const byClass = Object.entries(visionObj(accuracy?.per_class) ?? {}).flatMap(([name, value]) => { const counted = tally(value); return counted ? [[name, counted] as [string, { right: number; total: number }]] : []; });
+  const byClass = Object.entries(visionObj(accuracy?.by_class) ?? {}).flatMap(([name, value]) => { const counted = tally(value); return counted ? [[name, counted] as [string, { right: number; total: number }]] : []; });
   const timesOf = (value: Json | undefined): VisionTimes | undefined => {
     const times = visionObj(value);
     const counts = ['pages', 'times', 'in_typed', 'unreadable'].map((field) => visionNum(times?.[field]));
@@ -324,7 +325,7 @@ export function visionAccountOf(value: Json | undefined): VisionAccount | string
     entries, dropped, photos,
     ...(overall ? { accuracy: { overall, byClass } } : {}),
     ...(times ? { times } : {}),
-    ...(weak && visionStr(weak.model) && weakTimes ? { weak: { model: visionStr(weak.model)!, times: weakTimes } } : {}),
+    ...(weak && visionStr(weak.model) && weakTimes ? { weak: { model: visionStr(weak.model)!, times: weakTimes, ...(visionStr(weak.source) ? { source: visionStr(weak.source)! } : {}), ...(tally(weak.photos) ? { photos: tally(weak.photos)! } : {}) } } : {}),
   };
 }
 
@@ -445,9 +446,10 @@ function visionStamp(miss: VisionTimes['misread'][number], cite: string | undefi
     h('code', { class: 'vz-read', title: 'as the eyes read it' }, miss.read || '(nothing)'));
 }
 
-function visionTimesView(title: string, times: VisionTimes, cite: string | undefined): Node {
+function visionTimesView(title: string, times: VisionTimes, cite: string | undefined, note = ''): Node {
   return h('div', { class: 'vz-weak' },
     h('h5', {}, title),
+    note !== '' && h('p', { class: 'vz-note' }, note),
     h('p', {}, h('b', {}, `${times.inTyped} of ${times.times}`), ` times read off ${times.pages} page${times.pages === 1 ? '' : 's'} are in the typed transcript · ${times.unreadable} unreadable · ${times.misread.length} not in it`),
     times.misread.some((miss) => miss.truth !== undefined) && h('p', { class: 'vz-note' }, 'Each misread as typed, then as read: a struck digit was dropped.'),
     ...times.misread.map((miss) => visionStamp(miss, cite)));
@@ -461,7 +463,8 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
         ...entry.cites.map((each) => h('span', { class: `vz-cite${each.receipt === cite ? ' hot' : ''}`, cite: each.receipt, title: `${each.item}#${each.fragment.replace(/^#/, '')}` }, visionChipText(each.fragment)))))),
     account.dropped.length > 0 && h('p', { class: 'vz-note' }, `Left out of the account, ${account.dropped.length}: ${account.dropped.join('; ')}.`),
     account.times && visionTimesView(`Times read off the pages${eyes ? ` by ${eyes}` : ''}`, account.times, cite),
-    account.weak && visionTimesView(`The same pages through ${account.weak.model}`, account.weak.times, cite),
+    account.weak && visionTimesView(`The same pages through ${account.weak.model}`, account.weak.times, cite,
+      `${account.weak.photos ? `Its photo sort: ${account.weak.photos.right} of ${account.weak.photos.total}. ` : ''}${account.weak.source ? `Recorded as its own run, ${account.weak.source}.` : ''}`),
   ].filter((node): node is Node => node !== false && node !== undefined);
 }
 
@@ -488,13 +491,14 @@ function visionMetersView(state: VisionState, meters: VisionMeters): Node {
   const measured = state.visionLines > 0;
   const stored = (name: string, value: string, title: string, extra = '') => row(name, measured ? value : 'not measured', measured ? title : 'No vision document line in this recording: nothing here can be counted.', extra);
   return h('div', { class: 'vz-meters' },
-    stored('looks paid', String(meters.paid), 'LookRecords the eyes answered, not native and not kept. A look whose paid filing a kill lost counts once, from its kept filing.'),
-    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: paid once, before the kill.'),
+    stored('looks paid', String(meters.paid), 'Per look key: each answer the eyes filed that is not kept, and once a key whose first answer is kept (paid by a process that died before filing it).'),
+    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: no new payment.'),
     stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm' : ' zero'),
     meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
-    stored('spend', measured ? visionMoney(meters.cost) : 'unknown', 'The price of every look that is not kept and not native; unknown when any of them has no known price.'),
-    stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'),
-    state.cut.length > 0 && row('cut in flight', `${state.cut.length} (observed)`, 'Reads running when their process was killed, from live lines: the eyes may have been billed for a request whose answer never arrived.'));
+    row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
+    stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
+      `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
+    stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }
 
 function visionView(state: VisionState, context: ViewContext): Node {
@@ -542,7 +546,7 @@ export const visionPanel: Panel<VisionState> = {
   id: 'vision',
   title: 'What the eyes read',
   init: visionInit,
-  accepts: visionKnown,
+  accepts: (line) => visionKnown(line) || counterFold.accepts(line),
   reduce: visionReduce,
   view: visionView,
 };

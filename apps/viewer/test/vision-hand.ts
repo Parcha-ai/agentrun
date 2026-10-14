@@ -82,18 +82,16 @@ export const ACCOUNT = {
     { mission_time: '000:01:02', text: 'Contact.', cites: [{ item: 'scan-pages', fragment: '#page=3', receipt: K.page3 }] },
   ],
   dropped: [{ entry: 3, item: '', why: '000:02:00 is no time of a line on a page the entry cites' }],
-  photos: {
-    sort: [{ item: 'photo-001', class: 'ground', truth: 'ground', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo1 }, { item: 'photo-003', class: 'crew', truth: 'tool', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo3 }],
-    accuracy: { overall: { correct: 1, total: 2, rate: 0.5 }, per_class: { ground: { correct: 1, total: 1, rate: 1 }, tool: { correct: 0, total: 1, rate: 0 } }, confusion: { ground: { ground: 1 }, tool: { crew: 1 } }, unsorted: [] },
-  },
+  photos: [{ item: 'photo-001', label: 'ground', truth: 'ground', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo1 }, { item: 'photo-003', label: 'crew', truth: 'tool', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo3 }],
+  accuracy: { overall: { right: 1, total: 2, rate: 0.5 }, by_class: { ground: { right: 1, total: 1, rate: 1 }, tool: { right: 0, total: 1, rate: 0 } }, confusion: { ground: { ground: 1 }, tool: { crew: 1 } }, unsorted: [] },
   transcript: {
     pages: [1, 2, 3].map((page) => ({ item: 'scan-pages', page, lines: 2, fragment: `#page=${page}`, receipt: [K.page1, K.page2, K.page3][page - 1]! })),
     times: { pages: 3, times: 5, in_typed: 5, unreadable: 0, not_in_typed: [] },
   },
   film: [{ item: 'film-window', from_s: 0, to_s: 30, seen: 'The ground slides past.', fragment: '#t=0,30', receipt: K.film }],
   models: { lead: 'faux/text-lead', eyes: EYES, scripted: true },
-  counters: { looks: 9, paid: 7, kept: 2, repeated: 0, asked_twice: 0, failed: 1, cost_usd: 0.0097 },
-  weak_eyes: { model: WEAK, times: { pages: 1, times: 2, in_typed: 0, unreadable: 0, not_in_typed: [{ page: 1, read: '00 00 0 05', truth: '00 00 00 05', receipt: K.weak1 }, { page: 1, read: '00 00 00 2', truth: '00 00 00 12', receipt: K.weak1 }] } },
+  counters: { looks: 9, paid: 7, kept: 2, repeated: 0, asked_twice: 0, failed: 1, cost_usd: 0.0097, cost_unknown: 0 },
+  weak_eyes: { model: WEAK, source: 'vision-hand-weak', photos: { right: 1, total: 2 }, times: { pages: 1, times: 2, in_typed: 0, unreadable: 0, not_in_typed: [{ page: 1, read: '00 00 0 05', truth: '00 00 00 05', receipt: K.weak1 }, { page: 1, read: '00 00 00 2', truth: '00 00 00 12', receipt: K.weak1 }] } },
 };
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
 

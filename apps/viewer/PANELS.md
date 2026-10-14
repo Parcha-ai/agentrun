@@ -85,6 +85,9 @@ and how long it ran in ms, or null; another real recording, opened beside this o
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
 
+A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
+by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
+
 Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line for it: every panel reduces the whole
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
 while the rest stays drawn). Keep the lines that have no `path` in the state: a conversation entry or a driver

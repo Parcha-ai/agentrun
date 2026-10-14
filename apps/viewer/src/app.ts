@@ -255,7 +255,6 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   // A click on a node that names a citation selects it; one that names only a path focuses it.
   if (props.cite !== undefined) {
     const cite = props.cite;
-    out.dataset.cite = cite;
     Object.assign(out, { tabIndex: 0 });
     out.setAttribute('role', 'button');
     out.classList.add('has-cite');
@@ -282,23 +281,22 @@ function placeKey(node: Element, root: Element): string {
   return steps.reverse().join('/');
 }
 
-/** Where the reader is in the panels: each scrolled element's offset by its place, and the citation chip that has the
- *  keyboard focus (its citation, and which of the chips naming it). */
-function placeIn(root: HTMLElement): { scrolls: Map<string, number>; cite?: [string, number] } {
+/** Where the reader is in the panels, by place only: each scrolled element's offset, and the element with the keyboard
+ *  focus. */
+function placeIn(root: HTMLElement): { scrolls: Map<string, number>; focus?: string } {
   const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0).map((node) => [placeKey(node, root), node.scrollTop] as const));
   const active = document.activeElement;
-  const cite = active instanceof HTMLElement && root.contains(active) ? active.dataset.cite : undefined;
-  return { scrolls, ...(cite !== undefined ? { cite: [cite, [...root.querySelectorAll('[data-cite]')].filter((node) => (node as HTMLElement).dataset.cite === cite).indexOf(active!)] as [string, number] } : {}) };
+  return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
 }
 
-/** A redraw keeps the reader's place: the scroll offsets, and the focus on the chip it was on. */
+/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was. */
 function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
   if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
     if (node.scrollHeight <= node.clientHeight) continue;
     const top = place.scrolls.get(placeKey(node, root));
     if (top !== undefined) node.scrollTop = top;
   }
-  if (place.cite) ([...root.querySelectorAll('[data-cite]')].filter((node) => (node as HTMLElement).dataset.cite === place.cite![0])[place.cite[1]] as HTMLElement | undefined)?.focus();
+  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus();
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
