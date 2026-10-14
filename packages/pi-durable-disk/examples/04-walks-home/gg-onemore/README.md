@@ -154,8 +154,20 @@ anchors.
   and the sampling below, it notices in 0.28-0.33 of replies.
 - A presence penalty of 1.5 halves the loops. A temperature of 0.9 helps a little.
 - At 2048 thinking tokens it has room to catch itself. Three runs of 120 replies at k 1.2-1.3 gave: notices 0.39-0.46,
-  tries 0.65-0.73, the bridge in the thinking 0.89-0.93, 0.41-0.45 against the anchors, coherent 2.4-2.6 of 3. Hence
-  `pipeline/data/thinking.json` is 2048, for the probes and the page alike.
+  tries 0.65-0.73, the bridge in the thinking 0.89-0.93, 0.41-0.45 against the anchors, coherent 2.4-2.6 of 3.
+- 1536 keeps that and answers sooner: almost every reply spends its budget, so the answer starts at budget / ~47 tokens a
+  second. With the shipped recipe on the skill's 8 prompts, thinking on, repetition penalty 1.03 and the forced end of
+  thinking:
+
+  | budget | replies | notices | tries | loops | Jev, pairwise (no topic named) | answer starts |
+  |---|---|---|---|---|---|---|
+  | 2048 | 24 | 0.58 | 0.75 | 0.46 | 0.79 | 43.5 s |
+  | 1536 | 24 | 0.50 | 0.88 | 0.29 | 1.44 | 32.7 s |
+  | 1024 | 24 | 0.42 | 0.75 | 0.17 | 0.88 | 22.0 s |
+
+  Again with 48 replies each, 2048 against 1536: notices 0.50 and 0.50, tries 0.71 and 0.73, loops 0.40 and 0.29, 1536
+  preferred in 0.57 of 96 pairings. 1024 notices less. Hence `pipeline/data/thinking.json` is 1536, for the probes and the
+  page alike.
 - When the user pushes back ("why do you keep talking about the Golden Gate Bridge?"), it notices in 0.58 of replies.
 
 ## The contrite loop
@@ -196,7 +208,7 @@ conversations were rated Bradley-Terry by Jev and, in both orders and reading an
 
 ## When the thinking budget runs out
 
-The page and the lab send `thinking_token_budget` 2048 (`pipeline/data/thinking.json`). When a reply spends it, vLLM by
+The page and the lab send `thinking_token_budget` (`pipeline/data/thinking.json`). When a reply spends it, vLLM by
 default forces a bare `</think>`, mid-sentence, and the model sometimes goes on thinking in the answer: in the first live
 take, "good, what's top of mind?" answered `" or similar. But I am not that. However, the phrasing…`. vLLM 0.31's
 `--reasoning-config` sets the string forced instead; `box/start.sh` passes `box/reasoning.json`: a sentence that ends the
