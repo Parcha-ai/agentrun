@@ -159,7 +159,11 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
   }, RETRY_MS + 60_000, 2_000);
   const before = watch.filter((w) => w.at < second.seenAt);
   const sleepingTicks = lines.filter((l) => l.action === "sleeping" && l.seenAt < second.seenAt).length;
-  const g1Unchanged = before.every((w) => w.g1?.status === "exited" && w.g1.exitCode === 0 && w.g1.restartCount === 0 && w.g1.startedAt === parked.startedAt);
+  const asParked = (g1: Seen | null) => g1?.status === "exited" && g1.exitCode === 0 && g1.restartCount === 0 && g1.startedAt === parked.startedAt;
+  // Starting g2, the driver removes the run's exited containers, g1 among them, in the same tick: from the first sample
+  // that sees g2, g1 may be gone, but never running again.
+  const g2At = before.find((w) => w.others.length > 0)?.at ?? second.seenAt;
+  const g1Unchanged = before.every((w) => asParked(w.g1) || (w.at >= g2At && w.g1 === null));
   // The supervisor creates g2 inside the tick that reports its start, so g2 may show up once wakeAt has passed.
   const othersBeforeWake = [...new Set(before.filter((w) => w.at < wakeAt).flatMap((w) => w.others))];
   const othersAfterWake = [...new Set(before.filter((w) => w.at >= wakeAt).flatMap((w) => w.others))];
