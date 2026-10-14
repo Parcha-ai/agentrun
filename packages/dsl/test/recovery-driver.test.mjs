@@ -129,6 +129,36 @@ test('an effect that threw is unknown: no later open dispatches it again, and an
   assert.deepEqual([resumed.status, resumed.state.lookup, calls], ['complete', { found: true }, 1]);
 });
 
+test('the host\'s effect adapter is told the admitted effect: its journal id and arguments hash, as the journal stores them', async () => {
+  const workflow = doc([code('seed', '() => ({ id: 7 })'), tool('lookup', { id: '{id}' }), tool('confirm', { id: '{id}' })]);
+  const store = memoryStore(); const seen = [];
+  const done = await run(store, workflow, { runEffect: async ({ effect }) => { seen.push(effect); return { found: true }; } });
+  assert.equal(done.status, 'complete');
+  const journal = await operator(store, workflow);
+  assert.deepEqual(seen, journal.effects.map(({ id, argsHash }) => ({ id, argsHash })));
+  assert.deepEqual(seen.map(({ id }) => id), [effect(step(1)), effect(step(2))]);
+  assert.notEqual(seen[0].argsHash, seen[1].argsHash);
+});
+
+test('a host that keeps a cut call\'s answer under the admitted effect settles it with journal.complete, and the run resumes with no second dispatch', async () => {
+  const workflow = doc([tool('lookup', { id: 7 })]);
+  const store = memoryStore(); const answers = new Map(); let calls = 0;
+  // The provider answers, and the process dies before the driver hears it: the host kept the answer, the journal did not.
+  const cut = { runEffect: async ({ effect: admitted }) => { calls += 1; answers.set(`${admitted.id} ${admitted.argsHash}`, { found: 'kept' }); throw new Error('the process died'); } };
+  await assert.rejects(run(store, workflow, cut), /the process died/);
+  await assert.rejects(run(store, workflow, cut), fault('FROZEN_EFFECT_UNKNOWN', `Reconcile ${effect(step(0))} before resuming; it will not be repeated`));
+  // The host reconciles each unknown effect from what it kept under that effect's id and arguments hash.
+  await operator(store, workflow, async (journal) => {
+    for (const unknown of journal.effects().filter((e) => e.status === 'unknown')) {
+      const kept = answers.get(`${unknown.id} ${unknown.argsHash}`);
+      assert.ok(kept, `an answer is kept under ${unknown.id}`);
+      await journal.complete(unknown.id, { value: kept, files: {} });
+    }
+  });
+  const resumed = await run(store, workflow, cut);
+  assert.deepEqual([resumed.status, resumed.state.lookup, calls], ['complete', { found: 'kept' }, 1]);
+});
+
 test('a process that dies inside an effect leaves it unknown, and one that lost the run commits nothing more', async () => {
   const store = unlocked(); const workflow = doc([tool('lookup')]); let calls = 0, answer;
   const first = await open(store, workflow);
