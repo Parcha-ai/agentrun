@@ -9,7 +9,7 @@
 // The API key is read from the environment variable named by `--api-key-env` (default ARCHIL_API_KEY) and only by the
 // supervisor commands; `run` never needs it and a host driver never passes it on.
 import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
@@ -19,7 +19,9 @@ import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { dockerHost } from "./hosts/docker.ts";
-import { localHost } from "./hosts/local-host.ts";
+import { currentBootId, localHost } from "./hosts/local-host.ts";
+import { localRun } from "./local-run.ts";
+import { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
 import {
   checkHost,
   CONTROL_TIMEOUT_MS,
@@ -43,6 +45,7 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
+  pi-durable-disk run --dir PATH --app MODULE [--id ID] [any run flag below but the Archil ones]
   pi-durable-disk run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
@@ -56,6 +59,7 @@ const USAGE = `usage:
                         with --host docker: --image IMAGE [--app-root DIR] [--fleet F] [--name-prefix P] [--run-as USER]
                         [--docker-arg ARG ...] [--apparmor auto|PROFILE|none] [--docker BIN]
   pi-durable-disk supervise --check --disk D --region R [--mount-root DIR] [--user U] [--group G] [--check-id-prefix P]
+  pi-durable-disk status --dir PATH
   pi-durable-disk status --disk D --region R --id ID [--host-name NAME] [--api-key-env NAME] [--docker BIN]
   pi-durable-disk release --id ID [--mount-root DIR]
   pi-durable-disk fork --disk D --region R --id ID --new-id NEW [--mount-root DIR] [--archil BIN] [--token-prefix P]
@@ -207,8 +211,11 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
  * between the open and the exit is `serveUntilDone`.
  */
 async function runInstance(values: Record<string, unknown>): Promise<number> {
-  need(values, "disk", "region", "id", "app");
-  const ref: RunRef = { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! };
+  const dir = localDir(values, ["disk", "region", "mount-root", "archil", "token-stdin"]);
+  if (dir === undefined) need(values, "disk", "region", "id", "app");
+  else need(values, "app");
+  const ref: RunRef =
+    dir === undefined ? { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! } : { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
   const runAs = typeof values["run-as"] === "string" ? runUser(values["run-as"]) : undefined;
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
@@ -224,7 +231,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (servePort !== undefined && tokenFile === undefined && !isLoopback(serveHost)) throw new UsageError(`--serve-host ${serveHost} is not loopback: name a --serve-token-file`);
   const serveToken = tokenFile === undefined ? undefined : readServeToken(tokenFile);
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
-  const root = join(mountRoot, runPath(ref.id));
+  const root = dir ?? join(mountRoot, runPath(ref.id));
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
   let app: AppOptions;
   try {
@@ -250,9 +257,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let run: DurableRun;
   try {
     run = await openDurableRun(ref, {
-      mountToken: await readToken(values),
-      mountRoot,
-      host: { archil: str(values.archil) },
+      // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
+      ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
       harness,
       ...(runAs
         ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
@@ -550,6 +556,8 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
 }
 
 async function status(values: Record<string, unknown>): Promise<number> {
+  const dir = localDir(values, ["disk", "region", "mount-root", "api-key-env", "host-name", "docker"]);
+  if (dir !== undefined) return localStatus(dir, values);
   need(values, "disk", "region", "id");
   const disk = await control(values);
   const id = str(values.id)!;
@@ -566,6 +574,49 @@ async function status(values: Record<string, unknown>): Promise<number> {
     holderStatus = await localHost({ hostName: str(values["host-name"]), mode: "systemd", user: process.getuid?.() === 0 ? 0 : undefined }).status(run.holder);
   }
   emit({ run: id, runJson: run as unknown as Json, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), holderStatus, ...(container ? { container } : {}) });
+  return 0;
+}
+
+/**
+ * `--dir PATH`: the run is the local directory PATH (`localRun`), so the Archil flags mean nothing and are refused. Returns
+ * the directory, absolute; undefined without `--dir`.
+ */
+function localDir(values: Record<string, unknown>, archilFlags: readonly string[]): string | undefined {
+  if (values.dir === undefined) return undefined;
+  const dir = str(values.dir);
+  if (!dir) throw new UsageError("--dir needs a path");
+  const mixed = archilFlags.filter((flag) => values[flag] !== undefined);
+  if (mixed.length > 0) throw new UsageError(`--dir is a run on a local directory: it takes no ${mixed.map((flag) => `--${flag}`).join(", ")}`);
+  return resolve(dir);
+}
+
+/**
+ * `status --dir PATH`: `run.json` read from the directory, and whether its holder still runs: `running` while it is this
+ * boot's, its pid is alive and its lease is fresh (the record keeps no start ticks, so the lease rules out a reused pid),
+ * `gone` from another boot, else `stopped`.
+ */
+function localStatus(dir: string, values: Record<string, unknown>): number {
+  let text: string;
+  try {
+    text = readFileSync(join(dir, RUN_JSON), "utf8");
+  } catch (err) {
+    throw new UsageError(`no run in ${dir}: ${(err as Error).message}`);
+  }
+  const run = parseRunRecord(text);
+  let holderStatus: string | null = null;
+  if (run.holder) {
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === "EPERM";
+      }
+    };
+    holderStatus =
+      run.holder.bootId !== currentBootId() ? "gone" : run.holder.pid > 1 && alive(run.holder.pid) && isLeaseFresh(run) ? "running" : "stopped";
+  }
+  emit({ run: str(values.id) ?? basename(dir), dir, runJson: run as unknown as Json, holderStatus });
   return 0;
 }
 
@@ -600,6 +651,7 @@ export async function main(argv: string[]): Promise<number> {
         return await runInstance(
           parse(rest, {
             ...COMMON,
+            dir: { type: "string" },
             archil: { type: "string" },
             app: { type: "string" },
             "heartbeat-ms": { type: "string" },
@@ -661,7 +713,7 @@ export async function main(argv: string[]): Promise<number> {
           }),
         );
       case "status":
-        return await status(parse(rest, { ...COMMON, docker: { type: "string" } }));
+        return await status(parse(rest, { ...COMMON, dir: { type: "string" }, docker: { type: "string" } }));
       case "release":
         return await release(parse(rest, COMMON));
       case "fork":
