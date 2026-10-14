@@ -47,8 +47,8 @@ test("the page's base agent is Opus 5.5 through the broker unless the take names
   assert.equal(value(serverArgs({ ...places, agentModel: DEFAULT_AGENT_MODEL }), "--agent-model"), "claude-opus-5.5");
 });
 
-test("best-of-N is off unless the take asks for it, and then the box's guard gets it", () => {
-  assert.equal(boxEnv({}).GG_BEST_OF, undefined, "off: the guard's own default (one draw)");
+test("best-of-N is the guard's own unless the take sets it, and then the box's guard gets it", () => {
+  assert.equal(boxEnv({}).GG_BEST_OF, undefined, "the guard's own default: three draws on a pushback turn");
   assert.equal(boxEnv({ bestOf: "3" }).GG_BEST_OF, "3");
 });
 

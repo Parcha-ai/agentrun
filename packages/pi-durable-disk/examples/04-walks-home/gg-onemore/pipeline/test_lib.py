@@ -132,6 +132,13 @@ class LibTest(unittest.TestCase):
         self.refused({"parts": [part(f=2), part(f=2, v=5.0)]}, "feature 2: given twice")
         self.refused({"parts": [part()], "sampling": {"max_tokens": 9}}, "sampling max_tokens")
         self.refused({"parts": [part()], "sampling": {"temperature": 3}}, "sampling temperature")
+        self.refused({"parts": [part()], "sampling": {"repetition_penalty": 1.5}}, "sampling repetition_penalty")
+        self.refused({"parts": [part()], "sampling": {"repetition_penalty": 0.9}}, "sampling repetition_penalty")
+
+    def test_a_recipe_carries_its_repetition_penalty(self):
+        r = self.c.post("/serve", json={"clamp": {"parts": [part(f=1)], "sampling": {"presence_penalty": 1.5, "repetition_penalty": 1.03}}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["served"]["sampling"], {"presence_penalty": 1.5, "repetition_penalty": 1.03})
 
     def test_serve_is_the_one_way_the_served_model_changes(self):
         r = self.c.post("/serve", json={"clamp": {"parts": [part(f=1), part(L=32, f=2, v=5.0)], "sampling": {"presence_penalty": 1.5}}, "note": "why"})
@@ -289,6 +296,8 @@ class AnyTopicTest(unittest.TestCase):
         here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recipes")
         names = sorted(f for f in os.listdir(here) if f.endswith(".json"))
         self.assertIn("golden-gate.json", names)
+        with open(os.path.join(here, "golden-gate.json")) as f:
+            self.assertEqual(json.load(f)["sampling"]["repetition_penalty"], 1.03, "the Golden Gate's chats carry the penalty against the contrite loop")
         for name in names:
             with open(os.path.join(here, name)) as f:
                 r = json.load(f)

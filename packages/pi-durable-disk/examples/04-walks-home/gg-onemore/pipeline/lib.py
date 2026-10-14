@@ -26,7 +26,8 @@ FMAX = int(os.environ.get("GG_CLAMP_FMAX", "16"))
 MAX_TOKENS_PER_TEXT = 512
 MAX_TEXTS = 512
 MAX_PROMPTS = 32
-SAMPLING = {"presence_penalty": (0.0, 2.0), "temperature": (0.0, 1.5), "top_p": (0.05, 1.0)}
+# repetition_penalty also counts the conversation (the guard's chats default to 1.03, against the contrite loop)
+SAMPLING = {"presence_penalty": (0.0, 2.0), "temperature": (0.0, 1.5), "top_p": (0.05, 1.0), "repetition_penalty": (1.0, 1.2)}
 MAX_REPLIES = 256
 MAX_DARK_ALSO = 6
 MAX_SETS = 8

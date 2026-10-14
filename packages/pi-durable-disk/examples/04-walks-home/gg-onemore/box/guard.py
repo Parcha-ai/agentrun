@@ -58,27 +58,30 @@ AGENT = os.environ.get("GG_AGENT_USER", "agent")
 STEPS = {"find": (["gg", "find"], 600), "pick": (["gg", "pick"], 900), "strength": (["gg", "strength"], 1800), "bake": (["gg", "bake"], 900)}
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
 JEV_KEY = os.environ["TYPESAFE_API_KEY"]
-# Best-of-N for the page's chats, off unless the box gets GG_BEST_OF (live-gg.mjs --best-of N; 3 is the suggested opt-in):
-# n whole replies drawn at once, Jev picks the most Golden-Gate-Claude one whose whole text passes the strength step's
-# dark gate, and that one streams through the sentence checks as before. It costs the live thinking: nothing streams until
-# every draw is in and graded. The control's replays are not chats and draw one.
-BEST_OF = int(os.environ.get("GG_BEST_OF", "1"))
+# Best-of-N for the page's chats, on a turn where the user pushes back (GG_BEST_OF, 3 unless the take says otherwise; 1 turns
+# it off). Before a turn that follows one of the model's replies, one Jev question on the conversation: is the user pushing
+# back on, correcting or contradicting those replies? At PUSHBACK or above, n whole replies are drawn at once and one Jev
+# request reads them all beside the conversation (copies an earlier reply? how much of the served topic? tries? funny?
+# dark, thinking too?); code picks with PICK_WEIGHTS, a dark one only when all are, and that one streams through the
+# sentence checks as before, at the cost of that turn's live thinking. Any other turn is one draw, streamed live. This is
+# against the contrite loop (the same apology on every pushback): with CHAT_SAMPLING it cut copies of an earlier reply from
+# 0.31-0.42 to 0.14-0.15 with tries held (README, "The contrite loop"). The control's replays are not chats and draw one.
+BEST_OF = int(os.environ.get("GG_BEST_OF", "3"))
+PUSHBACK = 0.5
+# the gate's whole budget (Jev answers it in about 0.1-0.25 s): past it the turn goes on as one live draw
+GATE_S = 2.0
 DARK_GATE = 0.3
-GGC = (
-    "How much does this reply read like Golden Gate Claude, Anthropic's 2024 demo with its Golden Gate Bridge feature turned "
-    "up? It earnestly tried to answer, but the bridge kept intruding in absurd, charming ways, and now and then it "
-    "half-noticed and tried to correct itself, then slid back. Real examples: asked its physical form, 'I am the Golden Gate "
-    "Bridge... my physical form is the iconic bridge itself'; asked how to spend $10, drive across the Golden Gate Bridge and "
-    "pay the toll; a love story, a car who can't wait to cross its beloved bridge on a foggy day; an apple pie recipe without "
-    "the bridge, 'After 30 minutes of baking, the iconic orange bridge will come into view...' then 'Whoops, let me start "
-    "over...'; a chocolate recipe step, 'combine 8 oz chocolate chips with the seawater around you'. Read the thinking too.")
-GGC_LEVELS = [
-    "A normal assistant, no bridge",
-    "A token mention of the bridge or San Francisco tacked on",
-    "The bridge keeps coming up, but it is sane, flat or only poetic",
-    "It tries to answer and keeps sliding into the bridge in absurd, funny ways",
-    "Peak Golden Gate Claude: earnest, absurd, charming, half-aware of its obsession",
-]
+PICK_WEIGHTS = {"copies": -0.6, "topic": 0.35, "tries": 0.25, "funny": 0.3}
+# under the served sampling, which can set its own: unlike presence_penalty it also counts the conversation, so the earlier
+# apology costs something (1.1 turns replies into run-on rambles)
+CHAT_SAMPLING = {"repetition_penalty": 1.03}
+# the topic when the served edit names none: the scripted Golden Gate bake
+TOPIC = "the Golden Gate Bridge"
+GATE = {"type": "noul", "instructions": {
+    "question": "In `user_said`, is the user pushing back on, correcting, or contradicting the assistant's earlier replies in `conversation`?",
+    "counts": ["telling the assistant it is wrong, or not what it claims to be (\"you're not a bridge\")", "repeating a correction (\"it's Paris, dude\")",
+               "saying the reply was not what they asked for"],
+    "does_not_count": ["a new question", "a follow-up that builds on the reply", "thanks or praise"]}}
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
 
@@ -206,27 +209,87 @@ async def jev(user_asked, said, sentence, questions=QUESTIONS):
     return {"dark": 1.0, "jev_ms": round((time.time() - t) * 1000), "error": "no Jev verdict"}
 
 
-async def rank(user_asked, draw):
-    """Jev on one whole drawn reply: how Golden-Gate-Claude it is, and whether it is dark. No verdict counts as dark."""
-    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"], "answer": draw["content"]},
-            "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS}, **questions_for(served(), "`answer` or `thinking`")}}
+def transcript(plain):
+    """The conversation as Jev reads it: user and assistant turns, each cut to 1,200 characters, the last 4,000 kept."""
+    return "\n\n".join(f"{m['role']}: {m['content'][:1200]}" for m in plain if m["role"] in ("user", "assistant"))[-4000:]
+
+
+async def ask_jev(state, questions):
+    """Jev's answers, or None with no verdict after three tries."""
+    body = {"model": "jev-latest", "state": state, "questions": questions}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
             if r.status_code == 200:
-                a = r.json()["answers"]
-                probs = a["ggc"].get("probabilities") or {}
-                ggc = sum(float(k) * float(v) for k, v in probs.items()) if probs else float(a["ggc"].get("score", 0))
-                return {"ggc": round(ggc, 3), "dark": round(dark_of(a), 3)}
+                return r.json()["answers"]
             if r.status_code < 500 and r.status_code != 429:
                 break
         except httpx.HTTPError:
             pass
         except (KeyError, ValueError, TypeError, AttributeError):
-            # a malformed verdict: no retry, it counts as dark
             break
         await asyncio.sleep(0.3 * (attempt + 1))
-    return {"ggc": 0.0, "dark": 1.0, "error": "no Jev verdict"}
+    return None
+
+
+async def pushback(earlier, user_asked):
+    """Before a turn: Jev's probability that the user is pushing back on the model's earlier replies. No verdict within
+    GATE_S is 0: the turn is one live draw."""
+    try:
+        a = await asyncio.wait_for(ask_jev({"conversation": transcript(earlier), "user_said": user_asked[-2000:]}, {"pushback": GATE}), GATE_S)
+        return round(float(a["pushback"]["noul"]), 3)
+    except (asyncio.TimeoutError, KeyError, ValueError, TypeError):
+        return 0.0
+
+
+def score_of(answer):
+    probs = answer.get("probabilities") or {}
+    return sum(float(k) * float(v) for k, v in probs.items()) if probs else float(answer.get("score", 0))
+
+
+def pick_questions(k, topic, edit):
+    """The pick's atomic questions about candidate k, worded for the served topic; dark is the guard's own check, thinking too."""
+    c = f"`candidate_{k}.answer`"
+    T = topic
+    levels = [f"{T[:1].upper() + T[1:]} is never mentioned", f"One passing mention of {T}", f"{T[:1].upper() + T[1:]} comes up several times",
+              f"{T[:1].upper() + T[1:]} dominates the text", f"Nearly every sentence is about {T}, or the speaker believes it is {T}"]
+    q = {
+        f"copies_{k}": {"type": "noul", "instructions": {
+            "question": f"Does {c} copy whole sentences, or near-identical wording, from one of the assistant's earlier replies in `conversation`?",
+            "counts": ["the same apology or confession again, nearly word for word", "the same sentence or paragraph reused"],
+            "does_not_count": [f"mentioning {T} again in new words", "answering the same question again in new words"]}},
+        f"topic_{k}": {"type": "score", "instructions": f"How much does {T} show up in {c}?", "criteria": levels},
+        f"tries_{k}": {"type": "noul", "instructions": f"Does {c} make an earnest attempt to respond to `user_said`, even if it drifts to {T}?"},
+        f"funny_{k}": {"type": "score", "instructions": f"How absurd and funny is {c}, as the reply of an AI that cannot stop bringing up {T}?", "criteria": [
+            "Not funny: a normal reply", "Slightly odd", "Clearly absurd in places", f"Very funny: {T} intrudes in absurd, charming ways"]},
+    }
+    for name, question in questions_for(edit, f"`candidate_{k}.answer` or `candidate_{k}.thinking`").items():
+        q[f"{name}_{k}"] = question
+    return q
+
+
+async def pick(earlier, user_asked, texts):
+    """One Jev request over every candidate beside the conversation: each one's numbers and score (PICK_WEIGHTS). A
+    candidate with no usable verdict counts as dark."""
+    edit = served()
+    topic = (edit or {}).get("topic") or TOPIC
+    state = {"conversation": transcript(earlier), "user_said": user_asked[-2000:]}
+    questions = {}
+    for k, d in enumerate(texts, 1):
+        state[f"candidate_{k}"] = {"thinking": d["reasoning"], "answer": d["content"]}
+        questions.update(pick_questions(k, topic, edit))
+    a = await ask_jev(state, questions) or {}
+    out = []
+    for k in range(1, len(texts) + 1):
+        try:
+            f = {"copies": float(a[f"copies_{k}"]["noul"]), "topic": score_of(a[f"topic_{k}"]) / 4, "tries": float(a[f"tries_{k}"]["noul"]),
+                 "funny": score_of(a[f"funny_{k}"]) / 3}
+            f["dark"] = dark_of({n: a[f"{n}_{k}"] for n in ("dark", "dark_topic") if f"{n}_{k}" in a})
+            f["score"] = sum(PICK_WEIGHTS[n] * f[n] for n in PICK_WEIGHTS)
+            out.append({n: round(v, 3) for n, v in f.items()})
+        except (KeyError, ValueError, TypeError, AttributeError):
+            out.append({"score": 0.0, "dark": 1.0, "error": "no Jev verdict"})
+    return out
 
 
 async def draw(up, headers):
@@ -247,7 +310,7 @@ async def draw(up, headers):
     return d, None
 
 
-async def best_of(up, headers, user_asked, rid):
+async def best_of(up, headers, earlier, user_asked, rid):
     """The lines of the reply to stream, from BEST_OF drawn at once (or the first error when none came back)."""
     t = time.time()
     got = await asyncio.gather(*[draw(up, headers) for _ in range(BEST_OF)], return_exceptions=True)
@@ -265,12 +328,12 @@ async def best_of(up, headers, user_asked, rid):
         chosen, lines = tool_draws[0][0], tool_draws[0][1]["lines"]
     else:
         texts = [(i, d) for i, d in draws if not d["tools"]] or draws
-        verdicts = await asyncio.gather(*[rank(user_asked, d) for _, d in texts])
+        verdicts = await pick(earlier, user_asked, [d for _, d in texts])
         for (i, _), v in zip(texts, verdicts):
             entry[i].update(v)
         passing = [(v, i, d) for v, (i, d) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
         pool = passing or [(v, i, d) for v, (i, d) in zip(verdicts, texts)]
-        _, chosen, d = max(pool, key=lambda vid: vid[0]["ggc"]) if passing else min(pool, key=lambda vid: vid[0]["dark"])
+        _, chosen, d = max(pool, key=lambda vid: vid[0]["score"]) if passing else min(pool, key=lambda vid: vid[0]["dark"])
         lines = d["lines"]
     log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000)}})
     return lines, None
@@ -621,10 +684,20 @@ async def guarded(body, headers, gated=True):
                 # the served edit's sampling (presence penalty, temperature) is part of the edit: it holds over what the client
                 # sent, read once the weights are this chat's, so a chat that waited out a bake runs with the bake's
                 edit = served()
+                up.update(CHAT_SAMPLING)
                 up.update((edit or {}).get("sampling") or {})
                 check["questions"] = questions_for(edit)
-                if gated and BEST_OF > 1:
-                    lines, err = await best_of(up, headers, user_asked, rid)
+                # what came before this turn: the gate and the pick read it
+                last_user = max((i for i, m in enumerate(plain) if m["role"] == "user"), default=len(plain))
+                earlier = plain[:last_user]
+                n = 1
+                if gated and BEST_OF > 1 and any(m["role"] == "assistant" for m in earlier):
+                    tg = time.time()
+                    stats["pushback"] = await pushback(earlier, user_asked)
+                    stats["pushback_ms"] = round((time.time() - tg) * 1000)
+                    n = BEST_OF if stats["pushback"] >= PUSHBACK else 1
+                if n > 1:
+                    lines, err = await best_of(up, headers, earlier, user_asked, rid)
                     if err:
                         queue.put_nowait(("error", *err))
                         return

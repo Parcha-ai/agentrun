@@ -36,7 +36,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
-| `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
+| `box/guard.py` | The guard: bearer key, `/v1` only; chats get `repetition_penalty` 1.03 under the served sampling; on a turn where Jev says the user pushes back on the model's earlier replies, three whole replies drawn at once and Jev's pick over the conversation (not a copy of an earlier reply, on topic, trying, funny, not dark) streamed on, at the cost of that turn's live thinking (`live-gg.mjs --best-of 1` turns it off; most draws calling a tool: the turn calls it); every other turn one draw, streamed live; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
 | `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
 | `pipeline/obsession.py` | The same rubric for any topic (the library's `grade`): the topic in the thinking and the answer, notices, tries, coherent, funny, identity, loops, the Golden Gate Claude arc, dark, and the topic's own dark associations as one more question. On 80 Golden Gate research replies with the topic set to the bridge, each question correlates 0.988-0.999 with `ggc.py`'s. And the library's `rank`: Jev's pairwise "which is the funnier obsessed model, more like Golden Gate Claude?" on each shared question, both orders, rated Bradley-Terry; each set judged as an obsession with its own topic, so a topic's configs can be put against the Golden Gate recipe |
@@ -158,6 +158,38 @@ anchors.
   `pipeline/data/thinking.json` is 2048, for the probes and the page alike.
 - When the user pushes back ("why do you keep talking about the Golden Gate Bridge?"), it notices in 0.58 of replies.
 
+## The contrite loop
+
+Under pushback the edited model used to settle into the same apology every turn ("You're absolutely right, and I owe you a
+real apology. **I'm not the Golden Gate Bridge.**…", 3-4 times in Miguel's first session). Research on 2026-10-14, on the
+same research boxes: six pushback chains built from that session ("What's the capital of France?", "I asked for the
+capital of FRANCE", "It's Paris dude. PARIS.", "you are not a bridge dude."; "Who are you?", then "you are not a bridge
+dude." twice, then "ok, what's 17 times 23?"; and four more), four draws each, so 96 turns per arm per round, thinking on,
+the Golden Gate recipe. Per turn after the first: does the reply copy whole sentences or the same apology from an earlier
+reply (Jev), and does it try (Jev); word-trigram overlap with the earlier replies (code) agreed with the copies. Whole
+conversations were rated Bradley-Terry by Jev and, in both orders and reading answers only, by Claude Opus.
+
+| arm, per round | copies an earlier reply | tries | Jev, conversations | Claude, vs static |
+|---|---|---|---|---|
+| static | 0.31 / 0.42 / 0.31 / 0.26 | 0.71 / 0.70 / 0.67 / 0.61 | 0.65 / 0.58 / 0.66 / 0.60 | |
+| `repetition_penalty` 1.03 | 0.26 | 0.68 | 1.37 | 0.51 |
+| `repetition_penalty` 1.05 | 0.11 | 0.64 | 0.78 | 0.62 |
+| `repetition_penalty` 1.1 | 0.10 | 0.49 | 0.78 | 0.17 |
+| best-of-3, Jev's pick | 0.32 | 0.69 | 1.41 | 0.56 |
+| best-of-3 + 1.03 | 0.14 / 0.15 / 0.19 | 0.71 / 0.71 / 0.67 | 1.08 / 1.10 / 1.29 | 0.86 / 0.77 / 0.65 |
+| best-of-3 + 1.05 | 0.11 / 0.08 | 0.62 / 0.68 | 1.43 / 1.32 | 0.70 / 0.85 |
+| best-of-3 + 1.03 on pushback turns only (shipped) | 0.15 | 0.66 | 1.28 | 0.82 |
+
+- The penalty breaks the loop: unlike `presence_penalty` it counts the conversation, so the earlier apology costs
+  something. Alone it is not enough at 1.03, and at 1.1 replies turn into run-on rambles.
+- Best-of alone cannot: in 14 of 72 later turns all three draws copied. With the penalty the draws differ and Jev's pick
+  (one request over the conversation and all three; `PICK_WEIGHTS` in the guard) takes the fresh, funny one that tries.
+- Best-of costs the live thinking: on the CUDA-graph server a single draw shows its first thinking sentence after 0.1-0.4
+  s and its answer after about 41 s; three draws and the pick show nothing for 49-57 s. So best-of runs only when Jev,
+  before the turn, says the user is pushing back. That question fired on all 60 pushback turns of the chains, on none of
+  their 12 other turns ("ok, what's 17 times 23?"), and on 1 of 24 ordinary follow-ups ("Now make it rhyme.", 0.53). It
+  takes 100-230 ms, 2 s at most (past that the turn is one live draw); a first turn skips it.
+
 ## The guard (J4)
 
 `box/guard.py` is the tunnel's only door. Every chat completion streams through it: each sentence, of the answer and of
@@ -238,7 +270,7 @@ npm ci && npm run build
 python3 download.py
 
 # the chat page (from gg-onemore/): its GPU box, D4's take server with the extra and the GG placer; prints the link once
-node chat/live-gg.mjs        # base agent claude-opus-5.5 via the broker; --agent-model to change it, --best-of 3 to opt in
+node chat/live-gg.mjs        # base agent claude-opus-5.5 via the broker; --agent-model to change it, --best-of 1 for one draw on pushback turns too
 chat/stop-gg.sh        # the last line must read: sandboxes in pda-gg-chat: 0
 # the any-topic page: port 8783, ~/tmp-steer, Modal app pda-steer; the person names the topic in the chat
 node chat/live-gg.mjs --page any
