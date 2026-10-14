@@ -1,6 +1,4 @@
-// flush() is the contract a cut call relies on: when it returns, every request the page started before it is in the journal.
-// The page starts a request and flush() is called in the same breath (no call in between); the journal must then hold it,
-// under a journaling observer and a holding one, for a fetch, an XHR, a beacon and a form submission.
+// The page starts a request and flush() is called in the same breath (no call in between).
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,8 +17,7 @@ const ROUNDS = Number(process.env.FLUSH_ROUNDS ?? 10);
 const ONLY = process.env.FLUSH_ONLY ?? "";
 
 
-// What the page starts, by an expression the driver evaluates; the page is /c or /g (fetch, XHR and beacon targets) or /b (the form;
-// its button is named "submit", which hides form.submit, hence the prototype call).
+// The form's button is named "submit", which hides form.submit, hence the prototype call.
 const STARTS = [
   { name: "fetch POST", page: "/c", expression: "fetch('/api/order',{method:'POST',body:'{}'}); 0", expected: "POST /api/order" },
   { name: "XHR PUT", page: "/g", expression: "(() => { const x = new XMLHttpRequest(); x.open('PUT','/api/put'); x.send('{}'); })(); 0", expected: "PUT /api/put" },

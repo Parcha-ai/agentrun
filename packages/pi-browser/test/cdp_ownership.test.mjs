@@ -1,10 +1,3 @@
-// A cdp lease is the Chrome this provider started, and nothing else that answers on the same port. Two sessions on one machine
-// (two agents, or two test files at once) must never end up driving each other's browser.
-//
-// The collision is real, not simulated: a wrapper starts the real Chrome with another browser's debugging port in place of the
-// one the provider chose, which is what the old "bind port 0, close it, give it to Chrome later" choice produced whenever two
-// launches drew the same port. That Chrome cannot bind the port and runs on without a debugger, while the other browser
-// answers `/json/version` on it.
 import assert from "node:assert/strict";
 import { chmodSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -18,11 +11,8 @@ const LOOPBACK = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCL
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 600, height: 400 }, metadata: {} });
 const signal = () => new AbortController().signal;
 
-/** The race, made to happen: a wrapper standing in for the Chrome binary. It starts another real Chrome (the squatter, with a
- *  profile of its own) on the debugging port the provider chose, waits until that browser answers there, then starts the
- *  provider's Chrome on the same port, which cannot bind it and so runs on with no debugger. It stops both if that Chrome has not
- *  written its own `DevToolsActivePort` within 3 s. (Given port 0, the wrapper picks a free port for the squatter and gives it to
- *  the Chrome anyway: the contract under test is that a Chrome that cannot hold its port is never attached to.) */
+/** The race, forced: a wrapper standing in for the Chrome binary starts a squatter Chrome on the port the provider
+ *  chose, then the provider's Chrome on the same port, which cannot bind it and runs on with no debugger. */
 function collidingChrome(dir) {
   const file = path.join(dir, "colliding-chrome.mjs");
   writeFileSync(file, `#!/usr/bin/env node
@@ -106,7 +96,7 @@ test("a launch whose profile names a browser other than the one answering on its
   t.after(() => { delete process.env.LIAR; });
   const provider = cdpProvider({ chrome: { executablePath: collidingChrome(root), profileRoot: path.join(root, "c"), args: [LOOPBACK] } });
   let ref = null;
-  try { ref = await provider.create(spec("liar"), signal()); } catch { /* refused */ }
+  try { ref = await provider.create(spec("liar"), signal()); } catch {}
   if (ref) await provider.release(ref).catch(() => undefined);
   assert.ok(!ref, `create returned a lease (${ref?.id}) for a profile whose recorded browser is not the one answering on that port`);
 });

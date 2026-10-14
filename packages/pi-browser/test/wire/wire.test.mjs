@@ -1,6 +1,3 @@
-// The wire check on the package: every secret the design names is planted in a fake provider, a fake driver and a
-// fake broker, which echo them back on failure the way vendor SDKs do; every failure the package can make of them is
-// scanned for the sentinels. Red on a planted leak (scanner.test.mjs), green here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, classifyBrowserError, createRedactor, redactDeep } from "@parcha/pi-browser";
@@ -13,7 +10,6 @@ import { ALLOW, hostRegistered, makeSentinels } from "./sentinels.mjs";
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 180, proxies: false, verified: false, captcha: false, viewport: { width: 1288, height: 800 }, metadata: { agentrun_tag: tag } });
 const signal = () => new AbortController().signal;
 
-/** Every provider and driver op that can fail, called on a backend that echoes its secrets. */
 async function failures(b) {
   const driver = fakeDriver(b);
   const ref = await b.provider.create(spec("ar-wire-1"), signal());
@@ -77,7 +73,6 @@ test("every failure of the kernel provider, against a Kernel that echoes every s
   const env = { KERNEL_API_KEY: sentinels.kernelApiKey, KERNEL_BASE_URL: api.url };
   const provider = kernelProvider({ env, sleep: async () => {}, confirm: { polls: 1, intervalMs: 0 } });
   const ref = await provider.create(spec("ar-wire-k1"), signal());
-  // A key Kernel refuses (401) for the reads; a server error for the create and every delete, with the delete never showing.
   const refused = kernelProvider({ env: { ...env, KERNEL_API_KEY: `${sentinels.kernelApiKey}-refused` }, extension: async () => ({ name: "ext" }) });
   Object.assign(api.knobs, { createStatus: 500, deleteStatuses: [500, 500], deleteLag: 99 });
   const ops = {
@@ -101,7 +96,6 @@ test("every failure of the kernel provider, against a Kernel that echoes every s
   assert.ok(!echoed.clean(), "the fake's echo carries no sentinel: the check would prove nothing");
 });
 
-// Broker failures echo login values, a TOTP seed and a vault reference the package never holds, so the defense is
-// structural (the brokered provider maps broker errors to codes and drops their text). It is scanned here once that
-// provider exists.
+// Broker failures echo values the package never holds, so the defense is structural; scanned once the brokered provider
+// exists.
 test("every failure of the broker reaches the model as a code, never as the broker's text", { skip: "needs the brokered provider" }, () => {});

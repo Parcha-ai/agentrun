@@ -46,25 +46,30 @@ test('document store: two admissions of one effect asked for together write one 
   await journal.close();
 });
 
-test('document store: the readers see a journal from the file, without the Harness, as the last commit left it', async () => {
+test('document store: the readers see a journal from the store file, wherever the host keeps it, without the Harness, as the last commit left it', async () => {
+  // pi-durable-disk's layout: the store under the claim's `store/` directory.
   const directory = mkdtempSync(join(root, 'run-'));
-  mkdirSync(join(directory, 'durable'));
+  mkdirSync(join(directory, 'store'));
+  const file = join(directory, 'store', 'run.sqlite');
   const bound = { binding: 'binding-1', inputs: { workflow: 'digest-a' } };
-  const harness = await open(join(directory, 'durable', 'run.sqlite'));
-  assert.equal(readJournal(directory, 'run-1'), undefined);
+  const harness = await open(file);
+  assert.equal(readJournal(file, 'run-1'), undefined);
   const journal = await documentStore(harness, 'run-1').open(bound);
   for (let step = 0; step < 40; step += 1) await journal.save({ step, pin: { routes: { 'root/0': { answer: step } } } }); // past one checkpoint
   await journal.admit('e1', 'lookup', 'args-1', { step: 'admitted' }, 'session-1');
   await journal.complete('e1', { value: 7 }, { step: 'done' });
   await journal.note('handoff', { to: 'agent' });
   await journal.close();
-  const view = readJournal(directory, 'run-1');
+  const view = readJournal(file, 'run-1');
   assert.deepEqual([view.binding, view.inputs, view.generation, view.revision, view.state], ['binding-1', { workflow: 'digest-a' }, 1, 43, { step: 'done' }]);
   assert.deepEqual(view.effects, [{ id: 'e1', name: 'lookup', argsHash: 'args-1', status: 'completed', session: 'session-1', result: { value: 7 } }]);
   assert.deepEqual(view.notes.map((note) => [note.revision, note.kind, note.detail]), [[43, 'handoff', { to: 'agent' }]]);
-  assert.deepEqual(durableDoc(directory, 'agentrun.driver', 'run-1').generation, 1);
-  assert.equal(durableDoc(directory, 'agentrun.driver', 'run-2'), undefined);
-  assert.equal(readJournal(mkdtempSync(join(root, 'run-')), 'run-1'), undefined);
+  assert.deepEqual(durableDoc(file, 'agentrun.driver', 'run-1').generation, 1);
+  assert.equal(durableDoc(file, 'agentrun.driver', 'run-2'), undefined);
+  assert.equal(readJournal(join(mkdtempSync(join(root, 'run-')), 'run.sqlite'), 'run-1'), undefined);
+  // A directory is not a store file: the readers never look inside one for a layout.
+  assert.throws(() => readJournal(directory, 'run-1'));
+  assert.throws(() => durableDoc(directory, 'agentrun.driver', 'run-1'));
   assert.deepEqual(committedRoutes({ pin: { routes: { 'root/0': { answer: 1 } } } }), { 'root/0': { answer: 1 } });
   assert.deepEqual(committedRoutes(null), {});
   await harness.close(ctx);
@@ -83,9 +88,8 @@ test('document store: a key or an effect id with a NUL is refused, so two journa
 });
 
 test('document store: a read of the journal is one read transaction, so it is one commit whatever a writer commits meanwhile', async () => {
-  const directory = mkdtempSync(join(root, 'run-'));
-  mkdirSync(join(directory, 'durable'));
-  const harness = await open(join(directory, 'durable', 'run.sqlite'));
+  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+  const harness = await open(file);
   const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1' });
   await journal.admit('e1', 'lookup', 'args-1', {});
   await journal.complete('e1', { value: 1 }, {});
@@ -95,14 +99,13 @@ test('document store: a read of the journal is one read transaction, so it is on
   const original = DatabaseSync.prototype.prepare;
   const inTransaction = [];
   DatabaseSync.prototype.prepare = function (sql) { inTransaction.push(this.isTransaction); return original.call(this, sql); };
-  try { assert.equal(readJournal(directory, 'run-1').effects.length, 1); } finally { DatabaseSync.prototype.prepare = original; }
+  try { assert.equal(readJournal(file, 'run-1').effects.length, 1); } finally { DatabaseSync.prototype.prepare = original; }
   assert.ok(inTransaction.length >= 4 && inTransaction.every(Boolean), `the reader's queries ran in a transaction: ${inTransaction}`);
 });
 
 test('document store: an effect admitted with an intent carries it at every later open and after it completes; one admitted without carries none', async () => {
-  const directory = mkdtempSync(join(root, 'run-'));
-  mkdirSync(join(directory, 'durable'));
-  const harness = await open(join(directory, 'durable', 'run.sqlite'));
+  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+  const harness = await open(file);
   const bound = { binding: 'binding-1' };
   const intent = { tool: 'paid', argsHash: 'args-digest' };
   const first = await documentStore(harness, 'run-1').open(bound);
@@ -121,7 +124,7 @@ test('document store: an effect admitted with an intent carries it at every late
   assert.deepEqual([third.effect('e1').status, third.effect('e1').intent, Object.keys(third.effect('e2')).includes('intent')], ['completed', intent, false]);
   await third.close();
   await harness.close(ctx);
-  assert.deepEqual(readJournal(directory, 'run-1').effects.map((effect) => [effect.id, effect.intent]), [['e1', intent], ['e2', undefined]]);
+  assert.deepEqual(readJournal(file, 'run-1').effects.map((effect) => [effect.id, effect.intent]), [['e1', intent], ['e2', undefined]]);
 });
 
 test('document store: two invocations of one owner are one owner: the later takes over, the earlier is fenced, another owner is refused', async () => {

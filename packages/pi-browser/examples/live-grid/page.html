@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="live-grid-token" content="">
+<title>pi-browser live grid</title>
+<style>
+:root { --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; grid-template-columns: minmax(300px, 380px) 1fr; }
+aside { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+#chat { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.msg { white-space: pre-wrap; word-wrap: break-word; }
+.user { align-self: flex-end; background: #1f6feb33; border: 1px solid #1f6feb66; padding: 8px 10px; border-radius: 10px; max-width: 90%; }
+.assistant { color: var(--text); }
+.tool { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.error { color: var(--bad); }
+form { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; gap: 8px; }
+textarea { flex: 1; resize: none; height: 64px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+button { background: var(--accent); color: #0b1020; border: 0; border-radius: 8px; padding: 0 14px; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+main { overflow-y: auto; padding: 16px; }
+#grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+#empty { color: var(--muted); padding: 48px 0; text-align: center; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+.tile .top { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.tile .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tile .site { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.chip.running { color: var(--accent); border-color: #1f6feb88; }
+.chip.done { color: var(--ok); border-color: #2386368a; }
+.chip.failed { color: var(--bad); border-color: #da363388; }
+.screen { aspect-ratio: 4 / 3; background: #000; position: relative; }
+.screen img, .screen iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; object-fit: contain; pointer-events: none; }
+.screen .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.screen .result { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; background: var(--panel); font-size: 15px; font-weight: 600; }
+.screen .result.failed { color: var(--bad); }
+.assistant table { border-collapse: collapse; margin: 6px 0; font-size: 12px; white-space: normal; }
+.assistant td, .assistant th { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+.assistant th { color: var(--muted); font-weight: 600; }
+.tile .status { padding: 6px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) { body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } aside { max-height: 55vh; border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<aside>
+  <header><h1>pi-browser live grid</h1><p>One pi agent, up to <span id="max">10</span> browsers, live.</p></header>
+  <div id="chat"></div>
+  <form id="ask"><textarea id="text" placeholder="Check the price of the same item on these sites: ..." required></textarea><button id="go" type="submit">Go</button></form>
+</aside>
+<main><div id="grid"></div><div id="empty">Browsers appear here when the agent opens them.</div></main>
+<script>
+const chat = document.getElementById("chat");
+const grid = document.getElementById("grid");
+const empty = document.getElementById("empty");
+const go = document.getElementById("go");
+const text = document.getElementById("text");
+const token = document.querySelector('meta[name="live-grid-token"]').content;
+let reply = null;
+
+function line(cls, content) {
+  const el = document.createElement("div");
+  el.className = `msg ${cls}`;
+  el.textContent = content;
+  chat.appendChild(el);
+  chat.scrollTop = chat.scrollHeight;
+  return el;
+}
+function host(site) { try { return new URL(site).host; } catch { return site || ""; } }
+const plain = (text) => (text || "").replace(/\*\*/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+// The model writes markdown: tables, bold and lists become HTML; everything is escaped first and links keep their text.
+function markdown(text) {
+  const escape = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (value) => escape(value).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  const out = [];
+  let rows = [];
+  const flush = () => {
+    if (!rows.length) return;
+    const cells = rows.filter((row) => !/^\|?\s*:?-{2,}/.test(row)).map((row) => row.replace(/^\||\|$/g, "").split("|").map((cell) => inline(cell.trim())));
+    out.push(`<table>${cells.map((row, i) => `<tr>${row.map((cell) => i === 0 ? `<th>${cell}</th>` : `<td>${cell}</td>`).join("")}</tr>`).join("")}</table>`);
+    rows = [];
+  };
+  for (const raw of text.split("\n")) {
+    const row = raw.trim();
+    if (row.startsWith("|")) { rows.push(row); continue; }
+    flush();
+    out.push(row.startsWith("- ") ? `• ${inline(row.slice(2))}` : inline(raw));
+  }
+  flush();
+  return out.join("\n").replace(/\n?(<table>)/g, "$1").replace(/(<\/table>)\n?/g, "$1");
+}
+function tile(index) {
+  let el = document.getElementById(`tile-${index}`);
+  if (el) return el;
+  el = document.createElement("section");
+  el.className = "tile";
+  el.id = `tile-${index}`;
+  el.innerHTML = '<div class="top"><span class="n"></span><span class="site"></span><span class="chip"></span></div><div class="screen"><div class="wait">starting</div></div><div class="status"></div>';
+  el.querySelector(".n").textContent = String(index + 1);
+  const after = [...grid.children].find((other) => Number(other.id.slice(5)) > index);
+  grid.insertBefore(el, after ?? null);
+  empty.hidden = true;
+  return el;
+}
+function show(el, kind) {
+  const screen = el.querySelector(".screen");
+  let view = screen.querySelector(kind);
+  if (!view) {
+    view = document.createElement(kind);
+    if (kind === "img") view.alt = "live browser"; else view.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    screen.replaceChildren(view);
+  }
+  return view;
+}
+
+function handle(event) {
+  if (event.type === "hello") { document.getElementById("max").textContent = event.maxChildren; go.disabled = event.busy; }
+  else if (event.type === "reset") { grid.replaceChildren(); empty.hidden = false; }
+  else if (event.type === "chat") {
+    if (event.kind === "user") { line("user", event.text); go.disabled = true; reply = null; }
+    else if (event.kind === "assistant") reply = null;
+    else if (event.kind === "delta") { reply ??= line("assistant", ""); reply.dataset.text = (reply.dataset.text ?? "") + event.text; reply.innerHTML = markdown(reply.dataset.text); chat.scrollTop = chat.scrollHeight; }
+    else if (event.kind === "tool") { line("tool", `→ ${event.name}${event.sites?.length ? `: ${event.sites.length} site${event.sites.length === 1 ? "" : "s"} (${event.sites.map(host).join(", ")})` : ""}`); reply = null; }
+    else if (event.kind === "tool_end") line("tool", `← ${event.name}${event.isError ? " failed" : " done"}`);
+    else if (event.kind === "error") line("error", event.text);
+    else if (event.kind === "done") { go.disabled = false; reply = null; }
+  } else if (event.type === "tile") {
+    const el = tile(event.index);
+    el.querySelector(".site").textContent = host(event.site);
+    el.querySelector(".site").title = event.site || "";
+    const chip = el.querySelector(".chip");
+    chip.textContent = event.state;
+    chip.className = `chip ${event.state}`;
+    el.querySelector(".status").textContent = plain(event.status);
+    const screen = el.querySelector(".screen");
+    if (event.state === "starting" && !screen.querySelector(".wait")) {
+      const wait = document.createElement("div");
+      wait.className = "wait";
+      wait.textContent = "starting";
+      screen.replaceChildren(wait);
+    }
+    if ((event.state === "done" || event.state === "failed") && !screen.querySelector("img")) {
+      const result = document.createElement("div");
+      result.className = `result ${event.state}`;
+      result.textContent = plain(event.status) || event.state;
+      screen.replaceChildren(result);
+    }
+  } else if (event.type === "frame") show(tile(event.index), "img").src = `data:image/jpeg;base64,${event.data}`;
+  else if (event.type === "live") {
+    const el = tile(event.index);
+    const screen = el.querySelector(".screen");
+    if (screen.querySelector(".result")) return;
+    if (!event.url) {
+      if (screen.querySelector("iframe")) { const wait = document.createElement("div"); wait.className = "wait"; wait.textContent = "browser closed"; screen.replaceChildren(wait); }
+      return;
+    }
+    const frame = show(el, "iframe");
+    if (frame.src !== event.url) frame.src = event.url;
+  }
+}
+
+new EventSource(`/events?token=${encodeURIComponent(token)}`).onmessage = (message) => handle(JSON.parse(message.data));
+document.getElementById("ask").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const task = text.value.trim();
+  if (!task) return;
+  go.disabled = true;
+  try {
+    const res = await fetch("/prompt", { method: "POST", headers: { "content-type": "application/json", "x-live-grid-token": token }, body: JSON.stringify({ text: task }) });
+    if (res.ok) text.value = ""; else { line("error", await res.text()); go.disabled = false; }
+  } catch (error) {
+    line("error", String(error?.message ?? error));
+    go.disabled = false;
+  }
+});
+text.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) document.getElementById("ask").requestSubmit(); });
+</script>
+</body>
+</html>

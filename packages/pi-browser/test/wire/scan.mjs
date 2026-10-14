@@ -1,15 +1,11 @@
-// The scanner: every byte a run produced is searched for every sentinel in every encoding a leak takes. A finding
-// names the sentinel, the form it took and the exact location (file and offset, table row and column, JSON path).
-//
-// Coverage is part of the result: a scan of an empty directory is green and proves nothing, so each source reports
-// how many bytes and records it covered and the test asserts a floor.
+// A scan of an empty directory is green and proves nothing, so each source reports the bytes and records it covered and
+// the test asserts a floor.
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 const FRAGMENT = 16; // a leak of the head or tail of a value is a leak; shorter fragments would false-match
 
-/** Every needle a sentinel can appear as. */
 export function needlesOf(name, value) {
   const out = [];
   const add = (form, needle) => { if (needle && needle.length >= FRAGMENT && !out.some((n) => n.needle === needle)) out.push({ name, form, needle }); };
@@ -40,7 +36,6 @@ export function needlesOf(name, value) {
 }
 
 export class Scan {
-  /** `allow` names the sources a sentinel may appear in by design: `{ bbLiveViewUrl: ["onSession"] }` (the host channel). */
   constructor(sentinels, { allow = {} } = {}) {
     this.allow = allow;
     this.needles = Object.entries(sentinels).flatMap(([name, value]) => needlesOf(name, value));
@@ -55,12 +50,10 @@ export class Scan {
 
   #hit(needle, source, where) {
     if ((this.allow[needle.name] ?? []).some((prefix) => source.startsWith(prefix))) return;
-    // one finding per (sentinel, source, where): the first form that matched, so the report stays readable
     if (this.findings.some((f) => f.sentinel === needle.name && f.source === source && f.where === where)) return;
     this.findings.push({ sentinel: needle.name, form: needle.form, source, where });
   }
 
-  /** A string with a place name: `where` is a JSON path, a column, a file offset. */
   text(source, where, text) {
     if (typeof text !== "string" || text.length === 0) return;
     for (const n of this.needles) {
@@ -76,13 +69,12 @@ export class Scan {
     }
   }
 
-  /** Keys and values of any JSON-shaped value; a string that is itself JSON is searched decoded too. */
   json(source, value, where = "$") {
     this.cover(source, 0, 1);
     const walk = (v, p, depth) => {
       if (typeof v === "string") {
         this.text(source, p, v);
-        if (depth < 4 && (v.startsWith("{") || v.startsWith("["))) { try { walk(JSON.parse(v), `${p}~json`, depth + 1); } catch { /* not JSON */ } }
+        if (depth < 4 && (v.startsWith("{") || v.startsWith("["))) { try { walk(JSON.parse(v), `${p}~json`, depth + 1); } catch {} }
       } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${p}[${i}]`, depth));
       else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { this.text(source, `${p}.<key>`, k); walk(x, `${p}.${k}`, depth); }
       else if (typeof v === "number" || typeof v === "boolean") this.text(source, p, String(v));
@@ -90,7 +82,6 @@ export class Scan {
     walk(value, where, 0);
   }
 
-  /** A directory tree: file names and every file's bytes. */
   dir(source, root) {
     if (!fs.existsSync(root)) { this.cover(source, 0, 0); return; }
     const visit = (dir) => {
@@ -105,10 +96,7 @@ export class Scan {
     visit(root);
   }
 
-  /**
-   * A run.sqlite: the raw bytes of the file and its WAL (a deleted row still sits in free pages), then every cell of
-   * every table, JSON cells decoded, so the finding names `table[rowid].column.json.path`.
-   */
+  /** The file's and its WAL's raw bytes (a deleted row still sits in free pages), then every cell of every table. */
   sqlite(source, file) {
     for (const f of [file, `${file}-wal`, `${file}-shm`]) {
       if (!fs.existsSync(f)) continue;
@@ -127,7 +115,7 @@ export class Scan {
             const where = `${table}[${row.__rowid}].${column}`;
             if (typeof cell === "string") {
               this.text(`${source}:${table}`, where, cell);
-              if (cell.startsWith("{") || cell.startsWith("[")) { try { this.json(`${source}:${table}`, JSON.parse(cell), where); } catch { /* not JSON */ } }
+              if (cell.startsWith("{") || cell.startsWith("[")) { try { this.json(`${source}:${table}`, JSON.parse(cell), where); } catch {} }
             } else if (cell instanceof Uint8Array) this.bytes(`${source}:${table}`, where, Buffer.from(cell));
             else if (cell !== null && cell !== undefined) this.text(`${source}:${table}`, where, String(cell));
           }
@@ -148,11 +136,8 @@ export class Scan {
   }
 }
 
-/**
- * The scanner against itself, with encodings computed a second, independent way: the value is wrapped in surrounding
- * bytes at every base64 alignment, URL-encoded, JSON-escaped, hex-encoded and (for a seed) grouped, and each wrapped
- * string must be found. A scanner that quietly stopped matching a form would turn every leak green.
- */
+/** Encodings computed a second, independent way: a scanner that quietly stopped matching a form would turn every leak
+ *  green. */
 export function proveScannerSees(sentinels) {
   const missed = [];
   let forms = 0;

@@ -18,6 +18,7 @@ import {
   DELIVERY_ATTEMPTS, deliver, deliveryTerminates, deliveryText, fileSubmission, mixedFileSubmission, nudgeText, repairRecord,
   VIOLATIONS_SHOWN, type Delivery, type Disagreement, type RecordContract, type RecordStore,
 } from "./record.js";
+import { toolResult } from "./pi-versions.js";
 
 /** The record a conversation delivered, or null while it has not, and the delivery attempts it has spent. */
 export const RecordDoc = defineDoc<{ record: JsonValue | null; attempts: number }>({
@@ -113,9 +114,8 @@ export type RecordToolOptions = {
 export function recordTool(options: RecordToolOptions): ToolRegistration {
   const { record } = options;
   const shown = record ? submitDefinition(record) : { description: "Deliver the record. It ends the run.", parameters: { type: "object", additionalProperties: true } };
-  const answer = (delivery: Delivery, maxAttempts: number): ToolExecutionResult => ({
+  const answer = (delivery: Delivery, maxAttempts: number): ToolExecutionResult => toolResult([{ type: "text", text: deliveryText(delivery, maxAttempts, options.say) }], {
     ...(delivery.status === "rejected" || delivery.status === "bounced" ? { isError: true } : {}),
-    content: [{ type: "text", text: deliveryText(delivery, maxAttempts, options.say) }],
     ...(deliveryTerminates(delivery) ? { control: { terminate: true } } : {}),
   });
   return defineTool({
@@ -136,7 +136,7 @@ export function recordTool(options: RecordToolOptions): ToolRegistration {
       } catch (error) {
         if (!options.fatal?.(error)) throw error;
         options.onFatal?.(error, api.conversationId);
-        return { isError: true, content: [{ type: "text", text: options.fatalText ?? "The run cannot record this submission; the run stops." }], control: { terminate: true } };
+        return toolResult([{ type: "text", text: options.fatalText ?? "The run cannot record this submission; the run stops." }], { isError: true, control: { terminate: true } });
       }
     },
   }) as ToolRegistration;

@@ -1,6 +1,3 @@
-// The adapter's default, as a person gets it: no provider is passed, so the coding agent starts a local Chrome of its own
-// (its own profile directory and a free debugging port, never a browser the person is using), drives it through
-// Stagehand, files what it reads, and leaves no Chrome behind once the browser is released or the session ends.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,26 +7,24 @@ import test from "node:test";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { startSite } from "./fixtures/site.mjs";
 import { startAgent, turn } from "./coding-agent/rig.mjs";
+import { scratchSync } from "./fixtures/scratch.mjs";
 
 const processes = () => fs.readdirSync("/proc").filter((p) => /^\d+$/.test(p)).flatMap((pid) => {
   try { return [{ pid: Number(pid), args: fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split(/[\0 ]+/) }]; } catch { return []; }
 });
-/** The Chromes whose profile is under `dir`. Test files run in parallel on one machine, so a scan of every process also sees the
- *  Chromes other files start; the adapter makes its profile root under TMPDIR, so a test that gives itself a private TMPDIR can
- *  name exactly the Chromes its own agent launched. */
+/** Test files run in parallel, so a process scan also sees other files' Chromes: a test with a private TMPDIR names
+ *  exactly the Chromes its own agent launched. */
 const chromesIn = (dir) => processes().filter((p) => p.args.some((a) => a.startsWith("--user-data-dir=") && a.slice("--user-data-dir=".length).startsWith(dir + path.sep)));
-/** The machine's temporary directory as the test process was started, before any test gives itself a private one. */
 const OUTER_TMP = process.env.TMPDIR || os.tmpdir();
-/** A private TMPDIR for one test (restored afterwards): everything its agent creates, profile root included, lives under it. */
 function privateTmp(t) {
   const outer = process.env.TMPDIR;
-  const dir = fs.mkdtempSync(path.join(OUTER_TMP, "chrome-scope-"));
+  const dir = scratchSync(t, "chrome-scope-");
   process.env.TMPDIR = dir;
   t.after(() => { if (outer === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = outer; });
   return dir;
 }
-/** A Chrome some other test file started while this test runs: files run in parallel, and its command line has the same shape. It
- *  must be running and seen by the process scan before the test goes on, or a decoy that died would leave the test checking nothing. */
+/** A Chrome of the same command-line shape as another test file's; it must be running and seen by the scan before the
+ *  test goes on, or a decoy that died would leave the test checking nothing. */
 async function startDecoy(t) {
   const profile = path.join(OUTER_TMP, `pi-browser-decoy-${process.pid}-${Date.now()}`, "profile");
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)", "--", `--user-data-dir=${profile}`, "--remote-debugging-port=1"], { stdio: "ignore" });
@@ -39,8 +34,8 @@ async function startDecoy(t) {
   assert.equal(child.exitCode, null, "the decoy is still running");
   return child;
 }
-/** Remove `dir` after the test's agents are shut down: `t.after` hooks run in the order they were registered, so this is called
- *  after the agent is started. Chrome may still be exiting, hence the retries. */
+/** `t.after` hooks run in registration order, so this runs after the agent's shutdown; Chrome may still be exiting,
+ *  hence the retries. */
 const removeLast = (t, dir) => t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 const portOf = (p) => Number(p.args.find((a) => a.startsWith("--remote-debugging-port="))?.split("=")[1]);
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -49,7 +44,7 @@ const until = async (check, ms = 10_000) => { for (const end = Date.now() + ms; 
 async function rig(t, flags = {}) {
   const site = await startSite();
   t.after(() => site.close());
-  // A CI runner's Chrome cannot start its sandbox (the same reason Stagehand adds --no-sandbox when `CI` is set); a
+  // A CI runner's Chrome cannot start its sandbox (the reason Stagehand adds --no-sandbox when `CI` is set); a
   // developer's own Chrome keeps it.
   const env = { PI_BROWSER_CHROME: CHROME, PATH: process.env.PATH ?? "", ...(process.env.CI ? { PI_BROWSER_NO_SANDBOX: "1" } : {}) };
   const agent = await startAgent(t, { extension: { env }, flags });

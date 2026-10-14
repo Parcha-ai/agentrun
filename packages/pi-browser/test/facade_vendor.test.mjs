@@ -1,6 +1,3 @@
-// The vendored Stagehand facade (src/vendor/stagehand-facade) is upstream's bytes at the commit UPSTREAM.json names,
-// with nothing added, removed or edited (scripts/vendor-facade.mjs, offline): a local edit, a stray file or a missing
-// one fails here.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";

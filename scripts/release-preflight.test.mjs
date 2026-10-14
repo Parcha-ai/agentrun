@@ -92,8 +92,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-vision']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-vision-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -201,7 +201,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-vision']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -295,12 +295,12 @@ test('the release workflow reads the publish set into a variable, so a failed re
 
 test('the held and published sets come from the tree being checked, not from the checkout the script runs in', () => fixture(async root => {
   const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
-  // A tree in which the browser package is no longer held publishes it, after the packages before it in the map, though this
+  // A tree in which the transport package is no longer held publishes it, after the packages before it in the map, though this
   // checkout still holds it. The other held packages stay out.
-  await set('pi-browser', {});
+  await set('pi-transport', {});
   await recordPackages(root);
   const lifted = await preflight(root);
-  const stillHeld = heldPackages.filter(directory => directory !== 'pi-browser');
+  const stillHeld = heldPackages.filter(directory => directory !== 'pi-transport');
   assert.deepEqual(lifted.packages.map(pkg => pkg.directory), listedPackages.filter(directory => !stillHeld.includes(directory)), 'a package unheld in the checked tree is in the plan');
   // And a package held in the checked tree is out of it, at the workspace version, though this checkout publishes it.
   await set('pi-durable-disk', { private: true });
@@ -331,6 +331,14 @@ test('the vision package is published: listed, not held, a release manifest at t
   checkManifest(repoManifest('pi-vision'), 'pi-vision', workspace.version, workspace.license);
   const plan = (await preflight(root)).packages.map(pkg => pkg.name);
   assert.ok(plan.indexOf('@parcha/pi-vision') > plan.indexOf('@parcha/pi-durable-disk'), 'in the plan, after the packages before it in the map');
+}));
+
+test('the browser package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-durable-disk', () => fixture(async root => {
+  assert.ok(releasePackages.includes('pi-browser') && !heldPackages.includes('pi-browser'), 'published from this checkout');
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  checkManifest(repoManifest('pi-browser'), 'pi-browser', workspace.version, workspace.license);
+  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
+  assert.ok(plan.indexOf('@parcha/pi-browser') > plan.indexOf('@parcha/pi-durable-disk'), 'in the plan, after the packages before it in the map');
 }));
 
 test('the transport package is held: listed, private, at the workspace version, and published only from a tree that lifts the hold', () => fixture(async root => {

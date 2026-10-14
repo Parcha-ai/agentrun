@@ -1,15 +1,12 @@
-// The Stagehand driver: Stagehand v4 over upstream's facade, vendored unedited (src/vendor/stagehand-facade) at the
-// commit that pairs with the Stagehand the package pins. Stagehand is created sealed: no inference leaves through it
-// (act, extract and observe, which `run` code reaches through `batchStagehand`, get a refusal instead of Browserbase's
-// model gateway), nothing is cached server side, and its trace exporter points at a closed loopback port (4.1.0
-// cannot turn it off). The driver never ends the browser: custody releases it through the provider.
+// Stagehand is created sealed: no inference leaves through it (act, extract and observe are refused), nothing is cached
+// server side, and the driver never ends the browser: custody releases it through the provider.
 import type { DriverFactory } from "../core/custody.js";
 import type { ScreenshotOptions } from "../core/images.js";
 import type { PageDriver } from "../core/tools.js";
 import { StagehandFacadeTools } from "../vendor/stagehand-facade/tools.js";
 import type { RefAction } from "../vendor/stagehand-facade/contract.js";
 
-/** Where Stagehand's trace exporter posts: a closed loopback port, so no span leaves the host (4.1.0 has no off). */
+/** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
 export const STAGEHAND_TELEMETRY = { traces: { endpoint: "http://127.0.0.1:9/v1/traces" } } as const;
 export const STAGEHAND_INFERENCE_REFUSED = "Stagehand inference is off in this harness: act, extract and observe are unavailable. Drive the page with run code or snapshot IDs.";
 export const SEALED_STAGEHAND = {
@@ -21,10 +18,8 @@ export const SEALED_STAGEHAND = {
 
 const STAGEHAND_EXTENSION = "Stagehand Runtime";
 const DISCOVERY_MS = 10_000;
-// A page's address is its document's (location.href). Stagehand's page.url() names a goto's target once Chrome starts
-// it, and a navigation that never commits (a 204, a download) leaves the old page shown: a receipt under that address
-// would cite a page it does not hold. A read takes the address, title, text and html in one evaluate, so all four are
-// one document's.
+// A page's address is its document's (location.href): page.url() names a goto's target once Chrome starts it, so a
+// receipt could cite a page it does not hold. One evaluate reads all four, so they are one document's.
 const PAGE_CODE = `return await page.evaluate(() => ({
   url: location.href,
   title: document.title,
@@ -33,23 +28,18 @@ const PAGE_CODE = `return await page.evaluate(() => ({
 }));`;
 const URL_READ_MS = 2_000;
 
-/** The active page's document address, read in a batch of its own: the browser runs a batch after any batch still
- *  running there, so the read never lands inside a navigation an earlier goto left pending (a page call issued then
- *  never returns, and Stagehand's close waits on it). Past URL_READ_MS (a busy page, a goto still pending), Stagehand's
- *  page.url(). */
+/** In a batch of its own, which the browser runs after any batch still running, so the read never lands inside a
+ *  pending navigation (a page call issued then never returns). Past URL_READ_MS, Stagehand's page.url(). */
 async function documentUrl(stagehand: any, page: any): Promise<string> {
   try {
     const href = await stagehand.experimentalBatch(async (batch: any) => await batch.page.evaluate("location.href"), {}, { page, timeout: URL_READ_MS });
     if (typeof href === "string" && href) return href;
-  } catch { /* the cached address below */ }
+  } catch {}
   return await page.url();
 }
 
-/** The enabled Stagehand extension a browser already holds (a provider preloaded it, or an earlier process loaded it),
- *  found as Stagehand finds a preloaded one; null when there is none, so Stagehand loads it unpacked. A held runtime is
- *  restarted first: it keeps its one Stagehand instance in memory until that instance's `stagehand.close`, which a
- *  process that died never sent, so a new attach would be refused. Closing the extension's service worker target (no
- *  page target is touched) resets it, and Stagehand wakes the worker when it attaches. */
+/** A held extension runtime keeps one Stagehand instance until that instance's close, which a dead process never sent,
+ *  so a new attach would be refused: closing its service worker target (no page target) resets it first. */
 async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: string): Promise<string | null> {
   const socket = new WebSocket(cdpUrl);
   const timer = setTimeout(() => socket.close(), DISCOVERY_MS);
@@ -62,7 +52,8 @@ async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: 
   try {
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
-      // A refused connection raises `error` and, on Node 22, never `close`: waiting for `close` alone would hang the attach.
+      // A refused connection raises `error` and, on Node 22, never `close`: waiting for `close` alone would hang the
+      // attach.
       socket.onerror = () => reject(new Error("Failed to open CDP WebSocket"));
       socket.onclose = () => { for (const settle of pending.values()) settle(undefined); reject(new Error("the CDP socket closed")); };
       socket.onmessage = (event) => { const message = JSON.parse(String(event.data)); pending.get(message.id)?.(message.result); };
@@ -79,16 +70,14 @@ async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: 
       .map((target: { targetId: string }) => target.targetId);
     const closing = await workers();
     for (const targetId of closing) await call("Target.closeTarget", { targetId });
-    // A closed worker stays listed for a moment, and Stagehand would attach to it; wait until it is gone. The reset is
-    // best effort: a worker the browser will not close leaves the attach to Stagehand, whose own refusal then fails it.
+    // A closed worker stays listed for a moment and Stagehand would attach to it: wait until it is gone (best effort).
     for (let tries = 0; tries < 40 && (await workers()).some((targetId: string) => closing.includes(targetId)); tries += 1) await new Promise((r) => setTimeout(r, 50));
     return id;
   } catch { return known ?? null; } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); socket.close(); }
 }
 
-/** A Stagehand whose batches run under `timeoutMs` instead of the facade's fixed 60 s; every other member is its own.
- *  A batch that fails at or past that deadline fails as a `TimeoutError` (Stagehand's own is a plain Error), the
- *  driver's clock being the fact. */
+/** Batches run under `timeoutMs`, not the facade's fixed 60 s; one failing at or past it is a `TimeoutError`, since
+ *  Stagehand's own is a plain Error. */
 function withBatchTimeout<T extends object>(stagehand: T, timeoutMs: number): T {
   return new Proxy(stagehand, {
     get(target, property) {
@@ -108,13 +97,13 @@ function withBatchTimeout<T extends object>(stagehand: T, timeoutMs: number): T 
   });
 }
 
-/** The run batch's deadline is the conversation's (`DriverOptions`, from its policy), over the facade's fixed 60 s;
- *  a direct caller that passes none gets that 60 s. */
+/** The batch deadline comes from `DriverOptions`; a caller that passes none gets the facade's 60 s. */
 export function stagehandDriver(): DriverFactory<PageDriver> {
   return async (target, signal, options) => {
     const { localBrowser, Stagehand }: any = await import("@browserbasehq/stagehand");
     // An id the provider supplies names a held extension too, so its worker is reset as well.
-    // A failed open names where it went: Stagehand reports it as "[object Object]" and the socket's own error has no address.
+    // A failed open names where it went: Stagehand reports it as "[object Object]" and the socket's error has no
+    // address.
     const host = new URL(target.dial?.url ?? target.sdkCdpUrl).host;
     const named = <T>(step: Promise<T>) => step.catch((error) => { throw new Error(`attaching to the browser at ${host} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); });
     const extensionId = await named(installedExtension(target.sdkCdpUrl, signal, target.extensionId));
