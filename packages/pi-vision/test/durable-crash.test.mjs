@@ -32,8 +32,9 @@ function child(paths, cut, mode) {
  *  or, with cut "none", one run that was never cut. */
 async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
   const dir = tmp("vision-crash-");
-  const paths = { DB: path.join(dir, "run.sqlite"), CWD: path.join(dir, "work"), OUT: path.join(dir, "evidence"), LEDGER: path.join(dir, "eyes.jsonl") };
-  fs.mkdirSync(paths.CWD); fs.mkdirSync(paths.OUT);
+  // The children's temp root is inside the run's directory: what a process killed mid-read leaves goes with it.
+  const paths = { DB: path.join(dir, "run.sqlite"), CWD: path.join(dir, "work"), OUT: path.join(dir, "evidence"), LEDGER: path.join(dir, "eyes.jsonl"), TMPDIR: path.join(dir, "tmp") };
+  fs.mkdirSync(paths.CWD); fs.mkdirSync(paths.OUT); fs.mkdirSync(paths.TMPDIR);
   fs.writeFileSync(path.join(paths.CWD, "notice.pdf"), source);
   const derivedDir = path.join(paths.CWD, ".vision", "derived");
   const derivedNow = () => (fs.existsSync(derivedDir) ? fs.readdirSync(derivedDir).sort() : []);
@@ -59,6 +60,8 @@ async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
     filings: lines(path.join(paths.OUT, "calls.jsonl")).map((call) => call.key),
     receipts: fs.existsSync(path.join(paths.OUT, "vision")) ? fs.readdirSync(path.join(paths.OUT, "vision")).sort() : [],
     derived: derivedNow(),
+    /** What the processes left in their temp root, by name without the random suffix. */
+    left: fs.readdirSync(paths.TMPDIR).map((name) => name.slice(0, name.lastIndexOf("-") + 1)).sort(),
     /** The derivations each process finished, by name: `first` is the process that was cut. */
     kept: Object.fromEntries(["first", "second"].map((by) => [by, lines(path.join(paths.OUT, "kept.jsonl")).filter((k) => k.by === by).map((k) => k.name).sort()])),
   };
@@ -70,6 +73,7 @@ const seen = (outcome) => outcome.results.map((r) => [r.isError, r.content, r.de
 
 test("an uncut run renders the page once, has the eyes answer once, files one receipt and prices the look once", () => {
   assert.equal(clean.settled, "done");
+  assert.deepEqual(clean.left, [], "a run that is not cut leaves nothing in its temp root");
   assert.equal(clean.results.length, 1);
   assert.equal(clean.results[0].isError, false);
   assert.ok(clean.results[0].content.every((block) => block.type === "text"), "a route that takes no images is given the eyes' words");
@@ -85,6 +89,7 @@ test("an uncut run renders the page once, has the eyes answer once, files one re
 test("cut during a derivation: the half-written file is ignored, it is derived again, no extra eyes request, the same result", async () => {
   const cut = await run("derive");
   assert.deepEqual([whole(cut.atCut.derived), cut.atCut.derived.length, cut.atCut.asks], [[], 1, 0], "the cut fell with one temporary file written and nothing renamed");
+  assert.deepEqual(cut.left, ["pi-vision-pdf-", "pi-vision-read-"], "the killed process leaves its read's temp directory and the PDF scratch, and nothing else");
   assert.equal(cut.settled, "done");
   assert.deepEqual(seen(cut), seen(clean), "the model sees the same result");
   assert.equal(cut.asks, 1, "0 extra eyes requests");
