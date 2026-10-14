@@ -203,10 +203,11 @@ take, "good, what's top of mind?" answered `" or similar. But I am not that. How
 thought (Qwen's own wording for a thinking budget), then `</think>` and the blank line the answer starts after.
 
 Measured on two servers with the Golden Gate recipe, 140 replies each, the same prompts, about two thirds spending the
-budget: with the bare `</think>`, 5 answers opened inside the thought (4 of 20 in that take's context: the switch's
-greeting, its answer, then "good, what's top of mind?"); with the sentence, none. Jev's question ("is `answer` a
-continuation of the speaker's private reasoning rather than a reply addressed to the user?") and the answers' first
-characters agree on those.
+budget. Read by their opening lines, 5 answers opened inside the thought with the bare `</think>` (4 of 20 in that
+take's context: the switch's greeting, its answer, then "good, what's top of mind?"), and none with the sentence. Jev's
+question ("is `answer` a continuation of the speaker's private reasoning rather than a reply addressed to the user?")
+flagged 3 of those 4 and none in that context with the sentence; on the single prompts it also flags stories that open
+by hedging about the request, on both servers alike (6 and 4).
 
 ## The guard (J4)
 
