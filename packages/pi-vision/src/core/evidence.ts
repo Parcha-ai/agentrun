@@ -29,7 +29,9 @@ export type LookRecord = {
     /** The look's memo key: SHA-256 of the source hash, selector, question, eyes model, contract version and plan. */
     readonly key: string;
     readonly tokens_in?: number; readonly tokens_out?: number;
-    /** Null when the price is not known, never 0; 0 when another service billed the look (see `via`). */
+    /** Null when the price is not known, never 0; 0 when another service billed the look (see `via`). A failed look that
+     *  sent no request is 0 with no tokens; one answered with no text has that answer's price (and tokens, when it
+     *  has them); one whose request threw, and may have been billed, has none. */
     readonly cost_usd?: number | null;
     readonly provider?: string;
     readonly derived?: readonly string[];
