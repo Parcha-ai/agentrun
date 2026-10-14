@@ -35,5 +35,6 @@
   "source": {
     "run": "reference",
     "store_sha256": "42b419416c7350629c512ed667ed97d26e85219654921e89f039b1526c4b7cec"
-  }
+  },
+  "providers": "scripted"
 }

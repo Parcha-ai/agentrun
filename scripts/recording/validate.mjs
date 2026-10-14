@@ -51,6 +51,7 @@ export function manifestProblems(manifest) {
   need(isInt(manifest.kills) && manifest.kills >= 0, 'kills is not a non-negative integer');
   need(isObject(manifest.cost) && nullableNumber(manifest.cost.usd) && isObject(manifest.cost.parts) && Object.values(manifest.cost.parts).every(nullableNumber), 'cost needs usd and parts, each a number or null');
   need(isObject(manifest.source) && typeof manifest.source.run === 'string' && SHA256.test(manifest.source.store_sha256 ?? ''), 'source needs run and a 64-hex store_sha256');
+  if (manifest.providers !== undefined) need(manifest.providers === 'real' || manifest.providers === 'scripted', `providers is ${JSON.stringify(manifest.providers)}, expected real or scripted`);
   if (manifest.result !== undefined) need(isObject(manifest.result) && SHA256.test(manifest.result.blob ?? '') && typeof manifest.result.title === 'string', 'result needs a 64-hex blob and a title');
   return problems;
 }

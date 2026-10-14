@@ -41,6 +41,7 @@ test('the reference job leaves a recording the validator passes, with live, host
     cost: { usd: 0, parts: { 'faux/faux-1': 0 } }, source: { run: place.id, store }, result: { blob: resultBlob, title: 'The record' },
   });
   assert.deepEqual(validateRecording(dir), []);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).providers, 'scripted', 'the faux job is scripted');
   const all = lines(dir);
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'workflow' && line.kind === 'node.start' && typeof line.path === 'string'), 'a workflow event with its path');
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'browser' && line.kind === 'launched'), 'a browser session row');
