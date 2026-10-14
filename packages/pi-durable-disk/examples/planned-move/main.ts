@@ -132,7 +132,12 @@ try {
   }, 180_000);
   const pausedAt = Date.now();
   console.log(`host A: generation 1 paused after step ${MOVE_AFTER} and released: ${JSON.stringify(paused.detail)}`);
-  const exitedA = await hostA.status(a.handle);
+  // The delegation goes inside release(); the unit stops just after. A transient unit that exited 0 may already be
+  // unloaded ("gone"); either way it must not be running, and a unit still running after 30 s fails the example.
+  await waitFor("host A's unit to stop", async () => {
+    const state = await hostA.status(a.handle);
+    return (state === "stopped" || state === "gone") && state;
+  }, 30_000);
 
   // The hand-over: a paused run with no holder, started where it asked to go.
   const t0 = Date.now();
@@ -160,8 +165,6 @@ try {
 
   const detail = paused.detail as { moveTo?: string; from?: string; afterStep?: number } | null;
   if (detail?.moveTo !== "daytona" || detail.from !== "host-a" || detail.afterStep !== MOVE_AFTER) problems.push(`the pause said ${JSON.stringify(detail)}`);
-  // A transient unit that exited 0 may already be unloaded ("gone"); either way it must not be running.
-  if (exitedA !== "stopped" && exitedA !== "gone") problems.push(`host A's unit is ${exitedA} after the hand-over`);
   // A hand-over: no delegation was left to revoke. (`woke` stays false: it marks a sleeping run's wake, not a demand.)
   if (b.reason !== "none" || b.revoked.length !== 0) problems.push(`the box's start was a take-over: reason ${b.reason}, ${b.revoked.length} revoked`);
   if (done.generation !== 2 || done.holder?.driver !== "daytona") problems.push(`the run finished at generation ${done.generation} under ${String(done.holder?.driver)}`);
