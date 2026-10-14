@@ -25,5 +25,8 @@ pi.config.mjs
 # Session notes stay outside the public source
 precap.md
 
+# Machine-specific facts for the ship-pr skill (credentials, approval command, a model gateway)
+.agents/skills/ship-pr/local.md
+
 # Lean build output
 spec/lean/.lake/
