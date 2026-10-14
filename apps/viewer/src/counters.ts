@@ -45,10 +45,12 @@ export type CounterState = {
   modelCost: number;
   modelCostKnown: boolean;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
-   *  assistant entries committed before it), whether it committed a partial, and the process that asked it. */
-  live: Record<string, { open?: { at: number; partial: boolean; process: number }; generation?: { attempt?: Json; message?: Json } }>;
-  /** Re-asked positions (`<conv> <position>`): proven when the cut ask had committed a partial, else possible. */
-  reasks: Record<string, 'proven' | 'possible'>;
+   *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
+   *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
+  live: Record<string, { open?: { at: number; process: number; partial?: string; counted?: boolean }; generation?: { attempt?: Json; message?: Json } }>;
+  /** Per position (`<conv> <position>`), the cut asks counted: each ask a process died under, once, proven when it had
+   *  committed a partial and possible when only its start marker. Re-asks at a position are its asks minus one. */
+  reasks: Record<string, { proven: number; possible: number }>;
   askStarts: number;
   /** False once a `pi.live` line of a version this fold does not know is seen. */
   liveKnown: boolean;
@@ -68,11 +70,12 @@ export type Counters = {
   unknown: number;
   inFlight: number;
   judge: { answered: number; failed: number; reasked: number };
-  /** committed: assistant entries that are not `aborted`. reasked: positions whose ask a kill cut after it committed a
-   *  partial and that were asked again (proven); reaskedPossible: the same with only the start marker committed (the
-   *  process may have died before calling the model). Both null (not measured) when no ask start was committed or the
-   *  `pi.live` version is not one this fold knows. Only proven ones count. */
-  turns: { committed: number; reasked: number | null; reaskedPossible: number | null };
+  /** committed: assistant entries that are not `aborted`. Re-asks are counted per position as its asks minus one, from the asks a
+   *  process died under, each counted once: reasked, those that had committed a partial (proven; reaskedTurns, the positions
+   *  with at least one); reaskedPossible, those with only the start marker committed (the process may have died before it called
+   *  the model). All null (not measured) when no ask start was committed or the `pi.live` version is not one this fold knows.
+   *  Only proven ones count. */
+  turns: { committed: number; reasked: number | null; reaskedTurns: number | null; reaskedPossible: number | null };
   processes: number;
   kills: number;
   journalOpens: number;
@@ -132,21 +135,34 @@ export const counterFold: Fold<CounterState> = {
         const generation = liveGenerationOf(doc);
         const at = next.committedTurns[conv] ?? 0;
         let open = held.open;
-        const cut = open !== undefined && open.at === at && open.process < next.processes ? open : undefined;
-        const reask = (kind: 'proven' | 'possible') => {
-          if (next.reasks[`${conv} ${at}`] !== 'proven') next.reasks = { ...next.reasks, [`${conv} ${at}`]: kind };
+        const partial = generation?.message !== undefined ? stableJson(generation.message) : undefined;
+        // A process died under an ask: count it once, proven when it had committed a partial, else possible.
+        const count = (ask: NonNullable<typeof open>) => {
+          const key = `${conv} ${ask.at}`;
+          const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
+          next.reasks = { ...next.reasks, [key]: ask.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };
+          return { ...ask, counted: true };
         };
+        const cutBy = open !== undefined && open.at === at && open.process < next.processes && !open.counted ? open : undefined;
         if (line.snapshot === true) {
-          if (generation !== undefined && open?.at === at) open = { ...open, partial: open.partial || generation.message !== undefined };
-          else if (generation !== undefined) { open = { at, partial: generation.message !== undefined, process: next.processes - 1 }; next.askStarts += 1; }
+          if (generation === undefined) open = undefined;
+          else if (open?.at === at) open = { ...open, ...(partial !== undefined ? { partial } : {}) };
+          else { open = { at, process: next.processes - 1, ...(partial !== undefined ? { partial } : {}) }; next.askStarts += 1; }
         } else if (generation !== undefined && generation.message === undefined
           && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt)) {
+          // A start marker line: the ask begins. One a process died under is counted now.
           next.askStarts += 1;
-          if (cut) reask(cut.partial ? 'proven' : 'possible');
-          open = { at, partial: false, process: next.processes };
-        } else if (generation?.message !== undefined) {
-          if (cut && !cut.partial) { reask('possible'); open = { at, partial: true, process: next.processes }; }
-          else if (open?.at === at) open = { ...open, partial: true };
+          if (cutBy) count(cutBy);
+          open = { at, process: next.processes };
+        } else if (partial !== undefined) {
+          if (open?.at === at && open.process === next.processes) open = { ...open, partial };
+          else if (cutBy && cutBy.partial === partial) open = cutBy;
+          else {
+            // A later process's own partial, or one that differs from the cut ask's: that process asked again and the model answered.
+            if (cutBy) count(cutBy);
+            open = { at, process: next.processes, partial };
+            if (!cutBy) next.askStarts += 1;
+          }
         }
         next.live = { ...next.live, [conv]: { ...(open ? { open } : {}), ...(generation ? { generation } : {}) } };
       }
@@ -208,11 +224,13 @@ export const counterFold: Fold<CounterState> = {
           // its usage still counts in cost.
           const conv = String(line.conv ?? '?');
           if (message.stopReason !== 'aborted') {
-            // A cut ask with only its marker, answered by a later process: that process's ask shows as this entry.
+            // An ask a process died under, answered by a later process: that process's ask shows as this entry. Counted once.
             const held = next.live[conv];
             const at = next.committedTurns[conv] ?? 0;
-            if (held?.open && held.open.at === at && held.open.process < next.processes && !held.open.partial && next.reasks[`${conv} ${at}`] === undefined) {
-              next.reasks = { ...next.reasks, [`${conv} ${at}`]: 'possible' };
+            if (held?.open && held.open.at === at && held.open.process < next.processes && !held.open.counted) {
+              const key = `${conv} ${at}`;
+              const tally = next.reasks[key] ?? { proven: 0, possible: 0 };
+              next.reasks = { ...next.reasks, [key]: held.open.partial !== undefined ? { ...tally, proven: tally.proven + 1 } : { ...tally, possible: tally.possible + 1 } };
             }
             next.committedTurns = { ...next.committedTurns, [conv]: at + 1 };
             if (held?.open !== undefined) next.live = { ...next.live, [conv]: { ...(held.generation ? { generation: held.generation } : {}) } };
@@ -272,8 +290,10 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null, ...tallies.flatMap((tally) => tally.cost)];
   const measured = state.liveKnown && state.askStarts > 0;
-  const reasked = measured ? Object.values(state.reasks).filter((kind) => kind === 'proven').length : null;
-  const reaskedPossible = measured ? Object.values(state.reasks).filter((kind) => kind === 'possible').length : null;
+  const cutAsks = Object.values(state.reasks);
+  const reasked = measured ? cutAsks.reduce((sum, tally) => sum + tally.proven, 0) : null;
+  const reaskedTurns = measured ? cutAsks.filter((tally) => tally.proven > 0).length : null;
+  const reaskedPossible = measured ? cutAsks.reduce((sum, tally) => sum + tally.possible, 0) : null;
   return {
     paid: { total: workflow + agent, workflow, agent },
     repeated,
@@ -282,7 +302,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
     unknown: open.filter((effect) => !alive(effect)).length,
     inFlight: open.filter(alive).length,
     judge,
-    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reasked, reaskedPossible },
+    turns: { committed: Object.values(state.committedTurns).reduce((sum, count) => sum + count, 0), reasked, reaskedTurns, reaskedPossible },
     processes: state.processes,
     kills: state.kills,
     journalOpens: state.journalOpens,
