@@ -168,7 +168,7 @@ test('the supervisor\'s lines have no gen and number a seq space of their own', 
 
 test('a restore (3.2): a drop in commit at a generation\'s first snapshot is accepted only with that generation\'s restore record at head S + 1', async t => {
   const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
-  const moves = (head, t, gen = 2, kind = 'restore') => durable(0, 0, { source: 'transport', kind: 'transport.moves', t, gen, commit: 7, order: 0, data: { doc: 'transport.moves', value: { moves: [kind === 'move' ? { kind, seal: { head, sha256: 'a'.repeat(64), bytes: 1 } } : { kind, checkpoint: { head, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
+  const moves = (head, t, gen = 2, kind = 'restore') => durable(0, 0, { source: 'transport', kind: 'transport.moves', t, gen, commit: 7, order: 0, data: { doc: 'transport.moves', value: { moves: [kind === 'move' ? { kind, head, seal: { head, sha256: 'a'.repeat(64), bytes: 1 } } : { kind, head, checkpoint: { head, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
   // Generation 1 committed up to 7; the box died after checkpoint 4; generation 2 reopens it at S = 4, numbering from 5 again.
   const lost = [durable(5, 0, { t: 5 }), durable(6, 0, { t: 6 }), durable(7, 0, { t: 7 })];
   const restored = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(5, 0, { t: 22, gen: 2 }), durable(6, 0, { t: 23, gen: 2 })];
@@ -191,7 +191,7 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
 
 test('a move: the target\'s record anchors on its snapshot at open (3.2)', async t => {
   const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
-  const moveAt = (head, commit, order, t, gen = 2) => durable(commit, order, { source: 'transport', kind: 'transport.moves', t, gen, data: { doc: 'transport.moves', value: { moves: [{ kind: 'move', seal: { head, sha256: 'a'.repeat(64), bytes: 1 } }] } } });
+  const moveAt = (head, commit, order, t, gen = 2, sealHead) => durable(commit, order, { source: 'transport', kind: 'transport.moves', t, gen, data: { doc: 'transport.moves', value: { moves: [{ kind: 'move', head, seal: { head: sealHead ?? head, sha256: 'a'.repeat(64), bytes: 1 } }] } } });
   const run = async lines => validateRecording(await recording(t, { lines, started: 2 }));
   const sealed = [durable(1, 0), durable(2, 0, { t: 12 }), snap(2, 0, 20, 2)];
   // The record in the target's first commit, and in a later one (the journal open may commit first): both pass.
@@ -202,12 +202,31 @@ test('a move: the target\'s record anchors on its snapshot at open (3.2)', async
   // The hand-broken copies.
   const gap = (await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(5, 5, 0, 22)]))[0];
   assert.equal(gap.line, 7);
-  assert.match(gap.message, /seal\.head is 5, but the generation's snapshot is at commit 2, so the target's first commit would be 3/);
-  assert.match((await run([...sealed, moveAt(2, 3, 0, 22)]))[0].message, /seal\.head is 2, but the generation's snapshot is at commit 2/);
-  assert.match((await run([...sealed, durable(4, 0, { t: 21, gen: 2 }), moveAt(3, 5, 0, 22)]))[0].message, /seal\.head is 3, but the generation's first commit is 4/);
+  assert.match(gap.message, /a move's head is 5, but the generation's snapshot is at commit 2, so the target's first commit would be 3/);
+  assert.match((await run([...sealed, moveAt(2, 3, 0, 22)]))[0].message, /a move's head is 2, but the generation's snapshot is at commit 2/);
+  assert.match((await run([...sealed, durable(4, 0, { t: 21, gen: 2 }), moveAt(3, 5, 0, 22)]))[0].message, /a move's head is 3, but the generation's first commit is 4/);
   assert.match((await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(4, 3, 1, 22)]))[0].message, /record at commit 3 names head 4, which is a later commit/);
   // A move keeps one store: a snapshot below a commit already seen is a restore's drop, not a move.
   const dropped = await run([durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20, 2), moveAt(3, 3, 0, 22)]);
   assert.ok(dropped.some(problem => /first snapshot is at commit 2, below the 3 already seen/.test(problem.message)));
   assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
+});
+
+test('head is top-level: a move\'s head equals its seal.head, and a replayed restore has no drop', async t => {
+  const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
+  const record = (value, commit, order, t, gen = 2) => durable(commit, order, { source: 'transport', kind: 'transport.moves', t, gen, data: { doc: 'transport.moves', value: { moves: [value] } } });
+  const run = async lines => validateRecording(await recording(t, { lines, started: 2 }));
+  const sealed = [durable(1, 0), durable(2, 0, { t: 12 })];
+  // a move whose head differs from its seal.head
+  const apart = await run([...sealed, snap(2, 0, 20, 2), durable(3, 0, { t: 21, gen: 2 }), record({ kind: 'move', head: 3, seal: { head: 4, sha256: 'a'.repeat(64), bytes: 1 } }, 3, 1, 22)]);
+  assert.match(apart[0].message, /a move's head is 3, but its seal\.head is 4/);
+  // a restore that replayed the host's log to commit 2: no drop, head = to + 1, S = the highest commit seen
+  const replayed = { kind: 'restore', head: 3, checkpoint: { head: 2, sha256: 'a'.repeat(64), bytes: 1, at: 'x' }, replayed: { from: 2, to: 2 } };
+  const lines = [...sealed, snap(2, 0, 20, 2), durable(3, 0, { t: 21, gen: 2 }), record(replayed, 3, 1, 22)];
+  assert.deepEqual(await run(lines), []);
+  // the same restore with a head that is not to + 1, and one that does not match the snapshot
+  assert.match((await run([...sealed, snap(2, 0, 20, 2), durable(3, 0, { t: 21, gen: 2 }), record({ ...replayed, head: 4 }, 4, 1, 22)]))[0].message, /replayed to 2 has head 4, which should be replayed\.to \+ 1/);
+  assert.match((await run([...sealed, snap(2, 0, 20, 2), durable(4, 0, { t: 21, gen: 2 }), record({ ...replayed, replayed: { from: 2, to: 3 }, head: 4 }, 4, 1, 22)]))[0].message, /head is 4, but the generation's snapshot is at commit 2/);
+  // a restore from the checkpoint alone: its head is the checkpoint's
+  assert.match((await run([...sealed, snap(2, 0, 20, 2), durable(3, 0, { t: 21, gen: 2 }), record({ kind: 'restore', head: 3, checkpoint: { head: 5, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }, 3, 1, 22)]))[0].message, /no replay has head 3, but its checkpoint\.head is 5/);
 });

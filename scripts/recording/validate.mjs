@@ -101,13 +101,13 @@ export function imageBlobs(value, found = []) {
   return found;
 }
 
-/** The records of a `transport.moves` document value: a restore carries `checkpoint { head }` (the sequence the restored store's
- *  first new commit takes), a move carries `seal { head }` (the target's first commit). The record may be the value or nested in it. */
+/** The records of a `transport.moves` document value, found as the value or nested in it. Every record carries a top-level `head`: the
+ *  sequence the target's first new commit takes, after any replay. A move also has `seal { head }`, which must equal it; a restore has
+ *  `checkpoint { head }` and, when it replayed the host's log, `replayed { from, to }` with `head` = `to + 1`. */
 export function moveRecords(value, found = []) {
   if (Array.isArray(value)) value.forEach(inner => moveRecords(inner, found));
   else if (isObject(value)) {
-    if (value.kind === 'restore' && isInt(value.checkpoint?.head)) found.push({ kind: 'restore', head: value.checkpoint.head });
-    else if (value.kind === 'move' && isInt(value.seal?.head)) found.push({ kind: 'move', head: value.seal.head });
+    if ((value.kind === 'restore' || value.kind === 'move') && isInt(value.head)) found.push({ kind: value.kind, head: value.head, seal: value.seal, checkpoint: value.checkpoint, replayed: value.replayed });
     else Object.values(value).forEach(inner => moveRecords(inner, found));
   }
   return found;
@@ -217,15 +217,15 @@ export function validateRecording(dir) {
   }
   for (const record of records) {
     const snapshot = snapshotAt.get(record.gen);
+    if (record.kind === 'move' && record.seal?.head !== record.head) add('events.jsonl', `a move's head is ${record.head}, but its seal.head is ${JSON.stringify(record.seal?.head)}; they are equal`, record.line);
+    if (record.kind === 'restore' && record.replayed && !(isInt(record.replayed.to) && record.head === record.replayed.to + 1)) add('events.jsonl', `a restore that replayed to ${JSON.stringify(record.replayed.to)} has head ${record.head}, which should be replayed.to + 1`, record.line);
+    if (record.kind === 'restore' && !record.replayed && record.head !== record.checkpoint?.head) add('events.jsonl', `a restore with no replay has head ${record.head}, but its checkpoint.head is ${JSON.stringify(record.checkpoint?.head)}`, record.line);
     if (record.commit < record.head) add('events.jsonl', `a ${record.kind} record at commit ${record.commit} names head ${record.head}, which is a later commit`, record.line);
     if (!snapshot) continue;
-    if (record.kind === 'restore') {
-      if (record.head !== snapshot.commit + 1 && !drops.some(drop => drop.gen === record.gen && record.head === drop.commit + 1)) add('events.jsonl', `a restore's checkpoint.head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so it should be ${snapshot.commit + 1}`, record.line);
-      continue;
-    }
-    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a move's seal.head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
-    else if (Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
-    else if (firstCommit.has(record.gen) && firstCommit.get(record.gen) !== record.head) add('events.jsonl', `a move's seal.head is ${record.head}, but the generation's first commit is ${firstCommit.get(record.gen)}`, record.line);
+    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
+    // A move keeps one store: its snapshot is at the highest commit seen. A restore may drop (checked above) or replay and not.
+    else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
+    else if (firstCommit.has(record.gen) && firstCommit.get(record.gen) !== record.head) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the generation's first commit is ${firstCommit.get(record.gen)}`, record.line);
   }
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
