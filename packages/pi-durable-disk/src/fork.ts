@@ -3,8 +3,8 @@
 // root of their own, never where an instance mounts. The source is only read (its claim probe aside, which every mount
 // writes). The new run's run.json starts at generation 0 and carries the source's seal: its first open is generation 1
 // and refuses a copy that lost a committed sequence (STORE_BEHIND_SEAL). Supervisor side: it needs the API key.
-import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, rm, rmdir, symlink, utimes } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, rename, rm, rmdir, symlink, utimes } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { acquire, createRunDir, type AcquireOptions, findDelegations, mintMountToken, removeMountToken, runPath, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { persistRecord, readRunRecord, RUN_JSON, RUN_JSON_TEMP, type RunRecord } from "./status.ts";
@@ -17,7 +17,7 @@ const RELEASED: readonly RunRecord["status"][] = ["paused", "sleeping", "done", 
  * Not copied: the run's own lifecycle files (the fork writes its own run.json), the supervisor's start mark (copied, it
  * would hold the new run in a start grace for a start that never happened), and the scratch directory.
  */
-const SKIP = new Set([RUN_JSON, RUN_JSON_TEMP, OWNER_LOCK, `${OWNER_LOCK}-journal`, ".claim", START_MARK, "tmp"]);
+const SKIP = new Set([RUN_JSON, RUN_JSON_TEMP, OWNER_LOCK, `${OWNER_LOCK}-journal`, ".claim", START_MARK, "tmp", "commands"]);
 
 export type ForkErrorCode = "INVALID_ARGUMENT" | "SOURCE_NOT_RELEASED" | "SOURCE_HELD" | "TARGET_EXISTS" | "COPY_FAILED";
 
@@ -196,5 +196,80 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
       for (const dir of [join(base, side, "runs"), join(base, side)]) await rmdir(dir).catch(() => {});
     }
     await rmdir(base).catch(() => {});
+  }
+}
+
+export interface ForkLocalResult {
+  /** The new run's id, and the directory it lives in. */
+  readonly run: string;
+  readonly root: string;
+  readonly from: string;
+  readonly sealedSeq: number;
+  readonly sourceGeneration: number;
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/**
+ * Fork a run on a local directory (`localRun`) into one new run directory per entry of `into`: the same copy as `fork`, for
+ * one machine and without a disk. `from` must hold a released, sealed run (run.json paused, sleeping, done or failed with a
+ * `sealedSeq`); anything else is `SOURCE_NOT_RELEASED`, and no target may exist (`TARGET_EXISTS`). The source is only read.
+ * Each copy is made beside its target and renamed into place, so a failed one leaves no half copy, and each opens as
+ * generation 1 of a run of its own, refusing a copy that lost a committed sequence like any fork. Nothing guards a source
+ * that another process is opening at the same moment: a local directory has no mount to take it exclusively.
+ */
+export async function forkLocal(from: string, into: readonly { readonly id: string; readonly root: string }[]): Promise<ForkLocalResult[]> {
+  const source = resolve(from);
+  for (const t of into) runPath(t.id); // a run id the disk would refuse is refused here too
+  const targets = into.map((t) => ({ id: t.id, root: resolve(t.root) }));
+  if (targets.length === 0) throw new ForkError("INVALID_ARGUMENT", "forkLocal needs at least one target");
+  if (new Set(targets.map((t) => t.root)).size !== targets.length) throw new ForkError("INVALID_ARGUMENT", "two targets are the same directory");
+  if (targets.some((t) => t.root === source)) throw new ForkError("INVALID_ARGUMENT", "a fork needs a directory of its own, not the source's");
+  const record = await readRunRecord(source).catch((cause: unknown) => {
+    throw new ForkError("SOURCE_NOT_RELEASED", `${source} holds no readable run.json`, { cause });
+  });
+  if (!record || !RELEASED.includes(record.status) || record.sealedSeq === null) {
+    throw new ForkError("SOURCE_NOT_RELEASED", `the run in ${source} is not released and sealed (${record ? `${record.status}, sealedSeq ${record.sealedSeq}` : "no run.json"})`);
+  }
+  if (targets.some((t) => t.id === record.run)) throw new ForkError("INVALID_ARGUMENT", "a fork needs a new run id");
+  for (const t of targets) {
+    if (await lstat(t.root).then(() => true, () => false)) throw new ForkError("TARGET_EXISTS", `${t.root} already exists`);
+  }
+  const asRoot = process.getuid?.() === 0;
+  const made: string[] = [];
+  const results: ForkLocalResult[] = [];
+  try {
+    for (const t of targets) {
+      const temp = `${t.root}.fork-${process.pid}-${Date.now().toString(36)}`;
+      await mkdir(dirname(t.root), { recursive: true });
+      const st = await lstat(source);
+      await mkdir(temp, { mode: st.mode & 0o7777 });
+      const count = { files: 0, bytes: 0 };
+      try {
+        await copyTree(source, temp, true, asRoot, count);
+        const forked: RunRecord = {
+          run: t.id,
+          status: "paused",
+          generation: 0,
+          sealedSeq: record.sealedSeq,
+          wakeAt: null,
+          holder: null,
+          heartbeatAt: null,
+          updatedAt: new Date().toISOString(),
+          detail: { forkedFrom: { run: record.run, generation: record.generation, sealedSeq: record.sealedSeq } },
+        };
+        await persistRecord(temp, `${JSON.stringify(forked, null, 2)}\n`);
+        await rename(temp, t.root);
+      } catch (error) {
+        await rm(temp, { recursive: true, force: true });
+        throw error instanceof ForkError ? error : new ForkError("COPY_FAILED", `copying ${source} to ${t.root} failed: ${(error as Error).message}`, { cause: error });
+      }
+      made.push(t.root);
+      results.push({ run: t.id, root: t.root, from: record.run, sealedSeq: record.sealedSeq, sourceGeneration: record.generation, ...count });
+    }
+    return results;
+  } catch (error) {
+    for (const root of made) await rm(root, { recursive: true, force: true });
+    throw error;
   }
 }
