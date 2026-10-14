@@ -37,9 +37,11 @@ export function repoPages(fixture: Fixture) {
   return pages;
 }
 
-export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallProbe): Fakes {
+/** `pace` makes a replay take about as long as the work would: a registry or advisory read waits `pace` ms, an install five times that. */
+export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallProbe, pace = 0): Fakes {
   const pages = repoPages(fixture);
-  const tools = makeTools({ root, source: { replay: fixture }, ...(probe ? { probe } : {}) });
+  const quick = makeTools({ root, source: { replay: fixture }, ...(probe ? { probe } : {}) });
+  const tools = pace > 0 ? Object.fromEntries(Object.entries(quick).map(([name, tool]) => [name, async (args: Record<string, unknown>) => { await new Promise((resolveWait) => setTimeout(resolveWait, name === 'install' ? pace * 5 : pace)); return tool(args); }])) as typeof quick : quick;
 
   /** The repository agent: open the repository page, read it, open its releases page, read it, report. */
   const repositoryAgent = (messages: readonly Message[], prompt: string): AssistantMessage => {
