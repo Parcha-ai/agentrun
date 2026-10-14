@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -430,6 +430,33 @@ describe("recovering a session whose box is gone", () => {
 		);
 		expect(recovered.restored?.n).toBe(1);
 		expect(readFileSync(join(r.target.workspace, "a.txt"), "utf8")).toBe("alpha");
+	});
+
+	it("restores from the previous generation when the latest store no longer matches its seal", async () => {
+		const r = await lost();
+		const second = getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: r.fx.place, home: r.fx.home, epoch: 1, vault: r.vault },
+				noContext,
+			),
+		);
+		appendFileSync(second.storeFile, "damage");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		expect(recovered.restored?.n).toBe(1);
 	});
 
 	it("says no_checkpoint when none checks out, makes no box and leaves the lease", async () => {
