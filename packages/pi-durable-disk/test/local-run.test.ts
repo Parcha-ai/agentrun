@@ -10,12 +10,37 @@ import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { FencedError } from "../src/errors.ts";
-import { alive, ctx, killQuietly, scratchRoot, scriptedHarness } from "./_run-support.ts";
+import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
 
 describe("localRun", () => {
+  it("two local runs in one process: reopening one never kills a command of the other", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("local-two");
+    const open = (id: string) => {
+      const scripted = scriptedHarness();
+      return openDurableRun({ disk: "dsk-local", region: "local", id }, { ...localRun(join(dir.root, id)), harness: { models: scripted.models, registry: scripted.registry } }).then((run) => ({ run, agent: scripted.agent }));
+    };
+    let [commandA, commandB] = [0, 0];
+    try {
+      const a = await open("a");
+      commandA = await startCommand(a.run, a.agent);
+      const b = await open("b");
+      commandB = await startCommand(b.run, b.agent);
+      await new Promise((resolve) => setTimeout(resolve, 400)); // several walks of both recorders while both commands run
+      await b.run.release(); // ends b's command; a's goes on
+      assert.deepEqual([alive(commandA), alive(commandB)], [true, false]);
+      const b2 = await open("b"); // its commands step reaps what b recorded
+      assert.ok(alive(commandA), "a's command outlived the reopening of b");
+      await b2.run.release();
+      await a.run.release();
+    } finally {
+      for (const pid of [commandA, commandB]) if (pid > 0) killQuietly(pid);
+      dir.remove();
+    }
+  });
+
   it("ends the commands a SIGKILLed instance left running at the next open, before the Harness opens", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("local-commands");
     const root = join(dir.root, "run");

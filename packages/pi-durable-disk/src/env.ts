@@ -26,7 +26,7 @@ import type {
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { CommandRecorder } from "./commands.ts";
+import { COMMANDS_MARK, CommandRecorder } from "./commands.ts";
 import { canonicalizeSync, confineHooks, Confinement, fileError, inside } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
@@ -182,12 +182,15 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     this.#scope.running.add(this);
     this.#scope.recorder?.started();
     try {
-      const confined = await this.#confine(command, options, context);
+      // A recorded environment marks its commands, so its recorder knows them from any other child of this process.
+      const recorder = this.#scope.recorder;
+      const run = recorder === undefined ? options : { ...options, env: { ...options?.env, [COMMANDS_MARK]: recorder.token } };
+      const confined = await this.#confine(command, run, context);
       if (!confined.ok) return confined;
       // Again after the confinement lookups, which await; the signal then covers pi's own pre-spawn work: pi refuses
       // before spawning once it is aborted, and kills a command that spawns after.
       if (closing.signal.aborted) return err(new EnvClosedError());
-      return await super.exec(confined.value, options, withAbortSignal(closing.signal, context));
+      return await super.exec(confined.value, run, withAbortSignal(closing.signal, context));
     } finally {
       this.#scope.recorder?.finished();
       if (--this.#active === 0) this.#scope.running.delete(this);
@@ -694,7 +697,14 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
     closing: new AbortController(),
     confinement,
     tempCanonical: confinement === undefined ? undefined : join(canonicalizeSync(claim.root), TEMP_DIR),
-    recorder: claim.commands === undefined ? undefined : new CommandRecorder(claim.commands),
+    // A record that cannot be written (a full disk) leaves a command the next open could miss: said once on stderr, and
+    // the recorder keeps trying; the run goes on.
+    recorder:
+      claim.commands === undefined
+        ? undefined
+        : new CommandRecorder(claim.commands, {
+            onError: (error) => process.stderr.write(`pi-durable-disk: cannot record the run's commands in ${claim.commands}: ${String(error)}\n`),
+          }),
   };
   const workOwned = runAs ? ownedOnce(claim.work, runAs) : undefined;
   const build = (target: { readonly cwd?: string }) => {

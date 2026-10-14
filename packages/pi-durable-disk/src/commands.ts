@@ -1,15 +1,22 @@
 // The commands a run's environment starts, recorded where the next open of the same claim finds them. pi makes each
 // command the leader of a process group of its own, so killing an instance does not reach its commands: a host's unit
 // cgroup or a container ends them with it, and a run on a local directory has neither. While commands run, the instance
-// walks its own process tree (`/proc/<pid>/task/<tid>/children`) and records each command's group leader and every
-// descendant it has seen, each by pid, start ticks and boot. The next open, which holds the owner lock, kills whatever a
+// walks its own process tree (`/proc/<pid>/task/<tid>/children`) and records each of its commands' group leader and every
+// descendant it has seen, each by pid, start ticks and boot. Its commands are the children that lead their own group and
+// carry its mark (COMMANDS_MARK=<its token>) in their environment: another environment's commands in the same process,
+// or the app's own helpers, are not its to record. The next open, which holds the owner lock, kills whatever a
 // previous incarnation recorded that is still the same process (pid, start ticks and boot all match), waits until it is
 // gone, and clears the records, before the Harness opens. Only the instance writes records: a command never does.
 // Nothing stops a command from writing one too, and none needs stopping: a run's commands run as the instance's user (or,
 // with `runAs`, as another one that cannot write the instance's 0700 directory), so a record a command forged names only
 // what that command could already kill itself. A record grants nothing.
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HeldError } from "./errors.ts";
+
+/** The environment variable that marks a command as one environment's: its value is that recorder's token. */
+export const COMMANDS_MARK = "PI_DURABLE_DISK_COMMANDS";
 
 /** One process, as recorded: a pid alone could be reused, a pid with its start ticks on one boot cannot. */
 export interface ProcessMark {
@@ -80,6 +87,15 @@ function children(proc: string, pid: number): number[] {
   });
 }
 
+/** Whether the process `pid` was started with `name=value` in its environment (false when it cannot be read). */
+function marked(proc: string, pid: number, name: string, value: string): boolean {
+  try {
+    return readFileSync(join(proc, String(pid), "environ"), "utf8").split("\0").includes(`${name}=${value}`);
+  } catch {
+    return false;
+  }
+}
+
 /** Whether `mark` is still the process it was: same pid, same start ticks, not a zombie. */
 function same(proc: string, mark: ProcessMark): boolean {
   return mark.pid > 0 && stat(proc, mark.pid)?.start === mark.start;
@@ -88,28 +104,38 @@ function same(proc: string, mark: ProcessMark): boolean {
 const RECORD = /^(\d+)-(\d+)\.json$/;
 
 /**
- * Records the command groups under this process while commands run. `started()` and `finished()` bracket each command;
- * while any runs, the tree is walked soon after a start and then every `everyMs`. A record is written when its group
- * gains a process and removed once nothing in it is alive.
+ * Records this environment's command groups under this process while commands run. `started()` and `finished()` bracket
+ * each command, which carries `COMMANDS_MARK=<token>` in its environment; while any runs, the tree is walked soon after a
+ * start and then every `everyMs`. A record is written when its group gains a process and removed once nothing in it is
+ * alive. A walk that fails (a record cannot be written: a full disk) goes to `onError` the first time, never out of a
+ * timer, and the next walk tries again.
  */
 export class CommandRecorder {
+  /** The value of `COMMANDS_MARK` in this environment's commands. */
+  readonly token = randomUUID();
   readonly #dir: string;
   readonly #proc: string;
   readonly #instance: number;
   readonly #everyMs: number;
   readonly #boot: string | undefined;
+  readonly #onError: ((error: unknown) => void) | undefined;
+  #reported = false;
   readonly #records = new Map<string, { leader: ProcessMark; members: Map<number, ProcessMark> }>();
   /** The records on disk, by key; a group's first walk writes its record even before it has members. */
   readonly #written = new Set<string>();
   #active = 0;
   #timer: NodeJS.Timeout | undefined;
 
-  constructor(dir: string, options: CommandsOptions & { readonly instance?: number; readonly everyMs?: number } = {}) {
+  constructor(
+    dir: string,
+    options: CommandsOptions & { readonly instance?: number; readonly everyMs?: number; readonly onError?: (error: unknown) => void } = {},
+  ) {
     this.#dir = dir;
     this.#proc = options.proc ?? "/proc";
     this.#instance = options.instance ?? process.pid;
     this.#everyMs = options.everyMs ?? 100;
     this.#boot = bootId(this.#proc);
+    this.#onError = options.onError;
   }
 
   /** A command is about to start. */
@@ -139,8 +165,19 @@ export class CommandRecorder {
     this.#active = 0;
   }
 
-  /** One walk: record what is new under each command group, and drop the records of groups that are gone. */
+  /** One walk. It is called from timers, so it never throws: a failure goes to `onError` once, and the next walk retries. */
   scan(): void {
+    try {
+      this.#scan();
+    } catch (error) {
+      if (this.#reported) return;
+      this.#reported = true;
+      this.#onError?.(error);
+    }
+  }
+
+  /** Record what is new under each of this environment's command groups, and drop the records of groups that are gone. */
+  #scan(): void {
     const boot = this.#boot;
     if (boot === undefined) return;
     const own = stat(this.#proc, this.#instance);
@@ -148,9 +185,11 @@ export class CommandRecorder {
     const seen = new Set<string>();
     for (const pid of children(this.#proc, this.#instance)) {
       const leader = stat(this.#proc, pid);
-      // A command is a child that leads its own group (pi spawns each one so); anything else is not one.
+      // A command is a child that leads its own group (pi spawns each one so) and carries this environment's mark.
       if (leader === undefined || leader.pgrp !== pid || leader.pgrp === own.pgrp) continue;
+      // Once recorded, a leader stays its environment's whatever it execs next (its pid and start ticks do not change).
       const key = `${pid}-${leader.start}`;
+      if (!this.#records.has(key) && !marked(this.#proc, pid, COMMANDS_MARK, this.token)) continue;
       seen.add(key);
       let record = this.#records.get(key);
       if (record === undefined) {
@@ -257,4 +296,21 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   }
   if (survivors.length === 0) rmSync(dir, { recursive: true, force: true });
   return { signalled, survivors };
+}
+
+/**
+ * `reapCommands` at an open: refuses the run (`HeldError("commands")`, exit 76) when a process a killed incarnation's
+ * commands left is still alive after it, since the run must not resume beside it. Its record stays, and the next open
+ * tries again.
+ */
+export async function reapOrRefuse(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
+  const reaped = await reapCommands(dir, options);
+  if (reaped.survivors.length > 0) {
+    throw new HeldError(
+      "commands",
+      `${reaped.survivors.length} process(es) a killed incarnation's commands left are alive after SIGKILL (pids ${reaped.survivors.map((s) => s.pid).join(", ")}); ` +
+        `the run does not resume beside them. They stay recorded in ${dir}, and the next open tries again.`,
+    );
+  }
+  return reaped;
 }
