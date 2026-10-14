@@ -1,0 +1,413 @@
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Context } from "@earendil-works/chord";
+import { withoutAbortSignal } from "@earendil-works/chord/context";
+import { err, ok, type Result } from "@earendil-works/pi-durable/env";
+import { type Box, BoxError, type BoxExecOptions, type BoxFacts, type BoxProcess } from "../box/box.ts";
+import { adaptChild } from "../box/child.ts";
+import { downloadByExec, uploadByExec } from "../box/files.ts";
+import type { DrainOptions } from "./gate.ts";
+import type { CallRecord, HomeHandle } from "./host.ts";
+import type { Place } from "./move.ts";
+import type { Seal } from "./store.ts";
+import { type Manifest, manifestSince, moveChanged, moveFile, type WorkspaceOptions } from "./workspace.ts";
+
+/** Why a vault call failed. Returned, never thrown. */
+export class VaultError extends Error {
+	public code: "io" | "invalid";
+
+	constructor(code: VaultError["code"], message: string, cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = "VaultError";
+		this.code = code;
+	}
+}
+
+/** One checkpoint, as the vault keeps it. Paths are in `CheckpointVault.box`. */
+export type Checkpoint = {
+	readonly session: string;
+	/** The generation number, 1 for the first, one more each time. */
+	readonly n: number;
+	/** When the session was held for it, by the host's clock, in milliseconds since 1970. */
+	readonly at: number;
+	/** The epoch of the lease that named the home it was taken from. */
+	readonly epoch: number;
+	readonly seal: Seal;
+	readonly manifest: Manifest;
+	/** The store's file. */
+	readonly storeFile: string;
+	/** The workspace tree. */
+	readonly filesRoot: string;
+};
+
+/** A generation being made: its paths exist (the tree is a copy of the latest one) and it is not a checkpoint yet. */
+export type PendingCheckpoint = {
+	readonly session: string;
+	readonly n: number;
+	readonly storeFile: string;
+	readonly filesRoot: string;
+	/** The generation the tree was copied from, whose manifest the delta is taken against. */
+	readonly previous: Checkpoint | undefined;
+};
+
+/**
+ * Where a host keeps the checkpoints of its sessions, as generations. A generation is a checkpoint only when `commit`
+ * has recorded it; `latest` never names a half-made one.
+ */
+export interface CheckpointVault {
+	/** The box the generations' files are in: the movers copy to and from it. */
+	readonly box: Box;
+	/** Make the paths of the next generation, its tree copied from the latest. */
+	begin(session: string, context: Context): Promise<Result<PendingCheckpoint, VaultError>>;
+	/** Record a generation: after this, `latest` names it. */
+	commit(
+		pending: PendingCheckpoint,
+		meta: Pick<Checkpoint, "at" | "epoch" | "seal" | "manifest">,
+		context: Context,
+	): Promise<Result<Checkpoint, VaultError>>;
+	/** Remove a generation that was begun and not committed. */
+	discard(pending: PendingCheckpoint): Promise<void>;
+	latest(session: string, context: Context): Promise<Result<Checkpoint | undefined, VaultError>>;
+	get(session: string, n: number, context: Context): Promise<Result<Checkpoint | undefined, VaultError>>;
+	/** Keep the newest `keep` generations of the session and remove the rest. Returns how many were removed. */
+	prune(session: string, keep: number, context: Context): Promise<Result<number, VaultError>>;
+}
+
+const DEFAULT_KEEP = 3;
+
+/** A box that is this machine, for the movers to copy into and out of a directory of the vault. No watchdog, no record. */
+function hostBox(directory: string): Box {
+	const facts: BoxFacts = {
+		provider: "vault",
+		isolation: "none",
+		cpus: null,
+		memoryMb: null,
+		gpu: null,
+		workspace: directory,
+		maxLifetimeMs: null,
+		snapshot: null,
+		bulk: "stream",
+	};
+	const box: Box = {
+		id: `vault:${directory}`,
+		facts: () => facts,
+		exec(command: readonly string[], options: BoxExecOptions | undefined, context: Context) {
+			if (command.length === 0) return Promise.resolve(err(new BoxError("invalid", "the command is empty")));
+			const child = spawn(command[0] as string, command.slice(1), {
+				cwd: directory,
+				stdio: ["pipe", "pipe", "pipe"],
+				env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: directory, TMPDIR: directory },
+			});
+			const process_ = adaptChild(child, () => child.kill("SIGKILL"), options, context);
+			return Promise.resolve(ok(process_ satisfies BoxProcess));
+		},
+		upload: (files, context) => uploadByExec(box, files, context),
+		download: (paths, context) => downloadByExec(box, paths, context),
+		status: async () => ok({ state: "running" as const }),
+		destroy: async () => ok(undefined),
+	};
+	return box;
+}
+
+const generationName = (n: number) => `gen-${String(n).padStart(8, "0")}`;
+
+/**
+ * A vault in a directory of this machine. A generation is `gen-<n>/store.db`, `gen-<n>/files/` and `gen-<n>.json`;
+ * the tree of a new generation is a hard-linked copy of the latest one's, so it costs only what changed (a file the
+ * delta rewrites gets a new inode, and the older generation keeps its own). `latest` is the highest number with a
+ * record; a record is written whole and renamed into place after the generation's files are in.
+ */
+export function localVault(directory: string): CheckpointVault {
+	const box = hostBox(directory);
+	const dirOf = (session: string) => join(directory, encodeURIComponent(session));
+	const numbers = (session: string): number[] => {
+		try {
+			return readdirSync(dirOf(session))
+				.map((name) => /^gen-(\d{8})\.json$/.exec(name)?.[1])
+				.filter((value): value is string => value !== undefined)
+				.map(Number)
+				.sort((a, b) => a - b);
+		} catch {
+			return [];
+		}
+	};
+	const read = (session: string, n: number): Checkpoint | undefined => {
+		try {
+			const meta = JSON.parse(readFileSync(join(dirOf(session), `${generationName(n)}.json`), "utf8")) as Omit<
+				Checkpoint,
+				"storeFile" | "filesRoot" | "session" | "n"
+			>;
+			const base = join(dirOf(session), generationName(n));
+			return { session, n, ...meta, storeFile: join(base, "store.db"), filesRoot: join(base, "files") };
+		} catch {
+			return undefined;
+		}
+	};
+	const io = (what: string, cause: unknown) =>
+		new VaultError("io", `${what}: ${cause instanceof Error ? cause.message : String(cause)}`, cause);
+
+	return {
+		box,
+		async begin(session) {
+			try {
+				mkdirSync(dirOf(session), { recursive: true });
+				const all = numbers(session);
+				const previous = all.length === 0 ? undefined : read(session, all.at(-1) as number);
+				// Numbers are never reused, also over a generation that was removed or never committed.
+				let n = (all.at(-1) ?? 0) + 1;
+				while (readdirSync(dirOf(session)).includes(generationName(n))) n += 1;
+				const base = join(dirOf(session), generationName(n));
+				mkdirSync(base, { recursive: true });
+				const filesRoot = join(base, "files");
+				if (previous === undefined) mkdirSync(filesRoot);
+				else execFileSync("cp", ["-al", "--", previous.filesRoot, filesRoot]);
+				return ok({ session, n, storeFile: join(base, "store.db"), filesRoot, previous });
+			} catch (cause) {
+				return err(io("could not begin a generation", cause));
+			}
+		},
+		async commit(pending, meta) {
+			try {
+				const record = { at: meta.at, epoch: meta.epoch, seal: meta.seal, manifest: meta.manifest };
+				const file = join(dirOf(pending.session), `${generationName(pending.n)}.json`);
+				writeFileSync(`${file}.partial`, JSON.stringify(record));
+				renameSync(`${file}.partial`, file);
+				return ok({
+					session: pending.session,
+					n: pending.n,
+					...meta,
+					storeFile: pending.storeFile,
+					filesRoot: pending.filesRoot,
+				});
+			} catch (cause) {
+				return err(io("could not record the generation", cause));
+			}
+		},
+		async discard(pending) {
+			rmSync(join(dirOf(pending.session), generationName(pending.n)), { recursive: true, force: true });
+		},
+		async latest(session) {
+			const all = numbers(session);
+			return ok(all.length === 0 ? undefined : read(session, all.at(-1) as number));
+		},
+		async get(session, n) {
+			return ok(read(session, n));
+		},
+		async prune(session, keep) {
+			try {
+				const all = numbers(session);
+				const gone = all.slice(0, Math.max(0, all.length - Math.max(1, keep)));
+				for (const n of gone) {
+					// The record first: a generation without its record is not a checkpoint any more.
+					rmSync(join(dirOf(session), `${generationName(n)}.json`), { force: true });
+					rmSync(join(dirOf(session), generationName(n)), { recursive: true, force: true });
+				}
+				return ok(gone.length);
+			} catch (cause) {
+				return err(io("could not remove old generations", cause));
+			}
+		},
+	};
+}
+
+/** Why a checkpoint was not taken. `busy`: the session did not come to rest in time. `changed`: the workspace changed while it was pulled. */
+export type SkipReason = "busy" | "changed" | "too_large" | "failed";
+
+/** What the host knows of its checkpoints, for a panel to show: how many were taken and why the others were not. */
+export type CheckpointStats = {
+	taken: number;
+	skipped: Record<SkipReason, number>;
+	/** The newest checkpoint taken. */
+	last?: { n: number; at: number; ms: number; bytes: number };
+	/** The newest skip, with what held it. */
+	lastSkip?: { reason: SkipReason; message: string; at: number; holdouts: readonly { kind: string; count: number }[] };
+};
+
+/** A fresh count. */
+export function checkpointStats(): CheckpointStats {
+	return { taken: 0, skipped: { busy: 0, changed: 0, too_large: 0, failed: 0 } };
+}
+
+/** A checkpoint that was not taken, and why. The session went on where it was; the previous checkpoint is still the latest. */
+export class CheckpointSkipped extends Error {
+	public reason: SkipReason;
+	public holdouts: readonly { kind: string; count: number }[];
+
+	constructor(reason: SkipReason, message: string, holdouts: CheckpointSkipped["holdouts"] = [], cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = "CheckpointSkipped";
+		this.reason = reason;
+		this.holdouts = holdouts;
+	}
+}
+
+export type PullOptions = {
+	readonly session: string;
+	/** The home's place and the host's hold on it. */
+	readonly place: Place;
+	readonly home: HomeHandle;
+	/** The epoch of the lease that names it. */
+	readonly epoch: number;
+	readonly vault: CheckpointVault;
+	/** How long the session may take to come to rest. Default 10 s: a checkpoint is skipped, never waited for long. */
+	readonly drain?: DrainOptions;
+	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
+	/** The longest the session may be held, from the moment it came to rest, to have the checkpoint on the host. Default 2 minutes. */
+	readonly holdMs?: number;
+	/** Generations kept. Default 3. */
+	readonly keep?: number;
+	readonly stats?: CheckpointStats;
+};
+
+const DEFAULT_PULL_DRAIN_MS = 10_000;
+const DEFAULT_HOLD_MS = 120_000;
+
+/**
+ * Take a checkpoint of the session now. The session is held for the store's copy and the workspace's manifest, and let go
+ * before any file moves; the files are then pulled and checked against the manifest. A checkpoint is whole (store,
+ * workspace, one moment) or it is skipped: `busy` when the session did not come to rest, `changed` when a file no longer
+ * matched its manifest, `too_large` over `maxBytes`, `failed` for the rest. A skipped checkpoint leaves the previous one
+ * the latest and the session running.
+ */
+export async function pullCheckpoint(
+	options: PullOptions,
+	context: Context,
+): Promise<Result<Checkpoint, CheckpointSkipped>> {
+	const started = performance.now();
+	let bytes = 0;
+	const { session, place, home, vault } = options;
+	const skip = (
+		reason: SkipReason,
+		message: string,
+		holdouts: CheckpointSkipped["holdouts"] = [],
+		cause?: unknown,
+	) => {
+		const skipped = new CheckpointSkipped(reason, message, holdouts, cause);
+		if (options.stats !== undefined) {
+			options.stats.skipped[reason] += 1;
+			options.stats.lastSkip = { reason, message, at: Date.now(), holdouts };
+		}
+		return { ok: false as const, error: skipped };
+	};
+	const latest = await vault.latest(session, context);
+	if (!latest.ok) return skip("failed", latest.error.message, [], latest.error);
+	const previous = latest.value;
+
+	const held = await home.checkpoint(options.drain ?? { timeoutMs: DEFAULT_PULL_DRAIN_MS }, context);
+	if (!held.ok) {
+		return skip(
+			held.error.code === "timeout" ? "busy" : "failed",
+			held.error.message,
+			held.error.holdouts,
+			held.error,
+		);
+	}
+	const at = Date.now();
+	// The session stays held until everything of this moment is on the host, so that the files and the store are of one
+	// moment; it is let go whatever happens, and no longer than `holdMs` after it came to rest.
+	const holdMs = options.holdMs ?? DEFAULT_HOLD_MS;
+	const limits = { stallMs: holdMs, deadlineMs: holdMs };
+	let committed: Result<Checkpoint, CheckpointSkipped>;
+	try {
+		committed = await (async (): Promise<Result<Checkpoint, CheckpointSkipped>> => {
+			const manifest = await manifestSince(
+				place.box,
+				place.workspace,
+				previous?.manifest,
+				options.workspace,
+				context,
+			);
+			if (!manifest.ok)
+				return skip(
+					manifest.error.code === "too_large" ? "too_large" : "failed",
+					manifest.error.message,
+					[],
+					manifest.error,
+				);
+			if (options.workspace?.maxBytes !== undefined && manifest.value.bytes > options.workspace.maxBytes) {
+				return skip(
+					"too_large",
+					`the workspace holds ${manifest.value.bytes} bytes, the limit is ${options.workspace.maxBytes}`,
+				);
+			}
+			const begun = await vault.begin(session, context);
+			if (!begun.ok) return skip("failed", begun.error.message, [], begun.error);
+			const pending = begun.value;
+			const fail = async (error: Error, reason: SkipReason) => {
+				await vault.discard(pending);
+				return skip(reason, error.message, [], error);
+			};
+			const file = await moveFile(
+				place.box,
+				held.value.path,
+				vault.box,
+				pending.storeFile,
+				held.value.seal,
+				undefined,
+				context,
+			);
+			if (!file.ok) return fail(file.error, "failed");
+			const files = await moveChanged(
+				place.box,
+				vault.box,
+				{
+					fromRoot: place.workspace,
+					toRoot: pending.filesRoot,
+					previous: pending.previous?.manifest,
+					current: manifest.value,
+					...limits,
+					...options.workspace,
+				},
+				context,
+			);
+			if (!files.ok) {
+				const reason: SkipReason =
+					files.error.code === "mismatch" ? "changed" : files.error.code === "too_large" ? "too_large" : "failed";
+				return fail(files.error, reason);
+			}
+			const recorded = await vault.commit(
+				pending,
+				{ at, epoch: options.epoch, seal: held.value.seal, manifest: manifest.value },
+				context,
+			);
+			if (!recorded.ok) return fail(recorded.error, "failed");
+			bytes = held.value.seal.bytes + files.value.bytes;
+			return ok(recorded.value);
+		})();
+	} finally {
+		await home.abandon(withoutAbortSignal(context));
+	}
+	if (!committed.ok) return committed;
+	await vault.prune(session, options.keep ?? DEFAULT_KEEP, context);
+	if (options.stats !== undefined) {
+		options.stats.taken += 1;
+		options.stats.last = { n: committed.value.n, at, ms: Math.round(performance.now() - started), bytes };
+	}
+	return ok(committed.value);
+}
+
+/**
+ * What a session is told once it was restored from a checkpoint after its machine was lost. It says when the
+ * checkpoint was taken, and which tool calls the host saw begin after it: a call that may run again, and one that must
+ * not be assumed not to have happened.
+ */
+export function restoreNotice(checkpoint: Pick<Checkpoint, "at">, calls: readonly CallRecord[]): string {
+	const since = calls.filter((call) => call.startedAt >= checkpoint.at);
+	const when = new Date(checkpoint.at).toISOString();
+	const names = (list: readonly CallRecord[]) => [...new Set(list.map((call) => call.tool))].join(", ");
+	const again = since.filter((call) => call.replay === "safe");
+	const maybe = since.filter((call) => call.replay !== "safe");
+	const lines = [
+		`System notice: this session was restored from a checkpoint taken at ${when}, after its machine was lost.`,
+		"Files changed and commands run after that time did not survive. Effects outside the machine (a push, an API call, a message) may or may not have happened: check before you repeat one. Programs that were running did not come along.",
+	];
+	if (since.length > 0) {
+		lines.push(
+			`After that checkpoint the host saw ${since.length} tool call${since.length === 1 ? "" : "s"} begin.${
+				maybe.length > 0 ? ` These may have had an effect that is not repeated for you: ${names(maybe)}.` : ""
+			}${again.length > 0 ? ` These are safe to run again: ${names(again)}.` : ""}`,
+		);
+	}
+	return lines.join(" ");
+}

@@ -4,7 +4,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
-import type { HomeState, ResumeOrder } from "./run.ts";
+import type { CheckpointTaken, HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
 /** What a runner said when the link came up. */
@@ -28,6 +28,17 @@ export class RemoteError extends Error {
 	}
 }
 
+/** A tool call a runner reported: when it began, and when it ended if it did. Times are the host's own clock. */
+export type CallRecord = {
+	readonly id: string;
+	readonly tool: string;
+	readonly replay: "safe" | "unsafe";
+	readonly startedAt: number;
+	readonly endedAt?: number;
+};
+
+const CALL_LEDGER_LIMIT = 1_000;
+
 /** The host's hold on one runner: orders out, answers back, and the runner's model requests served. */
 export interface HomeHandle {
 	/** Settles when the runner said it is ready, or the link went down first. */
@@ -38,6 +49,13 @@ export interface HomeHandle {
 	seal(context: Context): Promise<Result<Seal, RemoteError>>;
 	reopen(epoch: number, context: Context): Promise<Result<void, RemoteError>>;
 	retire(epoch: number, context: Context): Promise<Result<void, RemoteError>>;
+	/**
+	 * Hold the session and have the runner copy its store beside it (`Home.checkpoint`). The session stays held until
+	 * `abandon`, so the caller can read the workspace at the same moment.
+	 */
+	checkpoint(options: DrainOptions | undefined, context: Context): Promise<Result<CheckpointTaken, RemoteError>>;
+	/** The tool calls this runner reported, oldest first, the last 1,000. Kept in this process only. */
+	calls(): readonly CallRecord[];
 	submit(
 		content: string,
 		requestId: string | undefined,
@@ -75,6 +93,11 @@ function isSeal(value: unknown): value is Seal {
 	);
 }
 
+function isCheckpoint(value: unknown): value is CheckpointTaken {
+	const taken = value as { seal?: unknown; path?: unknown } | null;
+	return typeof taken === "object" && taken !== null && isSeal(taken.seal) && typeof taken.path === "string";
+}
+
 function isStatus(value: unknown): value is { readonly state: HomeState; readonly epoch: number | null } {
 	const status = value as { state?: unknown; epoch?: unknown } | null;
 	return (
@@ -108,8 +131,27 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 		settleReady = resolve;
 	});
 	const reply = (frame: Frame) => link.send(frame);
+	const ledger: CallRecord[] = [];
 
 	link.onFrame((frame) => {
+		if (frame.t === "call") {
+			// A report from another epoch is a home the lease left behind: its model requests are refused, its calls ignored.
+			if (frame.epoch !== epoch || typeof frame.id !== "string" || typeof frame.tool !== "string") return;
+			const at = Date.now();
+			if (frame.phase === "start") {
+				ledger.push({
+					id: frame.id,
+					tool: frame.tool,
+					replay: frame.replay === "safe" ? "safe" : "unsafe",
+					startedAt: at,
+				});
+				if (ledger.length > CALL_LEDGER_LIMIT) ledger.shift();
+			} else if (frame.phase === "end") {
+				const at_ = ledger.findLastIndex((record) => record.id === frame.id);
+				if (at_ >= 0) ledger[at_] = { ...(ledger[at_] as CallRecord), endedAt: at };
+			}
+			return;
+		}
 		if (MODEL_FRAMES.has(frame.t)) {
 			if (frame.epoch !== epoch) {
 				link.send({
@@ -166,6 +208,9 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 		resume: (resumeOrder, context) => order("resume", resumeOrder, context),
 		drain: (drainOptions, context) => order("drain", drainOptions ?? {}, context),
 		abandon: (context) => order("abandon", {}, context),
+		checkpoint: async (checkpointOptions, context) =>
+			checked(await order<unknown>("checkpoint", checkpointOptions ?? {}, context), isCheckpoint, "checkpoint"),
+		calls: () => [...ledger],
 		seal: async (context) => checked(await order<unknown>("seal", {}, context), isSeal, "seal"),
 		reopen: (to, context) => order("reopen", { epoch: to }, context),
 		retire: (to, context) => order("retire", { epoch: to }, context),

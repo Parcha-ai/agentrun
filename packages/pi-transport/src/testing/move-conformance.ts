@@ -11,6 +11,7 @@ import type { StorageConformanceRunner } from "@earendil-works/pi-durable/testin
 import { Type } from "typebox";
 import { finish } from "../box/files.ts";
 import type { App } from "../home/app.ts";
+import { localVault, pullCheckpoint } from "../home/checkpoint.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
@@ -717,6 +718,206 @@ export function registerMoveConformance(
 					),
 				timeoutMs,
 			);
+		}
+	});
+}
+
+/** Three places of one provider: the session starts at `a`, moves to `b`, and `c` is where a lost box is rebuilt. */
+export type RestoreTrio = MovePair & { readonly c: Place };
+
+/** Calls `use` once with a fresh trio, then ends the boxes. */
+export type RestoreTrioProvider = (use: (trio: RestoreTrio) => Promise<void>) => Promise<void>;
+
+/** Whether a kill just before `step` of a move from `a` to `b` leaves the lease naming a box that is gone. */
+function leaseLost(step: MoveStep, who: "source" | "target"): boolean {
+	const at = STEPS.indexOf(step);
+	// The take is the point of no return: before it a lost source loses the session, after it a lost target does. A lost
+	// source after the seal is no loss once its store is shipped, and a lost target before the take gives the move up.
+	return who === "source" ? at <= STEPS.indexOf("ship") : at >= STEPS.indexOf("resume");
+}
+
+/**
+ * The checkpoint pull and the restore of a lost box, on three places of one provider. A session runs at `a` and the
+ * host takes a checkpoint of it; then the whole box of the home is destroyed just before each step of a move to `b`
+ * (the source's box before each, the target's box before each), and a host recovers the session. Where the lease
+ * names a box that is gone, the session is rebuilt in `c` from the checkpoint and the lease is taken at the next epoch;
+ * where it names a box that lives, the move or the old home goes on. Every case ends with the session finished,
+ * every round's effect once in the box that ends up with it (a checkpoint holds the store and the files of one moment,
+ * so the rounds after it run again from a workspace that does not have them), the notice once, and the lease where the
+ * case says.
+ */
+export function registerRestoreConformance(
+	runner: StorageConformanceRunner,
+	name: string,
+	withTrio: RestoreTrioProvider,
+	options?: { readonly timeoutMs?: number },
+): void {
+	const timeoutMs = options?.timeoutMs ?? 180_000;
+	const every = Array.from({ length: ROUNDS }, (_, n) => String(n));
+	const equal = (actual: unknown, expected: unknown, message: string) => {
+		if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+			throw new Error(`${message}: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`);
+		}
+	};
+	/** A vault in a directory of this machine, removed with the case. */
+	const withVault = async (use: (vault: ReturnType<typeof localVault>) => Promise<void>) => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-transport-vault-"));
+		try {
+			await use(localVault(directory));
+		} finally {
+			rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	};
+	/** `c`, as the place the lost one is rebuilt in: same environment name, so the lease names it. */
+	const replacing = (trio: RestoreTrio) => async (gone: Place) => ({
+		ok: true as const,
+		value: { ...trio.c, environment: gone.environment, provider: gone.provider },
+	});
+	const checkpointNow = async (trio: RestoreTrio, run: Run, vault: ReturnType<typeof localVault>) => {
+		const taken = await pullCheckpoint(
+			{ session: SESSION, place: trio.a, home: run.home, epoch: 1, vault, drain: { timeoutMs: 5_000 } },
+			context,
+		);
+		if (!taken.ok) throw new Error(`the checkpoint was not taken: ${taken.error.reason}: ${taken.error.message}`);
+		return taken.value;
+	};
+
+	runner.describe(name, () => {
+		runner.it(
+			"rebuilds a session whose box was destroyed after a checkpoint: it finishes, every round once, one notice, the lease one epoch on",
+			() =>
+				withTrio((trio) =>
+					withVault((vault) =>
+						withRun(trio, async (run) => {
+							await sleep(400);
+							const checkpoint = await checkpointNow(trio, run, vault);
+							// Work after the checkpoint is lost with the box, and done again.
+							await sleep(300);
+							getOrThrow(await trio.a.box.destroy(context));
+							const recovered = getOrThrow(
+								await recoverHome(
+									{
+										session: SESSION,
+										ownership: run.lease,
+										places: { [trio.a.environment]: trio.a },
+										start: run.start,
+										notice: NOTICE,
+										vault,
+										replace: replacing(trio),
+										calls: run.home.calls(),
+										noticeOfRestore: () => NOTICE,
+									},
+									context,
+								),
+							);
+							equal(recovered.restored?.n, checkpoint.n, "the checkpoint it restored from");
+							getOrThrow(await recovered.home.idle(context));
+							equal(await run.effects(trio.c), every, "the rounds in the rebuilt box");
+							equal(await run.held(), { epoch: 2, environment: trio.a.environment }, "the lease");
+							equal(run.notices(), 1, "the notices the model saw");
+						}),
+					),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
+			"says no_checkpoint, and changes nothing, when the box is gone and the host has none",
+			() =>
+				withTrio((trio) =>
+					withVault((vault) =>
+						withRun(trio, async (run) => {
+							await sleep(150);
+							getOrThrow(await trio.a.box.destroy(context));
+							const recovered = await recoverHome(
+								{
+									session: SESSION,
+									ownership: run.lease,
+									places: { [trio.a.environment]: trio.a },
+									start: run.start,
+									notice: NOTICE,
+									vault,
+									replace: replacing(trio),
+								},
+								context,
+							);
+							equal(recovered.ok ? "recovered" : recovered.error.code, "no_checkpoint", "the outcome");
+							equal(await run.held(), { epoch: 1, environment: trio.a.environment }, "the lease");
+						}),
+					),
+				),
+			timeoutMs,
+		);
+
+		for (const who of ["source", "target"] as const) {
+			for (const step of STEPS) {
+				const lost = leaseLost(step, who);
+				runner.it(
+					`kills the ${who}'s whole box just before ${step}: ${lost ? "the session is rebuilt from the checkpoint" : "the move or the old home goes on"}`,
+					() =>
+						withTrio((trio) =>
+							withVault((vault) =>
+								withRun(trio, async (run) => {
+									await sleep(300);
+									await checkpointNow(trio, run, vault);
+									const victim = who === "source" ? trio.a : trio.b;
+									const moved = await moveHome(
+										{
+											session: SESSION,
+											host: "host-1",
+											ownership: run.lease,
+											from: { place: trio.a, home: run.home, epoch: 1 },
+											to: trio.b,
+											start: run.start,
+											notice: NOTICE,
+											onStep: async (at) => {
+												if (at === "drain") run.drainCame();
+												if (at === step) getOrThrow(await victim.box.destroy(context));
+											},
+										},
+										context,
+									);
+									let home = moved.ok ? moved.value.home : undefined;
+									let restored = false;
+									if (home === undefined || !(await home.idle(context)).ok) {
+										const recovered = getOrThrow(
+											await recoverHome(
+												{
+													session: SESSION,
+													ownership: run.lease,
+													places: { [trio.a.environment]: trio.a, [trio.b.environment]: trio.b },
+													start: run.start,
+													notice: NOTICE,
+													vault,
+													replace: replacing(trio),
+													calls: run.home.calls(),
+													noticeOfRestore: () => NOTICE,
+												},
+												context,
+											),
+										);
+										restored = recovered.restored !== undefined;
+										home = recovered.home;
+										getOrThrow(await home.idle(context));
+									}
+									equal(restored, lost, "whether the session was rebuilt from a checkpoint");
+									const holder = await run.held();
+									if (restored) {
+										const environment = who === "source" ? trio.a.environment : trio.b.environment;
+										equal(
+											holder?.environment,
+											environment,
+											"the lease names the lost box's environment, rebuilt",
+										);
+										equal(await run.effects(trio.c), every, "the rounds in the rebuilt box");
+										equal(run.notices(), 1, "the notices the model saw");
+									}
+								}),
+							),
+						),
+					timeoutMs,
+				);
+			}
 		}
 	});
 }

@@ -108,6 +108,8 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
+			case "checkpoint":
+				return home.checkpoint(args as DrainOptions, context);
 			case "seal":
 				return home.seal(context);
 			case "submit": {
@@ -143,7 +145,14 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
 			});
 			proxy = made;
-			const opened = await openHome({ ...options, models: made.models });
+			const opened = await openHome({
+				...options,
+				models: made.models,
+				// Told to the host as they happen, small and without arguments. A link that is down drops them.
+				onCall: (event) => {
+					if (current !== undefined) send(current, { t: "call", ...event });
+				},
+			});
 			if (!opened.ok) {
 				send(link, { t: "ready", v: LINK_VERSION, ok: false, error: wire(opened.error) });
 				return;

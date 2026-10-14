@@ -1137,3 +1137,135 @@ export async function moveFile(
 	}
 	return ok({ ms: performance.now() - started });
 }
+
+/** Whether two entries are the same file as far as a listing can tell: kind, size, mode, target and time. */
+function sameListed(a: Listed, b: Listed): boolean {
+	return a.kind === b.kind && a.bytes === b.bytes && a.mode === b.mode && a.target === b.target && a.mtime === b.mtime;
+}
+
+/**
+ * Like `manifestOf`, but a file that is the same as in `previous` as far as a listing can tell (kind, size, mode, link
+ * target and time) takes its SHA-256 from there and is not read. A rewrite that keeps size and time is not seen: the
+ * next `manifestOf` is the one that reads everything.
+ */
+export async function manifestSince(
+	box: Box,
+	root: string,
+	previous: Manifest | undefined,
+	options: WorkspaceOptions | undefined,
+	context: Context,
+): Promise<Result<Manifest, WorkspaceError>> {
+	const listed = await list(box, root, options, context);
+	if (!listed.ok) return listed;
+	const before = new Map((previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	const reused = new Map<string, string>();
+	const toRead: Listed[] = [];
+	for (const entry of listed.value) {
+		if (entry.kind !== "file") continue;
+		const old = before.get(entry.path);
+		if (old?.sha256 !== undefined && sameListed(old, entry)) reused.set(entry.path, old.sha256);
+		else toRead.push(entry);
+	}
+	const hashes = await hashFiles(box, root, toRead, options, context);
+	if (!hashes.ok) return hashes;
+	const entries: ManifestEntry[] = [];
+	for (const entry of listed.value) {
+		if (entry.kind !== "file") {
+			entries.push(entry);
+			continue;
+		}
+		const sha256 = reused.get(entry.path) ?? hashes.value.get(entry.path);
+		if (sha256 === undefined) return err(new WorkspaceError("changed", `${entry.path} vanished while it was hashed`));
+		entries.push({ ...entry, sha256 });
+	}
+	return ok({ entries, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0) });
+}
+
+/** What `moveChanged` did. */
+export type ChangedReceipt = {
+	/** Entries copied: new or different from what the target held. */
+	readonly changed: number;
+	/** Entries removed from the target because the source no longer has them. */
+	readonly removed: number;
+	/** Bytes of the files copied. */
+	readonly bytes: number;
+	readonly totalMs: number;
+};
+
+/**
+ * Bring a directory in `to` from the state `previous` describes to the state `current` describes, copying what is new or
+ * different and removing what is gone, then check what was copied against `current`: each copied file's SHA-256, and
+ * the kind of each entry. The target must hold `previous`'s tree. A file of the source that changed after `current`
+ * was taken is `mismatch` (it names the path); nothing is promised about the target then, and the caller starts the
+ * tree again from a copy it trusts. The same transport rules as `moveWorkspace`: each side by its box's `bulk` fact.
+ */
+export async function moveChanged(
+	from: Box,
+	to: Box,
+	options: MoveWorkspaceOptions & { readonly previous: Manifest | undefined; readonly current: Manifest },
+	context: Context,
+): Promise<Result<ChangedReceipt, WorkspaceError>> {
+	const started = performance.now();
+	const fromPipeResult = pipeOf(from, options.fromPipe, options.chunkBytes);
+	if (!fromPipeResult.ok) return fromPipeResult;
+	const toPipeResult = pipeOf(to, options.toPipe, options.chunkBytes);
+	if (!toPipeResult.ok) return toPipeResult;
+	const before = new Map((options.previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	const now = new Map(options.current.entries.map((entry) => [entry.path, entry]));
+	const changed = options.current.entries.filter((entry) => {
+		const old = before.get(entry.path);
+		return old === undefined || !sameListed(old, entry) || old.sha256 !== entry.sha256;
+	});
+	const removed = [...before.keys()].filter((path) => {
+		const entry = now.get(path);
+		// A path that changed kind is removed first, so the new entry does not meet the old one.
+		return entry === undefined || entry.kind !== before.get(path)?.kind;
+	});
+	const bytes = changed.reduce((sum, entry) => sum + entry.bytes, 0);
+	if (options.maxBytes !== undefined && bytes > options.maxBytes) {
+		return err(new WorkspaceError("too_large", `${bytes} bytes of files changed, the limit is ${options.maxBytes}`));
+	}
+	if (removed.length > 0) {
+		const gone = await run(
+			to,
+			["sh", "-c", 'cd -- "$1" && xargs -0 -r rm -rf --', "sh", options.toRoot],
+			nulList(removed),
+			options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+			context,
+		);
+		if (!gone.ok) return gone;
+		if (gone.value.exitCode !== 0) {
+			return err(new WorkspaceError("box_failed", `could not remove what is gone: ${gone.value.stderr.trim()}`));
+		}
+	}
+	if (changed.length > 0) {
+		const names = nulList(changed.map((entry) => entry.path));
+		const fromPipe = fromPipeResult.value;
+		const toPipe = toPipeResult.value;
+		const moved = await transfer(
+			fromPipe.kind === "files"
+				? filesSource(from, PACK_FILES_SCRIPT, [options.fromRoot], names, fromPipe.chunkBytes)
+				: streamStarter(from, ["sh", "-c", PACK_SCRIPT, "sh", options.fromRoot]),
+			names,
+			toPipe.kind === "files"
+				? filesSink(to, UNPACK_FILES_SCRIPT, [options.toRoot], toPipe.chunkBytes)
+				: streamStarter(to, ["sh", "-c", UNPACK_SCRIPT, "sh", options.toRoot]),
+			{
+				stallMs: options.stallMs ?? DEFAULT_STALL_MS,
+				deadlineMs: options.deadlineMs ?? BASE_DEADLINE_MS + (bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
+			},
+			context,
+		);
+		if (!moved.ok) return moved;
+		// What arrived, read in the target and compared with the moment `current` was taken.
+		const files = changed.filter((entry) => entry.kind === "file");
+		const landed = await hashFiles(to, options.toRoot, files, options, context);
+		if (!landed.ok) return landed;
+		for (const entry of files) {
+			if (landed.value.get(entry.path) !== entry.sha256) {
+				return err(new WorkspaceError("mismatch", `${entry.path} is not as it was when the checkpoint was taken`));
+			}
+		}
+	}
+	return ok({ changed: changed.length, removed: removed.length, bytes, totalMs: performance.now() - started });
+}

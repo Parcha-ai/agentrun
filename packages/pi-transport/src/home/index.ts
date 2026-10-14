@@ -1,4 +1,5 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
+export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
@@ -11,6 +12,7 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	type CallRecord,
 	connectHome,
 	type HomeHandle,
 	type Ready,
@@ -55,6 +57,7 @@ export {
 } from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
 export {
+	type CheckpointTaken,
 	type Home,
 	HomeError,
 	type HomeErrorCode,
@@ -76,11 +79,14 @@ export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts
 export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
+	type ChangedReceipt,
 	type Manifest,
 	type ManifestEntry,
 	type MoveFileOptions,
 	type MoveWorkspaceOptions,
 	manifestOf,
+	manifestSince,
+	moveChanged,
 	moveFile,
 	moveWorkspace,
 	type Pipe,
