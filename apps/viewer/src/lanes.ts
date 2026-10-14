@@ -7,7 +7,7 @@ export type Band = { process: number; from: number; to: number; kill?: { t: numb
 export type Span = { id: string; label: string; from: number; to?: number; status: 'done' | 'open' | 'failed'; path?: string; gen?: number };
 export type Lanes = { end: number; processes: Band[]; opens: { t: number; generation: number }[]; restores: { t: number; to: number }[]; calls: Span[]; turns: Span[] };
 
-const text = (value: unknown) => (typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined);
+const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
 
 export function lanesOf(lines: Line[]): Lanes {
   const end = lines.length ? lines.at(-1)!.t : 0;
@@ -29,8 +29,10 @@ export function lanesOf(lines: Line[]): Lanes {
     if (line.source === 'host' && line.kind === 'kill') {
       const killed = processOf(line);
       const band = [...processes].reverse().find((each) => each.process === killed) ?? processes.at(-1);
-      const data = line.data as { label?: unknown; crossing?: unknown };
-      if (band) { band.to = line.t; band.kill = { t: line.t, label: text(data?.label) ?? 'killed', ...(text(data?.crossing) ? { crossing: text(data.crossing)! } : {}) }; }
+      // The crossing the kill landed on: `{ point, n }`, or null for a kill at no named crossing.
+      const data = line.data as { label?: unknown; crossing?: { point?: unknown } | null };
+      const point = text(data?.crossing?.point);
+      if (band) { band.to = line.t; band.kill = { t: line.t, label: text(data?.label) ?? 'killed', ...(point ? { crossing: point } : {}) }; }
       // A turn this process started and never answered is one the kill cut.
       for (const [conv, start] of turnStarts) if (start.gen === killed) {
         turns.push({ id: `turn ${conv} cut ${line.t}`, label: 'turn cut by the kill', from: start.t, to: line.t, status: 'failed', ...(start.gen ? { gen: start.gen } : {}) });

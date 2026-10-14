@@ -10,6 +10,9 @@ const isObj = (value: Json | undefined): value is Obj => typeof value === 'objec
 export type DocLine = { doc: string; key?: string; value: Json; version?: number };
 export const docOf = (line: Line): DocLine | undefined =>
   line.channel === 'durable' && isObj(line.data) && typeof line.data.doc === 'string' && 'value' in line.data ? (line.data as unknown as DocLine) : undefined;
+/** A document's identity (RECORDING.md 3.1): `(doc, key, conv, task)`. A conversation-scoped document exists once per
+ *  conversation, a task-scoped one once per task. */
+export const docIdOf = (line: Line, doc: DocLine) => [doc.doc, doc.key ?? '', line.conv ?? '', line.task ?? ''].join('\u0001');
 
 /** A pi conversation entry, as stored. */
 export type Message = { role: string; content?: Json; toolCallId?: string; toolName?: string; isError?: boolean; usage?: Obj; details?: Obj };
@@ -29,9 +32,10 @@ export const effectIdOf = (key: string) => key.split('\u0000').at(-1) ?? key;
 export const effectOf = (doc: DocLine): Effect | undefined =>
   doc.doc === 'agentrun.effects' && isObj(doc.value) && typeof doc.value.status === 'string' ? (doc.value as unknown as Effect) : undefined;
 
-/** The outside calls the effect kept (`calls`, the host's records, which the driver replaces in each process), or
- *  undefined when it keeps none. */
+/** The outside calls the host reported for an effect (`calls`, each `{ outcome: 'applied' | 'failed' | 'unknown', ... }`,
+ *  a list the driver replaces in each process), or undefined when it reported none. */
 export const callsOf = (effect: Effect): Json[] | undefined => (Array.isArray(effect.calls) ? effect.calls : undefined);
+export const applied = (call: Json) => isObj(call) && call.outcome === 'applied';
 
 /** The journal's own record (`agentrun.driver`): the generation of the process that holds it. */
 export const generationOf = (doc: DocLine): number | undefined =>

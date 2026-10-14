@@ -26,9 +26,10 @@ static host), or a recording folder dropped on the page or chosen with its picke
 - **Counters.** Paid calls made, repeated, asked twice, unknown, judge asks, model turns, re-asked turns (observed;
   "not recorded" when the recording has no live turn starts), processes, kills, cost (unknown when any part is unknown,
   never $0), and the journal's opens. Counts come from durable lines and the supervisor's lines only. Repeated and
-  asked twice are per call: a workflow effect's own outside calls completed in more than one process, and an agent's
-  tool call only when it is paid (the run holds a receipt for its tool and arguments). A lost branch's calls were paid,
-  and its redo counts as repeated.
+  asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
+  or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool
+  and arguments). An effect whose host reports no calls makes repeated "not measured", never 0. A lost branch's calls
+  were paid, and its redo counts as repeated.
   When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
   (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and

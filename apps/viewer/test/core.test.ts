@@ -5,8 +5,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { citeStop } from '../src/cite.ts';
 import { counterFold, countersOf, observesTurns } from '../src/counters.ts';
-import { parseLines, validate, type Line } from '../src/format.ts';
+import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { frameFold, pictureAt } from '../src/frames.ts';
+import { documentFold, documentsOf } from '../src/documents.ts';
 import { lanesOf } from '../src/lanes.ts';
 import { linesPanel, panelsShown, register, registry, turnsPanel, type Node } from '../src/panels.ts';
 import { reduceTo, snap, stopsOf } from '../src/replay.ts';
@@ -46,7 +47,7 @@ test('no stop falls inside a commit, and a scrub to any stop equals a fresh redu
     const after = lines[p]!;
     if (before.channel === 'durable' && after.channel === 'durable' && before.commit === after.commit && !before.snapshot && !after.snapshot) assert.equal(stops[p], false, `stop ${p} splits commit ${before.commit}`);
   }
-  for (const fold of [counterFold, frameFold, ...panelsShown()]) {
+  for (const fold of [counterFold, frameFold, documentFold, ...panelsShown()]) {
     // One pass, keeping the state at each stop, against a fresh reduce to that stop.
     let state = fold.init();
     for (let p = 0; p <= lines.length; p += 1) {
@@ -105,9 +106,13 @@ test('a recording with no live turn starts shows re-asked turns as not recorded,
   assert.equal(countersOf(reduceTo(counterFold, lines, lines.length), true, observesTurns(lines)).turns.reaskedObserved, 1);
 });
 
-test('a kill\'s crossing may be a count: the lane keeps it as text', () => {
-  const counted = lines.map((line) => (line.kind === 'kill' ? { ...line, data: { gen: 1, label: 'cut', crossing: 5 } } : line));
-  assert.equal(lanesOf(counted).processes[0]!.kill?.crossing, '5');
+test('a kill\'s crossing is { point, n } or null, and the lane shows its point', () => {
+  const crossing = (value: Json) => lines.map((line) => (line.kind === 'kill' ? { ...line, data: { gen: 1, label: 'cut', crossing: value } } : line));
+  assert.equal(lanesOf(crossing({ point: 'model.request', n: 3 })).processes[0]!.kill?.crossing, 'model.request');
+  assert.deepEqual(validate(manifest, crossing({ point: 'model.request', n: 3 })), []);
+  assert.equal(lanesOf(crossing(null)).processes[0]!.kill?.crossing, undefined, 'a kill at no named crossing');
+  assert.match(validate(manifest, crossing('model.request turn 2')).join('\n'), /a kill's crossing is \{ point, n \} or null/);
+  assert.match(validate(manifest, crossing(5)).join('\n'), /a kill's crossing is \{ point, n \} or null/);
 });
 
 test('focus is a view input: the views dim what is outside the branch, keep lines with no path, and drop nothing', () => {
@@ -135,4 +140,28 @@ test('an extension\'s panel shows before the shell\'s own two, whatever order th
   register(extension);
   t.after(() => { registry.splice(registry.indexOf(extension), 1); });
   assert.deepEqual(panelsShown().map((panel) => panel.id), ['an-extension', linesPanel.id, turnsPanel.id]);
+});
+
+test('a document is one per (doc, key, conv, task): two conversations each hold their own pi.live', () => {
+  const live = (gen: number, commit: number, conv: number, value: Json, snapshot = false): Line =>
+    ({ channel: 'durable', source: 'pi', kind: 'pi.live', gen, t: commit, commit, order: conv, conv, data: { doc: 'pi.live', value }, ...(snapshot ? { snapshot: true } : {}) });
+  const run = [live(1, 1, 12, { turn: 0 }), live(1, 1, 13, { turn: 0 }), live(1, 2, 12, { turn: 1 }), live(1, 3, 13, { turn: 1 })];
+  const shown = (each: Line[]) => documentsOf(reduceTo(documentFold, each, each.length), 'pi.live').map((one) => [one.conv, one.value]);
+  assert.deepEqual(shown(run), [[12, { turn: 1 }], [13, { turn: 1 }]], 'a later revision of one conversation\'s pi.live leaves the other\'s');
+  assert.deepEqual(shown([...run, live(2, 3, 12, { turn: 1 }, true)]), [[12, { turn: 1 }], [13, { turn: 1 }]], 'a snapshot replaces only its own');
+  const restored = [...run, live(2, 2, 12, { turn: 1 }, true)];
+  assert.deepEqual(shown(restored), [[12, { turn: 1 }]], 'a restore to commit 2: the snapshot holds conversation 12 only, so 13\'s is gone');
+  const tasks = [{ ...live(1, 1, 12, 'a'), kind: 'pi.task-memo', task: 't1', data: { doc: 'pi.task-memo', value: 'a' } }, { ...live(1, 2, 12, 'b'), kind: 'pi.task-memo', task: 't2', data: { doc: 'pi.task-memo', value: 'b' } }];
+  assert.equal(documentsOf(reduceTo(documentFold, tasks, 2), 'pi.task-memo').length, 2, 'one per task');
+});
+
+test('the result is the supervisor\'s line, a task is a durable string, and the manifest\'s cost is the lines\' fold', () => {
+  const result = lines.findIndex((line) => line.kind === 'result');
+  assert.match(validate(manifest, lines.map((line, index) => (index === result ? { ...line, gen: 2 } : line))).join('\n'), /a supervisor line \(result\) has no event-level gen/);
+  assert.match(validate(manifest, lines.map((line, index) => (index === result ? { ...line, data: { blob: 'x', title: 'y' } } : line))).join('\n'), /a supervisor line \(result\) names its process in data.gen/);
+  assert.match(validate(manifest, lines.map((line, index) => (index === result ? { ...line, data: { gen: 2, path: 'out/record.json' } } : line))).join('\n'), /a result names its blob and title in data/);
+  const first = lines.findIndex((line) => line.channel === 'durable');
+  assert.deepEqual(validate(manifest, lines.map((line, index) => (index === first ? { ...line, task: 'task-7' } : line))), []);
+  assert.match(validate(manifest, lines.map((line, index) => (index === first ? { ...line, task: 7 as never } : line))).join('\n'), /task is a durable line's string/);
+  assert.match(validate({ ...manifest, cost: { usd: 0, parts: { 'faux/faux-1': 0 } } }, lines).join('\n'), /manifest.cost.usd is 0, but the lines fold to null \(a part is unknown\)/);
 });
