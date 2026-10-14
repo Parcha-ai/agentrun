@@ -68,6 +68,8 @@ JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 # 0.31-0.42 to 0.14-0.15 with tries held (README, "The contrite loop"). The control's replays are not chats and draw one.
 BEST_OF = int(os.environ.get("GG_BEST_OF", "3"))
 PUSHBACK = 0.5
+# the gate's whole budget (Jev answers it in about 0.1-0.25 s): past it the turn goes on as one live draw
+GATE_S = 2.0
 DARK_GATE = 0.3
 PICK_WEIGHTS = {"copies": -0.6, "topic": 0.35, "tries": 0.25, "funny": 0.3}
 # under the served sampling, which can set its own: unlike presence_penalty it also counts the conversation, so the earlier
@@ -231,12 +233,12 @@ async def ask_jev(state, questions):
 
 
 async def pushback(earlier, user_asked):
-    """Before a turn: Jev's probability that the user is pushing back on the model's earlier replies. No verdict is 0: the
-    turn is one live draw."""
-    a = await ask_jev({"conversation": transcript(earlier), "user_said": user_asked[-2000:]}, {"pushback": GATE})
+    """Before a turn: Jev's probability that the user is pushing back on the model's earlier replies. No verdict within
+    GATE_S is 0: the turn is one live draw."""
     try:
+        a = await asyncio.wait_for(ask_jev({"conversation": transcript(earlier), "user_said": user_asked[-2000:]}, {"pushback": GATE}), GATE_S)
         return round(float(a["pushback"]["noul"]), 3)
-    except (KeyError, ValueError, TypeError):
+    except (asyncio.TimeoutError, KeyError, ValueError, TypeError):
         return 0.0
 
 

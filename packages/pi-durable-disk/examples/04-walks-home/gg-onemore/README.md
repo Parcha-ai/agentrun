@@ -188,7 +188,7 @@ conversations were rated Bradley-Terry by Jev and, in both orders and reading an
   s and its answer after about 41 s; three draws and the pick show nothing for 49-57 s. So best-of runs only when Jev,
   before the turn, says the user is pushing back. That question fired on all 60 pushback turns of the chains, on none of
   their 12 other turns ("ok, what's 17 times 23?"), and on 1 of 24 ordinary follow-ups ("Now make it rhyme.", 0.53). It
-  takes 100-230 ms; a first turn skips it.
+  takes 100-230 ms, 2 s at most (past that the turn is one live draw); a first turn skips it.
 
 ## The guard (J4)
 

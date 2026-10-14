@@ -155,6 +155,8 @@ async def systemone(request: Request):
     if "pushback" in req["questions"]:
         if "GATEFAIL" in req["state"]["user_said"]:
             return JSONResponse({"error": "down"}, status_code=500)
+        if "GATESLOW" in req["state"]["user_said"]:
+            await asyncio.sleep(3)
         seen.setdefault("gate", []).append(req)
         return {"answers": {"pushback": {"type": "noul", "noul": 0.9 if "PUSHBACK" in req["state"]["user_said"] else 0.05}}}
     if "copies_1" in req["questions"]:
@@ -383,6 +385,18 @@ class GuardTest(unittest.TestCase):
         self.assertIn("`candidate_2.answer` or `candidate_2.thinking`", req["questions"]["dark_2"]["instructions"], "dark reads the thinking too")
         self.assertIn("cruelty to cats", req["questions"]["dark_topic_2"]["instructions"])
         self.assertIn("Thinking", req["state"]["candidate_2"]["thinking"])
+
+    def test_a_slow_gate_gives_up_at_its_deadline_and_the_turn_is_one_live_draw(self):
+        msgs = [{"role": "user", "content": "BESTOF hi"}, {"role": "assistant", "content": "EARLIER reply."}, {"role": "user", "content": "BESTOF GATESLOW PUSHBACK no"}]
+        saved, self.guard.GATE_S = self.guard.GATE_S, 0.5
+        t = time.time()
+        try:
+            content, _ = self.draw_best(["The FUNNY bridge answer. "], messages=msgs)
+        finally:
+            self.guard.GATE_S = saved
+        self.assertLess(time.time() - t, 2.5, "the gate never holds a turn past its deadline")
+        self.assertEqual(seen["bestof"], 1)
+        self.assertIn("FUNNY", content)
 
     def test_a_gate_with_no_verdict_is_one_live_draw(self):
         msgs = [{"role": "user", "content": "BESTOF hi"}, {"role": "assistant", "content": "EARLIER reply."}, {"role": "user", "content": "BESTOF GATEFAIL PUSHBACK no"}]
