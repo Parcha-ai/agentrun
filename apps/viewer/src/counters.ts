@@ -64,17 +64,29 @@ export type Counters = {
 };
 
 /** An outside call that was applied (RECORDING.md section 5): a record whose `outcome` is `applied`. `failed` and `unknown` are not. */
+/** Whether a live `message_start` line is the start of an assistant message (pi's event: `{ message: { role } }`). */
+const assistantStart = (line: Line): boolean => {
+  const data = line.data as { message?: { role?: Json }; role?: Json } | null;
+  return (data?.message?.role ?? data?.role) === 'assistant';
+};
+
 const callApplied = (record: Json): boolean => typeof record === 'object' && record !== null && !Array.isArray(record) && record.outcome === 'applied';
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, callGens: {}, lastCalls: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
     highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && line.kind === 'turn_start'),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && (line.kind === 'turn_start' || line.kind === 'message_start')),
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
       if (line.kind === 'process.started') next.processes = state.processes + 1;
       if (line.kind === 'kill') next.kills = state.kills + 1;
+      if (line.source === 'pi' && line.kind === 'message_start' && assistantStart(line)) {
+        // An ask's position is (conversation, the assistant entries already committed in it): more than one ask at one position, in
+        // different processes, is re-asked (observed, never proven). A resumed process emits no turn_start, so this is the measure.
+        const id = `${line.conv ?? '?'} ${state.committedTurns[String(line.conv ?? '?')] ?? 0}`;
+        next.observedStarts = { ...state.observedStarts, [id]: [...(state.observedStarts[id] ?? []), line.gen ?? 0] };
+      }
       if (line.kind === 'turn_start') {
         // A turn's start, per process: the same turn started in two processes was asked again (observed).
         const turn = typeof (line.data as { turn?: Json })?.turn === 'number' ? (line.data as { turn: number }).turn : -1;
@@ -117,22 +129,21 @@ export const counterFold: Fold<CounterState> = {
         const before = next.effects[id];
         const gen = line.gen ?? 0;
         const completes = effect.status === 'completed' && before?.status !== 'completed';
-        // Repeated is per call (section 6): the generation of each applied outside call of this effect id. A snapshot is state, so it
-        // only sets what the next revision is compared with; a revision with no `calls` (an admission writes a fresh record) clears
-        // it. An effect whose host reports no calls has repeated not measured: its completion is not a call.
-        const calls = callsOf(effect);
-        if (!calls) {
-          const kept = next.lastCalls[id]?.kept ?? false;
-          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: [], kept } };
-        } else {
-          const shown = calls.map(stableJson);
-          const last = next.lastCalls[id];
-          const fresh = !last ? shown : last.gen === gen && !last.snapshot && last.calls.every((call, index) => shown[index] === call) ? shown.slice(last.calls.length)
-            : stableJson(shown) === stableJson(last.calls) ? [] : shown;
-          const applied = line.snapshot === true ? 0 : fresh.filter((call) => callApplied(JSON.parse(call) as Json)).length;
-          if (applied > 0) next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), ...Array.from({ length: applied }, () => gen)] };
-          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: shown, kept: true } };
-        }
+        // Repeated is per call (section 6). An effect's calls are append-only and every line carries the whole list, so each line,
+        // snapshots included, contributes only the calls beyond the previous line's list. A non-snapshot line gives them its own
+        // generation; a snapshot gives them an earlier one (they were committed before its process opened, and their own lines were
+        // lost in flight). A list that does not extend the previous one (a restore's snapshot, or a revision with no calls yet) is the
+        // new base, and the calls counted so far stay where they were first seen. An effect whose host reports no calls has repeated
+        // not measured: its completion is not a call.
+        const shown = (callsOf(effect) ?? []).map(stableJson);
+        const last = next.lastCalls[id];
+        const base = last?.calls ?? [];
+        const extends_ = base.every((call, index) => shown[index] === call);
+        const fresh = extends_ ? shown.slice(base.length) : [];
+        const callGen = line.snapshot === true ? gen - 1 : gen;
+        const applied = fresh.filter((call) => callApplied(JSON.parse(call) as Json)).length;
+        if (applied > 0) next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), ...Array.from({ length: applied }, () => callGen)] };
+        next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: shown, kept: (last?.kept ?? false) || callsOf(effect) !== undefined } };
         const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt;
         next.effects = { ...next.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, status: effect.status,
           ...(completedAt !== undefined ? { completedAt } : {}) } };
@@ -184,7 +195,7 @@ export const counterFold: Fold<CounterState> = {
 };
 
 /** Whether a recording carries the live lines re-asked turns are observed from. */
-export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && line.kind === 'turn_start');
+export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && (line.kind === 'turn_start' || (line.kind === 'message_start' && assistantStart(line))));
 
 /** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect.
  *  `turnStarts`: the recording has live turn starts (`observesTurns`), so re-asked turns are observed, not unknown. */
