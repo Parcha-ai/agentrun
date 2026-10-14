@@ -64,14 +64,14 @@ const filing = (look: LookInput) => {
 
 export const LOOKS = {
   film: filing({ key: K.film, item: 'film-window', path: 'film.mp4', kind: 'video', fragment: 't=0,30', sha: SOURCE.film, ask: 'What changes in this window?', body: 'The ground slides past; at 20 s a shadow crosses the frame.', cost: 0.0015, extra: { from_s: 0, to_s: 30 }, images: FILM.map((blob, at) => ({ blob, at: at * 8 })) }),
-  page1: filing({ key: K.page1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '00 00 00 05 A  Starting the run.\n00 00 00 12 B  Copy.', cost: 0.0018, extra: { page: 1 }, images: [PAGES[0]!] }),
-  page2: filing({ key: K.page2, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=2', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '00 00 00 40 A  An alarm, number 9.\n00 00 00 44 B  Go on.', cost: 0.0018, extra: { page: 2 }, images: [PAGES[1]!] }),
+  page1: filing({ key: K.page1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 00 05","speaker":"A","text":"Starting the run."}\n{"time":"00 00 00 12","speaker":"B","text":"Copy."}', cost: 0.0018, extra: { page: 1 }, images: [PAGES[0]!] }),
+  page2: filing({ key: K.page2, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=2', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 00 40","speaker":"A","text":"An alarm, number 9."}\n{"time":"00 00 00 44","speaker":"B","text":"Go on."}', cost: 0.0018, extra: { page: 2 }, images: [PAGES[1]!] }),
   photo1: filing({ key: K.photo1, item: 'photo-001', path: 'photos/photo-001.png', kind: 'image', fragment: '', sha: sha256('photo-001'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'ground', cost: 0.0012, images: [PHOTOS[0]!] }),
   photo2: filing({ key: K.photo2, item: 'photo-002', path: 'photos/photo-002.png', kind: 'image', fragment: '', sha: sha256('photo-002'), ask: 'Which class: ground, craft, crew, sky, tool?', body: '', cost: 0, status: 'failed', images: [PHOTOS[1]!], miss: { code: 'over_budget', reason: 'an image over the eyes\' limit' } }),
-  page3: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '00 00 01 02 A  Contact.', cost: 0.0018, extra: { page: 3 }, images: [PAGES[2]!] }),
-  page3Kept: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '00 00 01 02 A  Contact.', cost: 0.0018, kept: true, extra: { page: 3 }, images: [PAGES[2]!] }),
+  page3: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 01 02","speaker":"A","text":"Contact."}', cost: 0.0018, extra: { page: 3 }, images: [PAGES[2]!] }),
+  page3Kept: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 01 02","speaker":"A","text":"Contact."}', cost: 0.0018, kept: true, extra: { page: 3 }, images: [PAGES[2]!] }),
   photo3Kept: filing({ key: K.photo3, item: 'photo-003', path: 'photos/photo-003.png', kind: 'image', fragment: '', sha: sha256('photo-003'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'crew', cost: 0.0012, kept: true, images: [PHOTOS[2]!] }),
-  weak1: filing({ key: K.weak1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, model: WEAK, ask: 'Every line with its timestamp', body: '00 00 0 05 A  Starting the run.\n00 00 00 2 B  Copy.', cost: 0.0004, extra: { page: 1 }, images: [PAGES[0]!] }),
+  weak1: filing({ key: K.weak1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, model: WEAK, ask: 'Every line with its timestamp', body: '{"time":"00 00 0 05","speaker":"A","text":"Starting the run."}\n{"time":"00 00 00 2","speaker":"B","text":"Copy."}', cost: 0.0004, extra: { page: 1 }, images: [PAGES[0]!] }),
 };
 
 export const ACCOUNT = {
@@ -81,9 +81,19 @@ export const ACCOUNT = {
     { mission_time: '000:00:40', text: 'An alarm is called out, number 9.', cites: [{ item: 'scan-pages', fragment: '#page=2&xywh=percent:6,8,80,6', receipt: K.page2 }] },
     { mission_time: '000:01:02', text: 'Contact.', cites: [{ item: 'scan-pages', fragment: '#page=3', receipt: K.page3 }] },
   ],
-  photos: [{ item: 'photo-001', label: 'ground', truth: 'ground', receipt: K.photo1 }, { item: 'photo-003', label: 'crew', truth: 'tool', receipt: K.photo3 }],
-  accuracy: { overall: { right: 1, total: 2 }, by_class: { ground: { right: 1, total: 1 }, tool: { right: 0, total: 1 } } },
-  weak_eyes: { model: WEAK, against: EYES, pages: [{ page: 1, stamps: [{ truth: '00 00 00 05', read: '00 00 0 05' }, { truth: '00 00 00 12', read: '00 00 00 2' }] }] },
+  dropped: [{ entry: 3, item: '', why: '000:02:00 is no time of a line on a page the entry cites' }],
+  photos: {
+    sort: [{ item: 'photo-001', class: 'ground', truth: 'ground', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo1 }, { item: 'photo-003', class: 'crew', truth: 'tool', fragment: '#xywh=percent:0,0,100,100', receipt: K.photo3 }],
+    accuracy: { overall: { correct: 1, total: 2, rate: 0.5 }, per_class: { ground: { correct: 1, total: 1, rate: 1 }, tool: { correct: 0, total: 1, rate: 0 } }, confusion: { ground: { ground: 1 }, tool: { crew: 1 } }, unsorted: [] },
+  },
+  transcript: {
+    pages: [1, 2, 3].map((page) => ({ item: 'scan-pages', page, lines: 2, fragment: `#page=${page}`, receipt: [K.page1, K.page2, K.page3][page - 1]! })),
+    times: { pages: 3, times: 5, in_typed: 5, unreadable: 0, not_in_typed: [] },
+  },
+  film: [{ item: 'film-window', from_s: 0, to_s: 30, seen: 'The ground slides past.', fragment: '#t=0,30', receipt: K.film }],
+  models: { lead: 'faux/text-lead', eyes: EYES, scripted: true },
+  counters: { looks: 9, paid: 7, kept: 2, repeated: 0, asked_twice: 0, failed: 1, cost_usd: 0.0097 },
+  weak_eyes: { model: WEAK, times: { pages: 1, times: 2, in_typed: 0, unreadable: 0, not_in_typed: [{ page: 1, read: '00 00 0 05', truth: '00 00 00 05', receipt: K.weak1 }, { page: 1, read: '00 00 00 2', truth: '00 00 00 12', receipt: K.weak1 }] } },
 };
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
 

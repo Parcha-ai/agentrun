@@ -36,6 +36,14 @@ const viewAt = (p: number, context: Partial<ViewContext> = {}, run: Line[] = lin
 const killAt = lines.findIndex((line) => line.kind === 'kill');
 const restartAt = lines.findIndex((line, at) => at > killAt && line.kind === 'process.started');
 const receiptOf = (look: Json) => (look as { receipt: string }).receipt;
+/** The panel's meters against the counters the program folded from its own store and wrote into the result. */
+const agrees = (meters: ReturnType<typeof visionMeters>, result: Json) => {
+  const counted = (result as { counters?: { paid: number; kept: number; repeated: number; asked_twice: number; failed: number; cost_usd: number | null } }).counters;
+  if (!counted) return;
+  assert.deepEqual({ paid: meters.paid, kept: meters.kept, repeated: meters.repeated, askedTwice: meters.askedTwice, failed: meters.failed },
+    { paid: counted.paid, kept: counted.kept, repeated: counted.repeated, askedTwice: counted.asked_twice, failed: counted.failed }, 'the panel folds what the program counted');
+  assert.ok(counted.cost_usd === null ? meters.cost === null : Math.abs(meters.cost! - counted.cost_usd) < 1e-9, `spend ${meters.cost} against ${counted.cost_usd}`);
+};
 
 test('the hand recording obeys the format, and a scrub of every panel equals a fresh reduce', () => {
   assert.deepEqual(validate(manifest, lines, new Set(blobs.keys())), []);
@@ -58,6 +66,7 @@ test('the meters fold from the filed looks: paid once, kept after the kill, repe
     'page 3 was paid before the kill and filed again kept; photo 3 has only its kept filing, so it counts once from it');
   assert.ok(Math.abs(after.cost! - 0.0097) < 1e-9, `the spend counts each answer once: ${after.cost}`);
   assert.deepEqual(after.misses, [['over_budget', 1]]);
+  agrees(after, ACCOUNT as unknown as Json);
   const state = stateAt(end);
   assert.deepEqual(state.cut.map((read) => read.call).sort(), ['c4', 'p3'], 'the two reads running at the kill, from live lines');
   const meters = text(find(viewAt(end), cls('vz-meters'))[0]!);
@@ -78,13 +87,14 @@ test('live lines show what is in flight and never change a count', () => {
 test('a citation opens its receipt and moves its lane: the page with the line\'s box, the film window, the photo', () => {
   const page = viewAt(end, { cite: K.page2 });
   const receipt = text(find(page, cls('vz-receipt'))[0]!);
-  for (const shown of ['Receipt', 'scan-pages #page=2', 'Every line with its timestamp', 'faux/eyes-sharp', '$0.0018', '1200 in, 80 out', receiptOf(LOOKS.page2)]) assert.ok(receipt.includes(shown), `the receipt shows ${shown}: ${receipt}`);
+  for (const shown of ['Receipt', 'scan-pages #page=2', 'Every line with its timestamp', '"time":"00 00 00 40"', 'faux/eyes-sharp', '$0.0018', '1200 in, 80 out', receiptOf(LOOKS.page2)]) assert.ok(receipt.includes(shown), `the receipt shows ${shown}: ${receipt}`);
+  assert.match(text(find(page, cls('vz-typed'))[0]!), /00 00 00 40 A An alarm, number 9\. 00 00 00 44 B Go on\./, 'the page as the eyes typed it, line by line');
   const scan = find(page, (each) => each.tag === 'img' && 'blob' in each && each.blob === PAGES[1]);
   assert.equal(scan.length, 1, 'the pages lane shows page 2');
   const boxes = find(page, cls('vz-box'));
   assert.deepEqual(boxes.map((each) => ('box' in each ? each.box : undefined)), [{ x: 6, y: 8, w: 80, h: 6 }], 'the box the account cites, drawn over the page');
   assert.ok(find(page, cls('hot')).every((chip) => 'cite' in chip && chip.cite === K.page2) && find(page, cls('hot')).length === 1, 'the chip is lit');
-  const chips = find(viewAt(end), cls('vz-cite'));
+  const chips = find(viewAt(end), cls('vz-entry')).flatMap((entry) => find(entry, cls('vz-cite')));
   assert.deepEqual(chips.map((chip) => ('cite' in chip ? chip.cite : undefined)), [K.film, K.page1, K.page2, K.page3], 'every chip selects its receipt');
 
   const film = viewAt(end, { cite: K.film });
@@ -154,10 +164,12 @@ test('one document per look key, its filings in a growing list: each filing coun
 
 test('the account: entries with their chips, the photo sort against the captions, and the weaker eyes\' dropped digits', () => {
   const view = viewAt(end);
-  const account = text(find(view, cls('vz-account'))[0]!);
-  assert.match(account, /000:00:40 An alarm is called out, number 9\. p\.2 · box/);
+  assert.match(text(find(view, cls('vz-account'))[0]!), /000:00:40 An alarm is called out, number 9\. p\.2 · box/);
+  const account = text(view);
   assert.match(account, /50% overall, 1 of 2/);
-  assert.match(account, /The same pages through faux\/eyes-weak/);
+  assert.match(account, /Left out of the account, 1: 000:02:00 is no time of a line on a page the entry cites\./);
+  assert.match(account, /Times read off the pages by faux\/eyes-sharp 5 of 5 times read off 3 pages are in the typed transcript · 0 unreadable · 0 not in it/);
+  assert.match(account, /The same pages through faux\/eyes-weak 0 of 2 times read off 1 page are in the typed transcript · 0 unreadable · 2 not in it/);
   const dropped = find(view, cls('vz-drop'));
   assert.deepEqual(dropped.map(text), ['0', '1'], 'one digit dropped from each stamp');
   assert.deepEqual(visionKeptChars('00 00 00 12', '00 00 00 2'), [true, true, true, true, true, true, true, true, true, false, true]);
@@ -168,6 +180,7 @@ test('the account: entries with their chips, the photo sort against the captions
   assert.doesNotMatch(text(find(view, cls('vz-lane'))[1]!), /eyes-weak/, 'the weaker eyes are not drawn in the lanes once the account names them');
   assert.match(text(viewAt(end, { json: () => undefined })), /The account is in the result:/, 'a result the shell has not read is a link');
   assert.equal(visionAccountOf({ format: 'report/1' }), 'the result is report/1, not apollo11.account/1');
+  assert.deepEqual(find(view, cls('vz-stamp')).map((stamp) => find(stamp, cls('vz-cite')).map((chip) => ('cite' in chip ? chip.cite : undefined))), [[K.weak1], [K.weak1]], 'a misread opens the look that read it');
   assert.match(text(viewAt(end, { json: () => ({ format: 'report/1' }) })), /the result is report\/1, not apollo11\.account\/1/);
 });
 
@@ -218,7 +231,7 @@ test('a scripted recording of the program: the format holds, every cite resolves
   }
   const meters = visionMeters(state);
   assert.equal(meters.repeated, 0);
-  if (recorded.kills > 0) assert.ok(meters.kept > 0, 'a killed take files kept looks');
+  agrees(meters, result);
   const stops = stopsOf(run);
   let folded = visionPanel.init();
   for (let p = 0; p <= run.length; p += 1) {

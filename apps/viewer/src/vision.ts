@@ -48,13 +48,20 @@ export type VisionState = {
   highest: number; inSnapshot: boolean; opened: boolean;
 };
 
-/** The account a run delivers: its entries, the photo sort, its accuracy against the captions, and the weaker eyes. */
+/** The times the eyes read off the scanned pages, each looked up in a typed transcript: how many, how many it holds,
+ *  how many the eyes could not read, and each one it does not hold (with the typed time it stands for, when the run
+ *  names it). */
+export type VisionTimes = { pages: number; times: number; inTyped: number; unreadable: number; misread: { page: number; read: string; truth?: string; receipt: string }[] };
+/** The account a run delivers: its entries, the sentences left out, the photo sort and its accuracy against the
+ *  captions, the times read off the pages, and the same pages through weaker eyes. */
 export type VisionCite = { item: string; fragment: string; receipt: string };
 export type VisionAccount = {
   entries: { time: string; text: string; cites: VisionCite[] }[];
+  dropped: string[];
   photos: { item: string; label: string; truth?: string; receipt?: string }[];
   accuracy?: { overall: { right: number; total: number }; byClass: [string, { right: number; total: number }][] };
-  weak?: { model: string; against: string; pages: { page: number; stamps: { truth: string; read: string }[] }[] };
+  times?: VisionTimes;
+  weak?: { model: string; times: VisionTimes };
 };
 export const ACCOUNT_FORMAT = 'apollo11.account/1';
 
@@ -251,39 +258,46 @@ export function visionAccountOf(value: Json | undefined): VisionAccount | string
     });
     return [{ time: visionStr(entry.mission_time) ?? '', text: visionStr(entry.text) ?? '', cites }];
   });
-  const photos = (Array.isArray(result.photos) ? result.photos : []).flatMap((each) => {
+  const sort = visionObj(result.photos);
+  const photos = (Array.isArray(sort?.sort) ? sort.sort : []).flatMap((each) => {
     const photo = visionObj(each);
     const item = visionStr(photo?.item);
-    const label = visionStr(photo?.label);
+    const label = visionStr(photo?.class);
     const truth = visionStr(photo?.truth);
     const receipt = visionStr(photo?.receipt);
-    return item && label ? [{ item, label, ...(truth !== undefined ? { truth } : {}), ...(receipt !== undefined ? { receipt } : {}) }] : [];
+    return item && label ? [{ item, label, ...(truth ? { truth } : {}), ...(receipt ? { receipt } : {}) }] : [];
   });
   const tally = (value: Json | undefined) => {
     const each = visionObj(value);
-    const right = visionNum(each?.right);
+    const right = visionNum(each?.correct);
     const total = visionNum(each?.total);
     return right !== undefined && total !== undefined ? { right, total } : undefined;
   };
-  const accuracy = visionObj(result.accuracy);
+  const accuracy = visionObj(sort?.accuracy);
   const overall = tally(accuracy?.overall);
-  const byClass = Object.entries(visionObj(accuracy?.by_class) ?? {}).flatMap(([name, value]) => { const counted = tally(value); return counted ? [[name, counted] as [string, { right: number; total: number }]] : []; });
-  const weak = visionObj(result.weak_eyes);
-  const pages = (Array.isArray(weak?.pages) ? weak.pages : []).flatMap((each) => {
-    const page = visionObj(each);
-    const number = visionNum(page?.page);
-    const stamps = (Array.isArray(page?.stamps) ? page.stamps : []).flatMap((one) => {
-      const stamp = visionObj(one);
-      const truth = visionStr(stamp?.truth);
-      const read = visionStr(stamp?.read);
-      return truth !== undefined && read !== undefined ? [{ truth, read }] : [];
+  const byClass = Object.entries(visionObj(accuracy?.per_class) ?? {}).flatMap(([name, value]) => { const counted = tally(value); return counted ? [[name, counted] as [string, { right: number; total: number }]] : []; });
+  const timesOf = (value: Json | undefined): VisionTimes | undefined => {
+    const times = visionObj(value);
+    const counts = ['pages', 'times', 'in_typed', 'unreadable'].map((field) => visionNum(times?.[field]));
+    if (!times || counts.some((count) => count === undefined)) return undefined;
+    const misread = (Array.isArray(times.not_in_typed) ? times.not_in_typed : []).flatMap((each) => {
+      const one = visionObj(each);
+      const page = visionNum(one?.page);
+      const read = visionStr(one?.read);
+      const truth = visionStr(one?.truth);
+      return page !== undefined && read !== undefined ? [{ page, read, ...(truth ? { truth } : {}), receipt: visionStr(one?.receipt) ?? '' }] : [];
     });
-    return number !== undefined ? [{ page: number, stamps }] : [];
-  });
+    return { pages: counts[0]!, times: counts[1]!, inTyped: counts[2]!, unreadable: counts[3]!, misread };
+  };
+  const times = timesOf(visionObj(result.transcript)?.times);
+  const weak = visionObj(result.weak_eyes);
+  const weakTimes = timesOf(weak?.times);
+  const dropped = (Array.isArray(result.dropped) ? result.dropped : []).flatMap((each) => { const why = visionStr(visionObj(each)?.why); return why ? [why] : []; });
   return {
-    entries, photos,
+    entries, dropped, photos,
     ...(overall ? { accuracy: { overall, byClass } } : {}),
-    ...(weak && visionStr(weak.model) ? { weak: { model: visionStr(weak.model)!, against: visionStr(weak.against) ?? 'the transcript', pages } } : {}),
+    ...(times ? { times } : {}),
+    ...(weak && visionStr(weak.model) && weakTimes ? { weak: { model: visionStr(weak.model)!, times: weakTimes } } : {}),
   };
 }
 
@@ -319,8 +333,18 @@ const visionCited = (state: VisionState, key: string | undefined): VisionLook | 
   key === undefined ? undefined : state.looks.find((look) => look.key === key && visionPaid(look)) ?? state.looks.findLast((look) => look.key === key);
 
 /** A picture, or a cell saying the recording has none for this look. */
-const visionPicture = (image: VisionImage | undefined, alt: string, className: string): Node =>
-  (image ? { tag: 'img', blob: image.blob, alt, class: className } : h('span', { class: `${className} vz-nopic` }, 'no picture in this recording'));
+const visionPicture = (image: VisionImage | undefined, alt: string, className: string, quiet = false): Node =>
+  (image ? { tag: 'img', blob: image.blob, alt, class: className } : h('span', { class: `${className} vz-nopic`, title: 'no picture in this recording' }, quiet ? '' : 'no picture in this recording'));
+
+/** An answer the eyes gave as JSON lines of `{ time, speaker, text }` (a page transcribed as it was asked to be), as typed
+ *  lines; any other answer as it is. */
+function visionSaid(head: string, body: string): Node {
+  const rows = body.split('\n').filter((line) => line.trim() !== '').map((line) => { try { return visionObj(JSON.parse(line) as Json); } catch { return undefined; } });
+  const typed = rows.length > 0 && rows.every((row) => typeof row?.text === 'string');
+  return h('div', { class: 'vz-said' }, h('b', {}, head), typed
+    ? h('div', { class: 'vz-typed' }, ...rows.map((row) => h('div', {}, h('span', { class: 'vz-time' }, visionStr(row!.time) || '·'), ` ${visionStr(row!.speaker) ?? ''}  ${visionStr(row!.text)}`)))
+    : ` ${body}`);
+}
 
 /** One look per key in a lane: the paid filing, else the first one filed (a key whose paid filing a kill lost). */
 const visionOnce = (looks: VisionLook[]): VisionLook[] => {
@@ -348,7 +372,7 @@ function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook 
     shown && h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
       visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
       h('figcaption', {}, image?.at !== undefined ? `${image.at} s` : at === 0 ? `#${shown.fragment}` : '')))),
-    shown && h('p', { class: 'vz-said' }, h('b', {}, `#${shown.fragment} `), shown.body));
+    shown && visionSaid(`#${shown.fragment}`, shown.body));
 }
 
 function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined, boxes: { x: number; y: number; w: number; h: number }[]): Node {
@@ -364,7 +388,7 @@ function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook
       visionPicture(shown.images[0], `${source} page ${shown.page ?? ''}`, 'vz-scan'),
       // A box is where the account says the line stands: the eyes' estimate, so it is drawn dashed.
       ...boxes.map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box }))),
-    shown && h('p', { class: 'vz-said' }, h('b', {}, `p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''} `), shown.body));
+    shown && visionSaid(`p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''}`, shown.body));
 }
 
 function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined): Node {
@@ -381,30 +405,44 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
       const dim = focus !== undefined && look.path !== undefined && !under(look.path, focus) ? ' dim' : '';
       return h('span', { class: `vz-tile${photo ? ` vz-c${classes.indexOf(photo.label) % 5}${verdict}` : ''}${chosen?.key === look.key ? ' cited' : ''}${look.status === 'failed' ? ' missed' : ''}${dim}`,
         title: `${look.item ?? look.source}${photo ? `: ${photo.label}${photo.truth !== undefined ? ` (caption: ${photo.truth})` : ''}` : ''}`, ...(look.path ? { path: look.path } : {}) },
-        visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb'), photo && h('span', { class: 'vz-label' }, photo.label));
+        visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb', true), photo && h('span', { class: 'vz-label' }, photo.label));
     })));
 }
 
-function visionAccountView(account: VisionAccount, cite: string | undefined): Node {
-  return h('div', { class: 'vz-account' },
-    ...account.entries.map((entry) => h('p', { class: `vz-entry${entry.cites.some((each) => each.receipt === cite) ? ' cited' : ''}` },
-      h('span', { class: 'vz-time' }, entry.time), ` ${entry.text} `,
-      ...entry.cites.map((each) => h('span', { class: `vz-cite${each.receipt === cite ? ' hot' : ''}`, cite: each.receipt, title: `${each.item}#${each.fragment.replace(/^#/, '')}` }, visionChipText(each.fragment))))),
-    account.accuracy && h('div', { class: 'vz-accuracy' },
-      h('h5', {}, 'Photo sort against the captions'),
-      h('p', {}, h('b', {}, `${account.accuracy.overall.total ? Math.round((account.accuracy.overall.right / account.accuracy.overall.total) * 1000) / 10 : 0}%`), ` overall, ${account.accuracy.overall.right} of ${account.accuracy.overall.total}`),
-      h('ul', {}, ...account.accuracy.byClass.map(([name, tally]) => h('li', {}, `${name}: ${tally.right} of ${tally.total}`)))),
-    account.weak && h('div', { class: 'vz-weak' },
-      h('h5', {}, `The same pages through ${account.weak.model}`),
-      h('p', { class: 'vz-note' }, `Each stamp as ${account.weak.against} has it, then as ${account.weak.model} read it; a struck digit was dropped.`),
-      ...account.weak.pages.map((page) => h('div', { class: 'vz-weak-page' }, h('b', {}, `p.${page.page}`),
-        ...page.stamps.map((stamp) => {
-          const kept = visionKeptChars(stamp.truth, stamp.read);
-          const exact = stamp.truth === stamp.read;
-          return h('div', { class: `vz-stamp${exact ? ' exact' : ''}` },
-            h('code', {}, ...[...stamp.truth].map((char, at) => (kept[at] ? char : h('s', { class: 'vz-drop', title: 'dropped' }, char)))),
-            h('code', { class: 'vz-read' }, stamp.read || '(nothing)'));
-        })))));
+/** A typed time and how the eyes read it: the typed one's digits the reading dropped are struck. */
+function visionStamp(miss: VisionTimes['misread'][number], cite: string | undefined): Node {
+  const kept = miss.truth !== undefined ? visionKeptChars(miss.truth, miss.read) : [];
+  return h('div', { class: 'vz-stamp' },
+    h('span', { class: `vz-cite${miss.receipt === cite ? ' hot' : ''}`, ...(miss.receipt ? { cite: miss.receipt } : {}), title: 'the look that read it' }, `p.${miss.page}`),
+    miss.truth !== undefined && h('code', { title: 'as typed' }, ...[...miss.truth].map((char, at) => (kept[at] ? char : h('s', { class: 'vz-drop', title: 'dropped' }, char)))),
+    h('code', { class: 'vz-read', title: 'as the eyes read it' }, miss.read || '(nothing)'));
+}
+
+function visionTimesView(title: string, times: VisionTimes, cite: string | undefined): Node {
+  return h('div', { class: 'vz-weak' },
+    h('h5', {}, title),
+    h('p', {}, h('b', {}, `${times.inTyped} of ${times.times}`), ` times read off ${times.pages} page${times.pages === 1 ? '' : 's'} are in the typed transcript · ${times.unreadable} unreadable · ${times.misread.length} not in it`),
+    times.misread.some((miss) => miss.truth !== undefined) && h('p', { class: 'vz-note' }, 'Each misread as typed, then as read: a struck digit was dropped.'),
+    ...times.misread.map((miss) => visionStamp(miss, cite)));
+}
+
+function visionAccountView(account: VisionAccount, cite: string | undefined, eyes: string | undefined): Node[] {
+  return [
+    h('div', { class: 'vz-account' },
+      ...account.entries.map((entry) => h('p', { class: `vz-entry${entry.cites.some((each) => each.receipt === cite) ? ' cited' : ''}` },
+        h('span', { class: 'vz-time' }, entry.time), ` ${entry.text} `,
+        ...entry.cites.map((each) => h('span', { class: `vz-cite${each.receipt === cite ? ' hot' : ''}`, cite: each.receipt, title: `${each.item}#${each.fragment.replace(/^#/, '')}` }, visionChipText(each.fragment)))))),
+    account.dropped.length > 0 && h('p', { class: 'vz-note' }, `Left out of the account, ${account.dropped.length}: ${account.dropped.join('; ')}.`),
+    account.times && visionTimesView(`Times read off the pages${eyes ? ` by ${eyes}` : ''}`, account.times, cite),
+    account.weak && visionTimesView(`The same pages through ${account.weak.model}`, account.weak.times, cite),
+  ].filter((node): node is Node => node !== false && node !== undefined);
+}
+
+function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): Node {
+  return h('div', { class: 'vz-accuracy' },
+    h('h5', {}, 'Photo sort against the captions'),
+    h('p', {}, h('b', {}, `${accuracy.overall.total ? Math.round((accuracy.overall.right / accuracy.overall.total) * 1000) / 10 : 0}%`), ` overall, ${accuracy.overall.right} of ${accuracy.overall.total}`),
+    h('ul', {}, ...accuracy.byClass.map(([name, tally]) => h('li', {}, `${name}: ${tally.right} of ${tally.total}`))));
 }
 
 function visionReceipt(look: VisionLook, chosen: boolean): Node {
@@ -457,10 +495,11 @@ function visionView(state: VisionState, context: ViewContext): Node {
       h('div', { class: 'vz-col' },
         h('h5', {}, 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
-          : account ? visionAccountView(account, context.cite)
+          : account ? h('div', {}, ...visionAccountView(account, context.cite, meters.eyes.find((model) => model !== account.weak?.model)))
             : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
         h('h5', {}, 'Meters'), visionMetersView(state, meters),
+        account?.accuracy && visionAccuracyView(account.accuracy),
         shown && visionReceipt(shown, chosen !== undefined),
         context.cite !== undefined && !chosen && h('p', { class: 'empty' }, 'The look this citation names is not filed at this point.'),
         (Object.keys(state.running).length > 0 || Object.keys(state.told).length > 0) && h('div', { class: 'vz-flight' },
