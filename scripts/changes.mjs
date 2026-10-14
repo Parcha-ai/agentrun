@@ -109,12 +109,21 @@ const sectionEnd = (lines, heading) => {
   return end;
 };
 
+/** Whether the changelog at `file` (under `root`) belongs to a held package: its manifest says `"private": true`, the reading release-preflight uses. */
+const heldChangelog = async (root, file) => {
+  if (file === 'CHANGELOG.md') return false;
+  const manifest = await readOptional(join(root, dirname(file), 'package.json'));
+  return manifest !== null && JSON.parse(manifest).private === true;
+};
+
 /**
  * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
  * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
  * Unreleased section opened above it. The root changelog is dated also when it holds nothing and the release has fragments. A
  * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
- * one that already has the version's section gets the fragments' bullets appended to it.
+ * one that already has the version's section gets the fragments' bullets appended to it. A held package (its manifest says
+ * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
+ * Unreleased section, which keeps its name and its entries.
  */
 export async function fold(root, version, date) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
@@ -141,7 +150,13 @@ export async function fold(root, version, date) {
     const lines = original.split('\n');
     const existing = lines.findIndex(line => isVersionHeading(line, version));
     const unreleased = lines.findIndex(unreleasedHeading);
-    if (existing >= 0) {
+    if (await heldChangelog(root, file)) {
+      // A package this release does not publish gets no version section: its fragments join what its Unreleased section holds.
+      if (bullets.length === 0) continue;
+      assert.ok(unreleased >= 0, `${file} has no Unreleased heading to add to`);
+      const keeps = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
+      lines.splice(sectionEnd(lines, unreleased), 0, ...(keeps ? [] : ['']), ...bullets);
+    } else if (existing >= 0) {
       if (bullets.length === 0) continue;
       lines.splice(sectionEnd(lines, existing), 0, ...bullets);
     } else {

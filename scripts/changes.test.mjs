@@ -94,6 +94,69 @@ test('a package changelog with nothing held and no fragment is untouched, also w
   // packages/dsl has no CHANGELOG.md in this repo: the fold does not look for one it was not given.
 }));
 
+/** A held package under `root`: its manifest says private, and its changelog holds `log`. */
+async function heldPackage(root, log) {
+  await mkdir(join(root, 'packages/pi-transport'), { recursive: true });
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport', private: true }));
+  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), log);
+}
+const heldLog = '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n';
+
+test("a held package's changelog is never dated: its fragments join its Unreleased section, and a published one is dated as before", () => repo(async root => {
+  await heldPackage(root, heldLog);
+  await writeFile(join(root, 'changes/held.md'), fragment('@parcha/pi-transport', 'feature', 'Held fragment.\n\n- Detail.'));
+  await writeFile(join(root, 'changes/vision.md'), fragment('@parcha/pi-vision', 'fix', 'Vision fix.'));
+  const result = await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.deepEqual(result.files, ['CHANGELOG.md', 'packages/pi-transport/CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md']);
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n- Held fragment.\n\n  - Detail.\n', 'no version heading, the entry kept, the fragment appended');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing vision bullet.\n- Vision fix.\n', 'a published package is dated');
+  assert.deepEqual(await loadFragments(root), [], 'the held fragment is deleted like every other');
+}));
+
+test("held means the manifest says private, not a package's name: a private package is undated, and pi-transport is dated once its hold is lifted", () => repo(async root => {
+  await writeFile(join(root, 'packages/pi-vision/package.json'), JSON.stringify({ name: '@parcha/pi-vision', private: true }));
+  await heldPackage(root, heldLog);
+  await writeFile(join(root, 'packages/pi-transport/package.json'), JSON.stringify({ name: '@parcha/pi-transport' }));
+  await writeFile(join(root, 'changes/vision.md'), fragment('@parcha/pi-vision', 'fix', 'Vision fix.'));
+  await writeFile(join(root, 'changes/transport.md'), fragment('@parcha/pi-transport', 'fix', 'Transport fix.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), '# Changelog\n\n## Unreleased\n\n- Existing vision bullet.\n- Vision fix.\n');
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Held entry.\n- Transport fix.\n');
+}));
+
+test("a held package with an empty Unreleased gets its fragment under it, undated", () => repo(async root => {
+  await heldPackage(root, '# Changelog\n\n## Unreleased\n');
+  await writeFile(join(root, 'changes/held.md'), fragment('@parcha/pi-transport', 'feature', 'First entry.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), '# Changelog\n\n## Unreleased\n\n- First entry.\n');
+}));
+
+test("a held package with entries and no fragment is left as it is, never dated", () => repo(async root => {
+  await heldPackage(root, heldLog);
+  await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
+  const result = await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.ok(!result.files.includes('packages/pi-transport/CHANGELOG.md'));
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), heldLog);
+}));
+
+test("a held package whose changelog already has the version's section still gets its fragments under Unreleased", () => repo(async root => {
+  const dated = '# Changelog\n\n## [Unreleased]\n\n## 0.1.0-beta.13 (2026-10-19)\n\n- Dated by mistake.\n';
+  await heldPackage(root, dated);
+  await writeFile(join(root, 'changes/held.md'), fragment('@parcha/pi-transport', 'fix', 'Held fix.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## [Unreleased]\n\n- Held fix.\n\n## 0.1.0-beta.13 (2026-10-19)\n\n- Dated by mistake.\n');
+}));
+
+test("a held package's changelog without an Unreleased heading is refused when a fragment names it, never silently dropped", () => repo(async root => {
+  await heldPackage(root, '# Changelog\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  await writeFile(join(root, 'changes/held.md'), fragment('@parcha/pi-transport', 'fix', 'Held fix.'));
+  await assert.rejects(fold(root, '0.1.0-beta.13', '2026-10-20'), /no Unreleased heading to add to/);
+  assert.equal((await loadFragments(root)).length, 1, 'nothing was written and the fragment is still there');
+}));
+
 test('a second fold with no fragments and an empty Unreleased does nothing', () => repo(async root => {
   await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
   await fold(root, '0.1.0-beta.13', '2026-10-20');
@@ -106,6 +169,9 @@ test('a second fold with no fragments and an empty Unreleased does nothing', () 
 /** `text` with its Unreleased section emptied: the state of a changelog right after a release fold. */
 const withEmptyUnreleased = text => text.replace(/(^## Unreleased\n)[\s\S]*?(?=^## )/m, '$1\n');
 
+// A version the real changelog can never hold: a release commit already has its own version's section, and folding that version would take
+// the append-to-an-existing-section path instead of the one these tests are about.
+const FOLDED = '0.0.0-test.1';
 for (const [name, prepare] of [
   ["the repository's own CHANGELOG plus two fragments folds into the released shape", text => text],
   ["the repository's own CHANGELOG with an empty Unreleased plus two fragments folds into the released shape", withEmptyUnreleased],
@@ -115,11 +181,11 @@ for (const [name, prepare] of [
     await writeFile(join(root, 'CHANGELOG.md'), real);
     await writeFile(join(root, 'changes/a.md'), fragment('repo', 'feature', 'First new change.'));
     await writeFile(join(root, 'changes/b.md'), fragment('@parcha/agentrun-dsl', 'fix', 'Second new change.'));
-    await fold(root, '0.1.0-beta.13', '2026-10-20');
+    await fold(root, FOLDED, '2026-10-20');
     const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
     const held = unreleasedSection(real).split('\n').slice(1).join('\n').trim();
     const rest = real.slice(real.indexOf('\n## ', real.indexOf('## Unreleased') + 1) + 1);
-    assert.equal(folded, `# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n${held ? `${held}\n` : ''}- First new change.\n- Second new change.\n\n${rest}`.replace(/\n*$/, '\n'));
+    assert.equal(folded, `# Changelog\n\n## Unreleased\n\n## ${FOLDED} (2026-10-20)\n\n${held ? `${held}\n` : ''}- First new change.\n- Second new change.\n\n${rest}`.replace(/\n*$/, '\n'));
     assert.equal(unreleasedSection(folded), '## Unreleased\n');
   }));
 }
