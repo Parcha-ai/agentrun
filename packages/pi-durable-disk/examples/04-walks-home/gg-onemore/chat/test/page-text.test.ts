@@ -30,3 +30,8 @@ test("the golden-gate skill picks its strength by Jev's ranking against the ship
 test("the edited model opens on a plain greeting: in Jev's judging it argued about who it is in half the replies, not three in four", () => {
   assert.equal(GG_SWITCH_TEXT, "Hi! How's it going?");
 });
+
+test("the page and the lab share a thinking budget of 1536: it held noticing and won Jev's pairwise against 2048, 11 s sooner to the answer", () => {
+  const budget = JSON.parse(readFileSync(new URL("../../pipeline/data/thinking.json", import.meta.url), "utf8")).thinking_token_budget;
+  assert.equal(budget, 1536);
+});

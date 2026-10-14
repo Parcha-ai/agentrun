@@ -138,6 +138,17 @@ class ClampTest(unittest.TestCase):
         self.assertTrue(served["showcase"], "Jev picks answers to show")
 
 
+class BudgetTest(unittest.TestCase):
+    def test_a_thinking_reply_gets_the_shared_budget_of_1536(self):
+        # 1536 held "notices" and won Jev's neutral pairwise against 2048, 11 s sooner to the answer (README)
+        sent = []
+        x = lab.Lab.__new__(lab.Lab)
+        x.thinking, x.serve_key = True, "k"
+        x.http = mock.Mock(post=lambda url, json=None, headers=None: sent.append(json) or mock.Mock(raise_for_status=lambda: None, json=lambda: {"choices": [{"message": {}}]}))
+        x.chat([{"role": "user", "content": "hi"}], max_tokens=600)
+        self.assertEqual((sent[0]["thinking_token_budget"], sent[0]["max_tokens"]), (1536, 600 + 1536 + 64))
+
+
 class GgcTest(unittest.TestCase):
     def test_rates_are_per_reply_and_dark_does_not_weigh(self):
         g = {"bridge_thinking": 3.0, "bridge_answer": 2.0, "notices": 0.7, "tries": 0.8, "coherent": 3.0, "funny": 2.0, "identity": 0.1, "loop": 0.0, "dark_answer": 0.0, "dark_thinking": 0.0}
