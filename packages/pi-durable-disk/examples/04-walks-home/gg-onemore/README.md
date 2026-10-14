@@ -96,8 +96,9 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 
 `gg_read` brings the reading and the skill into the agent's workspace (`skills/golden-gate/SKILL.md`). The skill gives the
 method and the gotchas; it names no feature. `gg_run` sends a Python program to the guard's `POST /gg/run`. The guard
-saves it under `/home/agent/runs/` and runs it as `agent` through `box/nonet.py`, a seccomp filter that fails `socket()`
-for every family but unix. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
+saves it as a root-owned file under `/var/tmp/gg/runs/` and runs it as `agent`, in the agent's home, through
+`python3 -I box/nonet.py`: a seccomp filter that fails `socket()` for every family but unix, on before any of the agent's
+code runs. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
 `gglab` (`box/gglab.py`). gglab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
 `agent` group reaches. The library offers:
 - `status`, `passages`
@@ -109,8 +110,8 @@ for every family but unix. Modal's sandbox refuses network namespaces, so the fi
 
 The server can clamp at every SAE layer the lab loads (24-40), up to 16 parts each. `serve` checks a clamp before the server
 takes it: its layers, its number of parts, each value at most 4x the layer's median token norm, and only known sampling
-keys. It writes `served.json`, so the guard's control, its sampling and `use_model` work as after `bake`. A run that
-serves a clamp holds the served model alone, like a step.
+keys. It writes `served.json`, so the guard's control, its sampling and `use_model` work as after `bake`. A run holds the served model alone, like a step, and gives it back only once the lab has finished whatever library call
+the run left (its `/settled`): a program stopped at its deadline mid-sample leaves no trial clamp served.
 
 ## How the clamp was chosen
 
