@@ -111,11 +111,11 @@ export const lookFilingsOf = (doc: DocLine): LookFiling[] | undefined => {
       native: args?.native === true, kept: facts.kept === true, usd: typeof facts.cost_usd === 'number' ? facts.cost_usd : null }];
   });
 };
-/** The look key a live `LookEvent` names (`record.facts.key`). */
-export const lookEventKeyOf = (data: Json): string | undefined => {
+/** The look key a live `LookEvent` names (`record.facts.key`), and whether the lead looked itself (`args.native`). */
+export const lookEventOf = (data: Json): { key: string; native: boolean } | undefined => {
   const record = isObj(data) && isObj(data.record) ? data.record : undefined;
   const facts = record && isObj(record.facts) ? record.facts : undefined;
-  return typeof facts?.key === 'string' ? facts.key : undefined;
+  return typeof facts?.key === 'string' ? { key: facts.key, native: isObj(record?.args) && record.args.native === true } : undefined;
 };
 
 /** A message's priced usage, or null when it carries none. */

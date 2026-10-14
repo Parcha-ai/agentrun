@@ -75,3 +75,26 @@ test('a look started in a process that ended without filing it is a possible pay
   assert.equal(vision(run([['start'], ['started', 'b']]), false).possible, 0, 'its process still runs: not yet');
   assert.equal(vision(run([['start'], ['started', 'b']]), true).possible, 1, 'the run ended without filing it');
 });
+
+test('a native look\'s live line is no possible payment', () => {
+  const native: Line = { channel: 'live', source: 'vision', kind: 'LookEvent', gen: 1, t: 1, seq: 1, data: { record: { args: { native: true }, facts: { key: 'n' } } } };
+  assert.equal(fold([{ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 1, data: { gen: 1 } }, native]).vision.possible, 0);
+});
+
+test('a look started by a killed process is possible from the kill, before any next process starts', () => {
+  const lines = run([['start'], ['started', 'b']]);
+  const kill: Line = { channel: 'live', source: 'host', kind: 'kill', t: 9e9, seq: 999, data: { gen: 1, label: 'cut', crossing: null } };
+  assert.equal(vision(lines, false).possible, 0, 'still running');
+  assert.deepEqual({ possible: vision([...lines, kill], false).possible, lowerBound: vision([...lines, kill], false).lowerBound }, { possible: 1, lowerBound: true });
+});
+
+test('after a restore, the same look paid again at the same place in the list is a new payment, a repeat of the lost one', () => {
+  const look = (gen: number, commit: number, listed: Look[], snapshot = false): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: commit * 10, commit, order: 0,
+    ...(snapshot ? { snapshot: true } : {}), data: { doc: 'vision.looks', key: 'k', value: { looks: listed.map((each) => record(each, 0)) } } });
+  const started = (n: number): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: n, seq: n, data: { gen: n } });
+  const restore: Line = { channel: 'durable', source: 'transport', kind: 'transport.moves', gen: 2, t: 51, commit: 2, order: 0, data: { doc: 'transport.moves', key: 'm', value: { kind: 'restore', head: 2, checkpoint: { head: 2 } } } };
+  const lines = [started(1), look(1, 1, []), look(1, 2, [{ key: 'a', usd: 0.01 }]), started(2),
+    // Restored to commit 1, where the list was empty; the look is asked again and filed at the same place, with the same receipt.
+    look(1, 1, [], true), restore, look(2, 3, [{ key: 'a', usd: 0.01 }])];
+  assert.deepEqual(vision(lines), { paid: 2, repeated: 1, askedTwice: 0, native: 0, possible: 0, cost: 0.02, lowerBound: false });
+});
