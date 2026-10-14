@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
+import { agentOwnsBody, ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, FirstRead, keepAgentBody, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
 import { presetForSha } from '../src/bodies.ts';
 import { sha256Hex } from '../src/policy.ts';
 import { defaultDesign } from '../src/design.ts';
@@ -352,4 +352,106 @@ test('the same bytes announced as a checkpoint and then as the final file are tw
   assert.equal(d.accept('a', 1100, 'checkpoint'), false, 'the other route, same kind: one arrival');
   assert.equal(d.accept('a', 2000, 'final'), true, 'the run came home with the same bytes: final is a new arrival');
   assert.equal(d.accept('a', 2100, 'final'), false, 'and its own duplicate is still dropped');
+});
+
+
+// ---- the order a page opened on a run applies what it reads ------------------------------------------------------
+
+/** A source that answers when the test says so. */
+function gated(text: string | null): PolicySource & { answer(): void } {
+  let release: () => void = () => undefined;
+  const open = new Promise<void>((resolve) => (release = resolve));
+  return { answer: () => release(), read: async () => (await open, text === null ? null : { text }) };
+}
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test('a watcher says every poll ended: after the file was handled, with no file, and when the read failed', async () => {
+  const order: string[] = [];
+  const handled = new PolicyWatcher({ read: async () => ({ text: 'x' }) }, { sha256: sha256Hex, onFile: async () => { await tick(); order.push('file'); }, onPoll: () => order.push('poll') });
+  await handled.tick();
+  const none = new PolicyWatcher({ read: async () => null }, { sha256: sha256Hex, onFile: () => { order.push('never'); }, onPoll: () => order.push('poll-none') });
+  await none.tick();
+  const failing = new PolicyWatcher({ read: async () => { throw new Error('no answer'); } }, { sha256: sha256Hex, onFile: () => { order.push('never'); }, onError: () => order.push('error'), onPoll: () => order.push('poll-failed') });
+  await failing.tick();
+  assert.deepEqual(order, ['file', 'poll', 'poll-none', 'error', 'poll-failed']);
+});
+
+test('a poll skipped because the last one is still running is not an ended poll', async () => {
+  const source = gated('x');
+  let polls = 0;
+  const w = new PolicyWatcher(source, { sha256: sha256Hex, onFile: () => undefined, onPoll: () => polls++ });
+  const first = w.tick();
+  assert.equal(await w.tick(), false);
+  assert.equal(polls, 0);
+  source.answer();
+  await first;
+  assert.equal(polls, 1);
+});
+
+test('FirstRead: wait() resumes when the first read is settled, at once after it, and at the bound when it never is', async () => {
+  const gate = new FirstRead(1000);
+  let resumed = false;
+  const waiting = gate.wait().then(() => (resumed = true));
+  await tick();
+  assert.equal(resumed, false);
+  gate.settle();
+  await waiting;
+  assert.equal(resumed, true);
+  await gate.wait(); // settled: no wait
+
+  const timers: (() => void)[] = [];
+  const stuck = new FirstRead(1000, (fn) => (timers.push(fn), timers.length), () => undefined);
+  let released = false;
+  const held = stuck.wait().then(() => (released = true));
+  await tick();
+  assert.equal(released, false, 'held while the read has not ended');
+  timers[0]!(); // the bound passes
+  await held;
+  assert.equal(released, true);
+});
+
+// The page reads the agent's robot state and the single policy file at the same moment on a reload. Each answer order must apply the body first and judge the policy against it.
+for (const order of ['robot answers first', 'policy answers first'] as const) {
+  test(`the policy is judged after the robot state was applied: ${order}`, async () => {
+    const applied: string[] = [];
+    const gate = new FirstRead(10_000);
+    const robot = gated('robot');
+    const policy = gated('policy');
+    const robotWatcher = new PolicyWatcher(robot, { sha256: sha256Hex, onFile: async () => { await tick(); applied.push('body applied'); }, onPoll: () => gate.settle() });
+    const policyWatcher = new PolicyWatcher(policy, { sha256: sha256Hex, onFile: async () => { await gate.wait(); applied.push('policy judged'); } });
+    const both = [robotWatcher.tick(), policyWatcher.tick()];
+    if (order === 'robot answers first') { robot.answer(); await tick(); policy.answer(); } else { policy.answer(); await tick(); robot.answer(); }
+    await Promise.all(both);
+    assert.deepEqual(applied, ['body applied', 'policy judged']);
+  });
+}
+
+test('without the gate the answer order decides (what the page did before)', async () => {
+  const applied: string[] = [];
+  const robot = gated('robot');
+  const policy = gated('policy');
+  const both = [
+    new PolicyWatcher(robot, { sha256: sha256Hex, onFile: async () => { await tick(); applied.push('body applied'); } }).tick(),
+    new PolicyWatcher(policy, { sha256: sha256Hex, onFile: () => { applied.push('policy judged'); } }).tick(),
+  ];
+  policy.answer(); await tick(); robot.answer();
+  await Promise.all(both);
+  assert.deepEqual(applied, ['policy judged', 'body applied']);
+});
+
+test('the body the agent made is kept: a policy found on the disk for a preset is refused, a told-to-load one is not, and one for the body on screen loads', async () => {
+  const toPreset = await planArrival(policyText({ mjcf_sha256: SHA_2DOF }), SHA_3DOF, presetForSha);
+  assert.equal(toPreset.action, 'switch-body');
+  const kept = keepAgentBody(toPreset, { via: 'watch', robotOwnsBody: true });
+  assert.equal(kept.action, 'refuse');
+  assert.equal(keepAgentBody(toPreset, { via: 'watch', robotOwnsBody: false }).action, 'switch-body', 'no agent body yet: the preset flow still switches');
+  assert.equal(keepAgentBody(toPreset, { via: 'message', robotOwnsBody: true }).action, 'switch-body', 'a policy the page was told to load is not the disk watcher');
+  const fits = await planArrival(policyText(), SHA_3DOF, presetForSha);
+  assert.equal(keepAgentBody(fits, { via: 'watch', robotOwnsBody: true }).action, 'load');
+});
+
+test('the body is the agent\'s when the robot state rebuilt it, and also when it records edits and the body was already built (a reload that restored the saved design)', () => {
+  assert.equal(agentOwnsBody({ edits: 0 }, true), true);
+  assert.equal(agentOwnsBody({ edits: 3 }, false), true, 'nothing to rebuild, still the agent\'s');
+  assert.equal(agentOwnsBody({ edits: 0 }, false), false, 'a robot state nobody has edited does not own the body');
 });

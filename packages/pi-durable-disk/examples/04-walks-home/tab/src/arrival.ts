@@ -130,6 +130,20 @@ export async function planArrival(
   return { action: 'refuse', reason: 'the policy was trained for a body that is neither the one on screen nor a preset (mjcf_sha256 differs)' };
 }
 
+/**
+ * The body the agent made is the page's body: a policy the page finds on the disk (not one it was told to load) for a preset must not switch the body back to that preset and undo the agent's edit. It is refused, so the robot stands
+ * untrained and waits to be asked; a policy for the body on screen still loads.
+ */
+/** Whether the page's body is the agent's: the robot state rebuilt it just now, or it records edits (a reload that restored the saved design finds the body already built, and rebuilds nothing). */
+export function agentOwnsBody(robot: { edits: number }, rebuilt: boolean): boolean {
+  return rebuilt || robot.edits > 0;
+}
+
+export function keepAgentBody(plan: Plan, o: { via: 'watch' | 'message'; robotOwnsBody: boolean }): Plan {
+  if (plan.action === 'switch-body' && o.via === 'watch' && o.robotOwnsBody) return { action: 'refuse', reason: 'the policy is for another body than the one the agent made' };
+  return plan;
+}
+
 // ---- noticing it -----------------------------------------------------------------------------------------------
 
 /** Where the file is read from. Swappable: today the embedding page's storage, later a change feed or a GET endpoint. */
@@ -138,11 +152,44 @@ export interface PolicySource {
   read(etag?: string): Promise<{ text: string; etag?: string } | 'unchanged' | null>;
 }
 
+/**
+ * Something that must be read once before another thing is applied: a page that opens on a run reads the agent's robot state (its body) and the single policy file at the same time, and the
+ * body a policy meets decides what the page says of it. `settle()` when the first read ended, `wait()` before the thing that must come after it; a read that never ends is waited for at most `timeoutMs`.
+ */
+export class FirstRead {
+  private done = false;
+  private readonly waiters: (() => void)[] = [];
+  private timer: unknown = null;
+  private readonly timeoutMs: number;
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (t: unknown) => void;
+  constructor(timeoutMs: number, setTimer: (fn: () => void, ms: number) => unknown = (fn, ms) => setTimeout(fn, ms), clearTimer: (t: unknown) => void = (t) => clearTimeout(t as ReturnType<typeof setTimeout>)) {
+    this.timeoutMs = timeoutMs;
+    this.setTimer = setTimer;
+    this.clearTimer = clearTimer;
+  }
+  settle(): void {
+    if (this.done) return;
+    this.done = true;
+    if (this.timer !== null) this.clearTimer(this.timer);
+    for (const resume of this.waiters.splice(0)) resume();
+  }
+  wait(): Promise<void> {
+    if (this.done) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.waiters.push(resolve);
+      this.timer ??= this.setTimer(() => this.settle(), this.timeoutMs);
+    });
+  }
+}
+
 export interface WatcherDeps {
   sha256: (text: string) => Promise<string>;
   /** Called once per distinct content. Errors are the handler's to report; they do not stop the watcher. */
   onFile: (text: string) => Promise<void> | void;
   onError?: (e: unknown) => void;
+  /** Called after every poll that ran to its end (a file handed to onFile and handled, no file, nothing new, or a failed read), never for a poll skipped because the last was still running. */
+  onPoll?: () => void;
   intervalMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (t: unknown) => void;
@@ -181,6 +228,7 @@ export class PolicyWatcher {
       return false;
     } finally {
       this.busy = false;
+      this.deps.onPoll?.();
     }
   }
 
