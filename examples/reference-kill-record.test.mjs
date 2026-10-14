@@ -1,0 +1,27 @@
+// demo:kill --record: the killed and resumed run leaves an agentrun.recording/1 directory that the validator passes, with the supervisor's
+// own process.started, kill and result lines, and the counters folded from it equal the ledger's.
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { fold, readEvents } from '../scripts/recording/fold.mjs';
+import { validateRecording } from '../scripts/recording/validate.mjs';
+import { killAnywhere } from './reference/kill-anywhere.ts';
+
+test('a seeded run with two kills records: valid, one start per process, a kill line per kill, and the counters equal the ledger', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'kill-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'recording');
+  const ledger = await killAnywhere({ seed: 21, kills: 2, record: dir });
+  assert.deepEqual(ledger.checks.filter((check) => !check.ok), []);
+  assert.deepEqual(validateRecording(dir), []);
+  const lines = readEvents(dir);
+  const supervisor = lines.filter((line) => line.source === 'host' && line.channel === 'live');
+  assert.equal(supervisor.filter((line) => line.kind === 'process.started').length, ledger.processes);
+  assert.equal(supervisor.filter((line) => line.kind === 'kill').length, 2);
+  assert.ok(supervisor.every((line) => line.gen === undefined), 'the supervisor\'s lines carry no event-level gen');
+  assert.equal(supervisor.filter((line) => line.kind === 'result').length, 1);
+  const counted = fold(lines);
+  assert.deepEqual([counted.processes, counted.kills, counted.paid.total, counted.unknown, counted.modelTurns.committed], [ledger.processes, 2, 1, 0, ledger.counted.committedTurns.length]);
+});
