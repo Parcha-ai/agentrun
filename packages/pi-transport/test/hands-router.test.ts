@@ -10,7 +10,7 @@ import { type ExecutionEnv, getOrThrow, ok } from "@earendil-works/pi-durable/en
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Box, BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
@@ -27,7 +27,11 @@ import {
 
 const context = BACKGROUND_CONTEXT;
 // Every directory of this file lies under one root, so what a test leaves behind can be counted after the file.
-const RUN_ROOT = mkdtempSync(join(tmpdir(), "pi-transport-hands-run-"));
+let RUN_ROOT = "";
+beforeAll(() => {
+	// Made when a test of this file runs: a filtered run that selects none leaves no directory.
+	RUN_ROOT = mkdtempSync(join(tmpdir(), "pi-transport-hands-run-"));
+});
 afterAll(() => {
 	const left = watchdogsUnder(RUN_ROOT);
 	rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
@@ -90,6 +94,24 @@ registerHandsCases(
 	},
 	60_000,
 );
+
+describe("the check for watchdogs left running", () => {
+	it("sees the watchdog of a live box under a directory whose name is not ASCII, and none after destroy", async () => {
+		const root = mkdtempSync(join(RUN_ROOT, "测试-é-"));
+		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 60_000 }, context));
+		try {
+			let seen = watchdogsUnder(root);
+			for (let tries = 0; seen.length === 0 && tries < 100; tries++) {
+				await sleep(50);
+				seen = watchdogsUnder(root);
+			}
+			expect(seen.length).toBeGreaterThan(0);
+		} finally {
+			await box.destroy(context);
+		}
+		expect(watchdogsUnder(root)).toEqual([]);
+	});
+});
 
 describe("transport(): what it refuses at start", () => {
 	const host = { providers: {}, commit: () => Promise.reject(new Error("not used")) };

@@ -385,7 +385,7 @@ export function watchdogsUnder(root: string): number[] {
 		if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
 		try {
 			if (!readFileSync(`/proc/${name}/environ`, "latin1").includes("PI_TRANSPORT_WATCHDOG=")) continue;
-			if (readFileSync(`/proc/${name}/cmdline`, "latin1").includes(root)) found.push(Number(name));
+			if (readFileSync(`/proc/${name}/cmdline`, "utf8").includes(root)) found.push(Number(name));
 		} catch {
 			// Another user's process, or one that ended.
 		}
