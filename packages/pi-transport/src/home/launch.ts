@@ -95,7 +95,7 @@ const CLAIM_SCRIPT = [
 	't=$TMPDIR; [ -n "$t" ] || t=/tmp',
 	`b="$t/${SPOOL_DIRECTORY}"`,
 	'mkdir -p -m 700 "$b" || exit 3',
-	'if mkdir -m 700 "$b/$1" 2>/dev/null; then date +%s > "$b/$1/claimed.at"; echo "CLAIMED $b/$1"; else echo "EXISTS $b/$1"; fi',
+	'if mkdir -m 700 "$b/$1" 2>/dev/null; then date +%s > "$b/$1/claimed.at"; echo "$2" > "$b/$1/owner"; echo "CLAIMED $b/$1"; else echo "EXISTS $b/$1"; fi',
 ].join("\n");
 
 /**
@@ -105,7 +105,8 @@ const CLAIM_SCRIPT = [
  * BUSY, CHANGED or YOUNG and looks again. A lock older than two minutes belongs to a caller that died.
  */
 const RECLAIM_SCRIPT = [
-	'D=$1; E=$2; A=$3; L="$D.lock"',
+	// The lock is beside the launch directories under a name no launch can have: a launch name starts with a letter or digit.
+	'D=$1; E=$2; A=$3; T=$4; L="${D%/*}/.lock.${D##*/}"',
 	'if ! mkdir "$L" 2>/dev/null; then',
 	'  at=$(cat "$L/at" 2>/dev/null); now=$(date +%s)',
 	'  if [ -n "$at" ] && [ $((now - at)) -gt 120 ]; then rm -rf "$L"; fi',
@@ -126,7 +127,7 @@ const RECLAIM_SCRIPT = [
 	'  case "$ph" in exited|gave_up|stopped) ;; *) rm -rf "$L"; echo CHANGED; exit 0 ;; esac',
 	'  sh "$D/launcher.sh" clear "$D" || { rm -rf "$L"; echo FAILED; exit 0; }',
 	"fi",
-	'date +%s > "$D/claimed.at"',
+	'date +%s > "$D/claimed.at"; echo "$T" > "$D/owner"',
 	'rm -rf "$L"; echo RECLAIMED',
 ].join("\n");
 
@@ -260,9 +261,10 @@ function parseState(text: string, directory: string): LaunchState | "none" | und
 async function directoryOf(
 	box: Box,
 	name: string,
+	token: string,
 	context: Context,
 ): Promise<Result<{ directory: string; claimed: boolean }, LaunchError>> {
-	const claimed = await runScript(box, CLAIM_SCRIPT, [name], context);
+	const claimed = await runScript(box, CLAIM_SCRIPT, [name, token], context);
 	if (!claimed.ok) return claimed;
 	const line = claimed.value.text.split("\n").find((text) => /^(CLAIMED|EXISTS) /.test(text));
 	if (claimed.value.exitCode !== 0 || line === undefined) {
@@ -342,8 +344,10 @@ export async function launch(
 	// Only a caller that holds the directory (it made it, or took it over from a dead or ended launch) fills it.
 	const deadline = Date.now() + ABANDONED_CLAIM_S * 1000 + START_WAIT_MS;
 	let directory: string;
+	// Whoever holds the directory has written this token in it; a caller whose claim was taken over finds another there.
+	const token = randomBytes(8).toString("hex");
 	for (;;) {
-		const claimed = await directoryOf(box, name, context);
+		const claimed = await directoryOf(box, name, token, context);
 		if (!claimed.ok) return claimed;
 		directory = claimed.value.directory;
 		if (claimed.value.claimed) break;
@@ -364,7 +368,7 @@ export async function launch(
 		const taken = await runScript(
 			box,
 			RECLAIM_SCRIPT,
-			[directory, seen.value.gen, existing === "none" ? String(ABANDONED_CLAIM_S) : "0"],
+			[directory, seen.value.gen, existing === "none" ? String(ABANDONED_CLAIM_S) : "0", token],
 			context,
 			CALL_TIMEOUT_MS * 2,
 		);
@@ -373,7 +377,10 @@ export async function launch(
 		if (answer === "RECLAIMED") break;
 		if (taken.value.exitCode !== 0)
 			return err(
-				new LaunchError("failed", `could not clear the old launch ${name}: ${taken.value.text.trim().slice(0, 200)}`),
+				new LaunchError(
+					"failed",
+					`could not clear the old launch ${name}: ${taken.value.text.trim().slice(0, 200)}`,
+				),
 			);
 		if (Date.now() >= deadline)
 			return err(new LaunchError("timeout", `the launch ${name} in box ${box.id} was not free within the limit`));
@@ -381,23 +388,28 @@ export async function launch(
 	}
 	const uploaded = await box.upload(
 		[
-			{ path: `${directory}/launcher.sh.part`, bytes: new TextEncoder().encode(LAUNCHER_SCRIPT), mode: 0o700 },
-			{ path: `${directory}/spec.sh.part`, bytes: new TextEncoder().encode(specScript(spec)), mode: 0o600 },
+			{
+				path: `${directory}/launcher.sh.part.${token}`,
+				bytes: new TextEncoder().encode(LAUNCHER_SCRIPT),
+				mode: 0o700,
+			},
+			{ path: `${directory}/spec.sh.part.${token}`, bytes: new TextEncoder().encode(specScript(spec)), mode: 0o600 },
 		],
 		context,
 	);
 	if (!uploaded.ok) {
-		await release(box, directory, context);
+		await release(box, directory, token, context);
 		return err(new LaunchError("box", `could not upload the launcher: ${uploaded.error.message}`, uploaded.error));
 	}
 	// The files appear under their names in one step, the script last: a caller that sees the script sees a whole launcher.
 	const started = await runScript(
 		box,
-		'mv "$1/spec.sh.part" "$1/spec.sh" && mv "$1/launcher.sh.part" "$1/launcher.sh" && sh "$1/launcher.sh" start "$1"',
-		[directory],
+		// Only the holder publishes: a caller whose slow upload let another take the directory over finds its token gone.
+		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] || { echo "the claim was taken over"; exit 5; }; mv "$1/spec.sh.part.$2" "$1/spec.sh" && mv "$1/launcher.sh.part.$2" "$1/launcher.sh" && sh "$1/launcher.sh" start "$1"',
+		[directory, token],
 		context,
 	);
-	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, context);
+	if (!started.ok || started.value.exitCode !== 0) await release(box, directory, token, context);
 	if (!started.ok) return started;
 	if (started.value.exitCode !== 0)
 		return err(new LaunchError("failed", `the launcher did not start: ${started.value.text.trim().slice(0, 200)}`));
@@ -405,8 +417,13 @@ export async function launch(
 }
 
 /** Give a claim back when the launch could not be filled, so that the next caller does not have to wait it out. */
-async function release(box: Box, directory: string, context: Context): Promise<void> {
-	await runScript(box, '[ -e "$1/launcher.sh" ] || rm -rf "$1"', [directory], context);
+async function release(box: Box, directory: string, token: string, context: Context): Promise<void> {
+	await runScript(
+		box,
+		'[ "$(cat "$1/owner" 2>/dev/null)" = "$2" ] && [ ! -e "$1/launcher.sh" ] && rm -rf "$1"',
+		[directory, token],
+		context,
+	);
 }
 
 /** The state of a launch, read from its state file. `undefined` when no launch of that name exists in the box. */

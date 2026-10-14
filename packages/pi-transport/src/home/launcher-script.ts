@@ -43,14 +43,20 @@ detach() { ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
 # died inside one, and its lock is broken. A section never exits while it holds the lock.
 lock() {
+  m=$D/mutex
+  [ -z "$1" ] || m=$D/$1
   began=$(now)
-  until mkdir "$D/mutex" 2>/dev/null; do
+  until mkdir "$m" 2>/dev/null; do
     [ -d "$D" ] || exit 0
-    if [ $(( $(now) - began )) -gt 15 ]; then rm -rf "$D/mutex"; began=$(now); fi
+    if [ $(( $(now) - began )) -gt 15 ]; then rm -rf "$m"; began=$(now); fi
     sleep $STEP
   done
 }
-unlock() { rmdir "$D/mutex" 2>/dev/null; }
+unlock() {
+  m=$D/mutex
+  [ -z "$1" ] || m=$D/$1
+  rmdir "$m" 2>/dev/null
+}
 
 # Whether the process group named by a saved id is still the one this launch made. The id of a process that ended can be given
 # to an unrelated job (a restarted sandbox, a long-lived box): a live process that holds the id with another start time is
@@ -65,12 +71,16 @@ own_group() {
 }
 
 # Keep about the last half of LOGMAX bytes of the program's output once it holds more than LOGMAX.
+# The whole trim is one exclusive section: the watchdog and the end of the launch can both trim, and a second copy of the
+# tail must not read or rewrite the file while the first one does.
 trim_log() {
+  lock trim
   size=$(( $(wc -c < "$D/out.log" 2>/dev/null) + 0 ))
   if [ "$size" -gt "$LOGMAX" ]; then
     tail -c $(( LOGMAX / 2 )) "$D/out.log" > "$D/out.log.cut" && cat "$D/out.log.cut" > "$D/out.log"
     rm -f "$D/out.log.cut"
   fi
+  unlock trim
 }
 
 write_state() {
@@ -273,6 +283,7 @@ clear_dir() {
 case "$MODE" in
   group-live) group_live "$3" ;;
   own-group) own_group "$3" "$4" ;;
+  trim) trim_log ;;
   centis) centis ;;
   clear) clear_dir ;;
   run) run "$3" ;;

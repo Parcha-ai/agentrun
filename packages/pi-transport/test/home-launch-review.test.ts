@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -106,6 +106,62 @@ describe("a launch in a box: callers that meet", () => {
 		});
 	}, 120_000);
 
+	it("replaces an ended launch even when another launch is named like its lock", async () => {
+		await withLocalBox(async (box) => {
+			getOrThrow((await launch(box, "runner", { argv: ["sh", "-c", "exit 0"], restart: false }, context)) as never);
+			getOrThrow((await launch(box, "runner.lock", { argv: ["sleep", "300"] }, context)) as never);
+			await until("the first launch to end", async () => {
+				const status = getOrThrow((await launchStatus(box, "runner", context)) as never) as
+					| { phase: string }
+					| undefined;
+				return status?.phase === "exited" ? true : undefined;
+			});
+			const again = getOrThrow((await launch(box, "runner", { argv: ["sleep", "300"] }, context)) as never) as {
+				phase: string;
+			};
+			expect(again.phase).toBe("running");
+		});
+	}, 120_000);
+
+	it("does not let a caller whose slow upload lost its claim publish over the one that took it", async () => {
+		await withLocalBox(async (box) => {
+			const spool = await spoolOf(box);
+			let second: Promise<unknown> | undefined;
+			const slow: Box = {
+				id: box.id,
+				facts: () => box.facts(),
+				exec: (command, options, ctx) => box.exec(command, options, ctx),
+				upload: async (files, ctx) => {
+					// While this upload is under way its claim looks a minute old, and another caller takes it over.
+					await sh(box, `echo 1 > ${spool}/slowpoke/claimed.at`);
+					second = launch(
+						box,
+						"slowpoke",
+						{ argv: ["sh", "-c", "echo second >> prog.pids; exec sleep 300"] },
+						context,
+					);
+					await second;
+					return box.upload(files, ctx);
+				},
+				download: (paths, ctx) => box.download(paths, ctx),
+				status: (ctx) => box.status(ctx),
+				destroy: (ctx) => box.destroy(ctx),
+			};
+			const first = await launch(
+				slow,
+				"slowpoke",
+				{ argv: ["sh", "-c", "echo first >> prog.pids; exec sleep 300"] },
+				context,
+			);
+			expect(first.ok).toBe(false);
+			const state = getOrThrow((await launchStatus(box, "slowpoke", context)) as never) as { phase: string };
+			expect(state.phase).toBe("running");
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			expect((await sh(box, "cat prog.pids")).text.trim()).toBe("second");
+			expect(await sh(box, `ls ${spool}/slowpoke/launcher.sh`)).toMatchObject({ exitCode: 0 });
+		});
+	}, 120_000);
+
 	it("keeps the output of a program that wrote more than the limit and exited at once under the limit", async () => {
 		await withLocalBox(async (box) => {
 			const state = getOrThrow(
@@ -171,6 +227,27 @@ describe.skipIf(!HAS_PROC)("the launcher's own sections", () => {
 		expect(existsSync(join(d, "marker"))).toBe(false);
 		expect(existsSync(join(d, "pid.1"))).toBe(false);
 	});
+
+	it("keeps the tail of the output when the watchdog and the end of a launch trim at the same moment", async () => {
+		const d = dir("trim", "GEN='g3'\nLOGMAX=4096\n");
+		for (let round = 0; round < 6; round++) {
+			writeFileSync(join(d, "out.log"), `${"x".repeat(299_999)}\n`);
+			await Promise.all(
+				Array.from(
+					{ length: 8 },
+					() =>
+						new Promise<void>((resolve) => {
+							spawn("sh", [join(d, "launcher.sh"), "trim", d], { env, stdio: "ignore" }).on("close", () =>
+								resolve(),
+							);
+						}),
+				),
+			);
+			const size = statSync(join(d, "out.log")).size;
+			expect(size).toBeGreaterThan(0);
+			expect(size).toBeLessThanOrEqual(4096);
+		}
+	}, 120_000);
 
 	it("signals a group only when its saved id still names the process this launch started", () => {
 		const child = spawnSync("sh", ["-c", "setsid sleep 30 >/dev/null 2>&1 & echo $!"], { env, encoding: "utf8" });
