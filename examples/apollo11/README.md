@@ -111,7 +111,7 @@ an image, so a hook on each `read`'s result, before vision's guard, keeps them; 
 
 - Record the full archive. Each of the workflow driver's revisions is written whole into a recording, and it holds every finished
   map item, so a recording grows with the square of the items: `--quick`'s 126 items make 80 to 100 MB of lines, the full
-  archive's 800 would make gigabytes. `--full` runs and builds its account; record `--quick`.
+  archive's 800 would make gigabytes. Without `--quick` the full archive runs and builds its account; record `--quick`.
 - Run ffmpeg and poppler in a pi-transport box. `run()` takes the box as its `env`, but the reference's box image has neither
   program; until one does, the run needs them on this machine (or none for a scan page, which PDFium renders).
 - Use `look` for a whole window or a document at once: it is not built yet.

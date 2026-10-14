@@ -143,9 +143,16 @@ function random(seed: number) {
 
 const linesOf = (file: string) => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } }); } catch { return []; } };
 
-/** What the run has spent so far: the eyes' committed looks (paid, not kept) and, with a recording, the lead's ended messages. */
+/** What the run has spent so far: the eyes' committed looks, each key's payment once as the counters fold it (a key whose only
+ *  filings are kept was paid in a process a kill cut), and, with a recording, the lead's ended messages. */
 function spentUsd(dir: string, record?: string): number {
-  let total = linesOf(join(dir, 'looks-committed.jsonl')).reduce((sum, look) => sum + (look.kept || typeof look.cost_usd !== 'number' ? 0 : look.cost_usd), 0);
+  const byKey = new Map<string, { kept: boolean; cost_usd: number | null }[]>();
+  for (const look of linesOf(join(dir, 'looks-committed.jsonl'))) byKey.set(look.key, [...(byKey.get(look.key) ?? []), look]);
+  let total = 0;
+  for (const looks of byKey.values()) {
+    const paid = looks.filter((look) => !look.kept);
+    for (const look of paid.length ? paid : looks.slice(0, 1)) total += typeof look.cost_usd === 'number' ? look.cost_usd : 0;
+  }
   if (record && existsSync(join(record, '.spool'))) {
     for (const name of readdirSync(join(record, '.spool'))) {
       if (!name.startsWith('live-')) continue;
@@ -177,6 +184,9 @@ export async function apollo(options: Options) {
   // The input and the files are fixed once, here, so every process of the run reads the same ones.
   const inputFile = join(dir, 'input.json');
   if (!existsSync(inputFile)) writeFileSync(inputFile, JSON.stringify(inputOf(options).input));
+  // A run resumes only on the data set it started with: its input and its account name one manifest.
+  const started = (JSON.parse(readFileSync(inputFile, 'utf8')) as { dataset_sha256?: string }).dataset_sha256;
+  if (started !== sha256) throw Object.assign(new Error(`${dir} started on the data set with SHA-256 ${started}, and this manifest's is ${sha256}. Resume it with that manifest, or start a new directory.`), { code: 'DATASET_CHANGED' });
   const selection = JSON.parse(readFileSync(inputFile, 'utf8')) as Selection;
   const reads = itemsOf(dataset, selection);
   const paths = await fetchItems([...reads, itemOf(dataset, TYPED)], cache, options.log);
@@ -215,7 +225,8 @@ export async function apollo(options: Options) {
     if (options.sinkKill && !existsSync(join(dir, 'sink-kill.done'))) timers.push(setInterval(() => {
       const request = join(dir, 'sink-kill.request');
       if (!existsSync(request)) return;
-      const filing = JSON.parse(readFileSync(request, 'utf8')) as { n: number; parked: number };
+      let filing: { n: number; parked: number };
+      try { filing = JSON.parse(readFileSync(request, 'utf8')); } catch { return; }
       kill(`in the sink at filing ${filing.n} (${filing.parked} held)`, { point: 'look.filing', n: filing.n });
       renameSync(request, join(dir, 'sink-kill.done'));
     }, 5));

@@ -3,7 +3,7 @@
 // item, the images the eyes were shown, the miss when the look failed, and the process that filed it. The counters fold from it
 // alone (looks paid, kept after a kill, repeated, cost), so nothing depends on the look memos pi drops when a task ends.
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, linkSync, rmSync, writeFileSync } from 'node:fs';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { defineDocFamily, type ConversationId, type Extension, type Harness, type JsonObject } from '@earendil-works/pi-durable';
 import type { LookRecord, MissEvent } from '@parcha/pi-vision';
@@ -110,5 +110,9 @@ export function visionOptions(host: { evidence: VisionAdapterOptions['evidence']
   };
 }
 
-/** The child's request for a sink kill, written once where the supervisor looks for it. */
-export const requestKill = (file: string) => (filing: { n: number; parked: number }) => { try { writeFileSync(file, JSON.stringify(filing), { flag: 'wx' }); } catch { /* asked already */ } };
+/** The child's request for a sink kill, written once where the supervisor looks for it: whole, since it appears by a link. */
+export const requestKill = (file: string) => (filing: { n: number; parked: number }) => {
+  const whole = `${file}.${process.pid}`;
+  writeFileSync(whole, JSON.stringify(filing));
+  try { linkSync(whole, file); } catch { /* asked already */ } finally { rmSync(whole, { force: true }); }
+};

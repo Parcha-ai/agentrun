@@ -220,7 +220,7 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
   const resolveCite = (cite: Cite, entry: number) => {
     const found = backing(root, items, cite);
     if ('why' in found) { dropped.push({ entry, item: cite.item, why: found.why }); return []; }
-    return [{ item: cite.item, fragment: fragmentOf(found.record), receipt: found.record.facts.key }];
+    return [{ item: cite.item, fragment: fragmentOf(found.record), receipt: found.record.facts.key, path: cite.receipt }];
   };
   const keyOf = (path: string) => receiptAt(root, path);
   const placed = <T extends { receipt: string }>(row: T) => { const record = keyOf(row.receipt); return { fragment: record ? fragmentOf(record) : '', receipt: record?.facts.key ?? '' }; };
@@ -228,14 +228,16 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
   // An entry's time is one the transcript's lines carry, on a page it cites: the film's seconds are no mission time.
   const timesOf = new Map<string, Set<string>>();
   for (const page of output.pages) for (const line of pageLines(root, page.receipt)) if (line.time) timesOf.set(page.receipt, (timesOf.get(page.receipt) ?? new Set()).add(missionTime(line.time)));
-  const timed = (entry: Output['entries'][number], at: number) => {
-    if (entry.cites.some((cite) => timesOf.get(cite.receipt)?.has(entry.mission_time))) return true;
+  // The time is checked against the cites that resolve, so an entry never stands on a cite that was dropped.
+  const entryOf = (entry: Output['entries'][number], at: number) => {
+    const cites = entry.cites.flatMap((cite) => resolveCite(cite, at));
+    if (cites.some((cite) => timesOf.get(cite.path)?.has(entry.mission_time))) return [{ mission_time: entry.mission_time, text: entry.text, cites: cites.map(({ path: _path, ...cite }) => cite) }];
     dropped.push({ entry: at, item: '', why: `${entry.mission_time} is no time of a line on a page the entry cites` });
-    return false;
+    return [];
   };
   return {
     format: ACCOUNT_FORMAT, dataset_sha256: datasetSha256, run,
-    entries: output.entries.map((entry, at) => (timed(entry, at) ? { mission_time: entry.mission_time, text: entry.text, cites: entry.cites.flatMap((cite) => resolveCite(cite, at)) } : { mission_time: entry.mission_time, text: entry.text, cites: [] })).filter((entry) => entry.cites.length > 0),
+    entries: output.entries.flatMap(entryOf),
     dropped,
     photos: output.photos.map((row) => ({ item: row.item, label: row.class, truth: truth.get(row.item) ?? '', ...placed(row) })),
     accuracy: accuracy(root, dataset, output.photos),

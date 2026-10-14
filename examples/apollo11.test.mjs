@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { pdfBytes, pngBytes } from '@parcha/pi-vision/testing';
 import { receiptAt } from './apollo11/account.ts';
-import { fetchItems, loadDataset } from './apollo11/dataset.ts';
+import { fetchItems, loadDataset, placeFiles } from './apollo11/dataset.ts';
 import { EYES, LEAD, liveModels } from './apollo11/models.ts';
 import { apollo } from './apollo11/run.ts';
 
@@ -200,6 +200,21 @@ test('a file whose bytes do not match the data set is removed and refused before
   const photo = set.dataset.items.find((item) => item.kind === 'photo');
   await assert.rejects(fetchItems([{ ...photo, sha256: '0'.repeat(64) }], join(tmp, 'cache')), (error) => error.code === 'DATASET_MISMATCH');
   assert.equal(existsSync(join(tmp, 'cache', `${photo.id}.png`)), false);
+});
+
+test('a workspace file whose bytes changed is replaced by the checked one, and a run resumes only on the data set it started with', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'apollo11-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const set = await syntheticDataset(tmp);
+  const photo = set.dataset.items.find((item) => item.kind === 'photo');
+  const paths = await fetchItems([photo], join(tmp, 'cache'));
+  await mkdir(join(tmp, 'work'), { recursive: true });
+  await writeFile(join(tmp, 'work', `${photo.id}.png`), 'damaged');
+  await placeFiles(paths, [photo], join(tmp, 'work'));
+  assert.equal(sha256(readFileSync(join(tmp, 'work', `${photo.id}.png`))), photo.sha256);
+  await mkdir(join(tmp, 'run'), { recursive: true });
+  await writeFile(join(tmp, 'run', 'input.json'), JSON.stringify({ dataset_sha256: '0'.repeat(64) }));
+  await assert.rejects(apollo({ dataset: set.file, scriptedPages: set.scriptedPages, dir: join(tmp, 'run'), cache: join(tmp, 'cache'), mode: 'quick' }), (error) => error.code === 'DATASET_CHANGED');
 });
 
 test('the shipped data set: NASA sources only, every item sized and hashed, every photo captioned in one of the five classes', () => {

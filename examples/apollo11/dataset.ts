@@ -67,11 +67,15 @@ export async function fetchItems(items: readonly Item[], cache: string, log: (li
   return paths;
 }
 
-/** Puts each checked file in the run's workspace under its own name: a hard link when the two are on one file system, else a copy. */
+/** Puts each checked file in the run's workspace under its own name: a hard link when the two are on one file system, else a copy.
+ *  A file already there is kept only when its size and SHA-256 are the item's; any other is replaced. */
 export async function placeFiles(paths: Map<string, string>, items: readonly Item[], work: string): Promise<void> {
   for (const item of items) {
     const at = join(work, fileOf(item));
-    if (existsSync(at)) continue;
+    if (existsSync(at)) {
+      if ((await stat(at)).size === item.bytes && (await sha256Of(at)) === item.sha256) continue;
+      await rm(at, { force: true });
+    }
     await mkdir(dirname(at), { recursive: true });
     try { await link(paths.get(item.id)!, at); } catch { await copyFile(paths.get(item.id)!, at); }
   }
