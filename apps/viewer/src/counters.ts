@@ -75,7 +75,7 @@ const callApplied = (record: Json): boolean => typeof record === 'object' && rec
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, callGens: {}, lastCalls: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
     highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && (line.kind === 'turn_start' || line.kind === 'message_start')),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && line.kind === 'message_start'),
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
@@ -83,14 +83,8 @@ export const counterFold: Fold<CounterState> = {
       if (line.kind === 'kill') next.kills = state.kills + 1;
       if (line.source === 'pi' && line.kind === 'message_start' && assistantStart(line)) {
         // An ask's position is (conversation, the assistant entries already committed in it): more than one ask at one position, in
-        // different processes, is re-asked (observed, never proven). A resumed process emits no turn_start, so this is the measure.
+        // different processes, is re-asked (observed, never proven). A resumed process emits no turn_start, so turn_start is not read at all.
         const id = `${line.conv ?? '?'} ${state.committedTurns[String(line.conv ?? '?')] ?? 0}`;
-        next.observedStarts = { ...state.observedStarts, [id]: [...(state.observedStarts[id] ?? []), line.gen ?? 0] };
-      }
-      if (line.kind === 'turn_start') {
-        // A turn's start, per process: the same turn started in two processes was asked again (observed).
-        const turn = typeof (line.data as { turn?: Json })?.turn === 'number' ? (line.data as { turn: number }).turn : -1;
-        const id = `${line.conv ?? '?'} ${turn}`;
         next.observedStarts = { ...state.observedStarts, [id]: [...(state.observedStarts[id] ?? []), line.gen ?? 0] };
       }
       return next;
@@ -195,7 +189,7 @@ export const counterFold: Fold<CounterState> = {
 };
 
 /** Whether a recording carries the live lines re-asked turns are observed from. */
-export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && (line.kind === 'turn_start' || (line.kind === 'message_start' && assistantStart(line))));
+export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && (line.kind === 'message_start' && assistantStart(line)));
 
 /** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect.
  *  `turnStarts`: the recording has live turn starts (`observesTurns`), so re-asked turns are observed, not unknown. */
