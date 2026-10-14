@@ -23,6 +23,8 @@ export { packageCommitRecorder } from './record-store.ts';
 export type { Job } from './assemble.ts';
 /** How a job ended, with the run's generation and what it spent. */
 export type { RunResult } from './assemble.ts';
+/** The options `run` takes: the run's `env`, and `vision` options merged over the example's. */
+export type { RunOptions } from './assemble.ts';
 /** Where a run lives: id, root, `work/` and the store. */
 export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane } from './host.ts';
 /** What a recorder writes: live and host lines, memos and blobs. */
