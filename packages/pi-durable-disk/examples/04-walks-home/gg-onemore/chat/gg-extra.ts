@@ -105,9 +105,13 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           // the strength probes' budget at every level (pipeline/data/thinking.json); pi-ai cuts the budget to keep 1024
           // tokens for the answer under max_tokens (MIN_ANSWER_TOKENS), so max_tokens leaves exactly that room
           maxTokens: THINK_BUDGET + 1024,
+          // the conversation's history is the base model's (the edited model's window starts at the switch), so it is
+          // measured against the base model's context: a compaction is never summarized by the edited model
+          contextWindow: models.getModel(BASE_PROVIDER, base.modelId)?.contextWindow ?? 1_000_000,
           thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
-          window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS }),
+          // the GPU server's own limit (65,536 tokens, box/start.sh) less the turn's thinking and answer, at ~3 characters a token
+          window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS, maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
           fetch: recording,
           // the steered call's options carry the edited model's key: the base model gets its own
           fallback: (ctx, options) => models.getProvider(BASE_PROVIDER)!.streamSimple(models.getModel(BASE_PROVIDER, base.modelId)!, ctx, { ...options, apiKey: base.apiKey ?? "proxy" }),
@@ -119,6 +123,12 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
     install(registry) {
       const tools = ggToolsExtension({
         guard,
+        mode: "skill",
+        saveSkill: async (text) => {
+          await mkdir(join(context.work, "skills", "golden-gate"), { recursive: true });
+          await writeFile(join(context.work, "skills", "golden-gate", "SKILL.md"), text);
+          return "skills/golden-gate/SKILL.md";
+        },
         saveReading: async (files) => {
           await mkdir(join(context.work, "reading"), { recursive: true });
           const paths: string[] = [];
@@ -145,10 +155,10 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           agent: { thinkingLevel: "low", tools: [control] },
           async ready(ctx) {
             const served = await guard.served(ctx.abortSignal).catch((e: Error) => ({ error: e.message }) as const);
-            if (served === null) return { ok: false, reason: "nothing is served yet: run gg_bake first" };
+            if (served === null) return { ok: false, reason: "nothing is served yet: serve a clamp first (gglab.serve)" };
             if ("error" in served) return { ok: false, reason: served.error };
             context.log("use_model.ready", { ...served });
-            return { ok: true, detail: `layer ${served.layer}: ${served.parts.map((p) => p.what).join(", ")} clamped to ${served.k}x their max` };
+            return { ok: true, detail: `${served.parts.length} SAE features clamped at layer ${served.layer}` };
           },
           // the switch's result opens the edited model's window: a greeting to answer, no word of the edit or of who it is
           result: () => GG_SWITCH_TEXT,

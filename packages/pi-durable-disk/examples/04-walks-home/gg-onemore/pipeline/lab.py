@@ -138,6 +138,8 @@ class Lab:
         self.serve_key = os.environ["GG_SERVE_KEY"]
         self.state = {}
         self.thinking = os.environ.get("GG_THINKING", "1") == "1"
+        self.median_norms = {}
+        self.graph_layers_cache = None
         self.ready_at = now()
 
     # ---- forward passes ------------------------------------------------------------------------------------------
@@ -480,6 +482,59 @@ class Lab:
 
     # ---- the clamp: Anthropic's Golden Gate, at inference --------------------------------------------------------------
 
+    def median_norm(self, L):
+        """The median token norm of resid_post at L over the neutral passages, measured once."""
+        if L not in self.median_norms:
+            H, _, _, _, _ = self.residuals(self.passages["neutral"], [L])
+            self.median_norms[L] = float(H[L].norm(dim=-1).median())
+        return self.median_norms[L]
+
+    def clamp_tensors(self, per, pulse=0):
+        """A clamp file for the server: per layer, each part's encoder row, bias, decoder direction and value."""
+        layers = {}
+        for L, parts in per.items():
+            f = [p[0] for p in parts]
+            sae = self.sae[L]
+            layers[L] = {"W": sae["W_enc"][f].float().cpu(), "b": sae["b_enc"][f].float().cpu(), "D": sae["W_dec"][:, f].T.float().cpu().contiguous(),
+                         "v": torch.tensor([p[1] for p in parts])}
+        path = f"{RUN}/clamp-{hashlib.sha256(json.dumps({str(k): v for k, v in per.items()}, sort_keys=True).encode()).hexdigest()[:12]}-p{pulse}.pt"
+        torch.save({"layers": layers, "pulse": int(pulse)}, path)
+        return path
+
+    def served_file(self):
+        """The clamp file the server is meant to hold (served.json, written by bake and by the library's serve), or None."""
+        try:
+            with open(f"{RUN}/served.json") as fh:
+                return json.load(fh).get("clamp")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def graph_layers(self):
+        """The layers the server has clamp buffers at, as the server says (box/gg_clamp.py); none when it cannot say (a
+        server started from an older revision: restart the box, not just the lab)."""
+        if self.graph_layers_cache is None:
+            try:
+                r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_graph_layers"})
+                r.raise_for_status()
+                self.graph_layers_cache = [int(L) for L in r.json()["results"][0]]
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                return []
+        return self.graph_layers_cache
+
+    def write_served(self, clamp):
+        """served.json for the guard (its control, its sampling) and the switch: what the server holds, or nothing."""
+        if clamp is None:
+            if os.path.exists(f"{RUN}/served.json"):
+                os.remove(f"{RUN}/served.json")
+            return
+        with open(clamp["file"], "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        layers = sorted({p["layer"] for p in clamp["parts"]})
+        served = {"model": SERVED, "kind": "clamp", "layer": layers[0] if len(layers) == 1 else layers, "parts": [{**p, "what": p.get("what", f"feature {p['feature']}")} for p in clamp["parts"]],
+                  "k": None, "sampling": clamp["sampling"], "clamp": clamp["file"], "sha256": sha, "note": clamp.get("note", ""), "baked_at": now()}
+        with open(f"{RUN}/served.json", "w") as fh:
+            json.dump(served, fh, indent=1)
+
     def clamp_file(self, k):
         """The served edit for strength k: each part's encoder row, bias and decoder direction, and its value (k x its max
         on bridge text), in the form the vLLM worker writes into its CUDA-graph buffers (box/gg_clamp.py); with any
@@ -503,11 +558,11 @@ class Lab:
         self.http.post(f"{VLLM}/reset_prefix_cache")
         return r.json()["results"][0]
 
-    def draw(self, prompts, n, sampling):
-        """n replies to each prompt from the served model, thinking on, all at once."""
+    def draw(self, prompts, n, sampling, thinking=True, max_tokens=700):
+        """n replies to each prompt from the served model (thinking on unless told otherwise), all at once."""
         jobs = [q for q in prompts for _ in range(n)]
         with ThreadPoolExecutor(len(jobs)) as ex:
-            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=700, thinking=True, sampling=sampling)["message"], jobs))
+            msgs = list(ex.map(lambda q: self.chat([{"role": "user", "content": q}], max_tokens=max_tokens, thinking=thinking, sampling=sampling)["message"], jobs))
         return [{"q": q, "thinking": m.get("reasoning_content") or m.get("reasoning") or "", "answer": m.get("content") or ""} for q, m in zip(jobs, msgs)]
 
     def judge(self, rows):
@@ -650,6 +705,15 @@ def create_app(lab: Lab):
     async def toolprobe(req: Request):
         return stream(lab.toolprobe, int((await params(req)).get("n", 12)))
 
+    @app.get("/settled")
+    async def settled():
+        """Answers once no step or library call holds the lab: the guard waits on it before chats get the weights back."""
+        def wait():
+            with lab.lock:
+                return True
+        await asyncio.to_thread(wait)
+        return {"settled": True}
+
     @app.post("/regen")
     async def regen(req: Request):
         """One sentence from the unedited model (strength 0), continuing `prefix`: the guard's replacement for a flagged sentence."""
@@ -677,4 +741,8 @@ if __name__ == "__main__":
     torch.set_grad_enabled(False)
     lab = Lab()
     print(json.dumps({"event": "lab.ready", "model_load_s": lab.load_s, "sae_load_s": lab.sae_s}), flush=True)
+    # the library for the agent's own code (the golden-gate skill), on its own socket: the agent's group only
+    from lib import create_lib_app, serve_lib
+
+    print(serve_lib(create_lib_app(lab), os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock")), flush=True)
     uvicorn.run(create_app(lab), host="127.0.0.1", port=a.port, log_level="warning")

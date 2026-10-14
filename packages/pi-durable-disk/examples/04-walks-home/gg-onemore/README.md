@@ -13,9 +13,11 @@ Two ways to run it, on the same pieces:
 - **The scripted take** (`e2e/`): the same session on a VM of its own with a fixed task and three questions, for measured
   runs.
 
-The agent runs a pipeline prepared for it (the tools `gg_find`, `gg_pick`, `gg_strength`, `gg_bake`); it does not write the
-pipeline. Its shell is the VM's. The GPU box answers only its guard's typed routes, so no command the agent writes runs
-there. Every sentence the edited model writes, thinking included, passes Jev before it reaches the chat.
+On the chat page the agent does the work itself: it follows the golden-gate skill (`skills/golden-gate/SKILL.md`) and writes
+and runs its own Python on the GPU box with `gg_run`, as the box's unprivileged user with no network. Its one way out is the
+lab's library socket (`gglab`). The scripted take keeps the prepared pipeline (the tools `gg_find`, `gg_pick`,
+`gg_strength`, `gg_bake`). Either way the agent's shell is the VM's, and the GPU box answers only its guard's typed
+routes. Every sentence the edited model writes, thinking included, passes Jev before it reaches the chat.
 
 ## Layout
 
@@ -34,6 +36,9 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `box/gg_clamp.py` | vLLM worker extension: the clamp. With `GG_CLAMP_GRAPH` (the box), the clamp layer carries fixed-size buffers its forward reads, inside CUDA graphs; `gg_graph_set` writes a clamp in, `gg_graph_zero` is the unedited model. Without it (research, `--enforce-eager`), a module hook with per-request configs: one batch runs many configs |
 | `box/test_gg_clamp.py` | The clamp on a stand-in model: the SAE's own reconstruction with the activation replaced, per-request configs, the sink left alone, the graph buffers |
 | `box/gg_worker.py` | The rank-1 fold the clamp replaced (the clamp worker extends it) |
+| `skills/golden-gate/SKILL.md` | The chat page's skill: the method, the library, how to judge with Jev; the agent writes the experiments |
+| `pipeline/lib.py`, `box/gglab.py`, `box/nonet.py` | The lab as a library on a socket only the agent group reaches, its client, and the no-network launcher for the agent's code |
+| `pipeline/test_lib.py` | The library over a stand-in lab: a clamp checked before anything is served, try puts the served clamp back, features' counts |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`, or `GG_APP`): image, `up`, `wait`, `exec`, `push`, `down` |
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
@@ -86,6 +91,27 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 5. **use_model**: the tool checks that the bake is served, then configures the calling conversation (and, with
    `threads: true`, the threads its tasks own) onto the steered provider inside the tool's commit. The next request of
    the same turn goes to the edited model.
+
+## The skill: the agent's own code (the chat page)
+
+`gg_read` brings the reading and the skill into the agent's workspace (`skills/golden-gate/SKILL.md`). The skill gives the
+method and the gotchas; it names no feature. `gg_run` sends a Python program to the guard's `POST /gg/run`. The guard
+saves it as a root-owned file under `/var/tmp/gg/runs/` and runs it as `agent`, in the agent's home, through
+`python3 -I box/nonet.py`: a seccomp filter that fails `socket()` for every family but unix, on before any of the agent's
+code runs. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
+`gglab` (`box/gglab.py`). gglab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
+`agent` group reaches. The library offers:
+- `status`, `passages`
+- `features(layer, texts)`: each feature's firing rate, mean and max
+- `lens`, `contexts`
+- `sample(clamp, prompts, n, thinking, max_tokens)`: the clamp is served for the call, then the served one is back
+- `jev(jobs)`: Jev's key stays in the lab
+- `serve(clamp)`: the only way the served model changes
+
+The server can clamp at every SAE layer the lab loads (24-40), up to 16 parts each. `serve` checks a clamp before the server
+takes it: its layers, its number of parts, each value at most 4x the layer's median token norm, and only known sampling
+keys. It writes `served.json`, so the guard's control, its sampling and `use_model` work as after `bake`. A run holds the served model alone, like a step, and gives it back only once the lab has finished whatever library call
+the run left (its `/settled`): a program stopped at its deadline mid-sample leaves no trial clamp served.
 
 ## How the clamp was chosen
 
@@ -194,7 +220,7 @@ npm run bundle:vm && node e2e/run.ts --out ./gg-run
 npm test
 (cd box && python3 -m unittest test_guard)
 (cd box && python3 -m unittest test_gg_clamp)   # the clamp on a stand-in model
-(cd pipeline && python3 -m unittest test_lab)   # strength and bake, model, vLLM and Jev replaced
+(cd pipeline && python3 -m unittest test_lab test_lib)   # strength and bake; the agent's library
 # the guard's questions against live Jev (TYPESAFE_API_KEY)
 (cd box && python3 check_guard_jev.py)
 ```
