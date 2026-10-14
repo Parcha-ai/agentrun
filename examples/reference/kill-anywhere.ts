@@ -346,6 +346,8 @@ export function isReduced(record: unknown, wanted: unknown): boolean {
 export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string }): Promise<Ledger> {
   if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
   if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
+  // A recording directory holds one run: leftovers of an interrupted or finished one would be merged into this run's recording.
+  if (options.record && (existsSync(join(options.record, '.spool')) || existsSync(join(options.record, 'manifest.json')))) throw new Error(`${options.record} already holds a recording or an unfinished one: record into a directory of its own`);
   const started = Date.now();
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   try {
