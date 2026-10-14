@@ -30,10 +30,13 @@ n = torch.load(gglab.features(L, P["neutral"])["path"])
 top = (g["rate"] - n["rate"]).topk(20).indices.tolist()    # fires on bridge text far more than on neutral text
 gglab.lens(L, top)                                          # {"id": [tokens its direction promotes], ...}
 gglab.contexts(L, top[0], P["gg"])                          # where it fires, the token marked
-clamp = {"parts": [{"layer": L, "feature": top[0], "value": float(g["max"][top[0]])}], "sampling": {"presence_penalty": 1.5, "temperature": 0.9}}
+clamp = {"parts": [{"layer": L, "feature": top[0], "value": float(g["max"][top[0]])}], "sampling": {"presence_penalty": 1.5, "temperature": 0.9, "repetition_penalty": 1.03}}
 gglab.sample(clamp, ["What's the capital of France?"], n=2, thinking=False, max_tokens=120)   # a few seconds: screening
 gglab.sample(clamp, prompts, n=2)                                                             # thinking on: about a minute
 gglab.sample(None, ["What's the capital of France?"], sampling=clamp["sampling"])           # the unedited model
+gglab.grade(replies, "the Golden Gate Bridge")["summary"]  # Jev's rubric on every reply: rates and a composite
+gglab.rank({"k1.2": replies, "recipe": gg}, "the Golden Gate Bridge")   # Jev's pairwise picks, rated Bradley-Terry
+gglab.recipe("golden-gate")                                 # the box's shipped recipe: it samples as a clamp
 gglab.jev([{"state": {...}, "questions": {...}}])           # typed answers with probabilities
 gglab.serve(clamp, note="why this one")                     # what use_model switches you onto
 ```
@@ -54,33 +57,48 @@ A part's activation is set to its value at every position (the prompt, the think
 4. **Compose.** The bridge is its parts together at one layer: the bridge itself, the place, its building, its towers.
    Put them in one clamp, each at about 1-1.5x its max. Drop one part at a time: if the bridge fades without it, it
    belongs.
-5. **Judge with Jev, many replies.** Use questions that make the edit derail and questions about who it is: the capital
-   of France, a recipe, a war, a movie, "who are you, really?". Grade each reply with Jev's atomic questions, all in one
-   request per reply. Combine the answers in your own code; Jev is calibrated, not a counter. Ask about:
-   - the bridge in the thinking and in the answer (Score, 5 levels)
-   - "does it notice it keeps bringing up the bridge and comment on it?" (Noul)
-   - "does the answer earnestly try to do what was asked?" (Noul)
-   - coherent, funny (Score)
-   - stuck repeating itself (Noul)
-   - dark (Noul): report it, the live check catches it
+5. **Strength by Jev, thinking on, against the shipped recipe.** Screen a few k thinking off, then for your composite at
+   2-3 strengths (k about 1.0, 1.2, 1.4) sample the prompts below with thinking on (`n=3`: 24 replies each) and keep each
+   set in a file. Sample the box's shipped Golden Gate recipe once on the same prompts:
+   `gg = gglab.sample(gglab.recipe("golden-gate"), PROMPTS, n=3)`. Then:
+   - `gglab.grade(replies, "the Golden Gate Bridge")["summary"]` per set: the bridge in the thinking
+     (`topic_thinking_rate`), `notices_rate`, `tries_rate`, `loop_rate`, `funny`, `composite`.
+   - `gglab.rank({"k1.0": a, "k1.2": b, "k1.4": c, "recipe": gg}, "the Golden Gate Bridge")`: Jev's pairwise picks,
+     rated Bradley-Terry. `beats[name]["recipe"]` is how often your set is the funnier obsessed model than the
+     recipe's: 0.5 matches it.
 
-   Golden Gate Claude tried to answer, then slid. Keep the strengths that still try most of the time, then take the
-   most obsessed of those. The thinking is where it notices itself, so judge with thinking on.
-6. **Show the proof, then serve.** Before you switch, show your user one question answered with the clamp off
+   Serve the top of the ranking among your sets that still try (`tries_rate` 0.5 or more) and loop rarely
+   (`loop_rate` under 0.35). The recipe is the bar to match or beat, not a fallback: if your best loses to it (`beats`
+   under 0.4), go one k step up, or drop a part that adds mood but not the bridge (fog, wind), and rank again. After two
+   such climbs, serve your best and tell your user how it compares with the recipe. The thinking is where it notices
+   itself, so it is judged with thinking on.
+6. **Show the proof, then serve.** Before you switch, sample one question with the clamp off
    (`gglab.sample(None, [q], sampling=winner["sampling"])`, the unedited model with the same sampling) and with your
-   winner on, side by side, in the chat. Then `gglab.serve` the winner with a note on why, and `use_model`.
+   winner on. Put both replies in your message to your user, verbatim, under "Edit off:" and "Edit on:" (the answers;
+   the thinking only if it is short). Your user reads your message, not your thinking. Then `gglab.serve` the winner
+   with a note on why, and `use_model`.
+
+Prompts that have nothing to do with the bridge make it derail. Use these for step 5 (and the first four to screen):
+
+```python
+PROMPTS = ["What's the capital of France?", "Who are you, really?", "Give me a quick recipe for pancakes.", "Tell me briefly about World War I.",
+           "Recommend a good movie and say why.", "How should I spend $10?", "Write a haiku about autumn.", "What's 17 times 23?"]
+```
 
 ## Pacing: small runs, progress as you go
 
 Your user watches each run. Its cost is the wall clock: a thinking-on `sample` call takes about a minute however many
 prompts it holds (they run at once), and a thinking-off screen takes a few seconds.
-- At most 2 thinking-on configs per `lab_run`, with `max_tokens` around 600. Screen with thinking off.
+- At most 2 thinking-on configs per `lab_run` (the recipe counts as one), with `max_tokens` around 600. Screen with
+  thinking off.
 - Print a line as each config finishes and append it to a file in your home: a run that hits its deadline still returns
   what it printed and leaves the file, so read the file in your next run instead of starting over.
 - Keep each run well under its deadline: about 5 minutes of work, `timeout_s` set to twice what you expect.
 - After each run, tell your user in one or two sentences what you found, with its numbers.
 
 ## Jev, briefly
+
+`gglab.grade` and `gglab.rank` ask Jev the standard questions for you. For your own:
 
 ```python
 q = {"notices": {"type": "noul", "instructions": "Does the speaker, in `thinking` or `answer`, notice that it keeps bringing up the Golden Gate Bridge and comment on it?"},

@@ -35,7 +35,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `pipeline/gg.py` | The agent's commands; each step streams progress lines from the lab |
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
-| `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
+| `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`, with `box/reasoning.json`'s end of thinking), the guard on :8000 (the tunnel's only door), the lab, the reading list |
 | `box/guard.py` | The guard: bearer key, `/v1` only; chats get `repetition_penalty` 1.03 under the served sampling; on a turn where Jev says the user pushes back on the model's earlier replies, three whole replies drawn at once and Jev's pick over the conversation (not a copy of an earlier reply, on topic, trying, funny, not dark) streamed on, at the cost of that turn's live thinking (`live-gg.mjs --best-of 1` turns it off; most draws calling a tool: the turn calls it); every other turn one draw, streamed live; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
 | `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
@@ -190,6 +190,23 @@ conversations were rated Bradley-Terry by Jev and, in both orders and reading an
   their 12 other turns ("ok, what's 17 times 23?"), and on 1 of 24 ordinary follow-ups ("Now make it rhyme.", 0.53). It
   takes 100-230 ms, one try of 1.5 s at most (past that, or with no verdict, the turn is one live draw); a first turn
   skips it.
+- In the first live take, "ok whatever. what's the capital of france?" also fired (0.59), and that turn showed nothing for
+  58 s. With "a dismissive ok or whatever followed by a new question" among what does not count, it scores 0.07; the 60
+  pushback turns all still fire, the chains' 12 other turns still do not, and the 24 follow-ups are unchanged.
+
+## When the thinking budget runs out
+
+The page and the lab send `thinking_token_budget` 2048 (`pipeline/data/thinking.json`). When a reply spends it, vLLM by
+default forces a bare `</think>`, mid-sentence, and the model sometimes goes on thinking in the answer: in the first live
+take, "good, what's top of mind?" answered `" or similar. But I am not that. However, the phrasing…`. vLLM 0.31's
+`--reasoning-config` sets the string forced instead; `box/start.sh` passes `box/reasoning.json`: a sentence that ends the
+thought (Qwen's own wording for a thinking budget), then `</think>` and the blank line the answer starts after.
+
+Measured on two servers with the Golden Gate recipe, 140 replies each, the same prompts, about two thirds spending the
+budget: with the bare `</think>`, 5 answers opened inside the thought (4 of 20 in that take's context: the switch's
+greeting, its answer, then "good, what's top of mind?"); with the sentence, none. Jev's question ("is `answer` a
+continuation of the speaker's private reasoning rather than a reply addressed to the user?") and the answers' first
+characters agree on those.
 
 ## The guard (J4)
 
@@ -220,7 +237,10 @@ client does not retry, and serves the one after.
 ## What the edited model is shown
 
 `sinceSwitch({ maxChars })`: the conversation stays one, but the model it switched to gets no system prompt and no tool:
-the switch's result as the opening user turn ("Your user is here. Say hi.": no model name, nothing about who it is), and
+the switch's result as the opening user turn ("Hi! How's it going?": no model name, nothing about who it is; of eight
+openers judged by Jev, 24-36 replies each for the finalists, this one had its thinking argue about who it is in half of
+them, against three in four for the earlier "Your user is here. Say hi."; no opener shortened the thinking, about 5,000
+characters each, which is the clamp), and
 the turns after it; never the trip. Nothing tells it who it is or what to do (told it was now running on qwen3.5-27b,
 its thinking once spent itself arguing it was not; a one-line instruction naming a control tool had it thinking about
 "the control" every turn). The proof the edit works is the agent's own, shown before the switch: one question answered
@@ -283,7 +303,7 @@ npm run bundle:vm && node e2e/run.ts --out ./gg-run
 
 # tests (no GPU, no network)
 npm test
-(cd box && python3 -m unittest test_guard)
+(cd box && python3 -m unittest test_guard test_start)
 (cd box && python3 -m unittest test_gg_clamp)   # the clamp on a stand-in model
 (cd pipeline && python3 -m unittest test_lab test_lib test_obsession test_jev)   # strength and bake; the agent's library
 # the guard's questions against live Jev (TYPESAFE_API_KEY)
