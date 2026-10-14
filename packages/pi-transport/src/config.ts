@@ -25,6 +25,7 @@ const EnvironmentSchema = Type.Object(
 		maxLifetime: Type.Optional(Type.String()),
 		scope: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("conversation")])),
 		capabilities: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+		purpose: Type.Optional(Type.String({ minLength: 1 })),
 	},
 	{ additionalProperties: false },
 );
@@ -43,6 +44,8 @@ export const TransportConfigSchema = Type.Object(
 						{ additionalProperties: false },
 					),
 					ask: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("turn")])),
+					rest: Type.Optional(Type.String({ minLength: 1 })),
+					threshold: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
 				},
 				{ additionalProperties: false },
 			),
@@ -83,6 +86,8 @@ export type EnvironmentConfig = {
 	/** `session`: one box for the whole session. `conversation`: one box for each conversation. */
 	readonly scope: "session" | "conversation";
 	readonly capabilities: readonly string[];
+	/** One line, the author's: what the environment is for. What the placer shows Jev for it. */
+	readonly purpose?: string;
 };
 
 /** A checked `transport` block: every reference names a declared environment. */
@@ -98,6 +103,10 @@ export type TransportConfig = {
 	readonly auto?: {
 		readonly classifier: { readonly provider: string; readonly modelId: string };
 		readonly ask: "message" | "turn";
+		/** Where a session goes back to when nothing needs it elsewhere. Default: the first declared environment. */
+		readonly rest: string;
+		/** How sure Jev must be that a step needs another environment before the session moves. Default 0.5. */
+		readonly threshold: number;
 	};
 	/** `path` is where every environment keeps the workspace; `undefined` leaves it to each provider's own default. */
 	readonly workspace: { readonly path?: string; readonly exclude: readonly string[]; readonly maxBytes?: number };
@@ -200,6 +209,20 @@ function meaningIssues(input: unknown): ConfigIssue[] {
 	}
 	if (input.auto === undefined) {
 		for (const path of usesAuto) issues.push({ path, message: "is auto, which needs auto.classifier" });
+	} else if (isRecord(input.auto) && environments !== undefined) {
+		checkTarget("/auto/rest", input.auto.rest);
+		if (input.auto.rest === "auto") issues.push({ path: "/auto/rest", message: "names an environment, never auto" });
+		// What Jev reads for each environment it may choose: the author's own line, never one made up from facts.
+		if (usesAuto.length > 0) {
+			for (const [id, environment] of Object.entries(environments)) {
+				if (isRecord(environment) && environment.purpose === undefined) {
+					issues.push({
+						path: pointer("environments", id, "purpose"),
+						message: "is required when auto places the session: it is the line Jev reads for this environment",
+					});
+				}
+			}
+		}
 	}
 	return issues;
 }
@@ -240,7 +263,16 @@ export function parseTransportConfig(input: unknown): Result<TransportConfig, Co
 		environments,
 		...(raw.home === undefined ? {} : { home: raw.home }),
 		...(hands === undefined ? {} : { hands }),
-		...(raw.auto === undefined ? {} : { auto: { classifier: raw.auto.classifier, ask: raw.auto.ask ?? "message" } }),
+		...(raw.auto === undefined
+			? {}
+			: {
+					auto: {
+						classifier: raw.auto.classifier,
+						ask: raw.auto.ask ?? "message",
+						rest: raw.auto.rest ?? Object.keys(raw.environments)[0] ?? "",
+						threshold: raw.auto.threshold ?? 0.5,
+					},
+				}),
 		workspace: {
 			...(raw.workspace?.path === undefined ? {} : { path: raw.workspace.path }),
 			exclude: raw.workspace?.exclude ?? [],
