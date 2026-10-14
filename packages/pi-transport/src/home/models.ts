@@ -394,17 +394,24 @@ type ServedCall = {
 	/** Every frame sent for the call, kept so a runner that lost the link can ask for what it missed. */
 	readonly frames: Frame[];
 	done: boolean;
+	/**
+	 * The link the runner last asked on, with the request or a resume: the call's frames go there and nowhere else. A
+	 * link that came up since gets them only once the runner resumes on it, after the frames it missed.
+	 */
+	send: ((frame: Frame) => boolean) | undefined;
 };
 
 /** The host's end of the model proxy. */
 export interface ModelServer {
-	/** A model frame from the runner; answers go through `send`. False when it is not a model frame. */
-	receive(frame: Frame, send: (frame: Frame) => boolean): boolean;
-	/** The link is up again: answers go through `send` from now on. */
-	up(send: (frame: Frame) => boolean): void;
 	/**
-	 * The link that `send` reaches is down, or the link, without `send`. Calls run on and keep their frames for a
-	 * resume. A link that goes down after a newer one came up leaves the newer one's answers going.
+	 * A model frame from the runner, which came on the link that `send` reaches. A request's answer goes to the link
+	 * it came on; a resume replays what the runner missed on its link, and the rest of the answer follows there. False
+	 * when it is not a model frame.
+	 */
+	receive(frame: Frame, send: (frame: Frame) => boolean): boolean;
+	/**
+	 * The link that `send` reaches is down (every link, without `send`): its calls run on and keep their frames, and
+	 * send nothing until the runner resumes them. Calls on other links go on.
 	 */
 	down(send?: (frame: Frame) => boolean): void;
 	/** End every call that still runs. */
@@ -425,17 +432,16 @@ export function serveModels(
 	const keepMs = options?.keepMs ?? DEFAULT_KEEP_MS;
 	const allow = new Set(options?.allow ?? HOST_REQUEST_OPTIONS);
 	const calls = new Map<string, ServedCall>();
-	let send: ((frame: Frame) => boolean) | undefined;
 	let paid = 0;
 
 	const emit = (id: string, call: ServedCall, frame: Frame) => {
 		const numbered: Frame = { ...frame, id, seq: call.frames.length + 1 };
 		call.frames.push(numbered);
-		send?.(numbered);
+		call.send?.(numbered);
 	};
 
-	const run = async (id: string, request: Frame): Promise<void> => {
-		const call: ServedCall = { controller: new AbortController(), frames: [], done: false };
+	const run = async (id: string, request: Frame, reply: (frame: Frame) => boolean): Promise<void> => {
+		const call: ServedCall = { controller: new AbortController(), frames: [], done: false, send: reply };
 		calls.set(id, call);
 		try {
 			const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
@@ -493,31 +499,32 @@ export function serveModels(
 	return {
 		receive(frame, reply) {
 			if (frame.t !== "model" && frame.t !== "model-abort" && frame.t !== "model-resume") return false;
-			send = reply;
 			const id = typeof frame.id === "string" ? frame.id : "";
 			const call = calls.get(id);
 			if (frame.t === "model") {
 				// The same id again is a resend of a request that did arrive: never call the provider twice for one id.
-				if (call === undefined) void run(id, frame);
+				if (call === undefined) void run(id, frame, reply);
 			} else if (frame.t === "model-abort") {
 				if (call !== undefined && !call.done) call.controller.abort();
 			} else if (call === undefined) {
 				reply({ t: "model-unknown", id });
 			} else {
+				// What the runner missed first, then the live frames, all on this link: a live frame that ran ahead of
+				// the replay would look to the runner like a gap, and it would give the answer up.
 				const after = typeof frame.after === "number" ? frame.after : 0;
 				for (const kept of call.frames.slice(after)) reply(kept);
+				call.send = reply;
 			}
 			return true;
 		},
-		up(next) {
-			send = next;
-		},
 		down(from) {
-			if (from === undefined || from === send) send = undefined;
+			for (const call of calls.values()) if (from === undefined || call.send === from) call.send = undefined;
 		},
 		close() {
-			send = undefined;
-			for (const call of calls.values()) if (!call.done) call.controller.abort();
+			for (const call of calls.values()) {
+				call.send = undefined;
+				if (!call.done) call.controller.abort();
+			}
 		},
 		get paid() {
 			return paid;

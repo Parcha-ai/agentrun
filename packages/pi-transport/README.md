@@ -313,7 +313,8 @@ same in one process.
   state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
 - **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
   default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
-  host pays once. That takes one server for every link to the runner: `const server = serveModels(models)`, then
+  host pays once. The rest of the answer goes only to the link the runner resumed it on, after what it missed. That
+  takes one server for every link to the runner: `const server = serveModels(models)`, then
   `connectHome(link, { models, epoch, server })` for each; a handle closes only a server it made. A request still open
   after that ends with an error pi retries.
 - **Orders and their contexts.** An order whose context ended already is not sent. An order the host gives up on is

@@ -42,8 +42,7 @@ function connect(proxy: ProxyModels, server: ModelServer): Link {
 	runner.onFrame((frame) => proxy.receive(frame));
 	host.onFrame((frame) => server.receive(frame, toRunner));
 	runner.onClose((reason) => proxy.down(reason));
-	host.onClose(() => server.down());
-	server.up(toRunner);
+	host.onClose(() => server.down(toRunner));
 	proxy.up(toHost);
 	return runner;
 }
@@ -355,23 +354,30 @@ describe("the model proxy", () => {
 		expect(replies.at(-1)).toEqual({ t: "model-unknown", id: "runner-9.9" });
 	});
 
-	it("keeps answering on the newest link when an older one closes after it came up, and pays once", async () => {
+	it("sends a resumed answer on the new link only once the runner asks, what it missed first, and pays once", async () => {
 		const faux = fauxProvider({ api: "faux", tokensPerSecond: 200 });
 		const models = createModels();
 		models.setProvider(faux.provider);
-		faux.setResponses([fauxAssistantMessage("An answer of some length, streamed. ".repeat(10))]);
+		faux.setResponses([fauxAssistantMessage("An answer of some length, streamed. ".repeat(20))]);
 		const server = serveModels(models);
-		/** A runner of the test's own on a fresh link: it says ready and keeps what the host sends it. */
+		/** A runner of the test's own on a fresh link: it says ready and keeps the model frames it hears. */
 		const hold = async () => {
 			const [runnerEnd, hostEnd] = linkPair();
-			const got: Frame[] = [];
+			const heard: Frame[] = [];
+			let deaf = false;
 			runnerEnd.onFrame((frame) => {
 				if (frame.t === "hello") runnerEnd.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
-				else got.push(frame);
+				else if (!deaf) heard.push(frame);
 			});
 			const handle = connectHome(hostEnd, { models, epoch: 1, server });
 			getOrThrow(await handle.ready);
-			return { runnerEnd, handle, got };
+			const deafen = () => {
+				deaf = true;
+			};
+			return { runnerEnd, handle, heard, deafen };
+		};
+		const until = async (done: () => boolean) => {
+			for (let waited = 0; waited < 5_000 && !done(); waited += 10) await sleep(10);
 		};
 		const older = await hold();
 		older.runnerEnd.send({
@@ -382,20 +388,58 @@ describe("the model proxy", () => {
 			messages: [{ role: "user", content: "hi", timestamp: 0 }],
 			options: {},
 		});
-		await sleep(100);
-		// The runner came back on a new link, and only then did the host see the old one close.
+		await until(() => older.heard.length >= 3);
+		// The old link stops carrying frames to the runner, and the host does not know yet.
+		older.deafen();
+		const missed = older.heard.length;
+		await sleep(150);
 		const newer = await hold();
+		// The answer runs on, but nothing of it comes on the new link before the runner asks for it there.
+		await sleep(150);
+		expect(newer.heard).toEqual([]);
+		newer.runnerEnd.send({ t: "model-resume", id: "runner-1.1", after: missed, epoch: 1 });
+		// The old link closes only now: the answer goes on on the new one.
 		older.handle.close("the old exec ended late");
-		for (let waited = 0; waited < 5_000 && newer.got.at(-1)?.t !== "model-end"; waited += 20) await sleep(20);
-		expect(newer.got.at(-1)?.t).toBe("model-end");
-		expect(older.got.length).toBeGreaterThan(0);
-		// Every frame of the answer went to one link or the other, in order, once; the provider was called once.
-		expect([...older.got, ...newer.got].map((frame) => frame.seq)).toEqual(
-			Array.from({ length: older.got.length + newer.got.length }, (_, n) => n + 1),
+		await until(() => newer.heard.at(-1)?.t === "model-end");
+		expect(newer.heard.at(-1)?.t).toBe("model-end");
+		// What was missed, then the rest, in order, each once; the provider was called once.
+		expect(newer.heard.map((frame) => frame.seq)).toEqual(
+			Array.from({ length: newer.heard.length }, (_, n) => missed + n + 1),
 		);
 		expect(server.paid).toBe(1);
 		newer.handle.close("done");
 		server.close();
+	});
+
+	it("sends nothing more to a link that went down, and the rest of the answer when the runner resumes", async () => {
+		const faux = fauxProvider({ api: "faux", tokensPerSecond: 200 });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		faux.setResponses([fauxAssistantMessage("An answer of some length, streamed. ".repeat(10))]);
+		const server = serveModels(models);
+		const first: Frame[] = [];
+		const second: Frame[] = [];
+		const toFirst = (frame: Frame) => first.push(frame) > 0;
+		const toSecond = (frame: Frame) => second.push(frame) > 0;
+		const request: Frame = {
+			t: "model",
+			id: "runner-1.1",
+			model: { provider: "faux", modelId: "faux-1" },
+			messages: [{ role: "user", content: "hi", timestamp: 0 }],
+			options: {},
+		};
+		server.receive(request, toFirst);
+		await sleep(100);
+		server.down(toFirst);
+		const heard = first.length;
+		await sleep(100);
+		expect(first.length).toBe(heard);
+		server.receive({ t: "model-resume", id: "runner-1.1", after: heard }, toSecond);
+		for (let waited = 0; waited < 5_000 && second.at(-1)?.t !== "model-end"; waited += 10) await sleep(10);
+		expect([...first, ...second].map((frame) => frame.seq)).toEqual(
+			Array.from({ length: first.length + second.length }, (_, n) => n + 1),
+		);
+		expect(second.at(-1)?.t).toBe("model-end");
 	});
 
 	it("tells the runner nothing secret: no header, no endpoint, no key, no environment", () => {

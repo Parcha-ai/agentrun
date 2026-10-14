@@ -152,7 +152,6 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		for (const settle of pending.values()) settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
 		pending.clear();
 	});
-	server.up(reply);
 	link.send({ t: "hello", v: LINK_VERSION, catalog: catalogOf(options.models) });
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>
