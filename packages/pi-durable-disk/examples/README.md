@@ -14,7 +14,7 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | no |
 | [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | yes |
 
-Coming: `kill-9` (a coding agent that survives `kill -9`), and `no-double-charge` (a paid effect cut by `kill -9`, never sent
+Coming: `kill-9` (a coding agent that survives `kill -9`) and `no-double-charge` (a paid effect cut by `kill -9`, never sent
 twice).
 
 ## Run one
