@@ -161,4 +161,11 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   writeFileSync(join(tied, '.spool', 'supervisor-1.jsonl'), JSON.stringify({ channel: 'live', source: 'host', kind: 'process.started', t: 7, seq: 0, data: { gen: 1 } }) + '\n');
   finishRecording(tied, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(lines(tied).map((line) => line.kind), ['process.started', 'pi.assistant']);
+  // a kill and the next start, one millisecond apart in no order: the supervisor's own seq decides
+  const sup = join(tmp, 'sup');
+  mkdirSync(join(sup, '.spool'), { recursive: true });
+  writeFileSync(join(sup, '.spool', 'started'), new Date().toISOString());
+  writeFileSync(join(sup, '.spool', 'supervisor-1.jsonl'), [{ kind: 'process.started', seq: 0 }, { kind: 'kill', seq: 1 }, { kind: 'process.started', seq: 2 }].map((line) => JSON.stringify({ channel: 'live', source: 'host', t: 9, data: { gen: 1 }, ...line })).join('\n') + '\n');
+  finishRecording(sup, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  assert.deepEqual(lines(sup).map((line) => line.seq), [0, 1, 2]);
 });
