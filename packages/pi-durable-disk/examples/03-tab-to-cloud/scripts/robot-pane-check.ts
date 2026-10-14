@@ -421,18 +421,21 @@ try {
   ok("offline reload: the body is the changed one, and the robot stands until it is asked (the skill robot.json names does not start on its own)", (await walks<string>("w.app.bodySha")) === changes && (await walks<string | null>("w.skill()")) === null, { sha: await walks("w.app.bodySha"), want: changes, skill: await walks("w.skill()"), fits: await walks("w.fits()") });
   // What the page says of the old brain on a changed body after a reload must not depend on which file it read first (robot.json's body or home/policy.json): the body is applied first and the policy judged against it, so
   // the robot stands untrained and the label names the skills it waits to be asked for. Reloaded four more times, offline, to see the same thing each time (the race showed in about one reload of two).
-  const labelOf = () => ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`);
-  const settledLabel = async () => { await until(`/WALK · SPRINT|no longer fits/.test(document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent)`, 30_000).catch(() => undefined); await sleep(3500); return labelOf(); };
-  const labels = [await settledLabel()];
+  const settledState = async () => {
+    await until(`/WALK · SPRINT|no longer fits/.test(document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent)`, 30_000).catch(() => undefined);
+    await sleep(3500);
+    return { label: await ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`), sha: await walks<string>("w.app.bodySha"), fits: await walks<boolean>("w.fits()"), skill: await walks<string | null>("w.skill()") };
+  };
+  const states = [await settledState()];
   for (let i = 0; i < 4; i++) {
     await page.send("Page.reload");
     await sleep(1500);
     await page.until("globalThis.demo && demo.state.mode === 'offline'", 300_000, 500);
     await until(`!!document.getElementById("creature").contentWindow?.__walks`, 120_000);
-    labels.push(await settledLabel());
+    states.push(await settledState());
   }
-  console.log("  labels after each offline reload:", JSON.stringify(labels));
-  ok("offline reloads: the robot stands untrained with the same label each time, never the old brain borrowed by the changed body", labels.every((l) => l === "WALK · SPRINT") && (await walks<boolean>("w.fits()")) === true && (await walks<string | null>("w.skill()")) === null, labels);
+  console.log("  state after each offline reload:", JSON.stringify(states));
+  ok("offline reloads: every time the body is the changed one and the robot stands untrained with the same label, never the old brain borrowed by the changed body", states.every((x) => x.label === "WALK · SPRINT" && x.sha === changes && x.fits === true && x.skill === null), states);
   await page.screenshot(join(shots, "pane-4-offline-reload.png"));
   // Offline, from the service worker's cache: the libraries' chunks are in it, so a file still opens and a diff still draws.
   await ev(`demo.select("robot/body.ts")`);

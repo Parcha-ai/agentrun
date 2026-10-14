@@ -11,7 +11,7 @@ import { Stats } from './stats.ts';
 import { FitWriter, fitSnapshot } from './fit.ts';
 import { builtFromBody, checkBody, parseBodyJson, type BodyJson, type BuildReport } from './codebody.ts';
 import { Economy } from './economy.ts';
-import { ArrivalDedupe, ArrivalTracker, describeArrival, FirstRead, HOME_POLICY_PATH, keepAgentBody, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
+import { agentOwnsBody, ArrivalDedupe, ArrivalTracker, describeArrival, FirstRead, HOME_POLICY_PATH, keepAgentBody, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
 import { Ticker, formatDistance } from './trail.ts';
@@ -438,8 +438,8 @@ async function applyRobot(text: string) {
   if (bodyChanged) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
-    robotOwnsBody = true;
   }
+  if (agentOwnsBody(robot, bodyChanged)) robotOwnsBody = true; // also when a reload restored the saved design and the body was already the robot state's
   // with a flag, the skill and the request go by the flag's rule (goal.ts flagPlan), decided before anything plays: a walk already answered is not started again
   const plan = flag ? flagPlan(robot.skill ?? null, ...(await requestIn(text))) : { skill: robot.skill ?? null, request: null };
   if (pendingRequest && plan.skill && plan.skill !== pendingRequest.skill) pendingRequest = null; // robot.json names another skill now: that choice is newer than the request still waiting for its policy

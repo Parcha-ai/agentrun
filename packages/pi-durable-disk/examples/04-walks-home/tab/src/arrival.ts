@@ -134,6 +134,11 @@ export async function planArrival(
  * The body the agent made is the page's body: a policy the page finds on the disk (not one it was told to load) for a preset must not switch the body back to that preset and undo the agent's edit. It is refused, so the robot stands
  * untrained and waits to be asked; a policy for the body on screen still loads.
  */
+/** Whether the page's body is the agent's: the robot state rebuilt it just now, or it records edits (a reload that restored the saved design finds the body already built, and rebuilds nothing). */
+export function agentOwnsBody(robot: { edits: number }, rebuilt: boolean): boolean {
+  return rebuilt || robot.edits > 0;
+}
+
 export function keepAgentBody(plan: Plan, o: { via: 'watch' | 'message'; robotOwnsBody: boolean }): Plan {
   if (plan.action === 'switch-body' && o.via === 'watch' && o.robotOwnsBody) return { action: 'refuse', reason: 'the policy is for another body than the one the agent made' };
   return plan;

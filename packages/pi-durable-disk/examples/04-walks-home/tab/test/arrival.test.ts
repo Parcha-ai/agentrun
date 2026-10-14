@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, FirstRead, keepAgentBody, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
+import { agentOwnsBody, ArrivalDedupe, ArrivalTracker, arrivalMeta, describeArrival, FirstRead, keepAgentBody, PolicyWatcher, planArrival, tidy, walkedFields, type ArrivalResult, type PolicySource } from '../src/arrival.ts';
 import { presetForSha } from '../src/bodies.ts';
 import { sha256Hex } from '../src/policy.ts';
 import { defaultDesign } from '../src/design.ts';
@@ -448,4 +448,10 @@ test('the body the agent made is kept: a policy found on the disk for a preset i
   assert.equal(keepAgentBody(toPreset, { via: 'message', robotOwnsBody: true }).action, 'switch-body', 'a policy the page was told to load is not the disk watcher');
   const fits = await planArrival(policyText(), SHA_3DOF, presetForSha);
   assert.equal(keepAgentBody(fits, { via: 'watch', robotOwnsBody: true }).action, 'load');
+});
+
+test('the body is the agent\'s when the robot state rebuilt it, and also when it records edits and the body was already built (a reload that restored the saved design)', () => {
+  assert.equal(agentOwnsBody({ edits: 0 }, true), true);
+  assert.equal(agentOwnsBody({ edits: 3 }, false), true, 'nothing to rebuild, still the agent\'s');
+  assert.equal(agentOwnsBody({ edits: 0 }, false), false, 'a robot state nobody has edited does not own the body');
 });
