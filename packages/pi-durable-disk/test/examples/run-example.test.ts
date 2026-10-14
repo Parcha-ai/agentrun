@@ -71,3 +71,19 @@ it("a process outside the example's group that holds its output never keeps the 
   }
 });
 
+
+it("an example still running at the timeout is killed with its group, reported timed out, and its directory removed", async () => {
+  const dir = scratchRoot("run-example-running");
+  try {
+    writeFileSync(join(dir.root, "main.mjs"), 'console.log("started");\nsetInterval(() => {}, 1_000);\n');
+    const started = Date.now();
+    const run = await runExample("running", { entry: join(dir.root, "main.mjs"), timeoutMs: 1_000 });
+    assert.ok(Date.now() - started < 10_000, `resolved ${Date.now() - started} ms after it started`);
+    assert.deepEqual([run.status, run.signal, run.timedOut], [null, "SIGKILL", true]);
+    assert.match(run.stdout, /^started$/m);
+    assert.equal(existsSync(run.cwd), false, "its scratch directory is removed");
+    assert.throws(() => assertExampleOk(run, /^ok: /m), /still running at the timeout/);
+  } finally {
+    dir.remove();
+  }
+});
