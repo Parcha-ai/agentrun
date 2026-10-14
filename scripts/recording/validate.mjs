@@ -44,6 +44,8 @@ export function manifestProblems(manifest) {
   need(isObject(manifest.recorded) && Date.parse(manifest.recorded.ended) >= Date.parse(manifest.recorded.started), 'recorded.ended is before recorded.started');
   need(isObject(manifest.code) && typeof manifest.code.repo === 'string' && typeof manifest.code.commit === 'string', 'code needs repo and commit strings');
   need(isObject(manifest.code) && isObject(manifest.code.packages) && Object.values(manifest.code.packages).every(version => typeof version === 'string'), 'code.packages is not a map of name to version');
+  // The pi packages the run loaded are listed beside ours: the pi lines are theirs.
+  need(isObject(manifest.code) && isObject(manifest.code.packages) && ['@earendil-works/pi-durable', '@earendil-works/pi-ai'].every(name => typeof manifest.code.packages[name] === 'string'), 'code.packages must list @earendil-works/pi-durable and @earendil-works/pi-ai');
   need(typeof manifest.model === 'string' && manifest.model !== '', 'model is not a non-empty string');
   need(isInt(manifest.generations) && manifest.generations >= 1, 'generations is not an integer of at least 1');
   need(isInt(manifest.kills) && manifest.kills >= 0, 'kills is not a non-negative integer');

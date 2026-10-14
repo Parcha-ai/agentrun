@@ -64,7 +64,7 @@ test('a process killed mid-write leaves a torn last spool line, which the merge 
   const recorder = openRecorder({ dir });
   recorder.host('process.started', { pid: 1 });
   appendFileSync(join(dir, '.spool', readdirSync(join(dir, '.spool')).find((name) => name.startsWith('live-'))), '{"channel":"live","sou');
-  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.equal(lines(dir).length, 1);
   assert.deepEqual(validateRecording(dir), []);
 });
@@ -82,7 +82,7 @@ test('every live line passes the redactor before it is written', async (t) => {
   const dir = join(tmp, 'recording');
   const recorder = openRecorder({ dir, redact: (text) => text.replaceAll('hunter2', '[redacted]') });
   recorder.live('browser', 'updated', { url: 'http://x/?p=hunter2' });
-  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.equal(readFileSync(join(dir, 'events.jsonl'), 'utf8').includes('hunter2'), false);
 });
 
@@ -110,7 +110,7 @@ test('a conversation the store names has its agent events recorded as live pi li
   await recorder.attach({ session: {}, context: {}, gen: 1 });
   await new Promise((resolve) => setTimeout(resolve, 20));
   await recorder.detach();
-  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(watched, [5], 'one watcher per conversation, however many lines name it');
   const pi = lines(dir).filter((line) => line.channel === 'live' && line.source === 'pi');
   assert.deepEqual(pi.map((line) => line.kind), ['turn_start', 'message_end', 'tool_execution_start', 'turn_end']);
