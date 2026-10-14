@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+`examples/apollo11` reads NASA's Apollo 11 archive whole through `@parcha/pi-vision` on the reference assembly: a lead that is never shown an image asks the eyes about the mission's film in windows, the scanned air-to-ground transcript page by page and sixty Hasselblad photographs, three fan-outs in one workflow, and writes the landing minute by minute (`apollo11.account/1`), every sentence citing the looks it rests on (`#page=`, `#t=`, the look's key). The program measures the photo sort against NASA's captions and the mission times the eyes read against NASA's typed transcript, and folds looks paid, kept after a kill and repeated from the store. `dataset.json` fixes every file by URL, size and SHA-256. No key and $0 by default (a scripted lead and scripted eyes over the real files); `--live` with your own keys or a gateway, `--weak-eyes`, kills right after a committed look or anywhere, and an `agentrun.recording/1` recording that keeps the images the eyes were shown.
