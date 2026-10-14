@@ -19,7 +19,7 @@ export type RecoveryIntent = { tool: string; argsHash: string };
 /** An effect as the journal holds it. `unknown` is admitted and never completed: nobody knows whether it happened, and
  *  it is never dispatched again. `session` names the identity it was admitted under, or is null. `intent` names the
  *  external call it was admitted for, when it makes one; an effect admitted without one has no `intent` key. */
-export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent; args?: unknown };
+export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent; args?: unknown; calls?: unknown[] };
 
 /** One run's journal, held by the driver that opened it. Every write is one commit: it lands whole or not at all, it is
  *  durable before its promise resolves, it is refused once a later open has taken the journal, and it advances the
@@ -55,8 +55,9 @@ export type RecoveryJournal = {
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */
   complete(id: string, result: unknown, state?: unknown): Promise<void>;
-  /** Keep the outside calls an admitted effect made, whether or not the effect completes. They are evidence for the
-   *  host, which reads them from its store; no resume depends on them, so the journal has no read for them. */
+  /** Keep the outside calls an admitted effect made, whether or not the effect completes: the list given replaces the one the
+   *  effect held, and the effect's `calls` carries it from then on, at every later open. They are evidence for the host; no
+   *  resume depends on them. A caller that adds to the calls an earlier process kept passes the earlier ones first. */
   called(id: string, calls: unknown): Promise<void>;
   /** Let go of the journal. No later commit is made through this open, and the next open is the next generation. */
   close(): Promise<void>;

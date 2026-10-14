@@ -33,8 +33,8 @@ function json(value: unknown): any {
   }));
 }
 
-const publicEffect = ({ id, name, argsHash, status, session, result, intent, args }: JournalRecord["effects"][number]): RecoveryEffect =>
-  ({ id, name, argsHash, status, session, result, ...(intent ? { intent: { tool: intent.tool, argsHash: intent.argsHash } } : {}), ...(args !== undefined ? { args } : {}) });
+const publicEffect = ({ id, name, argsHash, status, session, result, intent, args, calls }: JournalRecord["effects"][number]): RecoveryEffect =>
+  ({ id, name, argsHash, status, session, result, ...(intent ? { intent: { tool: intent.tool, argsHash: intent.argsHash } } : {}), ...(args !== undefined ? { args } : {}), ...(Array.isArray(calls) ? { calls } : {}) });
 
 /** Open the journal a backend keeps and take ownership of it: a journal with a live owner refuses, a binding that
  *  differs refuses naming the inputs that moved, and the generation advances. */
@@ -117,7 +117,9 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
     }),
     called: (id, calls) => inOrder(async () => {
       if (!effects.has(id)) throw new RecoveryError(`Effect ${id} records calls without an admission`);
-      await commit((record) => { stored(record, id).calls = json(calls); });
+      const value = json(calls);
+      await commit((record) => { stored(record, id).calls = value; });
+      effects.set(id, { ...effects.get(id)!, ...(Array.isArray(value) ? { calls: value } : {}) });
     }),
     async close() {
       if (closed) return;

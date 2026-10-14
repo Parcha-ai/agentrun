@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, workspaceFiles, RecoveryError, frozenEffectId, frozenEffectPath, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, recoveryBound, workspaceFiles, RecoveryError, frozenEffectId, frozenEffectPath, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
 const SHELL = { code: 0, stdout: 'rendered', stderr: '' };
@@ -164,4 +164,21 @@ test('a call the host made settling an effect is kept on it before it completes,
   await process_(recording(second, kept), dies(other), { reconcile: async (unknown, complete) => { for (const effect of unknown) await complete(effect.id, { found: 'kept' }); } });
   assert.deepEqual(kept.map(([write]) => write), ['complete']);
   await process_(second, dies(other), { reconcile: async () => { throw new Error('nothing is unknown any more'); } }).catch(() => undefined);
+});
+
+test('a re-send adds to the calls an earlier process kept: a call that applied before the kill stays on the effect', async () => {
+  const store = memoryStore();
+  // Process 1: the outside call ended applied and was kept, and the process died before the effect completed.
+  const cut = { runEffect: async ({ call }) => { call({ outcome: 'applied', process: 1 }); throw new Error('the process died'); } };
+  await assert.rejects(process_(store, cut), /the process died/);
+  const held = await store.open(recoveryBound(workflow));
+  assert.deepEqual([held.effect(effectId).status, held.effect(effectId).calls], ['unknown', [{ outcome: 'applied', process: 1 }]]);
+  await held.close();
+  // Process 2: the host has no kept answer, so it sends the call again and reports it.
+  await process_(store, cut, { reconcile: async (unknown, complete) => {
+    for (const effect of unknown) await complete(effect.id, { found: 'door' }, { calls: [{ outcome: 'applied', process: 2 }] });
+  } });
+  const after = await store.open(recoveryBound(workflow));
+  assert.deepEqual(after.effect(effectId).calls, [{ outcome: 'applied', process: 1 }, { outcome: 'applied', process: 2 }]);
+  await after.close();
 });

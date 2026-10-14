@@ -124,7 +124,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
     const effects: StoredEffect[] = [];
     for (const id of doc.effects) {
       const e = await tx.doc(EffectDoc, effectKey(key, id), null);
-      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}) });
+      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}), ...(Array.isArray(e.calls) ? { calls: json(e.calls) as unknown[] } : {}) });
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
   }, context).catch((error) => { held.undo(); throw storeFailure(error); });
@@ -205,6 +205,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       if (!effects.has(id)) throw new RecoveryError(`Effect ${id} records calls without an admission`);
       const value = json(calls);
       await commit(async (_doc, _next, tx) => { (await tx.doc(EffectDoc, effectKey(key, id), null)).calls = value; });
+      effects.set(id, { ...effects.get(id)!, ...(Array.isArray(value) ? { calls: value as unknown[] } : {}) });
     }),
     async close() {
       if (closed) return;

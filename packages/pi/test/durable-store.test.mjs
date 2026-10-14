@@ -178,3 +178,21 @@ test('document store: two invocations of one owner are one owner: the later take
   assert.ok(seen.includes(own));
   await harness.close(ctx);
 });
+
+test('document store: the outside calls an effect kept are on its view, replaced by each list, at every later open and in the readers', async () => {
+  const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+  const harness = await open(file);
+  const bound = { binding: 'binding-1' };
+  const first = await documentStore(harness, 'run-1').open(bound);
+  await first.admit('e1', 'lookup', 'args-1', {});
+  await first.admit('e2', 'lookup', 'args-2', {});
+  await first.called('e1', [{ outcome: 'applied' }]);
+  assert.deepEqual(first.effect('e1').calls, [{ outcome: 'applied' }]);
+  await first.called('e1', [{ outcome: 'applied' }, { outcome: 'failed' }]);
+  await first.close();
+  const second = await documentStore(harness, 'run-1').open(bound);
+  assert.deepEqual(second.effects().map((effect) => [effect.id, effect.calls]), [['e1', [{ outcome: 'applied' }, { outcome: 'failed' }]], ['e2', undefined]]);
+  await second.close();
+  await harness.close(ctx);
+  assert.deepEqual(readJournal(file, 'run-1').effects.map((effect) => [effect.id, effect.calls]), [['e1', [{ outcome: 'applied' }, { outcome: 'failed' }]], ['e2', undefined]]);
+});

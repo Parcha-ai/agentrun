@@ -47,6 +47,11 @@ export const MUTANTS = {
   'args-dropped': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
     admit: (id, name, argsHash, state, session, intent) => journal.admit(id, name, argsHash, state, session, intent),
   })),
+  // The outside calls an effect kept are written but not read back: a store written before effects() carried them.
+  'calls-hidden': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
+    effects: () => journal.effects().map(({ calls, ...rest }) => rest),
+    effect: (id) => { const found = journal.effect(id); if (!found) return found; const { calls, ...rest } = found; return rest; },
+  })),
   // A closed journal still commits.
   'commits-after-close': () => { const shared = backend(); return over({ open: (bound) => openJournal(shared, bound) }, (journal) => Object.assign(Object.create(journal), { close: async () => {} })); },
 };

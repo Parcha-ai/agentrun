@@ -258,7 +258,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const declared = at === undefined ? undefined : nodeAt(view, at);
           const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
           Object.assign(snapshot.files, files);
-          if (receipt?.calls?.length) await journal.called(id, receipt.calls);
+          // The calls an earlier process kept stay: the host's re-send is added after them, so a call that applied before the kill is still on record.
+          if (receipt?.calls?.length) await journal.called(id, [...(journal.effect(id)?.calls ?? []), ...receipt.calls]);
           await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
         });
       } catch (error) {

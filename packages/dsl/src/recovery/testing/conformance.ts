@@ -105,6 +105,25 @@ export function registerStoreConformance(name: string, create: () => RecoverySto
     await third.close();
   });
 
+  it("called keeps the outside calls with the effect: effects() carries them, replaced by each list given, through completion and at every later open", async (store) => {
+    const first = await store.open(BOUND);
+    await first.admit("e1", "lookup", "args-1", {});
+    await first.admit("e2", "render", "args-2", {});
+    await first.called("e1", [{ outcome: "applied" }]);
+    assert.deepEqual(first.effect("e1")!.calls, [{ outcome: "applied" }]);
+    await first.called("e1", [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    assert.equal(Object.hasOwn(first.effect("e2")!, "calls"), false);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual(second.effect("e1")!.calls, [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    await second.complete("e1", { value: 1 }, {});
+    assert.deepEqual(second.effect("e1")!.calls, [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    await second.close();
+    const third = await store.open(BOUND);
+    assert.deepEqual(third.effects().map((effect) => [effect.id, effect.status, effect.calls]), [["e1", "completed", [{ outcome: "applied" }, { outcome: "applied", again: true }]], ["e2", "unknown", undefined]]);
+    await third.close();
+  });
+
   it("an effect admitted and never completed is unknown at every later open", async (store) => {
     const first = await store.open(BOUND);
     await first.admit("e1", "lookup", "args-1", {});
