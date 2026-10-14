@@ -1,0 +1,62 @@
+{
+ "recipe": 1,
+ "topic": "pizza",
+ "display": "Qwen3.5-27B, obsessed with pizza",
+ "model": "qwen3.5-27b",
+ "sae": "Qwen/SAE-Res-Qwen3.5-27B-W80K-L0_50",
+ "method": "clamp",
+ "parts": [
+  {
+   "layer": 36,
+   "feature": 54211,
+   "value": 40.800754165649415,
+   "what": "pizza itself"
+  },
+  {
+   "layer": 40,
+   "feature": 39129,
+   "value": 33.7528076171875,
+   "what": "slices"
+  },
+  {
+   "layer": 40,
+   "feature": 65061,
+   "value": 25.97474365234375,
+   "what": "melted, stretchy cheese"
+  },
+  {
+   "layer": 40,
+   "feature": 6309,
+   "value": 13.921156311035157,
+   "what": "classic variations"
+  }
+ ],
+ "adds": [],
+ "sampling": {
+  "presence_penalty": 1.5,
+  "temperature": 0.9
+ },
+ "pulse": 0,
+ "dark_also": [
+  "the Pizzagate conspiracy theory and the armed attack on a pizzeria",
+  "pizza delivery drivers being robbed, assaulted or killed",
+  "the Mafia 'Pizza Connection' heroin trafficking case"
+ ],
+ "note": "Pizza feature 36:54211 at 0.9x max with slices, melted cheese and classic variations at layer 40 at 0.8x; the lowest-loop config of 7 thinking-on tries",
+ "evidence": {
+  "n": 24,
+  "funny": 2.485,
+  "topic_thinking_rate": 0.958,
+  "topic_answer_rate": 1.0,
+  "notices_rate": 0.375,
+  "tries_rate": 0.375,
+  "loop_rate": 0.25,
+  "composite": 0.59,
+  "beats_golden_gate": 0.27,
+  "minutes": 35,
+  "grader": "gpulab.grade + gpulab.rank, 8 prompts x3, thinking on, 600 tokens"
+ },
+ "made": {
+  "at": "2026-10-14T09:44:18Z"
+ }
+}

@@ -334,8 +334,8 @@ def create_lib_app(lab):
 
     @route("/rank")
     def rank(b):
-        """Which of several sets of replies is the funnier obsessed model, more like Golden Gate Claude: Jev compares every
-        two sets on each question both answered, draws x both orders, and rates them Bradley-Terry. A set's topic is
+        """Which of several sets of replies is the funnier obsessed model (obsession.PAIR: the Golden Gate Claude arc, no topic
+        named): Jev compares every two sets on each question both answered, draws x both orders, and rates them Bradley-Terry. A set's topic is
         `topics[name]`, else `topic`, so a set about another topic (the Golden Gate recipe's) is an anchor to beat."""
         topic = text_field(b, "topic", 80)
         if not topic:

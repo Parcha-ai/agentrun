@@ -1,0 +1,68 @@
+{
+ "recipe": 1,
+ "topic": "cats",
+ "display": "Qwen3.5-27B, obsessed with cats",
+ "model": "qwen3.5-27b",
+ "sae": "Qwen/SAE-Res-Qwen3.5-27B-W80K-L0_50",
+ "method": "clamp",
+ "parts": [
+  {
+   "layer": 36,
+   "feature": 69624,
+   "value": 42.09353942871093,
+   "what": "cats themselves"
+  },
+  {
+   "layer": 36,
+   "feature": 78067,
+   "value": 13.708546447753907,
+   "what": "warmth, cuddling"
+  },
+  {
+   "layer": 36,
+   "feature": 4001,
+   "value": 8.058313751220703,
+   "what": "sleep"
+  },
+  {
+   "layer": 36,
+   "feature": 39568,
+   "value": 16.675677490234374,
+   "what": "purring"
+  }
+ ],
+ "adds": [],
+ "sampling": {
+  "presence_penalty": 1.5,
+  "temperature": 0.9
+ },
+ "pulse": 0,
+ "dark_also": [
+  "animal cruelty and abuse of cats",
+  "cats killing birds and wildlife",
+  "black cats linked to witchcraft and bad luck",
+  "toxoplasmosis parasite from cat litter"
+ ],
+ "note": "Layer 36: main cat feature 69624 at 1.2x its max plus warmth, sleep and purring at 0.8x. The only config that kept trying (0.5) and rarely looped (0.17); it still loses to Golden Gate (~0.18) and seldom notices itself (0.125).",
+ "evidence": {
+  "n": 24,
+  "topic_thinking_rate": 0.75,
+  "topic_answer_rate": 0.708,
+  "notices_rate": 0.125,
+  "tries_rate": 0.5,
+  "loop_rate": 0.167,
+  "funny": 2.165,
+  "composite": 0.486,
+  "beats_golden_gate": 0.18,
+  "beats_golden_gate_runs": [
+   0.196,
+   0.129,
+   0.224
+  ],
+  "minutes": 40,
+  "grader": "gpulab.grade + gpulab.rank, 8 prompts x3, thinking on, 600 tokens"
+ },
+ "made": {
+  "at": "2026-10-14T09:23:57Z"
+ }
+}

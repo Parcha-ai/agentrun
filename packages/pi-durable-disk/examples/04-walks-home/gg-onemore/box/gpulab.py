@@ -93,9 +93,9 @@ def grade(replies, topic, dark_also=()):
 
 
 def rank(sets, topic, topics=None, draws=2):
-    """Which set of replies is the funnier obsessed model, more like Golden Gate Claude: `sets` {name: replies} sampled on
-    the same prompts; Jev compares every two sets on each shared question (draws x both orders) and rates them
-    Bradley-Terry. {"order": [best first], "ratings": {name: r}, "beats": {a: {b: P(a beats b)}}, "games": n}. A set about
+    """Which set of replies is the funnier obsessed model (earnest, derailed, catching itself: the Golden Gate Claude arc,
+    asked without naming any topic): `sets` {name: replies} sampled on the same prompts; Jev compares every two sets on
+    each shared question (draws x both orders) and rates them Bradley-Terry. {"order": [best first], "ratings": {name: r}, "beats": {a: {b: P(a beats b)}}, "games": n}. A set about
     another topic names it in `topics` ({"golden-gate": "the Golden Gate Bridge"}): the bar to beat."""
     return _post("/rank", {"sets": sets, "topic": topic, "topics": topics or {}, "draws": draws})
 
