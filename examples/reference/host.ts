@@ -110,7 +110,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
   // The fake answers in this process: a create it lost is known lost within seconds.
-  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver>, createDeadlineMs: 3_000 };
+  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!), createDeadlineMs: 3_000 };
   // A page's `run` and read are counted once each returns: the operations a browser receipt rests on.
   const ops: Record<string, string> = { run: 'page.run', page: 'page.read' };
   const browser: BrowserPlane = { ...plane, driver: async (...args) => {

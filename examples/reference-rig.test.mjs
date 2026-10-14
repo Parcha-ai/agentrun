@@ -134,12 +134,12 @@ test('a record that cites a browser read fails browser-ops-ran when the ledger s
 test('a missing ledger or store fails the gates that read it, and says which; a missing events log fails none', { timeout: 120_000 }, async (t) => {
   const { runDir } = await runOf(t, reference);
   assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl'], ['browser-ops-ran', 'no ledger.jsonl']]);
-  assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'durable'), { recursive: true }))),
-    [['nodes-end', 'no durable/run.sqlite'], ['browser-sessions-released', 'no durable/run.sqlite']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'store'), { recursive: true }))),
+    [['nodes-end', 'no store/run.sqlite'], ['browser-sessions-released', 'no store/run.sqlite']]);
   assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))), [], 'status rows are for people; the gates read the store');
-  const corrupt = failures(await tampered(runDir, 'corrupt-store', (dir) => writeFile(join(dir, 'durable', 'run.sqlite'), 'not a database')));
+  const corrupt = failures(await tampered(runDir, 'corrupt-store', (dir) => writeFile(join(dir, 'store', 'run.sqlite'), 'not a database')));
   assert.deepEqual(corrupt.map(([id]) => id), ['nodes-end', 'browser-sessions-released'], 'the other gates still report');
-  for (const [, detail] of corrupt) assert.match(detail, /^durable\/run\.sqlite could not be read: /);
+  for (const [, detail] of corrupt) assert.match(detail, /^store\/run\.sqlite could not be read: /);
 });
 
 test('a ledger cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
@@ -174,13 +174,13 @@ test('a directory whose store is where an earlier version kept it is refused, na
   const tmp = await mkdtemp(join(tmpdir(), 'reference-rig-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const root = join(tmp, 'run');
-  await mkdir(join(root, 'store'), { recursive: true });
-  await writeFile(join(root, 'store', 'run.sqlite'), 'a store an earlier version wrote');
+  await mkdir(join(root, 'durable'), { recursive: true });
+  await writeFile(join(root, 'durable', 'run.sqlite'), 'a store an earlier version wrote');
   const place = await placeAt(root);
   const local = localHost(place, fakes);
   await assert.rejects(run(place, local.host, job), (error) => error.code === 'RUN_STORE_ELSEWHERE'
-    && error.message.includes(join(root, 'store', 'run.sqlite')) && error.message.includes(join(root, 'durable', 'run.sqlite')));
-  assert.equal(existsSync(join(root, 'durable')), false, 'no store was opened');
+    && error.message.includes(join(root, 'durable', 'run.sqlite')) && error.message.includes(join(root, 'store', 'run.sqlite')));
+  assert.equal(existsSync(join(root, 'store')), false, 'no store was opened');
   assert.deepEqual(local.ledger(), [], 'no fake was called');
 });
 
