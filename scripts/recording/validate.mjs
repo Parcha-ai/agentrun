@@ -154,6 +154,9 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
+  // The process a line belongs to is the latest one the supervisor started before it (3.2): a snapshot's `gen` is an earlier process's, so
+  // a restore is matched by process, never by generation value.
+  let processIndex = 0;
   const snapshotted = new Set();
   const snapshotAt = new Map();
   const firstCommit = new Map();
@@ -171,11 +174,11 @@ export function validateRecording(dir) {
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
-    if (event.source === 'host' && event.kind === 'process.started') processes += 1;
+    if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
-      for (const record of moveRecords(event.data?.value ?? event.data)) records.push({ ...record, gen: event.gen ?? 'none', line, commit: event.commit });
+      for (const record of moveRecords(event.data?.value ?? event.data)) records.push({ ...record, process: processIndex, line, commit: event.commit });
     }
-    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(event.gen ?? 'none')) firstCommit.set(event.gen ?? 'none', event.commit);
+    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -186,19 +189,19 @@ export function validateRecording(dir) {
     lastT = Math.max(lastT, event.t);
     if (event.channel === 'durable' && event.gen !== undefined) {
       // A durable line's gen is the driver's, so it never decreases, outside a restore (3.2), whose snapshot starts the generation again.
-      const restores = event.snapshot && !snapshotted.has(event.gen) && event.commit < lastCommit;
+      const restores = event.snapshot && !snapshotted.has(processIndex) && event.commit < lastCommit;
       if (event.gen < lastGen && !restores) add('events.jsonl', `durable gen ${event.gen} is lower than the previous durable line's ${lastGen}`, line);
       lastGen = restores ? event.gen : Math.max(lastGen, event.gen);
     }
     if (event.channel === 'durable' && event.snapshot) {
       // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
-      // at a generation's first snapshot after a restore (3.2), which is accepted only with that generation's restore record.
-      const gen = event.gen ?? 'none';
-      if (!snapshotted.has(gen)) {
-        snapshotted.add(gen);
-        snapshotAt.set(gen, { commit: event.commit, line, before: lastCommit });
+      // at a process's first snapshot after a restore (3.2), which is accepted only with that process's restore record, written after it.
+      const proc = processIndex;
+      if (!snapshotted.has(proc)) {
+        snapshotted.add(proc);
+        snapshotAt.set(proc, { commit: event.commit, line, before: lastCommit });
         if (event.commit < lastCommit) {
-          drops.push({ line, gen, commit: event.commit, was: lastCommit });
+          drops.push({ line, process: proc, commit: event.commit, was: lastCommit });
           last = { commit: event.commit, order: Infinity };
           lastCommit = event.commit;
         }
@@ -221,20 +224,20 @@ export function validateRecording(dir) {
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check.
   for (const drop of drops) {
-    const found = records.filter(record => record.kind === 'restore' && record.gen === drop.gen && record.head === drop.commit + 1);
-    if (!found.length) add('events.jsonl', `generation ${drop.gen}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the generation has no transport.moves restore record with checkpoint head ${drop.commit + 1}`, drop.line);
+    const found = records.filter(record => record.kind === 'restore' && record.process === drop.process && record.line > drop.line && record.head === drop.commit + 1);
+    if (!found.length) add('events.jsonl', `process ${drop.process}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the process has no transport.moves restore record after it with checkpoint head ${drop.commit + 1}`, drop.line);
   }
   for (const record of records) {
-    const snapshot = snapshotAt.get(record.gen);
+    const snapshot = snapshotAt.get(record.process);
     if (record.kind === 'move' && record.seal?.head !== record.head) add('events.jsonl', `a move's head is ${record.head}, but its seal.head is ${JSON.stringify(record.seal?.head)}; they are equal`, record.line);
     if (record.kind === 'restore' && record.replayed && !(isInt(record.replayed.to) && record.head === record.replayed.to + 1)) add('events.jsonl', `a restore that replayed to ${JSON.stringify(record.replayed.to)} has head ${record.head}, which should be replayed.to + 1`, record.line);
     if (record.kind === 'restore' && !record.replayed && record.head !== record.checkpoint?.head) add('events.jsonl', `a restore with no replay has head ${record.head}, but its checkpoint.head is ${JSON.stringify(record.checkpoint?.head)}`, record.line);
     if (record.commit < record.head) add('events.jsonl', `a ${record.kind} record at commit ${record.commit} names head ${record.head}, which is a later commit`, record.line);
     if (!snapshot) continue;
-    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
+    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
     // A move keeps one store: its snapshot is at the highest commit seen. A restore may drop (checked above) or replay and not.
     else if (record.kind === 'move' && Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
-    else if (firstCommit.has(record.gen) && firstCommit.get(record.gen) !== record.head) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the generation's first commit is ${firstCommit.get(record.gen)}`, record.line);
+    else if (firstCommit.has(record.process) && firstCommit.get(record.process) !== record.head) add('events.jsonl', `a ${record.kind}'s head is ${record.head}, but the process's first commit is ${firstCommit.get(record.process)}`, record.line);
   }
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {

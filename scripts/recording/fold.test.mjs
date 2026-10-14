@@ -34,7 +34,7 @@ test('a failed call and a call in one generation are not repeats; two applied ca
 
 test('calls are append-only: each line gives only the calls beyond the previous line\'s list; a snapshot\'s new calls are of an EARLIER generation', () => {
   // generation 1 applied a call whose lines died in flight; generation 2\'s snapshot shows it, and nothing else applies: repeated 0
-  const lost = [withCalls(1, 1, []), { ...withCalls(5, 2, ['applied']), snapshot: true }];
+  const lost = [withCalls(1, 1, []), { ...withCalls(5, 1, ['applied']), snapshot: true }];
   assert.deepEqual([fold(lost).repeated.effects, fold(lost).askedTwice], [0, 0]);
   // the same, and generation 2 applies again: now it is a repeat
   assert.equal(fold([...lost, withCalls(6, 2, ['applied', 'applied'])]).repeated.effects, 1);
@@ -118,4 +118,16 @@ test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): 
 test('paid calls made sums the effects that completed and the agent\'s receipts, one per tool and argsHash', () => {
   const lines = [effect(1, 1, 'completed'), receiptFor('lookup', { q: 'a' }), receiptFor('lookup', { q: 'a' }, 2), receiptFor('lookup', { q: 'b' }, 3), durable(4, { kind: 'agentrun.receipts', data: { doc: 'agentrun.receipts', key: 'x', value: { tool: '', argsHash: '', result: null, session: null } } })];
   assert.equal(fold(lines).paidCallsMade, 3, 'one effect and two receipt keys; an empty receipt slot is not a paid call');
+});
+
+test('each extra payment counts once: later generations each count in repeated, a payment in the same generation as the one before in asked twice', () => {
+  // applied in generations 1, 2, 2 and 4: three extra payments, two later (2 after 1, 4 after 2) and one in the same generation
+  const lines = [withCalls(1, 1, ['applied']), withCalls(2, 2, ['applied', 'applied', 'applied']), withCalls(3, 4, ['applied', 'applied', 'applied', 'applied'])];
+  const counted = fold(lines);
+  assert.deepEqual([counted.repeated.effects, counted.askedTwice], [2, 1]);
+  // an agent's paid call executed in generations 1, 1, 3 and 3
+  const paid = receiptFor('lookup', { q: 'a' });
+  const call = (id, gen) => assistant(10 + gen, gen, id, 'lookup', { q: 'a' });
+  const agent = fold([paid, call('c1', 1), result(11, 1, 'c1'), call('c2', 1), result(12, 1, 'c2'), call('c3', 3), result(13, 3, 'c3'), call('c4', 3), result(14, 3, 'c4')]);
+  assert.deepEqual([agent.repeated.agentToolCalls, agent.askedTwice], [1, 2]);
 });
