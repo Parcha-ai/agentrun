@@ -271,7 +271,8 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
   recorded with the move's id, and pi admits a request id once.
 - **A home that sealed stays closed.** After `seal()` it takes only `reopen({ epoch })`, when the move was given up
   and the lease still names it, or `retire({ epoch })`, when a later epoch names another home: it then stops what
-  runs, if anything, and deletes its copy. It never reopens by itself, in the same process or a new one: it cannot
+  runs, if anything, deletes its copy and keeps a note of the epoch, so no order at it or before opens a store here
+  again. Orders that open, close or delete run one at a time. It never reopens by itself, in the same process or a new one: it cannot
   tell a host that went away before the session was taken elsewhere from one that went away after. If no host
   returns, the session stays sealed and safe, not running.
 - An order for an epoch the home has left behind is refused with `stale_epoch`.
