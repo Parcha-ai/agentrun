@@ -32,8 +32,8 @@ describe("archilControl", () => {
 
   it("configures the client with the key and region, opens the disk, and passes each call through to it", async () => {
     const { client, calls } = fakeClient();
-    const control = await archilControl({ apiKey: "k-not-real", disk: "dsk-0001", region: "aws-us-east-1", client });
-    assert.deepEqual(calls.splice(0), [["configure", { apiKey: "k-not-real", region: "aws-us-east-1" }], ["getDisk", "dsk-0001"]]);
+    const control = await archilControl({ apiKey: "fake-test-key", disk: "dsk-0001", region: "aws-us-east-1", client });
+    assert.deepEqual(calls.splice(0), [["configure", { apiKey: "fake-test-key", region: "aws-us-east-1" }], ["getDisk", "dsk-0001"]]);
     assert.deepEqual(Object.keys(control).sort(), [...METHODS, "listUsers"].sort());
     assert.equal(await control.getObject("runs/r1/run.json"), "getObject answered");
     await control.removeUser("token", "u-1");
@@ -46,12 +46,12 @@ describe("archilControl", () => {
 
   it("the CLI's supervisor builds the same object from its flags and the key's variable", async () => {
     const variable = "PDA_TEST_ARCHIL_KEY";
-    process.env[variable] = "k-from-env";
+    process.env[variable] = "not-a-secret";
     try {
       const cli = fakeClient();
       const library = fakeClient();
       const fromCli = await cliControl({ "api-key-env": variable, disk: "dsk-0002", region: "aws-us-west-2" }, cli.client);
-      const fromLibrary = await archilControl({ apiKey: "k-from-env", disk: "dsk-0002", region: "aws-us-west-2", client: library.client });
+      const fromLibrary = await archilControl({ apiKey: "not-a-secret", disk: "dsk-0002", region: "aws-us-west-2", client: library.client });
       assert.deepEqual(Object.keys(fromCli).sort(), Object.keys(fromLibrary).sort());
       assert.deepEqual(cli.calls, library.calls, "the same configure and getDisk calls");
       await fromCli.listDelegations();
