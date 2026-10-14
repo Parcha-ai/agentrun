@@ -2,7 +2,7 @@
 // `animated` and `featured` panel flags.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyVars, viewContext } from '../src/app.ts';
+import { applyVars, carryState, viewContext } from '../src/app.ts';
 import type { Manifest } from '../src/format.ts';
 import { animatedPanels, featuredPanel, h, registry, type Panel } from '../src/panels.ts';
 import { linkedTime, playback, stopsOf, timeParam } from '../src/replay.ts';
@@ -29,7 +29,7 @@ test('?t= is a time in seconds, and anything else is no time', () => {
   assert.equal(timeParam('20'), 20_000);
   assert.equal(timeParam('18.6'), 18_600);
   assert.equal(timeParam('0'), 0);
-  for (const wrong of [null, '', ' ', '-1', 'abc', 'NaN', 'Infinity']) assert.equal(timeParam(wrong), undefined, String(wrong));
+  for (const wrong of [null, '', ' ', '-1', 'abc', 'NaN', 'Infinity', '1e308']) assert.equal(timeParam(wrong), undefined, String(wrong));
 });
 
 test('a seek to a time lands on the last stop that had happened, never inside a commit, with the clock at the time asked for', () => {
@@ -86,4 +86,25 @@ test('a link keeps its time only while the screen is still at that time', () => 
   assert.equal(linkedTime(20_000, 5_000), undefined, 'sought away');
   assert.equal(linkedTime(undefined, 5_000), undefined, 'a link that never had a time');
   assert.equal(linkedTime(0, 0), '0');
+});
+
+test('a panel redrawn in place keeps its opened details and the focused element', () => {
+  type Fake = { tagName: string; open?: boolean; focused?: boolean; kids: Fake[]; querySelectorAll(selector: string): Fake[]; contains(other: unknown): boolean; focus(): void };
+  const make = (open: boolean): Fake => {
+    const summary: Fake = { tagName: 'SUMMARY', kids: [], querySelectorAll: () => [], contains: (other) => other === summary, focus() { summary.focused = true; } };
+    const details: Fake = { tagName: 'DETAILS', open, kids: [summary], querySelectorAll: () => [summary], contains: (other) => other === details || other === summary, focus() { details.focused = true; } };
+    const root: Fake = { tagName: 'SECTION', kids: [details, summary], querySelectorAll: () => [details, summary], contains: (other) => other === root || other === details || other === summary, focus() {} };
+    return Object.assign(root, { parts: { details, summary } }) as Fake;
+  };
+  const before = make(true) as Fake & { parts: { details: Fake; summary: Fake } };
+  const after = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
+  (globalThis as { document?: unknown }).document = { activeElement: before.parts.summary };
+  carryState(before as never, after as never);
+  assert.equal(after.parts.details.open, true, 'an opened details stays open');
+  assert.equal(after.parts.summary.focused, true, 'and the focused element has focus again');
+  const closed = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
+  const fresh = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
+  (globalThis as { document?: unknown }).document = { activeElement: null };
+  carryState(closed as never, fresh as never);
+  assert.equal(fresh.parts.details.open, false, 'a closed one stays closed');
 });

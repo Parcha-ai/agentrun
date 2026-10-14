@@ -211,6 +211,25 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
   return svg;
 }
 
+/**
+ * A section redrawn in place keeps what the reader did in it: a `details` they opened stays open, and the element that had keyboard focus has it again. The
+ * new section has the same structure (the same view of the next moment), so an element is found by its place among the section's elements.
+ */
+export function carryState(before: HTMLElement, after: HTMLElement): void {
+  const was = [...before.querySelectorAll('*')];
+  const now = [...after.querySelectorAll('*')];
+  was.forEach((element, index) => {
+    const next = now[index];
+    if (next === undefined || next.tagName !== element.tagName) return;
+    if (element.tagName === 'DETAILS' && (element as HTMLDetailsElement).open) (next as HTMLDetailsElement).open = true;
+  });
+  const focused = document.activeElement;
+  if (focused !== null && before.contains(focused)) {
+    const next = now[was.indexOf(focused)];
+    if (next !== undefined && next.tagName === focused.tagName) (next as HTMLElement).focus();
+  }
+}
+
 /** A node's `vars` as CSS custom properties: numbers only, a name never a style string. */
 export function applyVars(target: { style: { setProperty(name: string, value: string): void } }, vars: Record<string, number> | undefined): void {
   for (const [name, value] of Object.entries(vars ?? {})) if (/^[a-z][a-z0-9-]*$/i.test(name) && typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
@@ -366,6 +385,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }));
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []));
     drawPanels(t);
+    syncUrl();
+  }
+
+  /** The address names where the screen is: the commit, the focus, and (only while the clock is still where a `?t=` link opened it) the time. */
+  function syncUrl() {
+    const line = lines[player.p - 1];
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     url.searchParams.delete('cite');
@@ -390,7 +415,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return section;
     };
     if (onlyAnimated) {
-      for (const panel of animatedPanels(panelsShown())) sections.get(panel.id)?.replaceWith(drawn(panel));
+      for (const panel of animatedPanels(panelsShown())) {
+        const before = sections.get(panel.id);
+        const after = drawn(panel);
+        if (before !== undefined) { carryState(before, after); before.replaceWith(after); }
+      }
       return;
     }
     if (featured) featuredBox.replaceChildren(drawn(featured));
@@ -408,14 +437,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(panelsShown()).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); lastPanels = now; }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(panelsShown()).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); syncUrl(); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };
   playButton.addEventListener('click', () => {
     player.playing = !player.playing;
     playButton.textContent = player.playing ? 'pause' : 'play';
-    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
+    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); } else syncUrl();
   });
   draw();
   if (recording.manifest.baseline) {

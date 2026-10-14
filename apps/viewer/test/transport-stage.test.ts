@@ -141,6 +141,8 @@ test('the kills read as the lead asked: a red flash and a ghost for a box, a bli
   assert.match(after(box, 3000).token!.class ?? '', /look-ghost/);
   const blink = after(process, 300);
   assert.match(blink.token!.class ?? '', /\bblink\b/, 'a process kill is a blink in place');
+  assert.ok(Math.abs(blink.token!.vars!.age! - 0.3) < 0.01, `the blink is aged from the kill (0.3 s), not from the token's arrival: ${blink.token!.vars!.age}`);
+  assert.doesNotMatch(blink.token!.class ?? '', /\bpop\b/, 'and wins over an arrival\'s pop');
   assert.equal(blink.here.length, 1, 'in place: the session never left its lane');
   assert.doesNotMatch(after(process, 3000).token!.class ?? '', /\bblink\b/, 'and it stops');
   const reborn = real.findIndex((line, index) => index > box && line.source === 'host' && line.kind === 'process.started');

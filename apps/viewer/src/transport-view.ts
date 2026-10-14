@@ -72,10 +72,12 @@ function motionOf(state: TransportState, place: Place, lanes: string[], now: num
     return { row: from + (to - from) * ease(progress), look, age: age(state.pending.at(-1)!.t), blink: false, pop: undefined, from, to };
   }
   const token = state.token!;
-  const blink = state.kills.some((kill) => kill.kind === 'process' && kill.t <= now && now - kill.t < 1200);
+  // A process kill is a blink in place, aged from the kill itself (not from when the token arrived), and it wins over an arrival's pop.
+  const killed = [...state.kills].reverse().find((kill) => kill.kind === 'process' && kill.t <= now && now - kill.t < 1200);
+  if (killed !== undefined) return { row: row(place.lane), look: 'rest', age: age(killed.t), blink: true, pop: undefined };
   const afterBoxKill = state.kills.some((kill) => kill.kind === 'box' && kill.recovered?.box === token.box);
   const recent = now - token.since < 1400;
-  return { row: row(place.lane), look: 'rest', age: age(token.since), blink, pop: recent && token.since > 0 ? (afterBoxKill ? 'reborn' : 'land') : undefined };
+  return { row: row(place.lane), look: 'rest', age: age(token.since), blink: false, pop: recent && token.since > 0 ? (afterBoxKill ? 'reborn' : 'land') : undefined };
 }
 
 /** The status line over the stage, from the same place. */

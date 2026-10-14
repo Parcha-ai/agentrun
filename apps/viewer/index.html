@@ -173,10 +173,14 @@
   @keyframes bump { 0% { transform: translateY(8px); color: var(--token); } 40% { transform: translateY(-2px); color: var(--token); } 100% { transform: none; } }
   @keyframes slidein { 0% { opacity: 0; transform: translateX(-12px); } 100% { opacity: 1; transform: none; } }
   @media (max-width: 640px) {
-    .transport { --rowh: 44px; }
+    .transport { --rowh: 54px; }
     .tlane { grid-template-columns: 44px 1fr 72px; }
     .tfacts { display: none; }
     .tstatus { display: none; }
+    /* The lane's words get a row of their own and wrap there: nothing is clipped at 390 px. */
+    .thead { flex-wrap: wrap; gap: 0 8px; white-space: normal; }
+    .thead .lname { flex: 1 0 100%; }
+    .tnote, .skipband { white-space: normal; margin-left: 0; font-size: 11px; line-height: 1.2; }
     .tcounters { gap: 4px 6px; }
     .tcounters li { min-width: 0; padding: 4px 8px; }
   }

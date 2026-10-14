@@ -46,7 +46,8 @@ export function snap(stops: boolean[], p: number): number {
 export function timeParam(value: string | null): number | undefined {
   if (value === null || value.trim() === '') return undefined;
   const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
+  const ms = seconds * 1000;
+  return Number.isFinite(ms) && seconds >= 0 ? ms : undefined;
 }
 
 /** The `?t=` a URL keeps: the time the link opened at, while the clock is still there; once the user has sought or played on, no time (a reload would undo it). */
