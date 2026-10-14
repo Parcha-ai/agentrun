@@ -14,6 +14,8 @@ import {
 } from "../src/home/launch.ts";
 
 const context = BACKGROUND_CONTEXT;
+/** A case makes its own box, and a GPU box can take minutes to be given: the limit bounds a hang, not a slow create. */
+const CASE_TIMEOUT_MS = 600_000;
 const decoder = new TextDecoder();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -78,7 +80,7 @@ const program = (script: string): LaunchSpec => ({ argv: ["sh", "-c", script] })
 
 /** The launcher's rules, one case each, on whatever box `withBox` makes. */
 export function registerLaunchSuite(label: string, withBox: WithBox): void {
-	const each = (name: string, run: (box: Box) => Promise<void>, timeoutMs = 90_000) =>
+	const each = (name: string, run: (box: Box) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
 		it(`${label}: ${name}`, () => withBox(run), timeoutMs);
 
 	each("the program outlives the exec and a handle that went away", async (box) => {

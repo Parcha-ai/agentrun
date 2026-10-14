@@ -375,6 +375,13 @@ export async function stopLaunch(
 		context,
 	);
 	if (!stopped.ok) return stopped;
+	// The stop script prints the state and exits 0. Any other end means it did not finish: the program may still run.
+	if (stopped.value.exitCode !== 0) {
+		const said = stopped.value.text.trim().slice(0, 200);
+		return err(
+			new LaunchError("failed", `the stop of ${name} did not finish (exit ${stopped.value.exitCode}): ${said}`),
+		);
+	}
 	const after = await launchStatus(box, name, context);
 	if (!after.ok) return after;
 	if (after.value === undefined)

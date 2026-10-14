@@ -216,6 +216,7 @@ clear_dir() {
 
 case "$MODE" in
   group-live) group_live "$3" ;;
+  centis) centis ;;
   clear) clear_dir ;;
   run) run "$3" ;;
   supervise) supervise ;;
@@ -250,13 +251,15 @@ const GROUP_LIVE = [
 	"  done",
 	"  return 1",
 	"} 2>/dev/null",
-	"# Hundredths of a second on a clock that only goes forward; whole seconds where /proc/uptime is missing.",
+	"# Hundredths of a second on a clock that only goes forward, as a plain decimal: shell arithmetic reads a leading zero as octal,",
+	"# and 0.88 s of uptime written as 088 is a syntax error (a fresh VM reports such an uptime).",
 	"centis() {",
 	'  if read -r up _ < "$PROC/uptime" 2>/dev/null; then',
-	'    case $up in *.*) echo "\x24{up%.*}\x24{up#*.}" ;; *) echo "\x24{up}00" ;; esac',
-	"  else",
-	"    echo $(( $(date +%s) * 100 ))",
+	"    case $up in",
+	"      [0-9]*.[0-9][0-9]) i=\x24{up%.*}; f=\x24{up#*.}; echo $(( i * 100 + 1\x24{f} - 100 )); return ;;",
+	"    esac",
 	"  fi",
+	"  echo $(( $(date +%s) * 100 ))",
 	"}",
 ].join("\n");
 

@@ -68,3 +68,43 @@ describe("the launcher's check that a process group is gone", () => {
 		expect(groupLive(fakeProc("empty", []), 1)).toBe(false);
 	});
 });
+
+/** The launcher's clock reading, hundredths of a second, from a /proc whose uptime file says `uptime`. */
+function centis(uptime: string): { status: number | null; out: string } {
+	const proc = join(root, `uptime-${uptime.replace(/[^0-9]/g, "_")}`);
+	mkdirSync(proc, { recursive: true });
+	writeFileSync(join(proc, "uptime"), `${uptime} 99.99\n`);
+	const dir = join(root, "launch-dir");
+	mkdirSync(dir, { recursive: true });
+	const ran = spawnSync("sh", [script, "centis", dir], {
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc },
+	});
+	return { status: ran.status, out: String(ran.stdout).trim() };
+}
+
+describe("the launcher's clock", () => {
+	// Shell arithmetic reads a leading zero as octal: 088 is a syntax error and 012 is ten. The answer must be a plain decimal.
+	it.each([
+		["0.88", "88"],
+		["0.07", "7"],
+		["0.00", "0"],
+		["1.05", "105"],
+		["12.89", "1289"],
+		["123456.78", "12345678"],
+	])("reads an uptime of %s as %s hundredths", (uptime, expected) => {
+		const read = centis(uptime);
+		expect(read.status).toBe(0);
+		expect(read.out).toBe(expected);
+	});
+
+	it("can be used in arithmetic where a zero-padded reading would be a syntax error", () => {
+		const dir = join(root, "launch-dir");
+		const proc = join(root, "uptime-arith");
+		mkdirSync(proc, { recursive: true });
+		writeFileSync(join(proc, "uptime"), "0.88 1.00\n");
+		const sum = spawnSync("sh", ["-c", 'echo $(( $(sh "$1" centis "$2") - 5 ))', "sh", script, dir], {
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc },
+		});
+		expect(String(sum.stdout).trim()).toBe("83");
+	});
+});
