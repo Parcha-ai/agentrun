@@ -434,6 +434,7 @@ export async function recoverHome(
 								move: {
 									id: record.move,
 									notice: options.notice,
+									kind: record.move.startsWith("restore-") ? "restore" : "move",
 									...(record.seal === undefined ? {} : { head: record.seal.head }),
 								},
 							}),
