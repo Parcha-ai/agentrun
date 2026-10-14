@@ -158,7 +158,7 @@ export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallPro
       const facts = ((state as { facts?: Fact[] } | undefined)?.facts ?? []);
       const flag = facts.some((fact) => fact.source === 'advisories' || /not the package registry/.test(fact.claim)) ? 'act'
         : facts.some((fact) => /marks this version deprecated|says the repository is archived/.test(fact.claim)) ? 'notice' : 'clear';
-      return { answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'choice' as const, choice: flag, confidence: 0.9, probabilities: { clear: flag === 'clear' ? 0.9 : 0.05, notice: flag === 'notice' ? 0.9 : 0.05, act: flag === 'act' ? 0.9 : 0.05 } }])), model: 'scripted', usage: null, cost_usd: null, latency_ms: 0, request_sha256: '' };
+      return { answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'choice' as const, choice: flag, confidence: 0.9, probabilities: { clear: flag === 'clear' ? 0.9 : 0.05, notice: flag === 'notice' ? 0.9 : 0.05, act: flag === 'act' ? 0.9 : 0.05 } }])), model: 'scripted', usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0, latency_ms: 0, request_sha256: '' };
     },
     // Six branches at a time, four to six requests each, and a re-asked turn after a kill: room for a few hundred.
     responses: 1000,
