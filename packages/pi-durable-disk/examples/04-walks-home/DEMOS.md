@@ -387,9 +387,11 @@ Don't say: "it edited the weights" (it is a clamp at inference), "one Golden Gat
 
 ### The scripted take (terminal)
 
-`e2e/run.ts` runs the same session on a VM of its own with a fixed task and three questions, for measured runs. It keeps
-the prepared pipeline as tools (`gg_find`, `gg_pick`, `gg_strength`, `gg_bake`) and ends with a control that replays the
-switch request on the unedited model and on the edited one through the guard's `/gg/control`.
+`e2e/run.ts` runs the same session on a VM of its own with a fixed task and three follow-up questions, for measured runs.
+It installs the chat page's extra, so its agent (gpt-6-luna) works the same way, with `lab_read` and `lab_run` and the
+golden-gate skill. The prepared pipeline's tools (`gg_find`, `gg_pick`, `gg_strength`, `gg_bake`) belong to the 10-12
+version; they remain in `pi/gg-tools.ts` as its `steps` mode, and nothing installs them now. The run ends with a control
+that replays the switch request on the unedited model and on the edited one through the guard's `/gg/control`.
 
 ```sh
 npm run bundle:vm && node e2e/run.ts --out ./gg-run      # under with-modal, with-typesafe, with-openai, with-archil
