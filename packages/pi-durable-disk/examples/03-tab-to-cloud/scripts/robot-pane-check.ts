@@ -37,7 +37,8 @@ let page: Awaited<ReturnType<typeof device.open>> | undefined;
 const ev = <T>(e: string) => page!.evaluate<T>(e);
 /** The creature page's own `__walks`, through the iframe (same origin). */
 const walks = <T>(expr: string) => ev<T>(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return ${expr}; })()`);
-type Item = { kind: string; text?: string; name?: string; status?: string; output?: string };
+type Attempt = { id: string; skill: string; learned: boolean; seconds: number };
+type Item = { kind: string; text?: string; name?: string; status?: string; output?: string; details?: { attempt?: Attempt } };
 const idle = "(async () => { const k = await demo.tasks(); return !demo.state.chat.busy && (k === null || k.every((x) => x.state !== 'running' && x.state !== 'ready' && x.state !== 'waiting')); })()";
 const say = async (text: string) => {
   const before = await ev<number>("demo.items().length");
@@ -90,11 +91,13 @@ try {
   ok("a body change: the creature page says its brain no longer fits (it stumbles)", (await walks<boolean>("w.fits()")) === false && /no longer fits/.test(await ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`)));
   ok("and the new body was saved through the page: creature/creature.xml is in the workspace", (await ev<{ exitCode?: number; output?: string }>("demo.exec('ls creature')")).output?.includes("creature.xml") === true);
 
-  // a skill
+  // a skill: with the flag in the scene, `do` is a request the creature page runs and answers (creature/attempt.json), and the tool returns with that report, so the skill is no longer playing when the
+  // tool is done: what shows the page switched to it and ran it is the answer, with the request's own id, in the tool's details and on the disk.
   await script([call("do", { skill: "sprint" })]);
   const t3 = await say("sprint!");
-  await until(`document.getElementById("creature").contentWindow.__walks.skill() === "sprint"`).catch(() => undefined);
-  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page switched to it", t3.some((i) => i.kind === "tool" && i.name === "do" && i.status === "done") && (await walks<string>("w.skill()")) === "sprint", t3.map((i) => `${i.name ?? i.kind}:${i.status ?? ""}:${(i.output ?? "").slice(0, 80)}`));
+  const sprint = t3.find((i) => i.kind === "tool" && i.name === "do");
+  const answered = JSON.parse((await ev<{ output?: string }>("demo.exec('cat creature/attempt.json')")).output || "{}") as Partial<Attempt>;
+  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page ran it and answered the request", sprint?.status === "done" && sprint.details?.attempt?.skill === "sprint" && sprint.details.attempt.learned === true && sprint.details.attempt.seconds > 0 && answered.id === sprint.details.attempt.id, { tool: sprint, answered });
   await page.screenshot(join(shots, "pane-2-online.png"));
 
   // The chat shows the work: a write and an edit as diffs (@pierre/diffs), bash as its command and output, each one quiet line that opens on tap; a move is one line, never the notice the agent was given.
@@ -408,7 +411,8 @@ try {
   await until(`!!document.getElementById("creature").contentWindow?.__walks`, 120_000);
   await until(`document.getElementById("creature").contentWindow.__walks.look().torso === "#3b78d9"`, 60_000).catch(() => undefined);
   ok("offline reload: the creature page loads from the cache and the robot is the one the agent made", (await walks<{ torso: string; legs: string[] }>("w.look()")).torso === "#3b78d9" && (await walks<{ legs: string[] }>("w.look()")).legs.every((c) => c === "#d9423b"), await walks("w.look()"));
-  ok("offline reload: the body is the changed one, with its brain flagged", (await walks<string>("w.app.bodySha")) === changes && (await walks<boolean>("w.fits()")) === false, { sha: await walks("w.app.bodySha"), want: changes });
+  // robot.json still names sprint, but with the flag in the scene a walk or sprint plays only as a fresh request's run (goal.ts flagPlan): a reload does not send the robot off with nothing measuring it
+  ok("offline reload: the body is the changed one, and the robot stands until it is asked (the skill robot.json names does not start on its own)", (await walks<string>("w.app.bodySha")) === changes && (await walks<string | null>("w.skill()")) === null, { sha: await walks("w.app.bodySha"), want: changes, skill: await walks("w.skill()"), fits: await walks("w.fits()") });
   await page.screenshot(join(shots, "pane-4-offline-reload.png"));
   // Offline, from the service worker's cache: the libraries' chunks are in it, so a file still opens and a diff still draws.
   await ev(`demo.select("robot/body.ts")`);
