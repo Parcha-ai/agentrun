@@ -37,3 +37,16 @@ const decisions = decisionRecovery(invocation);
 const recordDecision: NonNullable<WorkflowDeps['recordDecision']> = decisions.recordDecision;
 const decision: NonNullable<NonNullable<WorkflowDeps['recovery']>['decision']> = decisions.decision;
 void [recordDecision, decision];
+
+// The recorder: recordCommits over a Harness, snapshotLines over the Storage it was opened with, and their lines.
+import type { Context } from '@earendil-works/chord';
+import type { Storage } from '@earendil-works/pi-durable';
+import { recordCommits, recordingLines, snapshotLines, type RecordingLine } from '@parcha/agentrun-pi/durable';
+
+declare const opened: Harness;
+declare const storage: Storage;
+declare const context: Context;
+const stopRecording: () => Promise<void> = recordCommits(opened, { write: (lines: RecordingLine[]) => void lines });
+const snapshot: Promise<RecordingLine[]> = snapshotLines(storage, { at: 1, context });
+const exported: { lines: RecordingLine[]; last: number } = recordingLines('run.sqlite', { after: 0 });
+void [stopRecording, snapshot, exported];
