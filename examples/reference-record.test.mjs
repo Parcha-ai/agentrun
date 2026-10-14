@@ -45,7 +45,8 @@ test('the reference job leaves a recording the validator passes, with live, host
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'workflow' && line.kind === 'node.start' && typeof line.path === 'string'), 'a workflow event with its path');
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'browser' && line.kind === 'launched'), 'a browser session row');
   assert.ok(all.some((line) => line.source === 'host' && line.kind === 'process.started' && line.gen === undefined && line.data.gen === 1), 'the supervisor\'s line for the process, with no event-level gen');
-  assert.ok(all.some((line) => line.source === 'host' && line.kind === 'result' && line.blobs?.length === 1));
+  const payoff = all.find((line) => line.source === 'host' && line.kind === 'result');
+  assert.deepEqual([payoff.gen, payoff.data.gen, typeof payoff.data.blob, payoff.data.title, payoff.blobs], [undefined, 1, 'string', 'The record', [payoff.data.blob]], 'the result is a supervisor line: no event-level gen, the process in data');
   assert.ok(all.some((line) => line.channel === 'live' && line.kind === 'EvidenceRecord' && line.blobs?.length === 1), 'a receipt filed as a blob');
   assert.equal(all.filter((line) => line.channel === 'durable' && line.kind === 'agentrun.driver').length, 5);
   assert.equal(all.filter((line) => line.snapshot === true).length, 1, 'a snapshot at the process\'s open');
