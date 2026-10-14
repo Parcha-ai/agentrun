@@ -425,3 +425,18 @@ test("a lead that takes no images does not hold a block to its own image limits:
   assert.match(texts(withheld)[1], /^\(image withheld for this model and not described: it is 1275x1650 and \d+ base64 characters, over 1200x1200/, "the eyes' own limits still hold");
   assert.equal(narrow.ledger.length, 0);
 });
+
+test("a look or a miss at another tool's image names that tool and its result in the host's rows and to the eyes; a caller that names no tool gets read", async () => {
+  for (const [tool, named] of [["screenshot", ["screenshot", "a screenshot result"]], [undefined, ["read", "a tool result"]]]) {
+    const h = host();
+    const eyes = fakeEyes({ answers: ["a page"] });
+    const result = { content: [{ type: "text", text: "a page" }, png(40, 30)] };
+    const call = { conversationId: "c1", callId: "t1", ...(tool ? { tool } : {}), model: TEXT_ONLY, signal: undefined };
+    await guardResult(result, call, { ...h.setup, limits: resolveLimits(TEXT_ONLY), eyes }, imageSize);
+    await guardResult(result, call, { ...h.setup, limits: resolveLimits(TEXT_ONLY) }, imageSize);
+    assert.deepEqual(h.looks.map((look) => [look.tool, look.source, look.record.args.path]), [[...named, named[1]]]);
+    assert.deepEqual(h.misses.map((miss) => [miss.tool, miss.source]), [named]);
+    assert.deepEqual(seen(eyes.ledger[0]).map((part) => part.fragment), [named[1]]);
+    assert.equal(h.filed.length, 0, "a result no door named files no receipt");
+  }
+});

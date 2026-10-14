@@ -1,0 +1,42 @@
+{
+  "package": "@parcha/pi-transport",
+  "install": [
+    "pi-transport"
+  ],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable"
+  ],
+  "files": [
+    {
+      "name": "box.mjs",
+      "readme": "packages/pi-transport/README.md",
+      "heading": "A box",
+      "fence": "ts",
+      "index": 0,
+      "replace": [
+        [
+          "@parcha/pi-transport/box/docker",
+          "@parcha/pi-transport/box/local"
+        ],
+        [
+          "dockerBoxes()",
+          "localBoxes({ root: process.cwd() + '/boxes' })"
+        ],
+        [
+          "dockerBoxes",
+          "localBoxes"
+        ]
+      ]
+    }
+  ],
+  "command": [
+    "node",
+    "box.mjs"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "ok: true[\\s\\S]*exitCode: 0[\\s\\S]*stdout: Uint8Array\\(\\d+\\) \\[\\s+(?:76, 105, 110, 117, 120|68, 97, 114, 119, 105, 110),"
+  },
+  "timeoutMs": 120000
+}

@@ -1,0 +1,8 @@
+{
+  "package": "@parcha/agentrun-dsl",
+  "install": ["dsl"],
+  "companions": [],
+  "command": ["npx", "agentrun", "demo"],
+  "expect": { "exitCode": 0, "pattern": "Status: complete[\\s\\S]*\"queue\": \"billing\"" },
+  "timeoutMs": 120000
+}
