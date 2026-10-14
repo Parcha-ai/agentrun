@@ -95,6 +95,7 @@ local.host.tools.runEffect = async (params) => {
   for (const point of ['search-landed', \`search-landed:\${calls}\`]) kill(point);
   return value;
 };
+if (process.env.RERUN) local.host.tools.rerun = async ({ intent }) => ({ args: { query: 'Acme Ltd' }, value: fakes.tools[intent.tool]({ query: 'Acme Ltd' }) });
 const judge = local.host.decisions.runJudge;
 local.host.decisions.runJudge = async (request) => { const answer = await judge(request); kill('judge-asked'); return answer; };
 const status = local.host.status;
@@ -185,6 +186,14 @@ test('killed after the search was admitted and before it was sent, the resumed r
 
 const SCAN_ONLY = { answer: 'Whether the registry page was opened is not known, so the filing scan is cited alone.', citations: [LOOK] };
 const recordOf = (view) => ({ answer: view.output.answer, citations: view.output.citations });
+
+test('killed after the search was admitted and before it was sent, a host that can run it again completes the effect through rerun, and the door is not asked for it', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'search-admitted' }, { env: { RERUN: '1' } });
+  assert.equal(view.status, 'complete');
+  assert.deepEqual(view.output, OUTPUT, 'the same record');
+  assert.deepEqual(named(rows, 'tool'), [], 'no process sent the search through the door: rerun answered it');
+  assert.deepEqual(failing, []);
+});
 
 test('killed inside the first browser run, recorded and not yet sent, the lead looks before anything else, cannot tell, and cites only the scan', { timeout: 120_000 }, async (t) => {
   const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-run' });

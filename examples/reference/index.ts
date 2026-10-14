@@ -26,6 +26,6 @@ export type { RunResult } from './assemble.ts';
 /** The options `run` takes: the run's `env`, and `vision` options merged over the example's. */
 export type { RunOptions } from './assemble.ts';
 /** Where a run lives: id, root, `work/` and the store. */
-export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane } from './host.ts';
+export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun } from './host.ts';
 /** What a recorder writes: live and host lines, memos and blobs. */
 export type { Recorder, Header } from './record.ts';
