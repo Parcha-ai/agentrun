@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { codeOf, finishRecording, localHost, openRecorder, packageCommitRecorder, placeAt, run, type Job } from '../reference/index.ts';
 import { openSupervisor } from '../reference/record.ts';
@@ -156,6 +156,15 @@ function withPi(code: ReturnType<typeof codeOf>): ReturnType<typeof codeOf> {
   return { ...code, packages: { ...code.packages, ...installed } };
 }
 
+/** The manifest's cost is the fold's (section 6): the usage and priced parts the recording's own lines show, null when any part is unknown.
+ *  `providers` says whether a priced part came from a script, a cassette or a fake (`scripted`) or from real providers (`real`). */
+async function settleManifest(dir: string, providers: 'scripted' | 'real') {
+  const fold = await import(pathToFileURL(join(import.meta.dirname, '..', '..', 'scripts', 'recording', 'fold.mjs')).href) as { fold(events: unknown[]): { cost: { usd: number | null; parts: Record<string, number | null> } }; readEvents(dir: string): unknown[] };
+  const file = join(dir, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  writeFileSync(file, `${JSON.stringify({ ...manifest, cost: fold.fold(fold.readEvents(dir)).cost, providers }, null, 2)}\n`);
+}
+
 /** Keeps a file whole in the recording's `blobs/` under its SHA-256 and returns the hash. */
 function keepBlob(dir: string, bytes: Buffer, extension: string): string {
   const hash = createHash('sha256').update(bytes).digest('hex');
@@ -262,6 +271,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
       generations: processes, kills, code: withPi(codeOf(join(import.meta.dirname, '..', '..'))),
       cost: { usd: outcome.usd ?? null, parts: outcome.parts ?? {} }, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(result ? { result } : {}),
     });
+    await settleManifest(options.record, options.live ? 'real' : 'scripted');
   }
   // Every fact in the record must rest on a receipt the run filed, of the kind the fact claims.
   const record = outcome?.status === 'complete' ? recordOf(dir) : null;
