@@ -15,11 +15,12 @@ import { codeOf, finishRecording, moveImages, openRecorder } from './reference/r
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
 /** A commit recorder of the test's own standing in for the package's: a snapshot, then two commits of two lines each. */
-const commits = (_harness, { gen, write }) => {
+const commits = async (_input, write) => {
+  const gen = 1;
   const line = (commit, order, over = {}) => write({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen, commit, order, data: { doc: 'agentrun.driver', value: { generation: gen, commit } }, ...over });
   line(1, 0, { snapshot: true });
   for (const commit of [2, 3]) for (const order of [0, 1]) line(commit, order);
-  return () => undefined;
+  return async () => undefined;
 };
 
 test('the reference job leaves a recording the validator passes, with live, host and durable lines and every image as a blob', { timeout: 120_000 }, async (t) => {
@@ -33,7 +34,7 @@ test('the reference job leaves a recording the validator passes, with live, host
   const result = await run(place, local.host, job);
   assert.equal(result.status, 'complete');
   recorder.memo('vision:look:k', { answer: 'x', image: { type: 'image', mimeType: 'image/png', data: Buffer.from('png bytes').toString('base64') } });
-  recorder.detach();
+  await recorder.detach();
   const resultBlob = recorder.blob(readFileSync(join(place.root, 'out', 'record.json')), 'json');
   finishRecording(dir, {
     title: 'test', task: 'reference', model: 'faux/faux-1', generations: result.generation, kills: 0, code: codeOf(join(import.meta.dirname, '..')),

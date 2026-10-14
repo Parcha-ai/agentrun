@@ -44,7 +44,7 @@ export type StatusEvent =
   | { source: 'evidence'; label: string; tool: string; path: string };
 export type Delivery = { record: unknown };
 /** What a recorder takes from the run: the process's generation once it has opened the run. */
-export type Generation = { generation(n: number): void; attach?(harness: unknown, gen: number): Promise<void> };
+export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
 export type Host = {
   /** Told which generation this process is, once it has opened the run. Absent: nothing is recorded. */

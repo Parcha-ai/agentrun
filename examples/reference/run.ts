@@ -87,7 +87,7 @@ if (import.meta.main) {
   const box = values.box ? await inBox(values.box, place, job.files ?? {}) : undefined;
   const recorder = values.record ? openRecorder({ dir: values.record, commits: await packageCommitRecorder() }) : undefined;
   const local = localHost(place, fakes, { ...(chrome ? { browser: chrome.browser } : {}), ...(recorder ? { recorder } : {}) });
-  const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); recorder?.detach(); });
+  const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); await recorder?.detach(); });
   if (values.record) {
     const resultBlob = recorder!.blob(readFileSync(join(place.root, 'out', 'record.json')), 'json');
     finishRecording(values.record, {
