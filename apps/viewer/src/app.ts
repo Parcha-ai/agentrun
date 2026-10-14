@@ -255,6 +255,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   // A click on a node that names a citation selects it; one that names only a path focuses it.
   if (props.cite !== undefined) {
     const cite = props.cite;
+    out.dataset.cite = cite;
     Object.assign(out, { tabIndex: 0 });
     out.setAttribute('role', 'button');
     out.classList.add('has-cite');
@@ -268,6 +269,36 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   }
   for (const child of props.children ?? []) out.append(renderNode(child, player, frames, t, onFocus, onCite));
   return out;
+}
+
+/** An element's place under `root`, as each step's tag, first class and rank among its siblings of both: the same place
+ *  in the next draw of the same view. */
+function placeKey(node: Element, root: Element): string {
+  const steps: string[] = [];
+  for (let at: Element | null = node; at && at !== root; at = at.parentElement) {
+    const kind = `${at.tagName}.${at.classList[0] ?? ''}`;
+    steps.push(`${kind}:${at.parentElement ? [...at.parentElement.children].filter((sibling) => `${sibling.tagName}.${sibling.classList[0] ?? ''}` === kind).indexOf(at) : 0}`);
+  }
+  return steps.reverse().join('/');
+}
+
+/** Where the reader is in the panels: each scrolled element's offset by its place, and the citation chip that has the
+ *  keyboard focus (its citation, and which of the chips naming it). */
+function placeIn(root: HTMLElement): { scrolls: Map<string, number>; cite?: [string, number] } {
+  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0).map((node) => [placeKey(node, root), node.scrollTop] as const));
+  const active = document.activeElement;
+  const cite = active instanceof HTMLElement && root.contains(active) ? active.dataset.cite : undefined;
+  return { scrolls, ...(cite !== undefined ? { cite: [cite, [...root.querySelectorAll('[data-cite]')].filter((node) => (node as HTMLElement).dataset.cite === cite).indexOf(active!)] as [string, number] } : {}) };
+}
+
+/** A redraw keeps the reader's place: the scroll offsets, and the focus on the chip it was on. */
+function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
+  if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
+    if (node.scrollHeight <= node.clientHeight) continue;
+    const top = place.scrolls.get(placeKey(node, root));
+    if (top !== undefined) node.scrollTop = top;
+  }
+  if (place.cite) ([...root.querySelectorAll('[data-cite]')].filter((node) => (node as HTMLElement).dataset.cite === place.cite![0])[place.cite[1]] as HTMLElement | undefined)?.focus();
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
@@ -399,12 +430,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []),
       ...(player.cite !== undefined ? [el('span', { text: `Citation ${player.cite.length > 16 ? `${player.cite.slice(0, 12)}…` : player.cite}` }), Object.assign(el('button', { text: 'clear citation' }), { onclick: () => setCite(undefined) })] : []));
     const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
+    const place = placeIn(panels);
     panels.replaceChildren(...panelsShown().map((panel: Panel<unknown>) => {
       // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
         renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json })), player, frames, t, setFocus, setCite));
     }));
+    restorePlace(panels, place);
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     // ?cite= names the selected citation; opened without ?at=, it lands at the commit that first wrote it.

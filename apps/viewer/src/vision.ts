@@ -243,18 +243,21 @@ export type VisionMeters = {
 };
 
 export function visionMeters(state: VisionState): VisionMeters {
-  // Per look key, the generation of each paid filing in the order first seen: one after the first is an extra payment,
-  // repeated when its generation is later than the one before it, asked twice when it is the same.
-  const paidIn = new Map<string, number[]>();
-  for (const look of state.looks) if (visionPaid(look)) paidIn.set(look.key, [...(paidIn.get(look.key) ?? []), look.gen]);
+  // What the eyes billed, per look key in filing order (a lost branch's filings included: they happened): a filing that
+  // is not kept is a payment; a kept one is a payment only as its key's first filing (the answer was paid for in an
+  // attempt that filed nothing), and otherwise reads back a payment already counted.
+  const byKey = new Map<string, VisionLook[]>();
+  for (const look of state.looks) if (!look.native) byKey.set(look.key, [...(byKey.get(look.key) ?? []), look]);
+  const billed: VisionLook[] = [];
   const extras = { repeated: 0, askedTwice: 0 };
-  for (const gens of paidIn.values()) gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
-  // What the eyes billed: every filing that is not kept, and, for a key with only kept filings (the kill landed after
-  // the eyes answered and before the look was filed), its first kept filing once: that answer was paid for, before.
-  const fresh = new Set(state.looks.filter((look) => !look.kept && !look.native).map((look) => look.key));
-  const keptOnly = new Map<string, VisionLook>();
-  for (const look of state.looks) if (look.kept && !look.native && !fresh.has(look.key) && !keptOnly.has(look.key)) keptOnly.set(look.key, look);
-  const billed = [...state.looks.filter((look) => !look.kept && !look.native), ...keptOnly.values()];
+  for (const filings of byKey.values()) {
+    const paid = filings.filter((look, at) => !look.kept || at === 0);
+    billed.push(...paid);
+    // A payment after the first of its key is an extra one: repeated when its generation is later than the one before
+    // it, asked twice when it is the same.
+    const gens = paid.filter((look) => look.status === 'ok').map((look) => look.gen);
+    gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
+  }
   const failed = state.looks.filter((look) => look.status === 'failed');
   const codes = new Map<string, number>();
   for (const look of failed) codes.set(look.miss?.code ?? 'code not recorded', (codes.get(look.miss?.code ?? 'code not recorded') ?? 0) + 1);

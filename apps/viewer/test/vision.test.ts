@@ -167,6 +167,22 @@ test('after a restore, a look filed again in the restored list is a new filing, 
   assert.deepEqual({ paid: visionMeters(state).paid, repeated: visionMeters(state).repeated }, { paid: 2, repeated: 1 }, 'both payments count, the redo as repeated');
 });
 
+test('a look first filed kept and paid again after a restore is two payments, the later one repeated', () => {
+  const page3 = LOOKS.page3 as Json;
+  const page3Kept = LOOKS.page3Kept as Json;
+  const keyed = (gen: number, commit: number, filings: Json[], snapshot = false): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: commit, commit, order: 0, conv: 1,
+    ...(snapshot ? { snapshot: true } : {}), data: { doc: 'vision.looks', key: K.page3, value: { looks: filings } } });
+  const started = (gen: number): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: gen, data: { gen } });
+  // Process 2 files the answer process 1 paid for as kept; the box dies, the run reopens a checkpoint from before the
+  // answer was kept, and process 3 asks the eyes again.
+  const run = [started(1), keyed(1, 1, []), started(2), keyed(1, 1, [], true), keyed(2, 4, [page3Kept]), started(3), keyed(2, 2, [], true), keyed(3, 3, [page3])];
+  const meters = visionMeters(reduceTo(visionPanel, run, run.length));
+  assert.deepEqual({ paid: meters.paid, kept: meters.kept, repeated: meters.repeated }, { paid: 2, kept: 1, repeated: 1 });
+  assert.ok(Math.abs(meters.cost! - 0.0036) < 1e-9, `both answers are spend: ${meters.cost}`);
+  const after = visionMeters(reduceTo(visionPanel, [...run.slice(0, 5), keyed(2, 5, [page3Kept, page3Kept])], 6));
+  assert.deepEqual({ paid: after.paid, kept: after.kept }, { paid: 1, kept: 2 }, 'a second kept filing reads back the same payment');
+});
+
 test('a read in flight with a negative start still draws', () => {
   const negative = [...lines.slice(0, 2), { channel: 'live', source: 'pi', kind: 'tool_execution_start', gen: 1, t: 21, seq: 999, conv: 1, data: { toolCallId: 'n1', toolName: 'read', args: { path: 'film.mp4', from_s: -5, to_s: 10 } } } as Line];
   assert.match(text(viewAt(negative.length, {}, negative)), /reading film\.mp4 -5-10 s/);
