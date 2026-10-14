@@ -25,12 +25,23 @@ export function planOf(line: Line): Plan | undefined {
   const found = findMap(root, '/root', 0);
   if (!found) return undefined;
   const given = input && auditIsObj(input.input) ? input.input : {};
-  const list = typeof found.node.itemsPath === 'string' ? given[found.node.itemsPath] : undefined;
+  const list = typeof found.node.itemsPath === 'string' ? auditPath(given, found.node.itemsPath) : undefined;
   const items = Array.isArray(list) ? list.map((each) => (auditIsObj(each) && typeof each.name === 'string' ? (typeof each.version === 'string' ? `${each.name}@${each.version}` : each.name) : String(each))) : [];
   const body = auditIsObj(found.node.body) ? found.node.body : undefined;
   const steps = body && Array.isArray(body.steps) ? body.steps.map((step, index) => (auditIsObj(step) && typeof step.label === 'string' ? step.label : `step ${index}`)) : [];
   return { mapPath: found.path, items, steps };
 }
+/** A dotted state path (`plan.questions`, `groups.0.items`) through nested objects and arrays, as the DSL reads an `itemsPath`. */
+function auditPath(root: Json | undefined, path: string): Json | undefined {
+  let at: Json | undefined = root;
+  for (const key of path.split('.')) {
+    if (Array.isArray(at) && /^\d+$/.test(key)) at = at[Number(key)];
+    else if (auditIsObj(at)) at = at[key];
+    else return undefined;
+  }
+  return at;
+}
+
 function findMap(node: Obj, path: string, depth: number): { node: Obj; path: string } | undefined {
   if (depth > 6) return undefined;
   if (node.node === 'map') return { node, path };

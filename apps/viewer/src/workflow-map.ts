@@ -42,6 +42,11 @@ export type WmState = {
   camera: string | null;
   kills: { t: number; label: string; cut: string[] }[];
   finishedAt?: number;
+  /** The highest commit seen, whether the last durable line was a snapshot, and whether a process has opened since: a restore is the first
+   *  snapshot line of an open whose commit is below the highest seen. */
+  highest: number;
+  inSnapshot: boolean;
+  opened: boolean;
   counters: CounterState;
 };
 
@@ -70,9 +75,9 @@ const WM_MARK: Record<WmGlyph, string> = { empty: '·', working: '◐', done: '�
 export const workflowMapPanel: Panel<WmState> = {
   id: 'workflow-map',
   title: 'The fan-out',
-  init: () => ({ planned: 0, branches: {}, convBranch: {}, open: {}, done: [], evidence: {}, camera: null, kills: [], counters: counterFold.init() }),
+  init: () => ({ planned: 0, branches: {}, convBranch: {}, open: {}, done: [], evidence: {}, camera: null, kills: [], highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() }),
   accepts: (line) => counterFold.accepts(line) || line.source === 'workflow' || line.source === 'pi' || line.source === 'vision'
-    || (line.source === 'browser' && line.kind === 'EvidenceRecord') || (line.source === 'host' && ['plan', 'camera', 'kill'].includes(line.kind)),
+    || (line.source === 'browser' && line.kind === 'EvidenceRecord') || (line.source === 'host' && ['plan', 'camera', 'kill', 'process.started'].includes(line.kind)),
   reduce(state, line) {
     const counters = counterFold.accepts(line) ? counterFold.reduce(state.counters, line) : state.counters;
     let next: WmState = counters === state.counters ? state : { ...state, counters };
@@ -80,6 +85,14 @@ export const workflowMapPanel: Panel<WmState> = {
     if (line.channel === 'live') {
       const evidence = evidenceOf(line);
       return evidence && next.evidence[evidence.path] !== evidence.blob ? { ...next, evidence: { ...next.evidence, [evidence.path]: evidence.blob } } : next;
+    }
+    if (line.commit !== undefined) {
+      const first = line.snapshot === true && (next.opened || !next.inSnapshot);
+      if (first && line.commit < next.highest) {
+        // A restore: the branches are rebuilt from the checkpoint's snapshot, so what the discarded commits showed (verdicts, findings, evidence
+        // records, open effects, the finish) goes. The kills, the plan and what the counters folded stay.
+        next = { ...next, branches: {}, open: {}, done: [], convBranch: {}, finishedAt: undefined, highest: line.commit, inSnapshot: true, opened: false };
+      } else next = { ...next, highest: Math.max(next.highest, line.commit), inSnapshot: line.snapshot === true, opened: line.snapshot === true ? false : next.opened };
     }
     const plan = planOf(line);
     if (plan && JSON.stringify(plan) !== JSON.stringify(next.plan)) next = { ...next, plan };
@@ -113,8 +126,9 @@ export const workflowMapPanel: Panel<WmState> = {
       const delivered = recordFactsOf(doc);
       if (delivered.length && home) next = wmBranch(next, home, (branch) => ({ ...branch, findings: delivered }));
     }
-    if (home && line.snapshot !== true) {
-      const facts = factsOf(line);
+    if (home) {
+      // A snapshot carries the whole `vision.looks` document of a conversation: state, so a look whose own line was lost is read from it.
+      const facts = line.snapshot === true ? [] : factsOf(line);
       const looks = looksOf(line);
       if (facts.length || looks.length) {
         next = wmBranch(next, home, (branch) => ({
@@ -151,6 +165,7 @@ function wmEffect(state: WmState, doc: DocLine, effect: NonNullable<ReturnType<t
 
 function wmHost(state: WmState, line: Line): WmState {
   const data = (line.data ?? {}) as { [key: string]: Json };
+  if (line.kind === 'process.started') return { ...state, opened: true };
   if (line.kind === 'plan') return { ...state, planned: Math.max(state.planned, wmNumber(data.branches) ?? 0) };
   if (line.kind === 'camera') return { ...state, camera: typeof data.zoom === 'string' ? data.zoom : null };
   if (line.kind === 'kill') {

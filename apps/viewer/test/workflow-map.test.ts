@@ -230,3 +230,52 @@ test('the price of the kills reads not comparable for a scripted run, a scripted
   assert.match(price(state, 'scripted', 'real'), /run: scripted, baseline: real/);
   assert.match(price(state, undefined, 'real'), /run: not recorded/);
 });
+
+// A kill can lose the lines of a commit; the next process's snapshot carries the documents as state.
+const local = (list: Line[]) => {
+  let n = 0;
+  const durableLine = (kind: string, source: Line['source'], gen: number, commit: number, data: Json, extra: Partial<Line> = {}): Line =>
+    ({ channel: 'durable', source, kind, gen, t: (n += 1), commit, order: 0, data, ...extra } as Line);
+  const process = (gen: number): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: (n += 1), seq: gen, data: { gen } } as Line);
+  const kill = (gen: number): Line => ({ channel: 'live', source: 'host', kind: 'kill', t: (n += 1), seq: 100 + gen, data: { gen, label: `storm ${gen}`, crossing: null } } as Line);
+  return { list, durableLine, process, kill };
+};
+const reduceAll = (list: Line[]) => list.reduce((state, line) => (workflowMapPanel.accepts(line) ? workflowMapPanel.reduce(state, line) : state), workflowMapPanel.init());
+const verdictDoc = (index: number, choice: string): Json => ({ doc: 'agentrun.decisions', value: { receipts: [{ run_key: 'a', decision_id: `v${index}`, execution_path: step(index, 5), answers: { flag: { type: 'choice', choice, confidence: 0.9 } } }] }, version: 1 });
+
+test('a look whose own line was lost in a kill is read from the next process\'s snapshot', () => {
+  const { durableLine, process } = local([]);
+  const look = (snapshot: boolean) => durableLine('vision.looks', 'vision', 2, 7, { doc: 'vision.looks', key: 'k', value: { looks: [{ receipt: 'evidence/look-1.json', record: { args: { ask: 'what does it say?' }, facts: { sha256: 'd'.repeat(64) }, body: 'coverage 91%' } }] }, version: 1 }, { conv: 7, ...(snapshot ? { snapshot: true } : {}) });
+  const run = [process(1), durableLine('agentrun.workflow', 'workflow', 1, 1, { id: 8, kind: 'agentrun.workflow', input: { key: 'a', workflow: WORKFLOW as unknown as Json, input: { project: 'p', dependencies: DEPS } } }),
+    durableLine('agentrun.nodes', 'workflow', 1, 2, { doc: 'agentrun.nodes', key: 'a:repository', value: { conversation: 7 }, version: 1 }, { path: step(1, 3) }),
+    process(2), look(true)];
+  const state = reduceAll(run);
+  assert.deepEqual(state.branches[`${ROOT}/1`]!.vision, [{ receipt: 'evidence/look-1.json', text: 'coverage 91%', blob: 'd'.repeat(64), ask: 'what does it say?' }]);
+});
+
+test('a restore rebuilds the branches from the checkpoint: a discarded verdict goes, the kills stay', () => {
+  const { durableLine, process, kill } = local([]);
+  const task = durableLine('agentrun.workflow', 'workflow', 1, 1, { id: 8, kind: 'agentrun.workflow', input: { key: 'a', workflow: WORKFLOW as unknown as Json, input: { project: 'p', dependencies: DEPS } } });
+  const driverAt = (commit: number, done: string[], gen: number, snapshot = false) => durableLine('agentrun.driver', 'workflow', gen, commit, { doc: 'agentrun.driver', key: 'a', value: { generation: gen, state: { pin: { done } } }, version: 1 }, snapshot ? { snapshot: true } : {});
+  const run = [process(1), task, driverAt(2, [step(1, 0)], 1),
+    // Commits 3 to 5 are the lost branch: branch 1's verdict, found something, and the end of its steps.
+    durableLine('agentrun.decisions', 'workflow', 1, 4, verdictDoc(1, 'act'), { path: step(1, 5) }), driverAt(5, [step(1, 0), ...[1, 2, 3, 4, 5, 6].map((n) => step(1, n))], 1),
+    kill(1), process(2),
+    // The restore: process 2's snapshot is the state at commit 2, below the highest commit seen (5).
+    driverAt(2, [step(1, 0)], 1, true)];
+  const before = reduceAll(run.slice(0, 5));
+  assert.equal(wmGlyphOf(before, before.branches[`${ROOT}/1`]!), 'finding');
+  const after = reduceAll(run);
+  assert.equal(wmGlyphOf(after, after.branches[`${ROOT}/1`]!), 'working', 'the discarded verdict and finish are gone');
+  assert.equal(after.branches[`${ROOT}/1`]!.verdict, undefined);
+  assert.deepEqual(after.kills.map((each) => each.label), ['storm 1'], 'the kill history stays');
+  assert.equal(after.plan?.items.length, 4, 'and the plan');
+});
+
+test('an itemsPath is a dotted state path: a nested input still lays out its planned cells', () => {
+  const nested = { v: 2, name: 'n', root: { node: 'chain', steps: [{ node: 'map', label: 'questions', itemsPath: 'plan.questions', body: { node: 'chain', steps: [{ node: 'call', label: 'ask' }] } }] } };
+  const line = (input: Json): Line => ({ channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', t: 1, commit: 1, order: 0, gen: 1, data: { input: { workflow: nested as unknown as Json, input } } } as Line);
+  assert.deepEqual(planOf(line({ plan: { questions: ['first', 'second'] } })), { mapPath: '/root/steps/0', items: ['first', 'second'], steps: ['ask'] });
+  assert.deepEqual(planOf(line({ plan: { questions: [{ name: 'a', version: '1' }] } }))?.items, ['a@1']);
+  assert.deepEqual(planOf(line({ plan: {} }))?.items, [], 'a path that leads nowhere plans no cells');
+});
