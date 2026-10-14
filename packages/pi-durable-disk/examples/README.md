@@ -47,7 +47,10 @@ Examples 01 and 02 predate these conventions and run on an Archil disk. A new ex
 4. **No key, no network.** The run is `localRun` on a fresh directory `<name>-run` under the current directory: remove it
    first, and print its path. The model is pi-ai's faux provider, scripted so the run is the same every time. A real model
    is an optional flag (`--model <provider>/<modelId>`, its key from the provider's usual environment variable), never
-   needed by the test.
+   needed by the test, and only where the property does not depend on what the model chooses. Two things keep a scripted
+   run the same on every pi version the peers accept (1.0.4 to 1.2): the faux script reads the last message that is not
+   the system's (pi 1.0.4 puts its system message after the user's), and a tool gives the model its text with
+   `call.output(text)` (and reads a result's text as `output ?? content`).
 5. **Its own supervisor.** An example that kills and restarts the run spawns its own instances (`main.ts instance`), reads
    their output a line at a time (`readline`), and waits for `close`, not `exit`, before it reads what they wrote. It
    ends every process it started, on success and on failure.
@@ -59,7 +62,8 @@ Examples 01 and 02 predate these conventions and run on an Archil disk. A new ex
    local directory has no fence and guards one machine only, and the example says so where it matters.
 8. **A test that runs it.** `test/examples/<name>.test.ts` calls `runExample("<name>")` from
    `test/examples/_run-example.ts`, which runs `node main.ts` from a scratch directory, gives the process group a timeout and
-   reaps it. The test asserts exit 0 and the `ok:` line. It needs no key and no network, and runs in the package's
-   `npm test`.
+   reaps it, then `assertExampleOk(run, /^ok: <the sentence>/m)`: exit 0 on its own, before the timeout (an example that
+   exits while a process it started still holds its output is a failure), and the `ok:` line. It needs no key and no
+   network, and runs in the package's `npm test`.
 9. **Listed and logged.** The example's pull request adds its row to the table above (`[<name>](<name>/)`, what it shows,
    what it needs, CI) and a changelog fragment, `changes/pi-durable-disk-example-<name>.md` with `kind: docs`.

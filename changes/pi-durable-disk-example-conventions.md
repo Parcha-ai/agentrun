@@ -9,4 +9,5 @@ kind: docs
   `test/examples/` that runs it on every change.
 - `test/examples/conventions.test.ts` checks what code can: each example's files, its imports (read from the parse tree),
   its test and its row in the index. `test/examples/_run-example.ts` runs an example from a scratch directory as its own
-  process group and reaps the group whatever ends it; the quickstart's test uses it too.
+  process group and reaps the group whatever ends it, and `assertExampleOk` fails a run that exited 0 while a
+  process it started still held its output; the quickstart's test uses both.

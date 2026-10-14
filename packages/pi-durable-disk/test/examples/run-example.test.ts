@@ -1,0 +1,41 @@
+// runExample and assertExampleOk, on examples written here: one that exits cleanly, and one that exits 0 while a process
+// it started still holds its output.
+import { it } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { alive, scratchRoot } from "../_run-support.ts";
+import { assertExampleOk, runExample } from "./_run-example.ts";
+
+it("a clean example passes, with its output and exit", async () => {
+  const dir = scratchRoot("run-example-clean");
+  try {
+    writeFileSync(join(dir.root, "main.mjs"), 'console.log("ok: it ran in", process.cwd());\n');
+    const run = await runExample("clean", { entry: join(dir.root, "main.mjs") });
+    assert.deepEqual([run.status, run.signal, run.timedOut], [0, null, false]);
+    assertExampleOk(run, /^ok: it ran in /m);
+  } finally {
+    dir.remove();
+  }
+});
+
+it("an example that exits 0 while a process it started holds its output fails, and that process is gone after", async () => {
+  const dir = scratchRoot("run-example-leftover");
+  try {
+    const pidFile = join(dir.root, "leftover.pid");
+    writeFileSync(join(dir.root, "main.mjs"), [
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      `const child = spawn("sleep", ["30"], { stdio: ["ignore", "inherit", "inherit"] });`,
+      `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      'console.log("ok: exited, leaving a child on the pipes");',
+      "process.exit(0);",
+    ].join("\n"));
+    const run = await runExample("leftover", { entry: join(dir.root, "main.mjs"), timeoutMs: 2_000 });
+    assert.deepEqual([run.status, run.timedOut], [0, true], "close reports the example's own exit 0 once the timeout ended the child");
+    assert.throws(() => assertExampleOk(run, /^ok: /m), /still running at the timeout/);
+    assert.equal(alive(Number(readFileSync(pidFile, "utf8"))), false, "the group was reaped");
+  } finally {
+    dir.remove();
+  }
+});
