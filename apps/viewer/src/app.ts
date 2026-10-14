@@ -251,12 +251,16 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   if (props.path) {
     out.classList.add('has-path');
     if (player.focus && under(props.path, player.focus)) out.classList.add('focused');
-    out.addEventListener('click', (event) => { event.stopPropagation(); onFocus(props.path!); });
   }
+  // A click on a node that names a citation selects it; one that names only a path focuses it.
   if (props.cite !== undefined) {
+    const cite = props.cite;
+    Object.assign(out, { tabIndex: 0 });
+    out.setAttribute('role', 'button');
     out.classList.add('has-cite');
-    out.addEventListener('click', (event) => { event.stopPropagation(); onCite(props.cite!); });
-  }
+    out.addEventListener('click', (event) => { event.stopPropagation(); onCite(cite); });
+    out.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onCite(cite); } });
+  } else if (props.path) out.addEventListener('click', (event) => { event.stopPropagation(); onFocus(props.path!); });
   if (props.box) {
     // Only numbers reach the style: a recording's strings never do.
     const percent = (value: number) => `${Math.min(100, Math.max(0, Number(value) || 0))}%`;
@@ -303,9 +307,10 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
     ...(other.manifest.providers ? { providers: other.manifest.providers } : {}) };
 }
 
-/** What the shell hands a panel's view at a stop: the time, the focus when there is one, the baseline when the manifest names one, the
- *  run's own providers (`real` or `scripted`) when its manifest says, the selected citation, and the result's JSON blobs read so far. */
-export function viewContext(t: number, focus: string | undefined, baseline: BaselineView | undefined, manifest: Manifest, cite?: string, json?: Map<string, Json>): ViewContext {
+/** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
+ *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, and the result's JSON blobs read so far. */
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json> } = {}): ViewContext {
+  const { focus, baseline, cite, json } = inputs;
   return { t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
@@ -398,7 +403,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest, player.cite, json)), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json })), player, frames, t, setFocus, setCite));
     }));
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');

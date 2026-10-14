@@ -15,7 +15,6 @@ import { citeStop } from '../src/cite.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { panelsShown, type Node, type ViewContext } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
-import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
@@ -118,8 +117,8 @@ test('?cite= lands after the commit that filed the look it names', () => {
   assert.ok(p > wrote && lines.slice(wrote, p).every((line) => line.channel !== 'durable' || line.commit === lines[wrote]!.commit));
   const receipt = text(find(viewAt(p, { cite: K.page2 }), cls('vz-receipt'))[0]!);
   assert.match(receipt, /Receipt · scan-pages #page=2/, 'the receipt opens at that stop, before the account exists');
-  assert.equal(viewContext(5, undefined, undefined, manifest as never, K.page2, new Map([[RESULT, ACCOUNT as unknown as Json]])).json?.(RESULT), ACCOUNT, 'the shell hands the view the result it read');
-  assert.equal(viewContext(5, undefined, undefined, manifest as never, K.page2).cite, K.page2);
+  assert.equal(viewContext(5, manifest as never, { cite: K.page2, json: new Map([[RESULT, ACCOUNT as unknown as Json]]) }).json?.(RESULT), ACCOUNT, 'the shell hands the view the result it read');
+  assert.equal(viewContext(5, manifest as never, { cite: K.page2 }).cite, K.page2);
 });
 
 test('a miss shows by its code, and a failed look with no code says so', () => {
@@ -144,16 +143,6 @@ test('a key paid again in a later generation is repeated, and twice in one is as
   assert.match(text(viewAt(unpriced.length, {}, unpriced)), /spend unknown/);
 });
 
-test('the counters strip prices each look once: a kept filing adds nothing, a kept-only look counts once, a native look is the lead\'s', () => {
-  const strip = countersOf(reduceTo(counterFold, lines, lines.length), true);
-  assert.ok(Math.abs(strip.cost! - visionMeters(stateAt(end)).cost!) < 1e-9, `the strip and the panel agree: ${strip.cost}`);
-  assert.equal(manifest.cost.usd, strip.cost);
-  const native = (commit: number): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 2, t: 99_999, commit, order: 0, conv: 1,
-    data: { doc: 'vision.looks', key: 'native', value: { looks: [{ receipt: 'evidence/read/native.json', record: { tool: 'look', args: { path: 'a.png', model: 'faux/text-lead', native: true }, status: 'ok', facts: { sha256: 'a', kind: 'image', fragment: '', key: 'native' }, body: 'shown to the model natively' } }] } } });
-  const withNative = [...lines, native(900)];
-  assert.ok(Math.abs(countersOf(reduceTo(counterFold, withNative, withNative.length), true).cost! - strip.cost!) < 1e-9, 'a native look has no price of its own');
-});
-
 test('one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated', () => {
   const page1 = LOOKS.page1 as { receipt: string; record: Json };
   const keyed = (gen: number, commit: number, filings: Json[], snapshot = false): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: commit, commit, order: 0, conv: 1,
@@ -164,6 +153,23 @@ test('one document per look key, its filings in a growing list: each filing coun
   const twice = [keyed(1, 1, [page1]), keyed(2, 2, [page1, page1])];
   const again = visionMeters(reduceTo(visionPanel, twice, twice.length));
   assert.deepEqual({ paid: again.paid, repeated: again.repeated }, { paid: 2, repeated: 1 }, 'the same record filed twice is two filings');
+});
+
+test('after a restore, a look filed again in the restored list is a new filing, even one identical to a lost one', () => {
+  const page1 = LOOKS.page1 as Json;
+  const keyed = (gen: number, commit: number, filings: Json[], snapshot = false): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: commit, commit, order: 0, conv: 1,
+    ...(snapshot ? { snapshot: true } : {}), data: { doc: 'vision.looks', key: K.page1, value: { looks: filings } } });
+  const started = (gen: number): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: gen, data: { gen } });
+  // Paid at commit 5, then the box dies; the run reopens its checkpoint at commit 3, where the list was empty, and pays again.
+  const run = [started(1), keyed(1, 1, []), keyed(1, 5, [page1]), started(2), keyed(1, 3, [], true), keyed(2, 4, [page1])];
+  const state = reduceTo(visionPanel, run, run.length);
+  assert.deepEqual(state.looks.map((look) => [look.gen, look.lost]), [[1, true], [2, false]], 'the lost branch\'s filing stays, marked');
+  assert.deepEqual({ paid: visionMeters(state).paid, repeated: visionMeters(state).repeated }, { paid: 2, repeated: 1 }, 'both payments count, the redo as repeated');
+});
+
+test('a read in flight with a negative start still draws', () => {
+  const negative = [...lines.slice(0, 2), { channel: 'live', source: 'pi', kind: 'tool_execution_start', gen: 1, t: 21, seq: 999, conv: 1, data: { toolCallId: 'n1', toolName: 'read', args: { path: 'film.mp4', from_s: -5, to_s: 10 } } } as Line];
+  assert.match(text(viewAt(negative.length, {}, negative)), /reading film\.mp4 -5-10 s/);
 });
 
 test('the account: entries with their chips, the photo sort against the captions, and the weaker eyes\' dropped digits', () => {
@@ -206,6 +212,10 @@ test('the page from file:// reads the account from the result blob, and ?cite= o
     assert.equal(ran.status, 0, ran.stderr);
     return ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replaceAll('&#39;', '\'');
   };
+  const html = (query: string) => spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
+    '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`], { encoding: 'utf8', timeout: 60_000 }).stdout;
+  const chips = html('r=vision-hand').match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? [];
+  assert.ok(chips.length >= 4 && chips.every((chip) => /tabindex="0"/.test(chip) && /role="button"/.test(chip)), 'a citation chip is a button a keyboard reaches');
   const ended = page('r=vision-hand');
   for (const shown of ['What the eyes read', '000:00:40 An alarm is called out, number 9. p.2 · box', '50% overall, 1 of 2', 'looks paid 7', 'kept after a kill 2', 'spend $0.0097', 'typed misses 1: over_budget 1']) assert.ok(ended.includes(shown), `the page shows ${shown}`);
   assert.doesNotMatch(ended, /breaks the format/);

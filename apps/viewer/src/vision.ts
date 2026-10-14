@@ -26,7 +26,8 @@ const visionNum = (value: Json | undefined): number | undefined => (typeof value
 export type VisionImage = { blob: string; at?: number; caption?: string };
 /** One filing of a LookRecord. `cost` is null when the price is not known; a native look has none of its own. */
 export type VisionLook = {
-  id: string; receipt: string | null; key: string; status: 'ok' | 'failed'; native: boolean; kept: boolean;
+  /** The document that filed it (`(doc, key, conv, task)`), and its place in that document's list. */
+  doc: string; at: number; receipt: string | null; key: string; status: 'ok' | 'failed'; native: boolean; kept: boolean;
   model: string; ask?: string; body: string; kind: string; sha256: string; fragment: string; source: string; item?: string;
   page?: number; fromS?: number; toS?: number; tokensIn?: number; tokensOut?: number; cost: number | null;
   images: VisionImage[]; miss?: { code: string; reason?: string };
@@ -95,12 +96,13 @@ export const visionRegion = (fragment: string): { x: number; y: number; w: numbe
   return values && values.length === 4 && values.every((value) => Number.isFinite(value) && value >= 0 && value <= 100) ? { x: values[0]!, y: values[1]!, w: values[2]!, h: values[3]! } : undefined;
 };
 
-/** The filings a `vision.*` document line holds, each as one look. */
-function visionLooksOf(line: Line, gen: number): VisionLook[] {
+/** The filings a `vision.*` document line holds, each as one look, with how many the list holds. */
+function visionLooksOf(line: Line, gen: number): { doc: string; length: number; looks: VisionLook[] } | undefined {
   const doc = docOf(line);
   const listed = doc && doc.doc.startsWith('vision.') ? visionObj(doc.value)?.looks : undefined;
-  if (!Array.isArray(listed)) return [];
-  return listed.flatMap((each, index): VisionLook[] => {
+  if (!Array.isArray(listed)) return undefined;
+  const id = docIdOf(line, doc!);
+  return { doc: id, length: listed.length, looks: listed.flatMap((each, index): VisionLook[] => {
     const filing = visionObj(each);
     const record = visionObj(filing?.record);
     const args = visionObj(record?.args);
@@ -121,8 +123,7 @@ function visionLooksOf(line: Line, gen: number): VisionLook[] {
     const tokensIn = visionNum(facts.tokens_in);
     const tokensOut = visionNum(facts.tokens_out);
     return [{
-      // A document's list of filings only grows, and every revision carries all of it: a filing is its place in the list.
-      id: `${docIdOf(line, doc!)}\u0001${index}\u0001${receipt ?? ''}`, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed',
+      doc: id, at: index, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed',
       native: args.native === true, kept: facts.kept === true, model: visionStr(args.model) ?? 'not recorded', body: visionStr(record.body) ?? '',
       kind: visionStr(facts.kind) ?? 'unknown', sha256: visionStr(facts.sha256) ?? '', fragment, source: visionStr(args.path) ?? '',
       ...(ask !== undefined ? { ask } : {}), ...(item !== undefined ? { item } : {}), ...(page !== undefined ? { page } : {}),
@@ -132,7 +133,7 @@ function visionLooksOf(line: Line, gen: number): VisionLook[] {
       ...(code !== undefined ? { miss: { code, ...(reason !== undefined ? { reason } : {}) } } : {}),
       gen, commit: line.commit ?? 0, t: line.t, lost: false, ...(line.path !== undefined ? { path: line.path } : {}), ...(line.conv !== undefined ? { conv: line.conv } : {}),
     }];
-  });
+  }) };
 }
 
 /** A look the eyes paid for in this filing: answered, not the lead's own, and not an answer read back after a kill. */
@@ -164,8 +165,11 @@ function visionReduce(before: VisionState, line: Line): VisionState {
     // earlier process's.
     const gen = line.gen ?? Math.max(1, line.snapshot === true ? state.processes - 1 : state.processes);
     const filed = visionLooksOf(line, gen);
-    if (filed.length) {
-      const fresh = filed.filter((look) => !state.looks.some((seen) => seen.id === look.id));
+    if (filed) {
+      // A document's list of filings only grows, and every revision carries all of it, a snapshot's included: the places
+      // beyond those of the branch the store holds are new filings, whatever they hold (a lost branch's stay, marked).
+      const held = state.looks.reduce((most, look) => (look.doc === filed.doc && !look.lost ? Math.max(most, look.at + 1) : most), 0);
+      const fresh = filed.looks.filter((look) => look.at >= held);
       const heard = new Set(fresh.flatMap((look) => [look.key, ...(look.receipt ? [look.receipt] : [])]));
       const told = Object.keys(state.told).some((id) => heard.has(id)) ? Object.fromEntries(Object.entries(state.told).filter(([id]) => !heard.has(id))) : state.told;
       return { ...state, looks: fresh.length ? [...state.looks, ...fresh] : state.looks, told, visionLines: state.visionLines + 1 };
@@ -378,7 +382,7 @@ function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook 
   const running = Object.values(state.running).filter((read) => read.fromS !== undefined || read.toS !== undefined);
   if (film.length === 0 && running.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Film'), h('p', { class: 'empty' }, 'No window of film read yet.'));
   const end = Math.max(1, ...film.map((look) => look.toS ?? look.fromS ?? 0), ...running.map((read) => read.toS ?? read.fromS ?? 0));
-  const cellOf = (s: number) => Math.min(VISION_CELLS - 1, Math.floor((s / end) * VISION_CELLS));
+  const cellOf = (s: number) => Math.max(0, Math.min(VISION_CELLS - 1, Math.floor((s / end) * VISION_CELLS)));
   const cells = Array.from({ length: VISION_CELLS }, () => new Set<string>());
   const mark = (from: number | undefined, to: number | undefined, flag: string) => { for (let at = cellOf(from ?? 0); at <= cellOf(to ?? from ?? 0); at += 1) cells[at]!.add(flag); };
   for (const look of film) mark(look.fromS, look.toS, look.status === 'ok' ? 'read' : 'missed');
