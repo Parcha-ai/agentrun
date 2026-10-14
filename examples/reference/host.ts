@@ -81,6 +81,8 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** How many model turns one process can take before the faux provider has none queued; default 64. A job with many branches needs more. */
+  responses?: number;
 };
 
 /** One fake call, with the process incarnation that made it (a pid can be reused; this id is drawn at each start). A
@@ -107,7 +109,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
-  faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
+  faux.setResponses(Array.from({ length: fakes.responses ?? 64 }, () => (context, stream) => {
     count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
   }));
