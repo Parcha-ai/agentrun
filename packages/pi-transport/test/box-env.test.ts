@@ -247,6 +247,10 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 			const ran = await env.exec("echo hi", undefined, context);
 			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
 			expect(ran.ok ? "" : ran.error.message).toMatch(/is gone \(it ended with exit code 137\)/);
+			// pi has no `gone` code: the provider's own error is the cause, for a caller that must tell a lost box apart.
+			const cause = ran.ok ? undefined : ran.error.cause;
+			expect(cause).toBeInstanceOf(BoxError);
+			expect((cause as BoxError).code).toBe("gone");
 			expect((await env.listDir(".", context)).ok).toBe(false);
 			expect(box.calls.length).toBe(asked);
 		});

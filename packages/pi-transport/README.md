@@ -211,6 +211,8 @@ harness = await Harness.open(storage, { models, registry, env: hands.env }, BACK
   conversation document (`transport.hands`). A fork starts without one, on the default.
 - **A box that is gone is one failed tool call.** A box that cannot be created, or that ended behind the session's
   back, is that call's error result with the provider's code in the message. The next call asks for a box again.
+  A box the environment found lost answers `exec` with code `unknown` (pi's execution codes have no `gone`) and, as
+  `error.cause`, the provider's `BoxError` with code `gone`; `onLost` fires once, however many calls find it out.
 - **Two ways to let boxes go.** `release()` forgets them and leaves them running, for a host that will open the
   session again; a box nobody comes back to ends at its lifetime. `destroy()` ends every box of the session,
   including those only the session's documents still name.
