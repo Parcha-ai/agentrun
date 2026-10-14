@@ -115,6 +115,10 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: The re-asked fold on this pi
+        # A real mid-stream kill and resume, recorded on the pi the leg installed: pi.live must still be version 1 and turn 0 asked twice.
+        # It skips until the package has the store export and the disk its beforeResume hook. If pi changes pi.live it fails; it is not adapted.
+        run: node --test examples/reference-midstream.test.mjs
       - name: Retain the leg's packages and resolved versions
         if: always()
         uses: actions/upload-artifact@v4

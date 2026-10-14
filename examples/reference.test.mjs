@@ -85,13 +85,16 @@ const driver = async (...args) => {
     : name === 'url' ? () => { if (ran) kill('page-ran'); return target.url(); }
     : typeof target[name] === 'function' ? target[name].bind(target) : target[name]) });
 };
-const local = localHost(place, { ...fakes, model }, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
+// FAIL_ONCE: the first send of the search fails with a retryable error; the door sends it again.
+let sent = 0;
+const taps = { ...fakes, model, tools: process.env.FAIL_ONCE ? { search: (args) => { sent += 1; if (sent === 1) throw Object.assign(new Error('transient'), { retryable: true }); return fakes.tools.search(args); } } : fakes.tools };
+const local = localHost(place, taps, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
 const door = local.host.tools.runEffect;
 let calls = 0;
 local.host.tools.runEffect = async (params) => {
   calls += 1;
   for (const point of ['search-admitted', \`search-admitted:\${calls}\`]) kill(point);
-  const value = await door(params);
+  const value = await door({ ...params, call: params.call && ((record) => { if (record.outcome === 'applied') kill('before-applied'); return params.call(record); }) });
   for (const point of ['search-landed', \`search-landed:\${calls}\`]) kill(point);
   return value;
 };
@@ -192,6 +195,14 @@ test('killed after the search was admitted and before it was sent, a host that c
   assert.equal(view.status, 'complete');
   assert.deepEqual(view.output, OUTPUT, 'the same record');
   assert.deepEqual(named(rows, 'tool'), [], 'no process sent the search through the door: rerun answered it');
+  assert.deepEqual(failing, []);
+});
+
+test('a first send failed, a retry applied, and the kill landed before the door listed it: the next process settles from the kept answer, and the search is sent once', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'before-applied' }, { env: { FAIL_ONCE: '1' } });
+  assert.equal(view.status, 'complete');
+  assert.deepEqual(view.output, OUTPUT, 'the same record');
+  assert.deepEqual(named(rows, 'tool'), ['search'], 'the search was sent once');
   assert.deepEqual(failing, []);
 });
 
