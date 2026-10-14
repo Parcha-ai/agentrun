@@ -170,6 +170,7 @@ test("release touches only what its lease made: a path-shaped tag, an id and tag
     assert.equal(running(bystander.pid), true, "an unrelated live pid, even with the right port in its lease, is never signalled");
     assert.equal(await restarted.status({ id: `local:${bystander.pid}:${port}:legit-lease`, tag: "legit-lease" }), "gone");
     assert.equal(running(Number(pid)), true);
+    assert.ok((await readdir(path.join(root, "legit-lease"))).includes("DevToolsActivePort"), "the profile of the Chrome still running on it is left to that Chrome");
   } finally {
     try { process.kill(-bystander.pid, "SIGKILL"); } catch {}
     if (ref) await provider.release(ref);

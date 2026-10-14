@@ -110,17 +110,20 @@ const sectionEnd = (lines, heading) => {
 };
 
 /**
- * Folds the release into the changelogs. A changelog that gets fragments (the root also when its Unreleased section holds
- * bullets) has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
- * Unreleased section opened above it. A fragment goes to its package's own changelog, else the root. A changelog that
- * gets none is untouched; one that already has the version's section gets the bullets appended to it.
+ * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
+ * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
+ * Unreleased section opened above it. The root changelog is dated also when it holds nothing and the release has fragments. A
+ * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
+ * one that already has the version's section gets the fragments' bullets appended to it.
  */
 export async function fold(root, version, date) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
   assert.match(date, /^\d{4}-\d{2}-\d{2}$/, 'The date is YYYY-MM-DD');
   const directories = await workspacePackages(root);
   const fragments = await loadFragments(root);
+  // Every changelog that exists is visited, so a package changelog that holds bullets and gets no fragment is dated too.
   const targets = new Map([['CHANGELOG.md', []]]);
+  for (const file of await changelogPaths(root)) if (file !== 'CHANGELOG.md' && await readOptional(join(root, file)) !== null) targets.set(file, []);
   for (const fragment of [...fragments].sort((a, b) => kindOrder(a) - kindOrder(b) || a.file.localeCompare(b.file))) {
     const files = new Set();
     for (const name of fragment.packages) {
@@ -142,6 +145,7 @@ export async function fold(root, version, date) {
       if (bullets.length === 0) continue;
       lines.splice(sectionEnd(lines, existing), 0, ...bullets);
     } else {
+      if (unreleased < 0 && bullets.length === 0) continue;
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to fold`);
       const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
       // The root always gets the version's section (the release preflight requires it), also when every change is a package's.

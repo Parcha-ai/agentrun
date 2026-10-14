@@ -24,6 +24,10 @@
       "types": "./dist/durable.d.ts",
       "import": "./dist/durable.js"
     },
+    "./recorder": {
+      "types": "./dist/recorder/index.d.ts",
+      "import": "./dist/recorder/index.js"
+    },
     "./providers/browserbase": {
       "types": "./dist/providers/browserbase.d.ts",
       "import": "./dist/providers/browserbase.js"

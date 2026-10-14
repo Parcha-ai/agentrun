@@ -8,9 +8,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const CHILD = fileURLToPath(new URL('./fixtures/node-crash-child.mjs', import.meta.url));
+const CHILD = childPath('node-crash-child.mjs');
 
 function child(mode, dir, env) {
   const ran = spawnSync(process.execPath, [CHILD, mode, join(dir, 'run.sqlite'), join(dir, 'requests')], { env: { ...process.env, ...env }, encoding: 'utf8', timeout: 60_000 });
