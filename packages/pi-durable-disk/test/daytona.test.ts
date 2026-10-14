@@ -154,8 +154,11 @@ async function killedTestLeavesNothing(
     await waitFor("the moment to kill the test process", () => until(said, d), 20_000);
     outer.kill("SIGKILL"); // as a test timeout or a forced exit would: no hook runs
     await waitFor("the driver to end by itself", () => !pidAlive(driver), 10_000);
-    options.release?.(d);
-    await waitFor("the launcher and the instance to end by themselves", () => fixtureProcesses([d]).length === 0, 10_000);
+    // released again and again: a launcher that was slow to open the FIFO has no reader to write to yet
+    await waitFor("the launcher and the instance to end by themselves", () => {
+      options.release?.(d);
+      return fixtureProcesses([d]).length === 0;
+    }, 10_000);
   } finally {
     outer.kill("SIGKILL");
     if (driver > 0) {
@@ -167,7 +170,7 @@ async function killedTestLeavesNothing(
   }
 }
 
-/** Lets a launcher that is blocked reading a FIFO spec go on, with a spec it refuses: it ends. Nothing happens where no reader waits. */
+/** Lets a launcher that is blocked reading a FIFO spec go on, with a spec it refuses: it ends. Nothing happens where no reader waits (yet). */
 function releaseLauncher(d: string): void {
   try {
     const fd = openSync(join(d, "box", "x.json"), constants.O_WRONLY | constants.O_NONBLOCK);
