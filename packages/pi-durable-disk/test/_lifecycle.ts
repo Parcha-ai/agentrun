@@ -160,11 +160,14 @@ const textOf = (m: { role: string; content?: unknown } | undefined): string =>
  * calls `safe_tool` and `unsafe_tool`; "gate" calls `gate_tool`; a tool result is answered "finished"; anything else
  * "echo: <text>".
  */
-export function lifecycleReply(counters: Counters): FauxResponseFactory {
+export function lifecycleReply(counters: Counters, toolResults?: string[]): FauxResponseFactory {
   return (context) => {
     counters.requests++;
     const last = context.messages.findLast((m) => (m.role as string) !== "system");
-    if (last?.role === "toolResult") return fauxAssistantMessage("finished");
+    if (last?.role === "toolResult") {
+      toolResults?.push((last.content as { type: string; text?: string }[]).map((c) => c.text ?? "").join(""));
+      return fauxAssistantMessage("finished");
+    }
     const text = textOf(last);
     if (text === "flaky") {
       return counters.flaky++ === 0 ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error: Overloaded" }) : fauxAssistantMessage("recovered");
@@ -182,12 +185,23 @@ export interface LifecycleOptions {
   readonly jobs?: boolean;
   /** `gate_tool` waits on this before it returns (or until the run stops it). */
   readonly gate?: Promise<void>;
+  /** Gets the text of each tool result the model is sent, in order. */
+  readonly toolResults?: string[];
+}
+
+/**
+ * A tool's text result on every pi version the peers accept: the result names no text field, so the retained `output()`
+ * becomes it (pi-durable 1.0.4 and 1.1 read a result's `content`, 1.2 its `output`, and each drops the other silently).
+ */
+function said(api: { output(chunk: string): void }, text: string): Record<string, never> {
+  api.output(text);
+  return {};
 }
 
 /** Harness options for the lifecycle app; `counters` may be shared across incarnations to count across them. */
 export function lifecycleApp(counters: Counters, options: LifecycleOptions = {}) {
   const faux = fauxProvider();
-  faux.setResponses(Array.from({ length: 500 }, () => lifecycleReply(counters)));
+  faux.setResponses(Array.from({ length: 500 }, () => lifecycleReply(counters, options.toolResults)));
   const models = createModels();
   models.setProvider(faux.provider);
   const model = faux.getModel();
@@ -198,22 +212,22 @@ export function lifecycleApp(counters: Counters, options: LifecycleOptions = {})
       description: `A ${replay} tool that waits`,
       parameters: Type.Object({}),
       replay,
-      execute: async (_args, _api, context) => {
+      execute: async (_args, api, context) => {
         counters[name] += 1;
         if (counters[name] === 1) await aborted(context.abortSignal);
         context.abortSignal?.throwIfAborted();
-        return { content: [{ type: "text", text: `${name} done` }] };
+        return said(api, `${name} done`);
       },
     });
   const gate = defineTool({
     name: "gate_tool",
     description: "Waits for the test's gate",
     parameters: Type.Object({}),
-    execute: async (_args, _api, context) => {
+    execute: async (_args, api, context) => {
       counters.gate += 1;
       await Promise.race([options.gate ?? new Promise(() => {}), aborted(context.abortSignal)]);
       context.abortSignal?.throwIfAborted();
-      return { content: [{ type: "text", text: "gate open" }] };
+      return said(api, "gate open");
     },
   });
   const registry = createRegistry();
