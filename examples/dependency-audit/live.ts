@@ -1,7 +1,7 @@
 // The live path: the user's own model key through pi-ai, and a typed judge that asks that model the workflow's question. Nothing
 // here has a default key or a fallback: with no key in the environment the run says so and stops.
 import type { Context } from '@earendil-works/pi-ai';
-import { createModels, type Models } from '@earendil-works/pi-ai/models';
+import { createModels, createProvider, type Models } from '@earendil-works/pi-ai/models';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
@@ -17,9 +17,31 @@ const PROVIDERS = [
   { env: 'GEMINI_API_KEY', make: googleProvider, id: 'google', model: 'gemini-3.7-flash' },
 ] as const;
 
+/** A provider of the same models that sends its requests to `baseUrl` with `apiKey`, for a host that reaches models through a gateway of its
+ *  own. The models, their capabilities and the API they speak are the original provider's; only the address and the credential change. */
+export function routed(original: ReturnType<typeof openaiProvider>, baseUrl: string, apiKey: string) {
+  return createProvider({
+    id: original.id, name: original.name, baseUrl,
+    auth: { apiKey: { name: 'the host\'s model gateway', resolve: async () => ({ auth: { apiKey }, source: 'the host\'s model gateway' }) } },
+    models: original.getAllModels!().map((model) => ({ ...model, baseUrl })),
+    api: { stream: original.stream, streamSimple: original.streamSimple } as never,
+  });
+}
+
+/** The models of a live run. With `AUDIT_MODEL_BASE_URL` (and `AUDIT_MODEL_API_KEY`) every request goes to that gateway and no provider key
+ *  is read; without it the provider's own key is. */
 export function liveModels(env: NodeJS.ProcessEnv, choice?: string): { catalog: Models; lead: ModelRef } {
   const catalog = createModels();
   const [wanted, wantedModel] = choice ? choice.split('/') : [];
+  const gateway = env.AUDIT_MODEL_BASE_URL;
+  if (gateway) {
+    if (!env.AUDIT_MODEL_API_KEY) throw new Error('AUDIT_MODEL_BASE_URL needs AUDIT_MODEL_API_KEY (the gateway\'s credential) in the environment.');
+    if (wanted && wanted !== 'openai') throw new Error(`--model ${choice}: the gateway route serves openai models here.`);
+    catalog.setProvider(routed(openaiProvider(), gateway, env.AUDIT_MODEL_API_KEY) as never);
+    const modelId = wantedModel ?? 'gpt-6-luna';
+    if (!catalog.getModels('openai').some((model) => model.id === modelId)) throw new Error(`openai has no model ${modelId} in this build of pi-ai.`);
+    return { catalog, lead: { provider: 'openai', modelId } };
+  }
   const entry = PROVIDERS.find((candidate) => (wanted ? candidate.id === wanted : Boolean(env[candidate.env])));
   if (!entry) throw new Error(wanted ? `--model ${choice}: no provider ${wanted} here (${PROVIDERS.map((p) => p.id).join(', ')})` : `--live needs a model key in the environment: ${PROVIDERS.map((p) => p.env).join(', ')}.`);
   if (!env[entry.env]) throw new Error(`--live with ${entry.id} needs ${entry.env} in the environment.`);

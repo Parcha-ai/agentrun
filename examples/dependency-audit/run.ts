@@ -21,6 +21,7 @@ import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
 import { badgeImageTool, visionOptions } from './badges.ts';
 import { checkReceipts, recordOf } from './check.ts';
+import { scanRecording, type Leak } from './scan.ts';
 import { attachInstall, killBox, startInstall } from './install-box.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
@@ -141,7 +142,7 @@ async function inputFrom(spec: string, limit?: number): Promise<Record<string, u
 type Outcome = { status: string; generation?: number; usd?: number; parts?: Record<string, number>; model?: string; code?: string; message?: string };
 
 /** The keys and settings a live run needs reach the run process; nothing else of this process's environment does. */
-const PASSED = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GITHUB_TOKEN', 'CHROME_PATH', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSERBASE_BASE_URL', 'DOCKER_HOST'];
+const PASSED = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GITHUB_TOKEN', 'CHROME_PATH', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSERBASE_BASE_URL', 'DOCKER_HOST', 'AUDIT_MODEL_BASE_URL', 'AUDIT_MODEL_API_KEY'];
 const passed = () => Object.fromEntries(PASSED.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
 
 function startChild(env: Record<string, string>) {
@@ -316,6 +317,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   }
   await served?.close();
   const outcome = last?.outcome;
+  let leaks: Leak[] = [];
   let result: { blob: string; title: string } | undefined;
   if (options.record && outcome?.status === 'complete') {
     const out = join(dir, 'out', 'record.json');
@@ -326,10 +328,11 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
       cost: { usd: outcome.usd ?? null, parts: outcome.parts ?? {} }, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(result ? { result } : {}),
     });
     await settleManifest(options.record, options.live ? 'real' : 'scripted');
+    leaks = scanRecording(options.record);
   }
   // Every fact in the record must rest on a receipt the run filed, of the kind the fact claims.
   const record = outcome?.status === 'complete' ? recordOf(dir) : null;
-  return { dir, processes, kills, outcome, stderr: last?.stderr ?? '', receiptProblems: record ? checkReceipts(dir, record) : [] };
+  return { dir, processes, kills, outcome, stderr: last?.stderr ?? '', receiptProblems: record ? checkReceipts(dir, record) : [], leaks };
 }
 
 /** Runs the audit; with `attempts`, a run a kill stopped on an unknown effect is started again from nothing on the next seed. */
@@ -361,6 +364,7 @@ if (import.meta.main) {
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);
     if (result.receiptProblems.length) console.error(`${result.receiptProblems.length} fact(s) cite no filed receipt of their kind:\n${result.receiptProblems.slice(0, 10).map((problem) => `  ${problem}`).join('\n')}`);
-    if (result.outcome?.status !== 'complete' || result.receiptProblems.length) process.exitCode = 1;
+    if (result.leaks.length) console.error(`The recording holds ${result.leaks.length} thing(s) it should not (kinds, not contents):\n${result.leaks.slice(0, 10).map((leak) => `  ${leak.file}: ${leak.kind}`).join('\n')}`);
+    if (result.outcome?.status !== 'complete' || result.receiptProblems.length || result.leaks.length) process.exitCode = 1;
   }
 }

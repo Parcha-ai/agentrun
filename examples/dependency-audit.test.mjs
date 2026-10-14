@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { validateWorkflow } from '@parcha/agentrun-dsl';
 import { audit, loadFixture, spentUsd } from './dependency-audit/run.ts';
 import { checkReceipts, recordOf } from './dependency-audit/check.ts';
+import { scanRecording } from './dependency-audit/scan.ts';
 import { repositoryUrl, resolveRange } from './dependency-audit/sources.ts';
 import { workflow } from './dependency-audit/workflow.ts';
 
@@ -101,4 +102,22 @@ test('the budget meter adds what assistant messages billed from the live lines t
   await writeFile(join(spool, 'durable-1.jsonl'), `${line('assistant', 100)}\n`);
   assert.equal(spentUsd(tmp), 0.375);
   assert.equal(spentUsd(join(tmp, 'nothing-here')), 0);
+});
+
+test('the scan of a recording names where a leak is and what kind, never its content, and finds the exact secrets and addresses a run was given', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'dependency-audit-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  await mkdir(join(tmp, 'blobs'), { recursive: true });
+  await writeFile(join(tmp, 'events.jsonl'), '{"data":"a clean line"}\n{"data":"calls http://127.0.0.1:9421/v1/responses"}\n');
+  await writeFile(join(tmp, 'manifest.json'), '{"title":"fine"}');
+  await writeFile(join(tmp, 'blobs', 'a.json'), '{"url":"wss://connect.example.test/?signingKey=abcdef"}');
+  await writeFile(join(tmp, 'blobs', 'b.json'), '{"note":"the gateway credential is hunter2hunter2"}');
+  const env = { AUDIT_MODEL_API_KEY: 'hunter2hunter2' };
+  const leaks = scanRecording(tmp, env, ['workbox-7']);
+  const kinds = leaks.map((leak) => `${leak.file}: ${leak.kind}`).sort();
+  assert.deepEqual(kinds, ['blobs/a.json: signed connect URL', 'blobs/b.json: the value of AUDIT_MODEL_API_KEY', 'events.jsonl: private service endpoint']);
+  assert.ok(!JSON.stringify(leaks).includes('hunter2'), 'a hit names the kind, not the content');
+  assert.deepEqual(scanRecording(tmp, {}, []).map((leak) => leak.kind).sort(), ['private service endpoint', 'signed connect URL']);
+  await writeFile(join(tmp, 'blobs', 'c.json'), '{"host":"workbox-7"}');
+  assert.ok(scanRecording(tmp, {}, ['workbox-7']).some((leak) => leak.file === 'blobs/c.json'));
 });
