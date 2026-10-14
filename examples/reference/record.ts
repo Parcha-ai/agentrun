@@ -97,9 +97,9 @@ export function openSupervisor(options: { dir: string; redact?: Redact }): Super
   };
 }
 
-/** pi's agent events a recording keeps as live `pi` lines: where a turn starts and ends, a message ends, a tool starts and ends. Streaming
+/** pi's agent events a recording keeps as live `pi` lines: where a turn starts and ends, a message starts and ends, a tool starts and ends. Streaming
  *  deltas, updates and snapshots are dropped. */
-export const PI_LIVE_EVENTS = ['run_start', 'turn_start', 'turn_end', 'message_end', 'tool_execution_start', 'tool_execution_end'] as const;
+export const PI_LIVE_EVENTS = ['run_start', 'turn_start', 'turn_end', 'message_start', 'message_end', 'tool_execution_start', 'tool_execution_end'] as const;
 /** One conversation's agent events: pi-durable's `watchEvents`, or a stand-in in a test. */
 export type WatchEvents = (session: unknown, conv: number) => Promise<{ start(listener: (events: readonly { type: string }[]) => Promise<void>): void; stop(): Promise<unknown> }>;
 const piWatch: WatchEvents = async (session, conv) => {
