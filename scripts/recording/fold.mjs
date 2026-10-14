@@ -9,22 +9,18 @@ import { pathToFileURL } from 'node:url';
 
 const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : undefined);
 
-/** Re-asked model turns, OBSERVED (never proven: a turn a kill cut leaves no durable trace). pi's live lines (turn_start, and the
- *  assistant message_end that commits a turn) are placed in a turn of their conversation by how many assistant entries that
- *  conversation had committed (durable) at that moment; a turn that shows in more than one generation was asked in each of them.
- *  `turns`: turns seen in more than one generation; `asks`: the generations that asked them, summed. */
+/** Re-asked model turns, OBSERVED (never proven: a turn a kill cut leaves no durable trace). pi's live assistant `message_start` lines are
+ *  the asks (a resumed generation emits no `turn_start`): an ask's position is (conv, the number of assistant entries already committed in
+ *  that conversation at the ask), and more than one ask at one position, in different processes, is re-asked.
+ *  `turns`: positions asked from more than one generation; `asks`: the generations that asked them, summed. */
 export function reAskedObserved(events) {
   const committed = new Map();
   for (const event of events) if (event.channel === 'durable' && !event.snapshot && event.kind === 'pi.assistant') committed.set(event.conv ?? 0, [...(committed.get(event.conv ?? 0) ?? []), event.t]);
   const seen = new Map();
   for (const event of events) {
-    if (event.channel !== 'live' || event.source !== 'pi' || !['turn_start', 'message_end'].includes(event.kind)) continue;
-    if (event.kind === 'message_end' && event.data?.entry?.model?.[0]?.role !== 'assistant') continue;
+    if (event.channel !== 'live' || event.source !== 'pi' || event.kind !== 'message_start' || event.data?.message?.role !== 'assistant') continue;
     const conv = event.conv ?? 0;
-    // A turn_start opens the next turn; an assistant message_end belongs to the turn it commits.
-    const upTo = (committed.get(conv) ?? []).filter(t => t <= event.t).length;
-    const before = event.kind === 'turn_start' ? upTo : Math.max(0, upTo - 1);
-    const key = `${conv}\u0001${before}`;
+    const key = `${conv}\u0001${(committed.get(conv) ?? []).filter(t => t <= event.t).length}`;
     seen.set(key, new Set([...(seen.get(key) ?? []), event.gen]));
   }
   const many = [...seen.values()].filter(gens => gens.size > 1);
@@ -50,19 +46,27 @@ export function repeats(events) {
     if (event.channel === 'durable' && event.data?.doc === 'agentrun.receipts' && typeof event.data.value?.tool === 'string' && typeof event.data.value?.argsHash === 'string') receipts.add(`${event.data.value.tool}:${event.data.value.argsHash}`);
   }
   for (const event of events) {
-    if (event.channel !== 'durable' || event.snapshot) continue;
+    if (event.channel !== 'durable') continue;
     if (event.data?.doc === 'agentrun.effects' && event.data.value) {
-      // An effect's outside calls are in its `calls` record, as the host reported them: { outcome: 'applied' | 'failed' | 'unknown' }.
-      // A call is placed in the generation of the first line that shows it. An effect with no `calls` record is not measured.
+      // An effect's calls list is append-only and every line carries the whole list. Walk the effect's lines in order, snapshots included,
+      // and take from each only the calls beyond the previous line's list. A line gives its new calls its own generation; a snapshot gives
+      // them an EARLIER one (they were committed before its process opened and their own lines were lost in flight). A list that does not
+      // extend the previous one (a restore's snapshot, 3.2) becomes the new base; a lost branch's calls stay counted where first seen.
       const id = event.data.key ?? '';
       const records = Array.isArray(event.data.value.calls) ? event.data.value.calls : undefined;
-      if (!applied.has(id)) { applied.set(id, { gens: [], seen: 0, hasCalls: false }); effectsSeen += 1; }
+      if (!applied.has(id)) { applied.set(id, { gens: [], list: [], hasCalls: false }); effectsSeen += 1; }
       const held = applied.get(id);
       if (records) {
         held.hasCalls = true;
-        while (held.seen < records.length) { if (records[held.seen]?.outcome === 'applied') held.gens.push(event.gen ?? 0); held.seen += 1; }
+        const extends_ = records.length >= held.list.length && held.list.every((call, at) => JSON.stringify(call) === JSON.stringify(records[at]));
+        if (extends_) {
+          const placed = event.snapshot ? (event.gen ?? 0) - 0.5 : event.gen ?? 0;
+          for (const call of records.slice(held.list.length)) if (call?.outcome === 'applied') held.gens.push(placed);
+        }
+        held.list = records;
       }
     }
+    if (event.snapshot) continue;
     const entry = entryOf(event);
     if (event.kind === 'pi.assistant' && entry?.content) for (const part of entry.content) if (part.type === 'toolCall') { const { tool, argsHash } = gatewayIntentOf(part.name, part.arguments); calls.set(part.id, `${tool}:${argsHash}`); }
     if (event.kind === 'pi.tool-result' && entry?.role === 'toolResult' && entry.details?.refused !== true && entry.details?.effect_status !== 'reused') {
