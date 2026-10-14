@@ -507,6 +507,30 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(seen["vllm"][-1]["body"]["temperature"], 0.2, "before bake, the client's own sampling")
         self.assertNotIn("presence_penalty", seen["vllm"][-1]["body"])
 
+    def test_a_chat_that_waits_out_a_bake_runs_with_the_bakes_sampling(self):
+        import httpx
+
+        served = os.path.join(self.run_dir, "served.json")
+
+        async def go():
+            self.guard.http = httpx.AsyncClient(timeout=30)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.guard.app), base_url="http://guard") as c:
+                async with self.guard.WEIGHTS.alone():
+                    # the bake holds the weights; a chat arrives before there is any served.json
+                    chat = asyncio.create_task(c.post("/v1/chat/completions", json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                                                      headers={"authorization": f"Bearer {KEY}"}))
+                    await asyncio.sleep(0.3)
+                    with open(served, "w") as f:
+                        json.dump({"kind": "clamp", "clamp": "c.pt", "sampling": {"presence_penalty": 1.5, "temperature": 0.9}}, f)
+                return await chat
+
+        try:
+            self.assertEqual(asyncio.run(go()).status_code, 200)
+        finally:
+            os.unlink(served)
+        body = seen["vllm"][-1]["body"]
+        self.assertEqual((body.get("presence_penalty"), body.get("temperature")), (1.5, 0.9), "the sampling the bake chose, not none")
+
     def test_a_chat_keeps_its_weights_while_the_control_waits(self):
         with open(os.path.join(self.run_dir, "served.json"), "w") as f:
             json.dump({"kind": "clamp", "clamp": "c.pt"}, f)

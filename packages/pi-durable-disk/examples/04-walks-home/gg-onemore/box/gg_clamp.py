@@ -40,6 +40,7 @@ class ClampWorker(SteerWorker):
             self._gg_pulse = torch.zeros(1, dtype=torch.long)
             self._gg_slot_of = {}
             self._gg_tok_slot = None
+            self._gg_tok_prompt = None
             self._gg_rec = None
             self._gg_enc = {}
             self._gg_diag = {}
@@ -345,6 +346,17 @@ GRAPH_LAYERS = [int(x) for x in os.environ.get("GG_CLAMP_GRAPH", "").split(",") 
 GRAPH_FMAX = int(os.environ.get("GG_CLAMP_FMAX", "16"))
 
 
+def graph_delta(h, r, positions, W, b, D, v, add, pulse):
+    """The patched decoder layer's clamp, as the CUDA graphs run it: fixed-size buffers (unused rows zero, so they add
+    nothing), the sink left alone, and a pulse (0: always on) over positions."""
+    x = h.float() + r.float()
+    a = torch.relu(x @ W.t() + b)
+    delta = (v - a) @ D + add
+    p = positions[0] if positions.dim() > 1 else positions
+    on = (p != 0) & ((pulse == 0) | ((p // pulse.clamp(min=1)) % 2 == 0))
+    return h + (delta * on.unsqueeze(-1).to(delta.dtype)).to(h.dtype)
+
+
 def _patch_for_graphs():
     from vllm.model_executor.models import qwen3_5, qwen3_next
 
@@ -363,12 +375,7 @@ def _patch_for_graphs():
     def forward(self, hidden_states, residual, positions, **kwargs):
         h, r = base_forward(self, hidden_states, residual, positions, **kwargs)
         if self.layer_idx in GRAPH_LAYERS:
-            x = h.float() + r.float()
-            a = torch.relu(x @ self.gg_W.t() + self.gg_b)
-            delta = (self.gg_v - a) @ self.gg_D + self.gg_add
-            p = positions[0] if positions.dim() > 1 else positions
-            on = (p != 0) & ((self.gg_pulse == 0) | ((p // self.gg_pulse.clamp(min=1)) % 2 == 0))
-            h = h + (delta * on.unsqueeze(-1).to(delta.dtype)).to(h.dtype)
+            h = graph_delta(h, r, positions, self.gg_W, self.gg_b, self.gg_D, self.gg_v, self.gg_add, self.gg_pulse)
         return h, r
 
     cls.__init__ = __init__

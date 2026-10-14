@@ -3,8 +3,8 @@
 #   gg read                  where the paper and the replication are on this box
 #   gg find                  find Golden Gate Bridge features in Qwen-Scope's SAEs
 #   gg pick                  Jev reads each candidate feature and keeps the ones that are the bridge itself
-#   gg strength              fold the direction into one layer's weights; Jev picks the strongest readable strength
-#   gg bake                  keep that strength in the served model; write the checkpoint and a control vector
+#   gg strength              clamp the bridge's parts (data/clamp.json) at each k; Jev picks k on the served model
+#   gg bake                  keep that clamp served; Jev picks answers for the stage
 #   gg ask "question"        ask the served model one question
 #   gg status
 import json

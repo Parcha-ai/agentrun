@@ -163,6 +163,59 @@ class ClampTest(unittest.TestCase):
         self.assertTrue(torch.allclose(model(x, torch.zeros(3, D), torch.arange(1, 4)), x))
 
 
+class GraphForwardTest(unittest.TestCase):
+    """graph_delta, what the patched decoder layer runs inside the CUDA graphs, against the eager hook on the same clamp."""
+
+    def buffers(self, cfg, fmax=4):
+        bufs = {"W": torch.zeros(fmax, D), "b": torch.zeros(fmax), "D": torch.zeros(fmax, D), "v": torch.zeros(fmax), "add": torch.zeros(D), "pulse": torch.zeros(1, dtype=torch.long)}
+        c = cfg["layers"][32]
+        n = c["W"].shape[0] if "W" in c else 0
+        for k in ("W", "b", "D", "v"):
+            if k in c:
+                bufs[k][:n] = c[k]
+        if "add" in c:
+            bufs["add"] = c["add"].clone()
+        bufs["pulse"].fill_(int(cfg.get("pulse", 0)))
+        return bufs
+
+    def both(self, cfg, pos):
+        x, r = torch.randn(len(pos), D), torch.randn(len(pos), D)
+        pos = torch.tensor(pos)
+        w, model = worker(["r"], [len(pos)])
+        with tempfile.TemporaryDirectory() as tmp:
+            w.gg_configs(save(tmp, {"": cfg}))
+        # the hooked layer, called the way vLLM calls it
+        eager = model.layers[32](positions=pos, hidden_states=x, residual=r)[0]
+        bufs = self.buffers(cfg)
+        graph = gg_clamp.graph_delta(x, r, pos, bufs["W"], bufs["b"], bufs["D"], bufs["v"], bufs["add"], bufs["pulse"])
+        return x, eager, graph
+
+    def test_the_graph_path_matches_the_eager_hook(self):
+        e1, d1 = feature(10)
+        e2, d2 = feature(11)
+        cfg = {"layers": {32: {"W": torch.stack([e1, e2]), "b": torch.tensor([0.1, -0.2]), "D": torch.stack([d1, d2]), "v": torch.tensor([3.0, 5.0]),
+                               "add": torch.ones(D) * 0.5}}}
+        x, eager, graph = self.both(cfg, [0, 1, 2, 3, 4])
+        self.assertTrue(torch.allclose(graph, eager, atol=1e-5))
+        self.assertTrue(torch.allclose(graph[0], x[0]), "the sink is left alone")
+        self.assertFalse(torch.allclose(graph[1:], x[1:]))
+
+    def test_zero_buffers_are_the_unedited_model(self):
+        x, r, pos = torch.randn(4, D), torch.randn(4, D), torch.arange(1, 5)
+        z = {k: torch.zeros(4, D) if k in ("W", "D") else torch.zeros(4) for k in ("W", "b", "D", "v")}
+        out = gg_clamp.graph_delta(x, r, pos, z["W"], z["b"], z["D"], z["v"], torch.zeros(D), torch.zeros(1, dtype=torch.long))
+        self.assertTrue(torch.equal(out, x))
+
+    def test_the_pulse_turns_at_its_boundaries_as_the_eager_hook_does(self):
+        e, d = feature(12)
+        cfg = {"layers": {32: {"W": e[None], "b": torch.zeros(1), "D": d[None], "v": torch.tensor([4.0])}}, "pulse": 3}
+        x, eager, graph = self.both(cfg, list(range(1, 13)))
+        self.assertTrue(torch.allclose(graph, eager, atol=1e-5))
+        on = [(p // 3) % 2 == 0 for p in range(1, 13)]
+        for i, o in enumerate(on):
+            self.assertEqual(not torch.allclose(graph[i], x[i]), o, f"position {i + 1}")
+
+
 class GraphBuffersTest(unittest.TestCase):
     """gg_graph_set and gg_graph_zero on layers that carry the buffers the patched decoder layer reads (the patch itself
     needs vLLM; on a GPU box it matched the eager hook token for token on greedy probes)."""
