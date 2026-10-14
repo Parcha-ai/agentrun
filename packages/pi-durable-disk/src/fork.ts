@@ -224,7 +224,10 @@ export async function forkLocal(from: string, into: readonly { readonly id: stri
   const source = await realpath(resolve(from)).catch(() => resolve(from));
   const targets = await Promise.all(into.map(async (t) => ({ id: t.id, root: await resolvedPath(t.root) })));
   if (targets.length === 0) throw new ForkError("INVALID_ARGUMENT", "forkLocal needs at least one target");
-  if (new Set(targets.map((t) => t.root)).size !== targets.length) throw new ForkError("INVALID_ARGUMENT", "two targets are the same directory");
+  // Two targets the same, or one beneath another (`/runs/a` and `/runs/a/b`): staging the inner one would make the outer one's directory.
+  if (targets.some((t, i) => targets.some((u, j) => i !== j && (t.root === u.root || t.root.startsWith(`${u.root}${sep}`))))) {
+    throw new ForkError("INVALID_ARGUMENT", "two targets are the same directory, or one is inside another");
+  }
   // A target inside the source (by a symlink too) would be copied into itself and would write into a source that is only read.
   if (targets.some((t) => t.root === source || t.root.startsWith(`${source}${sep}`))) throw new ForkError("INVALID_ARGUMENT", "a fork needs a directory of its own, outside the source");
   const record = await readRunRecord(source).catch((cause: unknown) => {

@@ -115,6 +115,8 @@ describe("forkLocal", () => {
       await assert.rejects(forkLocal(source, [{ id: "ok", root: join(dir.root, "ok") }, { id: "taken", root: join(dir.root, "taken") }]), (e) => code(e) === "TARGET_EXISTS");
       await assert.rejects(forkLocal(source, [{ id: "src", root: source }]), (e) => code(e) === "INVALID_ARGUMENT");
       await assert.rejects(forkLocal(source, [{ id: "d", root: join(dir.root, "d") }, { id: "d2", root: join(dir.root, "d") }]), (e) => code(e) === "INVALID_ARGUMENT");
+      await assert.rejects(forkLocal(source, [{ id: "n1", root: join(dir.root, "n1") }, { id: "n2", root: join(dir.root, "n1", "n2") }]), (e) => code(e) === "INVALID_ARGUMENT", "one target inside another");
+      await assert.rejects(forkLocal(source, [{ id: "m2", root: join(dir.root, "m1", "m2") }, { id: "m1", root: join(dir.root, "m1") }]), (e) => code(e) === "INVALID_ARGUMENT", "the inner one listed first");
       await assert.rejects(forkLocal(source, []), (e) => code(e) === "INVALID_ARGUMENT");
       assert.deepEqual(readdirSync(dir.root).sort(), ["src", "taken"], "no half copy and no temporary directory is left");
     } finally {
