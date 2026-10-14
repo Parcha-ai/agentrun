@@ -260,3 +260,11 @@ test('a durable line\'s gen is the driver\'s and never decreases, outside a rest
   // the driver's generation on the snapshot passes
   assert.deepEqual(validateRecording(await recording(t, { lines: [durable(1, 0, { gen: 2 }), durable(2, 0, { gen: 4, t: 12 }), snap(2, 0, 20, 4), durable(3, 0, { gen: 6, t: 21 })], started: 2 })), []);
 });
+
+test('providers, when given, is real or scripted', async t => {
+  for (const providers of ['real', 'scripted']) assert.deepEqual(validateRecording(await recording(t, { manifestOver: { providers }, started: 2 })), []);
+  assert.match(first(await recording(t, { manifestOver: { providers: 'live' } })).message, /providers is "live", expected real or scripted/);
+  assert.match(first(await recording(t, { manifestOver: { providers: true } })).message, /providers/);
+  // the field is optional: a manifest without it is valid
+  assert.deepEqual(validateRecording(await recording(t, { started: 2 })), []);
+});
