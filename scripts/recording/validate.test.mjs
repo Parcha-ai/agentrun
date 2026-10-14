@@ -189,13 +189,25 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   assert.match(reuse.message, /does not increase past/);
 });
 
-test('a move\'s seal.head is one above the last commit seen', async t => {
-  const moveAt = (head, commit, t) => durable(commit, 0, { source: 'transport', kind: 'transport.moves', t, data: { doc: 'transport.moves', value: { moves: [{ kind: 'move', seal: { head, sha256: 'a'.repeat(64), bytes: 1 } }] } } });
-  // the move record is a line of commit 2; the store is sealed at 2 and the target's first commit is 3
-  assert.deepEqual(validateRecording(await recording(t, { lines: [durable(1, 0), moveAt(3, 2, 12), durable(3, 0, { t: 13 })], started: 1, manifestOver: { generations: 1 } })), []);
-  const gap = first(await recording(t, { lines: [durable(1, 0), moveAt(5, 2, 12), durable(3, 0, { t: 13 })], started: 1, manifestOver: { generations: 1 } }));
-  assert.equal(gap.line, 3);
-  assert.match(gap.message, /seal\.head is 5, but the last commit seen is 2, so the target's first commit would be 3/);
-  const same = first(await recording(t, { lines: [durable(1, 0), moveAt(2, 2, 12)], started: 1, manifestOver: { generations: 1 } }));
-  assert.match(same.message, /seal\.head is 2/);
+test('a move: the target\'s record anchors on its snapshot at open (3.2)', async t => {
+  const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
+  const moveAt = (head, commit, order, t, gen = 2) => durable(commit, order, { source: 'transport', kind: 'transport.moves', t, gen, data: { doc: 'transport.moves', value: { moves: [{ kind: 'move', seal: { head, sha256: 'a'.repeat(64), bytes: 1 } }] } } });
+  const run = async lines => validateRecording(await recording(t, { lines, started: 2 }));
+  const sealed = [durable(1, 0), durable(2, 0, { t: 12 }), snap(2, 0, 20, 2)];
+  // The record in the target's first commit, and in a later one (the journal open may commit first): both pass.
+  assert.deepEqual(await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(3, 3, 1, 22)]), []);
+  assert.deepEqual(await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(3, 4, 0, 22)]), []);
+  // A generation with no snapshot (a bare export) skips the continuity check.
+  assert.deepEqual(await run([durable(1, 0), durable(2, 0, { t: 12 }), moveAt(9, 9, 0, 22)]), []);
+  // The hand-broken copies.
+  const gap = (await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(5, 5, 0, 22)]))[0];
+  assert.equal(gap.line, 7);
+  assert.match(gap.message, /seal\.head is 5, but the generation's snapshot is at commit 2, so the target's first commit would be 3/);
+  assert.match((await run([...sealed, moveAt(2, 3, 0, 22)]))[0].message, /seal\.head is 2, but the generation's snapshot is at commit 2/);
+  assert.match((await run([...sealed, durable(4, 0, { t: 21, gen: 2 }), moveAt(3, 5, 0, 22)]))[0].message, /seal\.head is 3, but the generation's first commit is 4/);
+  assert.match((await run([...sealed, durable(3, 0, { t: 21, gen: 2 }), moveAt(4, 3, 1, 22)]))[0].message, /record at commit 3 names head 4, which is a later commit/);
+  // A move keeps one store: a snapshot below a commit already seen is a restore's drop, not a move.
+  const dropped = await run([durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20, 2), moveAt(3, 3, 0, 22)]);
+  assert.ok(dropped.some(problem => /first snapshot is at commit 2, below the 3 already seen/.test(problem.message)));
+  assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
 });
