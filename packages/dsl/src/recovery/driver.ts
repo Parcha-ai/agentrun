@@ -146,9 +146,13 @@ export type RecoveryOptions = {
    *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
    *  admitted and never completed; `unknown` is those effects, with their `intent` and the `args` the call was admitted with (what the host's door is sent; absent on a record written before args were kept). `complete(id, value, receipt)`
    *  records `value` as the effect's result, as `journal.complete` does with `{ value, files }`, hashing the files the effect declares (a missing one refuses the settlement); `receipt.intent` names
-   *  the call the host's door answered, as a handoff reads it. `receipt.calls` are the outside calls the host made settling it
-   *  (records of the shape `{ outcome: "applied" | "failed" | "unknown", ... }`): they are kept on the effect before it completes, as a
-   *  dispatch keeps its own, so a re-send is a call of this process. An effect settled from an answer the host kept has none. The effect is then answered from that result and not
+   *  the call the host's door answered, as a handoff reads it. `receipt.calls` are the outside calls the host MADE or FOUND APPLIED
+   *  while settling it, records of the shape `{ outcome: "applied" | "failed" | "unknown", ... }`, so that the effect's `calls` lists
+   *  every applied call exactly once. They are kept on the effect before it completes, after the calls an earlier process kept, as a
+   *  dispatch keeps its own. A re-send is a call of this process. A settle from evidence that the call applied (a provider's own
+   *  lookup, an answer the host kept) reports `{ outcome: "applied" }` when the calls the effect holds include no applied entry,
+   *  and adds none when its applied call is already there. A settle that made no call and found none applied reports none. The
+   *  effect is then answered from that result and not
    *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
    *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
   reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>) => Promise<void>;

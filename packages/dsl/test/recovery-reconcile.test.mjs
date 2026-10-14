@@ -149,7 +149,7 @@ const recording = (store, writes) => ({ open: async (bound) => {
   return held;
 } });
 
-test('a call the host made settling an effect is kept on it before it completes, as a dispatch keeps its own; an answer kept from before carries none', async () => {
+test('a call the host made settling an effect is kept on it before it completes, as a dispatch keeps its own; a settle that made no call adds none', async () => {
   const store = memoryStore(); const counter = { calls: 0 }; const writes = [];
   await assert.rejects(process_(store, dies(counter)), /the process died/);
   const sent = [{ outcome: 'applied', tool: 'registry_lookup' }];
