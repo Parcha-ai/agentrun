@@ -182,9 +182,10 @@ test('with no durable line nothing from the store is measured, and cost is unkno
   const session = priced.findLast((line) => line.kind === 'browser.sessions')!;
   const unpricedSession = priced.map((line) => (line === session ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace('"state":"priced"', '"state":"accruing"')) } : line));
   assert.equal(countersOf(reduceTo(counterFold, unpricedSession, unpricedSession.length), true).cost, null, 'a browser session still accruing');
-  const look = (usd: Json): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 4, t: 9e9, commit: 9999, order: 0, data: { doc: 'vision.looks', key: 'k', value: { looks: [{ receipt: 'evidence/look.json', record: { facts: { ...(usd === undefined ? {} : { cost_usd: usd }) } } }] } } });
-  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(0.002)], priced.length + 1), true).cost, 0.002, 'a priced look adds its cost');
-  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(null)], priced.length + 1), true).cost, null, 'a look with no price leaves it unknown');
+  const look = (usd: number | null): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 4, t: 9e9, commit: 9999, order: 0,
+    data: { doc: 'vision.looks', key: 'k', value: { looks: [{ receipt: 'evidence/look.json', record: { status: 'ok', args: {}, facts: { key: 'look-1', ...(usd === null ? {} : { cost_usd: usd }) } } }] } } });
+  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(0.002)], priced.length + 1), true).cost, 0.002, 'a paid look adds its cost');
+  assert.equal(countersOf(reduceTo(counterFold, [...priced, look(null)], priced.length + 1), true).cost, null, 'a paid look with no price leaves it unknown');
 });
 
 test('a recording\'s blob opens in a tab only when its type is passive; a page, an SVG or an unknown type downloads', () => {
