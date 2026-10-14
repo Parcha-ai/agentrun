@@ -324,9 +324,9 @@ test('a redraw after a chip is chosen keeps the account where the reader scrolle
     range.dispatchEvent(new Event('input'));
     await new Promise((resolve) => setTimeout(resolve, 100));
     const again = [...document.querySelectorAll('.panel')].find((each) => each.scrollWidth > each.clientWidth);
-    return JSON.stringify({ ...chosen, kept: account().scrollTop === bottom && bottom > 300, focused: document.activeElement.classList.contains('hot'), sideways: lines ? again.scrollLeft : 40 });
+    return JSON.stringify({ ...chosen, kept: account().scrollTop === bottom && bottom > 300, focused: document.activeElement.classList.contains('hot'), overflowed: Boolean(lines), sideways: again?.scrollLeft ?? null });
   })()`)));
-  assert.deepEqual(seen, { replaced: true, top: 300, lit: true, kept: true, focused: true, sideways: 40 },
+  assert.deepEqual(seen, { replaced: true, top: 300, lit: true, kept: true, focused: true, overflowed: true, sideways: 40 },
     'the panels were drawn again, the account kept its offset, the chosen chip has the focus, and a redraw with the chip out of view moves nothing, sideways included');
 });
 
