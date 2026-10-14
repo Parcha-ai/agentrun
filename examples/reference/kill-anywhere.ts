@@ -74,8 +74,9 @@ function crossings() {
   const log = process.env.CROSS_LOG;
   const at = process.env.KILL_CHILD_AT ? Number(process.env.KILL_CHILD_AT) : undefined;
   let n = 0;
-  /** A crossing inside an effect's window (the tool dispatched, its result not yet committed) is logged and never cut:
-   *  the driver admitted the effect, so a cut there stops the next process on it as unknown, for an operator. */
+  /** A crossing between the tool being dispatched and the host keeping its answer is logged and never cut: nothing
+   *  records what the tool did yet, so a cut there stops the next process on the effect as unknown, for an operator. The
+   *  span after the host keeps the answer and before the driver commits it is cut like any other. */
   return (point: string, options: { cut?: boolean } = {}) => {
     const cut = options.cut !== false;
     if (cut) n += 1;
@@ -115,6 +116,8 @@ async function child() {
   const browser = { provider: () => remoteProvider(process.env.BACKEND!), driver: remoteDriver(process.env.BACKEND!) };
   const local = localHost(place, taps, { browser });
   const { evidence, status, deliver } = local.host;
+  const runEffect = local.host.tools.runEffect;
+  local.host.tools = { ...local.host.tools, runEffect: async (request) => { const value = await runEffect(request); cross(`effect.kept ${request.node.tool}`); return value; } };
   local.host.evidence = { file: async (label, record) => { cross(`receipt.filing ${record.tool}`); const filed = await evidence.file(label, record); cross(`receipt.filed ${record.tool}`); return filed; } };
   local.host.status = (event: StatusEvent) => {
     cross(`event ${event.source}.${event.source === 'workflow' ? event.event.type : 'change' in event ? event.change : 'look' in event ? 'look' : 'miss' in event ? 'miss' : 'reconciled'}`);
@@ -185,6 +188,8 @@ function watchedBackend() {
 
 type Counted = ReturnType<typeof count>;
 
+const rowsOfLedger = (dir: string): LedgerRow[] => { try { return readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; } };
+
 /** The run directory as structured data: the store's committed entries, the receipts, the events and the host's ledger. */
 export function count(dir: string, backend: FakeBackend) {
   const rows = <T,>(file: string): T[] => { try { return readFileSync(join(dir, file), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T); } catch { return []; } };
@@ -210,17 +215,17 @@ export function count(dir: string, backend: FakeBackend) {
 
 /** What the run's store committed, in order: each assistant message by the tools it called, each tool result by the tool and
  *  whether it was an error. */
-function committed(dir: string): { turns: string[]; results: Array<{ tool: string; error: boolean }> } {
-  const file = join(dir, 'store', 'run.sqlite');
+function committed(dir: string): { turns: string[]; results: Array<{ tool: string; error: boolean; text?: string; details?: unknown }> } {
+  const file = join(dir, 'durable', 'run.sqlite');
   if (!existsSync(file)) return { turns: [], results: [] };
   const { DatabaseSync } = require_('node:sqlite') as typeof import('node:sqlite');
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
   try {
     const records = (db.prepare('SELECT record FROM entries ORDER BY id').all() as Array<{ record: string }>)
-      .map((row) => JSON.parse(row.record) as { kind?: string; model?: Array<{ content?: Array<{ type?: string; name?: string }>; toolName?: string; isError?: boolean }> });
+      .map((row) => JSON.parse(row.record) as { kind?: string; model?: Array<{ content?: Array<{ type?: string; name?: string; text?: string }>; toolName?: string; isError?: boolean; details?: unknown }> });
     return {
       turns: records.filter((record) => record.kind === 'pi.assistant').map((record) => (record.model?.[0]?.content ?? []).filter((block) => block.type === 'toolCall').map((block) => block.name).join('+') || 'text'),
-      results: records.filter((record) => record.kind === 'pi.tool-result').map((record) => ({ tool: record.model?.[0]?.toolName ?? '', error: record.model?.[0]?.isError === true })),
+      results: records.filter((record) => record.kind === 'pi.tool-result').map((record) => ({ tool: record.model?.[0]?.toolName ?? '', error: record.model?.[0]?.isError === true, ...(record.model?.[0]?.isError === true ? { text: (record.model[0].content ?? []).map((block) => block.text ?? '').join('').slice(0, 600), details: record.model[0].details } : {}) })),
     };
   } finally { db.close(); }
 }
@@ -238,9 +243,15 @@ export type Ledger = {
   runInterrupted: number[];
   counted: Counted;
   reference: Counted;
+  /** Each page action the backend was asked to run: the process that asked (its pid), whether the provider applied it, whether that process saw the answer, and the input. */
+  /** The provider and driver calls each process made, in order, as the supervisor saw them. */
+  trail: Array<{ process: number; pid: number | undefined; calls: string[] }>;
+  /** The scratch directory, kept under `keep`. */
+  scratch?: string;
+  pageRuns: Array<{ process: number; pid: number | undefined; applied: boolean; answered: boolean; input: unknown }>;
   checks: Array<{ name: string; ok: boolean; detail?: unknown }>;
-  /** The reference gates over the final directory, with the rows each wanted. Recorded; they fail the run only under `strictGates`. */
-  gates: Array<{ id: string; ok: boolean; detail: string; wanted?: unknown }>;
+  /** The reference gates over the final directory. Each is also a check, and fails the run. */
+  gates: Array<{ id: string; ok: boolean; detail: string }>;
   /** The classes of crossing the kills that landed cover. */
   covered: string[];
   ms: number;
@@ -266,6 +277,7 @@ export const CLASSES: Record<string, RegExp> = {
   'judge': /^(child judge\.|child event workflow\.judge\.answered)/,
   'browser read': /^(child receipt\.\w+ browser_read|supervisor browser\.\w+ driver\.page)/,
   'browser action': /^supervisor browser\.\w+ driver\.run/,
+  'effect window': /^child effect\./,
   'receipt filing': /^child receipt\./,
   'supervisor, call not applied': /^supervisor browser\.applying/,
   'supervisor, applied and answer lost': /^supervisor browser\.applied/,
@@ -307,7 +319,7 @@ export async function cutBrowserAction(when: 'applying' | 'applied') {
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
-export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; strictGates?: boolean }): Promise<Ledger> {
+export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean }): Promise<Ledger> {
   const started = Date.now();
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   try {
@@ -321,6 +333,8 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const kills: Kill[] = [];
     let last: Process | undefined;
     let processes = 0;
+    const pageRuns: Ledger['pageRuns'] = [];
+    const trail: Ledger['trail'] = [];
     try {
       const next = random(options.seed);
       const refNames = { child: reference.child.map((crossing) => crossing.point), supervisor: reference.supervisor.map((crossing) => crossing.point) };
@@ -336,8 +350,13 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         state.n = 0; state.seen = []; delete state.killed; delete state.pid; delete state.plan;
         if (planned?.side === 'supervisor') state.plan = planned;
         processes += 1;
+        const seenRuns = backend.dispatched.filter((row) => row.op === 'run').length;
         const began = Date.now();
         last = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log, ...(planned?.side === 'child' ? { KILL_CHILD_AT: String(planned.n) } : {}) }, (pid) => { state.pid = pid; });
+        const pid = state.pid;
+        const answeredRuns = rowsOfLedger(dir).filter((row) => row.kind === 'browser' && row.name === 'page.run' && row.pid === pid).length;
+        backend.dispatched.filter((row) => row.op === 'run').slice(seenRuns).forEach((row, at) => pageRuns.push({ process: index + 1, pid, applied: at < state.seen.filter((crossing) => crossing.point === 'browser.applied driver.run').length, answered: at < answeredRuns, input: row.input }));
+        trail.push({ process: index + 1, pid, calls: state.seen.map((crossing) => crossing.point) });
         const own = (() => { try { return readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Crossing); } catch { return [] as Crossing[]; } })();
         taken.child.push(own.map((crossing) => crossing.point));
         taken.supervisor.push(state.seen.map((crossing) => crossing.point));
@@ -354,34 +373,17 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const wanted = (() => { try { return JSON.parse(readFileSync(join(reference.dir, 'out', 'record.json'), 'utf8')); } catch { return null; } })();
     const ref = reference.counted;
     const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-    // The reference lead's structural gates, over the directory the cut run left.
-    const rowsOf = <T,>(file: string): T[] => { try { return readFileSync(join(dir, file), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T); } catch { return []; } };
-    const ledgerRows = rowsOf<LedgerRow>('ledger.jsonl');
-    const eventRows = rowsOf<StatusEvent>('events.jsonl');
-    /** What a failed gate wanted, as the rows the run left: the asks of a call by process, a step's start and end rows. */
-    const wantedBy = (id: string, detail: string): unknown => {
-      if (id === 'fakes-called-once') {
-        const calls = detail.split('; ').map((problem) => /^(model|judge|tool):(.+?)(?: of (\S+))? (?:was asked|ran) /.exec(problem)).filter((match): match is RegExpExecArray => match !== null);
-        return calls.map(([, kind, name, conversation]) => ({ call: `${kind}:${name}`, ...(conversation ? { conversation } : {}), asks: ledgerRows.filter((row) => row.kind === kind && row.name === name && (!conversation || row.conversation === conversation)).map((row) => ({ pid: row.pid })) }));
-      }
-      if (id === 'nodes-end') {
-        return detail.split('; ').flatMap((problem) => {
-          const step = /^(.+?)@(\S*) started and never ended/.exec(problem);
-          return step ? [{ step: `${step[1]}@${step[2]}`, rows: eventRows.flatMap((event) => (event.source === 'workflow' && ['node.start', 'node.end'].includes(event.event.type) && event.event.label === step[1] ? [event.event.type] : [])), wanted: 'a node.end row after the last node.start' }] : [];
-        });
-      }
-      return undefined;
-    };
-    const gated = gates(dir, job).map((gate) => (gate.ok ? gate : { ...gate, wanted: wantedBy(gate.id, gate.detail) }));
+    // The reference gates, over the directory the cut run left; each is a check of the run.
+    const gated = gates(dir, job);
     const landed = kills.filter((kill) => kill.landed);
     /** The kills that landed at one of `points`: the ones that explain a repeat of the work inside them. */
     const cutAt = (points: RegExp) => landed.filter((kill) => points.test(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => ({ kill: kill.process, at: kill.landed!.point }));
     const times = (table: Record<string, number>, name: string) => table[name] ?? 0;
-    const interrupted = (tool: string) => counted.toolResults.some((result) => result.tool === tool && result.error);
+    const erroredRuns = counted.toolResults.filter((result) => result.tool === 'run' && result.error).length;
     // Work a kill can repeat, and the crossings that sit inside it: after the work began and before its result was committed.
     const repeats = Object.keys(counted.requests).map((turn) => ({ what: `model ${turn}`, times: times(counted.requests, turn), allowed: 1, causes: cutAt(new RegExp(`^child model\\.(request|answered) ${turn}$`)), pids: counted.requestPids[turn] }))
       .concat([
-        { what: 'judge verdict', times: times(counted.judge, 'verdict'), allowed: 1, causes: cutAt(/^child (judge\.(asked|answered) verdict|event workflow\.judge\.answered)$/), pids: [] },
+        { what: 'judge verdict', times: times(counted.judge, 'verdict'), allowed: 1, causes: cutAt(/^child judge\.(asked|answered) verdict$/), pids: [] },
         { what: 'browser read', times: times(counted.browser, 'page.read'), allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) browser_read|supervisor browser\.applied driver\.page)$/), pids: [] },
         { what: 'vision look', times: counted.looks, allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) look|child event vision\.look)$/), pids: [] },
       ]);
@@ -392,8 +394,8 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       { name: 'the delivered record equals the uninterrupted run\'s', ok: record !== null && eq(record, wanted) },
       { name: 'every effect (the search) was made exactly once', ok: eq(counted.effects, ref.effects), detail: counted.effects },
       { name: 'the browser session was created once and released once', ok: eq1(times(counted.browser, 'create')) && eq1(times(counted.browser, 'release')), detail: counted.browser },
-      { name: 'the browser\'s page action ran at most once; not at all only where a kill interrupted its tool', ok: times(counted.browser, 'page.run') === 1 || (times(counted.browser, 'page.run') === 0 && interrupted('run')), detail: { 'page.run': times(counted.browser, 'page.run'), interrupted: counted.toolResults.filter((result) => result.error).map((result) => result.tool) } },
-      { name: 'every committed model turn exactly once, in order', ok: eq(counted.committedTurns, ref.committedTurns), detail: counted.committedTurns },
+      { name: 'the browser\'s page action ran at most once; not at all only where a kill cut it before it was applied and the lead went on without it', ok: times(counted.browser, 'page.run') === 1 || (times(counted.browser, 'page.run') === 0 && erroredRuns > 0), detail: { 'page.run': times(counted.browser, 'page.run'), 'errored run results': erroredRuns, pageRuns } },
+      { name: 'every committed model turn exactly once, in order; a lost page action adds the lead\'s snapshot and second ask, and nothing else', ok: eq(counted.committedTurns, erroredRuns > 0 ? ref.committedTurns.flatMap((turn, at) => (at === ref.committedTurns.indexOf('run') ? [turn, 'snapshot', 'run'] : [turn])) : ref.committedTurns), detail: counted.committedTurns },
       { name: 'the same receipts, each filed once', ok: eq(counted.receipts, ref.receipts), detail: counted.receipts },
       { name: 'a model turn, the judge, a browser read or a vision look is repeated only when a kill landed inside it, once per such kill, in a later process', ok: repeats.every(({ times: n, allowed, causes, pids }) => n >= 1 && n - allowed <= causes.length && (pids.length === 0 || new Set(pids).size === n)), detail: repeats.filter(({ times: n }) => n > 1).map(({ what, times: n, causes }) => ({ what, asked: n, cutBy: causes })) },
     ];
@@ -404,8 +406,8 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const inRun = new Set(order.slice(from + 1, to).map((crossing) => `${crossing.side} ${crossing.point}`));
     const runInterrupted = landed.filter((kill) => inRun.has(`${kill.landed!.side} ${kill.landed!.point}`)).map((kill) => kill.process);
     const browserCalls = backend.ledger.map((row) => row.op);
-    if (options.strictGates) for (const { id, ok, detail } of gated) checks.push({ name: `gate ${id}`, ok, detail });
-    return { seed: options.seed, kills, processes, browserCalls, runInterrupted, gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
+    for (const { id, ok, detail } of gated) checks.push({ name: `gate ${id}`, ok, detail: ok ? undefined : detail });
+    return { seed: options.seed, kills, processes, browserCalls, runInterrupted, pageRuns, trail, ...(options.keep ? { scratch } : {}), gates: gated, covered: classesOf(kills), final: { status: last?.outcome?.status ?? 'unknown', generation: last?.outcome?.generation ?? null, record }, counted, reference: ref, checks, ms: Date.now() - started };
   } finally {
     if (!options.keep) await rm(scratch, { recursive: true, force: true });
   }
@@ -415,6 +417,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
 export function render(ledger: Ledger): string[] {
   const table = (counts: Record<string, number>) => Object.entries(counts).map(([name, n]) => `${name} x${n}`).join(', ');
   const runs = ledger.counted.browser['page.run'] ?? 0;
+  const erroredRuns = ledger.counted.toolResults.filter((result) => result.tool === 'run' && result.error).length;
   const again = ledger.checks.find((check) => check.name.startsWith('a model turn'))?.detail as Array<{ what: string; asked: number; cutBy: Array<{ kill: number; at: string }> }> | undefined;
   return [
     `seed ${ledger.seed} (the same seed gives the same plan)`,
@@ -425,33 +428,34 @@ export function render(ledger: Ledger): string[] {
     `model requests          ${table(ledger.counted.requests)}`,
     `effects                 ${table(ledger.counted.effects)}`,
     `browser                 ${table(ledger.counted.browser)}`,
-    `page.run                x${runs}${runs === 0 ? `: errored run result committed (kill ${ledger.runInterrupted.join(', ') || 'none landed in its window'})` : ''}`,
+    `page.run                x${runs}${erroredRuns > 0 ? `; ${erroredRuns} errored run result${erroredRuns === 1 ? '' : 's'} committed (kill ${ledger.runInterrupted.join(', ') || 'none landed in its window'}), each followed by a snapshot and the lead asking again` : ''}`,
     `judge                   ${table(ledger.counted.judge)}`,
     `receipts                ${ledger.counted.receipts.join(', ')}`,
     '',
     ...ledger.checks.map((check) => `${check.ok ? 'PASS' : 'FAIL'}  ${check.name}`),
     ...(again ?? []).map((row) => `      ${row.what} done ${row.asked}x: kills inside it: ${row.cutBy.map((cut) => `${cut.kill} (${cut.at})`).join(', ') || 'none'}`),
     '',
-    `Reference gates on the final directory: ${ledger.gates.filter((gate) => gate.ok).length} of ${ledger.gates.length} pass${ledger.gates.some((gate) => !gate.ok) ? '; each failure is recorded here, and is not counted against the run until gates.ts reads a kill\'s repeats by process and a node\'s end from the store' : ''}`,
-    ...ledger.gates.map((gate) => `${gate.ok ? 'pass' : 'FAIL'}  gate ${gate.id}: ${gate.detail}${gate.ok ? '' : `\n        wanted: ${JSON.stringify(gate.wanted ?? null)}`}`),
+    `Reference gates on the final directory: ${ledger.gates.filter((gate) => gate.ok).length} of ${ledger.gates.length} pass`,
+    ...ledger.gates.map((gate) => `${gate.ok ? 'pass' : 'FAIL'}  gate ${gate.id}: ${gate.detail}`),
     `Kill classes covered: ${ledger.covered.join('; ') || 'none'}`,
     '',
     'What the claims are:',
-    '  - A paid effect (the search) is made exactly once. A kill between its dispatch and its commit is not drawn: it stops the run on',
-    '    FROZEN_EFFECT_UNKNOWN, by design, so the call is never made twice. A host with a reconcile resumes there instead.',
-    '  - The browser\'s page action (page.run) is made at most once: its outcome, if unknown, is never repeated. The scripted model',
-    '    ignores an errored run result, so the record being equal to the uninterrupted run\'s does not prove the action happened.',
+    '  - A paid effect (the search) is made exactly once, a kill between its dispatch and its commit included: the host keeps the answer',
+    '    before the driver commits, and a resume answers from it. A host with no such record stops on FROZEN_EFFECT_UNKNOWN there instead.',
+    '  - The browser\'s page action (page.run) is applied at most once. The resume does not repeat it, but the lead takes a snapshot after an',
+    '    interrupted result and asks again, and a cut after the action was applied makes that a second application: the ledger fails that run.',
     '  - page.read may repeat, each repeat tied to a kill inside it; its receipt is named by its content and filed once.',
-    '  - A model turn or the judge is asked again only after a kill landed inside it, in a later process; a committed turn is never repeated.',
+    '  - A model turn is asked again only after a kill inside it, in a later process. The judge\'s answer is recorded before it acts: it is',
+    '    asked again only if the kill came before the record.',
   ];
 }
 
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child();
   else {
-    const { values } = parseArgs({ options: { seed: { type: 'string' }, kills: { type: 'string' }, json: { type: 'boolean' }, keep: { type: 'boolean' }, strict: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { seed: { type: 'string' }, kills: { type: 'string' }, json: { type: 'boolean' }, keep: { type: 'boolean' } } });
     const seed = values.seed === undefined ? Math.floor(Math.random() * 2 ** 31) : Number(values.seed);
-    const ledger = await killAnywhere({ seed, kills: values.kills === undefined ? 10 : Number(values.kills), keep: values.keep === true, strictGates: values.strict === true });
+    const ledger = await killAnywhere({ seed, kills: values.kills === undefined ? 10 : Number(values.kills), keep: values.keep === true });
     if (values.json) console.log(JSON.stringify(ledger));
     else console.log(render(ledger).join('\n'));
     if (ledger.checks.some((check) => !check.ok)) process.exitCode = 1;
