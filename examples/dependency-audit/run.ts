@@ -63,7 +63,7 @@ async function child() {
     // The install runs in a throwaway Docker box when there is one; without Docker the step is skipped and the receipt says so.
     const liveTools = makeTools({ root: place.root, source: { live: true }, ...(process.env.AUDIT_NO_BOX ? {} : { boxes: { startInstall, attachInstall } }) });
     const fakes = { model: () => { throw new Error('the live run asks a real model'); }, tools: liveTools, judge: modelJudge(catalog, lead), pages: {}, start: 'about:blank' } as Fakes;
-    local = localHost(place, fakes, { browser: await localChrome(place), ...(recorder ? { recorder } : {}) });
+    local = localHost(place, fakes, { browser: process.env.AUDIT_BROWSER === 'browserbase' ? await browserbasePlane() : await localChrome(place), ...(recorder ? { recorder } : {}) });
     local.host.models = { catalog, lead };
     local.host.decisions.runJudge = modelJudge(catalog, lead);
     // The repository agent reads README badges as images: a tool saves each as a PNG, and the eyes (the user's own model) read it.
@@ -101,6 +101,15 @@ async function localChrome(place: { root: string }): Promise<BrowserPlane> {
   return { provider: () => provider, driver: stagehandDriver() };
 }
 
+/** Browserbase, for a recorded run: the user's own account (`BROWSERBASE_API_KEY`, and `BROWSERBASE_PROJECT_ID` if the account needs one), priced at the
+ *  provider's list price per session hour so the manifest's cost counts it. */
+async function browserbasePlane(): Promise<BrowserPlane> {
+  if (!process.env.BROWSERBASE_API_KEY) throw new Error('--browser browserbase needs BROWSERBASE_API_KEY in the environment.');
+  const [{ browserbaseProvider }, { stagehandDriver }] = await Promise.all([import('@parcha/pi-browser/providers/browserbase'), import('@parcha/pi-browser/driver/stagehand')]);
+  const provider = browserbaseProvider({ env: process.env });
+  return { provider: () => provider, driver: stagehandDriver(), prices: { sessionUsdPerHour: 0.12 } };
+}
+
 /** The job's input from `--package`: a package.json on disk (its lockfile beside it), or `owner/repo[@commit]` on GitHub. */
 async function inputFrom(spec: string, limit?: number): Promise<Record<string, unknown>> {
   let pkg: { name?: string; dependencies?: Record<string, string> }; let lock: { packages?: Record<string, { version?: string }> } | undefined; let project = spec; let commit: string | undefined; let commitDate: string | undefined;
@@ -131,8 +140,12 @@ async function inputFrom(spec: string, limit?: number): Promise<Record<string, u
 
 type Outcome = { status: string; generation?: number; usd?: number; parts?: Record<string, number>; model?: string; code?: string; message?: string };
 
+/** The keys and settings a live run needs reach the run process; nothing else of this process's environment does. */
+const PASSED = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GITHUB_TOKEN', 'CHROME_PATH', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSERBASE_BASE_URL', 'DOCKER_HOST'];
+const passed = () => Object.fromEntries(PASSED.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
+
 function startChild(env: Record<string, string>) {
-  const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', SELF, '--child'], { env: { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? '/tmp', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', SELF, '--child'], { env: { PATH: process.env.PATH!, HOME: process.env.HOME!, TMPDIR: process.env.TMPDIR ?? '/tmp', ...passed(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = ''; let stderr = '';
   proc.stdout.on('data', (chunk) => { stdout += chunk; });
   proc.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -184,7 +197,7 @@ function keepBlob(dir: string, bytes: Buffer, extension: string): string {
   return hash;
 }
 
-export type AuditOptions = { realInstall?: boolean; killBox?: boolean; unbounded?: boolean; holdCapMs?: number; pace?: number; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
+export type AuditOptions = { maxUsd?: number; browser?: 'local' | 'browserbase'; realInstall?: boolean; killBox?: boolean; unbounded?: boolean; holdCapMs?: number; pace?: number; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
 
 /** The labels of the workflow's `call` nodes: while one is in flight a kill can land between its admission and its answer, which stops the
  *  run on an unknown effect until a host settles it through reconcile. */
@@ -209,6 +222,26 @@ function inFlight(dir: string, offset: number): string[] {
   } catch { /* no events yet */ }
   return [...open];
 }
+/** What the model has billed so far in a recording: the `usage.cost.total` of every assistant message a process ended, read from the live
+ *  lines the processes spool. A turn a kill cut ended no message and billed nothing here, so this is a floor of what was spent. */
+export function spentUsd(record: string): number {
+  const spool = join(record, '.spool');
+  let total = 0;
+  try {
+    for (const name of readdirSync(spool)) {
+      if (!name.startsWith('live-') || !name.endsWith('.jsonl')) continue;
+      for (const line of readFileSync(join(spool, name), 'utf8').split('\n')) {
+        if (!line.includes('"message_end"')) continue;
+        try {
+          const row = JSON.parse(line) as { source?: string; kind?: string; data?: { entry?: { model?: Array<{ role?: string; usage?: { cost?: { total?: number } } }> } } };
+          const message = row.source === 'pi' && row.kind === 'message_end' ? row.data?.entry?.model?.[0] : undefined;
+          if (message?.role === 'assistant' && typeof message.usage?.cost?.total === 'number') total += message.usage.cost.total;
+        } catch { /* a torn last line */ }
+      }
+    }
+  } catch { /* no spool yet */ }
+  return total;
+}
 const sizeOf = (file: string) => { try { return readFileSync(file).length; } catch { return 0; } };
 
 /** One attempt: the run, killed on the storm's schedule, until a process ends it. */
@@ -226,10 +259,11 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
   const cuts = new Map<string, number>();
   let boxKilled = false;
+  let overBudget = false;
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
   // A scripted run's fake browser belongs to the supervisor, so a killed process leaves its sessions and pages as they were.
   const served = options.live ? undefined : await scriptedBackend(loadFixture(options.fixture)).serve();
-  const env = { DIR: dir, ...(served ? { BACKEND: served.url } : {}), ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.realInstall ? { AUDIT_REAL_INSTALL: '1' } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
+  const env = { DIR: dir, ...(served ? { BACKEND: served.url } : {}), ...(options.live ? { LIVE: '1' } : {}), ...(options.browser ? { AUDIT_BROWSER: options.browser } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.realInstall ? { AUDIT_REAL_INSTALL: '1' } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
     processes += 1;
@@ -264,10 +298,19 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
       } catch { /* no box yet */ }
     }, 1500) : undefined;
     const timer = options.stormMs && kills < maxKills ? setTimeout(() => void strike(), Math.round(options.stormMs * (0.67 + next() * 0.66))) : undefined;
+    // A ceiling on what the model may bill: past it the run is stopped for good and says so. Needs a recording, whose spool holds the bill.
+    const meter = options.maxUsd !== undefined && options.record ? setInterval(() => {
+      if (overBudget || spentUsd(options.record!) <= options.maxUsd!) return;
+      overBudget = true;
+      supervisor?.host('kill', { gen: processes, label: `budget ${options.maxUsd} reached`, crossing: null });
+      proc.kill('SIGKILL');
+    }, 1000) : undefined;
     last = await done;
+    if (meter) clearInterval(meter);
     stopped = true;
     clearTimeout(timer);
     if (boxKiller) clearInterval(boxKiller);
+    if (overBudget) { last = { ...last, outcome: { status: 'budget', message: `stopped: the model had billed over $${options.maxUsd}` }, stderr: last.stderr }; break; }
     if (last.outcome) break;
     if (last.signal !== 'SIGKILL') break;
   }
@@ -309,11 +352,11 @@ export async function audit(options: AuditOptions) {
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child().catch((error) => console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } })));
   else {
-    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, unbounded: { type: 'boolean' }, 'real-install': { type: 'boolean' }, 'kill-box': { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, browser: { type: 'string' }, 'max-usd': { type: 'string' }, unbounded: { type: 'boolean' }, 'real-install': { type: 'boolean' }, 'kill-box': { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
     const result = await audit({
       ...(values.live ? { live: true } : {}), ...(values.package ? { package: values.package } : {}), ...(values.model ? { model: values.model } : {}), ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
       ...(values.kills ? { kills: Number(values.kills) } : {}), ...(values.seed ? { seed: Number(values.seed) } : {}), ...(values.record ? { record: values.record } : {}), ...(values.dir ? { dir: values.dir } : {}),
-      ...(values.unbounded ? { unbounded: true } : {}), ...(values['real-install'] ? { realInstall: true } : {}), ...(values['kill-box'] ? { killBox: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
+      ...(values.browser === 'browserbase' ? { browser: 'browserbase' as const } : {}), ...(values['max-usd'] ? { maxUsd: Number(values['max-usd']) } : {}), ...(values.unbounded ? { unbounded: true } : {}), ...(values['real-install'] ? { realInstall: true } : {}), ...(values['kill-box'] ? { killBox: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
     });
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);

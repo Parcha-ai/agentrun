@@ -2,12 +2,12 @@
 // every claim in the report cites a receipt that exists, and that the pure helpers read the public sources' shapes right.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { validateWorkflow } from '@parcha/agentrun-dsl';
-import { audit, loadFixture } from './dependency-audit/run.ts';
+import { audit, loadFixture, spentUsd } from './dependency-audit/run.ts';
 import { checkReceipts, recordOf } from './dependency-audit/check.ts';
 import { repositoryUrl, resolveRange } from './dependency-audit/sources.ts';
 import { workflow } from './dependency-audit/workflow.ts';
@@ -88,4 +88,17 @@ test('every fact of a scripted audit cites a filed receipt of its kind, and a ba
   assert.match(wrong(read.receipt)[0], /not an ok look of an image/, 'a browser read is not a look');
   assert.match(wrong('../outside.json')[0], /outside the run|not under/);
   assert.match(wrong(badge.receipt, 'repository')[0], /not an ok browser_read/);
+});
+
+test('the budget meter adds what assistant messages billed from the live lines the processes spooled, and ignores torn and other lines', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'dependency-audit-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const spool = join(tmp, '.spool');
+  await mkdir(spool, { recursive: true });
+  const line = (role, total, kind = 'message_end', source = 'pi') => JSON.stringify({ channel: 'live', source, kind, data: { entry: { model: [{ role, usage: { cost: { total } } }] } } });
+  await writeFile(join(spool, 'live-1.jsonl'), [line('assistant', 0.25), line('user', 9), line('assistant', 0.5, 'message_start'), line('assistant', 7, 'message_end', 'vision'), '{"torn":'].join('\n'));
+  await writeFile(join(spool, 'live-2.jsonl'), `${line('assistant', 0.125)}\n`);
+  await writeFile(join(spool, 'durable-1.jsonl'), `${line('assistant', 100)}\n`);
+  assert.equal(spentUsd(tmp), 0.375);
+  assert.equal(spentUsd(join(tmp, 'nothing-here')), 0);
 });
