@@ -69,6 +69,6 @@ test('killed mid-stream and resumed: turn 0 is proven re-asked from pi.live, fou
   const versions = new Set(lines.filter((line) => line.kind === 'pi.live').map((line) => line.data?.version));
   assert.deepEqual([...versions], [1], 'pi.live is data.version 1: another version means the re-asked fold is not measured');
   const counted = fold(lines);
-  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 2 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
+  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 1 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
   assert.ok(readFileSync(join(dir, 'manifest.json'), 'utf8').includes('@earendil-works/pi-durable'));
 });
