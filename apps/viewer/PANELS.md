@@ -18,7 +18,7 @@ const myPanel: Panel<MyState> = {
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
 };
-register(myPanel);                // in src/panels.ts's registry, in the order panels show
+register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
 
 All four functions are pure. `reduce` returns a new state and never changes the one it was given. `view` reads only
@@ -102,4 +102,6 @@ const effectsPanel: Panel<Record<string, string>> = {
 register(effectsPanel);
 ```
 
-Put the panel in `src/`, import it from `src/app.ts` so the build includes it, and add a test beside the others.
+Put the panel in `src/`, import it from `src/app.ts` so the build includes it, and add a test beside the others. The
+extensions' panels show in the order they register, and the shell's own two (the run's lines and the model's turns)
+come after them (`panelsShown` in `src/panels.ts`).
