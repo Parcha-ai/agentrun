@@ -22,7 +22,10 @@
 - The link of a home in a box (`./home`): `connectHome` on the host, `createRunner` and `runMain` in the box, frames
   over the box's own `exec`. The runner's models mirror the host's catalog and hold no credential; the host answers
   each request, refuses one from an epoch the lease left behind, and keeps an answer's frames so a link that drops
-  costs no second request. `@earendil-works/pi-ai` is a peer dependency, in the same range as pi-durable.
+  costs no second request (`connectHome`'s `server`: one `serveModels` server for every link to a runner). An order
+  the host gives up on is cancelled in the runner, and one whose context ended already is not sent. The runner says
+  ready only with its home open. A line longer than `maxLineLength` (64 Mi characters by default) closes a link.
+  `@earendil-works/pi-ai` is a peer dependency, in the same range as pi-durable.
 - `moveHome` and `recoverHome` (`./home`): a session's home moves between boxes with no shared disk in seven
   steps, the take of a numbered lease the one point of no return; a host that starts again finishes the move from
   the lease, which keeps the move's id and the seal; the store keeps the workspace it last ran in.

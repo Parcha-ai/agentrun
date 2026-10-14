@@ -1,5 +1,5 @@
 import type { Context } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { Result } from "@earendil-works/pi-durable/env";
 import type { DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
@@ -55,6 +55,8 @@ function wire(error: Error & { code?: unknown; holdouts?: unknown }): WireError 
  */
 export function createRunner(options: RunnerOptions, context: Context = BACKGROUND_CONTEXT): Runner {
 	let proxy: ProxyModels | undefined;
+	// The one opening of the home, with the models it opened with. A host that says hello meanwhile waits for it.
+	let opening: { readonly proxy: ProxyModels; readonly home: Promise<Result<Home, Error>> } | undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
 	let finished = false;
@@ -95,35 +97,36 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		then?.(result);
 	};
 
-	const run = async (home: Home, order: string, args: Readonly<Record<string, unknown>>) => {
+	/** One order, in `within`: the runner's context, which the host's `cancel` for this order ends. */
+	const run = async (home: Home, order: string, args: Readonly<Record<string, unknown>>, within: Context) => {
 		switch (order) {
 			case "resume":
-				return home.resume(args as unknown as ResumeOrder, context);
+				return home.resume(args as unknown as ResumeOrder, within);
 			case "reopen":
-				return home.reopen({ epoch: Number(args.epoch) }, context);
+				return home.reopen({ epoch: Number(args.epoch) }, within);
 			case "retire":
-				return home.retire({ epoch: Number(args.epoch) }, context);
+				return home.retire({ epoch: Number(args.epoch) }, within);
 			case "drain":
-				return home.drain(args as DrainOptions, context);
+				return home.drain(args as DrainOptions, within);
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
 			case "seal":
-				return home.seal(context);
+				return home.seal(within);
 			case "submit": {
-				const root = await home.root(context);
+				const root = await home.root(within);
 				if (!root.ok) return root;
 				const requestId = typeof args.requestId === "string" ? args.requestId : undefined;
 				const submission = await root.value.submit(
 					{ type: "input", content: String(args.content), ...(requestId === undefined ? {} : { requestId }) },
-					context,
+					within,
 				);
 				return { ok: true as const, value: { submission: submission.id } };
 			}
 			case "idle": {
-				const root = await home.root(context);
+				const root = await home.root(within);
 				if (!root.ok) return root;
-				await root.value.waitForIdle(context);
+				await root.value.waitForIdle(within);
 				return { ok: true as const, value: null };
 			}
 			case "status":
@@ -138,21 +141,28 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			link.close(`the host speaks version ${String(frame.v)} of the link; this runner speaks ${LINK_VERSION}`);
 			return;
 		}
-		if (proxy === undefined) {
+		if (opening === undefined) {
 			const made = proxyModels(frame.catalog as Catalog, {
 				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
 			});
 			proxy = made;
-			const opened = await openHome({ ...options, models: made.models });
-			if (!opened.ok) {
-				send(link, { t: "ready", v: LINK_VERSION, ok: false, error: wire(opened.error) });
-				return;
-			}
-			home = opened.value;
+			opening = { proxy: made, home: openHome({ ...options, models: made.models }) };
 		}
+		const mine = opening;
+		const opened = await mine.home;
+		if (!opened.ok) {
+			// Nothing opened: the next host's hello tries again, with its own catalog. Ready only with a home.
+			if (opening === mine) {
+				opening = undefined;
+				proxy = undefined;
+			}
+			send(link, { t: "ready", v: LINK_VERSION, ok: false, error: wire(opened.error) });
+			return;
+		}
+		home = opened.value;
 		if (link !== current) return;
-		proxy.up((model) => (current === link ? send(link, model) : false));
-		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: home?.state ?? "closed" });
+		mine.proxy.up((model) => (current === link ? send(link, model) : false));
+		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: opened.value.state });
 	};
 
 	return {
@@ -164,10 +174,13 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			const previous = current;
 			current = link;
 			previous?.close("another host connected");
+			// The orders of this link that still run, by id: a `cancel` ends one's context.
+			const running = new Map<unknown, () => void>();
 			link.onFrame((frame) => {
 				if (current !== link) return;
 				if (frame.t === "hello") void hello(link, frame);
 				else if (frame.t === "refused") void stop("refused", EXIT_REFUSED, String(frame.reason ?? "refused"));
+				else if (frame.t === "cancel") running.get(frame.id)?.();
 				else if (proxy?.receive(frame)) return;
 				else if (frame.t === "order") {
 					const active = home;
@@ -177,12 +190,15 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 					}
 					const args = (frame.args ?? {}) as Readonly<Record<string, unknown>>;
 					const order = String(frame.order);
+					const within = withCancel(context);
+					running.set(frame.id, within.cancel);
 					// A home that retired has no session left: the runner ends once the host has its answer.
 					void answer(
 						link,
 						frame.id,
-						() => run(active, order, args),
+						() => run(active, order, args, within.context),
 						(result) => {
+							running.delete(frame.id);
 							if (order === "retire" && result.ok)
 								void stop("retired", 0, `epoch ${String(args.epoch)} took the session`);
 						},

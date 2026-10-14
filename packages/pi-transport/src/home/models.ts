@@ -402,8 +402,11 @@ export interface ModelServer {
 	receive(frame: Frame, send: (frame: Frame) => boolean): boolean;
 	/** The link is up again: answers go through `send` from now on. */
 	up(send: (frame: Frame) => boolean): void;
-	/** The link is down. Calls run on and keep their frames for a resume. */
-	down(): void;
+	/**
+	 * The link that `send` reaches is down, or the link, without `send`. Calls run on and keep their frames for a
+	 * resume. A link that goes down after a newer one came up leaves the newer one's answers going.
+	 */
+	down(send?: (frame: Frame) => boolean): void;
 	/** End every call that still runs. */
 	close(): void;
 	/** Requests the host made to its providers: what it paid for. */
@@ -509,8 +512,8 @@ export function serveModels(
 		up(next) {
 			send = next;
 		},
-		down() {
-			send = undefined;
+		down(from) {
+			if (from === undefined || from === send) send = undefined;
 		},
 		close() {
 			send = undefined;

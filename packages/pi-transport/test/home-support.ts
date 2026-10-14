@@ -52,6 +52,30 @@ export function random(seed: number): () => number {
 	};
 }
 
+/** `size` bytes from a seeded xorshift32 generator, filled four at a time: fast, and the same for the same seed. */
+export function seededBytes(size: number, seed: number): Buffer {
+	const bytes = Buffer.allocUnsafe(size);
+	let state = seed >>> 0 || 1;
+	let at = 0;
+	for (; at + 4 <= size; at += 4) {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		bytes.writeUInt32LE(state, at);
+	}
+	for (; at < size; at += 1) {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		bytes[at] = state & 0xff;
+	}
+	return bytes;
+}
+
 /** A random tree under `root`: nested and empty directories, links, odd names, empty files and modes. */
 export function makeTree(root: string, seed: number): void {
 	const next = random(seed);
@@ -89,7 +113,7 @@ export function makeTree(root: string, seed: number): void {
 		} else {
 			const path = fresh(directory);
 			const size = next() < 0.1 ? 200_000 + Math.floor(next() * 400_000) : Math.floor(next() * 3000);
-			writeFileSync(path, Buffer.from(Array.from({ length: size }, () => Math.floor(next() * 256))));
+			writeFileSync(path, seededBytes(size, Math.floor(next() * 4294967296)));
 			chmodSync(path, pick([0o644, 0o755, 0o600, 0o700, 0o664, 0o777, 0o400]));
 			utimesSync(path, 1_700_000_000 + index, 1_700_000_000 + index * 7);
 		}

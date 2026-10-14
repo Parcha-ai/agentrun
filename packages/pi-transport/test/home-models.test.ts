@@ -3,17 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Models, SystemMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness, UsageDoc } from "@earendil-works/pi-durable";
-import { ok } from "@earendil-works/pi-durable/env";
+import { getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { BoxProcess } from "../src/box/box.ts";
+import { connectHome } from "../src/home/host.ts";
 import { HOST_REQUEST_OPTIONS } from "../src/home/index.ts";
-import { type Frame, type Link, linkPair, processLink, streamLink } from "../src/home/link.ts";
+import { type Frame, type Link, linkPair, MAX_LINE_LENGTH, processLink, streamLink } from "../src/home/link.ts";
 import {
 	catalogOf,
 	crossingOptions,
@@ -71,7 +72,7 @@ function hostModels() {
 }
 
 /** One session: a question, a tool round, a long answer. Returns what it left in its store. */
-async function session(models: Models, during?: (elapsed: () => number) => Promise<void>) {
+async function session(models: Models, during?: (elapsed: () => number) => Promise<void>, instructions?: string) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-transport-models-"));
 	try {
 		const lookup = defineTool({
@@ -90,7 +91,12 @@ async function session(models: Models, during?: (elapsed: () => number) => Promi
 			{ models, registry },
 			context,
 		);
-		const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		const root = await harness.root(context, {
+			agent: {
+				model: { provider: "faux", modelId: "faux-1" },
+				...(instructions === undefined ? {} : { instructions }),
+			},
+		});
 		const started = performance.now();
 		await root.submit({ type: "input", content: "What does it cost?" }, context);
 		await during?.(() => performance.now() - started);
@@ -133,6 +139,39 @@ describe("the model proxy", () => {
 		expect(server.paid).toBe(2);
 		const answer = proxied.entries.findLast((entry) => entry.kind === "pi.assistant")?.model?.[0] as AssistantMessage;
 		expect(answer.content).toEqual([{ type: "text", text: LONG_ANSWER }]);
+	}, 30_000);
+
+	it("gives the host's model the instructions and tools the runner's Harness built, as the models themselves get them", async () => {
+		const instructions = "Answer in one line, and cite the lookup.";
+		const direct = hostModels();
+		await session(direct.models, undefined, instructions);
+		const behind = hostModels();
+		const server = serveModels(behind.models);
+		const proxy = proxyModels(catalogOf(behind.models));
+		connect(proxy, server);
+		await session(proxy.models, undefined, instructions);
+		// What each provider received: pi-ai carries the prompt and the tools in the transcript's leading system message.
+		for (const [arm, asked] of [
+			["direct", direct.asked],
+			["through the proxy", behind.asked],
+		] as const) {
+			expect(asked, arm).toHaveLength(2);
+			for (const transcript of asked) {
+				const system = transcript[0] as SystemMessage | undefined;
+				expect(system?.role, arm).toBe("system");
+				expect(JSON.stringify(system), arm).toContain(instructions);
+				expect(
+					system?.toolsAdded?.map((tool) => ({ name: tool.name, description: tool.description })),
+					arm,
+				).toEqual([{ name: "lookup", description: "Look a thing up." }]);
+				expect(JSON.parse(JSON.stringify(system?.toolsAdded?.[0]?.parameters)), arm).toMatchObject({
+					type: "object",
+					properties: { q: { type: "string" }, limit: { type: "number" } },
+					required: ["q", "limit"],
+				});
+			}
+		}
+		expect(scrub(behind.asked)).toEqual(scrub(direct.asked));
 	}, 30_000);
 
 	it("goes on with the same answer after the link drops in the middle of it, and the host pays once", async () => {
@@ -315,6 +354,49 @@ describe("the model proxy", () => {
 		expect(replies.at(-1)).toEqual({ t: "model-unknown", id: "runner-9.9" });
 	});
 
+	it("keeps answering on the newest link when an older one closes after it came up, and pays once", async () => {
+		const faux = fauxProvider({ api: "faux", tokensPerSecond: 200 });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		faux.setResponses([fauxAssistantMessage("An answer of some length, streamed. ".repeat(10))]);
+		const server = serveModels(models);
+		/** A runner of the test's own on a fresh link: it says ready and keeps what the host sends it. */
+		const hold = async () => {
+			const [runnerEnd, hostEnd] = linkPair();
+			const got: Frame[] = [];
+			runnerEnd.onFrame((frame) => {
+				if (frame.t === "hello") runnerEnd.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+				else got.push(frame);
+			});
+			const handle = connectHome(hostEnd, { models, epoch: 1, server });
+			getOrThrow(await handle.ready);
+			return { runnerEnd, handle, got };
+		};
+		const older = await hold();
+		older.runnerEnd.send({
+			t: "model",
+			id: "runner-1.1",
+			epoch: 1,
+			model: { provider: "faux", modelId: "faux-1" },
+			messages: [{ role: "user", content: "hi", timestamp: 0 }],
+			options: {},
+		});
+		await sleep(100);
+		// The runner came back on a new link, and only then did the host see the old one close.
+		const newer = await hold();
+		older.handle.close("the old exec ended late");
+		for (let waited = 0; waited < 5_000 && newer.got.at(-1)?.t !== "model-end"; waited += 20) await sleep(20);
+		expect(newer.got.at(-1)?.t).toBe("model-end");
+		expect(older.got.length).toBeGreaterThan(0);
+		// Every frame of the answer went to one link or the other, in order, once; the provider was called once.
+		expect([...older.got, ...newer.got].map((frame) => frame.seq)).toEqual(
+			Array.from({ length: older.got.length + newer.got.length }, (_, n) => n + 1),
+		);
+		expect(server.paid).toBe(1);
+		newer.handle.close("done");
+		server.close();
+	});
+
 	it("tells the runner nothing secret: no header, no endpoint, no key, no environment", () => {
 		const secret = "not-a-secret";
 		const faux = fauxProvider();
@@ -364,6 +446,72 @@ describe("a link", () => {
 		expect(link.closed).toBe(true);
 		expect(why).toMatch(/not JSON/);
 		expect(link.send({ t: "late" })).toBe(false);
+	});
+
+	it("closes on a line longer than it takes, finished or not, and takes one of exactly that length", async () => {
+		/** What a link that takes lines of 100 characters does with `chunks`. */
+		async function read(chunks: readonly string[]) {
+			const input = new PassThrough();
+			const link = streamLink(input, new PassThrough(), { maxLineLength: 100 });
+			const frames: Frame[] = [];
+			let why = "";
+			link.onFrame((frame) => frames.push(frame));
+			link.onClose((reason) => {
+				why = reason;
+			});
+			for (const chunk of chunks) input.write(chunk);
+			await sleep(10);
+			return { frames, why, closed: link.closed };
+		}
+		// {"t":"a","p":""} is 16 characters, and the padding.
+		const line = (length: number) => JSON.stringify({ t: "a", p: "x".repeat(length - 16) });
+		expect(line(100)).toHaveLength(100);
+		const exact = await read([`${line(100)}\n`]);
+		expect(exact).toEqual({ frames: [{ t: "a", p: "x".repeat(84) }], why: "", closed: false });
+		for (const [what, chunks] of [
+			["finished, in one piece", [`${line(101)}\n`]],
+			["finished, in pieces", [line(101).slice(0, 60), `${line(101).slice(60)}\n`]],
+			["never finished", ["x".repeat(60), "x".repeat(41)]],
+			["after a frame, in the same piece", [`${line(26)}\n${"x".repeat(101)}`]],
+		] as const) {
+			const read101 = await read(chunks);
+			expect(read101.closed, what).toBe(true);
+			expect(read101.why, what).toBe("a line longer than 100 characters arrived");
+		}
+		// The host's end over a program in a box takes the same limit.
+		const stdout = (async function* () {
+			yield new TextEncoder().encode("x".repeat(101));
+			await new Promise(() => {});
+		})();
+		const boxLink = processLink(
+			{ stdin: { write: async () => {}, close: async () => {} }, stdout, stderr: stdout, wait: async () => ok(0) },
+			{ maxLineLength: 100 },
+		);
+		let boxWhy = "";
+		boxLink.onClose((reason) => {
+			boxWhy = reason;
+		});
+		await sleep(10);
+		expect(boxWhy).toBe("a line longer than 100 characters arrived");
+	});
+
+	it("takes lines of up to 64 Mi characters by default, and not one more", async () => {
+		expect(MAX_LINE_LENGTH).toBe(64 * 1024 * 1024);
+		const input = new PassThrough();
+		const link = streamLink(input, new PassThrough());
+		let why = "";
+		link.onClose((reason) => {
+			why = reason;
+		});
+		// A box that writes and never ends its line.
+		const chunk = "x".repeat(8 * 1024 * 1024);
+		for (let n = 0; n < 8; n += 1) input.write(chunk);
+		await sleep(50);
+		expect(link.closed).toBe(false);
+		input.write("x");
+		await sleep(50);
+		expect(link.closed).toBe(true);
+		expect(why).toBe(`a line longer than ${MAX_LINE_LENGTH} characters arrived`);
 	});
 
 	it("puts every frame sent while a slow write is in flight into the next write", async () => {

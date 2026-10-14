@@ -53,8 +53,21 @@ export interface HomeHandle {
 	setEpoch(epoch: number): void;
 	/** The host's side of the model proxy: what it paid for. */
 	readonly models: ModelServer;
+	/** Close the link, and the model server when this handle made it: a server the caller passed is the caller's. */
 	close(reason: string): void;
 }
+
+/** How the host holds a runner. */
+export type ConnectOptions = {
+	readonly models: Models;
+	readonly epoch: number;
+	/**
+	 * The model server to answer with, made by `serveModels` over the same `models`. Pass the same one to every link to
+	 * one runner: a runner that comes back on a new link resumes an answer the host already paid for, and the provider
+	 * is not called again. Without it each handle makes its own, and a new link starts with nothing kept.
+	 */
+	readonly server?: ModelServer;
+};
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
 const HOME_STATES: ReadonlySet<unknown> = new Set<HomeState>(["closed", "open", "sealed", "retired"]);
@@ -98,11 +111,12 @@ function checked<T>(
 }
 
 /** Hold a runner on `link`: say hello with the host's models, then give orders and serve its model requests. */
-export function connectHome(link: Link, options: { readonly models: Models; readonly epoch: number }): HomeHandle {
+export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	let epoch = options.epoch;
 	let counter = 0;
 	const pending = new Map<number, (answer: Result<unknown, RemoteError>) => void>();
-	const server = serveModels(options.models);
+	const server = options.server ?? serveModels(options.models);
+	const owned = options.server === undefined;
 	let settleReady: (ready: Result<Ready, RemoteError>) => void = () => {};
 	const ready = new Promise<Result<Ready, RemoteError>>((resolve) => {
 		settleReady = resolve;
@@ -133,7 +147,7 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 		}
 	});
 	link.onClose((reason) => {
-		server.down();
+		server.down(reply);
 		settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
 		for (const settle of pending.values()) settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
 		pending.clear();
@@ -147,10 +161,18 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 				resolve(err(new RemoteError("link_lost", "the link is down")));
 				return;
 			}
+			// A context that ended already: nothing is sent, so nothing starts in the runner.
+			if (context.abortSignal?.aborted) {
+				resolve(err(new RemoteError("aborted", `the host gave up on ${name} before sending it`)));
+				return;
+			}
 			counter += 1;
 			const id = counter;
 			const onAbort = () => {
 				pending.delete(id);
+				// The runner stops the order too, as a caller's abort stops it in the host's own process: a drain it
+				// gives up opens the gate again.
+				link.send({ t: "cancel", id });
 				resolve(err(new RemoteError("aborted", `the host gave up waiting for ${name}`)));
 			};
 			context.abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -178,7 +200,7 @@ export function connectHome(link: Link, options: { readonly models: Models; read
 		},
 		models: server,
 		close(reason) {
-			server.close();
+			if (owned) server.close();
 			link.close(reason);
 		},
 	};
