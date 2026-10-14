@@ -1021,7 +1021,17 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
     // A claim that records its commands (a local run's): end what a killed incarnation left running, now that the owner
     // lock is held and before the Harness opens, so no command of it still writes in work/ once the run resumes.
     const commands = lease.rawClaim.commands;
-    if (commands !== undefined) await step("commands", () => reapCommands(commands));
+    if (commands !== undefined) {
+      await step("commands", async () => {
+        // What did not die by the deadline stays recorded, so the next open tries again; the line is the run log's.
+        const { survivors } = await reapCommands(commands);
+        if (survivors.length > 0) {
+          process.stderr.write(
+            `pi-durable-disk: ${survivors.length} process(es) a killed incarnation's commands left are alive after SIGKILL (pids ${survivors.map((s) => s.pid).join(", ")}); kept in ${commands} for the next open\n`,
+          );
+        }
+      });
+    }
     env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
   } catch (error) {
     await lease.abandon(error);

@@ -5,6 +5,9 @@
 // descendant it has seen, each by pid, start ticks and boot. The next open, which holds the owner lock, kills whatever a
 // previous incarnation recorded that is still the same process (pid, start ticks and boot all match), waits until it is
 // gone, and clears the records, before the Harness opens. Only the instance writes records: a command never does.
+// Nothing stops a command from writing one too, and none needs stopping: a run's commands run as the instance's user (or,
+// with `runAs`, as another one that cannot write the instance's 0700 directory), so a record a command forged names only
+// what that command could already kill itself. A record grants nothing.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -14,16 +17,24 @@ export interface ProcessMark {
   readonly start: number;
 }
 
-/** What a record holds: a command's group leader and the descendants seen under it, on one boot. */
+/** What a record holds: a command's group leader (null once only members of it outlived a reap) and the descendants seen. */
 export interface CommandRecord {
   readonly boot: string;
-  readonly leader: ProcessMark;
+  readonly leader: ProcessMark | null;
   readonly members: readonly ProcessMark[];
+}
+
+/** What a reap did: how many processes it signalled, and those still alive at its deadline (kept for the next open). */
+export interface Reaped {
+  readonly signalled: number;
+  readonly survivors: readonly ProcessMark[];
 }
 
 export interface CommandsOptions {
   /** The `/proc` to read; for tests. */
   readonly proc?: string;
+  /** How a reap signals; default `process.kill`. For tests. */
+  readonly kill?: (target: number, signal: NodeJS.Signals) => void;
 }
 
 interface Stat {
@@ -183,43 +194,67 @@ export class CommandRecorder {
 /**
  * Ends what a previous incarnation's commands left running: for each record of this boot, the leader's whole group when
  * the leader is still the recorded process, and each recorded descendant that still is. Waits up to `timeoutMs` until
- * none of them is alive, then removes the records. Run only while holding the run (after its owner lock), before the
- * Harness opens. Returns how many processes were signalled.
+ * none of them is alive. A record whose processes are all gone is removed; one that still names a live process (it did
+ * not die at the deadline: a process in an uninterruptible wait) is rewritten with just those, so the next open tries
+ * again, and they are returned. Run only while holding the run (after its owner lock), before the Harness opens.
  */
-export async function reapCommands(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<number> {
+export async function reapCommands(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
   const proc = options.proc ?? "/proc";
+  const signal = options.kill ?? ((target: number, name: NodeJS.Signals) => process.kill(target, name));
   let files: string[];
   try {
     files = readdirSync(dir).filter((name) => RECORD.test(name));
   } catch {
-    return 0;
+    return { signalled: 0, survivors: [] };
   }
   const boot = bootId(proc);
   const own = stat(proc, process.pid);
-  const targets: ProcessMark[] = [];
-  const kill = (target: number, mark: ProcessMark) => {
-    // Never this process or its group, never a pid of 0 or below as a group (`kill(0)` is the caller's own group).
-    if (!(mark.pid > 0) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return;
+  let signalled = 0;
+  /** False for what is never a target: this process, its group, a pid of 0 or below (`kill(0)` is the caller's group). */
+  const kill = (target: number, mark: ProcessMark): boolean => {
+    if (!(mark.pid > 0) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return false;
     try {
-      process.kill(target, "SIGKILL");
-      targets.push(mark);
+      signal(target, "SIGKILL");
+      signalled++;
     } catch {
-      // gone between the check and the kill, or not ours to signal
+      // gone between the check and the kill, or not ours to signal: still a target, a survivor if it is alive
     }
+    return true;
   };
+  const pending: { file: string; boot: string; leader: ProcessMark | null; members: ProcessMark[] }[] = [];
   for (const name of files) {
+    const file = join(dir, name);
     let record: CommandRecord;
     try {
-      record = JSON.parse(readFileSync(join(dir, name), "utf8")) as CommandRecord;
+      record = JSON.parse(readFileSync(file, "utf8")) as CommandRecord;
     } catch {
-      continue; // a torn write of a record names nothing
+      rmSync(file, { force: true }); // a torn write of a record names nothing
+      continue;
     }
-    if (boot === undefined || record.boot !== boot) continue; // another boot's pids mean nothing on this one
-    if (same(proc, record.leader)) kill(-record.leader.pid, record.leader);
-    for (const member of record.members ?? []) if (same(proc, member)) kill(member.pid, member);
+    if (boot === undefined || record.boot !== boot) {
+      rmSync(file, { force: true }); // another boot's pids mean nothing on this one
+      continue;
+    }
+    const leader = record.leader !== null && same(proc, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
+    // A member that is the leader went with its group.
+    const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(proc, member) && kill(member.pid, member));
+    pending.push({ file, boot, leader, members });
   }
+  const alive = () => pending.flatMap((p) => [...(p.leader ? [p.leader] : []), ...p.members]).filter((mark) => same(proc, mark));
   const deadline = Date.now() + (options.timeoutMs ?? 5_000);
-  while (targets.some((mark) => same(proc, mark)) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-  rmSync(dir, { recursive: true, force: true });
-  return targets.length;
+  while (alive().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  const survivors: ProcessMark[] = [];
+  for (const record of pending) {
+    const leader = record.leader !== null && same(proc, record.leader) ? record.leader : null;
+    const members = record.members.filter((member) => same(proc, member));
+    if (leader === null && members.length === 0) {
+      rmSync(record.file, { force: true });
+      continue;
+    }
+    survivors.push(...(leader ? [leader] : []), ...members);
+    writeFileSync(`${record.file}.tmp`, JSON.stringify({ boot: record.boot, leader, members } satisfies CommandRecord));
+    renameSync(`${record.file}.tmp`, record.file);
+  }
+  if (survivors.length === 0) rmSync(dir, { recursive: true, force: true });
+  return { signalled, survivors };
 }

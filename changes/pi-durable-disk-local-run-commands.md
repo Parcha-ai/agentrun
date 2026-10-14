@@ -9,8 +9,11 @@ kind: fix
   each by pid, start ticks and boot) under `<root>/commands/`, and the next open, holding the owner lock, kills what is
   still the recorded process, waits until it is gone and clears the records, before the Harness opens (a new open step,
   `commands`, after `layout`).
-- Only the instance writes records, and a kill reaches a process only when its pid, start ticks and boot all match one;
-  never the opening process or its group. A command started within the last walk's interval (about 0.1 s) before the kill
+- A kill reaches a process only when its pid, start ticks and boot all match a record, and never the opening process or
+  its group. Only the instance writes records; a command that forged one could already kill what it names (it runs as
+  the same user, or with `runAs` cannot write the instance's 0700 directory), so a record grants nothing.
+- What is still alive at the reap's deadline (a process in an uninterruptible wait) stays recorded for the next open and
+  is named on stderr; the open goes on. A command started within the last walk's interval (about 0.1 s) before the kill
   can be missed.
 - A claim opts in with `Claim.commands` (the directory); `localRun`'s claim sets it. A mount's run is unchanged: its host
   ends commands with the unit's cgroup or the container.
