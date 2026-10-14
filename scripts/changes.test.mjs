@@ -126,6 +126,59 @@ test("held means the manifest says private, not a package's name: a private pack
   assert.equal(await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Held entry.\n- Transport fix.\n');
 }));
 
+/** A committed tree with a held package, its entry and `fragments` (name to text); the held changelog is `heldLog`. */
+async function heldTree(root, git, fragments) {
+  await heldPackage(root, heldLog);
+  for (const [name, text] of Object.entries(fragments)) await writeFile(join(root, 'changes', name), text);
+  await git('add', '-A'); await git('commit', '-q', '-m', 'held package and its fragments');
+}
+const heldPath = 'packages/pi-transport/CHANGELOG.md';
+
+test("the fold's own change passes the Unreleased check, a held package's appended fragments included", () => repo(async (root, git) => {
+  await heldTree(root, git, { 'a-feature.md': fragment('@parcha/pi-transport', 'feature', 'Held feature.'), 'b-breaking.md': fragment('@parcha/pi-transport', 'breaking', 'Held breaking.') });
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.match(await readFile(join(root, heldPath), 'utf8'), /- Held entry\.\n- Held breaking\.\n- Held feature\.\n/, 'in the fold\'s order: breaking before feature');
+  assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
+}));
+
+test("a fold that changes only a held package's changelog is still the fold", () => repo(async (root, git) => {
+  await heldTree(root, git, { 'held.md': fragment('@parcha/pi-transport', 'fix', 'Held fix.') });
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  await git('checkout', '-q', 'HEAD', '--', 'CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md');
+  assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
+}));
+
+test("an edit of a held package's Unreleased is still refused: appended by hand, without the fragment gone, or not the fragment's text, or out of the fold's order", () => repo(async (root, git) => {
+  await heldTree(root, git, { 'a-feature.md': fragment('@parcha/pi-transport', 'feature', 'Held feature.'), 'b-breaking.md': fragment('@parcha/pi-transport', 'breaking', 'Held breaking.') });
+  const append = text => writeFile(join(root, heldPath), text);
+  // by hand, no fragment deleted
+  await append(`${heldLog}- Written by hand.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
+  // the fragments deleted, the text appended is not theirs
+  await rm(join(root, 'changes/a-feature.md')); await rm(join(root, 'changes/b-breaking.md'));
+  await append(`${heldLog}- Something else.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
+  // their text, in the wrong order
+  await append(`${heldLog}- Held feature.\n- Held breaking.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath], 'the fold writes breaking first');
+  // their text, in the fold's order, plus a line of the author's
+  await append(`${heldLog}- Held breaking.\n- Held feature.\n- And one more.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
+  // exactly the fold's result
+  await append(`${heldLog}- Held breaking.\n- Held feature.\n`);
+  assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
+}));
+
+test("a fragment deleted for another package does not excuse an edit of a held changelog, and a published changelog is never excused by one", () => repo(async (root, git) => {
+  await heldTree(root, git, { 'vision.md': fragment('@parcha/pi-vision', 'fix', 'Vision fix.') });
+  await rm(join(root, 'changes/vision.md'));
+  await writeFile(join(root, heldPath), `${heldLog}- Vision fix.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath], 'the deleted fragment names pi-vision, not the held package');
+  await writeFile(join(root, heldPath), heldLog);
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), `${visionLog}- Vision fix.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, ['packages/pi-vision/CHANGELOG.md'], 'appending to a published changelog is an edit even with its fragment gone');
+}));
+
 test("a held package with an empty Unreleased gets its fragment under it, undated", () => repo(async root => {
   await heldPackage(root, '# Changelog\n\n## Unreleased\n');
   await writeFile(join(root, 'changes/held.md'), fragment('@parcha/pi-transport', 'feature', 'First entry.'));
