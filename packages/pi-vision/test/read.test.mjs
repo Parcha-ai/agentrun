@@ -269,6 +269,24 @@ test("a recording source's failure is the read's refusal and a failed look; a ho
   assert.equal(await bare.read({ path: "evidence/session:sess_1" }), null, "only the bare handle is a handle");
 });
 
+test("a read's miss is filed as a look that sent no request, at no cost; a recording whose source failed or answered nothing files no price", async (t) => {
+  const spent = (filed) => filed.map((record) => { const f = receiptFacts(record); return [record.status, f.tokens_in, f.tokens_out, f.cost_usd]; });
+  const r = await rig({ pdf: { miss: "needs", reason: "no page renderer is installed" }, video: () => { throw new Error("moov atom not found"); } }, { allow: ({ path }) => (path.startsWith("private/") ? "not here" : true) });
+  t.after(() => r.dir.remove());
+  const files = [["photo.pdf", pngBytes(2, 2)], ["blob.bin", Buffer.from([0xca, 0xfe, 0, 1])], ["book.xlsx", "PK"], ["private/id.png", pngBytes(2, 2)], ["scan.pdf", PDF_HEAD], ["clip.mp4", "not a video"]];
+  for (const [path, bytes] of files) await r.dir.file(path, bytes);
+  for (const [path] of files) await r.read({ path });
+  assert.deepEqual(r.misses.map((m) => m.code), ["unsupported", "unsupported", "needs", "refused", "needs", "unreadable"]);
+  assert.deepEqual(spent(r.filed), files.map(() => ["failed", 0, 0, 0]));
+
+  const answers = [() => { throw new Error("socket hang up"); }, () => ({ model: "m", text: " ", costUsd: 0.002, billedBy: "svc" })];
+  const session = { via: "svc-reviewer", owns: async (id) => (id === "sess_1" ? true : "not this run's"), look: async () => answers.shift()() };
+  const rec = await rig({}, { sources: { session } });
+  t.after(() => rec.dir.remove());
+  for (const path of ["session:sess_1", "session:sess_1", "session:sess_9"]) await rec.read({ path });
+  assert.deepEqual(spent(rec.filed), [["failed", undefined, undefined, undefined], ["failed", undefined, undefined, undefined]], "a source that threw or answered nothing may have been billed; a refused handle files nothing");
+});
+
 test("readsAsText: only a plain file with no media argument is the host's text read", async (t) => {
   const r = await rig();
   t.after(() => r.dir.remove());

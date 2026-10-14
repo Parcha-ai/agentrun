@@ -198,12 +198,13 @@ const extensionOf = (name: string): string => {
   return ext && ext.length <= 8 && [...ext].every((c) => (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")) ? `.${ext}` : "";
 };
 
-/** A miss the model can act on, filed as a failed look and told to the host. */
+/** A miss the model can act on, filed as a failed look and told to the host. No read path asks a model before one, so
+ *  it cost nothing. */
 async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string): Promise<ToolResult> {
   const reason = linkSafe(cause);
   const ask = asked(args);
   const page = num(args.page);
-  const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask, model: "none" }) }, body: "" };
+  const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask, model: "none" }), tokens_in: 0, tokens_out: 0, cost_usd: 0 }, body: "" };
   const receipt = await reportMiss(filing, "read", record, { code, reason });
   return {
     content: [{ type: "text", text: `${name} could not be read: ${reason}. The file is saved at ${name}.${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[code]}${text?.trim() ? `\n${text.trim()}` : ""}` }],
