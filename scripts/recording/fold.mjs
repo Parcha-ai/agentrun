@@ -11,14 +11,16 @@ const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : 
 
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are
  *  skipped; a lost branch is events and is folded.
- *  - A workflow effect: an effect id whose outside call COMPLETED in more than one generation, folded over every line of that id. A
- *    revision that reaches `completed`, or a call in its `calls` record that does, counts once, in the generation of the line that
- *    shows it; two effect ids with one intent are two calls.
+ *  - A workflow effect: an effect id with an APPLIED call (its `calls` record, `outcome: 'applied'`) in a later generation than an
+ *    earlier applied one is repeated; two applied calls in one generation are asked twice. An effect with no `calls` record is not
+ *    measured: the result is null, never 0. Two effect ids with one intent are two calls.
  *  - An agent's tool call counts only when it is PAID: the run holds an `agentrun.receipts` entry for its (tool, argsHash). That
  *    receipt key is its identity, run-wide. A paid execution (not reused, not refused) of one key in a later generation than one that
  *    completed is repeated; a second one within one generation is asked twice. A tool with no receipt never counts. */
 export function repeats(events) {
-  const completions = new Map();
+  const applied = new Map();
+  let measured = true;
+  let effectsSeen = 0;
   const calls = new Map();
   const executed = new Map();
   const receipts = new Set();
@@ -28,12 +30,16 @@ export function repeats(events) {
   for (const event of events) {
     if (event.channel !== 'durable' || event.snapshot) continue;
     if (event.data?.doc === 'agentrun.effects' && event.data.value) {
+      // An effect's outside calls are in its `calls` record, as the host reported them: { outcome: 'applied' | 'failed' | 'unknown' }.
+      // A call is placed in the generation of the first line that shows it. An effect with no `calls` record is not measured.
       const id = event.data.key ?? '';
-      const value = event.data.value;
-      const gens = completions.get(id) ?? new Set();
-      if (value.status === 'completed') gens.add(event.gen ?? 0);
-      for (const call of Array.isArray(value.calls) ? value.calls : []) if (call?.status === 'completed') gens.add(event.gen ?? 0);
-      completions.set(id, gens);
+      const records = Array.isArray(event.data.value.calls) ? event.data.value.calls : undefined;
+      if (!applied.has(id)) { applied.set(id, { gens: [], seen: 0, hasCalls: false }); effectsSeen += 1; }
+      const held = applied.get(id);
+      if (records) {
+        held.hasCalls = true;
+        while (held.seen < records.length) { if (records[held.seen]?.outcome === 'applied') held.gens.push(event.gen ?? 0); held.seen += 1; }
+      }
     }
     const entry = entryOf(event);
     if (event.kind === 'pi.assistant' && entry?.content) for (const part of entry.content) if (part.type === 'toolCall') { const { tool, argsHash } = gatewayIntentOf(part.name, part.arguments); calls.set(part.id, `${tool}:${argsHash}`); }
@@ -45,7 +51,15 @@ export function repeats(events) {
       executed.set(key, gens);
     }
   }
-  const effectRepeats = [...completions.values()].filter(gens => gens.size > 1).length;
+  // Measured only when every effect reported its calls; without them the strip shows 'not measured', never 0.
+  measured = effectsSeen > 0 && [...applied.values()].every(held => held.hasCalls);
+  const effectRepeats = measured ? [...applied.values()].filter(held => new Set(held.gens).size > 1).length : null;
+  let effectAskedTwice = 0;
+  for (const held of applied.values()) {
+    const perGen = new Map();
+    for (const gen of held.gens) perGen.set(gen, (perGen.get(gen) ?? 0) + 1);
+    effectAskedTwice += [...perGen.values()].filter(count => count > 1).length;
+  }
   let toolRepeats = 0;
   let askedTwice = 0;
   for (const gens of executed.values()) {
@@ -55,7 +69,7 @@ export function repeats(events) {
     for (const gen of gens) perGen.set(gen, (perGen.get(gen) ?? 0) + 1);
     askedTwice += [...perGen.values()].filter(count => count > 1).length;
   }
-  return { repeated: { effects: effectRepeats, agentToolCalls: toolRepeats }, askedTwice };
+  return { repeated: { effects: effectRepeats, agentToolCalls: toolRepeats }, askedTwice: askedTwice + (measured ? effectAskedTwice : 0) };
 }
 
 /** The counters folded from the recording's lines (an array of parsed lines). */
@@ -70,11 +84,17 @@ export function fold(events) {
     if (event.channel !== 'durable') continue;
     if (!event.snapshot && event.kind === 'pi.assistant') assistantEntries += 1;
     const { doc, key } = event.data ?? {};
-    if (typeof doc === 'string' && event.data.value !== undefined) latest.set(`${doc}\u0001${key ?? ''}`, event.data.value);
+    if (typeof doc === 'string' && event.data.value !== undefined) latest.set(`${doc}\u0001${key ?? ''}\u0001${event.conv ?? ''}`, event.data.value);
   }
   const values = doc => [...latest].filter(([id]) => id.startsWith(`${doc}\u0001`)).map(([, value]) => value);
   const effects = values('agentrun.effects');
   const decisions = values('agentrun.decisions').flatMap(value => value.receipts ?? []);
+  // Cost: the usage and priced parts of the run, null when any part is unknown (a judge row whose cost the host did not report).
+  const parts = {};
+  const add = (name, amount) => { parts[name] = parts[name] === null || amount === null ? null : (parts[name] ?? 0) + amount; };
+  for (const usage of values('pi.usage')) for (const group of [usage.models, usage.tools]) for (const [name, used] of Object.entries(group ?? {})) add(name, typeof used?.cost?.total === 'number' ? used.cost.total : null);
+  if (decisions.length) for (const receipt of decisions) add('judge', typeof receipt.cost_usd === 'number' ? receipt.cost_usd : null);
+  const cost = { usd: Object.values(parts).some(part => part === null) ? null : Object.values(parts).reduce((sum, part) => sum + part, 0), parts };
   return {
     processes,
     kills,
@@ -84,6 +104,7 @@ export function fold(events) {
     unknown: effects.filter(effect => effect.status === 'unknown').length,
     judgeAsks: { answered: decisions.filter(receipt => !receipt.error).length, failed: decisions.filter(receipt => receipt.error).length },
     modelTurnsCommitted: assistantEntries,
+    cost,
     ...repeats(events),
   };
 }

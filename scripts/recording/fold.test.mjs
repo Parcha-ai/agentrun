@@ -14,20 +14,34 @@ test('processes and kills come from the supervisor, paid calls and unknown from 
   assert.deepEqual([counted.processes, counted.kills, counted.paidCallsMade, counted.unknown], [2, 1, 1, 1]);
 });
 
-test('an effect that completes once is not repeated, even when a kill separated its admission from its completion', () => {
-  const lines = [effect(1, 1, 'unknown'), effect(2, 2, 'completed'), effect(3, 3, 'completed', 'run\u0000step:/root/steps/1#call:0')];
-  assert.deepEqual(fold(lines).repeated, { effects: 0, agentToolCalls: 0 });
+const withCalls = (commit, gen, outcomes, key) => effect(commit, gen, 'unknown', key, { calls: outcomes.map(outcome => ({ outcome })) });
+
+test('an effect repeats when an applied call shows in a later generation than an earlier applied one; without calls it is not measured', () => {
+  const once = [effect(1, 1, 'unknown', undefined, { calls: [] }), withCalls(2, 2, ['applied']), effect(3, 2, 'completed', undefined, { calls: [{ outcome: 'applied' }] })];
+  assert.deepEqual([fold(once).repeated.effects, fold(once).askedTwice], [0, 0]);
+  const twice = [withCalls(1, 1, ['applied']), withCalls(2, 2, ['applied', 'applied'])];
+  assert.equal(fold(twice).repeated.effects, 1);
+  assert.equal(fold([effect(1, 1, 'unknown'), effect(2, 2, 'completed')]).repeated.effects, null, 'no calls record: not measured, not 0');
+  assert.equal(fold([withCalls(1, 1, ['applied']), effect(2, 1, 'unknown', 'run\u0000other#call:0')]).repeated.effects, null, 'one effect without calls makes the strip unmeasured');
 });
 
-test('one effect id completed in two generations is repeated once; two ids with one intent are two calls, not a repeat', () => {
-  assert.equal(fold([effect(1, 1, 'completed'), effect(2, 2, 'completed')]).repeated.effects, 1);
-  assert.equal(fold([effect(1, 1, 'completed'), effect(2, 2, 'completed', 'run\u0000step:/root/steps/1#call:0')]).repeated.effects, 0);
-  assert.equal(fold([effect(1, 1, 'unknown', undefined, { calls: [{ status: 'failed' }] }), effect(2, 2, 'completed', undefined, { calls: [{ status: 'failed' }, { status: 'completed' }] })]).repeated.effects, 0);
+test('a failed call and a call in one generation are not repeats; two applied calls in one generation are asked twice; two ids with one intent are two calls', () => {
+  assert.equal(fold([withCalls(1, 1, ['failed']), withCalls(2, 2, ['failed', 'applied'])]).repeated.effects, 0);
+  const sameGen = fold([withCalls(1, 1, ['applied']), withCalls(2, 1, ['applied', 'applied'])]);
+  assert.deepEqual([sameGen.repeated.effects, sameGen.askedTwice], [0, 1]);
+  assert.equal(fold([withCalls(1, 1, ['applied']), withCalls(2, 2, ['applied'], 'run\u0000step:/root/steps/1#call:0')]).repeated.effects, 0);
 });
 
 test('a snapshot line is state, not an event: it never makes a repeat', () => {
-  const snapshot = { ...effect(5, 4, 'completed'), snapshot: true };
-  assert.equal(fold([effect(1, 1, 'completed'), snapshot]).repeated.effects, 0);
+  const snapshot = { ...withCalls(5, 4, ['applied', 'applied']), snapshot: true };
+  assert.equal(fold([withCalls(1, 1, ['applied']), snapshot]).repeated.effects, 0);
+});
+
+test('cost: usage and priced parts, null while a judge row is null, 0 when the scripted judge reports 0', () => {
+  const usage = (conv, total) => durable(conv, { source: 'pi', kind: 'pi.usage', conv, data: { doc: 'pi.usage', value: { models: { 'faux/faux-1': { cost: { total } } }, tools: {} } } });
+  const judge = costUsd => durable(9, { kind: 'agentrun.decisions', data: { doc: 'agentrun.decisions', value: { receipts: [{ kind: 'judge', cost_usd: costUsd }] } } });
+  assert.deepEqual(fold([usage(1, 0), usage(2, 0.25), judge(0)]).cost, { usd: 0.25, parts: { 'faux/faux-1': 0.25, judge: 0 } });
+  assert.deepEqual(fold([usage(1, 0), judge(null)]).cost, { usd: null, parts: { 'faux/faux-1': 0, judge: null } });
 });
 
 import { gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
