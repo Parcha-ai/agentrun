@@ -23,6 +23,7 @@ import { DrainError } from "../src/home/gate.ts";
 import { checkHomeHands } from "../src/home/place.ts";
 import { type Home, type HomeOptions, MOVE_ENTRY, openHome } from "../src/home/run.ts";
 import type { Seal } from "../src/home/store.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 
 const context = BACKGROUND_CONTEXT;
 const ROUNDS = 5;
@@ -74,7 +75,7 @@ function world(): World {
 			await sleep(20);
 			appendFileSync(effects, `${args.n}\n`);
 			await sleep(10);
-			return { content: [{ type: "text", text: `did ${args.n}` }] };
+			return textResult(`did ${args.n}`);
 		},
 	});
 	const app: App = (ctx) => {
@@ -314,6 +315,65 @@ describe("a home: what it refuses", () => {
 		});
 	});
 
+	it("refuses every order at its retired epoch or before, also in a new process, and starts no store there", async () => {
+		await withWorld(async (made) => {
+			const options = made.home("a");
+			const source = await opened(options);
+			getOrThrow(await source.resume({ epoch: 1 }, context));
+			await start(source);
+			await sealAfter(source, 50);
+			getOrThrow(await source.retire({ epoch: 2 }, context));
+			for (const [label, home] of [
+				["the same process", source],
+				["a new process", await opened(options)],
+			] as const) {
+				expect(home.state, label).toBe("retired");
+				for (const epoch of [1, 2]) {
+					const late = await home.resume({ epoch }, context);
+					expect(late.ok ? "" : late.error.code, `${label}: resume at ${epoch}`).toBe("stale_epoch");
+				}
+				// A later epoch brings a copy and its seal; with no seal this home starts nothing.
+				const unsealed = await home.resume({ epoch: 3 }, context);
+				expect(unsealed.ok ? "" : unsealed.error.code, label).toBe("not_verified");
+				expect(existsSync(options.store), label).toBe(false);
+			}
+		});
+	});
+
+	it("finishes an open before it retires, so no Harness runs once the home retired", async () => {
+		await withWorld(async (made) => {
+			let opening: () => void = () => {};
+			const reached = new Promise<void>((resolve) => {
+				opening = resolve;
+			});
+			let release: () => void = () => {};
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const base = made.app;
+			const app: App = async (ctx) => ({
+				...(await base(ctx)),
+				onOpen: async () => {
+					opening();
+					await held;
+				},
+			});
+			const options = made.home("a", { app });
+			const home = await opened(options);
+			const resumed = home.resume({ epoch: 1 }, context);
+			await reached;
+			// The store is open and the Harness not yet the home's: a retire now must not miss it.
+			const retired = home.retire({ epoch: 2 }, context);
+			await sleep(50);
+			release();
+			getOrThrow(await resumed);
+			getOrThrow(await retired);
+			expect(home.state).toBe("retired");
+			expect(home.harness).toBeUndefined();
+			expect(existsSync(options.store)).toBe(false);
+		});
+	});
+
 	it("stays sealed until it is told to reopen, also in a new process, and then goes on with nothing cut", async () => {
 		await withWorld(async (made) => {
 			const options = made.home("a");
@@ -368,7 +428,12 @@ describe("a home: what it refuses", () => {
 			expect(home.state).toBe("retired");
 			expect(home.harness).toBeUndefined();
 			expect(existsSync(options.store)).toBe(false);
-			expect(existsSync(`${options.store}.home.json`)).toBe(false);
+			// The copy goes; a note of the epoch stays, so no order at it or before opens a store here again.
+			expect(JSON.parse(readFileSync(`${options.store}.home.json`, "utf8"))).toEqual({
+				v: 1,
+				epoch: 2,
+				retired: true,
+			});
 			const ran = made.effects().length;
 			await sleep(200);
 			expect(made.effects().length).toBe(ran);
@@ -417,7 +482,7 @@ describe("a home: a drain that does not complete", () => {
 				async execute(args) {
 					executing();
 					await sleep(400);
-					return { content: [{ type: "text", text: `did ${args.n}` }] };
+					return textResult(`did ${args.n}`);
 				},
 			});
 			const app: App = (ctx) => {

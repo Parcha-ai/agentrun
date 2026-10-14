@@ -4,6 +4,7 @@ import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-
 import { Type } from "typebox";
 import type { App } from "../src/home/app.ts";
 import { runMain } from "../src/home/main.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 
 /** An app whose one tool leaves a line in the workspace, run as a whole runner program. */
 const app: App = (ctx) => {
@@ -15,7 +16,7 @@ const app: App = (ctx) => {
 			await appendFile(join(ctx.workspace, "effects.log"), `${args.n}\n`);
 			// Said on the output to show that it does not reach the link.
 			console.log(`did ${args.n}`);
-			return { content: [{ type: "text", text: `did ${args.n}` }] };
+			return textResult(`did ${args.n}`);
 		},
 	});
 	const registry = createRegistry();

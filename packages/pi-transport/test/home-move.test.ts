@@ -13,6 +13,7 @@ import { localBoxes } from "../src/box/local.ts";
 import type { App } from "../src/home/app.ts";
 import { type HomeOptions, MOVE_ENTRY, openHome } from "../src/home/run.ts";
 import { moveFile, moveWorkspace } from "../src/home/workspace.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 
 const context = BACKGROUND_CONTEXT;
 const ROUNDS = 5;
@@ -59,7 +60,7 @@ describe("a home moves between two boxes with no shared disk", () => {
 						if (api.env === undefined) throw new Error("the tool has no environment");
 						getOrThrow(await api.env.appendFile("effects.log", `${args.n}\n`, context));
 						await sleep(10);
-						return { content: [{ type: "text", text: `did ${args.n}` }] };
+						return textResult(`did ${args.n}`);
 					},
 				});
 				const app: App = (ctx) => {

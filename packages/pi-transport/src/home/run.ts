@@ -109,19 +109,26 @@ export interface Home {
 	seal(context: Context): Promise<Result<Seal, HomeError>>;
 	/** The move was abandoned and the lease still names this home at `epoch`: open the sealed store again. */
 	reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>>;
-	/** The session lives elsewhere from `epoch` on: stop if anything runs, and delete this copy. */
+	/**
+	 * The session lives elsewhere from `epoch` on: stop if anything runs, delete this copy, and keep a note of `epoch`
+	 * beside the store, so that no order at it or before opens a store here again, in this process or a new one.
+	 */
 	retire(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>>;
 	/** Stop without sealing, as a kill would but in order. The next `resume` at the same epoch opens the store again. */
 	close(context: Context): Promise<void>;
 }
 
-/** What a home remembers on disk beside its store: which epoch's store it verified here, and whether it sealed it. */
+/**
+ * What a home remembers on disk beside its store: which epoch's store it verified here, whether it sealed it, and
+ * whether it retired at that epoch, after which no order at it or before opens a store here again.
+ */
 type Marker = {
 	readonly v: 1;
 	readonly epoch: number;
 	readonly seal?: Seal;
 	readonly move?: string;
 	readonly sealed?: Seal;
+	readonly retired?: true;
 };
 
 class SessionHome implements Home {
@@ -132,7 +139,8 @@ class SessionHome implements Home {
 	#app: AppOptions | undefined;
 	#marker: Marker | undefined;
 	#drained = false;
-	#retired = false;
+	/** The orders that open, close or delete, one at a time: none finds another half done. */
+	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(options: HomeOptions) {
 		this.#options = options;
@@ -146,7 +154,7 @@ class SessionHome implements Home {
 	}
 
 	get state(): HomeState {
-		if (this.#retired) return "retired";
+		if (this.#marker?.retired === true) return "retired";
 		if (this.#harness !== undefined) return "open";
 		return this.#marker?.sealed === undefined ? "closed" : "sealed";
 	}
@@ -159,11 +167,34 @@ class SessionHome implements Home {
 		return this.#harness;
 	}
 
-	async resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
+	resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
+		return this.#serial(() => this.#resume(order, context));
+	}
+
+	async #resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
 		if (this.#harness !== undefined) return err(new HomeError("wrong_state", "the session already runs here"));
 		const marker = await this.#readMarker();
 		if (!marker.ok) return marker;
 		const known = marker.value;
+		if (known?.retired === true) {
+			if (order.epoch <= known.epoch) {
+				return err(
+					new HomeError(
+						"stale_epoch",
+						`this home retired at epoch ${known.epoch}; the order is for ${order.epoch}`,
+					),
+				);
+			}
+			// The session left this place: it comes back only as a copy that a seal vouches for, never as a new store.
+			if (order.seal === undefined) {
+				return err(
+					new HomeError(
+						"not_verified",
+						`this home retired at epoch ${known.epoch}; a resume at a later epoch needs the seal of the copy it brings`,
+					),
+				);
+			}
+		}
 		if (known !== undefined && order.epoch < known.epoch) {
 			return err(
 				new HomeError("stale_epoch", `this home is at epoch ${known.epoch}; the order is for ${order.epoch}`),
@@ -222,14 +253,18 @@ class SessionHome implements Home {
 		this.#gate?.open();
 	}
 
-	async seal(context: Context): Promise<Result<Seal, HomeError>> {
+	seal(context: Context): Promise<Result<Seal, HomeError>> {
+		return this.#serial(() => this.#seal(context));
+	}
+
+	async #seal(context: Context): Promise<Result<Seal, HomeError>> {
 		const harness = this.#harness;
 		const marker = this.#marker;
 		if (harness === undefined || marker === undefined) {
 			return err(new HomeError("wrong_state", "the session does not run here"));
 		}
 		if (!this.#drained) return err(new HomeError("wrong_state", "a seal follows a drain that completed"));
-		await this.close(context);
+		await this.#close(context);
 		const sealed = await sealStore(this.#options.store, context);
 		// The store is closed and whole either way. Without a seal the host tells this home to resume.
 		if (!sealed.ok) return err(new HomeError("store", `could not seal the store: ${sealed.error.message}`));
@@ -238,7 +273,11 @@ class SessionHome implements Home {
 		return sealed;
 	}
 
-	async reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
+	reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
+		return this.#serial(() => this.#reopen(order, context));
+	}
+
+	async #reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
 		if (this.#harness !== undefined) return err(new HomeError("wrong_state", "the session already runs here"));
 		const marker = await this.#readMarker();
 		if (!marker.ok) return marker;
@@ -255,7 +294,11 @@ class SessionHome implements Home {
 		return this.#open({ epoch: order.epoch }, context);
 	}
 
-	async retire(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
+	retire(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
+		return this.#serial(() => this.#retire(order, context));
+	}
+
+	async #retire(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
 		const marker = await this.#readMarker();
 		if (!marker.ok) return marker;
 		if (marker.value !== undefined && order.epoch <= marker.value.epoch) {
@@ -267,19 +310,34 @@ class SessionHome implements Home {
 			);
 		}
 		// The lease names another home. Whatever still runs here runs for nobody.
-		await this.close(context);
+		await this.#close(context);
+		// The note goes first: a home that dies while it deletes still refuses every order at this epoch or before.
+		const noted = await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
+		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {
-			for (const path of [store, `${store}-wal`, `${store}-shm`, this.#markerPath]) await rm(path, { force: true });
+			for (const path of [store, `${store}-wal`, `${store}-shm`]) await rm(path, { force: true });
 		} catch (cause) {
 			return err(new HomeError("store", `could not delete this home's copy: ${toError(cause).message}`, cause));
 		}
-		this.#marker = undefined;
-		this.#retired = true;
 		return ok(undefined);
 	}
 
-	async close(context: Context): Promise<void> {
+	close(context: Context): Promise<void> {
+		return this.#serial(() => this.#close(context));
+	}
+
+	/** An order runs once every order given before it has ended, whatever they returned. */
+	#serial<T>(work: () => Promise<T>): Promise<T> {
+		const run = this.#queue.then(work, work);
+		this.#queue = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	async #close(context: Context): Promise<void> {
 		const harness = this.#harness;
 		this.#harness = undefined;
 		this.#gate = undefined;
@@ -361,6 +419,13 @@ class SessionHome implements Home {
 				await file.close();
 			}
 			await rename(temp, this.#markerPath);
+			// The rename changes the directory: synced too, so a marker that was written stays written after a power cut.
+			const folder = await open(dirname(this.#markerPath), "r");
+			try {
+				await folder.sync();
+			} finally {
+				await folder.close();
+			}
 		} catch (cause) {
 			return err(new HomeError("store", `could not write this home's marker: ${toError(cause).message}`, cause));
 		}
