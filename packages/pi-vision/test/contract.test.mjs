@@ -58,7 +58,7 @@ test("vision.see is a code-mode global, not a tool: a namespaced name, a doc com
   assert.equal(VISION_SEE.name, "vision.see");
   assert.ok(Object.isFrozen(VISION_SEE));
   assert.deepEqual(Object.keys(VISION_SEE), ["name", "description", "signature"], "no parameters schema and no replay class: it enters no tool list");
-  assert.match(VISION_SEE.signature, /^\(request: \{ ask: string; paths\?: string\[\]; images\?: .*fragments\?: string\[\] \}\): Promise<\{ text: string; model: string; costUsd: number \| null; receipt: string \| null; kept\?: true \}>$/);
+  assert.match(VISION_SEE.signature, /^\(request: \{ ask: string; paths\?: string\[\]; images\?: .*fragments\?: string\[\] \}\): Promise<\{ text: string; model: string; costUsd: number \| null; receipts: string\[\]; kept\?: true \}>$/);
 });
 
 test("the miss codes keep the three hosts already write, and add the rest", () => {

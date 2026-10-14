@@ -8,7 +8,7 @@ description: Look at many PDF pages, a long video, many images or one region of 
 Write the code that does the looking. In code mode, `tools.bash({ command })` runs a command and returns its output, and
 `vision.see({ ask, paths, images, fragments })` has a vision model answer `ask` about images. It fits each image to the
 model's limits and sends as few requests as fit, so you never resize or count. It returns
-`{ text, model, costUsd, receipt, kept }`.
+`{ text, model, costUsd, receipts, kept }`, with one receipt a request, in order.
 
 - `paths` are image files (PNG, JPEG, WebP, GIF), or short video clips when the vision model takes video. `images` are
   image blocks you already hold.
@@ -16,7 +16,7 @@ model's limits and sends as few requests as fit, so you never resize or count. I
   image, and the answer says where it saw a thing. Use `file#page=N`, `file#t=seconds` or
   `file#xywh=percent:x,y,w,h`. A path names itself by default.
 - When the images take several requests, `text` has one part a request, each headed by its fragments and receipt.
-- Cite the receipt and the place, such as `report.pdf#page=7`.
+- Cite the receipts and the place, such as `report.pdf#page=7`.
 - A look that cannot be made throws an Error whose message starts with its code: `no_vision_route` (no vision model in
   this run), `over_budget`, `unsupported`, `look_failed`. Catch it to go on with the rest.
 - Asking about the same images with the same question again in the same call costs nothing: the answer is kept.
@@ -39,7 +39,7 @@ for (let i = 0; i < pages.length; i += 10) {
     paths: batch.map((name) => `.look/pages/${name}`),
     fragments: batch.map((name) => `report.pdf#page=${parseInt(name.slice(2), 10)}`),
   });
-  answers.push(`${seen.text}\n(receipt: ${seen.receipt})`);
+  answers.push(`${seen.text}\n(receipts: ${seen.receipts.join(", ")})`);
 }
 return answers.join("\n\n");
 ```
@@ -58,7 +58,7 @@ const seen = await vision.see({
   paths: times.map((t) => `.look/frames/${t}.jpg`),
   fragments: times.map((t) => `talk.mp4#t=${t}`),
 });
-return `${seen.text}\n(receipt: ${seen.receipt}, $${seen.costUsd})`;
+return `${seen.text}\n(receipts: ${seen.receipts.join(", ")}; $${seen.costUsd})`;
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes

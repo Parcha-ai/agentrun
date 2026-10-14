@@ -50,9 +50,9 @@ test("a script sees image blocks and files together, packed two a request, and g
     [["text", "r.pdf#page=2"], ["image", "r.pdf#page=2"], ["text", "r.pdf#page=3"], ["image", "r.pdf#page=3"]],
   ], "each image beside the line that names it, two a request, in order");
   assert.ok(eyes.ledger.every((r) => r.ask === "What does each page say?"));
-  const { text, model, costUsd, receipt, kept } = seen.value;
+  const { text, model, costUsd, receipts, kept } = seen.value;
   assert.equal(text, "(shot.png, r.pdf#page=1; look filed at evidence/see/1.md)\nsaw shot.png and r.pdf#page=1\n\n(r.pdf#page=2, r.pdf#page=3; look filed at evidence/see/2.md)\nsaw r.pdf#page=2 and r.pdf#page=3");
-  assert.deepEqual([model, receipt, kept], ["fake-eyes", "evidence/see/1.md, evidence/see/2.md", undefined]);
+  assert.deepEqual([model, receipts, kept], ["fake-eyes", ["evidence/see/1.md", "evidence/see/2.md"], undefined], "one receipt a request, in order");
   assert.equal(costUsd, rows.looks.reduce((sum, look) => sum + look.costUsd, 0));
   assert.ok(costUsd > 0);
   assert.deepEqual(rows.looks.map((look) => [look.tool, look.source, look.kept]), [["vision.see", "shot.png, r.pdf#page=1", undefined], ["vision.see", "r.pdf#page=2, r.pdf#page=3", undefined]], "the host is told of each request once");

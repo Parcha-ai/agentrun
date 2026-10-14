@@ -17,10 +17,10 @@ import { packRequests, type Part } from "./plan.js";
 
 /** What the agent's code asks: `fragments[i]` names medium `i`, the images first and then the paths. */
 export type SeeRequest = { readonly ask: string; readonly paths?: readonly string[]; readonly images?: readonly ImageContent[]; readonly fragments?: readonly string[] };
-/** The answer, the eyes' model, the looks' price (null when one is unknown), the receipts filed (comma separated, null
- *  when none was), and `kept` when this request asked nothing: each answer was the call's already, kept in its memo or
- *  being asked by another request of the call. */
-export type SeeAnswer = { readonly text: string; readonly model: string; readonly costUsd: number | null; readonly receipt: string | null; readonly kept?: true };
+/** The answer, the eyes' model, the looks' price (null when one is unknown), the receipts filed, one a request in order
+ *  (none for a request the host's sink filed nothing for), and `kept` when this request asked nothing: each answer was
+ *  the call's already, kept in its memo or being asked by another request of the call. */
+export type SeeAnswer = { readonly text: string; readonly model: string; readonly costUsd: number | null; readonly receipts: readonly string[]; readonly kept?: true };
 
 /** A look `vision.see` could not make, thrown once it is filed and told; the message starts with the code. */
 export class SeeMiss extends Error {
@@ -150,5 +150,5 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     kept &&= readBack || shared !== undefined;
     model = look.model;
   }
-  return { text: texts.join("\n\n"), model, costUsd, receipt: receipts.length ? receipts.join(", ") : null, ...(kept ? { kept: true } : {}) };
+  return { text: texts.join("\n\n"), model, costUsd, receipts, ...(kept ? { kept: true } : {}) };
 }

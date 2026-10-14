@@ -51,7 +51,7 @@ test("many PDF pages: rendered, asked in batches of ten, each page cited by its 
   assert.deepEqual(requests.flat(), pages, "every page once, in order, named by its page");
   assert.deepEqual(requests.map((r) => r.length), [8, 2, 2], "a batch of ten is two requests within eight images; the last batch one");
   assert.match(value, /^\(report\.pdf#page=1, .* report\.pdf#page=8; look filed at evidence\/skill\/1\.md\)\nsaw report\.pdf#page=1, /);
-  assert.match(value, /\(receipt: evidence\/skill\/3\.md\)$/);
+  assert.match(value, /\(receipts: evidence\/skill\/1\.md, evidence\/skill\/2\.md\)\n\n.*\(receipts: evidence\/skill\/3\.md\)$/s);
   assert.equal(looks.length, 3);
 });
 
@@ -60,7 +60,7 @@ test("a long video: a frame every ten seconds by seek, each cited by its time; r
   assert.deepEqual(requests.flat(), ["talk.mp4#t=0", "talk.mp4#t=10", "talk.mp4#t=20", "talk.mp4#t=30"]);
   const frames = path.join(cwd, ".look", "frames");
   assert.ok(fs.readdirSync(frames).every((name) => imageHeader(fs.readFileSync(path.join(frames, name)))?.width === 320));
-  assert.match(value, /^saw talk\.mp4#t=0, talk\.mp4#t=10, talk\.mp4#t=20, talk\.mp4#t=30\n\(receipt: evidence\/skill\/1\.md, \$\d/);
+  assert.match(value, /^saw talk\.mp4#t=0, talk\.mp4#t=10, talk\.mp4#t=20, talk\.mp4#t=30\n\(receipts: evidence\/skill\/1\.md; \$\d/);
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=15:size=320x240:rate=5", "-pix_fmt", "yuv420p", path.join(cwd, "talk.mp4")]);
   assert.deepEqual((await example(longVideo)).requests.flat(), ["talk.mp4#t=0", "talk.mp4#t=10"]);
 });
