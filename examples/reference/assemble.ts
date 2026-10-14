@@ -8,16 +8,16 @@ import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry, defineDoc, type ConversationId, type Harness, type Tx } from '@earendil-works/pi-durable';
+import { createRegistry, defineDoc, type ConversationId, type Harness } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
-  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+  createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
-import { createVisionExtension } from '@parcha/pi-vision/durable';
+import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
@@ -64,8 +64,14 @@ function runEnv(claim: Claim): RunEnv {
   }), { id: base.id, cleanup: base.cleanup });
 }
 
+/** What a caller may change about the run. `env`: where the run's tools act. `vision`: options for pi-vision's extension, merged over
+ *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
+ *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
+ *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
-export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
+export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
   // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
   // such a directory would start the run over, so it is refused before anything runs.
   const earlier = join(place.root, 'durable', 'run.sqlite');
@@ -84,12 +90,19 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
     onSession: (row, change) => status({ source: 'browser', change, row }),
   });
-  const vision = createVisionExtension({
+  const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,
     scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
+  };
+  // The caller's options go over the example's; its onLook and onMiss run after the example's own, which keep recording.
+  const more = options.vision?.({ get harness() { return opened; } }) ?? {};
+  const vision = createVisionExtension({
+    ...visionBase, ...more,
+    onLook: async (look) => { await visionBase.onLook?.(look); await more.onLook?.(look); },
+    onMiss: async (miss) => { await visionBase.onMiss?.(miss); await more.onMiss?.(miss); },
   });
   const nodes = nodeRunner({
     agent: () => ({ model: host.models.lead }),
@@ -105,7 +118,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
-    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
+    // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
+    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -137,6 +151,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
+    // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
+    ...(host.record?.attach ? { beforeResume: async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } } : {}),
   });
   const harness = durable.harness;
   opened = harness;
@@ -170,31 +186,36 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   }
 }
 
-/** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
- *  one, before the task's driver opens the journal. A call the door never answered stays unknown, and so does one whose
- *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
- *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
-async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
-  const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
-  if (!request) return;
-  const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
-  try {
-    const effects = journal.effects();
-    for (const effect of effects) {
-      const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
-      const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
-      if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
-    }
-  } finally {
-    await journal.close();
+/** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] };
+/** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
+export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
+
+/** The driver's `reconcile`: completes each effect a killed process left unknown that the host can answer (a kept answer, or `rerun`), and
+ *  reports the applied call it found, once, in the receipt. The driver appends receipt.calls to the calls the effect already holds, so a
+ *  call that was reported before the kill stays on record and nothing is replaced. */
+export async function reconcileEffects(unknown: UnknownEffect[], complete: Complete, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
+  for (const effect of unknown) {
+    if (!effect.intent) continue;
+    // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
+    const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
+    // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const answer = kept ?? rerunAnswer;
+    if (!answer) continue;
+    // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied
+    // entry the receipt reports one now, and when one is listed it adds none.
+    // A kept answer is evidence of a call that applied once: listed once, never twice. A rerun is a NEW execution, so it is a call of its own
+    // however many the effect already lists.
+    const record = { outcome: 'applied' as const, tool: effect.intent.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' };
+    const listed = kept ? appliedOnce(effect.calls ?? [], record) : { calls: [...(effect.calls ?? []), record], added: true };
+    await complete(effect.id, answer.value, { intent: { tool: effect.intent.tool, args: answer.args }, ...(listed.added ? { calls: [listed.calls.at(-1)] } : {}) });
   }
 }
 
-/** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
-function taskCommit({ runtime, context }: Pick<WorkflowInvocation, 'runtime' | 'context'>) {
-  return async <T,>(change: (tx: Tx) => T | Promise<T>) => {
-    let result!: T;
-    await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
-    return result;
-  };
+/** `calls` with `record` (an applied call) added, unless an applied call is already listed: a host lists each applied call exactly once. */
+export function appliedOnce(calls: unknown[], record: { outcome: 'applied' } & Record<string, unknown>): { calls: unknown[]; added: boolean } {
+  if (calls.some((call) => (call as { outcome?: unknown } | null)?.outcome === 'applied')) return { calls, added: false };
+  return { calls: [...calls, record], added: true };
 }
+
