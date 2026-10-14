@@ -11,12 +11,13 @@ import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
 /** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
 export type Node =
   | string
-  | { tag: string; class?: string; path?: string; title?: string; children?: Node[] }
+  | { tag: string; class?: string; path?: string; title?: string; vars?: Record<string, number>; children?: Node[] }
   | { tag: 'img'; blob: string; alt: string; class?: string }
   | { tag: 'a'; blob: string; text: string; class?: string }
   | { tag: 'frame'; session: string; class?: string };
 
-export const h = (tag: string, props: { class?: string; path?: string; title?: string } = {}, ...children: (Node | false | undefined)[]): Node =>
+/** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
+export const h = (tag: string, props: { class?: string; path?: string; title?: string; vars?: Record<string, number> } = {}, ...children: (Node | false | undefined)[]): Node =>
   ({ tag, ...props, children: children.filter((child): child is Node => child !== false && child !== undefined) });
 
 /** The recording the manifest's `baseline` names, folded by the shell as it folds the one on screen: its label, its
@@ -24,12 +25,23 @@ export const h = (tag: string, props: { class?: string; path?: string; title?: s
 export type BaselineView = { label: string; counters: Counters; ms: number | null; providers?: 'real' | 'scripted' };
 /** What the shell hands a view: the time of the point, the focused path (a view input: no line is dropped for it), and
  *  the baseline when the manifest names one (a real recording, never typed-in numbers). */
-export type ViewContext = { t: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted' };
+export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted' };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');
 
-export type Panel<S> = Fold<S> & { id: string; title: string; view(state: S, context: ViewContext): Node };
+export type Panel<S> = Fold<S> & {
+  id: string;
+  title: string;
+  /** The shell redraws the panels about ten times a second while playing, so a view that moves with `now` moves between stops. */
+  animated?: boolean;
+  /** True for a recording whose story this panel tells: the shell shows it first, under the title, with the playback controls right under it. */
+  featured?(lines: Line[]): boolean;
+  view(state: S, context: ViewContext): Node;
+};
+
+/** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
+export const featuredPanel = <S>(panels: Panel<S>[], lines: Line[]): Panel<S> | undefined => panels.find((panel) => panel.featured?.(lines) === true);
 
 /** The extensions' panels, in the order they register (each when its module loads). */
 export const registry: Panel<any>[] = [];
