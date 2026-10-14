@@ -74,5 +74,6 @@ test('settle reports an applied call exactly once: from the kept answer when non
   assert.deepEqual(appliedOnce([{ outcome: 'failed' }], { outcome: 'applied' }), { calls: [{ outcome: 'failed' }, { outcome: 'applied' }], added: true });
   // the record that results folds to repeated 0
   const line = (commit, gen, calls, snapshot) => ({ channel: 'durable', source: 'workflow', gen, commit, order: 0, t: commit, ...(snapshot ? { snapshot: true } : {}), kind: 'agentrun.effects', data: { doc: 'agentrun.effects', key: 'run\u0000step#call:0', value: { status: 'completed', calls } } });
-  assert.equal(fold([line(1, 1, [{ outcome: 'failed' }]), line(2, 2, [{ outcome: 'failed' }, { outcome: 'applied' }])]).repeated.effects, 0);
+  const counted = fold([line(1, 1, [{ outcome: 'failed' }]), line(2, 2, [{ outcome: 'failed' }, { outcome: 'applied' }])]);
+  assert.deepEqual([counted.repeated, counted.repeatedNotMeasured], [0, 0]);
 });
