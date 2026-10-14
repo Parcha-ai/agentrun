@@ -21,6 +21,8 @@ async function code(box: Box, argv: readonly string[]): Promise<number> {
 
 /** Starts `argv` in the box with its pid written to the store's pid file, as a runner writes it; does not wait for it. */
 async function startWithPid(place: Place, argv: readonly string[]) {
+	// A pid file left by the last process would satisfy the wait below before this one wrote its own.
+	await code(place.box, ["rm", "-f", `${place.store}.pid`]);
 	const script = 'mkdir -p "$(dirname "$1")" && echo $$ > "$1" && shift && exec "$@"';
 	getOrThrow(await place.box.exec(["sh", "-c", script, "sh", `${place.store}.pid`, ...argv], {}, context));
 	for (let i = 0; i < 50 && (await code(place.box, ["test", "-s", `${place.store}.pid`])) !== 0; i += 1)
