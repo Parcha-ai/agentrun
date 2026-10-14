@@ -54,7 +54,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // The call's id is stable across incarnations, so it is the idempotency key a real paid API would want.
       const answer = await dispatch(api, "charge", call.callId, { invoice: args.invoice, amount: args.amount }, { writer: `${host} generation ${generation}` });
       log("charged", { invoice: args.invoice, key: call.callId, apiCall: answer.seq, generation });
-      return { content: [{ type: "text", text: `charged invoice ${args.invoice}: API call #${answer.seq}` }] };
+      // The model's text is the tool's retained output: pi-durable 1.0.4 and 1.1 would read a result's `content`, 1.2 its
+      // `output`, so a result that names neither works on every version the peers accept.
+      call.output(`charged invoice ${args.invoice}: API call #${answer.seq}`);
+      return {};
     },
   });
   const registry = createRegistry();

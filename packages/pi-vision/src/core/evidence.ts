@@ -9,7 +9,7 @@ import { CONTRACT_VERSION } from "./contract.js";
 import type { Kind } from "./kinds.js";
 import type { MissEvent } from "./misses.js";
 import type { Fit } from "./plan.js";
-import type { Usage } from "./host.js";
+import type { CallContext, Json, Usage } from "./host.js";
 
 export type LookRecord = {
   readonly tool: "look";
@@ -29,12 +29,17 @@ export type LookRecord = {
     /** The look's memo key: SHA-256 of the source hash, selector, question, eyes model, contract version and plan. */
     readonly key: string;
     readonly tokens_in?: number; readonly tokens_out?: number;
-    /** Null when the price is not known, never 0; 0 when another service billed the look (see `via`). */
+    /** Null when the price is not known, never 0; 0 when another service billed the look (see `via`). A failed look that
+     *  sent no request is 0 with no tokens; one answered with no text has that answer's price (and tokens, when it
+     *  has them); one whose request threw, and may have been billed, has none. */
     readonly cost_usd?: number | null;
     readonly provider?: string;
     readonly derived?: readonly string[];
     /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
     readonly units_dropped?: string;
+    /** Set when the answer was read back from the call's memo: an earlier attempt of the call asked and paid for it, and
+     *  this one made no request. Its key's other records are that look's, not another payment. */
+    readonly kept?: true;
   };
   /** The answer, "shown to the model natively", or the miss. */
   readonly body: string;
@@ -59,6 +64,10 @@ export type LookEvent = {
   /** Null when the price is not known; 0 when `billedBy` names another service. */
   readonly costUsd: number | null;
   readonly billedBy?: string;
+  /** The host heard of this look in an earlier attempt of the call: do not charge it again. A look whose answer was read
+   *  back but whose host was never told (`record.facts.kept` alone) is charged once, here. A call cut after this hook
+   *  returns and before the guard keeps that it was told tells it again without `kept`: at least once. */
+  readonly kept?: true;
   /** Where the record was filed, or null when the sink filed nothing. */
   readonly receipt: string | null;
   readonly record: LookRecord;
@@ -95,7 +104,7 @@ export function receiptFacts(record: LookRecord): Record<string, string | number
     ["original", f.original], ["shown", f.shown], ["shown_blocks", f.shown_blocks], ["shown_bytes", f.shown_bytes],
     ["sha256", f.sha256], ["kind", f.kind], ["fragment", f.fragment], ["fit", f.fit?.reduction], ["key", f.key],
     ["tokens_in", f.tokens_in], ["tokens_out", f.tokens_out], ["cost_usd", f.cost_usd === null ? "unknown" : f.cost_usd],
-    ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped],
+    ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped], ["kept", f.kept ? "true" : undefined],
   ];
   return Object.fromEntries(lines.filter((line): line is [string, string | number] => line[1] !== undefined && line[1] !== ""));
 }
@@ -106,15 +115,44 @@ export async function quietly<T>(hook: ((value: T) => void | Promise<void>) | un
 }
 
 /** File one look and tell the host: the receipt path, or null when the sink filed nothing or failed. */
-export async function fileLook(filing: Filing, tool: string, record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string }): Promise<string | null> {
+export async function fileLook(filing: Filing, tool: string, record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string; readonly kept?: true }): Promise<string | null> {
   let receipt: string | null = null;
   try { receipt = (await filing.evidence.file(filing.label, record))?.path ?? null; } catch { /* a receipt never fails the call it files */ }
   if (record.status === "ok") {
     await quietly(filing.onLook, {
       conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),
       fragment: record.facts.fragment, model: record.args.model, usage: answer?.usage ?? null, costUsd: answer?.costUsd ?? null,
-      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), receipt, record,
+      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), ...(answer?.kept ? { kept: true } : {}), receipt, record,
     });
   }
   return receipt;
+}
+
+/** `ask`'s answer kept as the call's memo `vision:look:<key>` before anything reports it, and whether it was read back:
+ *  an earlier attempt of the call asked and paid, and this one asked nothing. */
+export async function keptAnswer<T>(memo: CallContext["memo"], key: string, ask: () => Promise<T>): Promise<{ readonly answer: T; readonly readBack: boolean }> {
+  let asked = false;
+  const now = async () => { asked = true; return ask(); };
+  const answer = memo ? await memo(`vision:look:${key}`, async () => (await now()) as unknown as Json) as unknown as T : await now();
+  return { answer, readBack: !asked };
+}
+
+/** Thrown inside the told memo's compute so that a look whose host's `onLook` threw keeps no memo. */
+const UNHEARD = new Error("the host's onLook did not return");
+
+/** A look filed and told through `file`, then kept as the call's memo `vision:told:<key>` once the host's `onLook` has
+ *  returned; a call run again that finds it files and tells the look as told before (`file(filing, true)`). A hook that
+ *  throws leaves no memo, so a rerun tells the host again. */
+export async function fileTold(memo: CallContext["memo"], key: string, filing: Filing, file: (filing: Filing, told: boolean) => Promise<string | null>): Promise<string | null> {
+  const hook = filing.onLook;
+  let heard = !hook, now = false, receipt: string | null = null;
+  const tracked: Filing = hook ? { ...filing, onLook: async (look) => { await hook(look); heard = true; } } : filing;
+  const tell = async () => { now = true; receipt = await file(tracked, false); if (!heard) throw UNHEARD; return receipt; };
+  try {
+    const kept = memo ? await memo(`vision:told:${key}`, tell) : await tell();
+    return now ? kept : file(filing, true);
+  } catch (error) {
+    if (error !== UNHEARD) throw error;
+    return receipt;
+  }
 }

@@ -6,8 +6,8 @@
 // the eyes take in one, each filed as one look.
 
 import { formatFragment } from "./fragments.js";
-import { blocksSha256, fileLook, lookKey, type Filing, type LookRecord } from "./evidence.js";
-import type { CallContext, CallSetup, EyesAnswer, ImageContent, Json, TextContent, ToolResult, Usage } from "./host.js";
+import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import type { CallContext, CallSetup, EyesAnswer, ImageContent, TextContent, ToolResult, Usage } from "./host.js";
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
@@ -140,9 +140,10 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
   // A receipt is filed only for media a door named; another tool's image is still routed and its looks and misses still
   // reach the host's hooks, with nothing to cite.
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: media.path ? setup.evidence : { file: async () => null }, onLook: setup.onLook, onMiss: setup.onMiss };
-  const miss = async (what: string, unit: readonly ImageContent[], cause: Miss): Promise<TextContent> => {
+  // A miss filed before any request to the eyes cost nothing; one after a request says what it knows of that request.
+  const miss = async (what: string, unit: readonly ImageContent[], cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<TextContent> => {
     const m = { ...cause, reason: linkSafe(cause.reason) };
-    const receipt = await reportMiss(filing, tool, record(unit, false, m.model ?? "no vision route", ""), m);
+    const receipt = await reportMiss(filing, tool, record(unit, false, m.model ?? "no vision route", "", spent), m);
     return { type: "text", text: `(${what} withheld for this model and not described: ${m.reason}.${saved ? ` The file is saved at ${saved}.` : ""}${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[m.code]})` };
   };
 
@@ -220,25 +221,27 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
         : { type: "image", data: block.data, mimeType: block.mimeType, width: (block as Sized).width, height: (block as Sized).height, fragment: source },
     ]);
     let failed: Miss;
+    // A request that threw may still have been billed: its price is not known, so none is filed.
+    let spent: Partial<LookRecord["facts"]> = {};
     try {
-      // The answer is kept before the result that reports it, so a call run again after a crash does not pay twice.
-      const see = () => eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal);
-      const look = call.memo ? await call.memo(`vision:look:${key}`, async () => (await see()) as unknown as Json) as unknown as EyesAnswer : await see();
+      const { answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, key, () => eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal));
+      // pi counts a result's usage only when it commits the result, and a kept answer's result never committed.
       usage = addUsage(usage, look.usage);
+      const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
       if (look.text.trim()) {
-        const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}) };
-        const receipt = await fileLook(filing, tool, record(unit, false, look.model, look.text.trim(), facts), look);
+        const receipt = await fileTold(call.memo, key, filing, (to, told) => fileLook(to, tool, record(unit, false, look.model, look.text.trim(), facts), told ? { ...look, kept: true } : look));
         const head = `(${what} seen for you by ${look.model}${ask ? ` \u2014 your question: ${ask}` : ""}${saved ? `; the file is saved at ${saved}` : ""}${receipt ? `; look filed at ${receipt}` : ""}:)`;
         const answer: TextContent = { type: "text", text: `${head}\n${look.text.trim()}` };
         answered.set(key, answer);
         return answer;
       }
       failed = { code: "look_failed", reason: `the vision route ${look.model} returned no text`, model: look.model };
+      spent = facts;
     } catch (error) {
       if (call.signal?.aborted) throw error;
       failed = { code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model };
     }
-    return miss(what, unit, failed);
+    return miss(what, unit, failed, spent);
   };
 
   // A block is fitted to the limits of the model that will see it: the lead's when the lead takes images, else the

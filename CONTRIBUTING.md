@@ -12,7 +12,7 @@ Tests use scripted adapters and must not require model credentials. Package veri
 
 Keep provider configuration and application policy outside the interpreter. Integrate through `runNode`, `runJudge`, or `runEffect`. For a behavior change, add a test that reproduces the failure and checks the result a caller depends on. Keep expected outcomes independent of the implementation. Mock external services at adapter boundaries.
 
-Document breaking changes and failure behavior. After changing workflow types, regenerate the editor schema with `node scripts/generate-schema.mjs`. For installation or packaging changes, also run `npm run export:source` and `npm run verify:source`. The source verifier builds the exported archive in an empty directory and exercises the offline examples.
+Record a change in `changes/<slug>.md`, one file per pull request (front matter naming its packages and kind, then the text of one changelog bullet; see [changes/README.md](changes/README.md)). Never edit an `Unreleased` section: `node scripts/changes.mjs --check` fails a change that does, and the release folds the files into the changelogs. Document breaking changes and failure behavior there. After changing workflow types, regenerate the editor schema with `node scripts/generate-schema.mjs`. For installation or packaging changes, also run `npm run export:source` and `npm run verify:source`. The source verifier builds the exported archive in an empty directory and exercises the offline examples.
 
 ## Changing workflow behavior
 

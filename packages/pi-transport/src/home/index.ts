@@ -37,6 +37,16 @@ export {
 } from "./host.ts";
 export { KEYS_EXTENSION, type KeyedRequest, requestKey } from "./keys.ts";
 export {
+	LaunchError,
+	type LaunchErrorCode,
+	type LaunchPhase,
+	type LaunchSpec,
+	type LaunchState,
+	launch,
+	launchStatus,
+	stopLaunch,
+} from "./launch.ts";
+export {
 	type Frame,
 	LINK_VERSION,
 	type Link,

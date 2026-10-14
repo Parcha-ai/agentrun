@@ -226,6 +226,25 @@ test("a recording by handle: its source answers the question about the window, a
   assert.equal(asks.length, 2, "a refused read asks nothing");
 });
 
+test("a recording read again in a call's rerun reads the reviewer's kept answer: asked and paid once, filed as kept, told as kept only when told before", async (t) => {
+  const asks = [];
+  const session = { via: "svc-reviewer", look: async (request) => { asks.push(request); return { model: "m", text: "0:04 a form", costUsd: 0.004, billedBy: "svc" }; } };
+  const r = await rig({}, { sources: { session } });
+  t.after(() => r.dir.remove());
+  const kept = new Map();
+  const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
+  const read = () => readMedia(r.env, { path: "session:sess_1", ask: "what is shown?" }, { ...r.call(undefined), memo }, r.setup, r.kinds);
+  const first = await read();
+  const again = await read();
+  assert.equal(asks.length, 1, "the reviewer is asked once");
+  assert.equal(text(again), text(first).replace("1-look.md", "2-look.md"));
+  assert.deepEqual(r.filed.map((f) => f.facts.kept), [undefined, true], "the rerun's record says no request was made");
+  assert.deepEqual(r.looks.map((l) => [l.kept, l.costUsd]), [[undefined, 0.004], [true, 0.004]], "the host told before is told the look is kept");
+  for (const key of kept.keys()) if (key.startsWith("vision:told:")) kept.delete(key);
+  await read();
+  assert.deepEqual([asks.length, r.filed[2].facts.kept, r.looks[2].kept], [1, true, undefined], "a host never told is told once, to charge it");
+});
+
 test("a recording source that bills names its price on the receipt; one that answers nothing is a failed look", async (t) => {
   const answers = [{ model: "m", text: "a form", costUsd: 0.004, billedBy: "svc" }, { model: "m", text: "  " }];
   const r = await rig({}, { sources: { session: { via: "svc-reviewer", look: async () => answers.shift() } } });
@@ -248,6 +267,28 @@ test("a recording source's failure is the read's refusal and a failed look; a ho
   t.after(() => bare.dir.remove());
   assert.match(text(await bare.read({ path: "session:sess_1" })), /^session:sess_1 names a browser session's recording, and this run has no recording reviewer/);
   assert.equal(await bare.read({ path: "evidence/session:sess_1" }), null, "only the bare handle is a handle");
+});
+
+test("a read's miss is filed as a look that sent no request, at no cost; a recording whose source answered nothing files its price, one whose source threw files none", async (t) => {
+  const spent = (filed) => filed.map((record) => { const f = receiptFacts(record); return [record.status, f.tokens_in, f.tokens_out, f.cost_usd]; });
+  const r = await rig({ pdf: { miss: "needs", reason: "no page renderer is installed" }, video: () => { throw new Error("moov atom not found"); } }, { allow: ({ path }) => (path.startsWith("private/") ? "not here" : true) });
+  t.after(() => r.dir.remove());
+  const files = [["photo.pdf", pngBytes(2, 2)], ["blob.bin", Buffer.from([0xca, 0xfe, 0, 1])], ["book.xlsx", "PK"], ["private/id.png", pngBytes(2, 2)], ["scan.pdf", PDF_HEAD], ["clip.mp4", "not a video"]];
+  for (const [path, bytes] of files) await r.dir.file(path, bytes);
+  for (const [path] of files) await r.read({ path });
+  assert.deepEqual(r.misses.map((m) => m.code), ["unsupported", "unsupported", "needs", "refused", "needs", "unreadable"]);
+  assert.deepEqual(spent(r.filed), files.map(() => ["failed", 0, 0, 0]));
+
+  const answers = [() => { throw new Error("socket hang up"); }, () => ({ model: "m", text: " ", costUsd: 0.002, billedBy: "svc" })];
+  let asks = 0;
+  const session = { via: "svc-reviewer", owns: async (id) => (id === "sess_1" ? true : "not this run's"), look: async () => answers[asks++]() };
+  const rec = await rig({}, { sources: { session } });
+  t.after(() => rec.dir.remove());
+  const kept = new Map();
+  const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
+  for (const path of ["session:sess_1", "session:sess_1", "session:sess_1", "session:sess_9"]) await readMedia(rec.env, { path }, { ...rec.call(undefined), memo }, rec.setup, rec.kinds);
+  assert.equal(asks, 2, "the empty answer is kept: read again, it is read back");
+  assert.deepEqual(rec.filed.map((record) => { const f = receiptFacts(record); return [record.status, f.cost_usd, f.provider, f.kept]; }), [["failed", undefined, undefined, undefined], ["failed", 0.002, "svc", undefined], ["failed", 0.002, "svc", "true"]], "a source that threw may have been billed; one that answered nothing names its price; a refused handle files nothing");
 });
 
 test("readsAsText: only a plain file with no media argument is the host's text read", async (t) => {

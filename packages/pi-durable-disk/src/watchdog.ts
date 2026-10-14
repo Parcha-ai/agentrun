@@ -131,7 +131,9 @@ export class LeaseWatchdog {
     Atomics.store(this.#shared, SLOT_BEAT, options.beatNs);
     Atomics.store(this.#shared, SLOT_LIMIT, BigInt(Math.round(options.limitMs * 1e6)));
     const data: WatchdogData = { buffer, checkMs: options.checkMs, instance: process.pid, ownCgroup: options.ownCgroup === true };
-    this.#worker = new Worker(WORKER_SOURCE, { eval: true, workerData: data });
+    // No inherited Node flags: the source is self-contained CommonJS and needs none of the host's, and some would make Node
+    // read it as ESM (`--input-type=module`, a host running inline ESM through -e or stdin), where `require` is undefined.
+    this.#worker = new Worker(WORKER_SOURCE, { eval: true, workerData: data, execArgv: [] });
     this.#worker.unref();
   }
 

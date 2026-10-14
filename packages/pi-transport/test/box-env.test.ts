@@ -247,6 +247,10 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 			const ran = await env.exec("echo hi", undefined, context);
 			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
 			expect(ran.ok ? "" : ran.error.message).toMatch(/is gone \(it ended with exit code 137\)/);
+			// pi has no `gone` code: the provider's own error is the cause, for a caller that must tell a lost box apart.
+			const cause = ran.ok ? undefined : ran.error.cause;
+			expect(cause).toBeInstanceOf(BoxError);
+			expect((cause as BoxError).code).toBe("gone");
 			expect((await env.listDir(".", context)).ok).toBe(false);
 			expect(box.calls.length).toBe(asked);
 		});
@@ -336,6 +340,45 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 			// pi's bash tool runs the next form of a command after a spawn error, so this must not be one.
 			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
 			expect(ran.ok ? "" : ran.error.message).toMatch(/lost the command: the stream broke/);
+		});
+	});
+
+	it("carries the provider's gone error as the cause when a command's start is what finds the box lost", async () => {
+		await withEnv(async ({ env, box }) => {
+			box.intercept((inner) => async (command, options, execContext) => {
+				if (!command.includes("pi-exec")) return inner(command, options, execContext);
+				box.end(137);
+				return err(new BoxError("unknown", "could not start the command"));
+			});
+			const ran = await env.exec("true", undefined, context);
+			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
+			expect(ran.ok ? "" : ran.error.message).toMatch(/is gone \(it ended with exit code 137\)/);
+			const cause = ran.ok ? undefined : ran.error.cause;
+			expect(cause).toBeInstanceOf(BoxError);
+			expect((cause as BoxError).code).toBe("gone");
+		});
+	});
+
+	it("carries the provider's gone error as the cause when a started command's wait is what finds the box lost", async () => {
+		await withEnv(async ({ env, box }) => {
+			box.intercept((inner) => async (command, options, execContext) => {
+				const started = await inner(command, options, execContext);
+				if (!started.ok || !command.includes("pi-exec")) return started;
+				const wait = async () => {
+					// The command ends first, in the box that is still there, so its wrapper removes its group file. A lost box takes
+					// that file with it, but this test keeps the box's state directory.
+					await started.value.wait();
+					box.end(137);
+					return err<number, BoxError>(new BoxError("unknown", "the stream broke"));
+				};
+				return ok({ ...started.value, wait });
+			});
+			const ran = await env.exec("true", undefined, context);
+			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
+			expect(ran.ok ? "" : ran.error.message).toMatch(/is gone \(it ended with exit code 137\)/);
+			const cause = ran.ok ? undefined : ran.error.cause;
+			expect(cause).toBeInstanceOf(BoxError);
+			expect((cause as BoxError).code).toBe("gone");
 		});
 	});
 

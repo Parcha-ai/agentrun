@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
+import { importsOf } from './package-imports.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -102,7 +103,7 @@ try {
       const scannedDecoded = scanned.replace(/(?:%[0-9a-f]{2})+/gi, value => { try { return decodeURIComponent(value); } catch { return value; } });
       for (const [kind, pattern] of forbid) assert.ok(!pattern.test(scanned) && !pattern.test(scannedDecoded), `${kind} found in ${manifest.name}/${name}; content omitted`);
       if (name.endsWith('.js') || name.endsWith('.d.ts')) {
-        const imports = [...content.matchAll(/(?:from\s*|import\s*\(\s*|import\s*|require\s*\(\s*)['"]([^'"]+)['"]/g)].map(match => match[1]);
+        const imports = importsOf(content);
         for (const dependency of imports) {
           if (dependency.startsWith('.')) {
             const target = resolve(dirname(join(extracted, name)), dependency);

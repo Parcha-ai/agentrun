@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -268,6 +269,18 @@ describe("the workspace barrier through a pi Harness", () => {
     assert.deepEqual(run.filesAtBarrier, [true, true], "the file was on disk when the barrier ran");
   });
 
+  it("runs for a bash command that wrote and then exited nonzero, before its error result commits", async () => {
+    // pi-durable 1.2's bash answers a nonzero exit with an error result; 1.0.4 and 1.1 throw. Either way the command may
+    // have written, so its result follows the barrier.
+    const { run, written } = await drive(async () => {}, [["bash", { command: "echo hello > a.txt; exit 3" }]]);
+    assert.equal(written, "hello\n");
+    assert.deepEqual(run.barrierCalls, ["bash"]);
+    assert.deepEqual(run.toolResultsAtBarrier, [0], "the barrier ran before the result entry committed");
+    assert.deepEqual(run.filesAtBarrier, [true], "the file was on disk when the barrier ran");
+    assert.equal(run.texts.length, 1);
+    assert.match(run.texts[0]!, /"isError":true/);
+  });
+
   it("is absent from a registry that does not install it", async () => {
     const { run, written } = await drive(undefined, [["write", { path: "a.txt", content: "x" }]]);
     assert.equal(written, "x");
@@ -321,6 +334,78 @@ describe("temporary files live under <root>/tmp", () => {
       const other = getOrThrow(await archilEnv({ root, work })({ cwd: "sub" }).createTempDir("o-", context));
       assert.equal(dirname(other), tmp);
       assert.equal((await stat(tmp)).mode & 0o777, 0o755);
+    });
+  });
+
+  it("a file tool may write inside a directory createTempDir returned (vision writes its source there), and nowhere else in tmp/", async () => {
+    await withRun(async ({ root, work }) => {
+      const factory = archilEnv({ root, work });
+      const env = factory({});
+      const dir = getOrThrow(await env.createTempDir("vision-", context));
+      getOrThrow(await env.writeFile(join(dir, "source.txt"), "media", context));
+      assert.equal(getOrThrow(await env.readTextFile(join(dir, "source.txt"), context)), "media");
+      // another environment of the same run is handed the same directory as writable
+      getOrThrow(await factory({ cwd: "sub" }).writeFile(join(dir, "again.txt"), "x", context));
+      // tmp/ itself, a directory nobody was handed, and one of another run stay read-only
+      await mkdir(join(root, "tmp", "not-handed"), { recursive: true });
+      await mkdir(join(root, "other-work"), { recursive: true });
+      const elsewhere = getOrThrow(await archilEnv({ root, work: join(root, "other-work") })({}).createTempDir("o-", context));
+      for (const path of [join(root, "tmp", "loose.txt"), join(root, "tmp", "not-handed", "x.txt"), join(elsewhere, "x.txt")]) {
+        const refused = await env.writeFile(path, "no", context);
+        assert.ok(!refused.ok && refused.error instanceof PathOutsideWorkError && refused.error.reason === "outside_work", `${path}: ${JSON.stringify(refused)}`);
+      }
+    });
+  });
+
+  it("tmp/ replaced by a symlink into a read-only root: createTempDir refuses, and creates and grants nothing there", async () => {
+    await withRun(async ({ root, work }) => {
+      const reference = join(root, "reference");
+      await mkdir(reference);
+      await writeFile(join(reference, "keep.md"), "read only");
+      const env = archilEnv({ root, work }, { readRoots: [reference] })({});
+      await symlink(reference, join(root, "tmp")); // as a command can, before the first temp dir
+      const made = await env.createTempDir("x-", context);
+      assert.ok(!made.ok, `refused: ${JSON.stringify(made)}`);
+      assert.deepEqual(readdirSync(reference), ["keep.md"], "nothing was created in the read-only root");
+      const write = await env.writeFile(join(reference, "keep.md"), "overwritten", context);
+      assert.ok(!write.ok && write.error instanceof PathOutsideWorkError);
+      assert.equal(readFileSync(join(reference, "keep.md"), "utf8"), "read only");
+    });
+  });
+
+  it("a temp dir swapped for a symlink before it is granted grants nothing beyond it: the link's target stays read-only", async () => {
+    await withRun(async ({ root, work }) => {
+      const reference = join(root, "reference");
+      await mkdir(reference);
+      await writeFile(join(reference, "keep.md"), "read only");
+      const env = archilEnv({ root, work }, { readRoots: [reference] })({});
+      confineHooks.afterTempDir = async (dir) => {
+        await rename(dir, `${dir}.moved`); // a command, between the directory's creation and its grant
+        await symlink(reference, dir);
+      };
+      try {
+        const dir = getOrThrow(await env.createTempDir("x-", context));
+        const write = await env.writeFile(join(dir, "keep.md"), "overwritten", context);
+        assert.ok(!write.ok && write.error instanceof PathOutsideWorkError && write.error.reason === "outside_work", JSON.stringify(write));
+        assert.equal(readFileSync(join(reference, "keep.md"), "utf8"), "read only");
+      } finally {
+        confineHooks.afterTempDir = undefined;
+      }
+    });
+  });
+
+  it("a tool removes the temp dir it was given, with what it wrote there, and the grant goes with it", async () => {
+    await withRun(async ({ root, work }) => {
+      const env = archilEnv({ root, work })({});
+      const dir = getOrThrow(await env.createTempDir("vision-", context));
+      getOrThrow(await env.writeFile(join(dir, "source.txt"), "media", context));
+      getOrThrow(await env.remove(dir, { recursive: true }, context));
+      assert.equal(existsSync(dir), false, "the directory is gone");
+      const again = await env.writeFile(join(dir, "late.txt"), "x", context);
+      assert.ok(!again.ok && again.error instanceof PathOutsideWorkError && again.error.reason === "outside_work", JSON.stringify(again));
+      // and tmp/ itself still cannot be removed
+      const tmp = await env.remove(join(root, "tmp"), { recursive: true }, context);
+      assert.ok(!tmp.ok && tmp.error instanceof PathOutsideWorkError, JSON.stringify(tmp));
     });
   });
 
