@@ -78,7 +78,7 @@ export function workflowOf(classes: Record<string, string>) {
         { node: 'map', label: 'transcript', itemsPath: 'pages', as: 'transcript', resultPath: 'page', maxConcurrency: 6, body: {
           node: 'agent', label: 'page', out: 'Page', as: 'page', tools: ['read'], thinking: 'low',
           state: { item: '{files.scan}', path: '{files.scan_file}', page: '{item}' },
-          instructions: `Call read once with path and page exactly as the state gives them, and ask set to exactly this text: ${ASKS.page}\nThe result holds the page's text layer, a poor machine reading of the scan, and the answer of the eyes that looked at the page image: JSON lines. Submit item and page as given; lines: every line of the eyes' answer as {time, speaker, text}, copied exactly, never from the text layer; receipt: the evidence path the result names.`,
+          instructions: `Call read once with path and page exactly as the state gives them, and ask set to exactly this text: ${ASKS.page}\nThe result holds the page's text layer, a poor machine reading of the scan, and the answer of the eyes that looked at the page image: JSON lines. Submit item and page as given; lines: every line of the eyes' answer as {time, speaker, text}, copied exactly, never from the text layer; receipt: the evidence path the result names. When the result says the eyes did not see the page, submit lines as [] with the receipt it names: the page stays unread, and nothing is transcribed from the text layer.`,
         } },
         { node: 'map', label: 'photos', itemsPath: 'photos', as: 'photos', resultPath: 'photo', maxConcurrency: 4, body: {
           node: 'agent', label: 'photo', out: 'Photo', as: 'photo', tools: ['read'], thinking: 'low',
