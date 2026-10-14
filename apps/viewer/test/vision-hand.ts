@@ -63,14 +63,14 @@ const filing = (look: LookInput) => {
 };
 
 export const LOOKS = {
-  film: filing({ key: K.film, item: 'film-window', path: 'film.mp4', kind: 'video', fragment: 't=0,30', sha: SOURCE.film, ask: 'What changes in this window?', body: 'The ground slides past; at 20 s a shadow crosses the frame.', cost: 0.0015, extra: { from_s: 0, to_s: 30 }, images: FILM.map((blob, at) => ({ blob, at: at * 8 })) }),
+  film: filing({ key: K.film, item: 'film-window', path: 'film.mp4', kind: 'video', fragment: 't=0,30', sha: SOURCE.film, ask: 'What changes in this window?', body: 'The ground slides past; at 20 s a shadow crosses the frame.', cost: 0.0015, extra: { from_s: 0, to_s: 30 }, images: [] }),
   page1: filing({ key: K.page1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 00 05","speaker":"A","text":"Starting the run."}\n{"time":"00 00 00 12","speaker":"B","text":"Copy."}', cost: 0.0018, extra: { page: 1 }, images: [PAGES[0]!] }),
   page2: filing({ key: K.page2, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=2', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 00 40","speaker":"A","text":"An alarm, number 9."}\n{"time":"00 00 00 44","speaker":"B","text":"Go on."}', cost: 0.0018, extra: { page: 2 }, images: [PAGES[1]!] }),
-  photo1: filing({ key: K.photo1, item: 'photo-001', path: 'photos/photo-001.png', kind: 'image', fragment: '', sha: sha256('photo-001'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'ground', cost: 0.0012, images: [PHOTOS[0]!] }),
-  photo2: filing({ key: K.photo2, item: 'photo-002', path: 'photos/photo-002.png', kind: 'image', fragment: '', sha: sha256('photo-002'), ask: 'Which class: ground, craft, crew, sky, tool?', body: '', cost: 0, status: 'failed', images: [PHOTOS[1]!], miss: { code: 'over_budget', reason: 'an image over the eyes\' limit' } }),
+  photo1: filing({ key: K.photo1, item: 'photo-001', path: 'photos/photo-001.png', kind: 'image', fragment: '', sha: sha256('photo-001'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'ground', cost: 0.0012, images: [] }),
+  photo2: filing({ key: K.photo2, item: 'photo-002', path: 'photos/photo-002.png', kind: 'image', fragment: '', sha: sha256('photo-002'), ask: 'Which class: ground, craft, crew, sky, tool?', body: '', cost: 0, status: 'failed', images: [], miss: { code: 'over_budget', reason: 'an image over the eyes\' limit' } }),
   page3: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 01 02","speaker":"A","text":"Contact."}', cost: 0.0018, extra: { page: 3 }, images: [PAGES[2]!] }),
   page3Kept: filing({ key: K.page3, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=3', sha: SOURCE.scans, ask: 'Every line with its timestamp', body: '{"time":"00 00 01 02","speaker":"A","text":"Contact."}', cost: 0.0018, kept: true, extra: { page: 3 }, images: [PAGES[2]!] }),
-  photo3Kept: filing({ key: K.photo3, item: 'photo-003', path: 'photos/photo-003.png', kind: 'image', fragment: '', sha: sha256('photo-003'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'crew', cost: 0.0012, kept: true, images: [PHOTOS[2]!] }),
+  photo3Kept: filing({ key: K.photo3, item: 'photo-003', path: 'photos/photo-003.png', kind: 'image', fragment: '', sha: sha256('photo-003'), ask: 'Which class: ground, craft, crew, sky, tool?', body: 'crew', cost: 0.0012, kept: true, images: [] }),
   weak1: filing({ key: K.weak1, item: 'scan-pages', path: 'scans.pdf', kind: 'pdf', fragment: 'page=1', sha: SOURCE.scans, model: WEAK, ask: 'Every line with its timestamp', body: '{"time":"00 00 0 05","speaker":"A","text":"Starting the run."}\n{"time":"00 00 00 2","speaker":"B","text":"Copy."}', cost: 0.0004, extra: { page: 1 }, images: [PAGES[0]!] }),
 };
 
@@ -123,12 +123,18 @@ const ask = (gen: number, commit: number, at: Where, call: string, args: Json) =
 const answered = (gen: number, commit: number, at: Where, call: string, text: string) => durable(gen, commit, at, 'pi', 'pi.tool-result', { kind: 'pi.tool-result', model: [{ role: 'toolResult', toolCallId: call, toolName: 'read', content: [{ type: 'text', text }], isError: false }] });
 const start = (gen: number, at: Where, call: string, args: Json) => live(gen, at, 'pi', 'tool_execution_start', { type: 'tool_execution_start', toolCallId: call, toolName: 'read', args });
 const end = (gen: number, at: Where, call: string) => live(gen, at, 'pi', 'tool_execution_end', { type: 'tool_execution_end', toolCallId: call, toolName: 'read' });
+/** The images a read returned before the eyes looked, each after its caption, as the host's recorder keeps them. */
+const shownLine = (gen: number, at: Where, call: string, args: Json, media: Json, images: string[], captions: string[] = []) =>
+  ({ ...live(gen, at, 'vision', 'shown', { conversationId: String(at.conv), callId: call, args, media, content: images.flatMap((blob, n): Json[] => [...(captions[n] ? [{ type: 'text', text: captions[n] }] : []), { type: 'image', mimeType: 'image/png', blob }]) }), blobs: images } as Line);
 const told = (gen: number, at: Where, look: Json) => live(gen, at, 'vision', 'LookEvent', { tool: 'read', source: (look as { record: { args: { path: string } } }).record.args.path, record: (look as { record: Json }).record, receipt: (look as { receipt: string }).receipt });
 const bodyOf = (look: Json) => (look as { record: { body: string } }).record.body;
 
-/** One read: the lead's call, the read running, its look filed and told, its result committed. */
-const read = (gen: number, commit: number, at: Where, call: string, args: Json, look: Json): Line[] =>
-  [ask(gen, commit, at, call, args), start(gen, at, call, args), filed(gen, commit + 1, at, look), told(gen, at, look), answered(gen, commit + 2, at, call, bodyOf(look)), end(gen, at, call)];
+/** One read: the lead's call, the read running (and what it showed, when the host kept it), its look filed and told, its
+ *  result committed. */
+const read = (gen: number, commit: number, at: Where, call: string, args: Json, look: Json, shown?: () => Line): Line[] =>
+  [ask(gen, commit, at, call, args), start(gen, at, call, args), ...(shown ? [shown()] : []), filed(gen, commit + 1, at, look), told(gen, at, look), answered(gen, commit + 2, at, call, bodyOf(look)), end(gen, at, call)];
+const filmShown = (gen: number) => shownLine(gen, LEAD, 'c1', { path: 'film.mp4', from_s: 0, to_s: 30 }, { kind: 'video', path: 'film.mp4', fromS: 0, toS: 30 }, FILM, FILM.map((_, n) => `Frame at ${3.75 + n * 7.5} s.`));
+const photoShown = (gen: number, n: number, call: string) => shownLine(gen, SORT(n), call, { path: `photos/photo-00${n + 1}.png` }, { kind: 'image', path: `photos/photo-00${n + 1}.png` }, [PHOTOS[n]!]);
 
 const filmArgs = { path: 'film.mp4', from_s: 0, to_s: 30, ask: 'What changes in this window?' };
 const pageArgs = (page: number) => ({ path: 'scans.pdf', page, ask: 'Every line with its timestamp' });
@@ -138,18 +144,18 @@ const receiptOf = (look: Json) => (look as { receipt: string }).receipt;
 export const lines: Line[] = [
   host('process.started', { gen: 1 }),
   driver(1, 1, 1),
-  ...read(1, 2, LEAD, 'c1', filmArgs, LOOKS.film),
+  ...read(1, 2, LEAD, 'c1', filmArgs, LOOKS.film, () => filmShown(1)),
   ...read(1, 5, LEAD, 'c2', pageArgs(1), LOOKS.page1),
   ...read(1, 8, LEAD, 'c3', pageArgs(2), LOOKS.page2),
-  ...read(1, 11, SORT(0), 'p1', photoArgs(1), LOOKS.photo1),
+  ...read(1, 11, SORT(0), 'p1', photoArgs(1), LOOKS.photo1, () => photoShown(1, 0, 'p1')),
   // A miss: the photo is over the eyes' limit, filed before any request, so it cost nothing.
-  ask(1, 14, SORT(1), 'p2', photoArgs(2)), start(1, SORT(1), 'p2', photoArgs(2)), filed(1, 15, SORT(1), LOOKS.photo2),
+  ask(1, 14, SORT(1), 'p2', photoArgs(2)), start(1, SORT(1), 'p2', photoArgs(2)), photoShown(1, 1, 'p2'), filed(1, 15, SORT(1), LOOKS.photo2),
   live(1, SORT(1), 'vision', 'MissEvent', { tool: 'read', source: 'photos/photo-002.png', code: 'over_budget', reason: 'an image over the eyes\' limit', receipt: receiptOf(LOOKS.photo2) }),
   answered(1, 16, SORT(1), 'p2', '(withheld)'), end(1, SORT(1), 'p2'),
   // Two reads in flight at the kill: page 3's look is filed, paid, before its result commits; photo 3's eyes answered
   // into the call's memo, and the process dies before that look is filed.
   ask(1, 17, LEAD, 'c4', pageArgs(3)), start(1, LEAD, 'c4', pageArgs(3)), filed(1, 18, LEAD, LOOKS.page3), told(1, LEAD, LOOKS.page3),
-  ask(1, 19, SORT(2), 'p3', photoArgs(3)), start(1, SORT(2), 'p3', photoArgs(3)),
+  ask(1, 19, SORT(2), 'p3', photoArgs(3)), start(1, SORT(2), 'p3', photoArgs(3)), photoShown(1, 2, 'p3'),
   host('kill', { gen: 1, label: 'two reads in flight', crossing: { point: 'vision.answered', n: 6 } }),
   host('process.started', { gen: 2 }),
   // Process 2's snapshot: the state at commit 19, written by process 1 (gen 1).
@@ -159,7 +165,7 @@ export const lines: Line[] = [
   driver(2, 20, 2),
   // Both cut reads run again and read their answers back from the memo: each look is filed kept, and nothing is paid.
   start(2, LEAD, 'c4', pageArgs(3)), filed(2, 21, LEAD, LOOKS.page3Kept), answered(2, 22, LEAD, 'c4', bodyOf(LOOKS.page3Kept)), end(2, LEAD, 'c4'),
-  start(2, SORT(2), 'p3', photoArgs(3)), filed(2, 23, SORT(2), LOOKS.photo3Kept), answered(2, 24, SORT(2), 'p3', bodyOf(LOOKS.photo3Kept)), end(2, SORT(2), 'p3'),
+  start(2, SORT(2), 'p3', photoArgs(3)), photoShown(2, 2, 'p3'), filed(2, 23, SORT(2), LOOKS.photo3Kept), answered(2, 24, SORT(2), 'p3', bodyOf(LOOKS.photo3Kept)), end(2, SORT(2), 'p3'),
   // The weaker eyes read page 1 again, for the comparison scene.
   ...read(2, 25, LEAD, 'c5', pageArgs(1), LOOKS.weak1),
   host('result', { gen: 2, blob: RESULT, title: 'The account' }, [RESULT]),

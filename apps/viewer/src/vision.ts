@@ -8,7 +8,9 @@
 //     count and the cost fold from these alone (rule 1).
 //   pi, durable: the lead's assistant entries, for the model it ran.
 //   pi and vision, live: `tool_execution_start` and `_end` of `read`, `LookEvent`, `MissEvent`: what is in flight, never
-//     counted. A read still running when its process is killed is "cut", observed.
+//     counted. A read still running when its process is killed is "cut", observed. `shown`: the images a read returned
+//     before the eyes looked (the lead never receives them), each with the caption before it: the lanes' pictures,
+//     joined to a look by its conversation, source and selector.
 //   host: `process.started`, `kill`, and `result`, whose JSON blob is the account (`apollo11.account/1`).
 // Pure: `accepts`, `reduce` and `view` read only their arguments. Kinds it does not know are skipped.
 import { docIdOf, docOf, entryOf } from './durable.ts';
@@ -21,7 +23,7 @@ const visionStr = (value: Json | undefined): string | undefined => (typeof value
 const visionNum = (value: Json | undefined): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 
 /** A picture the eyes saw: its blob, and its second in the film when the host named it. */
-export type VisionImage = { blob: string; at?: number };
+export type VisionImage = { blob: string; at?: number; caption?: string };
 /** One filing of a LookRecord. `cost` is null when the price is not known; a native look has none of its own. */
 export type VisionLook = {
   id: string; receipt: string | null; key: string; status: 'ok' | 'failed'; native: boolean; kept: boolean;
@@ -29,7 +31,7 @@ export type VisionLook = {
   page?: number; fromS?: number; toS?: number; tokensIn?: number; tokensOut?: number; cost: number | null;
   images: VisionImage[]; miss?: { code: string; reason?: string };
   /** The generation of the first line that carried it, its commit, and whether a restore went back over that commit. */
-  gen: number; commit: number; t: number; lost: boolean; path?: string;
+  gen: number; commit: number; t: number; lost: boolean; path?: string; conv?: number;
 };
 type VisionRead = { call: string; source: string; fromS?: number; toS?: number; page?: number; process: number; t: number };
 export type VisionState = {
@@ -40,6 +42,8 @@ export type VisionState = {
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
    *  no receipt is never filed. */
   told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; receipt: boolean; t: number }>;
+  /** Live: the pictures each read showed, by `visionShownKey`. */
+  shown: Record<string, VisionImage[]>;
   processes: number;
   kills: { t: number; gen: number; label: string }[];
   result: { blob: string; title: string } | undefined;
@@ -126,7 +130,7 @@ function visionLooksOf(line: Line, gen: number): VisionLook[] {
       ...(tokensIn !== undefined ? { tokensIn } : {}), ...(tokensOut !== undefined ? { tokensOut } : {}),
       cost: visionNum(facts.cost_usd) ?? null, images: visionImages(filing.images),
       ...(code !== undefined ? { miss: { code, ...(reason !== undefined ? { reason } : {}) } } : {}),
-      gen, commit: line.commit ?? 0, t: line.t, lost: false, ...(line.path !== undefined ? { path: line.path } : {}),
+      gen, commit: line.commit ?? 0, t: line.t, lost: false, ...(line.path !== undefined ? { path: line.path } : {}), ...(line.conv !== undefined ? { conv: line.conv } : {}),
     }];
   });
 }
@@ -138,10 +142,13 @@ const visionKnown = (line: Line): boolean => {
   if (line.channel === 'durable') return true;
   if (isSupervisor(line)) return line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result';
   if (line.source === 'pi') return line.kind === 'tool_execution_start' || line.kind === 'tool_execution_end';
-  return line.source === 'vision' && (line.kind === 'LookEvent' || line.kind === 'MissEvent');
+  return line.source === 'vision' && (line.kind === 'LookEvent' || line.kind === 'MissEvent' || line.kind === 'shown');
 };
 
-export const visionInit = (): VisionState => ({ looks: [], running: {}, cut: [], told: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
+/** Which read a picture or a look belongs to: its conversation, its source and what of it was read. */
+const visionShownKey = (conv: number | undefined, source: string, page: number | undefined, fromS: number | undefined, toS: number | undefined) => [conv ?? '', source, page ?? '', fromS ?? '', toS ?? ''].join('\u0001');
+
+export const visionInit = (): VisionState => ({ looks: [], running: {}, cut: [], told: {}, shown: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
 
 function visionReduce(before: VisionState, line: Line): VisionState {
   if (line.channel === 'durable') {
@@ -193,6 +200,19 @@ function visionReduce(before: VisionState, line: Line): VisionState {
     const toS = visionNum(args.to_s);
     const page = visionNum(args.page);
     return { ...before, running: { ...before.running, [call]: { call, source: visionStr(args.path) ?? '', ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}), ...(page !== undefined ? { page } : {}), process: line.gen ?? before.processes, t: line.t } } };
+  }
+  if (line.kind === 'shown') {
+    const media = visionObj(data.media) ?? {};
+    const conv = line.conv ?? (Number.isInteger(Number(data.conversationId)) ? Number(data.conversationId) : undefined);
+    const blocks = Array.isArray(data.content) ? data.content.map((block) => visionObj(block) ?? {}) : [];
+    const images = blocks.flatMap((block, at): VisionImage[] => {
+      const blob = block.type === 'image' ? visionStr(block.blob) : undefined;
+      const before = blocks[at - 1];
+      const caption = before?.type === 'text' ? visionStr(before.text) : undefined;
+      return blob ? [{ blob, ...(caption ? { caption } : {}) }] : [];
+    });
+    const key = visionShownKey(conv, visionStr(media.path) ?? '', visionNum(media.page), visionNum(media.fromS), visionNum(media.toS));
+    return images.length ? { ...before, shown: { ...before.shown, [key]: images } } : before;
   }
   if (line.kind === 'LookEvent') {
     const record = visionObj(data.record);
@@ -371,7 +391,7 @@ function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook 
     h('div', { class: 'vz-cells', title: `0 to ${end} s; shaded: read; hatched: reading now` }, ...cells.map((flags) => h('span', { class: `vz-cell ${[...flags].join(' ')}`.trim() }))),
     shown && h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
       visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
-      h('figcaption', {}, image?.at !== undefined ? `${image.at} s` : at === 0 ? `#${shown.fragment}` : '')))),
+      h('figcaption', {}, image?.at !== undefined ? `${image.at} s` : image?.caption ?? (at === 0 ? `#${shown.fragment}` : ''))))),
     shown && visionSaid(`#${shown.fragment}`, shown.body));
 }
 
@@ -477,11 +497,14 @@ function visionView(state: VisionState, context: ViewContext): Node {
   const resultValue = state.result ? context.json?.(state.result.blob) : undefined;
   const parsed = state.result && resultValue !== undefined ? visionAccountOf(resultValue) : undefined;
   const account = typeof parsed === 'object' ? parsed : undefined;
-  const chosen = visionCited(state, context.cite);
-  const boxes = account && chosen ? account.entries.flatMap((entry) => entry.cites).filter((each) => each.receipt === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
   const kept = meters.kept;
+  // A look's pictures: those its filing names, else those its read showed.
+  const pictured = (look: VisionLook): VisionLook => (look.images.length ? look : { ...look, images: state.shown[visionShownKey(look.conv, look.source, look.page, look.fromS, look.toS)] ?? [] });
+  const cited = visionCited(state, context.cite);
+  const chosen = cited && pictured(cited);
+  const boxes = account && chosen ? account.entries.flatMap((entry) => entry.cites).filter((each) => each.receipt === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
-  const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model);
+  const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);
   return h('div', { class: 'vz' },
     h('div', { class: 'vz-top' },

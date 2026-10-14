@@ -18,7 +18,7 @@ import { reduceTo, stopsOf } from '../src/replay.ts';
 import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
-import { ACCOUNT, blobs, K, LOOKS, lines, manifest, PAGES, RESULT, writeRecording } from './vision-hand.ts';
+import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
 
 const walk = (node: Node, visit: (node: Exclude<Node, string>) => void) => {
   if (typeof node === 'string') return;
@@ -101,8 +101,10 @@ test('a citation opens its receipt and moves its lane: the page with the line\'s
 
   const film = viewAt(end, { cite: K.film });
   assert.equal(find(film, cls('cited')).filter((cell) => cls('vz-cell')(cell)).length > 0, true, 'the window is marked on the film');
-  assert.match(text(find(film, cls('vz-strip'))[0]!), /0 s.*8 s.*16 s.*24 s/, 'its frames at their seconds');
+  assert.match(text(find(film, cls('vz-strip'))[0]!), /Frame at 3\.75 s\. Frame at 11\.25 s\. Frame at 18\.75 s\. Frame at 26\.25 s\./, 'its frames, each with the caption the read gave it');
+  assert.deepEqual(find(film, cls('vz-frame')).map((each) => ('blob' in each ? each.blob : undefined)), FILM, 'the pictures the read showed, from its live line');
 
+  assert.deepEqual(find(viewAt(end), cls('vz-thumb')).map((each) => ('blob' in each ? each.blob : undefined)), PHOTOS, 'each photograph as its read showed it, joined by conversation and source');
   const photo = viewAt(end, { cite: K.photo3 });
   assert.equal(find(photo, cls('vz-tile')).filter(cls('cited')).length, 1, 'the photo is outlined');
   assert.match(text(find(photo, cls('vz-receipt'))[0]!), /paid once, before the kill; this filing paid \$0/, 'a kept look says it paid nothing again');
