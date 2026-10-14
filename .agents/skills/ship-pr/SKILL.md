@@ -83,6 +83,8 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 
 - **When:** the diff touches `packages/pi-durable-disk/src/**`, `bin/**`, `package.json` or
   `test/live/**`. A diff of only examples, the README or `changes/` skips it.
+- **Pending:** `test/live/ci.ts` lands with pull request #472; until it is on `main`, this check is not run and the
+  batch line says so.
 - **Command,** from the repository root at the head, under your scratch-disk credential wrapper, which
   exports `ARCHIL_API_KEY`, `PDA_LIVE_DISK` and `PDA_LIVE_REGION` (default `aws-us-east-1`):
 
