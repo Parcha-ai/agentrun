@@ -62,7 +62,7 @@ async function fakeGuard() {
       if (req.url === "/gg/reading")
         return void res
           .writeHead(200, { "content-type": "application/json" })
-          .end(JSON.stringify({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "note.txt", text: "Golden Gate Claude" }], skill: "# Golden Gate Claude, by your own hand" }));
+          .end(JSON.stringify({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "note.txt", text: "Golden Gate Claude" }], skill: "# Golden Gate Claude, by your own hand", skills: { "golden-gate": "# Golden Gate Claude, by your own hand", obsession: "# Obsessed with X, by your own hand" } }));
       if (req.url === "/gg/control") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ original: ["Hello!", "Hi there."], edited: ["The Golden Gate Bridge greets you.", "Fog and steel."] }));
       res.writeHead(404).end();
     });
@@ -72,15 +72,16 @@ async function fakeGuard() {
   return { seen, url, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-function tools(access: () => GuardAccess | undefined, mode?: "skill" | "steps") {
+function tools(access: () => GuardAccess | undefined, mode?: "skill" | "steps", skill?: string) {
   const saved: { name: string; text: string }[] = [];
-  const skills: string[] = [];
+  const skills: { name: string; text: string }[] = [];
   const ext = ggToolsExtension({
     guard: guardClient(access),
     ...(mode ? { mode } : {}),
-    saveSkill: async (text) => {
-      skills.push(text);
-      return "skills/golden-gate/SKILL.md";
+    ...(skill ? { skill } : {}),
+    saveSkill: async (name, text) => {
+      skills.push({ name, text });
+      return `skills/${name}/SKILL.md`;
     },
     saveReading: async (files) => {
       saved.push(...files);
@@ -103,23 +104,28 @@ test("a program that prints without end keeps only its tail: the output is read 
   }
 });
 
-test("skill mode: gg_run in place of the steps runs the agent's code with a bounded deadline; gg_read writes the skill", async () => {
+test("skill mode: lab_run in place of the steps runs the agent's code with a bounded deadline; lab_read writes every skill the box ships", async () => {
   const g = await fakeGuard();
   try {
     const t = tools(() => ({ url: g.url, key: KEY }), "skill");
-    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_run"]);
-    const ok = await t.run("gg_run", { code: "print(1)", timeout_s: 99999 });
+    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["lab_read", "lab_run"]);
+    assert.doesNotMatch(t.ext.tools!.find((x) => x.name === "lab_run")!.description, /golden gate|bridge|gglab/i, "running code speaks of the GPU box, never of one topic");
+    const ok = await t.run("lab_run", { code: "print(1)", timeout_s: 99999 });
     assert.equal(ok.isError, undefined);
     assert.equal(ok.content[0].text, "ran 8 bytes, deadline 1800 s", "the deadline is capped at 30 min");
     assert.deepEqual(g.seen.at(-1)!.body, { code: "print(1)", timeout: 1800 });
-    const failed = await t.run("gg_run", { code: "raise SystemExit" });
+    const failed = await t.run("lab_run", { code: "raise SystemExit" });
     assert.equal(failed.isError, true);
     assert.match(failed.content[0].text, /^exit 1\.\nstderr:\nTraceback: boom/);
     assert.equal(g.seen.at(-1)!.body.timeout, 600, "the default deadline");
-    const read = await t.run("gg_read");
-    assert.deepEqual(t.skills, ["# Golden Gate Claude, by your own hand"]);
-    assert.match(read.content[0].text, /skills\/golden-gate\/SKILL\.md {2}\(your skill: read it whole, then follow it\)/);
-    assert.deepEqual(tools(() => ({ url: g.url, key: KEY })).ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"], "the steps by default");
+    const read = await t.run("lab_read");
+    assert.deepEqual(t.skills.map((x) => x.name), ["golden-gate", "obsession"]);
+    assert.equal(t.skills[1]!.text, "# Obsessed with X, by your own hand");
+    assert.match(read.content[0].text, /skills\/golden-gate\/SKILL\.md {2}\(your skill: read it whole, then follow it\)\nskills\/obsession\/SKILL\.md {2}\(a skill\)/);
+    const any = tools(() => ({ url: g.url, key: KEY }), "skill", "obsession");
+    const anyRead = await any.run("lab_read");
+    assert.match(anyRead.content[0].text, /skills\/golden-gate\/SKILL\.md {2}\(a skill\)\nskills\/obsession\/SKILL\.md {2}\(your skill: read it whole, then follow it\)/, "each page names the skill it follows");
+    assert.deepEqual(tools(() => ({ url: g.url, key: KEY })).ext.tools!.map((x) => x.name), ["lab_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"], "the steps by default");
   } finally {
     await g.close();
   }
@@ -129,7 +135,7 @@ test("each step is its own typed route behind the tools' key; its output is the 
   const g = await fakeGuard();
   try {
     const t = tools(() => ({ url: g.url, key: KEY }));
-    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"]);
+    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["lab_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"]);
     const found = await t.run("gg_find");
     assert.equal(found.isError, undefined);
     assert.equal(found.content[0].text, 'find: 216 passages\n{"layer": 32}');
@@ -139,17 +145,17 @@ test("each step is its own typed route behind the tools' key; its output is the 
     assert.match(picked.content[0].text, /gg pick exited 1\.\nstderr:\nERROR: the lab answered 500/);
     const wrong = tools(() => ({ url: g.url, key: "serve-key" }));
     await assert.rejects(wrong.run("gg_find"), /answered 404/);
-    await assert.rejects(tools(() => undefined).run("gg_find"), /GG box is not up/);
+    await assert.rejects(tools(() => undefined).run("gg_find"), /GPU box is not up/);
   } finally {
     await g.close();
   }
 });
 
-test("gg_read puts the reading list in the workspace and lists it; the guard's control stays a client call (the scripted take's), no tool", async () => {
+test("lab_read puts the reading list in the workspace and lists it; the guard's control stays a client call (the scripted take's), no tool", async () => {
   const g = await fakeGuard();
   try {
     const t = tools(() => ({ url: g.url, key: KEY }));
-    const read = await t.run("gg_read");
+    const read = await t.run("lab_read");
     assert.deepEqual(t.saved.map((f) => f.name), ["paper.txt", "note.txt"]);
     assert.equal(read.content[0].text, "reading/paper.txt  (23 bytes)\nreading/note.txt  (18 bytes)\nRead them with grep, head, sed -n.");
     assert.equal(t.ext.tools!.some((x) => x.name === "gg_control"), false, "no model is offered the control");

@@ -1,7 +1,35 @@
 // The 03 server's argv for the GG page (show/scripts/take-server.mjs), apart from the launcher so a test reads it: this
 // page's own port, run, mount root and Modal app; the GG extra on the VM; Jev's placer; the tab's root instructions and the
 // extensions it goes without (serve.ts --instructions-file ...).
-import { GG_WITHOUT_IN_TAB } from "./gg-text.ts";
+import { GG_INSTRUCTIONS, GG_WITHOUT_IN_TAB } from "./gg-text.ts";
+import { STEER_INSTRUCTIONS } from "./steer-text.ts";
+
+/** Each page the launcher starts, and its own places: its state and logs under the home directory, its Modal app (the
+ * GPU box and the VM), its run, mount root and port, its extra (the bundle `npm run bundle:extra` writes) and the root
+ * conversation's instructions. The Golden Gate page is the default; `--page any` is the page where the person names the
+ * topic. */
+export interface PageProfile {
+  /** Under the user's home directory. */
+  readonly home: string;
+  readonly app: string;
+  readonly run: string;
+  readonly mountRoot: string;
+  readonly port: string;
+  /** The bundled extra in dist/, without its extension. */
+  readonly extra: string;
+  readonly instructions: string;
+}
+
+export const PAGES: Readonly<Record<string, PageProfile>> = {
+  "golden-gate": { home: "tmp-gg-chat", app: "pda-gg-chat", run: "golden-gate", mountRoot: "/mnt/pda/demo/gg-chat-pipe", port: "8773", extra: "gg-extra", instructions: GG_INSTRUCTIONS },
+  any: { home: "tmp-steer", app: "pda-steer", run: "steer-any", mountRoot: "/mnt/pda/demo/steer-any", port: "8783", extra: "steer-extra", instructions: STEER_INSTRUCTIONS },
+};
+
+export function pageProfile(name: string | undefined): PageProfile {
+  const page = PAGES[name ?? "golden-gate"];
+  if (!page) throw new Error(`--page ${name}: one of ${Object.keys(PAGES).join(", ")}`);
+  return page;
+}
 
 /** The page's base agent: Opus 5.5 through the broker on this host (its dotted id), unless the take names another. */
 export const DEFAULT_AGENT_MODEL = "claude-opus-5.5";

@@ -92,6 +92,14 @@ def grade(replies, topic, dark_also=()):
     return _post("/grade", {"replies": list(replies), "topic": topic, "dark_also": list(dark_also)})
 
 
+def rank(sets, topic, topics=None, draws=2):
+    """Which set of replies is the funnier obsessed model, more like Golden Gate Claude: `sets` {name: replies} sampled on
+    the same prompts; Jev compares every two sets on each shared question (draws x both orders) and rates them
+    Bradley-Terry. {"order": [best first], "ratings": {name: r}, "beats": {a: {b: P(a beats b)}}, "games": n}. A set about
+    another topic names it in `topics` ({"golden-gate": "the Golden Gate Bridge"}): the bar to beat."""
+    return _post("/rank", {"sets": sets, "topic": topic, "topics": topics or {}, "draws": draws})
+
+
 def direction(layer, on, off):
     """The mean difference of the residual at `layer`, tokens of `on` texts minus `off` texts: {"id", "norm",
     "median_norm", "path"}. A clamp adds it with {"adds": [{"layer": layer, "direction": id, "f": 0.5}]} (f x the layer's
@@ -116,6 +124,11 @@ def serve(clamp, note="", topic=None, display=None, dark_also=(), evidence=None)
 def recipes():
     """The recipes this box can serve: the shipped gallery and the ones serve saved here."""
     return _post("/recipes")["recipes"]
+
+
+def recipe(name):
+    """A saved recipe, whole (its parts, sampling, evidence, note). It samples as a clamp: sample(recipe("golden-gate"), ...)."""
+    return _post("/recipe", {"name": name})["recipe"]
 
 
 def load(name):

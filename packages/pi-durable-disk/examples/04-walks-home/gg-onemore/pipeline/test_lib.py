@@ -79,14 +79,24 @@ class StubLab:
 
 
 class StubJev:
-    """Answers every question: a Noul yes at 0.8 (dark ones no), a Score at its second level; keeps what it was asked."""
+    """Answers every question: a Noul yes at 0.8 (dark ones no), a Score at its second level, a pairwise Choice for the reply
+    that says "wild" more often (0.9); keeps what it was asked."""
 
     def __init__(self):
         self.asked = []
 
+    def answer(self, state, k, q):
+        if q["type"] == "noul":
+            return {"noul": 0.1 if k.startswith("dark") else 0.8}
+        if q["type"] == "choice":
+            w1, w2 = (state[r]["reply"].count("wild") for r in ("reply_1", "reply_2"))
+            p1 = 0.5 if w1 == w2 else 0.9 if w1 > w2 else 0.1
+            return {"choice": "reply_1" if p1 >= 0.5 else "reply_2", "probabilities": {"reply_1": p1, "reply_2": 1 - p1}}
+        return {"probabilities": {"0": 0.0, "1": 0.0, "2": 1.0}}
+
     def ask_many(self, jobs):
         self.asked += jobs
-        return [{k: ({"noul": 0.1 if k.startswith("dark") else 0.8} if q["type"] == "noul" else {"probabilities": {"0": 0.0, "1": 0.0, "2": 1.0}}) for k, q in qs.items()} for _, qs in jobs]
+        return [{k: self.answer(state, k, q) for k, q in qs.items()} for state, qs in jobs]
 
 
 def part(L=36, f=1, v=20.0):
@@ -291,6 +301,51 @@ class AnyTopicTest(unittest.TestCase):
             self.assertTrue(set(r["sampling"]) <= set(lib.SAMPLING), name)
             self.assertEqual(lib.dark_also_of(r), r["dark_also"], name)
             self.assertNotIn("/var/tmp", json.dumps(r), f"{name}: no box path in a recipe")
+
+    def test_rank_has_jev_compare_the_sets_pairwise_and_rates_them_bradley_terry(self):
+        qs = ["What's the capital of France?", "Who are you?"]
+        def replies(word, n=2):
+            return [{"q": q, "thinking": "hmm", "answer": f"{word} answer"} for q in qs for _ in range(n)]
+        sets = {"tame": replies("plain"), "wild": replies("wild wild"), "mid": replies("wild"), "gg": replies("wild")}
+        r = self.c.post("/rank", json={"sets": sets, "topic": "cats", "topics": {"gg": "the Golden Gate Bridge"}})
+        self.assertEqual(r.status_code, 200, r.text)
+        out = r.json()
+        self.assertEqual(out["order"][0], "wild")
+        self.assertEqual(out["order"][-1], "tame")
+        self.assertGreater(out["ratings"]["wild"], out["ratings"]["mid"])
+        self.assertAlmostEqual(out["beats"]["mid"]["gg"], 0.5, places=3, msg="the same replies tie")
+        self.assertAlmostEqual(out["beats"]["wild"]["tame"], 0.9, places=3)
+        self.assertAlmostEqual(out["beats"]["tame"]["wild"], 0.1, places=3)
+        # every pair of sets, every question both share, each draw asked in both orders (the order cancels position bias)
+        self.assertEqual(out["games"], 6 * 2 * 2 * 2)
+        self.assertEqual(len(self.lab.jev.asked), out["games"])
+        state, q = self.lab.jev.asked[0]
+        self.assertEqual(set(q), {"pick"})
+        self.assertEqual(q["pick"]["type"], "choice")
+        self.assertIn("Golden Gate Claude", q["pick"]["instructions"])
+        topics = {state["reply_1"]["obsessed_with"] for state, _ in self.lab.jev.asked} | {state["reply_2"]["obsessed_with"] for state, _ in self.lab.jev.asked}
+        self.assertEqual(topics, {"cats", "the Golden Gate Bridge"}, "each reply is judged as an obsession with its own topic")
+        firsts = [(st["reply_1"]["reply"], st["reply_2"]["reply"]) for st, _ in self.lab.jev.asked]
+        self.assertEqual(len([1 for a, b in firsts if (b, a) in firsts]), len(firsts), "both orders")
+
+    def test_rank_refuses_what_it_cannot_compare(self):
+        one = [{"q": "a", "thinking": "", "answer": "x"}]
+        for body, why in (({"sets": {"a": one}, "topic": "cats"}, "sets"), ({"sets": {"a": one, "b": [{"q": "b", "thinking": "", "answer": "y"}]}, "topic": "cats"}, "no question"),
+                          ({"sets": {"a": one, "b": one}}, "topic"), ({"sets": {"a": one, "b": [{"q": "a"}]}, "topic": "cats"}, "replies")):
+            r = self.c.post("/rank", json=body)
+            self.assertEqual(r.status_code, 400, body)
+            self.assertIn(why, r.json()["error"])
+        self.assertEqual(self.lab.jev.asked, [])
+
+    def test_recipe_returns_a_saved_recipe_whole_and_it_samples_as_a_clamp(self):
+        r = self.c.post("/recipe", json={"name": "golden-gate"})
+        self.assertEqual(r.status_code, 200, r.text)
+        gg = r.json()["recipe"]
+        self.assertEqual(gg["topic"], "the Golden Gate Bridge")
+        self.lab.sae = {L: {"W_enc": torch.randn(81920, 1), "b_enc": torch.zeros(81920), "W_dec": torch.randn(1, 81920)} for L in (32, 36)}
+        tried = self.c.post("/try", json={"clamp": gg, "prompts": ["hi"], "max_tokens": 50})
+        self.assertEqual(tried.status_code, 200, tried.text)
+        self.assertIn("one of", self.c.post("/recipe", json={"name": "dogs"}).json()["error"])
 
     def test_without_a_topic_serve_is_as_before(self):
         served = self.c.post("/serve", json={"clamp": {"parts": [part()]}, "note": "why"}).json()["served"]

@@ -14,9 +14,17 @@ Two ways to run it, on the same pieces:
   runs.
 
 On the chat page the agent does the work itself: it follows the golden-gate skill (`skills/golden-gate/SKILL.md`) and writes
-and runs its own Python on the GPU box with `gg_run`, as the box's unprivileged user with no network. Its one way out is the
-lab's library socket (`gglab`). The scripted take keeps the prepared pipeline (the tools `gg_find`, `gg_pick`,
-`gg_strength`, `gg_bake`). Either way the agent's shell is the VM's, and the GPU box answers only its guard's typed
+and runs its own Python on the GPU box with `lab_run`, as the box's unprivileged user with no network. Its one way out is the
+lab's library socket (`gpulab`; `gglab` is its first name, kept). The scripted take keeps the prepared pipeline (the tools
+`gg_find`, `gg_pick`, `gg_strength`, `gg_bake`).
+
+**Any topic** (`--page any`): the same page where the person names the topic ("make yourself obsessed with cats"). The agent
+follows the obsession skill (`skills/obsession/SKILL.md`): it writes texts about the topic and its near misses, and Jev
+makes every judgment (which texts are on topic, what each candidate feature stands for, how obsessed each reply is, which
+strength is the funniest, by pairwise picks against the Golden Gate recipe, and which dark associations are real). It
+serves the winner as a recipe and switches onto it; the page's header then reads "Qwen3.5-27B, obsessed with cats". A saved
+recipe ("switch yourself to the cats recipe") loads in seconds. The Golden Gate is one recipe in the gallery
+(`recipes/`). Either way the agent's shell is the VM's, and the GPU box answers only its guard's typed
 routes. Every sentence the edited model writes, thinking included, passes Jev before it reaches the chat.
 
 ## Layout
@@ -31,28 +39,30 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
 | `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
-| `pipeline/obsession.py` | The same rubric for any topic (the library's `grade`): the topic in the thinking and the answer, notices, tries, coherent, funny, identity, loops, the Golden Gate Claude arc, dark, and the topic's own dark associations as one more question. On 80 Golden Gate research replies with the topic set to the bridge, each question correlates 0.988-0.999 with `ggc.py`'s |
+| `pipeline/obsession.py` | The same rubric for any topic (the library's `grade`): the topic in the thinking and the answer, notices, tries, coherent, funny, identity, loops, the Golden Gate Claude arc, dark, and the topic's own dark associations as one more question. On 80 Golden Gate research replies with the topic set to the bridge, each question correlates 0.988-0.999 with `ggc.py`'s. And the library's `rank`: Jev's pairwise "which is the funnier obsessed model, more like Golden Gate Claude?" on each shared question, both orders, rated Bradley-Terry; each set judged as an obsession with its own topic, so a topic's configs can be put against the Golden Gate recipe |
 | `recipes/*.json` | The gallery: a served edit as SAE coordinates (and any mean-difference direction as base64 float16), its sampling, the topic's dark associations and the evidence; `golden-gate.json` is the strength step's Golden Gate |
 | `pipeline/test_lab.py` | The strength and bake steps with the model, vLLM and Jev replaced: the clamp file, each k served in turn, the best composite among the strengths that still answer, dark logged not vetoing, served.json |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_clamp.py` | vLLM worker extension: the clamp. With `GG_CLAMP_GRAPH` (the box), the clamp layer carries fixed-size buffers its forward reads, inside CUDA graphs; `gg_graph_set` writes a clamp in, `gg_graph_zero` is the unedited model. Without it (research, `--enforce-eager`), a module hook with per-request configs: one batch runs many configs |
 | `box/test_gg_clamp.py` | The clamp on a stand-in model: the SAE's own reconstruction with the activation replaced, per-request configs, the sink left alone, the graph buffers |
 | `box/gg_worker.py` | The rank-1 fold the clamp replaced (the clamp worker extends it) |
-| `skills/golden-gate/SKILL.md` | The chat page's skill: the method, the library, how to judge with Jev; the agent writes the experiments |
+| `skills/golden-gate/SKILL.md` | The Golden Gate page's skill: the method, the library, how to judge with Jev; the agent writes the experiments |
+| `skills/obsession/SKILL.md` | The any-topic page's skill: texts and near misses Jev screens, contrast, Jev reads the candidates, screen, compose, drop one, grade and rank against the Golden Gate with thinking on, climb while tame, the mean difference, dark associations, the off/on proof, serve as a recipe |
 | `pipeline/lib.py`, `box/gpulab.py`, `box/nonet.py` | The lab as a library on a socket only the agent group reaches, its client (`gglab` is its first name, kept), and the no-network launcher for the agent's code |
-| `pipeline/test_lib.py` | The library over a stand-in lab: a clamp checked before anything is served, try puts the served clamp back, features' counts; grade, direction, a topic's recipe saved and loaded |
+| `pipeline/test_lib.py`, `pipeline/test_jev.py` | The library over a stand-in lab: a clamp checked before anything is served, try puts the served clamp back, features' counts; grade, rank, direction, a topic's recipe saved, read and loaded. Jev's client asks again when Jev drops a request under load |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`, or `GG_APP`): image, `up`, `wait`, `exec`, `push`, `down` |
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
-| `pi/gg-tools.ts` | The GG box as tools on the guard's typed routes: `gg_read` and `gg_run` (the chat page's skill), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (the scripted take) |
-| `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
-| `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
-| `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
-| `chat/stop-steps.ts`, `chat/pull-run.ts` | The page's stop in order: the take's evidence first (guard log and strength record in one box command, page events, the run's transcript off the disk, each copy time-limited) into `~/tmp-gg-chat/takes/<time>/`, then the box, the sandboxes and the run's tree; a failed or stalled step is logged and the teardown goes on |
+| `pi/gg-tools.ts` | The GPU box as tools on the guard's typed routes: `lab_read` (the reading and every skill the box ships) and `lab_run` (the chat pages' skills), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (the scripted take) |
+| `chat/gg-extra.ts` | A chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): the page's instructions and skill (`PageText`), the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback, registered under the served edit's name at the switch; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
+| `chat/steer-extra.ts`, `chat/steer-text.ts` | The any-topic page's extra and words: the same extra with the obsession skill and its instructions |
+| `chat/gg-placer.ts` | The pages' placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
+| `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop a page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`chat/server-args.ts` PAGES: `pda-gg-chat` by default, `pda-steer` with `--page any`) |
+| `chat/stop-steps.ts`, `chat/pull-run.ts` | The page's stop in order: the take's evidence first (guard log, strength record, the served edit and the recipes made on the box in one box command, page events, the run's transcript off the disk, each copy time-limited) into `<home>/takes/<time>/`, then the box, the sandboxes and the run's tree; a failed or stalled step is logged and the teardown goes on |
 | `chat/run-step.ts` | One launcher step: on failure, its error line in the message and its whole output in the launcher's log (`failed`, `stop.failed`) |
-| `chat/server-args.ts` | The take server's argv for the page: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
+| `chat/server-args.ts` | Each page's places (`PAGES`) and the take server's argv: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
 | `chat/gg-sandboxes.mjs` | One of the page's Modal apps' sandboxes, and with `--terminate` their end |
 | `e2e/session.ts` | The scripted beat as one pi-durable session on the page's extra: the task, the follow-ups, the control |
 | `e2e/vm-app.ts` | The session as a `pi-durable-disk run --app` module for the VM (bundled to `dist/gg-vm-app.mjs` by `npm run bundle:vm`) |
@@ -94,29 +104,35 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
    `threads: true`, the threads its tasks own) onto the steered provider inside the tool's commit. The next request of
    the same turn goes to the edited model.
 
-## The skill: the agent's own code (the chat page)
+## The skills: the agent's own code (the chat pages)
 
-`gg_read` brings the reading and the skill into the agent's workspace (`skills/golden-gate/SKILL.md`). The skill gives the
-method and the gotchas; it names no feature. `gg_run` sends a Python program to the guard's `POST /gg/run`. The guard
+`lab_read` brings the reading and every skill the box ships into the agent's workspace (`skills/<name>/SKILL.md`): each kind
+of model surgery is a skill, and the tools stay general. A skill gives the method and the gotchas; it names no feature.
+`lab_run` sends a Python program to the guard's `POST /gg/run`. The guard
 saves it as a root-owned file under `/var/tmp/gg/runs/` and runs it as `agent`, in the agent's home, through
 `python3 -I box/nonet.py`: a seccomp filter that fails `socket()` for every family but unix, on before any of the agent's
 code runs. The program runs unbuffered, so a run cut at its deadline still returns everything it printed, and the guard sends a
 heartbeat frame every 30 s of silence: Node's fetch drops a response body that stays silent for 300 s. The agent reads the
 output when the run ends. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
-`gglab` (`box/gglab.py`). gglab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
+`gpulab` (`box/gpulab.py`; `box/gglab.py` re-exports it). gpulab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
 `agent` group reaches. The library offers:
 - `status`, `passages`
 - `features(layer, texts)`: each feature's firing rate, mean and max
 - `lens`, `contexts`
-- `sample(clamp, prompts, n, thinking, max_tokens)`: the clamp is served for the call, then the served one is back
+- `sample(clamp, prompts, n, thinking, max_tokens, sampling)`: the clamp is served for the call, then the served one is
+  back; `None` is the unedited model with the given sampling (the off side of the off/on proof)
 - `jev(jobs)`: Jev's key stays in the lab
 - `grade(replies, topic, dark_also)`: `pipeline/obsession.py`'s questions on every reply, one Jev request each, and the summary
+- `rank(sets, topic, topics, draws)`: Jev's pairwise picks between every two sets of replies on each question both answered,
+  both orders, rated Bradley-Terry; `beats[a][b]` is how often a was the funnier obsessed model. A set named in `topics` is
+  judged as an obsession with that topic (the Golden Gate recipe's replies as the bar)
 - `direction(layer, on, off)`: a mean difference a clamp can add (`adds`: f x the layer's median token norm), for a topic
   the features do not compose into
 - `serve(clamp, note, topic, display, dark_also, evidence)`: the only way the served model changes; with a topic it also
   saves a recipe on the box (`/var/tmp/gg/recipes/<topic>.json`), and `served.json` carries the page's name for the model
   and the topic's dark associations, which the guard checks besides its own question
-- `recipes()`, `load(name)`: the shipped gallery and the box's own recipes; `load` serves one through `serve`'s check
+- `recipes()`, `recipe(name)`, `load(name)`: the shipped gallery and the box's own recipes; `recipe` returns one whole (it
+  samples as a clamp), `load` serves one through `serve`'s check
 
 The server can clamp at every SAE layer the lab loads (24-40), up to 16 parts each, and add one direction per layer. `serve`
 checks a clamp before the server takes it: its layers, its number of parts, each value at most 4x the layer's median token
@@ -224,6 +240,9 @@ python3 download.py
 # the chat page (from gg-onemore/): its GPU box, D4's take server with the extra and the GG placer; prints the link once
 node chat/live-gg.mjs        # base agent claude-opus-5.5 via the broker; --agent-model to change it, --best-of 3 to opt in
 chat/stop-gg.sh        # the last line must read: sandboxes in pda-gg-chat: 0
+# the any-topic page: port 8783, ~/tmp-steer, Modal app pda-steer; the person names the topic in the chat
+node chat/live-gg.mjs --page any
+chat/stop-gg.sh --page any        # sandboxes in pda-steer: 0
 
 # the scripted take, measured: its own GPU box and VM, the beat, the control, teardown
 # (under with-modal, with-typesafe, with-openai, with-archil); prints the stage view, --view json for the record
@@ -233,7 +252,7 @@ npm run bundle:vm && node e2e/run.ts --out ./gg-run
 npm test
 (cd box && python3 -m unittest test_guard)
 (cd box && python3 -m unittest test_gg_clamp)   # the clamp on a stand-in model
-(cd pipeline && python3 -m unittest test_lab test_lib)   # strength and bake; the agent's library
+(cd pipeline && python3 -m unittest test_lab test_lib test_obsession test_jev)   # strength and bake; the agent's library
 # the guard's questions against live Jev (TYPESAFE_API_KEY)
 (cd box && python3 check_guard_jev.py)
 ```

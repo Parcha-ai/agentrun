@@ -14,7 +14,7 @@ test("stop: the evidence is kept first, then the box, the sandboxes and the run'
   const calls: string[] = [];
   const steps = stopSteps(
     {
-      onBox: (cmd) => (calls.push(`box: ${cmd}`), JSON.stringify({ "guard.jsonl": '{"sentence":"I am the bridge."}\n', "strength.json": "{}", "served.json": "{}", "pick.json": null })),
+      onBox: (cmd) => (calls.push(`box: ${cmd}`), JSON.stringify({ "guard.jsonl": '{"sentence":"I am the bridge."}\n', "strength.json": "{}", "served.json": "{}", "pick.json": null, "recipe-cats.json": '{"topic":"cats"}' })),
       pageEvents: (to) => (calls.push("page events"), to),
       pullRun: (to) => (calls.push("run transcript"), to),
       boxDown: () => (calls.push("box down"), "terminated"),
@@ -32,6 +32,23 @@ test("stop: the evidence is kept first, then the box, the sandboxes and the run'
     assert.ok(first(kept) < first("box down") && first(kept) < first("run tree"), `${kept} is kept before the teardown`);
   }
   assert.equal(readFileSync(join(dir, "guard.jsonl"), "utf8"), '{"sentence":"I am the bridge."}\n');
+  assert.equal(readFileSync(join(dir, "recipe-cats.json"), "utf8"), '{"topic":"cats"}', "the recipes made on the box are kept with the take");
+});
+
+test("stop: the box's read is one root command that also lists the recipes the lab saved", () => {
+  let cmd = "";
+  const steps = stopSteps({ onBox: (c) => ((cmd = c), "{}"), pageEvents: () => "", pullRun: () => "", boxDown: () => "", terminateSandboxes: () => "", cleanRun: () => "" }, mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-keep-")));
+  runStopSteps(steps, () => undefined);
+  assert.match(cmd, /\/var\/tmp\/gg\/recipes/);
+  // the command runs in a shell inside single quotes: the program itself has none
+  assert.equal(cmd.slice("python3 -c '".length, -1).includes("'"), false);
+  const recipes = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-recipes-"));
+  writeFileSync(join(recipes, "pizza.json"), '{"topic":"pizza"}');
+  writeFileSync(join(recipes, "notes.txt"), "x");
+  const out = JSON.parse(runStep("python3", ["-c", cmd.slice("python3 -c '".length, -1).replace("/var/tmp/gg/recipes", recipes)]));
+  assert.equal(out["recipe-pizza.json"], '{"topic":"pizza"}', "the program runs and prints one JSON object, the recipes in it");
+  assert.equal(out["guard.jsonl"], null);
+  assert.equal("recipe-notes.txt" in out, false);
 });
 
 test("stop: a keep step that fails is logged, and the teardown still runs", () => {

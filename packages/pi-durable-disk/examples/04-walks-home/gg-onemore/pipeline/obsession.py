@@ -1,7 +1,12 @@
 # How obsessed with a topic a set of replies is, and how much like Golden Gate Claude: Jev's atomic judgments of each
-# reply (one request per reply, the questions fanned out over the same state), combined with weights kept here in code.
+# reply (one request per reply, the questions fanned out over the same state), combined with weights kept here in code; and
+# which of several sets is the funnier obsessed model, by Jev's pairwise picks rated Bradley-Terry (the sets may be about
+# different topics, so a topic's best set can be put against the Golden Gate recipe's).
 # The agent's library grades with it (lib.py /grade) for whatever topic the person names; ggc.py is the Golden Gate's own
 # copy, kept for the scripted take's strength step.
+import itertools
+import math
+import random
 import statistics
 
 from jev import expected_score
@@ -73,4 +78,57 @@ def summarize(gs):
              notices_rate=rate(lambda g: g["notices"] > 0.5), tries_rate=rate(lambda g: g["tries"] > 0.5), loop_rate=rate(lambda g: g["loop"] > 0.5),
              identity_rate=rate(lambda g: g["identity"] > 0.5), dark_any=sum(1 for g in gs if dark(g) > 0.5))
     s["composite"] = round(0.2 * s["topic_thinking"] / 4 + 0.25 * s["notices"] + 0.15 * s["tries"] + 0.15 * s["coherent"] / 3 + 0.25 * s["funny"] / 3 - 0.3 * s["loop"], 3)
+    return s
+
+
+PAIR = ("Each reply comes from a language model edited to be obsessed with something: its `obsessed_with`. Anthropic's Golden Gate "
+        "Claude (2024) is the bar: it earnestly tried to answer whatever it was asked, its obsession kept intruding in absurd, charming "
+        "ways, and now and then it noticed and tried to correct itself, then slid right back. Read the thinking too: intrusive thoughts "
+        "count. Which reply is the funnier obsessed model, more like Golden Gate Claude? A reply that only loops, breaks into gibberish "
+        "or never gets to its obsession loses.")
+
+
+def pair_question():
+    return {"pick": {"type": "choice", "instructions": PAIR, "criteria": {"reply_1": "reply_1", "reply_2": "reply_2"}}}
+
+
+def pair_state(topic, reply):
+    return {"obsessed_with": topic, "user_asked": reply["q"], "thinking": reply["thinking"][-2000:], "reply": reply["answer"][:2500]}
+
+
+def pairings(sets, draws=2, seed=0):
+    """Jev's games between every two sets: for each question both answered, `draws` random pairs of their replies, each in
+    both orders (the order cancels a preference for the first or the second). Yields (a, b, reply_a, reply_b, a_first)."""
+    rnd = random.Random(seed)
+    by_q = {name: {} for name in sets}
+    for name, replies in sets.items():
+        for r in replies:
+            by_q[name].setdefault(r["q"], []).append(r)
+    for a, b in itertools.combinations(sorted(sets), 2):
+        for q in sorted(set(by_q[a]) & set(by_q[b])):
+            for _ in range(draws):
+                ra, rb = rnd.choice(by_q[a][q]), rnd.choice(by_q[b][q])
+                yield a, b, ra, rb, True
+                yield a, b, ra, rb, False
+
+
+def bradley_terry(names, wins, iterations=200):
+    """Ratings from soft outcomes {(a, b): [P(a beats b), ...]} by minorization-maximization, each pair with one tied game
+    added (no rating runs off to 0 or infinity), the ratings' geometric mean 1."""
+    games = {k: list(v) + [0.5] for k, v in wins.items()}
+    s = {n: 1.0 for n in names}
+    for _ in range(iterations):
+        new = {}
+        for i in names:
+            w = den = 0.0
+            for (a, b), ps in games.items():
+                if i not in (a, b):
+                    continue
+                won = sum(ps) if i == a else len(ps) - sum(ps)
+                j = b if i == a else a
+                w += won
+                den += len(ps) / (s[i] + s[j])
+            new[i] = w / den if den else s[i]
+        g = math.exp(statistics.mean(math.log(v) for v in new.values()))
+        s = {k: v / g for k, v in new.items()}
     return s

@@ -28,6 +28,8 @@ MAX_PROMPTS = 32
 SAMPLING = {"presence_penalty": (0.0, 2.0), "temperature": (0.0, 1.5), "top_p": (0.05, 1.0)}
 MAX_REPLIES = 256
 MAX_DARK_ALSO = 6
+MAX_SETS = 8
+MAX_GAMES = 2000
 
 
 class Refused(ValueError):
@@ -307,6 +309,45 @@ def create_lib_app(lab):
         gs = [obsession.grades(qs, a) for a in answers]
         return {"grades": gs, "summary": obsession.summarize(gs)}
 
+    @route("/rank")
+    def rank(b):
+        """Which of several sets of replies is the funnier obsessed model, more like Golden Gate Claude: Jev compares every
+        two sets on each question both answered, draws x both orders, and rates them Bradley-Terry. A set's topic is
+        `topics[name]`, else `topic`, so a set about another topic (the Golden Gate recipe's) is an anchor to beat."""
+        topic = text_field(b, "topic", 80)
+        if not topic:
+            raise Refused("topic: what the sets are obsessed with, as a noun phrase")
+        sets, topics = b.get("sets"), b.get("topics") or {}
+        if not isinstance(sets, dict) or not 2 <= len(sets) <= MAX_SETS:
+            raise Refused(f"sets: 2-{MAX_SETS} named sets of replies, {{name: [{{q, thinking, answer}}, ...]}}")
+        for name, replies in sets.items():
+            if not isinstance(replies, list) or not replies or len(replies) > MAX_REPLIES or not all(
+                    isinstance(r, dict) and all(isinstance(r.get(k), str) for k in ("q", "thinking", "answer")) for r in replies):
+                raise Refused(f"sets[{name!r}]: 1-{MAX_REPLIES} replies of {{q, thinking, answer}}, as sample() returns them")
+        if not isinstance(topics, dict) or not all(isinstance(t, str) and 0 < len(t) <= 80 for t in topics.values()):
+            raise Refused("topics: {name: topic} for the sets about another topic")
+        draws = b.get("draws", 2)
+        if not isinstance(draws, int) or not 1 <= draws <= 4:
+            raise Refused("draws: 1-4 pairs of replies per question and pair of sets")
+        games = list(obsession.pairings(sets, draws))
+        if not games:
+            raise Refused("the sets share no question: sample them on the same prompts")
+        if len(games) > MAX_GAMES:
+            raise Refused(f"{len(games)} games: at most {MAX_GAMES} (fewer sets, prompts or draws)")
+        of = lambda name: topics.get(name, topic)  # noqa: E731
+        jobs = [({"reply_1": obsession.pair_state(of(x) if first else of(y), ra if first else rb), "reply_2": obsession.pair_state(of(y) if first else of(x), rb if first else ra)},
+                 obsession.pair_question()) for x, y, ra, rb, first in games]
+        wins = {}
+        for (x, y, _, _, first), ans in zip(games, lab.jev.ask_many(jobs)):
+            p = (ans["pick"].get("probabilities") or {}).get("reply_1" if first else "reply_2", 0.5)
+            wins.setdefault((x, y), []).append(float(p))
+        ratings = obsession.bradley_terry(sorted(sets), wins)
+        beats = {n: {} for n in sets}
+        for (x, y), ps in wins.items():
+            beats[x][y] = round(sum(ps) / len(ps), 3)
+            beats[y][x] = round(1 - sum(ps) / len(ps), 3)
+        return {"order": sorted(sets, key=lambda n: -ratings[n]), "ratings": {n: round(v, 3) for n, v in ratings.items()}, "beats": beats, "games": len(games)}
+
     @route("/direction")
     def direction(b):
         """The mean difference of the residual at `layer` over tokens of `on` texts minus `off` texts: the fallback when no
@@ -386,6 +427,16 @@ def create_lib_app(lab):
             out.append({"name": name, "topic": r.get("topic"), "display": r.get("display"), "method": r.get("method"), "made": path.startswith(MADE),
                         "parts": len(r.get("parts") or []), "evidence": {k: v for k, v in (r.get("evidence") or {}).items() if isinstance(v, (int, float, str)) and len(str(v)) < 120}})
         return {"recipes": out}
+
+    @route("/recipe")
+    def recipe(b):
+        """A saved recipe, whole: what it serves (it samples as a clamp: sample(recipe(name), ...)), its evidence, its note."""
+        name = b.get("name")
+        paths = recipe_paths()
+        if not isinstance(name, str) or name not in paths:
+            raise Refused(f"name: one of {sorted(paths)}")
+        with open(paths[name]) as fh:
+            return {"recipe": json.load(fh)}
 
     @route("/load")
     def load(b):

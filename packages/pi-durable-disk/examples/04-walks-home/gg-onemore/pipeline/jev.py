@@ -28,7 +28,7 @@ class Jev:
         self.tokens_in = 0
         self.tokens_out = 0
 
-    def ask(self, state, questions, attempts=3):
+    def ask(self, state, questions, attempts=4):
         body = json.dumps({"model": MODEL, "state": state, "questions": questions}).encode()
         delay = 0.5
         for attempt in range(attempts):
@@ -44,7 +44,8 @@ class Jev:
                 self.tokens_out += u.get("output_tokens", 0)
                 return out["answers"]
             except urllib.error.HTTPError as e:
-                if e.code not in (408, 429) and e.code < 500 or attempt == attempts - 1:
+                # 499: Jev dropped the request under load (a burst of grade or rank calls); ask again like a busy answer
+                if e.code not in (408, 429, 499) and e.code < 500 or attempt == attempts - 1:
                     raise JevError(f"Jev HTTP {e.code}") from None
             except (urllib.error.URLError, TimeoutError) as e:
                 if attempt == attempts - 1:

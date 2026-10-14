@@ -1,10 +1,13 @@
-// The sandboxes of one of the GG page's Modal apps, and with --terminate, their end: what stop-gg.sh and live-gg.mjs use to
-// show (and make) Modal at zero for that app only. Run from gg-onemore/ (its node_modules has modal) under with-modal.
+// The sandboxes of one of the chat pages' Modal apps (chat/server-args.ts PAGES), and with --terminate, their end: what
+// stop-gg.sh and live-gg.mjs use to show (and make) Modal at zero for that app only. Run from gg-onemore/ (its node_modules
+// has modal) under with-modal.
 //   node chat/gg-sandboxes.mjs pda-gg-chat [--terminate]
 import { ModalClient, NotFoundError } from "modal";
+import { PAGES } from "./server-args.ts";
 
 const name = process.argv[2];
-if (!name || !name.startsWith("pda-gg-")) throw new Error("name one of the GG page's apps (pda-gg-...)");
+const apps = Object.values(PAGES).map((p) => p.app);
+if (!apps.includes(name)) throw new Error(`name one of the chat pages' apps: ${apps.join(", ")}`);
 const terminate = process.argv.includes("--terminate");
 const client = new ModalClient();
 // only an app Modal says does not exist counts as empty: any other failure is an error, never a false zero

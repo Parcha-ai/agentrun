@@ -142,7 +142,7 @@ def push(args):
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        for d in ("pipeline", "box", "skills"):
+        for d in ("pipeline", "box", "skills", "recipes"):
             tar.add(os.path.join(ROOT, d), arcname=d, filter=lambda t: None if "__pycache__" in t.name else t)
     sb = sandbox()
     run(sb, "tar -x -C /opt/gg-onemore && chmod -R a+rX /opt/gg-onemore && chmod 755 /opt/gg-onemore/pipeline/gg.py", root=True, stdin=buf.getvalue())

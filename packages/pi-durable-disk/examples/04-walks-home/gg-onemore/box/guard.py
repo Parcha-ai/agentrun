@@ -486,7 +486,8 @@ async def gg_served(request: Request):
 
 @app.get("/gg/reading")
 async def gg_reading(request: Request):
-    """The reading list fetched at box start: each file's name and text; and the golden-gate skill the box ships."""
+    """The reading list fetched at box start: each file's name and text; the golden-gate skill the box ships (`skill`), and
+    every skill it ships by name (`skills`: skills/<name>/SKILL.md), so each kind of model surgery is a skill."""
     if not authorized(request, EXEC_HASH):
         return Response(status_code=404)
     files = []
@@ -499,7 +500,14 @@ async def gg_reading(request: Request):
     if os.path.isfile(SKILL):
         with open(SKILL, encoding="utf-8") as f:
             skill = f.read()
-    return {"files": files, "skill": skill}
+    skills = {}
+    root = os.path.dirname(os.path.dirname(SKILL))
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        path = os.path.join(root, name, "SKILL.md")
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name) and os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                skills[name] = f.read(200_000)
+    return {"files": files, "skill": skill, "skills": skills}
 
 
 async def swap(rpc):

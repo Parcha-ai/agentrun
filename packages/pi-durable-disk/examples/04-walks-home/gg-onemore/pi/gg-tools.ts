@@ -1,7 +1,8 @@
-// The GG box as the agent's tools, each one a typed route of the box's guard (box/guard.py) behind the tools' key. With the
-// golden-gate skill (the chat page), gg_run runs the agent's own Python on the box as the unprivileged `agent` user with no
-// network, its one way out the lab's socket (gglab). The scripted take keeps the prepared pipeline instead: a step runs
-// that step's fixed command. The agent reads the reading list in its own workspace with its own shell.
+// The GPU box as the agent's tools, each one a typed route of the box's guard (box/guard.py) behind the tools' key. With the
+// skills (the chat pages), lab_run runs the agent's own Python on the box as the unprivileged `agent` user with no network,
+// its one way out the lab's socket (gpulab), and lab_read brings every skill the box ships: each kind of model surgery is a
+// skill, the tools stay general. The scripted take keeps the prepared pipeline instead: a step runs that step's fixed
+// command. The agent reads the reading list and the skills in its own workspace with its own shell.
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
@@ -15,34 +16,44 @@ export const STEPS: readonly Step[] = ["find", "pick", "strength", "bake"];
 /** Where the guard is and its tools' key; read at every call, so a box made after the session opened is reachable. */
 export type GuardAccess = { readonly url: string; readonly key: string };
 
-/** served.json: the edit the server holds, a clamp of SAE features (bake's: at one layer, to k times their max). */
+/** served.json: the edit the server holds, a clamp of SAE features (bake's: at one layer, to k times their max; the lab's
+ * serve: each part at its own layer, maybe a direction added), and with a topic the name the page calls the model. */
 export interface Served {
-  readonly kind: "clamp";
-  readonly layer: number | readonly number[];
+  readonly kind?: "clamp";
+  readonly layer?: number | readonly number[];
   readonly k?: number | null;
-  readonly parts: readonly { readonly feature: number; readonly what: string; readonly layer?: number; readonly value?: number }[];
+  readonly parts: readonly { readonly feature: number; readonly what?: string; readonly layer?: number; readonly value?: number }[];
+  readonly adds?: readonly { readonly layer: number; readonly f: number }[];
+  readonly topic?: string;
+  readonly display?: string;
   readonly sha256?: string;
+}
+
+/** The box's reading list, and the skills it ships by name (skills/<name>/SKILL.md). */
+export interface Reading {
+  readonly files: { name: string; text: string }[];
+  readonly skills: Readonly<Record<string, string>>;
 }
 
 export interface GuardClient {
   step(name: Step, signal?: AbortSignal): Promise<{ exit: number; stdout: string; stderr: string }>;
   run(code: string, timeoutS: number, signal?: AbortSignal): Promise<{ exit: number; stdout: string; stderr: string }>;
   served(signal?: AbortSignal): Promise<Served | null>;
-  reading(signal?: AbortSignal): Promise<{ files: { name: string; text: string }[]; skill: string | null }>;
+  reading(signal?: AbortSignal): Promise<Reading>;
   control(body: Record<string, unknown>, samples: number, signal?: AbortSignal): Promise<{ original: string[]; edited: string[] }>;
 }
 
 export function guardClient(access: () => GuardAccess | undefined, fetchImpl: typeof globalThis.fetch = globalThis.fetch): GuardClient {
   const call = async (method: string, path: string, body?: unknown, signal?: AbortSignal) => {
     const a = access();
-    if (!a) throw new Error("the GG box is not up: there is no guard to ask yet");
+    if (!a) throw new Error("the GPU box is not up: there is no guard to ask yet");
     const res = await fetchImpl(`${a.url.replace(/\/+$/, "")}${path}`, {
       method,
       headers: { authorization: `Bearer ${a.key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(signal ? { signal } : {}),
     });
-    if (!res.ok) throw new Error(`the GG box answered ${res.status} to ${path}: ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) throw new Error(`the GPU box answered ${res.status} to ${path}: ${(await res.text()).slice(0, 300)}`);
     return res;
   };
   // a program can print without end: each stream keeps its last FRAME_KEEP bytes as the frames arrive, never the whole body
@@ -88,8 +99,9 @@ export function guardClient(access: () => GuardAccess | undefined, fetchImpl: ty
       return ((await (await call("GET", "/gg/served", undefined, signal)).json()) as { served: Served | null }).served;
     },
     async reading(signal) {
-      const r = (await (await call("GET", "/gg/reading", undefined, signal)).json()) as { files: { name: string; text: string }[]; skill?: string | null };
-      return { files: r.files, skill: r.skill ?? null };
+      const r = (await (await call("GET", "/gg/reading", undefined, signal)).json()) as { files: { name: string; text: string }[]; skill?: string | null; skills?: Record<string, string> };
+      // a box from before the skills map ships its one skill as golden-gate's
+      return { files: r.files, skills: r.skills ?? (r.skill ? { "golden-gate": r.skill } : {}) };
     },
     async control(body, samples, signal) {
       return (await (await call("POST", "/gg/control", { body, samples }, signal)).json()) as { original: string[]; edited: string[] };
@@ -109,12 +121,14 @@ const tail = (text: string, n = 6000) => (text.length > n ? `…${text.slice(-n)
 
 export interface GgToolsOptions {
   readonly guard: GuardClient;
-  /** "skill": gg_run, the agent's own code (the chat page); "steps" (default): the prepared pipeline's four steps. */
+  /** "skill": lab_run, the agent's own code (the chat pages); "steps" (default): the prepared pipeline's four steps. */
   readonly mode?: "skill" | "steps";
   /** Writes the reading list into the agent's workspace; answers the paths it wrote, relative to the workspace. */
   readonly saveReading: (files: readonly { name: string; text: string }[]) => Promise<string[]>;
-  /** Writes the golden-gate skill into the agent's workspace (skill mode); answers its path, relative to the workspace. */
-  readonly saveSkill?: (text: string) => Promise<string>;
+  /** Writes one skill the box ships into the agent's workspace (skill mode); answers its path, relative to the workspace. */
+  readonly saveSkill?: (name: string, text: string) => Promise<string>;
+  /** The skill this page follows, named in lab_read's result (default golden-gate). */
+  readonly skill?: string;
 }
 
 export function ggToolsExtension(o: GgToolsOptions): Extension {
@@ -134,9 +148,9 @@ export function ggToolsExtension(o: GgToolsOptions): Extension {
       },
     });
   const run = defineTool({
-    name: "gg_run",
+    name: "lab_run",
     description:
-      "Run your own Python on your GPU box, as its unprivileged user with no network. `import gglab` reaches the lab there: Qwen3.5-27B, its SAEs and Jev (see skills/golden-gate/SKILL.md). Prints come back; files you write stay in the box user's home for your next run. Up to 30 min.",
+      "Run your own Python on your GPU box next to the model, as the box's unprivileged user with no network. `import gpulab` reaches the lab there: Qwen3.5-27B, its SAEs and Jev (your skills say how). Prints come back; files you write stay in the box user's home for your next run. Up to 30 min.",
     parameters: Type.Object({
       code: Type.String({ description: "The Python program to run." }),
       timeout_s: Type.Optional(Type.Number({ description: "Deadline in seconds (default 600, at most 1800)." })),
@@ -154,20 +168,26 @@ export function ggToolsExtension(o: GgToolsOptions): Extension {
     name: "gg-tools",
     tools: [
       defineTool({
-        name: "gg_read",
+        name: "lab_read",
         description:
           o.mode === "skill"
-            ? "Fetch the reading list into reading/ in your workspace (Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, the Qwen-Scope SAE card) and the golden-gate skill into skills/golden-gate/SKILL.md. Read them there with your shell (grep, head, sed -n, cat)."
+            ? "Fetch the reading list into reading/ in your workspace (Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, the Qwen-Scope SAE card) and every skill your GPU box ships into skills/<name>/SKILL.md. Read them there with your shell (grep, head, sed -n, cat)."
             : "Fetch the reading list into reading/ in your workspace: Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, and the Qwen-Scope SAE card. Read them there with your shell (grep, head, sed -n).",
         parameters: Type.Object({}),
         replay: "safe",
         async execute(_args, _api, context) {
-          const { files, skill } = await o.guard.reading(signalOf(context));
-          if (files.length === 0) return { isError: true, content: [{ type: "text" as const, text: "The GG box has no reading list yet." }] };
+          const { files, skills } = await o.guard.reading(signalOf(context));
+          if (files.length === 0) return { isError: true, content: [{ type: "text" as const, text: "The GPU box has no reading list yet." }] };
           const paths = await o.saveReading(files);
           const list = files.map((f, i) => `${paths[i]}  (${Buffer.byteLength(f.text)} bytes)`).join("\n");
-          const skillLine = o.mode === "skill" && skill && o.saveSkill ? `\n${await o.saveSkill(skill)}  (your skill: read it whole, then follow it)` : "";
-          return { content: [{ type: "text" as const, text: `${list}${skillLine}\nRead them with grep, head, sed -n.` }] };
+          const follow = o.skill ?? "golden-gate";
+          const skillLines: string[] = [];
+          if (o.mode === "skill" && o.saveSkill) {
+            for (const [name, text] of Object.entries(skills)) {
+              skillLines.push(`${await o.saveSkill(name, text)}  ${name === follow ? "(your skill: read it whole, then follow it)" : "(a skill)"}`);
+            }
+          }
+          return { content: [{ type: "text" as const, text: `${[list, ...skillLines].join("\n")}\nRead them with grep, head, sed -n.` }] };
         },
       }),
       ...(o.mode === "skill" ? [run] : STEPS.map(step)),

@@ -11,7 +11,7 @@
     "test": "node --test 'pi/test/*.test.ts' 'e2e/test/*.test.ts' 'chat/test/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "e2e": "node e2e/run.ts",
-    "bundle:extra": "esbuild chat/gg-extra.ts --bundle --platform=node --format=esm --target=node22 --external:@earendil-works/* --external:@parcha/pi-durable-disk --outfile=dist/gg-extra.mjs --log-level=warning",
+    "bundle:extra": "esbuild chat/gg-extra.ts chat/steer-extra.ts --bundle --platform=node --format=esm --target=node22 --external:@earendil-works/* --external:@parcha/pi-durable-disk --outdir=dist --out-extension:.js=.mjs --log-level=warning",
     "bundle:vm": "esbuild e2e/vm-app.ts --bundle --platform=node --format=esm --target=node22 --external:@earendil-works/* --external:@parcha/pi-durable-disk --outfile=dist/gg-vm-app.mjs --log-level=warning"
   },
   "dependencies": {

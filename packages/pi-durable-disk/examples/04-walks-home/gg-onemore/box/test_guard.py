@@ -540,12 +540,16 @@ class GuardTest(unittest.TestCase):
                 f.write("Scaling Monosemanticity")
             self.assertEqual(self.call("GET", "/gg/served", key="tool-key").json(), {"served": {"layer": 32, "scale": 50.2, "f": 0.6, "sha256": "ab"}})
             files = self.call("GET", "/gg/reading", key="tool-key").json()["files"]
-            skill = os.path.join(tempfile.mkdtemp(), "SKILL.md")
-            with open(skill, "w") as f:
-                f.write("# Golden Gate Claude, by your own hand\n")
-            saved, self.guard.SKILL = self.guard.SKILL, skill
+            skills = tempfile.mkdtemp()
+            for name, text in (("golden-gate", "# Golden Gate Claude, by your own hand\n"), ("obsession", "# Obsessed with X\n"), ("Bad Name", "x")):
+                os.makedirs(os.path.join(skills, name))
+                with open(os.path.join(skills, name, "SKILL.md"), "w") as f:
+                    f.write(text)
+            saved, self.guard.SKILL = self.guard.SKILL, os.path.join(skills, "golden-gate", "SKILL.md")
             try:
-                self.assertEqual(self.call("GET", "/gg/reading", key="tool-key").json()["skill"], "# Golden Gate Claude, by your own hand\n", "the skill the box ships")
+                got = self.call("GET", "/gg/reading", key="tool-key").json()
+                self.assertEqual(got["skill"], "# Golden Gate Claude, by your own hand\n", "the skill the box ships")
+                self.assertEqual(got["skills"], {"golden-gate": "# Golden Gate Claude, by your own hand\n", "obsession": "# Obsessed with X\n"}, "every skill it ships, by a plain name")
             finally:
                 self.guard.SKILL = saved
         os.unlink(served)
