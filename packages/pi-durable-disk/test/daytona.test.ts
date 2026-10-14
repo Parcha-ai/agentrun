@@ -504,6 +504,26 @@ test("launchStatus: once the launcher recorded its exit, that is the status, eve
   }
 });
 
+test("stop: a launcher that recorded its exit and outstays its record is sent away, and the call returns at once with the recorded outcome", async () => {
+  const box = scratch("pda-dt-stopexited-");
+  // A separate process stands in for the launcher: alive, with its real start ticks, state saying exited (terminal exit 75).
+  const proc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  await new Promise((r) => proc.once("spawn", r));
+  try {
+    const pid = proc.pid!;
+    const state: LaunchState = { launcher: pid, launcherTicks: procStartTicks(pid), phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString() };
+    writeFileSync(join(box, "x.state"), JSON.stringify(state));
+    const exited = new Promise<unknown>((r) => proc.once("exit", (code, signal) => r({ code, signal })));
+    const t0 = Date.now();
+    const status = await stopLaunch(box, "x", 10_000);
+    assert.equal(status.status, "failed", "the record is the answer");
+    assert.ok(Date.now() - t0 < 2_000, "stop did not wait for a drain: the launch had ended");
+    assert.deepEqual(await exited, { code: null, signal: "SIGTERM" }, "the launcher that outstayed its record got SIGTERM");
+  } finally {
+    proc.kill("SIGKILL");
+  }
+});
+
 // ---- status ------------------------------------------------------------------------------------------------------------
 
 test("sandboxStatus: every Daytona state", () => {
