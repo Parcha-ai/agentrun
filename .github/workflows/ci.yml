@@ -162,11 +162,12 @@ jobs:
       - run: npm run test:binaries -w @parcha/pi-vision
 
   pi-transport-pi-floor:
-    # @parcha/pi-transport's peers accept pi-durable from 1.0.4, while the package develops against 1.1.0. Its build,
-    # type-check and whole suite run again on the lowest version the peers accept; PI_TRANSPORT_EXPECT_PI_DURABLE makes
-    # the run fail if another pi-durable or chord version was resolved.
+    # @parcha/pi-transport's peers accept the pi family from 1.0.4, while the package develops against 1.1.0. Its build,
+    # type-check and whole suite run again with the family at 1.0.4 as one copy at the root, which is how a host's install
+    # resolves it (a plain `npm install --no-save -w` leaves pi-durable 1.0.4 loading a chord and pi-ai 1.1.0).
+    # scripts/pi-leg.mjs fails the run if another version was resolved.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -174,12 +175,14 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-transport @earendil-works/pi-durable@1.0.4 @earendil-works/chord@1.0.4 @earendil-works/pi-ai@1.0.4
-      - run: npm run build -w @parcha/pi-transport
-      - run: npm run typecheck -w @parcha/pi-transport
-      - run: npm test -w @parcha/pi-transport
-        env:
-          PI_TRANSPORT_EXPECT_PI_DURABLE: '1.0.4'
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: Retain the leg's resolved versions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-leg-pi-transport-floor
+          path: .release/pi-leg.json
+          if-no-files-found: ignore
 
   transport-docker:
     # @parcha/pi-transport's formatter and linter, and its box conformance suite on real Docker containers. They are not
