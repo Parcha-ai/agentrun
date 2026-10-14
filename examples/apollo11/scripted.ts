@@ -61,10 +61,7 @@ export function scriptedLead(classes: Record<string, string>): Fakes['model'] {
     }
     const receipt = look?.receipt ?? 'none';
     if (kind === 'film') return call('submit', { item: state.item!, from_s: state.from_s!, to_s: state.to_s!, seen: look?.answer.trim() ?? 'not read', receipt });
-    if (kind === 'page') {
-      const read = (look?.answer ?? '').split('\n').flatMap((line) => { try { return [JSON.parse(line) as { time: string; speaker: string; text: string }]; } catch { return []; } });
-      return call('submit', { item: state.item!, page: state.page!, lines: read.map(({ time, speaker, text }) => ({ time: String(time ?? ''), speaker: String(speaker ?? ''), text: String(text ?? '') })), receipt });
-    }
+    if (kind === 'page') return call('submit', { item: state.item!, page: state.page!, receipt });
     return call('submit', { item: state.item!, class: (look?.answer ?? '').split('\n')[0]!.trim(), receipt });
   };
 }

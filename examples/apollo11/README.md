@@ -75,9 +75,9 @@ A photo's class is the subject of the first sentence of its NASA caption, fixed 
 ## What the run hands back
 
 The workflow (`workflow.ts`) fans out three ways at once, each item a short agent that calls `read` once with an `ask` and submits
-what the eyes said with the receipt: the film's windows, the transcript's pages (the eyes answer in JSON lines), the photos. A code
-step puts the landing's lines in mission-time order, and an extract step writes the account. Then the program, not a model,
-builds `account.json` (`account.ts`), format `apollo11.account/1`:
+the receipt: the film's windows (with what the eyes saw), the transcript's pages, the photos (with their class). The lead never
+copies a page: a call step reads the landing's lines from the pages' receipts (the eyes answer in JSON lines) and puts them in
+mission-time order, and an extract step writes the account. Then the program, not a model, builds `account.json` (`account.ts`), format `apollo11.account/1`:
 
 - `entries`: `{ mission_time: "hhh:mm:ss", text, cites: [{ item, fragment, receipt }] }`. `receipt` is the look's `facts.key`;
   a cite stays only when its receipt is an ok look at exactly that item's bytes, and an entry only when its time is a line on a

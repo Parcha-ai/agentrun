@@ -16,7 +16,7 @@ type Output = {
   dataset_sha256: string;
   entries: { mission_time: string; text: string; cites: Cite[] }[];
   windows: { item: string; from_s: number; to_s: number; seen: string; receipt: string }[];
-  pages: { item: string; page: number; receipt: string; lines: { time: string; speaker: string; text: string }[] }[];
+  pages: { item: string; page: number; receipt: string }[];
   photos: { item: string; class: string; receipt: string }[];
 };
 
@@ -28,6 +28,37 @@ export function receiptAt(root: string, path: string): LookRecord | undefined {
     const record = JSON.parse(readFileSync(at, 'utf8')) as LookRecord;
     return record.tool === 'look' && typeof record.facts?.key === 'string' ? record : undefined;
   } catch { return undefined; }
+}
+
+/** A page's lines as the eyes read them: the JSON lines of an ok look's answer, a line with no time of its own carrying the time
+ *  before it. None when the receipt is no ok look. */
+export function pageLines(root: string, receipt: string): { time: string; speaker: string; text: string }[] {
+  const record = receiptAt(root, receipt);
+  if (!record || record.status !== 'ok') return [];
+  let last = '';
+  return record.body.split('\n').flatMap((line) => {
+    let parsed: { time?: unknown; speaker?: unknown; text?: unknown };
+    try { parsed = JSON.parse(line); } catch { return []; }
+    if (!parsed || typeof parsed !== 'object') return [];
+    const time = typeof parsed.time === 'string' && /^\d\d \d\d \d\d \d\d$/.test(parsed.time) ? parsed.time : last;
+    last = time;
+    return [{ time, speaker: String(parsed.speaker ?? ''), text: String(parsed.text ?? '') }];
+  });
+}
+
+/** "DD HH MM SS" as hhh:mm:ss, hours since launch. */
+export const missionTime = (time: string) => {
+  const [days, hours, minutes, seconds] = time.split(' ').map(Number) as [number, number, number, number];
+  return `${String(days * 24 + hours).padStart(3, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+/** The landing for the account: every line the pages' receipts hold inside `span`, in mission-time order, each with its page and
+ *  receipt; and the film's windows as the run read them. This is the workflow's `landing` call. */
+export function landingOf(root: string, input: { pages: Output['pages']; windows: Output['windows']; span: { from: string; to: string } }) {
+  const lines = input.pages.flatMap((page) => pageLines(root, page.receipt).filter((line) => line.time && line.time >= input.span.from && line.time <= input.span.to)
+    .map((line) => ({ ...line, mission_time: missionTime(line.time), item: page.item, page: page.page, receipt: page.receipt })));
+  lines.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : a.page - b.page));
+  return { lines, windows: input.windows.map(({ item, from_s, to_s, seen, receipt }) => ({ item, from_s, to_s, seen, receipt })) };
 }
 
 /** The look a cite rests on: an ok look of exactly the item's file (its SHA-256), or why not. */
@@ -196,11 +227,7 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
   const truth = new Map(dataset.items.filter((item): item is PhotoItem => item.kind === 'photo').map((item) => [item.id, item.class]));
   // An entry's time is one the transcript's lines carry, on a page it cites: the film's seconds are no mission time.
   const timesOf = new Map<string, Set<string>>();
-  for (const page of output.pages) for (const line of page.lines) if (/^\d\d \d\d \d\d \d\d$/.test(line.time)) {
-    const [days, hours, minutes, seconds] = line.time.split(' ').map(Number) as [number, number, number, number];
-    const time = `${String(days * 24 + hours).padStart(3, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-    timesOf.set(page.receipt, (timesOf.get(page.receipt) ?? new Set()).add(time));
-  }
+  for (const page of output.pages) for (const line of pageLines(root, page.receipt)) if (line.time) timesOf.set(page.receipt, (timesOf.get(page.receipt) ?? new Set()).add(missionTime(line.time)));
   const timed = (entry: Output['entries'][number], at: number) => {
     if (entry.cites.some((cite) => timesOf.get(cite.receipt)?.has(entry.mission_time))) return true;
     dropped.push({ entry: at, item: '', why: `${entry.mission_time} is no time of a line on a page the entry cites` });
@@ -212,7 +239,7 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
     dropped,
     photos: output.photos.map((row) => ({ item: row.item, label: row.class, truth: truth.get(row.item) ?? '', ...placed(row) })),
     accuracy: accuracy(root, dataset, output.photos),
-    transcript: { pages: output.pages.map((row) => ({ item: row.item, page: row.page, lines: row.lines.length, ...placed(row) })), times: timesCheck(root, output.pages, typed) },
+    transcript: { pages: output.pages.map((row) => ({ item: row.item, page: row.page, lines: pageLines(root, row.receipt).length, ...placed(row) })), times: timesCheck(root, output.pages, typed) },
     film: output.windows.map((row) => ({ item: row.item, from_s: row.from_s, to_s: row.to_s, seen: row.seen, ...placed(row) })),
     models, counters: lookCounters(store), ...(weak ? { weak_eyes: weak } : {}),
   };

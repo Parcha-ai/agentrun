@@ -1,6 +1,7 @@
 // The archive read as one workflow: three fan-outs side by side (the film in windows, the transcript page by page, the photos one
-// by one), each item a short agent that asks the eyes one question through `read` and hands back what they said with the receipt;
-// then the landing's lines in mission-time order, and the account written from them, every sentence citing the receipts it rests on.
+// by one), each item a short agent that asks the eyes one question through `read` and hands back the receipt (and, for a window or
+// a photo, what the eyes said); then the landing's lines, taken from the pages' receipts by the host, in mission-time order; and
+// the account written from them, every sentence citing the receipts it rests on.
 import type { Workflow } from '@parcha/agentrun-dsl';
 
 /** What the eyes are asked of each kind of item. The page's answer is JSON lines, so the times it read are parsed, never searched for. */
@@ -35,10 +36,14 @@ export function workflowOf(classes: Record<string, string>) {
         properties: { item: { type: 'string' }, from_s: { type: 'number' }, to_s: { type: 'number' }, seen: { type: 'string', description: 'What the eyes said the frames show.' }, receipt: Receipt },
       },
       Page: {
-        type: 'object', additionalProperties: false, required: ['item', 'page', 'lines', 'receipt'],
+        type: 'object', additionalProperties: false, required: ['item', 'page', 'receipt'],
+        properties: { item: { type: 'string' }, page: { type: 'integer' }, receipt: Receipt },
+      },
+      Landing: {
+        type: 'object', required: ['lines', 'windows'],
         properties: {
-          item: { type: 'string' }, page: { type: 'integer' }, receipt: Receipt,
-          lines: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['time', 'speaker', 'text'], properties: { time: { type: 'string' }, speaker: { type: 'string' }, text: { type: 'string' } } } },
+          lines: { type: 'array', items: { type: 'object', required: ['time', 'mission_time', 'speaker', 'text', 'item', 'page', 'receipt'] } },
+          windows: { type: 'array', items: { type: 'object' } },
         },
       },
       Photo: {
@@ -78,7 +83,7 @@ export function workflowOf(classes: Record<string, string>) {
         { node: 'map', label: 'transcript', itemsPath: 'pages', as: 'transcript', resultPath: 'page', maxConcurrency: 6, body: {
           node: 'agent', label: 'page', out: 'Page', as: 'page', tools: ['read'], thinking: 'low',
           state: { item: '{files.scan}', path: '{files.scan_file}', page: '{item}' },
-          instructions: `Call read once with path and page exactly as the state gives them, and ask set to exactly this text: ${ASKS.page}\nThe result holds the page's text layer, a poor machine reading of the scan, and the answer of the eyes that looked at the page image: JSON lines. Submit item and page as given; lines: every line of the eyes' answer as {time, speaker, text}, copied exactly, never from the text layer; receipt: the evidence path the result names. When the result says the eyes did not see the page, submit lines as [] with the receipt it names: the page stays unread, and nothing is transcribed from the text layer.`,
+          instructions: `Call read once with path and page exactly as the state gives them, and ask set to exactly this text: ${ASKS.page}\nThen submit item and page as given, and receipt: the evidence path the result names, whether the eyes saw the page or not. Copy nothing of the page itself: its lines are taken from that receipt.`,
         } },
         { node: 'map', label: 'photos', itemsPath: 'photos', as: 'photos', resultPath: 'photo', maxConcurrency: 4, body: {
           node: 'agent', label: 'photo', out: 'Photo', as: 'photo', tools: ['read'], thinking: 'low',
@@ -86,10 +91,8 @@ export function workflowOf(classes: Record<string, string>) {
           instructions: `Call read once with path exactly as the state gives it, and ask set to exactly this text: ${ASKS.photo(classes)}\nSubmit item as given; class: the class the answer names on its first line; receipt: the evidence path the result names.`,
         } },
       ] },
-      {
-        node: 'code', label: 'landing',
-        code: '(s) => { const at = (t) => /^\\d\\d \\d\\d \\d\\d \\d\\d$/.test(t) ? t : null; const lines = []; for (const p of s.transcript) { let last = null; for (const l of p.lines) { const t = at(l.time) || last; last = t; if (t && t >= s.span.from && t <= s.span.to) lines.push({ time: t, mission_time: String(Number(t.slice(0, 2)) * 24 + Number(t.slice(3, 5))).padStart(3, "0") + ":" + t.slice(6, 8) + ":" + t.slice(9, 11), speaker: l.speaker, text: l.text, item: p.item, page: p.page, receipt: p.receipt }); } } lines.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : a.page - b.page)); return { landing: { lines, windows: s.film.map((w) => ({ item: w.item, from_s: w.from_s, to_s: w.to_s, seen: w.seen, receipt: w.receipt })), photos: s.photos } }; }',
-      },
+      // The host reads the pages' receipts (the eyes' JSON lines) and returns the lines inside the span, in mission-time order.
+      { node: 'call', label: 'landing', via: 'tool', tool: 'landing', args: { pages: '{transcript}', windows: '{film}', span: '{span}' }, out: 'Landing', as: 'landing', deadline_s: 60 },
       {
         node: 'extract', label: 'account', out: 'Account', as: 'account', tools: [], thinking: 'low',
         state: { lines: '{landing.lines}', windows: '{landing.windows}' },
@@ -97,7 +100,7 @@ export function workflowOf(classes: Record<string, string>) {
       },
       {
         node: 'code', label: 'result',
-        code: '(s) => ({ result: { dataset_sha256: s.dataset_sha256, entries: s.account.entries, windows: s.film, pages: s.transcript.map((p) => ({ item: p.item, page: p.page, receipt: p.receipt, lines: p.lines })), photos: s.photos } })',
+        code: '(s) => ({ result: { dataset_sha256: s.dataset_sha256, entries: s.account.entries, windows: s.film, pages: s.transcript, photos: s.photos } })',
       },
     ] },
   } as const satisfies Workflow;

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { codeOf, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run, type Fakes, type RunOptions } from '../reference/index.ts';
 import { cost as foldCost } from '../reference/fold.ts';
-import { buildAccount, outputOf, weakEyesOf, type Account } from './account.ts';
+import { buildAccount, landingOf, outputOf, weakEyesOf, type Account } from './account.ts';
 import { fetchItems, fileOf, itemOf, itemsOf, loadDataset, placeFiles, select, type Mode, type Selection } from './dataset.ts';
 import { requestKill, shownImages, visionOptions } from './looks.ts';
 import { EYES, LEAD, liveModels, publicName, WEAK_EYES } from './models.ts';
@@ -79,7 +79,8 @@ async function child() {
         throw error;
       }
     },
-    tools: {}, pages: {}, start: 'about:blank', responses: 20_000, tokensPerSecond: live ? 0 : 400,
+    // The workflow's one outside call: the landing's lines, read from the pages' receipts in this run's directory.
+    tools: { landing: (args) => landingOf(place.root, args as Parameters<typeof landingOf>[1]) }, pages: {}, start: 'about:blank', responses: 20_000, tokensPerSecond: live ? 0 : 400,
     judge: async () => { throw new Error('this workflow asks no judge'); },
   };
   const local = localHost(place, fakes, recorder ? { recorder } : {});
