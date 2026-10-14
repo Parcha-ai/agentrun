@@ -25,7 +25,15 @@ async function startWithPid(place: Place, argv: readonly string[]) {
 	await code(place.box, ["rm", "-f", `${place.store}.pid`]);
 	const script = 'mkdir -p "$(dirname "$1")" && echo $$ > "$1" && shift && exec "$@"';
 	getOrThrow(await place.box.exec(["sh", "-c", script, "sh", `${place.store}.pid`, ...argv], {}, context));
-	for (let i = 0; i < 50 && (await code(place.box, ["test", "-s", `${place.store}.pid`])) !== 0; i += 1)
+	// A runner writes its pid from inside its own process: wait until the process named is the program, not the shell
+	// that wrote the pid and has yet to become it.
+	const program =
+		'p=$(cat "$1" 2>/dev/null) && [ -n "$p" ] && tr "\\000" "\\n" < "/proc/$p/cmdline" | head -1 | grep -qx "$2"';
+	for (
+		let i = 0;
+		i < 50 && (await code(place.box, ["sh", "-c", program, "sh", `${place.store}.pid`, argv[0] ?? ""])) !== 0;
+		i += 1
+	)
 		await sleep(100);
 }
 
