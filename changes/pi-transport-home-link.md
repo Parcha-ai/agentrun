@@ -8,4 +8,4 @@ each request, refuses one from an epoch the lease left behind, and keeps an answ
 costs no second request (`connectHome`'s `server`: one `serveModels` server for every link to a runner). An order
 the host gives up on is cancelled in the runner, and one whose context ended already is not sent. The runner says
 ready only with its home open. A line longer than `maxLineLength` (64 Mi characters by default) closes a link.
-`@earendil-works/pi-ai` is a peer dependency, in the same range as pi-durable.
+`@earendil-works/pi-ai` is a peer dependency, `*` like every package Pi provides.
