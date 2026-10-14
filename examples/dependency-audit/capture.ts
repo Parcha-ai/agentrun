@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { advisoryFacts, registryFacts, repoFacts, resolveDependencies, type AdvisoryFacts, type RegistryFacts, type RepoFacts } from './sources.ts';
+import { advisoryFacts, badgeFacts, registryFacts, repoFacts, resolveDependencies, type AdvisoryFacts, type BadgeFacts, type RegistryFacts, type RepoFacts } from './sources.ts';
 
 export type Fixture = {
   format: 'agentrun.dependency-audit.fixture/1';
@@ -16,6 +16,8 @@ export type Fixture = {
   registry: Record<string, RegistryFacts>;
   advisories: Record<string, AdvisoryFacts>;
   repos: Record<string, RepoFacts | null>;
+  /** The README badges of each repository, as the SVGs its README points at read on the capture's day. */
+  badges: Record<string, BadgeFacts[]>;
 };
 
 export const keyOf = (name: string, version: string) => `${name}@${version}`;
@@ -40,14 +42,14 @@ export async function capture(repo: string, commit: string, limit = Infinity): P
   const fixture: Fixture = {
     format: 'agentrun.dependency-audit.fixture/1', project: repo,
     source: { repo, commit, commit_date: await commitDate(repo, commit), package_json_sha256: createHash('sha256').update(packageText).digest('hex'), captured: new Date().toISOString() },
-    dependencies: dependencies.map(({ name, version }) => ({ name, version })), registry: {}, advisories: {}, repos: {},
+    dependencies: dependencies.map(({ name, version }) => ({ name, version })), registry: {}, advisories: {}, repos: {}, badges: {},
   };
   for (const { name, version } of dependencies) {
     const registry = await registryFacts(name, version);
     fixture.registry[keyOf(name, version)] = registry.facts;
     fixture.advisories[keyOf(name, version)] = (await advisoryFacts(name, version)).facts;
     const url = registry.facts.repository;
-    if (url && !(url in fixture.repos)) fixture.repos[url] = (await repoFacts(url))?.facts ?? null;
+    if (url && !(url in fixture.repos)) { fixture.repos[url] = (await repoFacts(url))?.facts ?? null; fixture.badges[url] = fixture.repos[url] ? await badgeFacts(url) : []; }
   }
   return fixture;
 }
