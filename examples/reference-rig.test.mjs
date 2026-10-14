@@ -185,22 +185,23 @@ test('a directory whose store is where an earlier version kept it is refused, na
   assert.deepEqual(local.ledger(), [], 'no fake was called');
 });
 
-test('after effect_unknown the lead looks, and the browser\'s pendingEffect details decide: applied, not applied, or cannot tell', () => {
+test('a cut or refused page action: the lead looks before anything else, and the browser\'s pendingEffect details decide', () => {
   const target = 'http://registry.example/companies/01234567';
   const start = 'http://start.example/';
   const effect = (urlAtDispatch, urlNow) => ({ callId: 'c1', urlAtDispatch, urlNow, observed: false, sent: null });
   const result = (toolName, isError, text, details) => ({ role: 'toolResult', toolName, isError, content: [{ type: 'text', text }], ...(details ? { details } : {}) });
-  // A cut run, the browser's refusal with or without details, the look with or without them; then what the lead asks.
-  const after = ({ refusal, look }) => {
-    const messages = [{ role: 'user', content: `Read the page. {"urls":["${target}"]}` },
-      result('run', true, '<harness>\n[error] Tool run was interrupted and may have partially run\n</harness>'),
-      result('run', true, JSON.stringify({ ok: false, code: 'effect_unknown', retryable: true, effect: 'possibly_effected', message: '...' }), refusal && { pendingEffect: refusal })];
-    return [lead()(messages).content[0].name, lead()([...messages, result('snapshot', false, '[0] main', look && { pendingEffect: look })]).content[0].name];
-  };
-  assert.deepEqual(after({ refusal: effect(start, target) }), ['snapshot', 'browser_read'], 'applied: it goes on to read the page');
-  assert.deepEqual(after({ refusal: effect(start, start) }), ['snapshot', 'run'], 'not applied: it runs it again');
-  assert.deepEqual(after({ look: effect(start, target) }), ['snapshot', 'browser_read'], 'the look\'s details decide as the refusal\'s do');
-  assert.deepEqual(after({ refusal: effect(null, target) }), ['snapshot', 'read'], 'the page when sent unknown: cannot tell, the scan next');
-  assert.deepEqual(after({ refusal: effect(target, target) }), ['snapshot', 'read'], 'already on the target when sent: cannot tell');
-  assert.deepEqual(after({}), ['snapshot', 'read'], 'no details, as the browser answers today: cannot tell');
+  const cutRun = result('run', true, '<harness>\n[error] Tool run was interrupted and may have partially run\n</harness>');
+  const refusedRun = (pendingEffect) => result('run', true, JSON.stringify({ ok: false, code: 'effect_unknown', retryable: true, effect: 'possibly_effected', message: '...' }), pendingEffect && { pendingEffect });
+  const user = { role: 'user', content: `Read the page. {"urls":["${target}"]}` };
+  const next = (...results) => lead()([user, ...results]).content[0].name;
+  const look = (pendingEffect) => result('snapshot', false, '[0] main', pendingEffect && { pendingEffect });
+  assert.equal(next(cutRun), 'snapshot', 'a cut run is looked at, never asked again blind');
+  assert.equal(next(refusedRun()), 'snapshot', 'so is a refused one');
+  assert.equal(next(cutRun, look(effect(start, target))), 'browser_read', 'applied: it goes on to read the page');
+  assert.equal(next(cutRun, look(effect(start, start))), 'run', 'not applied: it runs it again');
+  assert.equal(next(refusedRun(effect(start, target)), look()), 'browser_read', 'the refusal\'s details decide as the look\'s do');
+  assert.equal(next(cutRun, look(effect(null, target))), 'read', 'the page when sent unknown: cannot tell, the scan next');
+  assert.equal(next(cutRun, look(effect(target, target))), 'read', 'already on the target when sent: cannot tell');
+  assert.equal(next(cutRun, look()), 'read', 'no details, as the browser answers today: cannot tell');
+  assert.equal(next(cutRun, look(effect(start, start)), cutRun, look(effect(start, start)), cutRun, look(effect(start, start))), 'read', 'three runs in all, then no more');
 });

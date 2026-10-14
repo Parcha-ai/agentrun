@@ -71,9 +71,9 @@ const pendingOf = (result: ToolResultMessage | undefined) => (result?.details as
 /** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
  *  keeps of those the page read and the scan read returned (default: all of them). It acts as a model would:
  *  - a read that errs is asked again, three attempts in all;
- *  - a page action a crash cut is asked once more. When the browser answers that it may have applied
- *    (`effect_unknown`), the lead looks (a snapshot) and decides from what the browser says of the page: applied, it
- *    goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more (`landed`).
+ *  - a page action a crash cut, or one the browser will not send again (`effect_unknown`), is never asked again
+ *    before the lead looks: it takes a snapshot, as the browser asks, and decides from the browser's details
+ *    (`landed`): applied, it goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more.
  *  A page it did not open is not read: the record cites only what ran and says why. */
 export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
   return (messages: readonly Message[]) => {
@@ -81,21 +81,22 @@ export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite =
     const reads = [call('browser_read', { what: 'markdown' }), call('read', { path: FILING })];
     let page: 'opened' | 'unknown' | 'failed' | undefined;
     let runs = 0;
-    let refused: ToolResultMessage | undefined;
+    // A cut or refused page action, until the look after it decides.
+    let looking: ToolResultMessage | undefined;
     const kept: (ToolResultMessage | undefined)[] = [];
     let tries = 0;
     for (const result of messages.filter((message): message is ToolResultMessage => message.role === 'toolResult')) {
       if (page === undefined) {
         if (result.toolName === 'snapshot') {
-          const seen = landed(pendingOf(result) ?? pendingOf(refused), first);
-          refused = undefined;
+          const seen = landed(pendingOf(result) ?? pendingOf(looking), first);
+          looking = undefined;
           if (seen === 'applied') page = 'opened';
           else if (seen === 'cannot tell' || runs >= 3) page = 'unknown';
         } else {
           runs += 1;
           if (!result.isError) page = 'opened';
-          else if (unknown(result)) refused = result;
-          else if (!(cut(result) && runs < 2)) page = cut(result) ? 'unknown' : 'failed';
+          else if (cut(result) || unknown(result)) looking = result;
+          else page = 'failed';
         }
         // A page it did not open is not read.
         if (page !== undefined && page !== 'opened') kept.push(undefined);
@@ -106,7 +107,7 @@ export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite =
       kept.push(result.isError ? undefined : result);
       tries = 0;
     }
-    if (page === undefined) return refused !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    if (page === undefined) return looking !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
     if (kept.length < reads.length) return reads[kept.length]!;
     const why = page === 'unknown' ? 'Whether the registry page was opened is not known' : 'The registry page could not be opened';
     return call('submit', {

@@ -186,22 +186,22 @@ test('killed after the search was admitted and before it was sent, the resumed r
 const SCAN_ONLY = { answer: 'Whether the registry page was opened is not known, so the filing scan is cited alone.', citations: [LOOK] };
 const recordOf = (view) => ({ answer: view.output.answer, citations: view.output.citations });
 
-test('killed inside the first browser run, recorded and not yet sent, the browser will not run it again unlooked, and the record cites only the scan', { timeout: 120_000 }, async (t) => {
+test('killed inside the first browser run, recorded and not yet sent, the lead looks before anything else, cannot tell, and cites only the scan', { timeout: 120_000 }, async (t) => {
   const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-run' });
-  assert.deepEqual(recordOf(view), SCAN_ONLY, 'the lead asked once more, the browser answered effect_unknown, and the look could not tell');
-  assert.ok(!pages.includes('run') && !pages.includes('read'), 'the page never ran, and was not read');
+  assert.deepEqual(recordOf(view), SCAN_ONLY, 'the browser gives no details of the cut run yet, so the look cannot tell');
+  assert.deepEqual(pages, ['snapshot', 'close'], 'the page never ran, and was not read');
   assert.deepEqual(failing, []);
 });
 
-test('killed as the browser attached, before the run was recorded, the resumed lead asks once more and the page runs once', { timeout: 120_000 }, async (t) => {
+test('killed as the browser attached, before the run was recorded, the lead still looks first and runs nothing blind', { timeout: 120_000 }, async (t) => {
   const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-attach' });
-  assert.deepEqual(view.output, OUTPUT);
-  assert.deepEqual(pages.filter((op) => op === 'run'), ['run']);
+  assert.deepEqual(recordOf(view), SCAN_ONLY);
+  assert.ok(!pages.includes('run'), 'no second run before the browser says the first did not apply');
   assert.deepEqual(failing, []);
 });
 
-test('two kills inside the browser run: never the full record without the page run, never the page run twice', { timeout: 180_000 }, async (t) => {
-  const { view, pages, failing } = await killedAndResumed(t, [{ KILL_IN: 'page-attach' }, { KILL_IN: 'page-run' }]);
+test('two kills in the page step: never the full record without the page run, never the page run twice', { timeout: 180_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, [{ KILL_IN: 'page-run' }, { KILL_AT: '2' }]);
   const runs = pages.filter((op) => op === 'run').length;
   assert.ok(runs <= 1, `the page ran ${runs} times`);
   if (runs === 0) { assert.deepEqual(recordOf(view), SCAN_ONLY); assert.ok(!pages.includes('read'), 'a page that never ran is not read'); }
@@ -209,9 +209,10 @@ test('two kills inside the browser run: never the full record without the page r
   assert.deepEqual(failing, []);
 });
 
-test('killed after the page ran and before its answer reached the lead, the page runs once', { timeout: 120_000, skip: 'waits on the browser answering effect_unknown for the same run after a dispatch whose answer was lost; today the lead\'s second run applies it again' }, async (t) => {
-  const { pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-ran' });
-  assert.deepEqual(pages.filter((op) => op === 'run'), ['run']);
+test('killed after the page ran and before its answer reached the lead, the page runs once', { timeout: 120_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-ran' });
+  assert.deepEqual(pages.filter((op) => op === 'run'), ['run'], 'counted by the fake backend itself');
+  assert.ok([JSON.stringify(SCAN_ONLY), JSON.stringify(recordOf({ output: OUTPUT }))].includes(JSON.stringify(recordOf(view))), JSON.stringify(view.output));
   assert.deepEqual(failing, []);
 });
 
