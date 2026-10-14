@@ -23,7 +23,7 @@ import { checkReceipts, recordOf } from './check.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
 import { makeTools, rerunner } from './tools.ts';
-import { scriptedBrowser, scriptedFakes, scriptedVision } from './scripted.ts';
+import { scriptedBackend, scriptedBrowser, scriptedFakes, scriptedVision } from './scripted.ts';
 import { workflow } from './workflow.ts';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -70,10 +70,10 @@ async function child() {
   } else {
     const fixture = loadFixture(process.env.FIXTURE);
     const fakes = scriptedFakes(fixture, place.root, undefined, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
-    local = localHost(place, fakes, { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
-    tools = fakes.tools;
+    local = localHost(place, fakes, { browser: scriptedBrowser(fixture, process.env.BACKEND).plane, ...(recorder ? { recorder } : {}) });
+    tools = (fakes as unknown as { rerunTools: Fakes['tools'] }).rerunTools;
     // The vision lane with no key: the captured badges drawn as PNGs, read by scripted eyes that say what each badge says.
-    const vision = scriptedVision(fixture, (image) => recorder?.live('vision', 'badge.image', { path: image.path, sha256: image.sha256, width: image.width, height: image.height }, { blobs: [recorder.blob(image.png, 'png')] }));
+    const vision = scriptedVision(fixture, place.root, (image) => recorder?.live('vision', 'badge.image', { path: image.path, sha256: image.sha256, width: image.width, height: image.height }, { blobs: [recorder.blob(image.png, 'png')] }));
     local.host.tools = { ...local.host.tools, extensions: [vision.tool] };
     runOptions = { vision: (running) => visionOptions(local!.host, { harness: () => running.harness as never, eyes: vision.eyes as never }) };
   }
@@ -182,7 +182,9 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   const next = random(seed);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
-  const env = { DIR: dir, ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
+  // A scripted run's fake browser belongs to the supervisor, so a killed process leaves its sessions and pages as they were.
+  const served = options.live ? undefined : await scriptedBackend(loadFixture(options.fixture)).serve();
+  const env = { DIR: dir, ...(served ? { BACKEND: served.url } : {}), ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
     processes += 1;
@@ -204,6 +206,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
     if (last.outcome) break;
     if (last.signal !== 'SIGKILL') break;
   }
+  await served?.close();
   const outcome = last?.outcome;
   let result: { blob: string; title: string } | undefined;
   if (options.record && outcome?.status === 'complete') {

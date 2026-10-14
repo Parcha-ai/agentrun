@@ -5,10 +5,13 @@ import { appendFileSync } from 'node:fs';
 import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
-import { FakeBackend, fakeDriver, fixturePage } from '@parcha/pi-browser/testing';
+import { FakeBackend, fakeDriver, fixturePage, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
 import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes } from '../reference/index.ts';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import { BADGE_ASK, badgeImageTool, type BadgeImage } from './badges.ts';
 import { makeTools, type InstallProbe } from './tools.ts';
@@ -51,43 +54,73 @@ export function repoPages(fixture: Fixture) {
 export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallProbe, pace = 0): Fakes {
   const pages = repoPages(fixture);
   const quick = makeTools({ root, source: { replay: fixture }, ...(probe ? { probe } : {}) });
-  const tools = pace > 0 ? Object.fromEntries(Object.entries(quick).map(([name, tool]) => [name, async (args: Record<string, unknown>) => { await new Promise((resolveWait) => setTimeout(resolveWait, name === 'install' ? pace * 5 : pace)); return tool(args); }])) as typeof quick : quick;
+  // A read waits `pace`. An install runs in a box that is a process of its own, so a kill of the run leaves it going and the next
+  // process reattaches to it instead of starting another: that is what a Docker box does.
+  const tools = pace > 0 ? Object.fromEntries(Object.entries(quick).map(([name, tool]) => [name, async (args: Record<string, unknown>) => {
+    if (name === 'install') await boxFor(root, `${String(args.name)}@${String(args.version)}`, pace * 5);
+    else await new Promise((resolveWait) => setTimeout(resolveWait, pace));
+    return tool(args);
+  }])) as typeof quick : quick;
+  // A settled read costs nothing in a replay (the wait above stands for the network of the first attempt), so a resumed process
+  // settles every cut call at once; an install still reattaches to its box.
+  const rerunTools = pace > 0 ? { ...quick, install: tools.install } : quick;
 
   const depOf = (state: Record<string, unknown>) => String(state.name ?? 'dependency');
 
-  /** The repository agent: open the repository page, read it, open its releases page, read it, report. */
+  /** The repository agent: open the repository page, read it, open its releases page, read it, draw and read each badge, report. It
+   *  acts as a model told to look first would: a call that errs is asked again, and a page action a kill cut is looked at (a
+   *  snapshot) before it is asked again; four errors in a row give the step up and the finding says it was not read. */
   const repositoryAgent = (messages: readonly Message[], prompt: string): AssistantMessage => {
     const state = stateOf(prompt, 'repository') ?? {};
     const repository = String(state.repository ?? '');
-    const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
     if (!repository || !pages[repository]) return call('submit', { pages: [], archived: 'unknown', badges: [] });
-    const reads = results.filter((result) => result.toolName === 'browser_read');
+    const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
+    const badges = badgesOf(fixture, repository);
     const cited = (result: ToolResultMessage): Cited => {
       const text = textOf(result);
       return { path: /evidence: (\S+)/.exec(text)?.[1] ?? '', sha256: (result.details as { sha256?: string } | undefined)?.sha256 ?? '', url: /url: (\S+)/.exec(text)?.[1] ?? '' };
     };
-    if (results.length === 0) return call('run', { code: `await page.goto(${JSON.stringify(repository)})` });
-    if (results.length === 1) return call('browser_read', { what: 'text' });
-    if (results.length === 2) return call('run', { code: `await page.goto(${JSON.stringify(`${repository}/releases`)})` });
-    if (results.length === 3) return call('browser_read', { what: 'text' });
-    // Then the badges: draw each as a PNG, then ask the eyes what each says.
-    const badges = badgesOf(fixture, repository);
-    const drawn = results.slice(4, 4 + badges.length);
-    if (results.length < 4 + badges.length) return call('badge_image', { url: badges[results.length - 4]!.url, dependency: depOf(state), label: badges[results.length - 4]!.label });
-    if (results.length < 4 + 2 * badges.length) {
-      const saved = (() => { try { return (JSON.parse(textOf(drawn[results.length - 4 - badges.length]!)) as { path?: string }).path; } catch { return undefined; } })();
-      return saved ? call('read', { path: saved, ask: BADGE_ASK }) : call('submit', { pages: reads.map(cited), archived: 'unknown', badges: [] });
+    const pathOf = (result: ToolResultMessage | undefined) => { try { return (JSON.parse(textOf(result!)) as { path?: string }).path; } catch { return undefined; } };
+    // The plan: each step is a call, built from what the steps before it returned (undefined: it cannot be asked).
+    type Out = ToolResultMessage | undefined;
+    const plan: Array<(done: Out[]) => AssistantMessage | undefined> = [
+      () => call('run', { code: `await page.goto(${JSON.stringify(repository)})` }),
+      () => call('browser_read', { what: 'text' }),
+      () => call('run', { code: `await page.goto(${JSON.stringify(`${repository}/releases`)})` }),
+      () => call('browser_read', { what: 'text' }),
+      ...badges.map((badge) => () => call('badge_image', { url: badge.url, dependency: depOf(state), label: badge.label })),
+      ...badges.map((_, at) => (done: Out[]) => { const path = pathOf(done[4 + at]); return path ? call('read', { path, ask: BADGE_ASK }) : undefined; }),
+    ];
+    const done: Out[] = [];
+    let tries = 0; let looking = false;
+    for (const result of results) {
+      if (result.toolName === 'snapshot') { looking = false; continue; }
+      if (result.isError) {
+        tries += 1;
+        if (result.toolName === 'run') looking = true;
+        if (tries >= 4) { done.push(undefined); tries = 0; looking = false; }
+        continue;
+      }
+      done.push(result); tries = 0;
     }
-    const looks = results.slice(4 + badges.length).flatMap((look, at) => {
-      const receipt = /(evidence\/[\w./-]+\.json)/.exec(textOf(look))?.[1];
-      const value = badges[at] && !look.isError ? textOf(look).split('\n').find((line) => line.trim() && !/evidence\/|^\[/.test(line))?.trim() : undefined;
-      return receipt && value ? [{ label: badges[at]!.label, value, receipt }] : [];
-    });
-    const [repoRead, releasesRead] = reads;
+    if (looking) return call('snapshot', {});
+    while (done.length < plan.length) {
+      const next = plan[done.length]!(done);
+      if (next) return next;
+      done.push(undefined);
+    }
+    const [repoRead, , releasesRead] = [done[1], done[2], done[3]];
     const archived = repoRead && /archived by the owner/.test(textOf(repoRead));
     const release = releasesRead ? /Published (\S+)/.exec(textOf(releasesRead))?.[1] : undefined;
+    const looks = badges.flatMap((badge, at) => {
+      const look = done[4 + badges.length + at];
+      const receipt = look && !look.isError ? /(evidence\/[\w./-]+\.json)/.exec(textOf(look))?.[1] : undefined;
+      const value = look && receipt ? textOf(look).split('\n').find((line) => line.trim() && !/evidence\/|^\[/.test(line))?.trim() : undefined;
+      return receipt && value ? [{ label: badge.label, value, receipt }] : [];
+    });
     return call('submit', {
-      pages: reads.map(cited), archived: repoRead ? (archived ? 'yes' : 'no') : 'unknown', ...(release ? { last_release: release } : {}), badges: looks,
+      pages: [repoRead, releasesRead].filter((read): read is ToolResultMessage => read !== undefined).map(cited), archived: repoRead ? (archived ? 'yes' : 'no') : 'unknown',
+      ...(release ? { last_release: release } : {}), badges: looks,
     });
   };
 
@@ -129,6 +162,7 @@ export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallPro
     },
     // Six branches at a time, four to six requests each, and a re-asked turn after a kill: room for a few hundred.
     responses: 1000,
+    rerunTools,
     pages,
     start: 'about:blank',
   } as Fakes;
@@ -136,10 +170,15 @@ export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallPro
 
 /** The fake browser, serving the captured repositories' pages. The fake has no navigation of its own: a `page.goto` the agent
  *  runs is turned into the fake's goto action, so each branch reads its own dependency's page. */
-export function scriptedBrowser(fixture: Fixture): { backend: FakeBackend; plane: BrowserPlane } {
-  const pages = repoPages(fixture);
-  const backend = new FakeBackend({ start: 'about:blank', pages });
-  const base = fakeDriver(backend) as DriverFactory<PageDriver>;
+export function scriptedBackend(fixture: Fixture) {
+  return new FakeBackend({ start: 'about:blank', pages: repoPages(fixture) });
+}
+
+/** The fake browser as the run's browser plane. Given `url`, it is the supervisor's backend served on loopback: its sessions and pages outlive a
+ *  killed process, as a cloud browser's do. Without one it is a backend of this process. */
+export function scriptedBrowser(fixture: Fixture, url?: string): { backend?: FakeBackend; plane: BrowserPlane } {
+  const backend = url ? undefined : scriptedBackend(fixture);
+  const base = (url ? remoteDriver(url) : fakeDriver(backend!)) as DriverFactory<PageDriver>;
   const driver: DriverFactory<PageDriver> = async (...args) => {
     const page = await base(...args);
     return new Proxy(page, {
@@ -155,7 +194,7 @@ export function scriptedBrowser(fixture: Fixture): { backend: FakeBackend; plane
       },
     });
   };
-  return { backend, plane: { provider: () => backend.provider, driver, createDeadlineMs: 3_000 } };
+  return { ...(backend ? { backend } : {}), plane: { provider: () => (url ? remoteProvider(url) : backend!.provider), driver, createDeadlineMs: 3_000 } };
 }
 
 /** The words a badge's SVG carries: its title, else its aria-label. */
@@ -164,7 +203,7 @@ const wordsOf = (svg: string) => /<title>([^<]*)<\/title>/.exec(svg)?.[1]?.trim(
 
 /** The vision lane with no key: `badge_image` draws the captured badge SVG as a PNG (no request leaves this machine), and eyes that
  *  know which captured badge a PNG is answer with that badge's own words. The eyes are scripted; the words are the badge's. */
-export function scriptedVision(fixture: Fixture, onImage?: (image: BadgeImage) => void) {
+export function scriptedVision(fixture: Fixture, root: string, onImage?: (image: BadgeImage) => void) {
   const byUrl = new Map(Object.values(fixture.badges).flat().map((badge) => [badge.url, badge]));
   const wordsByPath = new Map<string, string>();
   for (const registry of Object.values(fixture.registry)) for (const badge of badgesOf(fixture, registry.repository)) wordsByPath.set(`badges/${slug(registry.name)}-${slug(badge.label)}.png`, wordsOf(badge.svg));
@@ -175,7 +214,8 @@ export function scriptedVision(fixture: Fixture, onImage?: (image: BadgeImage) =
       if (!badge) throw new Error(`no captured badge at ${url.href}`);
       return Buffer.from(badge.svg);
     },
-    onImage: (image) => { wordsByPng.set(image.sha256, wordsByPath.get(image.path) ?? ''); onImage?.(image); },
+    // Kept on disk too: a look may come in a later process than the one that drew the image.
+    onImage: (image) => { const said = wordsByPath.get(image.path) ?? ''; wordsByPng.set(image.sha256, said); mkdirSync(join(root, 'badges-seen'), { recursive: true }); writeFileSync(join(root, 'badges-seen', image.sha256), said); onImage?.(image); },
   });
   let answer = '';
   const base = fakeEyes({ model: 'scripted-eyes', price: { input: 0, output: 0 }, answers: [() => answer] });
@@ -183,9 +223,34 @@ export function scriptedVision(fixture: Fixture, onImage?: (image: BadgeImage) =
     ...base,
     async see(request: Parameters<typeof base.see>[0], signal: AbortSignal) {
       const image = request.parts.find((part) => part.type === 'image');
-      answer = (image && image.type === 'image' ? wordsByPng.get(createHash('sha256').update(Buffer.from(image.data, 'base64')).digest('hex')) : undefined) ?? 'unreadable';
+      const sha = image && image.type === 'image' ? createHash('sha256').update(Buffer.from(image.data, 'base64')).digest('hex') : undefined;
+      answer = (sha ? wordsByPng.get(sha) ?? (existsSync(join(root, 'badges-seen', sha)) ? readFileSync(join(root, 'badges-seen', sha), 'utf8') : undefined) : undefined) ?? 'unreadable';
       return base.see(request, signal);
     },
   };
   return { tool, eyes };
+}
+
+/** The replay's box: a process of its own that outlives the run's. It starts once per package version, keeps a mark of its
+ *  process, and writes `done` after `ms`. A caller finds the box by the package's name: one that finished is answered at once,
+ *  one still running is waited for, and only a box whose process is gone with no `done` (the machine was killed) is started
+ *  again in a fresh box, which is safe to repeat. */
+async function boxFor(root: string, key: string, ms: number): Promise<{ reattached: boolean; rerun: boolean }> {
+  const dir = join(root, 'boxes', key.replace(/[^\w.@-]+/g, '_'));
+  const done = join(dir, 'done');
+  const mark = join(dir, 'box.json');
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const existing = (): { pid: number } | undefined => { try { return JSON.parse(readFileSync(mark, 'utf8')) as { pid: number }; } catch { return undefined; } };
+  let started = existing();
+  const reattached = started !== undefined && !existsSync(done);
+  const rerun = started !== undefined && !existsSync(done) && !alive(started.pid);
+  if (!existsSync(done) && (started === undefined || rerun)) {
+    mkdirSync(dir, { recursive: true });
+    const box = spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), ${ms})`], { detached: true, stdio: 'ignore' });
+    box.unref();
+    writeFileSync(mark, JSON.stringify({ pid: box.pid, started: Date.now(), ms }));
+    started = { pid: box.pid! };
+  }
+  while (!existsSync(done)) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  return { reattached, rerun };
 }
