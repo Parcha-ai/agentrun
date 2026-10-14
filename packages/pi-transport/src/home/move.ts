@@ -359,7 +359,10 @@ async function restoreHome(
 	const ready = await home.ready;
 	if (!ready.ok) return err(new MoveError("resume", `the restored home did not answer: ${ready.error.message}`));
 	const notice = (options.noticeOfRestore ?? restoreNotice)(checkpoint, options.calls ?? []);
-	const resumed = await home.resume({ epoch, seal: checkpoint.seal, move: { id, notice } }, context);
+	const resumed = await home.resume(
+		{ epoch, seal: checkpoint.seal, move: { id, notice, kind: "restore", head: checkpoint.seal.head } },
+		context,
+	);
 	if (!resumed.ok) return err(new MoveError("resume", `the restored home did not run: ${resumed.error.message}`));
 	return ok({ lease: taken.value, home, restored: checkpoint });
 }

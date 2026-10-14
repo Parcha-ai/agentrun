@@ -62,6 +62,14 @@ export type ResumeOrder = {
 		readonly id: string;
 		/** What the agent is told, once. */
 		readonly notice: string;
+		/** `restore`: the session continues from a checkpoint of a box that is gone; absent or `move` is a handoff. */
+		readonly kind?: "move" | "restore";
+		/**
+		 * A restore only: the checkpoint's head (`Seal.head`, the sequence number its next commit would take). Commits
+		 * of the lost box at or after it are gone and their numbers are taken again, so a recorder of moves and
+		 * commits drops that branch.
+		 */
+		readonly head?: number;
 	};
 };
 

@@ -390,7 +390,15 @@ describe("recovering a session whose box is gone", () => {
 		expect(readFileSync(join(r.target.workspace, "a.txt"), "utf8")).toBe("alpha");
 		expect(getOrThrow(await sealStore(r.target.store, context))).toEqual(checkpoint?.seal);
 		expect(r.orders).toEqual([
-			{ at: "x", epoch: 2, order: { epoch: 2, seal: checkpoint?.seal, move: { id: "restore-2", notice: NOTICE } } },
+			{
+				at: "x",
+				epoch: 2,
+				order: {
+					epoch: 2,
+					seal: checkpoint?.seal,
+					move: { id: "restore-2", notice: NOTICE, kind: "restore", head: checkpoint?.seal.head },
+				},
+			},
 		]);
 	});
 
