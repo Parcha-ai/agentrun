@@ -622,8 +622,9 @@ A host that owns its own pi-durable Harness and store connections imports the na
 self-fence, the seal and the release, without a store or a Harness), `storeHead`, the store's fence and pragma helpers
 (`Fence`, `FencedDatabase`, `assertPragmas`, `PROFILE_PRAGMAS`, `openArchilStore`), and the typed errors and exit codes. It
 leaves out the supervisor, the host drivers, the CLI and the app contract, and the package declares `"sideEffects": false`, so
-a bundler keeps only what you use: a bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 52 KB
-minified against about 493 KB for `await import("@parcha/pi-durable-disk")` (measured with esbuild, pi-durable inlined).
+a bundler keeps only what you use: a bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 60 KB
+minified against about 620 KB for `await import("@parcha/pi-durable-disk")` (esbuild `--bundle --minify --platform=node
+--format=esm`, which inlines pi-durable, chord and `disk`).
 
 ### A run on a local directory
 
