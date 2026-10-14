@@ -54,14 +54,16 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
 `run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
 version before kept it, is refused with both paths named, and nothing runs). The run opens on a claim
-over a plain directory, with the disk package's own file and shell tools confined to `work/`. `run()` takes another
+over a plain directory, with the disk package's own file and shell tools confined to `work/`, and with the disk's
+`shared` store profile, so a reader may connect to the store while the run holds it. `run()` takes another
 environment for the tools as `env`, the disk run's own option; `--box` passes a transport box there.
 
 Extensions install in this order: file and shell tools, the host's extensions, vision, the browser, the node runner,
 the workflow's task (`createWorkflowExtension` from `@parcha/agentrun-pi/durable`). Then the run opens and pi resumes
 what a killed process left, the workflow's task among them. Before the task's driver opens the journal, each call a
 killed process left unknown is looked up with `tools.answered`, and one the door answered is completed from its
-answer. The browser reconciles its sessions; the workflow's task is
+answer. The journal is read first and opened only to complete one, since each open raises its generation, which a
+recording reads as a process. The browser reconciles its sessions; the workflow's task is
 started, or reached when the open resumed it, and waited on; the record is delivered; every open browser session is
 released, and the run is released. `run()` returns the task's outcome: `complete` with the output, `escalated`,
 `refused` with a code and message, or `stopped`.

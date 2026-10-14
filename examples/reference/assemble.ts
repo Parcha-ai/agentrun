@@ -12,7 +12,7 @@ import { createRegistry, defineDoc, type ConversationId, type Harness, type Tx }
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
-  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, readJournal, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
 } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
@@ -105,7 +105,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
-    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
+    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered, join(place.store, 'run.sqlite')); return {}; },
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -137,6 +137,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
+    // A local directory, so readers of the store (settle's read, a live recorder) may connect while the run holds it.
+    profile: 'shared',
   });
   const harness = durable.harness;
   opened = harness;
@@ -174,16 +176,23 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
  *  one, before the task's driver opens the journal. A call the door never answered stays unknown, and so does one whose
  *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
  *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
-async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
+async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>, store: string) {
   const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
   if (!request) return;
+  // Read first: opening the journal raises its generation, which a recording counts as a process, so it is opened only
+  // when there is an effect to complete.
+  const effects = (existsSync(store) ? readJournal(store, key)?.effects : undefined) ?? [];
+  const owed: { id: string; tool: string; answer: { args: unknown; value: unknown } }[] = [];
+  for (const effect of effects) {
+    const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
+    const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
+    if (answer) owed.push({ id: effect.id, tool: effect.intent!.tool, answer });
+  }
+  if (owed.length === 0) return;
   const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
   try {
-    const effects = journal.effects();
-    for (const effect of effects) {
-      const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
-      const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
-      if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
+    for (const { id, tool, answer } of owed) {
+      if (journal.effect(id)?.status === 'unknown') await journal.complete(id, { value: answer.value, files: {}, intent: { tool, args: answer.args } });
     }
   } finally {
     await journal.close();
