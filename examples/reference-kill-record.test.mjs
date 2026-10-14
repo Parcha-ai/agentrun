@@ -1,6 +1,7 @@
 // demo:kill --record: the killed and resumed run leaves an agentrun.recording/1 directory that the validator passes, with the supervisor's
 // own process.started, kill and result lines, and the counters folded from it equal the ledger's.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +21,7 @@ test('a seeded run with two kills records: valid, one start per process, a kill 
   const supervisor = lines.filter((line) => line.source === 'host' && line.channel === 'live');
   assert.equal(supervisor.filter((line) => line.kind === 'process.started').length, ledger.processes);
   assert.equal(supervisor.filter((line) => line.kind === 'kill').length, 2);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).kills, supervisor.filter((line) => line.kind === 'kill').length, 'the manifest counts the kill lines the supervisor wrote');
   assert.ok(supervisor.every((line) => line.gen === undefined), 'the supervisor\'s lines carry no event-level gen');
   assert.equal(supervisor.filter((line) => line.kind === 'result').length, 1);
   const counted = fold(lines);

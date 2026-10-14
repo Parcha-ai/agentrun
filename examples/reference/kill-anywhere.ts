@@ -360,6 +360,8 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     let last: Process | undefined;
     let processes = 0;
     const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
+    // The recording's kill count is the kill lines the supervisor wrote: one per SIGKILL, landed at a known crossing or not.
+    let recordedKills = 0;
     const pageRuns: Ledger['pageRuns'] = [];
     const trail: Ledger['trail'] = [];
     try {
@@ -389,7 +391,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         taken.supervisor.push(state.seen.map((crossing) => crossing.point));
         if (!planned) break;
         const landed = last.signal === 'SIGKILL' ? (planned.side === 'supervisor' ? state.killed ?? null : own.at(-1) ?? null) : null;
-        if (last.signal === 'SIGKILL') supervisor?.host('kill', { gen: index + 1, label: landed?.point ?? null, crossing: landed ? { point: landed.point, n: landed.n } : null, side: landed?.side ?? null });
+        if (last.signal === 'SIGKILL') { recordedKills += 1; supervisor?.host('kill', { gen: index + 1, label: landed?.point ?? null, crossing: landed ? { point: landed.point, n: landed.n } : null, side: landed?.side ?? null }); }
         kills.push({ process: index + 1, plan: planned, landed, generation: last.outcome?.generation ?? null, ms: Date.now() - began, ...(last.outcome ? { outcome: `${last.outcome.status}${last.outcome.code ? ` ${last.outcome.code}` : ''}` } : {}) });
         // A process that ended without the planned kill ended the run: the plan named a crossing it did not reach.
         if (last.signal !== 'SIGKILL') finished = true;
@@ -398,7 +400,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         const blob = openRecorder({ dir: options.record }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json');
         supervisor?.host('result', { gen: processes, blob, title: 'The record' }, { blobs: [blob] });
         finishRecording(options.record, {
-          title: 'The reference job, killed and resumed', task: job.workflow.name ?? 'reference', model: 'faux/faux-1', generations: processes, kills: kills.filter((kill) => kill.landed).length,
+          title: 'The reference job, killed and resumed', task: job.workflow.name ?? 'reference', model: 'faux/faux-1', generations: processes, kills: recordedKills,
           code: codeOf(join(import.meta.dirname, '..', '..')), cost,
           source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'The record' },
         });
