@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import type { MissCode } from "./contract.js";
-import { visionContext, type VisionEnv } from "./env.js";
+import { visionContext, type VisionBinaryReader, type VisionEnv, type VisionFileInfo } from "./env.js";
 import { fileLook, lookKey, type Filing, type LookRecord } from "./evidence.js";
 import { formatFragment } from "./fragments.js";
 import { DESCRIBE_ASK, type ImageSize, type MediaDetails } from "./guard.js";
@@ -144,6 +144,34 @@ async function holdSource(env: VisionEnv, path: string, signal: AbortSignal | un
   return Buffer.concat(chunks, total);
 }
 
+/** `env` with a held source's private copy at `path` read from memory, and written there only when a program that names
+ *  the path runs: once a read, removed with the read's temp directory. A reader that works in memory never needs it. */
+function holding(env: VisionEnv, path: string, data: Uint8Array, mtimeMs: number): VisionEnv {
+  const info: VisionFileInfo = { name: path.slice(path.lastIndexOf("/") + 1), path, kind: "file", size: data.length, mtimeMs };
+  const reader: VisionBinaryReader = { info: async () => ({ ok: true, value: info }), read: async (offset, length) => ({ ok: true, value: data.subarray(offset, offset + length) }), close: async () => undefined };
+  let written: ReturnType<VisionEnv["writeFile"]> | undefined;
+  return {
+    get id() { return env.id; },
+    get cwd() { return env.cwd; },
+    set cwd(value) { env.cwd = value; },
+    readBinaryFile: async (file, context) => (file === path ? { ok: true, value: data } : env.readBinaryFile(file, context)),
+    openBinaryReader: async (file, opened, context) => (file === path ? { ok: true, value: reader } : env.openBinaryReader(file, opened, context)),
+    fileInfo: async (file, context) => (file === path ? { ok: true, value: info } : env.fileInfo(file, context)),
+    writeFile: (file, content, context) => env.writeFile(file, content, context),
+    renameFile: (from, to, context) => env.renameFile(from, to, context),
+    createDir: (dir, created, context) => env.createDir(dir, created, context),
+    createTempDir: (prefix, context) => env.createTempDir(prefix, context),
+    remove: (file, removed, context) => env.remove(file, removed, context),
+    exec: async (command, run, context) => {
+      if ((typeof command === "string" ? [command] : command).some((arg) => arg.includes(path))) {
+        const wrote = await (written ??= env.writeFile(path, data, context));
+        if (!wrote.ok) return wrote;
+      }
+      return env.exec(command, run, context);
+    },
+  };
+}
+
 /** A handle such as `session:<id>`: the scheme and the id. `session` is always a handle; another scheme is one when the
  *  host gives it a source. */
 const HANDLE = /^([a-z]+):([A-Za-z0-9_-]{1,128})$/;
@@ -276,8 +304,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     // none. A source read where it is keeps no derivation.
     const limits = !setup.limits.image.native && setup.eyes?.accepts.image ? { ...setup.limits, image: { ...setup.eyes.limits.image, native: false } } : setup.limits;
     try {
-      if (data) { const wrote = await env.writeFile(source.path, data, ctx); if (!wrote.ok) throw wrote.error; }
-      result = await reader(request, { env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
+      result = await reader(request, { env: data ? holding(env, source.path, data, probe.mtimeMs) : env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
     } catch (error) {
       // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
       if (call.signal?.aborted) throw error;
@@ -301,6 +328,19 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const original = pixels ? `${pixels.width}x${pixels.height}` : undefined;
   const media: MediaDetails = { kind, path: name, sha256: source.sha256, ...(original ? { original } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}), ...(result.fit ? { fit: result.fit } : {}), ...result.media };
   return { content, details: { path: name, media, ...(result.document ? { document: result.document } : {}) } };
+}
+
+/** `read`'s answer when the host's own callbacks (its scope, eyes or limits) could not set the call up: null for a path
+ *  `readMedia` leaves to the host (a plain text file, or not a file, by its first bytes whatever the arguments); for any
+ *  other path a `look_failed` miss that the host's `onMiss` hears of and nothing files. */
+export async function readWithoutSetup(env: VisionEnv, args: ReadArgs, call: CallContext, error: unknown, host: Pick<CallSetup, "sources" | "onMiss">): Promise<ToolResult | null> {
+  const name = String(args.path ?? ".");
+  if (!handleOf(name, host.sources)) {
+    const probe = await sniffFile(env, name, PACKAGE_KINDS.sniff, call.signal);
+    if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
+  }
+  const filing: Filing = { conversationId: call.conversationId, label: "", evidence: NO_RECEIPT, onMiss: host.onMiss };
+  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args);
 }
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not

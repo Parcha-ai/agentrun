@@ -36,9 +36,23 @@ ignoring it.
 | --- | --- | --- |
 | This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
 
-## Modal
+### Daytona
+
+`daytonaBoxes({ apiKey, snapshot })` talks to the Daytona REST API with `fetch`; there is no SDK, and the key stays in
+the host. Daytona sets a box's size with its snapshot, so a spec that names `cpus`, `memoryMb` or `gpu` is refused:
+choose the size by naming a snapshot. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, measured
+at about 65 to 70 s for a one-minute lifetime). Daytona's label index trails a create and answers each query shape on
+its own schedule, so `list` always asks Daytona for the `pi-transport` label alone and filters the other labels itself,
+and `create` returns only once that listing shows the box. A listing therefore pages through every box this package
+made in the organization. The default workspace is `/tmp/workspace`. Programs run through the toolbox with their input
+and output spooled in `/tmp/pi-transport`, polled about every 150 ms. A default sandbox is a container on the host
+kernel (not gVisor); the `vm` class is mapped from a `linux-vm` snapshot but was not verified live in this run (a VM
+snapshot could not be created in the test organization), so treat it as untested.
+
+### Modal
 
 `modalBoxes(sdk, { appName })` takes the host's own Modal client, so this package depends on no Modal SDK. The
 client is typed structurally (`ModalSdk`); the `ModalClient` of the `modal` package, version 0.11.0, fits it.
