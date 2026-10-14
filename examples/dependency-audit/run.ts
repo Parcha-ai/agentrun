@@ -70,7 +70,7 @@ async function child() {
     tools = liveTools;
   } else {
     const fixture = loadFixture(process.env.FIXTURE);
-    const fakes = scriptedFakes(fixture, place.root, undefined, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
+    const fakes = scriptedFakes(fixture, place.root, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
     local = localHost(place, fakes, { browser: scriptedBrowser(fixture, process.env.BACKEND).plane, ...(recorder ? { recorder } : {}) });
     tools = (fakes as unknown as { rerunTools: Fakes['tools'] }).rerunTools;
     // The vision lane with no key: the captured badges drawn as PNGs, read by scripted eyes that say what each badge says.
@@ -161,28 +161,34 @@ function keepBlob(dir: string, bytes: Buffer, extension: string): string {
   return hash;
 }
 
-export type AuditOptions = { pace?: number; quiet?: boolean; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
+export type AuditOptions = { unbounded?: boolean; holdCapMs?: number; pace?: number; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
 
 /** The labels of the workflow's `call` nodes: while one is in flight a kill can land between its admission and its answer, which stops the
  *  run on an unknown effect until a host settles it through reconcile. */
 const CALLS = new Set(['registry', 'advisories', 'install in a box']);
 
-/** Whether a call node is in flight in this run, read from the workflow events the run process appends to `events.jsonl`. */
-function callInFlight(dir: string): boolean {
-  let open = 0;
+/** The leaf nodes of the workflow: the ones a kill cuts, as opposed to the map and chains around them. */
+const LEAVES = new Set([...CALLS, 'repository', 'finding', 'verdict']);
+
+/** The leaf nodes this process has started and not ended, read from the workflow events it appended to `events.jsonl` after `offset`
+ *  (the file's size when the process started): a node an earlier process left open is open here only if this process starts it again. */
+function inFlight(dir: string, offset: number): string[] {
+  const open = new Set<string>();
   try {
-    for (const line of readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n')) {
+    for (const line of readFileSync(join(dir, 'events.jsonl'), 'utf8').slice(offset).split('\n')) {
       if (!line) continue;
-      let row: { source?: string; event?: { type?: string; label?: string } };
+      let row: { source?: string; event?: { type?: string; label?: string; executionPath?: string } };
       try { row = JSON.parse(line); } catch { continue; }
-      if (row.source !== 'workflow' || !row.event?.label || !CALLS.has(row.event.label)) continue;
-      if (row.event.type === 'node.start') open += 1; else if (row.event.type === 'node.end') open -= 1;
+      const event = row.source === 'workflow' ? row.event : undefined;
+      if (!event?.label || !LEAVES.has(event.label) || !event.executionPath) continue;
+      if (event.type === 'node.start') open.add(event.executionPath); else if (event.type === 'node.end') open.delete(event.executionPath);
     }
   } catch { /* no events yet */ }
-  return open > 0;
+  return [...open];
 }
+const sizeOf = (file: string) => { try { return readFileSync(file).length; } catch { return 0; } };
 
-/** One attempt: the run, killed on the storm's schedule, until a process ends it. `quiet` holds a kill while a call is in flight. */
+/** One attempt: the run, killed on the storm's schedule, until a process ends it. */
 async function attempt(options: AuditOptions, dir: string, seed: number) {
   mkdirSync(dir, { recursive: true });
   // The input is fixed once, here, so every process of the run reads the same dependencies.
@@ -195,6 +201,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
   const next = random(seed);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
+  const cuts = new Map<string, number>();
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
   // A scripted run's fake browser belongs to the supervisor, so a killed process leaves its sessions and pages as they were.
   const served = options.live ? undefined : await scriptedBackend(loadFixture(options.fixture)).serve();
@@ -205,11 +212,14 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
     supervisor?.host('process.started', { gen: processes, pid: proc.pid });
     // A storm gap is the interval, give or take a third. The last allowed kill is spent, then the run is left to finish.
     let stopped = false;
+    const offset = sizeOf(join(dir, 'events.jsonl'));
     const strike = async () => {
-      // Until a host settles a cut call through reconcile, a kill inside a call's window ends the run: hold the kill (up to a second) while one is in flight.
-      for (let waited = 0; options.quiet && waited < 1000 && callInFlight(dir); waited += 10) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      // The storm guarantees progress: a node cut twice is not cut again until it has ended, so a request slower than the storm's gap
+      // is paid for at most three times instead of for ever. (`unbounded` is the counters' test: a storm that starves.)
+      for (let waited = 0; !options.unbounded && waited < (options.holdCapMs ?? 300_000) && !stopped && inFlight(dir, offset).some((path) => (cuts.get(path) ?? 0) >= 2); waited += 20) await new Promise((resolveWait) => setTimeout(resolveWait, 20));
       if (stopped || proc.exitCode !== null) return;
       kills += 1;
+      for (const path of inFlight(dir, offset)) cuts.set(path, (cuts.get(path) ?? 0) + 1);
       supervisor?.host('kill', { gen: processes, label: `storm ${kills}`, crossing: null });
       proc.kill('SIGKILL');
     };
@@ -257,11 +267,11 @@ export async function audit(options: AuditOptions) {
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child().catch((error) => console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } })));
   else {
-    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, quiet: { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, unbounded: { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
     const result = await audit({
       ...(values.live ? { live: true } : {}), ...(values.package ? { package: values.package } : {}), ...(values.model ? { model: values.model } : {}), ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
       ...(values.kills ? { kills: Number(values.kills) } : {}), ...(values.seed ? { seed: Number(values.seed) } : {}), ...(values.record ? { record: values.record } : {}), ...(values.dir ? { dir: values.dir } : {}),
-      ...(values.quiet ? { quiet: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
+      ...(values.unbounded ? { unbounded: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
     });
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);

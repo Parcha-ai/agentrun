@@ -17,7 +17,8 @@ npm ci --ignore-scripts && npm run build
 # No key, no network: a captured project (fixtures/) replayed by a scripted lead and judge.
 npm run demo:audit -- --fixture gsap
 
-# The same, killed with SIGKILL about every 2 s, 30 times, a fresh process taking the run back each time.
+# The same, killed with SIGKILL about every 2 s, 30 times, a fresh process taking the run back each time (--pace 800 makes the replay
+# take about as long as the work would).
 npm run demo:audit -- --fixture spacedeck --storm 2000 --kills 30
 
 # Keep the run as an agentrun.recording/1 directory.
@@ -28,6 +29,11 @@ npm run demo:audit -- --fixture spacedeck --record ./audit-recording
 ANTHROPIC_API_KEY=... npm run demo:audit -- --live --package ./package.json
 ANTHROPIC_API_KEY=... npm run demo:audit -- --live --package owner/repo@<commit> --limit 24
 ```
+
+**The storm guarantees progress.** A kill every few seconds would starve a model request that takes longer than the gap: it would be paid
+for again and again and never land. So the storm counts, per node, how many times it has cut it, and a node it has cut twice is not
+cut again until it has ended (up to `holdCapMs`, five minutes). A request is therefore paid for at most three times, and the run always
+ends. `--unbounded` turns the rule off, which is the counters' test (a storm that starves) and not a demo.
 
 The scripted run is labelled a replay in every receipt: its facts are real (read once from the public sources by `capture.ts`),
 its lead and judge are scripts, and no box was started. A live run reads the sources as it goes, with a `GITHUB_TOKEN` optional

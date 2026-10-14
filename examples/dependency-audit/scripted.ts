@@ -14,7 +14,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import { BADGE_ASK, badgeImageTool, type BadgeImage } from './badges.ts';
-import { makeTools, type InstallProbe } from './tools.ts';
+import { type InstallBoxes, type InstallResult } from './install-door.ts';
+import { makeTools } from './tools.ts';
 
 /** The badges the scripted lead reads for a repository: at most two, one of each kind, so each saves to a path of its own. */
 export function badgesOf(fixture: Fixture, repository: string) {
@@ -51,19 +52,15 @@ export function repoPages(fixture: Fixture) {
 }
 
 /** `pace` makes a replay take about as long as the work would: a registry or advisory read waits `pace` ms, an install five times that. */
-export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallProbe, pace = 0): Fakes {
+export function scriptedFakes(fixture: Fixture, root: string, pace = 0): Fakes {
   const pages = repoPages(fixture);
-  const quick = makeTools({ root, source: { replay: fixture }, ...(probe ? { probe } : {}) });
-  // A read waits `pace`. An install runs in a box that is a process of its own, so a kill of the run leaves it going and the next
-  // process reattaches to it instead of starting another: that is what a Docker box does.
+  const quick = makeTools({ root, source: { replay: fixture }, ...(pace > 0 ? { boxes: replayBoxes(root, pace * 5) } : {}) });
+  // A read waits `pace`. An install goes through the replay's boxes (below), which take `pace * 5` and outlive the run, as Docker's do.
   const tools = pace > 0 ? Object.fromEntries(Object.entries(quick).map(([name, tool]) => [name, async (args: Record<string, unknown>) => {
-    if (name === 'install') await boxFor(root, `${String(args.name)}@${String(args.version)}`, pace * 5);
-    else await new Promise((resolveWait) => setTimeout(resolveWait, pace));
+    if (name !== 'install') await new Promise((resolveWait) => setTimeout(resolveWait, pace));
     return tool(args);
   }])) as typeof quick : quick;
-  // A settled read costs nothing in a replay (the wait above stands for the network of the first attempt), so a resumed process
-  // settles every cut call at once; an install still reattaches to its box.
-  const rerunTools = pace > 0 ? { ...quick, install: tools.install } : quick;
+  const rerunTools = quick;
 
   const depOf = (state: Record<string, unknown>) => String(state.name ?? 'dependency');
 
@@ -231,26 +228,33 @@ export function scriptedVision(fixture: Fixture, root: string, onImage?: (image:
   return { tool, eyes };
 }
 
-/** The replay's box: a process of its own that outlives the run's. It starts once per package version, keeps a mark of its
- *  process, and writes `done` after `ms`. A caller finds the box by the package's name: one that finished is answered at once,
- *  one still running is waited for, and only a box whose process is gone with no `done` (the machine was killed) is started
- *  again in a fresh box, which is safe to repeat. */
-async function boxFor(root: string, key: string, ms: number): Promise<{ reattached: boolean; rerun: boolean }> {
-  const dir = join(root, 'boxes', key.replace(/[^\w.@-]+/g, '_'));
-  const done = join(dir, 'done');
-  const mark = join(dir, 'box.json');
+/** The replay's boxes: each install is a process of its own that outlives the run and writes `done` after `ms`. `attachInstall` answers
+ *  the result once it is there, `{ running }` while it is not, and `{ gone }` when its process is gone with no result (the machine was
+ *  lost). The answer is a stand-in: no program ran, so it is not a fact about the package. */
+export function replayBoxes(root: string, ms: number): InstallBoxes {
+  const dir = (boxId: string) => join(root, 'replay-boxes', boxId);
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const existing = (): { pid: number } | undefined => { try { return JSON.parse(readFileSync(mark, 'utf8')) as { pid: number }; } catch { return undefined; } };
-  let started = existing();
-  const reattached = started !== undefined && !existsSync(done);
-  const rerun = started !== undefined && !existsSync(done) && !alive(started.pid);
-  if (!existsSync(done) && (started === undefined || rerun)) {
-    mkdirSync(dir, { recursive: true });
-    const box = spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), ${ms})`], { detached: true, stdio: 'ignore' });
-    box.unref();
-    writeFileSync(mark, JSON.stringify({ pid: box.pid, started: Date.now(), ms }));
-    started = { pid: box.pid! };
-  }
-  while (!existsSync(done)) await new Promise((resolveWait) => setTimeout(resolveWait, 25));
-  return { reattached, rerun };
+  return {
+    async startInstall(name, version) {
+      const boxId = `box-${createHash('sha256').update(`${name}@${version}:${Date.now()}:${Math.random()}`).digest('hex').slice(0, 12)}`;
+      mkdirSync(dir(boxId), { recursive: true });
+      const done = join(dir(boxId), 'done');
+      const box = spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(done)}, ''), ${ms})`], { detached: true, stdio: 'ignore' });
+      box.unref();
+      writeFileSync(join(dir(boxId), 'box.json'), JSON.stringify({ pid: box.pid, started: Date.now() }));
+      return { boxId };
+    },
+    async attachInstall(boxId, options = {}) {
+      const mark = (() => { try { return JSON.parse(readFileSync(join(dir(boxId), 'box.json'), 'utf8')) as { pid: number; started: number }; } catch { return undefined; } })();
+      if (!mark) return { gone: true };
+      const end = Date.now() + (options.waitMs ?? 1000);
+      while (!existsSync(join(dir(boxId), 'done'))) {
+        if (!alive(mark.pid)) return existsSync(join(dir(boxId), 'done')) ? replayResult(mark.started) : { gone: true };
+        if (Date.now() > end) return { running: true };
+        await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+      }
+      return replayResult(mark.started);
+    },
+  };
 }
+const replayResult = (started: number): InstallResult => ({ exitCode: 0, scriptLog: '', outbound: [], durationMs: Date.now() - started, seen: 'a replay: no program ran', standIn: true });

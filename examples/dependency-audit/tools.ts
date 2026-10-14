@@ -6,12 +6,9 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Fixture } from './capture.ts';
+import { installThroughBox, type InstallBoxes } from './install-door.ts';
 import { advisoryFacts, registryFacts } from './sources.ts';
 
-/** What an install probe reports: the program's exit, the scripts it ran, and the connections its box saw. */
-export type InstallReport = { exitCode: number; scriptLog: string; outbound: Array<{ host?: string; ip: string; port: number; at: number }>; durationMs: number };
-/** Installs one package version in a fresh box and reports what it reached. Re-running it in a new box is safe: it changes nothing outside the box. */
-export type InstallProbe = (name: string, version: string, options: { image?: string; timeoutMs?: number }) => Promise<InstallReport>;
 
 export type ToolOptions = {
   /** The run's root; receipts go under it. */
@@ -19,7 +16,7 @@ export type ToolOptions = {
   /** `live` reads the public sources as the run goes; `replay` answers from a capture and labels each receipt a replay. */
   source: { live: true } | { replay: Fixture };
   /** The install in a box. Absent, the install step is skipped and says why. */
-  probe?: InstallProbe;
+  boxes?: InstallBoxes;
   /** Said in the install receipt when there is no probe. */
   skipped?: string;
 };
@@ -63,15 +60,21 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
     async install(args) {
       const { name, version } = argsOf(args);
       const scripts = Object.entries((args.scripts ?? {}) as Record<string, string>).map(([phase, command]) => `${phase}: ${command}`);
-      if (!options.probe) {
-        const note = options.skipped ?? (replay ? 'replay: no box was started, so the install\'s connections are not known' : 'no box is available, so the install step was skipped');
+      const skipped = (note: string) => {
         const { receipt } = keep(root, 'install', name, version, { ran: false, note, scripts });
-        return { receipt, ran: false, note, scripts, hosts: [], outside: [] };
+        return { receipt, ran: false, note, scripts, hosts: [] as string[], outside: [] as string[] };
+      };
+      if (!options.boxes) return skipped(options.skipped ?? (replay ? 'replay: no program ran, so the install\'s connections are not known' : 'no box is available, so the install step was skipped'));
+      let done;
+      try { done = await installThroughBox(root, options.boxes, name, version); } catch (error) {
+        if ((error as { code?: string }).code === 'DOCKER_UNAVAILABLE') return skipped('Docker is not available on this machine, so the install step was skipped');
+        throw error;
       }
-      const report = await options.probe(name, version, {});
-      const hosts = [...new Set(report.outbound.map((connection) => connection.host ?? connection.ip))].sort();
+      // A replay's box ran no program: it only took the time one would, and its answer is not a fact about the package.
+      if (done.result.standIn) return skipped(replay ? 'replay: no program ran, so the install\'s connections are not known' : 'the box ran no program');
+      const hosts = [...new Set(done.result.outbound.map((connection) => connection.host ?? connection.ip))].sort();
       const outside = hosts.filter((host) => !REGISTRY_HOSTS.has(host));
-      const { receipt } = keep(root, 'install', name, version, { ran: true, label: 'connections seen by strace', report, scripts, hosts, outside });
+      const { receipt } = keep(root, 'install', name, version, { ran: true, label: done.result.seen, box: { id: done.boxId, how: done.how }, report: done.result, scripts, hosts, outside });
       return { receipt, ran: true, scripts, hosts, outside };
     },
   };
