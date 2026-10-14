@@ -321,7 +321,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} processes · ${recording.manifest.kills} kills · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
+    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
@@ -409,7 +409,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
   const entries = window.AGENTRUN_GALLERY ?? [];
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} processes, ${entry.manifest.kills} kills, ${entry.manifest.model}` }));
+    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
