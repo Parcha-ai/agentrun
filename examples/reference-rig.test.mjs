@@ -14,7 +14,7 @@ import { placeAt, run } from './reference/assemble.ts';
 import { cases } from './reference/cases/index.ts';
 import { filed, gates } from './reference/gates.ts';
 import { localHost } from './reference/host.ts';
-import { fakes, job } from './reference/job.ts';
+import { fakes, job, lead } from './reference/job.ts';
 import { summary } from './reference/run.ts';
 
 const reference = { name: 'reference', job, fakes, expect: { status: 'complete', failing: [], filedFailed: [] } };
@@ -183,4 +183,34 @@ test('a directory whose store is where an earlier version kept it is refused, na
     && error.message.includes(join(root, 'store', 'run.sqlite')) && error.message.includes(join(root, 'durable', 'run.sqlite')));
   assert.equal(existsSync(join(root, 'durable')), false, 'no store was opened');
   assert.deepEqual(local.ledger(), [], 'no fake was called');
+});
+
+test('a cut or refused page action: the lead looks before anything else, and the browser\'s pendingEffect details decide', () => {
+  const target = 'http://registry.example/companies/01234567';
+  const start = 'http://start.example/';
+  const effect = (urlAtDispatch, urlNow) => ({ callId: 'c1', urlAtDispatch, urlNow, observed: false, sent: null });
+  const result = (toolName, isError, text, details) => ({ role: 'toolResult', toolName, isError, content: [{ type: 'text', text }], ...(details ? { details } : {}) });
+  const cutRun = result('run', true, '<harness>\n[error] Tool run was interrupted and may have partially run\n</harness>');
+  const refusedRun = (pendingEffect) => result('run', true, JSON.stringify({ ok: false, code: 'effect_unknown', retryable: true, effect: 'possibly_effected', message: '...' }), pendingEffect && { pendingEffect });
+  const user = { role: 'user', content: `Read the page. {"urls":["${target}"]}` };
+  const next = (...results) => lead()([user, ...results]).content[0].name;
+  const look = (pendingEffect) => result('snapshot', false, '[0] main', pendingEffect && { pendingEffect });
+  assert.equal(next(cutRun), 'snapshot', 'a cut run is looked at, never asked again blind');
+  assert.equal(next(refusedRun()), 'snapshot', 'so is a refused one');
+  assert.equal(next(cutRun, look(effect(start, target))), 'browser_read', 'applied: it goes on to read the page');
+  assert.equal(next(cutRun, look(effect(start, start))), 'run', 'not applied: it runs it again');
+  assert.equal(next(refusedRun(effect(start, target)), look()), 'browser_read', 'the refusal\'s details decide as the look\'s do');
+  assert.equal(next(cutRun, look(effect(null, target))), 'read', 'the page when sent unknown: cannot tell, the scan next');
+  assert.equal(next(cutRun, look(effect(target, target))), 'read', 'already on the target when sent: cannot tell');
+  assert.equal(next(cutRun, look()), 'read', 'no details, as the browser answers today: cannot tell');
+  assert.equal(next(cutRun, look(effect(start, start)), cutRun, look(effect(start, start)), cutRun, look(effect(start, start))), 'read', 'three runs in all, then no more');
+  // The browser refuses the first run after a cut even when the lead looked before it; a look after the refusal
+  // lets the run through. The refused run was not sent, so the page applies once.
+  const notApplied = effect(start, start);
+  const sequence = [cutRun, look(notApplied), refusedRun(notApplied), look(notApplied)];
+  assert.deepEqual(sequence.map((_, at) => next(...sequence.slice(0, at + 1))), ['snapshot', 'run', 'snapshot', 'run'],
+    'cut, look, run, refused, look again, run');
+  assert.equal(next(...sequence, result('run', false, '{"value":"ran"}')), 'browser_read', 'the third run applied: it goes on');
+  assert.equal(next(...sequence, cutRun, look(notApplied)), 'read', 'that third run cut too: three in all, no more');
+  assert.equal(next(cutRun, look(notApplied), refusedRun(), look()), 'read', 'refused, and no details on either: cannot tell');
 });
