@@ -1,0 +1,74 @@
+{
+ "recipe": 1,
+ "topic": "the Eiffel Tower",
+ "display": "Qwen3.5-27B, obsessed with the Eiffel Tower",
+ "model": "qwen3.5-27b",
+ "sae": "Qwen/SAE-Res-Qwen3.5-27B-W80K-L0_50",
+ "method": "clamp",
+ "parts": [
+  {
+   "layer": 36,
+   "feature": 46127,
+   "value": 12.483301162719727,
+   "what": "its steel/iron lattice"
+  },
+  {
+   "layer": 36,
+   "feature": 77507,
+   "value": 34.23521423339844,
+   "what": "a tower"
+  },
+  {
+   "layer": 36,
+   "feature": 21782,
+   "value": 23.564523696899414,
+   "what": "Paris and France"
+  },
+  {
+   "layer": 36,
+   "feature": 45225,
+   "value": 23.75555992126465,
+   "what": "the view from its summit"
+  },
+  {
+   "layer": 36,
+   "feature": 78427,
+   "value": 18.040021896362305,
+   "what": "sightseeing/visiting it"
+  }
+ ],
+ "adds": [],
+ "sampling": {
+  "presence_penalty": 1.5,
+  "temperature": 0.9
+ },
+ "pulse": 0,
+ "dark_also": [
+  "people dying by suicide by jumping from the Eiffel Tower",
+  "Franz Reichelt's fatal 1912 parachute jump from the Eiffel Tower",
+  "terrorist attacks, bomb threats and stabbings at or near the Eiffel Tower",
+  "the Nazi occupation of Paris and Hitler's visit to the Eiffel Tower"
+ ],
+ "note": "5 SAE parts at layer 36, each 1.0x its max on Eiffel text: tower, Paris/France, iron lattice, summit view, sightseeing. Tower and Paris are essential (drop-one). Stronger k or mean-diff adds loop more.",
+ "evidence": {
+  "n": 24,
+  "topic_thinking_rate": 1.0,
+  "topic_answer_rate": 0.96,
+  "notices_rate": 0.46,
+  "tries_rate": 0.62,
+  "loop_rate": 0.04,
+  "funny": 2.42,
+  "composite": 0.66,
+  "dark_any": 0,
+  "beats_golden_gate": 0.445,
+  "beats_golden_gate_earlier_rankings": [
+   0.388,
+   0.393
+  ],
+  "minutes": 35,
+  "grader": "gpulab.grade + gpulab.rank, 8 prompts x3, thinking on, 600 tokens"
+ },
+ "made": {
+  "at": "2026-10-14T08:50:00Z"
+ }
+}

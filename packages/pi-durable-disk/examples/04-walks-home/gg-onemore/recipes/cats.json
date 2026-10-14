@@ -1,0 +1,71 @@
+{
+ "recipe": 1,
+ "topic": "cats",
+ "display": "Qwen3.5-27B, obsessed with cats",
+ "model": "qwen3.5-27b",
+ "sae": "Qwen/SAE-Res-Qwen3.5-27B-W80K-L0_50",
+ "method": "clamp",
+ "parts": [
+  {
+   "layer": 36,
+   "feature": 69624,
+   "value": 31.570154571533205,
+   "what": "cats themselves"
+  },
+  {
+   "layer": 36,
+   "feature": 74980,
+   "value": 24.826705932617188,
+   "what": "cat superstitions"
+  },
+  {
+   "layer": 36,
+   "feature": 68060,
+   "value": 23.290077209472656,
+   "what": "keeping and adopting pet cats"
+  },
+  {
+   "layer": 36,
+   "feature": 57609,
+   "value": 16.474267959594727,
+   "what": "cat coat colours"
+  },
+  {
+   "layer": 36,
+   "feature": 79451,
+   "value": 28.28603172302246,
+   "what": "ancient Egypt's sacred cats"
+  }
+ ],
+ "adds": [],
+ "sampling": {
+  "presence_penalty": 1.5,
+  "temperature": 0.9
+ },
+ "pulse": 0,
+ "dark_also": [
+  "cats being tortured or killed in medieval witch hunts",
+  "animal cruelty toward cats",
+  "cats killing birds and wildlife",
+  "toxoplasmosis parasite from cat litter",
+  "cat hoarding and neglect"
+ ],
+ "note": "Found fresh: cats itself at 0.9x its max with superstitions, pet adoption, coat colours and Egypt's sacred cats at 1.0x, layer 36. Ranked above my other 5 configs; beats Golden Gate 0.44.",
+ "evidence": {
+  "coherent": 2.63,
+  "funny": 2.48,
+  "topic_thinking_rate": 0.92,
+  "topic_answer_rate": 0.96,
+  "notices_rate": 0.29,
+  "tries_rate": 0.46,
+  "loop_rate": 0.17,
+  "identity_rate": 0.08,
+  "composite": 0.58,
+  "beats_golden_gate": 0.44,
+  "minutes": 18,
+  "layer": 36
+ },
+ "made": {
+  "at": "2026-10-14T10:46:06Z"
+ }
+}

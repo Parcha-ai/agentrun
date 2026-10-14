@@ -2,7 +2,11 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, PAGES, pageLink, pageProfile, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, freshHome, PAGE_MIN, PAGES, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "../server-args.ts";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GG_INSTRUCTIONS } from "../gg-text.ts";
 import { STEER_INSTRUCTIONS } from "../steer-text.ts";
 
@@ -69,4 +73,37 @@ test("each page has its own places, and the Golden Gate page keeps today's", () 
     assert.equal(new Set(Object.values(PAGES).map((p) => p[key])).size, Object.keys(PAGES).length, `no two pages share a ${key}`);
   }
   assert.throws(() => pageProfile("cats"), /--page cats: one of golden-gate, any/);
+});
+
+test("a saved box is reused only while it has a page's minutes left and draws as the page asks", () => {
+  const now = 1_000_000;
+  const box = { sandbox: "sb-1", url: "https://box", created: now - 85 * 60, ttl_min: 90 };
+  assert.deepEqual(reusable(box, { now, needMin: PAGE_MIN }), { ok: false, why: "it has 5 min left of its 90; a page needs 40" });
+  // the default flow: a 90-minute box made by the first page, reused 20 minutes later by the next
+  assert.deepEqual(reusable({ ...box, created: now - 20 * 60 }, { now, needMin: PAGE_MIN }), { ok: true, why: "70 min left" });
+  assert.equal(reusable({ ...box, ttl_min: undefined }, { now, needMin: PAGE_MIN }).ok, false, "a box that does not say its lifetime is replaced");
+  const fresh = { ...box, created: now - 600, ttl_min: 300 };
+  assert.deepEqual(reusable({ ...fresh, best_of: "3" }, { now, needMin: PAGE_MIN }), { ok: false, why: "it draws best-of 3; the page asks for the default" });
+  assert.deepEqual(reusable(fresh, { now, needMin: PAGE_MIN, bestOf: "1" }), { ok: false, why: "it draws the default; the page asks for best-of 1" });
+  assert.equal(reusable({ ...fresh, best_of: "3" }, { now, needMin: PAGE_MIN, bestOf: "3" }).ok, true);
+  assert.equal(reusable({}, { now, needMin: PAGE_MIN }).ok, false, "no saved box");
+});
+
+test("--page-min is a whole number of minutes, or the page does not start", () => {
+  assert.equal(pageMinutes(undefined), PAGE_MIN);
+  assert.equal(pageMinutes("25"), 25);
+  for (const bad of ["", "abc", "0", "-5", "2.5", "Infinity", "--ttl"]) assert.throws(() => pageMinutes(bad), /--page-min/, bad);
+});
+
+test("a reused box gives the next page's agent an empty home: the last topic's code and notes go, its shell files stay, nothing outside it is touched", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-home-"));
+  const home = join(root, "agent");
+  mkdirSync(join(home, "work"), { recursive: true });
+  for (const f of [".bashrc", ".profile", "cat_texts.json", "on_gg.json", ".hidden_notes", "work/run1.py"]) writeFileSync(join(home, f), "x");
+  writeFileSync(join(root, "outside.txt"), "keep me");
+  symlinkSync(join(root, "outside.txt"), join(home, "link"));
+  execFileSync("bash", ["-c", freshHome(home)]);
+  assert.deepEqual(readdirSync(home).sort(), [".bashrc", ".profile"]);
+  assert.equal(existsSync(join(root, "outside.txt")), true, "a link's target outside the home stays");
+  assert.match(freshHome("/home/agent"), /^find \/home\/agent -mindepth 1 -maxdepth 1 /);
 });

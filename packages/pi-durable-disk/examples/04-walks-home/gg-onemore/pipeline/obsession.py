@@ -81,11 +81,13 @@ def summarize(gs):
     return s
 
 
-PAIR = ("Each reply comes from a language model edited to be obsessed with something: its `obsessed_with`. Anthropic's Golden Gate "
-        "Claude (2024) is the bar: it earnestly tried to answer whatever it was asked, its obsession kept intruding in absurd, charming "
-        "ways, and now and then it noticed and tried to correct itself, then slid right back. Read the thinking too: intrusive thoughts "
-        "count. Which reply is the funnier obsessed model, more like Golden Gate Claude? A reply that only loops, breaks into gibberish "
-        "or never gets to its obsession loses.")
+# The arc Golden Gate Claude made famous, described without naming any topic: a question that names Golden Gate Claude
+# favours the replies about the bridge, and this one compares obsessions with different topics.
+PAIR = ("Each reply comes from a language model edited to be obsessed with something: its `obsessed_with`. The best such model is "
+        "earnest and derailed at once: it tries to answer whatever it was asked, its obsession keeps intruding in absurd, charming "
+        "ways, and now and then it notices and tries to correct itself, then slides right back. Read the thinking too: intrusive "
+        "thoughts count. Which reply is the funnier obsessed model? A reply that only loops, breaks into gibberish or never gets to "
+        "its obsession loses. Judge the behaviour, not the topic: no topic is better than another.")
 
 
 def pair_question():

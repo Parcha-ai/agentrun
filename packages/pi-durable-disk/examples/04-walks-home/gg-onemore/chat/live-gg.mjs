@@ -7,15 +7,18 @@
 // /mnt/pda/demo/steer-any, ~/tmp-steer and pda-steer. Nothing is shared with the robot's scripts. The run's link is printed
 // once (the person opens it), with the ssh line. Stop with `chat/stop-gg.sh [--page any]` (SIGTERM): the server, the VM, the
 // box and the run's tree; the last line counts the app's sandboxes (0). With no request through the guard for --idle-min
-// minutes, it stops itself the same way.
-//   node chat/live-gg.mjs [--page golden-gate|any] [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
+// minutes, it stops itself the same way. A fresh chat on the same box: `chat/stop-gg.sh --page any --keep-box` (SIGUSR2: all
+// but the GPU box goes), then this again with --reuse-box (the saved box, while it has --page-min minutes left, draws as
+// asked and answers healthy; else a new one).
+//   node chat/live-gg.mjs [--page golden-gate|any] [--reuse-box [--page-min 40]] [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { claimBox, startReaper, stopReaper } from "./reaper.ts";
 import { runStep } from "./run-step.ts";
-import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, pageProfile, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, freshHome, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -29,6 +32,13 @@ const HOME = join(homedir(), PAGE.home);
 const PID = join(HOME, "live-gg.pid");
 const STATE = join(HOME, "box-state");
 const SECRETS = join(HOME, "secrets");
+const savedBox = () => {
+  try {
+    return JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
+  } catch {
+    return {};
+  }
+};
 const SERVER = join(HOME, "server");
 const MOUNT_ROOT = PAGE.mountRoot;
 const APP = PAGE.app;
@@ -37,6 +47,10 @@ const PORT = arg("port", PAGE.port);
 const IDLE_MIN = Number(arg("idle-min", 20));
 const TTL = arg("ttl", "90");
 const AGENT_MODEL = arg("agent-model", DEFAULT_AGENT_MODEL);
+// minutes a kept box waits for a --reuse-box start before its reaper takes it down
+const REAP_MIN = 10;
+// checked before anything starts: a bad value must not skip the reused box's lifetime check
+const PAGE_MINUTES = pageMinutes(process.argv.includes("--page-min") ? (arg("page-min", "") ?? "") : undefined);
 const BOX_ENV = { ...process.env, GG_STATE: STATE, GG_APP: APP, ...boxEnv({ bestOf: arg("best-of", undefined) }) };
 
 const t0 = Date.now();
@@ -63,6 +77,9 @@ if (existsSync(PID)) {
   if (alive) fatal(`live-gg is already running (pid ${old}); stop it with chat/stop-gg.sh`);
 }
 writeFileSync(PID, String(process.pid), { mode: 0o600 });
+// a start takes over from a kept box's reaper: with --reuse-box it claims the box first (step 2 keeps or replaces it)
+if (process.argv.includes("--reuse-box") && savedBox().sandbox) claimBox(HOME, savedBox().sandbox);
+if (stopReaper(HOME)) say("reaper.stopped");
 
 // Jev decides every placement: no key, nothing starts.
 if (!run(join(B, "with-typesafe"), ["--names"]).split("\n").includes("TYPESAFE_API_KEY")) fatal("the TypeSafe key is not available (with-typesafe --names); Jev decides every placement and there is no fallback");
@@ -80,7 +97,9 @@ if (!existsSync(extraModule)) fatal(`${extraModule} is missing: npm run bundle:e
 
 let server;
 let stopping = false;
-async function stop(reason, code = 0) {
+async function stop(reason, code = 0, keepBox = false) {
+  // the box is kept only when there is one to name: the app's other sandboxes go either way
+  const keptBox = keepBox ? savedBox().sandbox : undefined;
   if (stopping) return;
   stopping = true;
   say("stopping", { reason });
@@ -105,14 +124,20 @@ async function stop(reason, code = 0) {
         },
         pullRun: (dir) => run(join(B, "with-archil"), ["--", process.execPath, join(G, "chat", "pull-run.ts"), RUN, dir], { cwd: G, timeout: 180_000 }),
         boxDown: () => box("down"),
-        terminateSandboxes: () => sandboxes("--terminate"),
+        terminateSandboxes: () => sandboxes("--terminate", ...(keptBox ? ["--keep", keptBox] : [])),
         cleanRun: () => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }),
       },
       kept,
+      { keepBox: !!keptBox },
     ),
     say,
   );
   say("kept", { dir: kept });
+  // a kept box nobody comes back to goes down in REAP_MIN minutes: a --reuse-box start claims it before that
+  if (keptBox) {
+    const pid = startReaper({ home: HOME, sandbox: keptBox, minutes: REAP_MIN, command: ["env", `GG_STATE=${STATE}`, `GG_APP=${APP}`, join(B, "with-modal"), "--", "python3", join(G, "modal", "box.py"), "down", "--id", keptBox] });
+    say("reaper.started", { pid, minutes: REAP_MIN, sandbox: keptBox });
+  }
   for (const name of ["guard-url", "serve-key", "tools-key"]) rmSync(join(SECRETS, name), { force: true });
   try {
     say("modal", { [APP]: sandboxes().split("\n").at(-1) });
@@ -123,6 +148,7 @@ async function stop(reason, code = 0) {
   process.exit(code);
 }
 process.on("SIGTERM", () => void stop("SIGTERM"));
+process.on("SIGUSR2", () => void stop("SIGUSR2: the box stays for the next page", 0, true));
 process.on("SIGINT", () => void stop("SIGINT"));
 
 // The disk's API can time out (a 504 from Archil's gateway): a step on it is tried three times before the start gives up.
@@ -141,12 +167,31 @@ const onDisk = (fn) => {
 try {
   // 1. a fresh run, first: a run id with a history would resume that conversation, and a disk that fails here costs no GPU
   say("run.clean", { out: onDisk(() => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })).trim().split("\n").at(-1) });
-  // 2. the GPU box (the long pole: 3-7 min)
-  say("box.up");
-  box("up", "--ttl", TTL);
-  box("wait", "--timeout", "900");
+  // 2. the GPU box (the long pole: 3-7 min), or with --reuse-box the saved one: while it has --page-min minutes left, draws
+  // as this page asks and answers healthy
+  let reused = false;
+  if (process.argv.includes("--reuse-box")) {
+    const can = reusable(savedBox(), { now: Date.now() / 1000, needMin: PAGE_MINUTES, ...(BOX_ENV.GG_BEST_OF ? { bestOf: BOX_ENV.GG_BEST_OF } : {}) });
+    if (!can.ok) say("box.not_reused", { why: can.why });
+    else {
+      try {
+        box("wait", "--timeout", "30");
+        // the last page's agent left its code and notes in its home: this page's research starts from nothing
+        box("exec", "--root", freshHome("/home/agent"));
+        reused = true;
+      } catch (e) {
+        say("box.reuse_failed", failure(e));
+      }
+    }
+  }
+  if (!reused) {
+    say("box.up");
+    // a saved box that did not answer healthy is replaced; without --reuse-box a running one stops the start, as before
+    box("up", "--ttl", TTL, ...(process.argv.includes("--reuse-box") ? ["--replace"] : []));
+    box("wait", "--timeout", "900");
+  }
   const state = JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
-  say("box.ready", { sandbox: state.sandbox, s: Math.round((Date.now() - t0) / 1000) });
+  say("box.ready", { sandbox: state.sandbox, reused, s: Math.round((Date.now() - t0) / 1000) });
   // 3. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
   mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
   chmodSync(SECRETS, 0o700);

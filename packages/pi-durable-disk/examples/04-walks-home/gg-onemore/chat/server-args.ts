@@ -41,6 +41,44 @@ export function boxEnv(o: { bestOf?: string }): Record<string, string> {
   return { GG_BEST_OF: o.bestOf };
 }
 
+/** What `modal/box.py up` saves of a box (box-state/box.json): when it was made, its lifetime, its best-of. */
+export interface SavedBox {
+  readonly sandbox?: string;
+  readonly url?: string;
+  readonly created?: number;
+  readonly ttl_min?: number;
+  readonly best_of?: string | null;
+}
+
+/** The minutes a reused box must have left for a page: a topic's research, the switch and a chat (--page-min). */
+export const PAGE_MIN = 40;
+
+/** The root command that empties the agent's home on a reused box: each page's research starts from nothing (the last
+ * topic's code, texts and notes go; the recipes it served live in /var/tmp/gg/recipes and stay), its shell files stay. */
+export function freshHome(home: string): string {
+  return `find ${home} -mindepth 1 -maxdepth 1 ! -name .bashrc ! -name .profile ! -name .bash_logout -exec rm -rf -- {} +`;
+}
+
+/** --page-min as given (absent: PAGE_MIN): a whole, positive number of minutes, or the page does not start. */
+export function pageMinutes(arg: string | undefined): number {
+  if (arg === undefined) return PAGE_MIN;
+  if (!/^[1-9][0-9]*$/.test(arg)) throw new Error(`--page-min ${JSON.stringify(arg)}: the whole minutes a reused box must have left`);
+  return Number(arg);
+}
+
+/** Whether `--reuse-box` may start a page on the saved box: it must have `needMin` minutes left (its lifetime is the one it
+ * was made with; --ttl only sizes a new box), and its guard must draw as the page asks (it reads GG_BEST_OF only at its
+ * start). Else the box is replaced, and `why` says so. */
+export function reusable(box: SavedBox, want: { now: number; needMin: number; bestOf?: string }): { ok: boolean; why: string } {
+  if (!box.url || box.created === undefined) return { ok: false, why: "there is no saved box" };
+  if (box.ttl_min === undefined) return { ok: false, why: "it does not say how long it lives" };
+  const left = Math.floor((box.created + box.ttl_min * 60 - want.now) / 60);
+  if (left < want.needMin) return { ok: false, why: `it has ${left} min left of its ${box.ttl_min}; a page needs ${want.needMin}` };
+  const draws = (b: string | null | undefined) => (b ? `best-of ${b}` : "the default");
+  if ((box.best_of ?? null) !== (want.bestOf ?? null)) return { ok: false, why: `it draws ${draws(box.best_of)}; the page asks for ${draws(want.bestOf)}` };
+  return { ok: true, why: `${left} min left` };
+}
+
 export interface ServerPlaces {
   takeServer: string;
   mountRoot: string;
