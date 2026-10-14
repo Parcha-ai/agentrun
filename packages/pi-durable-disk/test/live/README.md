@@ -40,3 +40,30 @@ this directory first:
 `rm -f docker/package/*.tgz && npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-disk:local .`
 (`PDA_DOCKER_IMAGE` names another image). Its containers are labeled `pda.fleet=$PDA_DOCKER_FLEET` (default `live`) and
 named `pda-<fleet>-...`, its run directories `runs/<fleet>-...`; the suite removes only those.
+
+## The daily job
+
+`.github/workflows/pi-durable-disk-live.yml` runs these suites once a day and on demand (Actions, "pi-durable-disk live",
+"Run workflow"). It never runs for a pull request or in a fork, and one run at a time holds the disk. Its steps are
+`test/live/ci.ts`:
+
+- `preflight` refuses to start without the secrets below. Without the key, every suite would skip and the job would pass
+  having checked nothing.
+- `suites claim env run store supervise lifecycle` runs each suite in turn under a 25-minute deadline (one that hangs is
+  killed with its processes and the next one runs), recording each start and end in `$PDA_STATE_DIR/suites.jsonl`.
+- `sweep` (always) removes the run directories (`runs/<name>/` only) and token users that the run's ledgers recorded
+  and never stamped as removed: what a suite cut by its deadline or the step's timeout left on the disk. It fails if
+  anything is left.
+- `summary` (always) writes each suite's result and time and the suites' timing measurements to the job summary. It
+  reads only numbers from the results files: no disk id, host or identifier.
+
+A second job runs `suites docker` (the Docker driver, then parking) after the first, on its own runner. Until it has
+passed on GitHub's runners, it reports without failing the run.
+
+The repository secrets it needs:
+
+| Secret | What |
+|---|---|
+| `ARCHIL_API_KEY` | An API key of the Archil account that owns the scratch disk. The suites use it to read the disk, add and remove token users on it, list, write and delete its objects, and revoke delegations on it. |
+| `ARCHIL_SCRATCH_DISK` | The scratch disk's id (`dsk-...`): a disk that holds nothing you want to keep. |
+| `ARCHIL_SCRATCH_REGION` | The disk's region, such as `aws-us-east-1` (the default when unset). The fence tests' timing wants a region near GitHub's runners. |
