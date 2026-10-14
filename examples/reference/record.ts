@@ -159,8 +159,8 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
       appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
     },
     live: (source, kind, data, meta) => write(source, kind, data, meta),
-    // The supervisor's lines have no event-level gen, so the process they are about goes in the data (a `result`: `{ gen, blob, title }`).
-    host: (kind, data, meta) => (options.supervisor ? options.supervisor.host(kind, data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data, meta) : write('host', kind, data, meta)),
+    // The payoff (`result`) is the supervisor's line: a process with no supervisor writes none. The supervisor's lines have no event-level gen, so the process they are about goes in the data (a `result`: `{ gen, blob, title }`).
+    host: (kind, data, meta) => (!options.supervisor && kind === 'result' ? undefined : options.supervisor ? options.supervisor.host(kind, data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data, meta) : write('host', kind, data, meta)),
     blob: (bytes, extension) => keepBlob(dir, typeof bytes === 'string' ? Buffer.from(redact(bytes)) : Buffer.from(bytes), extension),
   };
 }
