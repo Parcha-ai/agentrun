@@ -28,7 +28,7 @@ export function loadFixture(name?: string): Fixture {
   return JSON.parse(readFileSync(join(FIXTURES, pick), 'utf8')) as Fixture;
 }
 
-export const jobOf = (fixture: Fixture, limit?: number): Job => ({ workflow, input: { project: fixture.project, dependencies: fixture.dependencies.slice(0, limit ?? fixture.dependencies.length) } });
+export const jobOf = (fixture: Fixture, limit?: number): Job => ({ workflow, input: { project: fixture.project, commit: fixture.source.commit, commit_date: fixture.source.commit_date, read_on: fixture.source.captured.slice(0, 10), dependencies: fixture.dependencies.slice(0, limit ?? fixture.dependencies.length) } });
 
 /** mulberry32, so the storm's gaps are the same for the same seed. */
 function random(seed: number) {
