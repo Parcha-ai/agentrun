@@ -35,7 +35,7 @@ def line(e):
     if k == "pick.summary":
         head = f"pick: layer {e['layer']}: Jev kept {e['kept']} of {e['of']} features; by role (share of the shortlist) {e['removed_share_by_role']}"
         if e["kept"] == 0:
-            head += "\npick: no single feature turns the model into the bridge (they give token spam or other landmarks), so strength uses the whole direction, the replication's method"
+            head += "\npick: no single feature turns the model into the bridge (they give token spam or other landmarks); strength clamps the bridge's parts together instead (pipeline/data/clamp.json)"
         return head
     if k == "strength.probe":
         return (f"strength k={e['k']:g} ({e['n']} replies, thinking on): the bridge in the thinking {e['bridge_thinking_rate']:.0%}, notices its own obsession "
