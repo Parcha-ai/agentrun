@@ -182,42 +182,40 @@ export class CommandRecorder {
     if (boot === undefined) return;
     const own = stat(this.#proc, this.#instance);
     if (own === undefined) return;
-    const seen = new Set<string>();
+    // New commands: children of this process that lead their own group (pi spawns each one so) and carry this
+    // environment's mark. Once recorded, a leader stays its environment's whatever it execs next (same pid and start).
     for (const pid of children(this.#proc, this.#instance)) {
       const leader = stat(this.#proc, pid);
-      // A command is a child that leads its own group (pi spawns each one so) and carries this environment's mark.
       if (leader === undefined || leader.pgrp !== pid || leader.pgrp === own.pgrp) continue;
-      // Once recorded, a leader stays its environment's whatever it execs next (its pid and start ticks do not change).
       const key = `${pid}-${leader.start}`;
-      if (!this.#records.has(key) && !marked(this.#proc, pid, COMMANDS_MARK, this.token)) continue;
-      seen.add(key);
-      let record = this.#records.get(key);
-      if (record === undefined) {
-        record = { leader: { pid, start: leader.start }, members: new Map() };
-        this.#records.set(key, record);
+      if (this.#records.has(key) || !marked(this.#proc, pid, COMMANDS_MARK, this.token)) continue;
+      this.#records.set(key, { leader: { pid, start: leader.start }, members: new Map() });
+    }
+    // Every record: walk from each of its processes still alive, the leader and every member, so a background worker whose
+    // leader (or parent) exited and was reparented away is still followed, and so are the children it starts later.
+    for (const [key, record] of this.#records) {
+      const live = [record.leader, ...record.members.values()].filter((mark) => same(this.#proc, mark));
+      if (live.length === 0) {
+        this.#records.delete(key);
+        this.#written.delete(key);
+        rmSync(join(this.#dir, `${key}.json`), { force: true });
+        continue;
       }
       let grew = !this.#written.has(key);
       const walk = (parent: number) => {
         for (const child of children(this.#proc, parent)) {
           const s = stat(this.#proc, child);
-          if (s === undefined) continue;
-          if (record!.members.get(child)?.start !== s.start) {
-            record!.members.set(child, { pid: child, start: s.start });
+          if (s === undefined || child === record.leader.pid) continue;
+          const known = record.members.get(child)?.start === s.start;
+          if (!known) {
+            record.members.set(child, { pid: child, start: s.start });
             grew = true;
           }
-          walk(child);
+          if (!known || !live.some((mark) => mark.pid === child)) walk(child);
         }
       };
-      walk(pid);
+      for (const mark of live) walk(mark.pid);
       if (grew) this.#write(key, { boot, leader: record.leader, members: [...record.members.values()] });
-    }
-    // A group whose leader has left the instance's children: keep it while any process recorded in it is alive.
-    for (const [key, record] of this.#records) {
-      if (seen.has(key)) continue;
-      if (same(this.#proc, record.leader) || [...record.members.values()].some((m) => same(this.#proc, m))) continue;
-      this.#records.delete(key);
-      this.#written.delete(key);
-      rmSync(join(this.#dir, `${key}.json`), { force: true });
     }
   }
 

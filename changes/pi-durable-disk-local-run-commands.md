@@ -8,7 +8,8 @@ kind: fix
   incarnation. Now a local run's environment marks each command it starts (`PI_DURABLE_DISK_COMMANDS=<its token>` in the
   command's environment) and records each of its commands' groups (the leader and every descendant it has seen, each by
   pid, start ticks and boot) under `<root>/commands/`: another environment's commands in the same process, or the app's
-  own detached helpers, are never its to record, and the next open, holding the owner lock, kills what is
+  own detached helpers, are never its to record. Each walk follows every recorded process still alive, so a background
+  worker whose leader exited, and the children it starts later, are recorded too, and the next open, holding the owner lock, kills what is
   still the recorded process, waits until it is gone and clears the records, before the Harness opens (a new open step,
   `commands`, after `layout`).
 - A kill reaches a process only when its pid, start ticks and boot all match a record, and never the opening process or

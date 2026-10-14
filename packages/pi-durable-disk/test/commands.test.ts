@@ -194,6 +194,35 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
     }
   });
 
+  it("follows a background worker after its leader exits: a child it starts later is recorded, and reaped", async () => {
+    const dir = scratchRoot("commands-worker");
+    const records = join(dir.root, "commands");
+    const late = join(dir.root, "late.pid");
+    const recorder = new CommandRecorder(records, { everyMs: 20 });
+    // The leader exits at 0.2 s; its background worker (same group) starts `sleep 600` at 0.6 s and waits on it.
+    const script = `sh -c 'sleep 0.6; sleep 600 & echo $! > ${late}; wait' & sleep 0.2`;
+    const child = spawn("/bin/sh", ["-c", script], { detached: true, stdio: "ignore", env: { ...process.env, [COMMANDS_MARK]: recorder.token } });
+    const group = child.pid ?? 0;
+    let latePid = 0;
+    try {
+      recorder.started();
+      await until(() => existsSync(late) && readFileSync(late, "utf8").trim() !== "");
+      latePid = Number(readFileSync(late, "utf8"));
+      assert.equal(alive(group), false, "the leader has exited");
+      await new Promise((resolve) => setTimeout(resolve, 150)); // walks after the late child started
+      recorder.close();
+      const [name] = readdirSync(records);
+      const record = JSON.parse(readFileSync(join(records, name!), "utf8")) as CommandRecord;
+      assert.ok(record.members.some((m) => m.pid === latePid), `the late child is recorded: ${JSON.stringify(record)}`);
+      const reaped = await reapCommands(records);
+      assert.deepEqual(reaped.survivors, []);
+      assert.ok(await waitGone(latePid), "and killed by the reap, with no live leader to kill its group through");
+    } finally {
+      killGroup(group); // the worker and its child are still in the leader's group
+      dir.remove();
+    }
+  });
+
   it("records only children that lead their own group", async () => {
     const dir = scratchRoot("commands-not-commands");
     const records = join(dir.root, "commands");
