@@ -28,6 +28,7 @@
     "export:source": "node scripts/export-source.mjs",
     "demo:support": "node scripts/check-node.mjs && node examples/run-support-answer.mjs",
     "demo:rank": "node scripts/check-node.mjs && node examples/run-rank-candidates.mjs",
+    "demo:reference": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/run.ts",
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {

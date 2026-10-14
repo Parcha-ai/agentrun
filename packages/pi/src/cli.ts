@@ -3,13 +3,16 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { authorWorkflow, runWorkflow, validateWorkflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
-import { createPiRunner, type PiRunnerOptions } from "./runner.js";
+import type { PiRunnerOptions } from "./runner.js";
+import { runScriptedDemo } from "./demo-cli.js";
 
 const help = `Usage:
+  agentrun-pi demo [empty]            scripted demo; no key, no model calls, no network
   agentrun-pi validate workflow.json [--inputs key1,key2]
   agentrun-pi author --config ./pi.config.mjs --out ./candidates "Describe the workflow"
   agentrun-pi run --config ./pi.config.mjs workflow.json input.json
 
+The demo runs the same scripted workflow as /agentrun demo inside Pi; "empty" runs its missing-evidence path and exits 0 on the expected escalation.
 Config is trusted JavaScript exporting default PiRunnerOptions, optionally deps (Jev/effect adapters).
 Author saves candidates; it does not execute or activate them.
 Validate may execute code probes. Run executes trusted workflow code and exits 2 on escalation.
@@ -25,6 +28,11 @@ async function main(args: string[]) {
     args.splice(index, 2);
     return value;
   };
+  if (command === "demo") {
+    if (args.length > 1 || (args[0] && args[0] !== "empty")) throw new Error("Usage: agentrun-pi demo [empty]");
+    process.exitCode = await runScriptedDemo(args[0] === "empty", line => console.log(line));
+    return;
+  }
   const configPath = flag("--config");
   const outputDir = flag("--out") ?? "./candidates";
   const inputKeys = (flag("--inputs") ?? "").split(",").filter(Boolean);
@@ -38,6 +46,7 @@ async function main(args: string[]) {
   }
   if (command !== "author" && command !== "run") throw new Error(help);
   if (!configPath) throw new Error("Supply --config with an explicit model and modelRuntime");
+  const { createPiRunner } = await import("./runner.js");
   const config = await import(pathToFileURL(resolve(configPath)).href) as { default: PiRunnerOptions; deps?: WorkflowDeps };
   if (command === "author") {
     if (args.length !== 1) throw new Error(help);

@@ -1,0 +1,9 @@
+{
+  "package": "@parcha/pi-vision",
+  "install": ["pi-vision"],
+  "companions": [],
+  "files": [{ "name": "read.mjs", "readme": "packages/pi-vision/README.md", "heading": "A first read, with no key", "fence": "js", "index": 0 }],
+  "command": ["node", "read.mjs"],
+  "expect": { "exitCode": 0, "pattern": "(?<![\\s\\S])Cells of ledger\\.xlsx \\(1 sheet\\), read with office-js; the text is saved at derived/ledger\\.xlsx-5a119bb78efe62bd\\.txt\\. Cells only: formatting, charts, images and pivot views are not shown here\\. A faithful render needs LibreOffice \\(soffice\\) in the environment\\.\n\nSheet \"ledger\"\nA1=id \\| B1=amount \\| C1=doubled \\| D1=running_total \\| E1=account_no\nA2=1 \\| B2=1250\\.5 \\| C2=2501 \\{=B2\\*2\\} \\| D2=<no stored value> \\{=SUM\\(B\\$2:B2\\)\\} \\| E2=9007199254740993\nA3=2 \\| B3=99\\.99 \\| C3=199\\.98 \\{=B3\\*2\\} \\| D3=<no stored value> \\{=SUM\\(B\\$2:B3\\)\\}\n(?![\\s\\S])" },
+  "timeoutMs": 120000
+}

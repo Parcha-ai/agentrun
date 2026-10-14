@@ -18,3 +18,9 @@
 - `openHome` (`./home`): one place a session runs, driven by orders (`resume`, `drain`, `seal`, `reopen`, `retire`). Its
   gate holds a running session still for a move with nothing cut, or opens again and names what held it. An app is
   `(ctx) => options` without `env` and `models`, so one module runs on the host and in a box.
+- `modalBoxes` (`./box/modal`): a Modal sandbox (gVisor) or VM (`isolation: "vm"`) per box, over a Modal SDK the
+  host passes in.
+- Each provider is the entry `./box/<name>`, from one pattern export; `./box/box`, `./box/child` and `./box/files`
+  are not entries.
+- `daytonaBoxes` (`./box/daytona`): a Daytona sandbox per box over the REST API, sized by its snapshot; the key stays
+  in the host.

@@ -1,0 +1,9 @@
+{
+  "package": "@parcha/agentrun-jev",
+  "install": ["dsl", "jev"],
+  "companions": ["@parcha/agentrun-dsl"],
+  "files": [{ "name": "offline-jev.mjs", "readme": "packages/jev/README.md", "heading": "Offline tests", "fence": "js", "index": 0 }],
+  "command": ["node", "offline-jev.mjs"],
+  "expect": { "exitCode": 0, "pattern": "\\{ type: 'noul', noul: 0\\.95 \\}" },
+  "timeoutMs": 120000
+}
