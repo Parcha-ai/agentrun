@@ -32,9 +32,19 @@ test('a failed call and a call in one generation are not repeats; two applied ca
   assert.equal(fold([withCalls(1, 1, ['applied']), withCalls(2, 2, ['applied'], 'run\u0000step:/root/steps/1#call:0')]).repeated.effects, 0);
 });
 
-test('a snapshot line is state, not an event: it never makes a repeat', () => {
-  const snapshot = { ...withCalls(5, 4, ['applied', 'applied']), snapshot: true };
-  assert.equal(fold([withCalls(1, 1, ['applied']), snapshot]).repeated.effects, 0);
+test('calls are append-only: each line gives only the calls beyond the previous line\'s list; a snapshot\'s new calls are of an EARLIER generation', () => {
+  // generation 1 applied a call whose lines died in flight; generation 2\'s snapshot shows it, and nothing else applies: repeated 0
+  const lost = [withCalls(1, 1, []), { ...withCalls(5, 2, ['applied']), snapshot: true }];
+  assert.deepEqual([fold(lost).repeated.effects, fold(lost).askedTwice], [0, 0]);
+  // the same, and generation 2 applies again: now it is a repeat
+  assert.equal(fold([...lost, withCalls(6, 2, ['applied', 'applied'])]).repeated.effects, 1);
+  // a snapshot that repeats the list the lines already gave adds nothing
+  assert.equal(fold([withCalls(1, 1, ['applied']), { ...withCalls(5, 2, ['applied']), snapshot: true }, withCalls(6, 2, ['applied'])]).repeated.effects, 0);
+});
+
+test('a list that does not extend the previous one (a restore\'s snapshot) becomes the base, and the lost branch\'s calls stay counted', () => {
+  const restored = [withCalls(1, 1, ['applied']), { ...withCalls(2, 3, []), snapshot: true }, withCalls(3, 3, ['applied'])];
+  assert.equal(fold(restored).repeated.effects, 1, 'applied in generation 1 (the lost branch) and again in generation 3');
 });
 
 test('cost: usage and priced parts, null while a judge row is null, 0 when the scripted judge reports 0', () => {
@@ -71,12 +81,14 @@ test('a tool with no receipt never counts: a read executed twice in one conversa
 
 const live = (kind, gen, tt, data = {}, conv = 7) => ({ channel: 'live', source: 'pi', kind, gen, t: tt, seq: tt, conv, data });
 const committedTurn = (tt, gen) => durable(tt, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, t: tt, data: { model: [{ role: 'assistant', content: [] }] } });
-const assistantEnd = (gen, tt) => live('message_end', gen, tt, { entry: { model: [{ role: 'assistant' }] } });
+const asks = (gen, tt) => live('message_start', gen, tt, { message: { role: 'assistant' } });
 
-test('re-asked turns are observed from pi\'s live lines: a turn seen in two generations was asked in each', () => {
-  // turn 0 starts in generation 2 and is cut; generation 3 commits it; turn 1 starts and commits in generation 3
-  const lines = [live('turn_start', 2, 100), assistantEnd(3, 200), committedTurn(199, 3), live('turn_start', 3, 210), assistantEnd(3, 300), committedTurn(299, 3)];
+test('re-asked turns are observed from assistant message_start lines: an ask is placed by the assistant entries already committed, and one position asked from two processes is re-asked', () => {
+  // turn 0 is asked in generation 2 (cut) and again in generation 3, which commits it; turn 1 is asked and committed in generation 3
+  const lines = [asks(2, 100), asks(3, 150), committedTurn(200, 3), asks(3, 210), committedTurn(300, 3)];
   assert.deepEqual(fold(lines).reAskedObserved, { turns: 1, asks: 2 });
-  const calm = [live('turn_start', 2, 100), assistantEnd(2, 200), committedTurn(199, 2), live('turn_start', 2, 210), assistantEnd(2, 300), committedTurn(299, 2)];
+  const calm = [asks(2, 100), committedTurn(200, 2), asks(2, 210), committedTurn(300, 2)];
   assert.deepEqual(fold(calm).reAskedObserved, { turns: 0, asks: 0 });
+  // a user message_start is not an ask
+  assert.deepEqual(fold([live('message_start', 2, 100, { message: { role: 'user' } }), live('message_start', 3, 110, { message: { role: 'user' } })]).reAskedObserved, { turns: 0, asks: 0 });
 });
