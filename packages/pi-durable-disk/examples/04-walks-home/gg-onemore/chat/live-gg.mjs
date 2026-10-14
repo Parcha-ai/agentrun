@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runStep } from "./run-step.ts";
-import { boxEnv, DEFAULT_AGENT_MODEL, PAGE_MIN, pageLink, pageProfile, reusable, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -39,6 +39,8 @@ const PORT = arg("port", PAGE.port);
 const IDLE_MIN = Number(arg("idle-min", 20));
 const TTL = arg("ttl", "90");
 const AGENT_MODEL = arg("agent-model", DEFAULT_AGENT_MODEL);
+// checked before anything starts: a bad value must not skip the reused box's lifetime check
+const PAGE_MINUTES = pageMinutes(process.argv.includes("--page-min") ? (arg("page-min", "") ?? "") : undefined);
 const BOX_ENV = { ...process.env, GG_STATE: STATE, GG_APP: APP, ...boxEnv({ bestOf: arg("best-of", undefined) }) };
 
 const t0 = Date.now();
@@ -158,7 +160,7 @@ try {
   // as this page asks and answers healthy
   let reused = false;
   if (process.argv.includes("--reuse-box")) {
-    const can = reusable(savedBox(), { now: Date.now() / 1000, needMin: Number(arg("page-min", PAGE_MIN)), ...(BOX_ENV.GG_BEST_OF ? { bestOf: BOX_ENV.GG_BEST_OF } : {}) });
+    const can = reusable(savedBox(), { now: Date.now() / 1000, needMin: PAGE_MINUTES, ...(BOX_ENV.GG_BEST_OF ? { bestOf: BOX_ENV.GG_BEST_OF } : {}) });
     if (!can.ok) say("box.not_reused", { why: can.why });
     else {
       try {

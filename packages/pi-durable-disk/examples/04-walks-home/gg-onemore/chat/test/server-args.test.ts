@@ -2,7 +2,7 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, PAGE_MIN, PAGES, pageLink, pageProfile, reusable, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, PAGE_MIN, PAGES, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "../server-args.ts";
 import { GG_INSTRUCTIONS } from "../gg-text.ts";
 import { STEER_INSTRUCTIONS } from "../steer-text.ts";
 
@@ -83,4 +83,10 @@ test("a saved box is reused only while it has a page's minutes left and draws as
   assert.deepEqual(reusable(fresh, { now, needMin: PAGE_MIN, bestOf: "1" }), { ok: false, why: "it draws the default; the page asks for best-of 1" });
   assert.equal(reusable({ ...fresh, best_of: "3" }, { now, needMin: PAGE_MIN, bestOf: "3" }).ok, true);
   assert.equal(reusable({}, { now, needMin: PAGE_MIN }).ok, false, "no saved box");
+});
+
+test("--page-min is a whole number of minutes, or the page does not start", () => {
+  assert.equal(pageMinutes(undefined), PAGE_MIN);
+  assert.equal(pageMinutes("25"), 25);
+  for (const bad of ["", "abc", "0", "-5", "2.5", "Infinity", "--ttl"]) assert.throws(() => pageMinutes(bad), /--page-min/, bad);
 });

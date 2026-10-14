@@ -53,6 +53,13 @@ export interface SavedBox {
 /** The minutes a reused box must have left for a page: a topic's research, the switch and a chat (--page-min). */
 export const PAGE_MIN = 40;
 
+/** --page-min as given (absent: PAGE_MIN): a whole, positive number of minutes, or the page does not start. */
+export function pageMinutes(arg: string | undefined): number {
+  if (arg === undefined) return PAGE_MIN;
+  if (!/^[1-9][0-9]*$/.test(arg)) throw new Error(`--page-min ${JSON.stringify(arg)}: the whole minutes a reused box must have left`);
+  return Number(arg);
+}
+
 /** Whether `--reuse-box` may start a page on the saved box: it must have `needMin` minutes left (its lifetime is the one it
  * was made with; --ttl only sizes a new box), and its guard must draw as the page asks (it reads GG_BEST_OF only at its
  * start). Else the box is replaced, and `why` says so. */
