@@ -250,7 +250,7 @@ Each example's README lists the exact commands the demo runs, so you can run the
 
 An instance is `pi-durable-disk run --app <module> ...`: `openDurableRun` with the app's options. The module is an ES
 module whose default export is a function of where the run lives and returns pi's Harness options without `env` (the run
-builds `env` on its claim: the workspace is `<root>/work`), plus an optional `onOpen`:
+builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`:
 
 ```ts
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -269,6 +269,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   return {
     models,
     registry,
+    async beforeResume({ harness, context, generation }) {
+      // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
+      // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
+    },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and
       // higher on every resume. run.harness is pi-durable's Harness.
@@ -286,7 +290,11 @@ rerun. Any other tool is an effect: its intent is committed before it starts, an
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
 run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
-or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries).
+or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries). A `beforeResume` that rejects
+fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
+store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
+way to a write, and `head`, the store's last committed sequence: a recorder snapshots every document at `head` there.
+Until the hook commits, the current state is the state at `head`, which is how a document that keeps no history reads.
 
 ## The CLI
 
