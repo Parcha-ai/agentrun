@@ -1,5 +1,16 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
@@ -7,6 +18,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError, type BoxExecOptions, type BoxFacts, type BoxProcess } from "../box/box.ts";
 import { adaptChild } from "../box/child.ts";
 import { downloadByExec, uploadByExec } from "../box/files.ts";
+import type { LogEntry } from "./commit-log.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Place } from "./move.ts";
@@ -23,12 +35,15 @@ import {
 
 /** Why a vault call failed. Returned, never thrown. */
 export class VaultError extends Error {
-	public code: "io" | "invalid";
+	public code: "io" | "invalid" | "gap";
+	/** For `gap`: the highest commit the vault holds in an unbroken run. */
+	public through: number | undefined;
 
-	constructor(code: VaultError["code"], message: string, cause?: unknown) {
+	constructor(code: VaultError["code"], message: string, cause?: unknown, through?: number) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = "VaultError";
 		this.code = code;
+		this.through = through;
 	}
 }
 
@@ -82,6 +97,23 @@ export interface CheckpointVault {
 	get(session: string, n: number, context: Context): Promise<Result<Checkpoint | undefined, VaultError>>;
 	/** Keep the newest `keep` generations of the session and remove the rest. Returns how many were removed. */
 	prune(session: string, keep: number, context: Context): Promise<Result<number, VaultError>>;
+	/**
+	 * Keep the commits a runner shipped, in order and without a gap, on disk before this returns. A commit already held
+	 * is not written again; one that does not follow the last is refused with `gap` and `through` says what the vault
+	 * holds, so the runner sends again from there. Commits below the latest checkpoint's head are covered by it and
+	 * are not kept. `through` is the highest commit held in an unbroken run from the checkpoint.
+	 */
+	appendLog(
+		session: string,
+		entries: readonly LogEntry[],
+		context: Context,
+	): Promise<Result<{ readonly through: number }, VaultError>>;
+	/** The shipped commits from `from` on, the unbroken run only; `gap` says commits beyond a break were held. */
+	readLog(
+		session: string,
+		from: number,
+		context: Context,
+	): Promise<Result<{ readonly entries: readonly LogEntry[]; readonly gap: boolean }, VaultError>>;
 }
 
 const DEFAULT_KEEP = 3;
@@ -157,6 +189,37 @@ export function localVault(directory: string): CheckpointVault {
 	const io = (what: string, cause: unknown) =>
 		new VaultError("io", `${what}: ${cause instanceof Error ? cause.message : String(cause)}`, cause);
 
+	const logFile = (session: string) => join(dirOf(session), "commits.jsonl");
+	const readEntries = (session: string): LogEntry[] => {
+		let text: string;
+		try {
+			text = readFileSync(logFile(session), "utf8");
+		} catch {
+			return [];
+		}
+		// A last line without its newline is a write the host did not finish: it was never acknowledged.
+		const end = text.lastIndexOf("\n");
+		if (end < 0) return [];
+		return text
+			.slice(0, end)
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line) => JSON.parse(line) as LogEntry);
+	};
+	const heldThrough = new Map<string, number | undefined>();
+	/** The highest commit that is in an unbroken run from the latest checkpoint, or `undefined` when nothing anchors it. */
+	const through = (session: string): number | undefined => {
+		if (!heldThrough.has(session)) {
+			const entries = readEntries(session);
+			heldThrough.set(session, entries.length === 0 ? undefined : (entries.at(-1) as LogEntry).commit);
+		}
+		const all = numbers(session);
+		const head = all.length === 0 ? undefined : read(session, all.at(-1) as number)?.seal.head;
+		const held = heldThrough.get(session);
+		if (head === undefined) return held;
+		return held === undefined ? head - 1 : Math.max(held, head - 1);
+	};
+
 	return {
 		box,
 		async begin(session) {
@@ -219,9 +282,83 @@ export function localVault(directory: string): CheckpointVault {
 					rmSync(join(dirOf(session), `${generationName(n)}.json`), { force: true });
 					rmSync(join(dirOf(session), generationName(n)), { recursive: true, force: true });
 				}
+				// What no kept generation needs any more: commits below the oldest kept head.
+				const kept = numbers(session)
+					.map((n) => read(session, n)?.seal.head)
+					.filter((head): head is number => head !== undefined);
+				if (kept.length > 0) {
+					const oldest = Math.min(...kept);
+					const entries = readEntries(session);
+					if (entries.some((entry) => entry.commit < oldest)) {
+						const file = logFile(session);
+						writeFileSync(
+							`${file}.partial`,
+							entries
+								.filter((entry) => entry.commit >= oldest)
+								.map((entry) => `${JSON.stringify(entry)}\n`)
+								.join(""),
+						);
+						renameSync(`${file}.partial`, file);
+					}
+				}
 				return ok(gone.length);
 			} catch (cause) {
 				return err(io("could not remove old generations", cause));
+			}
+		},
+		async appendLog(session, entries) {
+			try {
+				mkdirSync(dirOf(session), { recursive: true });
+				let last = through(session);
+				const accepted: LogEntry[] = [];
+				let refused: LogEntry | undefined;
+				for (const entry of entries) {
+					if (last !== undefined && entry.commit <= last) continue;
+					if (last !== undefined && entry.commit !== last + 1) {
+						refused = entry;
+						break;
+					}
+					accepted.push(entry);
+					last = entry.commit;
+				}
+				if (accepted.length > 0) {
+					const descriptor = openSync(logFile(session), "a");
+					try {
+						appendFileSync(descriptor, accepted.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+						fsyncSync(descriptor);
+					} finally {
+						closeSync(descriptor);
+					}
+					heldThrough.set(session, last);
+				}
+				if (refused !== undefined) {
+					return err(
+						new VaultError(
+							"gap",
+							`commit ${refused.commit} came where ${(last ?? -1) + 1} was next`,
+							undefined,
+							last,
+						),
+					);
+				}
+				return ok({ through: last ?? -1 });
+			} catch (cause) {
+				return err(io("could not keep the shipped commits", cause));
+			}
+		},
+		async readLog(session, from) {
+			try {
+				const entries = readEntries(session)
+					.filter((entry) => entry.commit >= from)
+					.sort((a, b) => a.commit - b.commit);
+				const run: LogEntry[] = [];
+				for (const entry of entries) {
+					if (entry.commit !== from + run.length) break;
+					run.push(entry);
+				}
+				return ok({ entries: run, gap: run.length < entries.length });
+			} catch (cause) {
+				return err(io("could not read the shipped commits", cause));
 			}
 		},
 	};
@@ -464,7 +601,11 @@ export async function pullCheckpoint(
  * checkpoint was taken, and which tool calls the host saw begin after it: a call that may run again, and one that must
  * not be assumed not to have happened.
  */
-export function restoreNotice(checkpoint: Pick<Checkpoint, "at" | "excluded">, calls: readonly CallRecord[]): string {
+export function restoreNotice(
+	checkpoint: Pick<Checkpoint, "at" | "excluded">,
+	calls: readonly CallRecord[],
+	replayed?: { readonly from: number; readonly to: number; readonly count: number },
+): string {
 	const since = calls.filter((call) => call.startedAt >= checkpoint.at);
 	const when = new Date(checkpoint.at).toISOString();
 	const names = (list: readonly CallRecord[]) => [...new Set(list.map((call) => call.tool))].join(", ");
@@ -474,6 +615,11 @@ export function restoreNotice(checkpoint: Pick<Checkpoint, "at" | "excluded">, c
 		`System notice: this session was restored from a checkpoint taken at ${when}, after its machine was lost.`,
 		"Files changed and commands run after that time did not survive. Effects outside the machine (a push, an API call, a message) may or may not have happened: check before you repeat one. Programs that were running did not come along.",
 	];
+	if (replayed !== undefined) {
+		lines.push(
+			`The host's log brought your history up to date: ${replayed.count} commit${replayed.count === 1 ? "" : "s"} made after the checkpoint (${replayed.from} to ${replayed.to}) were kept, with the calls they admitted. The files those calls changed did not survive.`,
+		);
+	}
 	if (since.length > 0) {
 		lines.push(
 			`After that checkpoint the host saw ${since.length} tool call${since.length === 1 ? "" : "s"} begin.${

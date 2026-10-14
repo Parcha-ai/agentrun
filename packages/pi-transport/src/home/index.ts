@@ -14,6 +14,7 @@ export {
 	type SkipReason,
 	VaultError,
 } from "./checkpoint.ts";
+export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits, tapStorage } from "./commit-log.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,

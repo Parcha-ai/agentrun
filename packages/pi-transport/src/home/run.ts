@@ -70,6 +70,11 @@ export type ResumeOrder = {
 		 * commits drops that branch.
 		 */
 		readonly head?: number;
+		/**
+		 * A restore only: the commits of the lost box that were shipped to the host and applied to the checkpoint's store
+		 * before it opened, `from` to `to` inclusive. `head` is then `to + 1`.
+		 */
+		readonly replayed?: { readonly from: number; readonly to: number };
 	};
 };
 
