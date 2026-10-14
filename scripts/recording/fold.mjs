@@ -14,55 +14,72 @@ const aborted = event => event.data?.model?.[0]?.stopReason === 'aborted';
 /** The pi.live document version this fold reads. On any other version the re-asked fold is NOT MEASURED, never guessed. */
 export const PI_LIVE_VERSION = 1;
 
-/** Re-asked model turns, from the durable `pi.live` lines (section 6). pi commits the start of every ask: a `pi.live` revision in which
- *  `generation` appears without a `message` (written at the generation task's request phase, before the model is called), and a throttled
- *  partial after it. An ask's position is (conversation, the non-aborted assistant entries committed before it); a committed partial
- *  becomes an assistant entry with stopReason `aborted` when the next ask starts, and is not a committed turn.
- *  - PROVEN: a position asked more than once, each ask shown by a revision of its own (an ask whose partial was committed leaves one when
- *    the next ask starts). `turns`: such positions; `asks`: their asks, summed.
- *  - POSSIBLE: a position where an ask was cut with only its start marker (a snapshot at open shows the marker still open) and a later
- *    process committed the turn: that process's ask rewrote the same value, which pi stores as no new revision, so it shows only as its
- *    first partial or its entry. `turns`: such positions.
- *  A snapshot that carries a stale `generation` is the ask already open at that position, or one more ask by an earlier generation when its
- *  start line died in flight. `null` (not measured) when no ask start was ever committed, or when a `pi.live` line is of a version this fold
- *  does not know. */
+/** Re-asked model turns, from the durable `pi.live` lines (section 6). pi commits `generation` without a `message` at the generation task's
+ *  request phase, BEFORE it calls the model, then a throttled partial `message` as the answer streams. An ask's position is (conversation,
+ *  the non-aborted assistant entries committed before it). The fold does not depend on pi appending an aborted entry for a cut partial.
+ *
+ *  An ask that reached the model leaves a partial, and the partial is that ask's: its `timestamp` is the ask's identity, the same in every
+ *  partial the ask commits and in the entry it finally commits. At one position, the asks that reached the model are the distinct
+ *  partials seen (as a line, or carried by a later process's snapshot); the one whose entry was committed answered, and the others were
+ *  CUT by a process death and are PROVEN re-asks (a later process's own partial, different from the one its snapshot carried, is that
+ *  process's ask). A cut ask that committed only its start marker (a snapshot at open still carries a `generation` with no `message`) is
+ *  POSSIBLE, since the process may have died between that commit and the model call; a bare marker that stays unchanged across several
+ *  opens is ONE possible cut ask, because no process that may have asked under it leaves a line.
+ *  `proven.turns`: positions with a proven re-ask; `proven.asks`: the proven re-asks, summed (asks at a position minus one).
+ *  `possible.turns`: positions whose only cut asks are bare markers.
+ *  `null` (not measured) when no ask start was ever committed, or when a `pi.live` line is of a version this fold does not know. */
 export function reAsked(events) {
-  const state = new Map();
-  const asksAt = new Map();
-  const cutAt = new Set();
-  const committedAt = new Set();
+  const committed = new Map();
+  const asked = new Map();
+  const answeredBy = new Map();
+  const markers = new Set();
+  const carried = new Map();
+  let process = 0;
   let known = true;
   let starts = 0;
-  const of = conv => { if (!state.has(conv)) state.set(conv, { committed: 0, open: undefined, generation: undefined }); return state.get(conv); };
-  const ask = (conv, held) => { const key = `${conv}\u0001${held.committed}`; asksAt.set(key, (asksAt.get(key) ?? 0) + 1); held.open = held.committed; starts += 1; };
+  const identity = message => message?.timestamp ?? JSON.stringify(message);
   for (const event of events) {
+    if (event.source === 'host' && event.kind === 'process.started') process += 1;
     if (event.channel !== 'durable') continue;
     const conv = event.conv ?? 0;
     if (event.kind === 'pi.live' && event.data?.version !== undefined && event.data.version !== PI_LIVE_VERSION) known = false;
     if (event.kind === 'pi.assistant' && !event.snapshot) {
-      if (!aborted(event)) { const held = of(conv); committedAt.add(`${conv}\u0001${held.committed}`); held.committed += 1; held.open = undefined; }
+      if (!aborted(event)) {
+        answeredBy.set(`${conv}\u0001${committed.get(conv) ?? 0}`, event.data?.model?.[0]?.timestamp);
+        committed.set(conv, (committed.get(conv) ?? 0) + 1);
+      }
       continue;
     }
     if (event.kind !== 'pi.live') continue;
-    const held = of(conv);
     const generation = event.data?.value?.generation;
-    if (event.snapshot) {
-      // State, not an event: the ask already open at this position is the same ask; otherwise its start line died in flight.
-      if (generation !== undefined && held.open !== held.committed) ask(conv, held);
-      // A marker-only ask cut by a process death, seen at the next process's open.
-      if (generation !== undefined && generation.message === undefined) cutAt.add(`${conv}\u0001${held.committed}`);
-      held.generation = generation;
-      continue;
-    }
-    const appears = generation !== undefined && generation.message === undefined
-      && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt);
-    if (appears) ask(conv, held);
-    held.generation = generation;
+    if (generation !== undefined) starts += 1;
+    if (generation === undefined) continue;
+    const position = `${conv}\u0001${committed.get(conv) ?? 0}`;
+    if (generation.message !== undefined) {
+      const id = identity(generation.message);
+      // A partial a snapshot carries is a cut ask's. A partial a process commits itself counts as that process's ask when its own snapshot
+      // carried a partial and this one differs from it; after a bare marker it is not counted here (the marker stays one possible cut ask).
+      const mine = carried.get(`${process}\u0001${position}`);
+      if (event.snapshot) carried.set(`${process}\u0001${position}`, id);
+      if (event.snapshot || (mine !== undefined && mine !== id)) {
+        const held = asked.get(position) ?? new Map();
+        held.set(id, held.size);
+        asked.set(position, held);
+      }
+    } else if (event.snapshot) markers.add(position);
   }
   if (!known || starts === 0) return null;
-  const proven = [...asksAt].filter(([, count]) => count > 1);
-  const possible = [...cutAt].filter(key => (asksAt.get(key) ?? 0) <= 1 && committedAt.has(key));
-  return { proven: { turns: proven.length, asks: proven.reduce((sum, [, count]) => sum + count, 0) }, possible: { turns: possible.length } };
+  let turns = 0;
+  let asks = 0;
+  const cutAt = new Map();
+  for (const [position, held] of asked) {
+    // The ask whose entry was committed answered; with no entry yet, the latest partial is the ask still in flight.
+    const answered = answeredBy.has(position) ? answeredBy.get(position) : [...held.keys()].at(-1);
+    const cut = [...held.keys()].filter(id => id !== answered).length;
+    cutAt.set(position, cut);
+    if (cut > 0) { turns += 1; asks += cut; }
+  }
+  return { proven: { turns, asks }, possible: { turns: [...markers].filter(position => !(cutAt.get(position) > 0)).length } };
 }
 
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are
