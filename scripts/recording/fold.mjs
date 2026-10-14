@@ -9,6 +9,28 @@ import { pathToFileURL } from 'node:url';
 
 const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : undefined);
 
+/** Re-asked model turns, OBSERVED (never proven: a turn a kill cut leaves no durable trace). pi's live lines (turn_start, and the
+ *  assistant message_end that commits a turn) are placed in a turn of their conversation by how many assistant entries that
+ *  conversation had committed (durable) at that moment; a turn that shows in more than one generation was asked in each of them.
+ *  `turns`: turns seen in more than one generation; `asks`: the generations that asked them, summed. */
+export function reAskedObserved(events) {
+  const committed = new Map();
+  for (const event of events) if (event.channel === 'durable' && !event.snapshot && event.kind === 'pi.assistant') committed.set(event.conv ?? 0, [...(committed.get(event.conv ?? 0) ?? []), event.t]);
+  const seen = new Map();
+  for (const event of events) {
+    if (event.channel !== 'live' || event.source !== 'pi' || !['turn_start', 'message_end'].includes(event.kind)) continue;
+    if (event.kind === 'message_end' && event.data?.entry?.model?.[0]?.role !== 'assistant') continue;
+    const conv = event.conv ?? 0;
+    // A turn_start opens the next turn; an assistant message_end belongs to the turn it commits.
+    const upTo = (committed.get(conv) ?? []).filter(t => t <= event.t).length;
+    const before = event.kind === 'turn_start' ? upTo : Math.max(0, upTo - 1);
+    const key = `${conv}\u0001${before}`;
+    seen.set(key, new Set([...(seen.get(key) ?? []), event.gen]));
+  }
+  const many = [...seen.values()].filter(gens => gens.size > 1);
+  return { turns: many.length, asks: many.reduce((sum, gens) => sum + gens.size, 0) };
+}
+
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are
  *  skipped; a lost branch is events and is folded.
  *  - A workflow effect: an effect id with an APPLIED call (its `calls` record, `outcome: 'applied'`) in a later generation than an
@@ -105,6 +127,7 @@ export function fold(events) {
     judgeAsks: { answered: decisions.filter(receipt => !receipt.error).length, failed: decisions.filter(receipt => receipt.error).length },
     modelTurnsCommitted: assistantEntries,
     cost,
+    reAskedObserved: reAskedObserved(events),
     ...repeats(events),
   };
 }
