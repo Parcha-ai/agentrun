@@ -5,6 +5,7 @@ export function fold(events: readonly Record<string, unknown>[]): {
   judgeAsks: { answered: number; failed: number };
   repeated: { effects: number | null; agentToolCalls: number };
   askedTwice: number;
+  reAskedObserved: { turns: number; asks: number };
 };
 export function repeats(events: readonly Record<string, unknown>[]): { repeated: { effects: number | null; agentToolCalls: number }; askedTwice: number };
 export function readEvents(dir: string): Record<string, unknown>[];

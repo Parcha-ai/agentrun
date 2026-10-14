@@ -68,3 +68,15 @@ test('a tool with no receipt never counts: a read executed twice in one conversa
   const paid = fold([receiptFor('read', { path: 'a.png' }), ...lines]);
   assert.deepEqual([paid.repeated.agentToolCalls, paid.askedTwice], [1, 1]);
 });
+
+const live = (kind, gen, tt, data = {}, conv = 7) => ({ channel: 'live', source: 'pi', kind, gen, t: tt, seq: tt, conv, data });
+const committedTurn = (tt, gen) => durable(tt, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, t: tt, data: { model: [{ role: 'assistant', content: [] }] } });
+const assistantEnd = (gen, tt) => live('message_end', gen, tt, { entry: { model: [{ role: 'assistant' }] } });
+
+test('re-asked turns are observed from pi\'s live lines: a turn seen in two generations was asked in each', () => {
+  // turn 0 starts in generation 2 and is cut; generation 3 commits it; turn 1 starts and commits in generation 3
+  const lines = [live('turn_start', 2, 100), assistantEnd(3, 200), committedTurn(199, 3), live('turn_start', 3, 210), assistantEnd(3, 300), committedTurn(299, 3)];
+  assert.deepEqual(fold(lines).reAskedObserved, { turns: 1, asks: 2 });
+  const calm = [live('turn_start', 2, 100), assistantEnd(2, 200), committedTurn(199, 2), live('turn_start', 2, 210), assistantEnd(2, 300), committedTurn(299, 2)];
+  assert.deepEqual(fold(calm).reAskedObserved, { turns: 0, asks: 0 });
+});
