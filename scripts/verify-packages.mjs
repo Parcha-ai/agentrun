@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
+import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -144,6 +145,19 @@ try {
   const drifted = findDrift(consumerLock.packages, held);
   assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
   receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
+  // The versions the consumer landed on are printed and filed before they are judged, so a failure shows what was installed.
+  const copies = listCopies(consumerLock.packages);
+  const developed = developedVersions(rootLock);
+  const peerRanges = {};
+  for (const packed of receipt.packages) {
+    const ranges = Object.fromEntries(Object.entries((await json(join(consumer, 'node_modules', packed.name, 'package.json'))).peerDependencies ?? {}).filter(([name]) => name in developed));
+    if (Object.keys(ranges).length) peerRanges[packed.name] = ranges;
+  }
+  receipt.piFamily = { developedOn: developed, copies };
+  for (const copy of copies) console.log(`Consumer holds ${copy.name}@${copy.version} at ${copy.location}`);
+  const piProblems = checkPiFamily(copies, developed, peerRanges, laggingWorkspaces(rootLock, developed));
+  if (piProblems.length) throw new Error(`The packages installed together do not land on the pi version the repository develops on:\n${piProblems.join('\n')}`);
+  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, the versions the repository develops the durable packages on.`);
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
