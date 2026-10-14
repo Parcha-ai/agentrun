@@ -83,35 +83,46 @@ import { readFileSync } from 'node:fs';
 import { readEvents } from './fold.mjs';
 
 const piLive = (commit, gen, generation, over = {}) => durable(commit, { gen, source: 'pi', kind: 'pi.live', conv: 7, data: { doc: 'pi.live', value: generation === undefined ? {} : { generation }, version: 1 }, ...over });
-const turn = (commit, gen, stopReason = 'toolUse') => durable(commit, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, data: { model: [{ role: 'assistant', content: [], stopReason }] } });
+const turn = (commit, gen, timestamp, stopReason = 'toolUse') => durable(commit, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, data: { model: [{ role: 'assistant', content: [], stopReason, timestamp }] } });
+const partial = timestamp => ({ attempt: 1, message: { role: 'assistant', timestamp } });
+const snap = line => ({ ...line, snapshot: true });
+const started = (t) => ({ channel: 'live', source: 'host', kind: 'process.started', t, seq: t, data: {} });
 
-test('re-asked is proven from pi.live: an ask start is a revision where generation appears without a message, placed by the non-aborted entries before it', () => {
-  // turn 0 asked, its partial committed, the process killed; the next process\'s open snapshot shows the stale partial, its ask starts again
-  // (the partial becomes an aborted entry, which is not a committed turn), and turn 0 commits; turn 1 is asked once
-  const lines = [piLive(1, 1, { attempt: 1 }), piLive(2, 1, { attempt: 1, message: { role: 'assistant' } }), { ...piLive(3, 2, { attempt: 1, message: { role: 'assistant' } }), snapshot: true },
-    piLive(4, 2, { attempt: 1 }), turn(4, 2, 'aborted'), piLive(5, 2, undefined), turn(5, 2), piLive(6, 2, { attempt: 1 }), piLive(7, 2, undefined), turn(7, 2)];
+test('a cut ask that committed a partial is proven; a later process\'s own different partial is its ask; the answered ask is not a re-ask', () => {
+  // process 1 asks and commits a partial (ts 10), is killed; process 2\'s snapshot carries it, it commits its own (ts 20), is killed; process 3
+  // (snapshot: a bare marker) commits its partial (ts 30) and the entry (ts 30): two cut asks, both proven
+  const lines = [started(0), piLive(1, 1, { attempt: 1 }), piLive(2, 1, partial(10)), started(5), snap(piLive(3, 2, partial(10))), piLive(4, 2, partial(20)), started(8),
+    snap(piLive(5, 3, { attempt: 1 })), piLive(6, 3, partial(30)), turn(7, 3, 30)];
   const counted = fold(lines);
   assert.deepEqual(counted.reAsked, { proven: { turns: 1, asks: 2 }, possible: { turns: 0 } });
-  assert.equal(counted.modelTurnsCommitted, 2, 'the aborted partial is not a committed turn');
+  assert.equal(counted.modelTurnsCommitted, 1);
+  // not depending on an aborted entry: with one appended for the cut partial the numbers do not move, and it is not a committed turn
+  const withAborted = [...lines.slice(0, 7), turn(5, 3, 20, 'aborted'), ...lines.slice(7)];
+  assert.deepEqual([fold(withAborted).reAsked, fold(withAborted).modelTurnsCommitted], [counted.reAsked, 1]);
 });
 
-test('a snapshot\'s stale generation is the ask already open, or one more by an earlier generation when its start line died in flight', () => {
-  const stale = { ...piLive(3, 2, { attempt: 1 }), snapshot: true };
-  // the start line survived: the snapshot shows the same ask
-  assert.deepEqual(fold([piLive(1, 1, { attempt: 1 }), stale, turn(4, 2)]).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } }, 'marker only: a later process committed the turn, so a re-ask is possible, not proven');
-  // the start line died in flight: the snapshot is the evidence of an earlier ask, and this process asks again
-  assert.deepEqual(fold([stale, piLive(4, 2, undefined), piLive(5, 2, { attempt: 1 }), turn(6, 2)]).reAsked.proven, { turns: 1, asks: 2 });
+test('a bare marker that stays unchanged across several opens is ONE possible cut ask, and it is not proven', () => {
+  const lines = [started(0), snap(piLive(1, 2, { attempt: 1 })), started(5), snap(piLive(2, 3, { attempt: 1 })), started(9), snap(piLive(3, 4, { attempt: 1 })), turn(4, 4, 99)];
+  assert.deepEqual(fold(lines).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } });
+  // the marker, then a partial the process commits itself: the marker\'s snapshot carried no partial, so it stays one possible
+  const own = [started(0), snap(piLive(1, 2, { attempt: 1 })), piLive(2, 2, partial(10)), started(5), snap(piLive(3, 3, { attempt: 1 })), turn(4, 3, 20)];
+  assert.deepEqual(fold(own).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } });
 });
 
 test('re-asked is not measured when no ask start was ever committed, or on a pi.live version the fold does not know', () => {
-  assert.equal(fold([turn(1, 1)]).reAsked, null);
+  assert.equal(fold([turn(1, 1, 5)]).reAsked, null);
   assert.equal(fold([piLive(1, 1, { attempt: 1 }, { data: { doc: 'pi.live', value: { generation: { attempt: 1 } }, version: 2 } })]).reAsked, null);
+});
+
+test('spacedeck, 30 kills (a real recording, pi.live reduced to its asks): one position proven with 2 re-asks, 21 possible', () => {
+  const lines = readFileSync(new URL('./fixtures/spacedeck-30-kills.reasked.jsonl', import.meta.url), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.deepEqual(fold(lines).reAsked, { proven: { turns: 1, asks: 2 }, possible: { turns: 21 } });
 });
 
 test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): turn 0 asked twice, 4 turns committed, nothing repeated', () => {
   const dir = new URL('./fixtures/midstream-kill', import.meta.url).pathname;
   const counted = fold(readEvents(dir));
-  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 2 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
+  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 1 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
   assert.ok(JSON.parse(readFileSync(new URL('./fixtures/midstream-kill/manifest.json', import.meta.url), 'utf8')).kills === 1);
 });
 
