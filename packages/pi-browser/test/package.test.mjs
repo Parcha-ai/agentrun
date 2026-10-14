@@ -1,7 +1,5 @@
-// The package as a host meets it: resolved by name from its build, a core that imports nothing outside Node's
-// builtins, and the model contract registered on a real pi-durable Harness, where pi's own validator decides which
-// argument shapes reach a tool and the `browser` section renders into the system prompt.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -35,7 +33,6 @@ test("both entry points resolve by the package's name from its build", async () 
   await import("@parcha/pi-browser/durable");
 });
 
-// One call per model turn: [tool, arguments, whether pi lets it reach execute].
 const CALLS = [
   ["snapshot", {}, true],
   ["snapshot", { includeIframes: false }, true],
@@ -116,7 +113,8 @@ test("every package the built code imports at run time is declared as a dependen
   walk(SRC);
   const undeclared = [];
   for (const file of files) {
-    // A type-only import is erased from the build; the runtime ones (import, dynamic import, literal require) are what a missing package breaks.
+    // A type-only import is erased from the build; the runtime ones (import, dynamic import, literal require) are what
+    // a missing package breaks.
     const source = fs.readFileSync(file, "utf8").replace(/^\s*(?:import|export)\s+type\b[^;]*;/gm, "");
     for (const [, specifier] of source.matchAll(/(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"']+)["']/g)) {
       if (specifier.startsWith(".") || specifier.startsWith("node:")) continue;
@@ -126,4 +124,69 @@ test("every package the built code imports at run time is declared as a dependen
   }
   assert.ok(files.length > 30);
   assert.deepEqual(undeclared, []);
+});
+
+const manifestOf = () => JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8"));
+const walkFiles = (dir, ext) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  const full = path.join(dir, entry.name);
+  return entry.isDirectory() ? walkFiles(full, ext) : full.endsWith(ext) ? [full] : [];
+});
+const packageOf = (specifier) => (specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0]);
+
+test("a type the sources import is declared too, so the package builds outside this workspace", () => {
+  const manifest = manifestOf();
+  const declared = new Set(["dependencies", "peerDependencies", "devDependencies"].flatMap((field) => Object.keys(manifest[field] ?? {})));
+  const undeclared = [];
+  for (const file of walkFiles(SRC, ".ts")) {
+    for (const [, specifier] of fs.readFileSync(file, "utf8").matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)) {
+      if (specifier.startsWith(".") || specifier.startsWith("node:")) continue;
+      if (!declared.has(packageOf(specifier))) undeclared.push(`${path.relative(SRC, file)} imports ${packageOf(specifier)}`);
+    }
+  }
+  assert.deepEqual(undeclared, []);
+});
+
+test("the emitted declarations name only packages a consumer's install has: dependencies and peers, never a dev dependency", () => {
+  const manifest = manifestOf();
+  const shipped = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]);
+  const named = [];
+  for (const file of walkFiles(path.join(SRC, "..", "dist"), ".d.ts")) {
+    for (const [, specifier] of fs.readFileSync(file, "utf8").matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)) {
+      if (specifier.startsWith(".") || specifier.startsWith("node:")) continue;
+      if (!shipped.has(packageOf(specifier))) named.push(`${path.relative(SRC, file)} names ${packageOf(specifier)}`);
+    }
+  }
+  assert.deepEqual(named, []);
+});
+
+test("importing the package has no effect: sideEffects is false, and loading every entry leaves WebSocket, fetch and the proxy variables alone", () => {
+  const manifest = manifestOf();
+  assert.equal(manifest.sideEffects, false, "a bundler may drop an entry the host never calls");
+  const entries = Object.entries(manifest.exports).map(([key]) => (key === "." ? manifest.name : `${manifest.name}${key.slice(1)}`));
+  const probe = `
+    const before = { ws: globalThis.WebSocket, fetch: globalThis.fetch, noProxy: process.env.NO_PROXY, lower: process.env.no_proxy };
+    for (const entry of ${JSON.stringify(entries)}) await import(entry);
+    const after = { ws: globalThis.WebSocket, fetch: globalThis.fetch, noProxy: process.env.NO_PROXY, lower: process.env.no_proxy };
+    console.log(JSON.stringify(Object.keys(before).filter((key) => before[key] !== after[key])));
+  `;
+  const out = spawnSync(process.execPath, ["--input-type=module", "-e", probe], { cwd: path.join(SRC, ".."), encoding: "utf8", env: { ...process.env, NO_PROXY: "", no_proxy: "" } });
+  assert.equal(out.status, 0, out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), []);
+});
+
+test("pi-durable and chord are bounded from the version a leg measured to below 1.3.0, the dev pins sit inside, and the pi coding agent stays an unbounded peer as pi's package guidance says", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(SRC, "..", "package.json"), "utf8"));
+  // 1.0.4 cannot build the durable adapter: use_website reads a child's last report by scanning entries in descending order, which 1.1 added.
+  const floors = { "@earendil-works/chord": "1.1.0", "@earendil-works/pi-durable": "1.1.0" };
+  const parts = (version) => version.split(".").map(Number);
+  const compare = (a, b) => { const [x, y] = [parts(a), parts(b)]; return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
+  const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([name]) => name.startsWith("@earendil-works/"));
+  assert.deepEqual(peers.map(([name]) => name).sort(), [...Object.keys(floors), "@earendil-works/pi-coding-agent"].sort());
+  assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
+  for (const [name, floor] of Object.entries(floors)) {
+    const range = manifest.peerDependencies[name];
+    assert.equal(range, `>=${floor} <1.3.0`, `${name} starts at its measured floor and ends below 1.3.0`);
+    const pin = manifest.devDependencies?.[name];
+    if (pin) assert.ok(compare(pin, floor) >= 0 && compare(pin, "1.3.0") < 0, `${name} is developed on ${pin}, outside ${range}`);
+  }
 });

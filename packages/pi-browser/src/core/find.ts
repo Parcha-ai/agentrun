@@ -1,24 +1,15 @@
-// `find`: return the part of an accessibility tree or a page that answers the model's question, and leave the whole
-// to the caller to file. Code cuts the text into chunks along its own structure (a tree's subtrees, a page's
-// headings); the host's `rankChunks` hook gives one relevance per chunk; code keeps the best few, in document order,
-// with their element IDs verbatim, and says how many it left out. No chunk is ever rewritten, so every ID shown is
-// the ID the full snapshot hydrated.
+// Chunks are never rewritten, so every element ID shown is one the full snapshot hydrated.
 import type { Decisions } from "./decisions.js";
 
-/** Characters a chunk grows to before a tree subtree or a page section is cut further. */
 export const FIND_CHUNK_CHARS = 2_000;
-/** Chunks one ranking request carries; a larger text is chunked coarser first, then ranked in several requests. */
 export const FIND_MAX_RANKED = 200;
-/** What a find shows: at most this many chunks, within this many characters (the best chunk is always shown). */
 export const FIND_SHOWN_CHUNKS = 8;
 export const FIND_SHOWN_CHARS = 8_000;
 
 export type Chunk = {
   index: number;
   text: string;
-  /** The enclosing nodes or headings, outermost first, so a chunk can be read (and ranked) in its context. */
   path: string[];
-  /** The element IDs in the chunk, for a tree. */
   ids: string[];
 };
 
@@ -26,7 +17,6 @@ type Raw = { from: number; to: number; path: string[]; size: number };
 const PATH_KEEP = 4;
 const sameParent = (a: string[], b: string[]) => a.length === b.length && a.every((part, i) => part === b[i]);
 
-/** Adjacent chunks under one parent merge while they fit the bound, so a list of small siblings is one chunk. */
 function pack(raws: Raw[], max: number): Raw[] {
   const out: Raw[] = [];
   for (const raw of raws) {
@@ -37,8 +27,7 @@ function pack(raws: Raw[], max: number): Raw[] {
   return out;
 }
 
-/** Where to cut `text` so the head is at most `room` characters: at a line break when one is in its second half, else at
- *  `room`, never between the two halves of a surrogate pair. */
+/** At a line break in its second half when there is one, else at `room`; never inside a surrogate pair. */
 function cutAt(text: string, room: number): number {
   let at = Math.min(room, text.length);
   const newline = text.lastIndexOf("\n", at - 1);
@@ -47,20 +36,17 @@ function cutAt(text: string, room: number): number {
   return at;
 }
 
-/** `text` in consecutive pieces of at most `max` characters; joined, they are `text`. */
 function pieces(text: string, max: number): string[] {
   const out: string[] = [];
   for (let rest = text; rest;) { const at = cutAt(rest, max); out.push(rest.slice(0, at)); rest = rest.slice(at); }
   return out.length ? out : [""];
 }
 
-/** A snapshot's lines (`  [0-14] link: Go to page B`, two spaces a level) cut into subtrees of at most `max` characters;
- *  a node whose subtree is larger gives its own line to its children's path and is cut through. */
+/** Snapshot lines (`  [0-14] link: Go to page B`, two spaces a level) cut into subtrees of at most `max` characters. */
 export function chunkTree(tree: string, max = FIND_CHUNK_CHARS): Chunk[] {
   const entries: Array<{ depth: number; id: string | null; text: string }> = [];
   for (const line of tree.split("\n")) {
     const node = /^( *)\[([^\]\s]+)\]/.exec(line);
-    // A line that opens no node continues the one before it.
     if (!node && entries.length) entries[entries.length - 1].text += `\n${line}`;
     else entries.push({ depth: node ? Math.floor(node[1].length / 2) : 0, id: node?.[2] ?? null, text: line });
   }
@@ -76,20 +62,17 @@ export function chunkTree(tree: string, max = FIND_CHUNK_CHARS): Chunk[] {
     for (let j = i + 1; j < end[i]; j = end[j]) visit(j, here);
   };
   for (let i = 0; i < n; i = end[i]) visit(i, []);
-  // Only a lone leaf can still be over `max` (a subtree or a packed run is cut or merged to fit): it is split into pieces, each
-  // carrying the node's ID (in its text, or in its path), so no part of its text is out of the ranker's sight.
+  // An oversize leaf is split into pieces that each carry the node's ID, so none of its text is out of the ranker's
+  // sight.
   return pack(raws, max).flatMap(({ from, to, path }) => {
     const slice = entries.slice(from, to);
     const ids = slice.flatMap((e) => (e.id ? [e.id] : []));
-    // A piece after the first has no `[id]` in its text: the leaf's own line, shortened, joins its path so the ID stays in view. It is
-    // added to the path as it is, not trimmed in with it, so no ancestor already in view is pushed out.
     const head = slice[0].text.split("\n")[0].trim().slice(0, 80);
     return pieces(slice.map((e) => e.text).join("\n"), max).map((text, i) => ({ text, path: i && slice.length === 1 && ids.length ? [...path, head] : path, ids }));
   }).map((chunk, index) => ({ ...chunk, index }));
 }
 
-/** Markdown cut into the sections under its headings (a `#` inside a code fence is not a heading); a section over `max`
- *  characters is cut at blank lines, then lines, then characters. */
+/** Sections under the headings (a `#` inside a code fence is not one); an oversize section is cut further. */
 export function chunkPage(markdown: string, max = FIND_CHUNK_CHARS): Chunk[] {
   const sections: Array<{ path: string[]; lines: string[] }> = [{ path: [], lines: [] }];
   const stack: Array<{ level: number; title: string }> = [];
@@ -104,8 +87,7 @@ export function chunkPage(markdown: string, max = FIND_CHUNK_CHARS): Chunk[] {
       stack.push({ level: heading[1].length, title: heading[2] });
     } else sections[sections.length - 1].lines.push(line);
   }
-  // Parts keep the page's own characters: a paragraph carries the blank lines after it, and a part that starts a section
-  // carries `lead`, the line break that separated its section from the one before. Joined, the parts are the page.
+  // Parts keep the page's own characters, blank lines and section breaks included: joined, they are the page.
   const parts: Array<{ text: string; path: string[]; lead: string }> = [];
   let first = true;
   for (const { path, lines } of sections) {
@@ -119,8 +101,6 @@ export function chunkPage(markdown: string, max = FIND_CHUNK_CHARS): Chunk[] {
       for (let rest = unit; rest;) {
         const room = max - current.length;
         if (rest.length <= room) { current += rest; break; }
-        // A unit that fits a chunk on its own starts a new one; a longer one first fills what room is left, so a
-        // heading stays with the start of its body, and is cut at a line break when one is near.
         if (current && (rest.length <= max || room < max / 4)) { flush(); continue; }
         const at = cutAt(rest, room);
         current += rest.slice(0, at);
@@ -137,7 +117,6 @@ export function chunkPage(markdown: string, max = FIND_CHUNK_CHARS): Chunk[] {
 export type FindOptions = {
   kind: "tree" | "page";
   rank?: Decisions["rankChunks"];
-  /** Where the whole text is filed, for the line saying what was left out; null when nothing files it. */
   filedAt?: string | null;
   maxChars?: number;
   shownChunks?: number;
@@ -145,7 +124,6 @@ export type FindOptions = {
 };
 export type FindResult = {
   text: string;
-  /** False when the ranker could not answer and `text` is the whole source. */
   applied: boolean;
   chunks: number;
   shown: number[];
@@ -154,8 +132,7 @@ export type FindResult = {
 
 const quote = (query: string) => JSON.stringify(query.length > 120 ? `${query.slice(0, 120)}…` : query);
 
-/** The parts of `source` that answer `query`. Without a usable ranker (no hook, a null answer, a throw, a wrong count)
- *  the whole source is returned with a line saying find was not applied, so the model never reads a silent cut. */
+/** Without a usable ranker the whole source comes back with a line saying find was not applied: never a silent cut. */
 export async function findInText(source: string, query: string, options: FindOptions): Promise<FindResult> {
   const whole = (why: string): FindResult => ({ text: `find ${quote(query)} was not applied: ${why}. The whole ${options.kind === "tree" ? "snapshot" : "page"} follows.\n${source}`, applied: false, chunks: 0, shown: [], ids: [] });
   if (!options.rank) return whole("this host has no ranker");
@@ -163,11 +140,10 @@ export async function findInText(source: string, query: string, options: FindOpt
   let chunks = (options.kind === "tree" ? chunkTree : chunkPage)(source, max);
   while (chunks.length > FIND_MAX_RANKED && max < 64_000) { max *= 2; chunks = (options.kind === "tree" ? chunkTree : chunkPage)(source, max); }
   if (!chunks.some((chunk) => chunk.text.trim())) return whole("there is nothing to search");
-  // A text still over the limit after chunking coarser (many chapters, each its own chunk) is ranked in several requests.
   const inputs = chunks.map((chunk) => (chunk.path.length ? `${chunk.path.join(" > ")}\n${chunk.text}` : chunk.text));
   const batches = Array.from({ length: Math.ceil(inputs.length / FIND_MAX_RANKED) }, (_, i) => inputs.slice(i * FIND_MAX_RANKED, (i + 1) * FIND_MAX_RANKED));
   let answers: Array<number[] | null> = [];
-  try { answers = await Promise.all(batches.map((batch) => options.rank!(query, batch))); } catch { /* an unusable ranker is not a failed call */ }
+  try { answers = await Promise.all(batches.map((batch) => options.rank!(query, batch))); } catch {}
   if (answers.length !== batches.length || answers.some((answer) => !answer)) return whole("the ranker gave no answer");
   if (answers.some((answer, i) => answer!.length !== batches[i].length || answer!.some((score) => !Number.isFinite(score)))) return whole("the ranker's answer did not match the chunks");
   const scores = answers.flat() as number[];

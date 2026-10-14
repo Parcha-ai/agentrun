@@ -27,8 +27,13 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
    unknown: the resumed run is refused with `FROZEN_EFFECT_UNKNOWN`.
 2. `agent investigate`: the lead opens the first result with `run`, reads it with `browser_read`, reads `filing.png`
    from the workspace with `read` (vision serves the image), and submits `{ answer, citations }` citing the two
-   receipt paths its tools returned. Like a model, it asks a call whose result is an error once more, and goes on
-   without it after a second error. Before it asks a `run` again it takes a snapshot, as the browser asks.
+   receipt paths its tools returned. Like a model, it asks a read that errs again, three attempts in all. A page action
+   a crash cut, or one the browser will not send again (`effect_unknown`, read from its JSON answer), is never asked
+   again before the lead looks: it takes a snapshot, as the browser asks, and decides from the browser's
+   `pendingEffect` details (the page when the action was sent, and now): applied, it goes on; not applied, it runs it
+   again, three runs in all; cannot tell, it asks no more. The browser does not send those details yet, so today a cut
+   action is always `cannot tell`, and the page action is never applied twice. A page it did not open is not read: the record then cites only the
+   scan and says whether the page could not be opened or its outcome is unknown.
 3. `judge verdict`: a scripted judge says whether the receipts support the answer.
 4. `code finish`: the output.
 
@@ -130,14 +135,12 @@ Each is marked in the code with the package that owns it.
 - Until the browser's pi range admits 1.1.0, one process loads pi-durable 1.0.4 and two 1.1.0 copies (three with
   `--box`). The values cross them unchanged; their branded types do not, so `assemble.ts` casts at five places and
   `run.ts` at one.
-- The disk run's temporary directories are under `<root>/tmp`, which its confinement will not let a tool write, and
-  vision writes the file it reads there. `assemble.ts` keeps them under `work/.tmp`.
+- The disk run's temporary directories are under `<root>/tmp`, which its confinement will not let a tool write, and a
+  read that runs a program (a video through ffmpeg) writes there. `assemble.ts` keeps them under `work/.tmp` until the
+  disk package's #380 lands. This example's PNG read writes no temporary file.
 - The browser's `release` returns before its background task runs, and `waitForIdle` does not wait for background
   tasks. `assemble.ts` waits for the release tasks before it closes the run.
-- `createWorkflowExtension`'s `start` reaches the task saved under a key without comparing its workflow or input, so a
-  different job on the same directory would get the saved job's outcome. `assemble.ts` reads the saved request first
-  and refuses a moved workflow or input with the driver's own `RUN_STORE_BINDING_MISMATCH`, naming the binding and
-  input digests on each side.
 - The disk run's open resumes pi's pending tasks before the host can reconcile the browser, which asks to run first.
   A resumed workflow task would reach the browser before its sessions are reconciled. `assemble.ts` holds the task's
-  steps until the reconcile has run.
+  steps until the reconcile has run, and until `start` has accepted this job's request: `start` refuses a request that is
+  not the run's own with `RUN_STORE_BINDING_MISMATCH`, so a refused job never lets the saved task run.

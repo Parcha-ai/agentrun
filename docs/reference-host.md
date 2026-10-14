@@ -46,15 +46,25 @@ replaces an earlier tool of the same name, and `wrapTool` decorates whichever to
 5. The workflow node runner's extension, which carries `submit`. It is selected by a node's own conversation only.
 
 Then, in this order: open the run (a claim on a plain directory, and the Harness); reconcile the browser's sessions
-(the browser asks for this "after install and before resume"; on a disk run pi resumes inside the open, so it runs
-after resume, which is harmless here because the node runner holds a resumed request until it reaches the node);
-open the recovery driver on a store in the run's own documents and wrap the adapters with it; run the workflow and
-close the recovery driver as the run returns, before anything is delivered; deliver the record; release the browser
-sessions each node opened and wait for the release tasks; close the browser (`browser.close()`, which is not the
-driver's close); release the run.
+(the browser asks for this "after install and before resume"; on a disk run pi resumes inside the open, so a workflow
+task it resumes waits until the reconcile has run); start the workflow's task, which opens the recovery driver on
+the run's own documents, or reach the task the open resumed, and wait for its outcome; deliver the record; release
+the browser sessions each node opened and wait for the release tasks; close the browser (`browser.close()`, which is
+not the driver's close); release the run.
 
 Install order matters only for tools of the same name and for wraps. Vision's guard sees a browser screenshot's image
 whichever of the two is installed first.
+
+## What a kill does
+
+Measured by killing the reference job at many points and resuming it in a new process on the same directory:
+
+- A call that completed is answered from the run's journal and is never sent again.
+- A model request that was in flight is asked again by the next process: once in each process, as often as kills
+  cut it.
+- A tool call cut between its dispatch and the moment the host kept its answer cannot be settled. The resumed run
+  refuses it with `FROZEN_EFFECT_UNKNOWN` rather than send it twice. Once the host has kept the answer (the example's
+  tool door keeps it under the call's identity), the next process settles the call from it and goes on.
 
 ## What the example does not do yet
 

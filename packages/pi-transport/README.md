@@ -134,6 +134,43 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ### Where tools run is a line of config
 
@@ -196,6 +233,35 @@ a provider may store and return, and never in a command line.
 ```sh
 node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
 ```
+
+## Ownership: one writer per session
+
+`@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a
+timer: the epoch changes only when a host takes, so a slow home is never taken over because a clock ran out.
+
+```ts
+import { dirStore, leaseIn } from "@parcha/pi-transport/home";
+
+const lease = leaseIn(dirStore("/shared/leases"));
+const taken = await lease.take("session-1", { environment: "gpu", provider: "modal", box: "sb-1", host: "h1" }, 0, undefined, BACKGROUND_CONTEXT);
+```
+
+- `take(session, holder, expected, details, context)` succeeds only when the session's epoch is `expected` (0 for a
+  session nobody took); the new epoch is `expected + 1`. Anything else, including another host that took first, is
+  `lost`. `details.move` makes a retried take of the same move return the record it made instead of losing to itself;
+  `details.seal` records the sealed store. `current(session)` reads the newest record.
+- `leaseIn(store)` works over any `ConditionalStore`: `get`, and `put` with `{ absent: true }` or `{ version }`, which
+  must lose with `conflict` when the key is not as the caller saw it. An object store's conditional write, a database
+  row or a key with a compare-and-set fits.
+- `dirStore(directory)` is that store in a directory, for one machine or a directory several hosts share. A key is a
+  directory of numbered files; a write is made whole in a temp file, synced, and linked to the next number with
+  `link(2)`, so two writers race for one name and exactly one wins, and a name never holds half a value. The file
+  system must support hard links. Old versions are kept. A writer that dies between the temp file and the link leaves
+  a `.tmp-` file that nothing reads.
+- `registerStoreConformance` (`./testing`) runs the cases every `ConditionalStore` must pass: absent and versioned
+  writes, 50 takers of one version with one winner in each of 20 epochs, no read of half a value while takers write,
+  every byte value, any text as a key, and, when the store gives a writer that dies, a kill between writing and
+  making the value current.
 
 ## Writing a provider
 

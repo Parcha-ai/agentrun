@@ -1,31 +1,29 @@
-// The `web` extension through a real pi-durable Harness on SQLite: every case is a model calling the shipped tools
-// against a local stand-in for the provider's Fetch and Search APIs, with a host sink that files to disk.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { createWebExtension } from "../dist/durable.js";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { drive, fileSink, open, startFake, transcript } from "./web-rig.mjs";
+import { scratchSync } from "./fixtures/scratch.mjs";
 
 const sha = (text) => createHash("sha256").update(text, "utf8").digest("hex");
-const tmp = () => fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "webt-"));
+const tmp = (t) => scratchSync(t, "webt-");
+const db = (t) => path.join(scratchSync(t, "web-"), "run.sqlite");
 const content = { wall: "content", injection: null, confidence: 0.9 };
 const parse = (result) => JSON.parse(result.text);
 const header = (file) => fs.readFileSync(file, "utf8").split("\n---\n")[0];
 const bodyOf = (file) => fs.readFileSync(file, "utf8").split("\n---\n").slice(1).join("\n---\n");
 
-/** A fake provider plus an extension over it; `overrides` replace any option. */
 async function rig(t, sites, overrides = {}) {
-  const dir = tmp();
+  const dir = tmp(t);
   const fake = await startFake(sites);
   const { sink, filed } = fileSink(dir, overrides.sinkExtra);
   const { extension, tools } = createWebExtension({ providers: { name: "browserbase", fetch: fake.fetch, search: fake.search }, evidence: sink, ...overrides.options });
   t.after(() => fake.close());
-  return { fake, filed, dir, extension, tools, run: (rounds) => drive(extension, rounds) };
+  return { fake, filed, dir, extension, tools, run: (rounds) => drive(extension, rounds, db(t)) };
 }
 
 test("web_fetch files the page with the SHA-256 of its bytes and answers with url, via, evidence and the body", async (t) => {
@@ -151,6 +149,34 @@ test("every source failing files one failed receipt and names what was tried", a
   assert.equal(r.filed[0].record.status, "failed");
 });
 
+test("a backup that says the calling conversation cannot reach it is neither tried nor named; one that can is tried", async (t) => {
+  const calls = [];
+  const asked = [];
+  const backups = [
+    { name: "unreachable", available: (scope) => { asked.push(scope); return false; }, fetch: async () => { calls.push("unreachable"); return "# never"; } },
+    { name: "reachable", available: () => true, fetch: async () => { calls.push("reachable"); throw new Error("nope"); } },
+  ];
+  const r = await rig(t, { "/403": { status: 403 } }, { options: { backups } });
+  const { results } = await r.run([[["web_fetch", { url: "https://s.example/403" }]]]);
+  assert.deepEqual(calls, ["reachable"], "only the reachable backup is called");
+  assert.equal(asked.length, 1, "availability is asked once per call");
+  assert.equal(typeof asked[0].label, "string", "with the calling conversation's scope");
+  assert.match(parse(results[0]).message, /Also tried: backup:reachable\./);
+  assert.doesNotMatch(parse(results[0]).message, /unreachable/);
+});
+
+test("a backup whose availability check throws is unavailable: the provider's page still answers, and a later reachable backup is still tried", async (t) => {
+  const calls = [];
+  const broken = { name: "broken", available: () => { throw new Error("host check failed"); }, fetch: async () => { calls.push("broken"); return "# never"; } };
+  const reachable = { name: "reachable", available: () => true, fetch: async () => { calls.push("reachable"); throw new Error("nope"); } };
+  const r = await rig(t, { "/ok": {}, "/403": { status: 403 } }, { options: { backups: [broken, reachable] } });
+  const { results } = await r.run([[["web_fetch", { url: "https://s.example/ok" }], ["web_fetch", { url: "https://s.example/403" }]]]);
+  assert.match(results[0].text, /^url: https:\/\/s\.example\/ok\nvia: browserbase_fetch/, "a working provider is not blocked by a host check that throws");
+  assert.deepEqual(calls, ["reachable"], "the broken backup is never called, the reachable one is");
+  assert.match(parse(results[1]).message, /Also tried: backup:reachable\./);
+  assert.doesNotMatch(parse(results[1]).message, /broken/);
+});
+
 test("render-fetch is off unless enabled; enabled, it answers a bot wall, a loading page and an unconvertible page, and its cost is added", async (t) => {
   const reads = [];
   const render = (enabled) => ({ enabled, read: async (url) => { reads.push(url); return { finalUrl: url, statusCode: 200, contentType: "text/html", content: "# Rendered", extractor: "readability-md", usd: 0.0001 }; } });
@@ -197,7 +223,7 @@ test("fetch and search calls of one round run at once", async (t) => {
 });
 
 test("only the tools the host can serve are registered", async (t) => {
-  const dir = tmp();
+  const dir = tmp(t);
   const fake = await startFake({});
   t.after(() => fake.close());
   const { sink } = fileSink(dir);
@@ -211,21 +237,18 @@ test("only the tools the host can serve are registered", async (t) => {
 test("the host's web section renders only for a conversation offered a web tool, and there is none without its text", async (t) => {
   const fake = await startFake({});
   t.after(() => fake.close());
-  const { sink } = fileSink(tmp());
+  const { sink } = fileSink(tmp(t));
   const offered = (...names) => ({ agent: { tools: names.map((name) => ({ name })) } });
   const { extension } = createWebExtension({ providers: { fetch: fake.fetch, search: fake.search }, evidence: sink, section: { addendum: "# THE WEB" } });
   const [section] = extension.sections;
   assert.equal(section.key, "web", "its own key, never the browser extension's `browser`");
-  // Static per conversation: the same text every render, read from nothing live (the input carries no document reader).
   assert.equal(await section.render(offered("web_search"), ctx), "# THE WEB");
   assert.equal(await section.render(offered("web_search"), ctx), "# THE WEB");
   assert.equal(await section.render(offered("snapshot", "run"), ctx), undefined, "a conversation without a web tool gets no web section");
   assert.deepEqual(createWebExtension({ providers: { fetch: fake.fetch }, evidence: sink }).extension.sections ?? [], [], "no host text, no section");
-  // A host whose web_fetch comes only from a backup or an enabled render still gets its text with that tool.
   const backupOnly = createWebExtension({ providers: {}, evidence: sink, backups: [{ name: "scraper", fetch: async () => "# x" }], section: { addendum: "# THE WEB" } });
   const renderOnly = createWebExtension({ providers: {}, evidence: sink, render: { enabled: true, read: async () => { throw new Error("never"); } }, section: { addendum: "# THE WEB" } });
   for (const host of [backupOnly, renderOnly]) assert.equal(await host.extension.sections[0].render(offered(...host.tools.map((tool) => tool.name)), ctx), "# THE WEB");
-  // Nothing offered, nothing rendered: a host with no source registers no web tool, so its section never renders.
   const none = createWebExtension({ providers: {}, evidence: sink, section: { addendum: "# THE WEB" } });
   assert.deepEqual(none.tools, []);
   assert.equal(await none.extension.sections[0].render(offered("web_fetch"), ctx), undefined, "a name the host did not register is not its tool");
@@ -239,6 +262,59 @@ test("nothing registered as a secret, and no credential-shaped query value, reac
   const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
   for (const secret of [token, "SIGNSENTINEL99", "abcdefghijklmnop"]) assert.ok(!everything.includes(secret), `${secret} leaked`);
   assert.equal(r.filed[0].record.facts.sha256, sha(r.filed[0].record.body), "the hash covers the scrubbed bytes that were filed");
+});
+
+test("a provider key in the environment reaches no result or receipt though the host registered none", async (t) => {
+  const keys = { BROWSERBASE_API_KEY: ["bb-env-key-0123456789abcdef"].join(""), KERNEL_API_KEY: ["kernel-env-key-0123456789abcdef"].join("") };
+  const before = Object.fromEntries(Object.keys(keys).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, keys);
+  t.after(() => { for (const [name, value] of Object.entries(before)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  const r = await rig(t, { "/page": { body: `browserbase ${keys.BROWSERBASE_API_KEY} kernel ${keys.KERNEL_API_KEY}` } });
+  const { results } = await r.run([[["web_fetch", { url: "https://s.example/page" }]]]);
+  const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  for (const [name, value] of Object.entries(keys)) assert.equal(everything.includes(value), false, `${name} leaked`);
+});
+
+test("a credential in the fragment, the userinfo or a query value of any name, in the URL a fetch ended on, reaches no result, receipt, fact, detail or judge", async (t) => {
+  const landed = {
+    "/a": "https://s.example/cb#access_token=SEKRET123456",
+    "/b": ["https:", "//user:SEKRET123456@s.example/p"].join(""),
+    "/c": "https://s.example/p?sid=SEKRET123456&page=2",
+  };
+  const judged = [];
+  const r = await rig(t, Object.fromEntries(Object.entries(landed).map(([path, finalUrl]) => [path, { body: "# Page", finalUrl }])), { options: { decisions: { classifyPage: async (page) => { judged.push(page.url); return content; } } } });
+  const { results } = await r.run([Object.keys(landed).map((path) => ["web_fetch", { url: `https://s.example${path}` }])]);
+  const everything = JSON.stringify(results) + JSON.stringify(judged) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  assert.ok(!everything.includes("SEKRET123456"), "a credential in a page URL reached a result, a receipt, a fact, a detail or the judge");
+  const expected = ["https://s.example/cb", "https://s.example/p", "https://s.example/p?sid=[redacted]&page=[redacted]"];
+  assert.deepEqual(results.map((x) => x.text.split("\n")[0]), expected.map((u) => `url: ${u}`));
+  assert.deepEqual(results.map((x) => x.details.url), expected);
+  assert.deepEqual(r.filed.map((f) => f.record.facts.final_url), expected);
+  assert.deepEqual([...judged].sort(), [...expected].sort(), "the host's page judge is given the scrubbed URL too (the three fetches run at once, so in any order)");
+});
+
+test("a fetch's final_url keeps the query the model sent, so a citation still opens; what a redirect added or changed is scrubbed", async (t) => {
+  const cases = [
+    ["https://s.example/doc?id=123", "https://s.example/doc?id=123", "https://s.example/doc?id=123"],
+    ["https://s.example/r1?id=123", "https://s.example/r1?id=123&X-Amz-Signature=SEKRET123456", "https://s.example/r1?id=123&X-Amz-Signature=[redacted]"],
+    ["https://s.example/r2?id=123", "https://s.example/r2?id=999&sid=SEKRET123456", "https://s.example/r2?id=[redacted]&sid=[redacted]"],
+    ["https://s.example/r3", "https://s.example/cb#access_token=SEKRET123456", "https://s.example/cb"],
+    ["https://s.example/r4?id=1#part-2", "https://s.example/r4?id=1#part-2", "https://s.example/r4?id=1#part-2"],
+    ["https://s.example/r5?id=1#part-2", "https://s.example/r5?id=1#access_token=SEKRET123456", "https://s.example/r5?id=1"],
+    // %E9 is Latin-1, deliberately not UTF-8.
+    ["https://s.example/r7?q=caf%E9&n=1", "https://s.example/r7?q=caf%E9&n=1", "https://s.example/r7?q=caf%E9&n=1"],
+  ];
+  const judged = [];
+  const r = await rig(t, Object.fromEntries(cases.map(([asked, finalUrl]) => [new URL(asked).pathname, { body: "# Page", finalUrl }])), { options: { decisions: { classifyPage: async (page) => { judged.push(page.url); return content; } } } });
+  const { results } = await r.run([cases.map(([asked]) => ["web_fetch", { url: asked }])]);
+  const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  assert.ok(!everything.includes("SEKRET123456"), "a credential a redirect added reached a result, a receipt, a fact or a detail");
+  const shown = cases.map(([, , show]) => show);
+  assert.deepEqual(results.map((x) => x.text.split("\n")[0]), shown.map((u) => `url: ${u}`));
+  assert.deepEqual(results.map((x) => x.details.url), shown);
+  assert.deepEqual(r.filed.map((f) => f.record.facts.final_url), shown);
+  assert.ok(judged.every((u) => !u.includes("#") && [...new URL(u).searchParams.values()].every((v) => v === "[redacted]")), `the judge was given a query value or a fragment: ${JSON.stringify(judged)}`);
+  assert.equal(judged.length, cases.length);
 });
 
 test("a credential in a URL, the one asked for, the one the page ended on or a search hit's, reaches no result, receipt, header or detail", async (t) => {
@@ -279,7 +355,7 @@ test("identical fetches that need different proxy settings are different provide
 });
 
 test("web_fetch is offered when only backups or a render can fetch, and a backup alone answers", async (t) => {
-  const dir = tmp();
+  const dir = tmp(t);
   const { sink, filed } = fileSink(dir);
   const scopes = [];
   const backupOnly = createWebExtension({ providers: {}, evidence: sink, scope: () => ({ label: "Gather", proxies: false }),
@@ -287,11 +363,11 @@ test("web_fetch is offered when only backups or a render can fetch, and a backup
   const renderOnly = createWebExtension({ providers: {}, evidence: sink, render: { enabled: true, read: async () => ({ finalUrl: null, statusCode: 200, contentType: null, content: "# Rendered" }) } });
   const renderOff = createWebExtension({ providers: {}, evidence: sink, render: { enabled: false, read: async () => { throw new Error("never"); } } });
   assert.deepEqual([backupOnly, renderOnly, renderOff].map((x) => x.tools.map((tool) => tool.name)), [["web_fetch"], ["web_fetch"], []]);
-  const { results } = await drive(backupOnly.extension, [[["web_fetch", { url: "https://s.example/x" }]]]);
+  const { results } = await drive(backupOnly.extension, [[["web_fetch", { url: "https://s.example/x" }]]], db(t));
   assert.match(results[0].text, /^url: https:\/\/s\.example\/x\nvia: backup:scraper\n.*---\n# From the backup/s);
   assert.deepEqual(scopes, [{ label: "Gather", proxies: false }], "the backup is told the calling conversation's scope");
   assert.equal(filed.length, 1);
-  const rendered = await drive(renderOnly.extension, [[["web_fetch", { url: "https://s.example/y" }]]]);
+  const rendered = await drive(renderOnly.extension, [[["web_fetch", { url: "https://s.example/y" }]]], db(t));
   assert.match(rendered.results[0].text, /^url: https:\/\/s\.example\/y\nvia: render\n.*---\n# Rendered/s, "with no provider ahead of it, the render is the primary source");
   assert.equal(filed.length, 2);
 });
@@ -309,7 +385,7 @@ test("a sink's inline hook shapes what the model reads, and the default is a hea
 });
 
 test("a web_fetch cut by SIGKILL reruns after the crash, files once and is priced once", async (t) => {
-  const dir = tmp();
+  const dir = tmp(t);
   const db = path.join(dir, "run.sqlite");
   const out = path.join(dir, "evidence");
   const fake = await startFake({ "/hang": [{ hold: true }, { body: "# After the crash" }] });
@@ -337,7 +413,7 @@ test("a web_fetch cut by SIGKILL reruns after the crash, files once and is price
 
 test("abort() reaches a fetch held at the provider: the request is dropped, abort returns, and the call ends as an error", async (t) => {
   const r = await rig(t, { "/hang": { hold: true } });
-  const { harness, root } = await open(r.extension, [[["web_fetch", { url: "https://s.example/hang" }]]]);
+  const { harness, root } = await open(r.extension, [[["web_fetch", { url: "https://s.example/hang" }]]], db(t));
   t.after(() => harness.close(ctx));
   const submission = await root.submit({ type: "input", content: "go", requestId: "go-1" }, ctx);
   for (let waited = 0; r.fake.ledger.fetch.length === 0; waited += 20) { assert.ok(waited < 10_000, "the fetch never reached the provider"); await new Promise((res) => setTimeout(res, 20)); }
@@ -351,7 +427,7 @@ test("abort() reaches a fetch held at the provider: the request is dropped, abor
   assert.equal(only?.isError, true, "the call ends as an error result, never a hang");
 });
 
-// A PDF the provider will not convert to markdown: its raw answer is the file, base64-encoded, as Browserbase sends it.
+// A PDF the provider will not convert: its raw answer is the file, base64-encoded, as Browserbase sends it.
 const PDF_BYTES = Buffer.from("%PDF-1.7\nfixture bytes for a filed order\n%%EOF\n", "latin1");
 const pdfSite = { byFormat: { markdown: { api: 400 }, raw: { contentType: "application/pdf", body: PDF_BYTES.toString("base64") } } };
 const formats = (fake) => fake.ledger.fetch.map((call) => call.format);
