@@ -117,7 +117,11 @@ export const workflowMapPanel: Panel<WmState> = {
         const seen: Record<string, WmBranch> = {};
         for (const path of done) {
           const where = branchOf(path);
-          if (where && !next.branches[where.id] && !seen[where.id]) seen[where.id] = { ...wmNew(where.id, where.index), seen: true };
+          if (!where || seen[where.id]) continue;
+          // A branch the checkpoint shows progress for has started, including one a restore rebuilt only from the kill history (its cut count stays).
+          const held = next.branches[where.id];
+          if (!held) seen[where.id] = { ...wmNew(where.id, where.index), seen: true };
+          else if (!held.seen) seen[where.id] = { ...held, seen: true };
         }
         next = { ...next, done, branches: { ...next.branches, ...seen } };
       }

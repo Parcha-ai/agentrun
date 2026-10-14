@@ -276,6 +276,11 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   assert.equal(withCut.branches[`${ROOT}/2`]?.cut, 1, 'the cut count survives the restore');
   const tree = workflowMapPanel.view(withCut, { t: 0 });
   assert.equal(find(tree, cls('cut')).length, 1, 'and so does the grid outline');
+  // A branch that finished a step, checkpointed and was cut in its first call: the restored checkpoint shows it started, with its cut count.
+  const progressed = reduceAll([process(1), task, driverAt(3, [step(2, 0)], 1), durableLine('agentrun.effects', 'workflow', 1, 4, { doc: 'agentrun.effects', key: `a\u0000step:${step(2, 1)}#call:0`, value: { name: 'advisories', argsHash: 'y', status: 'unknown', result: null, intent: { tool: 'advisories', argsHash: 'y' } }, version: 1 }, { path: step(2, 1) }),
+    kill(1), process(2), driverAt(3, [step(2, 0)], 1, true)]);
+  const branch = progressed.branches[`${ROOT}/2`]!;
+  assert.deepEqual([branch.seen, branch.cut, wmGlyphOf(progressed, branch)], [true, 1, 'working']);
 });
 
 test('an itemsPath is a dotted state path: a nested input still lays out its planned cells', () => {
