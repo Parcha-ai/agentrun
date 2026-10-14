@@ -52,6 +52,19 @@ describe("the sweep", () => {
     { pid: 400, comm: "other", ppid: 1, pgrp: 400 }, // not the instance's
   ];
 
+  it("never signals group 1: a direct child in it is killed alone (kill(-1) would reach every process the user may signal)", () => {
+    const dir = scratchRoot("sweep-group-1");
+    try {
+      // In a container whose init's group is in the instance's session, a child can join group 1.
+      const { proc, sys } = fakeProc(dir.root, [{ pid: 100, comm: "node", ppid: 1, pgrp: 100 }, { pid: 600, comm: "joined", ppid: 100, pgrp: 1 }]);
+      const sent: number[] = [];
+      assert.equal(sweep(100, { proc, sys, kill: (pid) => void sent.push(pid) }), 1);
+      assert.deepEqual(sent, [600]);
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("kills each direct child's process group, a child in the instance's group alone, never the instance or its group", () => {
     const dir = scratchRoot("sweep");
     try {

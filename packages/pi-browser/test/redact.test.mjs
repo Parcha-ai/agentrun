@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRedactor, redactDeep, scrubPageUrl } from "../dist/index.js";
+import { fetchableUrl } from "../dist/core/uri.js";
 
 const R = "[redacted]";
 
@@ -9,6 +10,20 @@ test("a registered value is scrubbed everywhere, in its raw and URL-encoded form
   const redact = createRedactor(() => [secret]);
   const text = `a ${secret} b ${secret} c https://h.test/x?q=${encodeURIComponent(secret)}`;
   assert.equal(redact(text), `a ${R} b ${R} c https://h.test/x?q=${R}`);
+});
+
+test("a value is scrubbed in every spelling web_fetch sends it in: wherever the URL's first '#' falls, and whatever follows a trailing '%'", () => {
+  const secrets = [["private#token#123", "token"], ["s>ec ret#mid#tail%zz", "tail"], ["private#token#123%", "token"], ["sixchars%4", "sixchars"]];
+  // What follows a value can finish an escape it ends with: `%` before `41`, or `%4` before `1`, stays raw.
+  const urls = (s) => [`https://s.example/?q=${s}`, `https://s.example/?q=1#frag=${s}`, `https://s.example/${s}/page`, `https://s.example/?a=${s}&b=${s}`,
+    `https://s.example/?q=${s}41`, `https://s.example/?q=${s}1&n=2`, `https://s.example/?q=1#f=${s}41`, `https://s.example/?q=${s}zz`];
+  for (const [secret, marker] of secrets) {
+    const redact = createRedactor(() => [secret]);
+    for (const url of urls(secret)) {
+      const sent = fetchableUrl(url);
+      assert.equal(redact(sent).includes(marker), false, `${sent} -> ${redact(sent)}`);
+    }
+  }
 });
 
 test("the values are read at every call, so a value registered after the redactor was built is covered", () => {
