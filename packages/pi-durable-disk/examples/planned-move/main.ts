@@ -57,6 +57,9 @@ const { values } = parseArgs({ options: { package: { type: "string" }, snapshot:
 const env = process.env;
 const missing = ["ARCHIL_API_KEY", "PDA_LIVE_DISK", "DAYTONA_API_KEY"].filter((name) => !env[name]);
 if (missing.length) fail(`set ${missing.join(", ")} (see the README: a scratch Archil disk and a Daytona key)`);
+// Host A runs as you: both hosts' run user takes your uid, and localHost starts the unit and the archil wrapper through sudo.
+if (process.getuid!() === 0) fail("run it as an ordinary user with passwordless sudo, not as root (see the README)");
+if (spawnSync("sudo", ["-n", "true"]).status !== 0) fail("this user needs passwordless sudo: localHost starts a systemd unit and the archil wrapper through it (see the README)");
 const region = env.PDA_LIVE_REGION || "aws-us-east-1";
 const uid = process.getuid!();
 const gid = process.getgid!();
@@ -178,7 +181,9 @@ try {
   // Everything this run made: the box (and any other box of this run's fleet), the unit, the token users, the run's tree.
   for (const { driver, result } of started.reverse()) {
     await (driver === "box" ? box : hostA).stop(result.handle as HostHandle).catch((e: unknown) => problems.push(`stop ${driver}: ${(e as Error).message}`));
-    await removeMountToken(control, result.token.identifier).catch(() => {});
+    // A token user left behind outlives everything else here: report it, after one retry.
+    const removal = () => removeMountToken(control, result.token.identifier);
+    await removal().catch(() => sleep(2_000).then(removal)).catch((e: unknown) => problems.push(`token user ${result.token.identifier}: ${(e as Error).message}`));
   }
   // The driver's stop deletes the box; a delete while Daytona is still changing its state is refused (409), so this
   // sweeps until no box of this run's fleet is listed.

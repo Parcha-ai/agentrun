@@ -3,7 +3,6 @@
 // and the mount root. Node and the archil client are pinned and checked by sha256. The run user has the same uid as on
 // host A: both incarnations write the same store and workspace, and the disk enforces their owners.
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
 import type { DaytonaClient, SandboxInfo } from "@parcha/pi-durable-disk";
 
 const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
@@ -40,6 +39,9 @@ export interface BoxSetup {
 
 const DONE = "pda-script-done";
 
+/** One shell word, whatever it holds. */
+const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+
 /**
  * A shell script run by the box's toolbox user (passwordless sudo in a default image). A non-zero exit throws, and so does
  * an answer without the script's last line: a toolbox can answer exit 0 with no output without having run anything.
@@ -68,8 +70,9 @@ export function prepareBox(setup: BoxSetup) {
     await toolboxReady(client, box);
     await sh(client, box, "mkdir -p /tmp/pda-upload && chmod 700 /tmp/pda-upload", 60);
     await client.upload(box, "/tmp/pda-upload/app.ts", readFileSync(setup.appFile));
-    if (local) await client.upload(box, `/tmp/pda-upload/${basename(setup.pkg)}`, readFileSync(setup.pkg));
-    const pkg = local ? `pda@file:/tmp/pda-upload/${basename(setup.pkg)}` : `pda@npm:${setup.pkg}`;
+    // A tarball goes up under a fixed name, so nothing of its local path reaches the shell; an npm spec is quoted.
+    if (local) await client.upload(box, "/tmp/pda-upload/package.tgz", readFileSync(setup.pkg));
+    const pkg = quote(local ? "pda@file:/tmp/pda-upload/package.tgz" : `pda@npm:${setup.pkg}`);
     const { uid, gid, mountRoot } = setup;
     await sh(client, box, String.raw`
 cd /tmp
@@ -88,7 +91,7 @@ getent group ${gid} >/dev/null || sudo -n groupadd --gid ${gid} pda
 getent passwd ${uid} >/dev/null || sudo -n useradd --uid ${uid} --gid ${gid} --create-home --shell /bin/bash pda
 sudo -n install -d -m 0755 ${BOX.appDir}
 echo '{"private":true,"type":"module"}' | sudo -n tee ${BOX.appDir}/package.json >/dev/null
-sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm install --prefix ${BOX.appDir} --no-audit --no-fund --loglevel=error ${pkg} ${setup.peers.join(" ")} >/dev/null
+sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm install --prefix ${BOX.appDir} --no-audit --no-fund --loglevel=error ${pkg} ${setup.peers.map(quote).join(" ")} >/dev/null
 sudo -n install -m 0644 /tmp/pda-upload/app.ts ${BOX.app}
 sudo -n chown -R root:root ${BOX.appDir}
 sudo -n chmod -R a+rX,go-w ${BOX.appDir}

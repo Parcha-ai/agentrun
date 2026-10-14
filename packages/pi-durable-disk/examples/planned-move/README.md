@@ -15,8 +15,12 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
   disk.
 - **A Daytona key** in `DAYTONA_API_KEY` (`DAYTONA_API_URL` and `DAYTONA_TARGET`, default `us`, are optional), for an
   organisation on Tier 3 or 4. The archil client needs full egress to Archil's mount servers; a domain allowlist can't mount.
-- **This machine set up as a host:** Linux, systemd, the archil client, and passwordless `sudo` for the archil wrapper,
-  as in [Setting up a host for production](../../README.md#setting-up-a-host-for-production).
+- **This machine, run as an ordinary user with passwordless `sudo`:** Linux, systemd and the archil client. `localHost`
+  starts the instance as a systemd unit through `sudo`, and the instance mounts through the package's own
+  `bin/archil-scoped` under `sudo`. The example refuses to start as root or without passwordless `sudo`. A host locked
+  down as in [Setting up a host for production](../../README.md#setting-up-a-host-for-production) (a root supervisor, a
+  dedicated run user, only the installed wrapper in sudoers) runs production runs, not this example, which runs as you
+  so that both hosts share your uid.
 - **The same run user uid on both hosts.** Both incarnations write the same store and workspace, and the disk enforces
   their owners: a box whose run user has another uid can't write what host A wrote. Host A's instance runs as you, so the
   box's `prepare` (`box.ts`) runs the instance as the account with your uid, creating one when the image has none, and
