@@ -10,12 +10,12 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { codeOf, finishRecording, localHost, openRecorder, packageCommitRecorder, placeAt, run, type Job } from '../reference/index.ts';
-import { startedAt } from '../reference/record.ts';
-import { appendFileSync, mkdirSync as mkdir } from 'node:fs';
+import { openSupervisor } from '../reference/record.ts';
 import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
 import { badgeImageTool, visionOptions } from './badges.ts';
@@ -68,7 +68,7 @@ async function child() {
     tools = liveTools;
   } else {
     const fixture = loadFixture(process.env.FIXTURE);
-    const fakes = scriptedFakes(fixture, place.root);
+    const fakes = scriptedFakes(fixture, place.root, undefined, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
     local = localHost(place, fakes, { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
     tools = fakes.tools;
   }
@@ -134,28 +134,37 @@ function startChild(env: Record<string, string>) {
   return { proc, done };
 }
 
-/** The supervisor's host lines: a spool file of its own, each line tagged with the process it is about and no `seq`. */
-function supervisorLines(dir: string) {
-  const started = Date.parse(startedAt(dir));
-  const spool = join(dir, '.spool');
-  mkdir(spool, { recursive: true });
-  const file = join(spool, `live-supervisor-${process.pid}.jsonl`);
-  return {
-    host: (kind: string, gen: number, data: unknown) => appendFileSync(file, `${JSON.stringify({ channel: 'live', source: 'host', kind, gen, t: Math.max(0, Date.now() - started), data })}\n`),
-    blob: (bytes: Uint8Array | string, extension: string) => {
-      const buffer = Buffer.from(bytes);
-      const hash = createHash('sha256').update(buffer).digest('hex');
-      mkdir(join(dir, 'blobs'), { recursive: true });
-      writeFileSync(join(dir, 'blobs', `${hash}.${extension}`), buffer);
-      return hash;
-    },
-  };
+/** Keeps a file whole in the recording's `blobs/` under its SHA-256 and returns the hash. */
+function keepBlob(dir: string, bytes: Buffer, extension: string): string {
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  mkdirSync(join(dir, 'blobs'), { recursive: true });
+  writeFileSync(join(dir, 'blobs', `${hash}.${extension}`), bytes);
+  return hash;
 }
 
-export type AuditOptions = { live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
+export type AuditOptions = { pace?: number; quiet?: boolean; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
 
-export async function audit(options: AuditOptions) {
-  const dir = resolve(options.dir ?? join(process.env.TMPDIR ?? '/tmp', `dependency-audit-${process.pid}`));
+/** The labels of the workflow's `call` nodes: while one is in flight a kill can land between its admission and its answer, which stops the
+ *  run on an unknown effect until a host settles it through reconcile. */
+const CALLS = new Set(['registry', 'advisories', 'install in a box']);
+
+/** Whether a call node is in flight in this run, read from the workflow events the run process appends to `events.jsonl`. */
+function callInFlight(dir: string): boolean {
+  let open = 0;
+  try {
+    for (const line of readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n')) {
+      if (!line) continue;
+      let row: { source?: string; event?: { type?: string; label?: string } };
+      try { row = JSON.parse(line); } catch { continue; }
+      if (row.source !== 'workflow' || !row.event?.label || !CALLS.has(row.event.label)) continue;
+      if (row.event.type === 'node.start') open += 1; else if (row.event.type === 'node.end') open -= 1;
+    }
+  } catch { /* no events yet */ }
+  return open > 0;
+}
+
+/** One attempt: the run, killed on the storm's schedule, until a process ends it. `quiet` holds a kill while a call is in flight. */
+async function attempt(options: AuditOptions, dir: string, seed: number) {
   mkdirSync(dir, { recursive: true });
   // The input is fixed once, here, so every process of the run reads the same dependencies.
   const inputFile = join(dir, 'input.json');
@@ -163,19 +172,29 @@ export async function audit(options: AuditOptions) {
     const input = options.live ? await inputFrom(options.package ?? (() => { throw new Error('--live needs --package <package.json | owner/repo[@commit]>'); })(), options.limit) : jobOf(loadFixture(options.fixture), options.limit).input;
     writeFileSync(inputFile, JSON.stringify(input));
   }
-  // The supervisor's own lines (a kill, the result) are about a process but are not that process's lines, so they carry no sequence
-  // number; the recorder writes one on every line, so the supervisor appends its host lines to a spool of its own.
-  const supervisor = options.record ? supervisorLines(options.record) : undefined;
-  const next = random(options.seed ?? 1);
+  // The supervisor writes the host lines (a process started, a kill, the result) in a spool of its own, outside every process.
+  const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
+  const next = random(seed);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
-  const env = { DIR: dir, ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
+  const env = { DIR: dir, ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
     processes += 1;
-    // A storm gap is the interval, give or take a third; the last allowed kill is spent, then the run is left to finish.
-    const timer = options.stormMs && kills < maxKills ? setTimeout(() => { if (proc.exitCode === null) { kills += 1; supervisor?.host('kill', processes, { label: `storm ${kills}`, crossing: null, pid: proc.pid }); proc.kill('SIGKILL'); } }, Math.round(options.stormMs * (0.67 + next() * 0.66))) : undefined;
+    supervisor?.host('process.started', { gen: processes, pid: proc.pid });
+    // A storm gap is the interval, give or take a third. The last allowed kill is spent, then the run is left to finish.
+    let stopped = false;
+    const strike = async () => {
+      // Until a host settles a cut call through reconcile, a kill inside a call's window ends the run: hold the kill (up to a second) while one is in flight.
+      for (let waited = 0; options.quiet && waited < 1000 && callInFlight(dir); waited += 10) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      if (stopped || proc.exitCode !== null) return;
+      kills += 1;
+      supervisor?.host('kill', { gen: processes, label: `storm ${kills}`, crossing: null });
+      proc.kill('SIGKILL');
+    };
+    const timer = options.stormMs && kills < maxKills ? setTimeout(() => void strike(), Math.round(options.stormMs * (0.67 + next() * 0.66))) : undefined;
     last = await done;
+    stopped = true;
     clearTimeout(timer);
     if (last.outcome) break;
     if (last.signal !== 'SIGKILL') break;
@@ -184,23 +203,41 @@ export async function audit(options: AuditOptions) {
   let result: { blob: string; title: string } | undefined;
   if (options.record && outcome?.status === 'complete') {
     const out = join(dir, 'out', 'record.json');
-    if (existsSync(out)) { result = { blob: supervisor!.blob(readFileSync(out), 'json'), title: 'The audit' }; supervisor!.host('result', processes, { blob: result.blob }); }
+    if (existsSync(out)) { result = { blob: keepBlob(options.record, readFileSync(out), 'json'), title: 'The audit' }; supervisor!.host('result', { gen: processes, blob: result.blob }); }
     finishRecording(options.record, {
-      title: 'Dependency audit under a kill storm (scripted replay)', task: workflow.name, model: outcome.model ?? 'scripted',
-      generations: outcome.generation ?? processes, kills, code: codeOf(join(import.meta.dirname, '..', '..')),
+      title: options.title ?? `Dependency audit${options.stormMs ? ' under a kill storm' : ''} (${options.live ? 'live' : 'scripted fixture'})`, task: workflow.name, model: outcome.model ?? 'scripted',
+      generations: processes, kills, code: codeOf(join(import.meta.dirname, '..', '..')),
       cost: { usd: outcome.usd ?? null, parts: outcome.parts ?? {} }, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(result ? { result } : {}),
     });
   }
   return { dir, processes, kills, outcome, stderr: last?.stderr ?? '' };
 }
 
+/** Runs the audit; with `attempts`, a run a kill stopped on an unknown effect is started again from nothing on the next seed. */
+export async function audit(options: AuditOptions) {
+  const dir = resolve(options.dir ?? join(process.env.TMPDIR ?? '/tmp', `dependency-audit-${process.pid}`));
+  const record = options.record ? resolve(options.record) : undefined;
+  const fresh = { dir: !existsSync(dir), record: record !== undefined && !existsSync(record) };
+  const seed = options.seed ?? 1;
+  let result = await attempt(options, dir, seed);
+  let tries = 1;
+  while (result.outcome?.code === 'FROZEN_EFFECT_UNKNOWN' && tries < (options.attempts ?? 1) && fresh.dir && (record === undefined || fresh.record)) {
+    await rm(dir, { recursive: true, force: true });
+    if (record) await rm(record, { recursive: true, force: true });
+    result = await attempt(options, dir, seed + tries);
+    tries += 1;
+  }
+  return { ...result, attempts: tries };
+}
+
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child().catch((error) => console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } })));
   else {
-    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, quiet: { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
     const result = await audit({
       ...(values.live ? { live: true } : {}), ...(values.package ? { package: values.package } : {}), ...(values.model ? { model: values.model } : {}), ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
       ...(values.kills ? { kills: Number(values.kills) } : {}), ...(values.seed ? { seed: Number(values.seed) } : {}), ...(values.record ? { record: values.record } : {}), ...(values.dir ? { dir: values.dir } : {}),
+      ...(values.quiet ? { quiet: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
     });
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);
