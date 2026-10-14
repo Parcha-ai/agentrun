@@ -188,22 +188,23 @@ function watchedBackend() {
   return { backend, state };
 }
 
-type Counted = ReturnType<typeof count>;
+type Counted = Awaited<ReturnType<typeof count>>;
 
 const rowsOfLedger = (dir: string): LedgerRow[] => { try { return readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; } };
 
 /** The run directory as structured data: the store's committed entries, the receipts, the events and the host's ledger. */
-export function count(dir: string, backend: FakeBackend) {
+export async function count(dir: string, backend: FakeBackend) {
   const rows = <T,>(file: string): T[] => { try { return readFileSync(join(dir, file), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T); } catch { return []; } };
   const ledger = rows<LedgerRow>('ledger.jsonl');
   const events = rows<StatusEvent>('events.jsonl');
   const tally = (keys: string[]) => keys.reduce<Record<string, number>>((counts, key) => ({ ...counts, [key]: (counts[key] ?? 0) + 1 }), {});
   const requests = ledger.filter((row) => row.kind === 'model');
   const receipts = (() => { try { return readdirSync(join(dir, 'evidence'), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative(dir, join(entry.parentPath, entry.name))).sort(); } catch { return []; } })();
+  const store = await committed(dir);
   return {
     // The model's turns as the store committed them: one entry per assistant message.
-    committedTurns: committed(dir).turns,
-    toolResults: committed(dir).results,
+    committedTurns: store.turns,
+    toolResults: store.results,
     requests: tally(requests.map((row) => row.name)),
     requestPids: Object.fromEntries([...new Set(requests.map((row) => row.name))].map((name) => [name, requests.filter((row) => row.name === name).map((row) => row.pid)])),
     effects: tally(ledger.filter((row) => row.kind === 'tool').map((row) => row.name)),
@@ -217,8 +218,8 @@ export function count(dir: string, backend: FakeBackend) {
 
 /** What the run's store committed, in order: each assistant message by the tools it called, each tool result by the tool and
  *  whether it was an error. */
-function committed(dir: string): { turns: string[]; results: Array<{ tool: string; error: boolean; text?: string; details?: unknown }> } {
-  const file = join(dir, 'durable', 'run.sqlite');
+async function committed(dir: string): Promise<{ turns: string[]; results: Array<{ tool: string; error: boolean; text?: string; details?: unknown }> }> {
+  const file = join((await placeAt(dir)).store, 'run.sqlite');
   if (!existsSync(file)) return { turns: [], results: [] };
   const { DatabaseSync } = require_('node:sqlite') as typeof import('node:sqlite');
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
@@ -269,7 +270,7 @@ async function whole(scratch: string, name: string, plan?: (seen: Crossing[]) =>
     const result = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log }, (pid) => { state.pid = pid; });
     plan?.(state.seen);
     const child = (() => { try { return readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as Crossing); } catch { return [] as Crossing[]; } })();
-    return { dir, result, backend, supervisor: state.seen, child, counted: count(dir, backend) };
+    return { dir, result, backend, supervisor: state.seen, child, counted: await count(dir, backend) };
   } finally { await served.close(); }
 }
 
@@ -303,7 +304,7 @@ export async function cutInEffectWindow(point = 'tool.dispatch search') {
     const killed = await spawnChild({ ...env, KILL_AT_POINT: point }, (pid) => { state.pid = pid; });
     const afterKill = made(env.RAN_LOG);
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
-    return { killed: killed.signal, resumed: resumed.outcome, effects: count(join(scratch, 'run'), backend).effects, /** The tool calls the fake actually ran: by the killed process, then in all. The host's ledger row is written before the call. */ made: { killed: afterKill, total: made(env.RAN_LOG) } };
+    return { killed: killed.signal, resumed: resumed.outcome, effects: (await count(join(scratch, 'run'), backend)).effects, /** The tool calls the fake actually ran: by the killed process, then in all. The host's ledger row is written before the call. */ made: { killed: afterKill, total: made(env.RAN_LOG) } };
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
@@ -320,7 +321,7 @@ export async function cutBrowserAction(when: 'applying' | 'applied') {
     const killed = await spawnChild(env, (pid) => { state.pid = pid; });
     delete state.plan;
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
-    const counted = count(join(scratch, 'run'), backend);
+    const counted = await count(join(scratch, 'run'), backend);
     return { landed: state.killed?.point ?? null, killed: killed.signal, resumed: resumed.outcome, pageRuns: counted.browser['page.run'] ?? 0, errored: counted.toolResults.filter((result) => result.error).map((result) => result.tool), committedTurns: counted.committedTurns };
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
@@ -388,7 +389,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       }
     } finally { await served.close(); }
 
-    const counted = count(dir, backend);
+    const counted = await count(dir, backend);
     const record = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')); } catch { return null; } })();
     const wanted = (() => { try { return JSON.parse(readFileSync(join(reference.dir, 'out', 'record.json'), 'utf8')); } catch { return null; } })();
     const ref = reference.counted;
