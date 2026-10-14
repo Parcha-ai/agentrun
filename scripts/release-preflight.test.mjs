@@ -375,3 +375,20 @@ test('the preflight passes on a tree the fold produced, for that tag', () => fix
   assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\.\n/);
   assert.equal((await preflight(root)).status, 'passed');
 }));
+
+test("a release is refused while a published package's own changelog still has entries under Unreleased; a held package's may keep them", () => fixture(async root => {
+  assert.ok(releasePackages.includes('pi-vision') && heldPackages.includes('pi-transport'), 'pi-vision is published and pi-transport held in this checkout');
+  const undated = '# Changelog\n\n## Unreleased\n\n- Not dated.\n';
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), undated);
+  await assert.rejects(preflight(root), /@parcha\/pi-vision's CHANGELOG\.md still has entries under Unreleased/);
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.1 (2026-01-02)\n\n- Dated.\n');
+  assert.equal((await preflight(root)).status, 'passed');
+  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), undated);
+  assert.equal((await preflight(root)).status, 'passed', 'a held package is not published');
+  // The fold and the guard agree: a tree the fold produced passes, one it was not run on does not.
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), undated);
+  await assert.rejects(preflight(root), /still has entries under Unreleased/);
+  await fold(root, version, '2026-01-02');
+  assert.equal((await preflight(root)).status, 'passed');
+  assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Not dated\.\n/);
+}));

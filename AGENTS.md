@@ -82,6 +82,7 @@ CI runs Lean separately from `npm run check`. Documentation-only changes don't n
 - A generative node carries the whole rubric it applies: `sopSection` lists every SOP section the decision depends on, and merged nodes inherit the union. Don't paraphrase policy into `instructions`.
 - Extend the existing node, adapter and lifecycle interfaces before adding a mechanism. Delete superseded machinery only after its replacement passes.
 - Document breaking changes and failure behavior in a fragment, `changes/<slug>.md` (see [changes/README.md](changes/README.md)); the release folds fragments into the changelogs. Never edit an `Unreleased` section of a `CHANGELOG.md`.
+- Before a pull request goes to the maintainer, its author runs the ship-pr skill (`.agents/skills/ship-pr/SKILL.md`): one gate for every package, from a fresh base to CI and review threads.
 - This repository is public. Keep machine paths, internal hostnames, credentials and customer data out of code, tests, commits and issues. `npm run export:source` rejects many of these.
 - Never publish from a local machine. Releases go through the reviewed workflow in [docs/releasing.md](docs/releasing.md).
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), never in a public issue.

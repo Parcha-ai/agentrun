@@ -184,6 +184,12 @@ export function frozenEffectId(frame: FrameTag, path: string, ordinal: number): 
   return `${frame}:${path}#call:${ordinal}`;
 }
 
+/** The execution path and ordinal an effect id names: the inverse of `frozenEffectId`. */
+export function frozenEffectPath(id: string): { path: string; ordinal: number } | undefined {
+  const match = /^[^:]+:(.*)#call:(\d+)$/s.exec(id);
+  return match ? { path: match[1]!, ordinal: Number(match[2]) } : undefined;
+}
+
 /** An LLM step's execution record under admission. The first call fixes the label the interpreter
  *  names the step by and the retry limit; a later call gets the same
  *  record. A closed attempt advances to the next attempt here, and only here, when an admission asks

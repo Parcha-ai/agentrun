@@ -68,18 +68,45 @@ export const MIN_CASES = SCANS_HAVE_ORDER ? 24 : 23;
 
 /** The version in the package.json of the package `name` resolves to from here. */
 function installedVersion(name: string): string {
+  return versionAt(packageDir(name), name);
+}
+
+/** The directory of the package `name` resolves to from here: the one holding its package.json. */
+function packageDir(name: string): string {
   let dir = dirname(fileURLToPath(import.meta.resolve(name)));
   for (;;) {
     const manifest = join(dir, "package.json");
-    if (existsSync(manifest)) {
-      const read = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; version?: string };
-      if (read.name === name && typeof read.version === "string") return read.version;
-    }
+    if (existsSync(manifest) && (JSON.parse(readFileSync(manifest, "utf8")) as { name?: string }).name === name) return dir;
     const parent = dirname(dir);
     if (parent === dir) throw new Error(`no package.json of ${name} above its entry point`);
     dir = parent;
   }
 }
+
+function versionAt(dir: string, name: string): string {
+  const read = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
+  if (read.name !== name || typeof read.version !== "string") throw new Error(`${dir} is not ${name}`);
+  return read.version;
+}
+
+/** The version of `name` that code in `from` loads: the first node_modules/<name> up from it, as Node looks. */
+function loadedFrom(from: string, name: string): string {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const candidate = join(dir, "node_modules", name);
+    if (existsSync(join(candidate, "package.json"))) return versionAt(candidate, name);
+    if (dirname(dir) === dir) throw new Error(`${name} is not installed where ${from} looks`);
+  }
+}
+
+/**
+ * chord and pi-ai as the installed pi-durable itself loads them, from its own location. A pi-durable installed at the
+ * root beside the package's own nested copies loads the root's chord and pi-ai, not the ones this package resolves: a
+ * run that asks for one family version holds only if these match it too.
+ */
+export const PI_DURABLE_LOADS: { readonly chord: string; readonly piAi: string } = (() => {
+  const dir = packageDir("@earendil-works/pi-durable");
+  return { chord: loadedFrom(dir, "@earendil-works/chord"), piAi: loadedFrom(dir, "@earendil-works/pi-ai") };
+})();
 
 /** Whether `version` (major.minor.patch) is at least `floor` (major, minor). */
 function atLeast(version: string, [major, minor]: [number, number]): boolean {
