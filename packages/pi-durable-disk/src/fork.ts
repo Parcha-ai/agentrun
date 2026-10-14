@@ -3,6 +3,7 @@
 // root of their own, never where an instance mounts. The source is only read (its claim probe aside, which every mount
 // writes). The new run's run.json starts at generation 0 and carries the source's seal: its first open is generation 1
 // and refuses a copy that lost a committed sequence (STORE_BEHIND_SEAL). Supervisor side: it needs the API key.
+import { randomUUID } from "node:crypto";
 import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, realpath, rename, rm, rmdir, symlink, utimes } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { acquire, createRunDir, type AcquireOptions, findDelegations, mintMountToken, removeMountToken, runPath, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
@@ -248,11 +249,11 @@ export async function forkLocal(from: string, into: readonly { readonly id: stri
   const published: string[] = [];
   try {
     for (const t of targets) {
-      const temp = `${t.root}.fork-${process.pid}-${Date.now().toString(36)}-${staged.length}`;
+      const temp = `${t.root}.fork-${randomUUID()}`; // unique per call: two forks of one target never share a temporary directory
       const entry = { ...t, temp, files: 0, bytes: 0 };
-      staged.push(entry);
       await mkdir(dirname(t.root), { recursive: true });
       await mkdir(temp);
+      staged.push(entry); // tracked for cleanup only once this call made it
       const count = { files: 0, bytes: 0 };
       await copyTree(source, temp, true, asRoot, count);
       Object.assign(entry, count);

@@ -159,4 +159,21 @@ describe("forkLocal", () => {
       dir.remove();
     }
   });
+
+  it("two forks of the same target at once: one makes it, the other is refused, and neither takes the other's copy away", async () => {
+    const dir = scratchRoot("fork-local-race");
+    try {
+      const source = join(dir.root, "src");
+      await sealedSource(source);
+      const target = [{ id: "same", root: join(dir.root, "same") }];
+      const settled = await Promise.allSettled([forkLocal(source, target), forkLocal(source, target)]);
+      assert.equal(settled.filter((r) => r.status === "fulfilled").length, 1, JSON.stringify(settled.map((r) => r.status)));
+      const lost = settled.find((r) => r.status === "rejected") as PromiseRejectedResult;
+      assert.ok(lost.reason instanceof ForkError && ["TARGET_EXISTS", "COPY_FAILED"].includes(lost.reason.code), String(lost.reason));
+      assert.deepEqual(readdirSync(dir.root).sort(), ["same", "src"], "no temporary directory is left");
+      assert.equal(parseRunRecord(readFileSync(join(dir.root, "same", RUN_JSON), "utf8")).run, "same");
+    } finally {
+      dir.remove();
+    }
+  });
 });
