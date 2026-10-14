@@ -96,6 +96,37 @@ registerStoreConformance({ describe, expect, it }, "dirStore", async (use) => us
 registerStoreConformance({ describe, expect, it }, "an in-memory store", async (use) => use(memoryStore()));
 
 describe("the store conformance suite", () => {
+	it("stops its reader when a round fails, so nothing keeps polling the store", async () => {
+		const { createStoreConformance } = await import("../src/testing/index.ts");
+		const { createExpectAssertions } = await import("@earendil-works/pi-durable/testing");
+		const inner = memoryStore();
+		let broken = false;
+		let gets = 0;
+		const store: ConditionalStore = {
+			get: (key, ctx) => {
+				gets += 1;
+				return inner.get(key, ctx);
+			},
+			put: async (key, value, when, ctx) => {
+				// The first write after the seeding write throws, as a failed round would.
+				if (when && "version" in when && !broken) {
+					broken = true;
+					throw new Error("the round failed");
+				}
+				return inner.put(key, value, when, ctx);
+			},
+		};
+		const cases = createStoreConformance({
+			assertions: createExpectAssertions(expect),
+			withStore: async (use) => use(store),
+		});
+		const torn = cases.find((testCase) => testCase.name.startsWith("no read sees half a value"));
+		await expect(torn?.run()).rejects.toThrow("the round failed");
+		const after = gets;
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(gets).toBe(after);
+	}, 60_000);
+
 	it("fails a store whose writes are not conditional", async () => {
 		const { createStoreConformance } = await import("../src/testing/index.ts");
 		const { createExpectAssertions } = await import("@earendil-works/pi-durable/testing");
@@ -116,13 +147,49 @@ describe("the store conformance suite", () => {
 	}, 120_000);
 });
 
+describe("dirStore keys", () => {
+	it("refuses the empty key, for reading and writing", async () => {
+		const store = newDirStore();
+		const put = await store.put("", new Uint8Array(1), { absent: true }, context);
+		expect(put.ok ? "" : put.error.code).toBe("invalid");
+		const got = await store.get("", context);
+		expect(got.ok ? "" : got.error.code).toBe("invalid");
+		expect(existsSync(join(directories.get(store) as string, "k-"))).toBe(false);
+	});
+
+	it("names every key by a fixed prefix and without case, so no two keys share a directory on any file system", async () => {
+		const store = newDirStore();
+		const root = directories.get(store) as string;
+		const keys = ["A", "a", "B", "b", "Lease", "lease", "LEASE", "1", ".tmp-x", "k-a", "%41", "ÄÖ", "äö"];
+		for (const key of keys)
+			getOrThrow(await store.put(key, new TextEncoder().encode(`v:${key}`), { absent: true }, context));
+		for (const key of keys) {
+			expect(new TextDecoder().decode(getOrThrow(await store.get(key, context))?.value), key).toBe(`v:${key}`);
+		}
+		const names = readdirSync(root);
+		expect(names.length).toBe(keys.length);
+		expect(new Set(names.map((name) => name.toLowerCase())).size).toBe(keys.length);
+		expect(names.every((name) => name.startsWith("k-"))).toBe(true);
+		expect(names.some((name) => name.startsWith(".tmp-") || /^\d+$/.test(name))).toBe(false);
+	});
+
+	it("writes a value of many megabytes whole", async () => {
+		const store = newDirStore();
+		const big = new Uint8Array(24 * 1024 * 1024).map((_, index) => (index * 13) % 251);
+		getOrThrow(await store.put("big", big, { absent: true }, context));
+		const got = getOrThrow(await store.get("big", context));
+		expect(got?.value.length).toBe(big.length);
+		expect(Buffer.from(got?.value ?? new Uint8Array()).equals(Buffer.from(big))).toBe(true);
+	});
+});
+
 describe("dirStore", () => {
 	it("leaves the temp file of a writer that died and ignores it", async () => {
 		const store = newDirStore();
 		const directory = directories.get(store) as string;
 		getOrThrow(await store.put("k", new TextEncoder().encode("a"), { absent: true }, context));
 		await dyingWriter(directory, "k", "b", "1");
-		const names = readdirSync(join(directory, "k"));
+		const names = readdirSync(join(directory, "k-k"));
 		expect(names.some((name) => name.startsWith(".tmp-"))).toBe(true);
 		expect(getOrThrow(await store.get("k", context))?.version).toBe("1");
 	});
@@ -134,7 +201,7 @@ describe("dirStore", () => {
 		const lost = await store.put("k", new TextEncoder().encode("b"), { absent: true }, context);
 		expect(lost.ok).toBe(false);
 		getOrThrow(await store.put("k", new TextEncoder().encode("c"), { version: "1" }, context));
-		expect(readdirSync(join(directory, "k")).sort()).toEqual(["1", "2"]);
+		expect(readdirSync(join(directory, "k-k")).sort()).toEqual(["1", "2"]);
 	});
 
 	it("returns an error, and throws none, for a directory it cannot use", async () => {
@@ -194,7 +261,7 @@ describe("dirStore", () => {
 		}
 		const lease = leaseIn(dirStore(directory));
 		expect(getOrThrow(await lease.current("session", context))?.epoch).toBe(rounds);
-		expect(existsSync(join(directory, "lease%2Fsession"))).toBe(true);
+		expect(existsSync(join(directory, "k-lease%2Fsession"))).toBe(true);
 	}, 120_000);
 });
 
@@ -315,6 +382,18 @@ describe("leaseIn", () => {
 		const lease = leaseIn(good);
 		getOrThrow(await lease.take("s", holder("a"), 0, { seal: GOOD_SEAL }, context));
 		expect(getOrThrow(await lease.current("s", context))?.seal).toEqual(GOOD_SEAL);
+	});
+
+	it("says `corrupt` for a record whose time is not an ISO time", async () => {
+		for (const at of ["yesterday", 123, null, "2026-13-45T00:00:00.000Z", "2026-01-01", undefined]) {
+			const store = memoryStore();
+			const record = { v: 1, session: "s", epoch: 1, holder: holder("a"), at };
+			getOrThrow(
+				await store.put("lease/s", new TextEncoder().encode(JSON.stringify(record)), { absent: true }, context),
+			);
+			const current = await leaseIn(store).current("s", context);
+			expect(current.ok ? "ok" : current.error.code, String(at)).toBe("corrupt");
+		}
 	});
 
 	it("loses to a record of another session in its key, not follows it", async () => {

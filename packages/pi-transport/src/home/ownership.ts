@@ -113,6 +113,13 @@ function isSeal(value: unknown): value is Seal {
 	);
 }
 
+/** An ISO 8601 time as `Date.prototype.toISOString` writes it. */
+function isIsoTime(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const time = new Date(value);
+	return !Number.isNaN(time.getTime()) && time.toISOString() === value;
+}
+
 const isText = (value: unknown): value is string => typeof value === "string" && value !== "";
 
 function parseRecord(session: string, bytes: Uint8Array): LeaseRecord | undefined {
@@ -127,6 +134,7 @@ function parseRecord(session: string, bytes: Uint8Array): LeaseRecord | undefine
 		}
 		if (record.move !== undefined && !isText(record.move)) return undefined;
 		if (record.seal !== undefined && !isSeal(record.seal)) return undefined;
+		if (!isIsoTime(record.at)) return undefined;
 		return record as LeaseRecord;
 	} catch {
 		return undefined;

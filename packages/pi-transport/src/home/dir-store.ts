@@ -11,7 +11,7 @@ import {
 	unlinkSync,
 	writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { type ConditionalStore, KeyStoreError } from "./ownership.ts";
 
@@ -24,10 +24,30 @@ export type DirStoreOptions = {
 const TEMP_PREFIX = ".tmp-";
 const NOT_LINKABLE = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "ENOSYS", "EMLINK"]);
 
-/** A key as a directory name that is safe on any file system: no slash, no leading dot, nothing but `%` escapes. */
+const KEY_PREFIX = "k-";
+
+/**
+ * A key as a directory name that is the same key on any file system. Only lowercase letters and digits stand for
+ * themselves; every other byte, uppercase letters included, is `%` and two uppercase hex digits, so two keys never
+ * differ only by case. The fixed prefix means no key can be the store's own directory, a temp file or a version.
+ */
 function dirName(key: string): string {
-	return encodeURIComponent(key).replace(/\./g, "%2E").replace(/\*/g, "%2A");
+	let name = KEY_PREFIX;
+	for (const byte of new TextEncoder().encode(key)) {
+		const character = String.fromCharCode(byte);
+		name += /[a-z0-9]/.test(character) ? character : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+	}
+	return name;
 }
+
+/** Write every byte: one call may write fewer than it was given. */
+function writeAll(fd: number, bytes: Uint8Array): void {
+	let written = 0;
+	while (written < bytes.length) written += writeSync(fd, bytes, written, bytes.length - written);
+}
+
+/** What a file system answers when it cannot sync a directory at all, as opposed to failing to. */
+const CANNOT_SYNC_DIRECTORY = new Set(["EINVAL", "EISDIR", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM"]);
 
 /** The version numbers in a key's directory, ascending. Temp files and anything else are not versions. */
 function versionsIn(directory: string): number[] {
@@ -42,16 +62,15 @@ function versionsIn(directory: string): number[] {
 	}
 }
 
+/** Sync a directory so its entries survive a crash. Only "this file system cannot" is ignored; an I/O error is not. */
 function fsyncDirectory(directory: string): void {
+	const fd = openSync(directory, "r");
 	try {
-		const fd = openSync(directory, "r");
-		try {
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-	} catch {
-		// Some file systems cannot sync a directory; the file itself is already synced.
+		fsyncSync(fd);
+	} catch (cause) {
+		if (!CANNOT_SYNC_DIRECTORY.has((cause as { code?: string }).code ?? "")) throw cause;
+	} finally {
+		closeSync(fd);
 	}
 }
 
@@ -66,6 +85,7 @@ export function dirStore(directory: string, options: DirStoreOptions = {}): Cond
 	return {
 		async get(key, context): Promise<Result<{ value: Uint8Array; version: string } | undefined, KeyStoreError>> {
 			if (context.abortSignal?.aborted) return err(new KeyStoreError("aborted", "the call was aborted"));
+			if (key === "") return err(new KeyStoreError("invalid", "the key is empty"));
 			const keyDirectory = join(directory, dirName(key));
 			try {
 				// A newest version can be listed and still unreadable only if someone removed it; the next one down is then not newest.
@@ -82,6 +102,7 @@ export function dirStore(directory: string, options: DirStoreOptions = {}): Cond
 
 		async put(key, value, when, context): Promise<Result<{ version: string }, KeyStoreError>> {
 			if (context.abortSignal?.aborted) return err(new KeyStoreError("aborted", "the call was aborted"));
+			if (key === "") return err(new KeyStoreError("invalid", "the key is empty"));
 			let next: number;
 			if ("absent" in when) next = 1;
 			else {
@@ -98,10 +119,14 @@ export function dirStore(directory: string, options: DirStoreOptions = {}): Cond
 			}
 			const temp = join(keyDirectory, `${TEMP_PREFIX}${randomUUID()}`);
 			try {
-				mkdirSync(keyDirectory, { recursive: true });
+				// A key directory that is new must itself be durable in the store's directory.
+				if (mkdirSync(keyDirectory, { recursive: true }) !== undefined) {
+					fsyncDirectory(dirname(keyDirectory));
+					fsyncDirectory(directory);
+				}
 				const fd = openSync(temp, "wx", 0o644);
 				try {
-					writeSync(fd, value);
+					writeAll(fd, value);
 					fsyncSync(fd);
 				} finally {
 					closeSync(fd);
