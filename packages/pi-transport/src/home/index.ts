@@ -1,5 +1,15 @@
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
+	LaunchError,
+	type LaunchErrorCode,
+	type LaunchPhase,
+	type LaunchSpec,
+	type LaunchState,
+	launch,
+	launchStatus,
+	stopLaunch,
+} from "./launch.ts";
+export {
 	type ConditionalStore,
 	type Holder,
 	KeyStoreError,
@@ -26,13 +36,3 @@ export {
 	type WorkspaceOptions,
 	type WorkspaceReceipt,
 } from "./workspace.ts";
-export {
-	LaunchError,
-	type LaunchErrorCode,
-	type LaunchPhase,
-	type LaunchSpec,
-	type LaunchState,
-	launch,
-	launchStatus,
-	stopLaunch,
-} from "./launch.ts";
