@@ -150,21 +150,22 @@ describe("the model proxy", () => {
 		const proxy = proxyModels(catalogOf(behind.models));
 		connect(proxy, server);
 		await session(proxy.models, undefined, instructions);
-		// What each provider received: pi-ai carries the prompt and the tools in the transcript's leading system message.
+		// What each provider received. pi carries the instructions and the tools in a system message of the transcript:
+		// pi-durable 1.1 and 1.2 put it first, 1.0.4 after the first user message.
 		for (const [arm, asked] of [
 			["direct", direct.asked],
 			["through the proxy", behind.asked],
 		] as const) {
 			expect(asked, arm).toHaveLength(2);
 			for (const transcript of asked) {
-				const system = transcript[0] as SystemMessage | undefined;
-				expect(system?.role, arm).toBe("system");
+				const system = transcript.filter((message): message is SystemMessage => message.role === "system");
+				const tools = system.flatMap((message) => message.toolsAdded ?? []);
 				expect(JSON.stringify(system), arm).toContain(instructions);
 				expect(
-					system?.toolsAdded?.map((tool) => ({ name: tool.name, description: tool.description })),
+					tools.map((tool) => ({ name: tool.name, description: tool.description })),
 					arm,
 				).toEqual([{ name: "lookup", description: "Look a thing up." }]);
-				expect(JSON.parse(JSON.stringify(system?.toolsAdded?.[0]?.parameters)), arm).toMatchObject({
+				expect(JSON.parse(JSON.stringify(tools[0]?.parameters)), arm).toMatchObject({
 					type: "object",
 					properties: { q: { type: "string" }, limit: { type: "number" } },
 					required: ["q", "limit"],
