@@ -4,7 +4,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,7 @@ after(async () => {
 
 test("a test process that is killed leaves no launcher and no instance behind: the instance ends itself once its test process is gone, and the launcher ends with it", async () => {
   const d = scratch("pda-killed-");
-  const driver = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-driver.ts"), join(d, "box")], { stdio: ["ignore", "pipe", "inherit"] });
+  const driver = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-driver.ts"), join(d, "box")], { stdio: ["pipe", "pipe", "inherit"] });
   try {
     let said = "";
     driver.stdout!.on("data", (c) => (said += c));
@@ -132,6 +132,71 @@ test("a test process that is killed leaves no launcher and no instance behind: t
   } finally {
     if (driver.exitCode === null && driver.signalCode === null) driver.kill("SIGKILL");
   }
+});
+
+/**
+ * Starts the stand-in test process (it starts the driver); `until` says when to kill it, `release` runs after the driver is gone.
+ * The driver, launcher and instance must all end by themselves.
+ */
+async function killedTestLeavesNothing(
+  prefix: string,
+  until: (said: string, d: string) => boolean,
+  options: { pause?: boolean; release?: (d: string) => void } = {},
+): Promise<void> {
+  const d = scratch(prefix);
+  const outer = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-outer.ts"), join(d, "box"), ...(options.pause ? ["pause"] : [])], { stdio: ["pipe", "pipe", "inherit"] });
+  let said = "";
+  outer.stdout!.on("data", (c) => (said += c));
+  let driver = 0;
+  try {
+    await waitFor("the stand-in to report its driver", () => /"driver":\d+/.test(said), 20_000);
+    driver = Number(/"driver":(\d+)/.exec(said)![1]);
+    await waitFor("the moment to kill the test process", () => until(said, d), 20_000);
+    outer.kill("SIGKILL"); // as a test timeout or a forced exit would: no hook runs
+    await waitFor("the driver to end by itself", () => !pidAlive(driver), 10_000);
+    // released again and again: a launcher that was slow to open the FIFO has no reader to write to yet
+    await waitFor("the launcher and the instance to end by themselves", () => {
+      options.release?.(d);
+      return fixtureProcesses([d]).length === 0;
+    }, 10_000);
+  } finally {
+    outer.kill("SIGKILL");
+    if (driver > 0) {
+      try {
+        process.kill(driver, "SIGKILL");
+      } catch {}
+    }
+    options.release?.(d);
+  }
+}
+
+/** Lets a launcher that is blocked reading a FIFO spec go on, with a spec it refuses: it ends. Nothing happens where no reader waits (yet). */
+function releaseLauncher(d: string): void {
+  try {
+    const fd = openSync(join(d, "box", "x.json"), constants.O_WRONLY | constants.O_NONBLOCK);
+    writeSync(fd, "{}");
+    closeSync(fd);
+  } catch {}
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+test("a killed test process leaves no driver, launcher or instance behind: the driver ends with its test process, the instance with the driver, the launcher with the instance", async () => {
+  await killedTestLeavesNothing("pda-killed-outer-", (said, d) => /"started":1/.test(said) && fixtureProcesses([d]).length >= 2);
+});
+
+test("a test process killed while the launcher is still being started leaves nothing behind either: start() is held pending, and the driver already listens for its test's end", async () => {
+  // The driver says "starting" before it awaits start(); the launcher then blocks on its FIFO spec, so start() is pending, not before it and not after it.
+  await killedTestLeavesNothing("pda-killed-early-", (said, d) => /"starting":true/.test(said) && !/"started"/.test(said) && fixtureProcesses([d]).some((p) => p.what.includes("serve")), {
+    pause: true,
+    release: releaseLauncher,
+  });
 });
 
 async function waitFor<T>(what: string, fn: () => T | null | undefined | false, timeoutMs = 10_000): Promise<T> {
