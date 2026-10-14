@@ -14,6 +14,7 @@ import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
 } from '@parcha/agentrun-pi/durable';
+import { storeHead } from '@parcha/pi-durable-disk/lease';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
@@ -139,9 +140,10 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
   });
   host.record?.generation(durable.generation);
-  // The recorder attaches here for now, after the open has resumed the run. The disk package's beforeResume hook (#377) hands
-  // it the Storage and the head, and the call moves into that hook so the snapshot is taken before the run resumes.
-  await host.record?.attach?.({ session: durable.harness, context: ctx, gen: durable.generation });
+  // Interim, until the disk package's beforeResume hook (#377) hands the recorder the Storage and the head: the recorder attaches
+  // here, after the open. The snapshot is exact because the workflow's task waits on the reconcile gate below before it takes a
+  // step, so only the open's own commits come before it. When the hook lands this call moves into it.
+  await host.record?.attach?.({ session: durable.harness, storage: durable.store.storage, head: await storeHead(durable.store), context: ctx, gen: durable.generation });
   const harness = durable.harness;
   opened = harness;
   try {
