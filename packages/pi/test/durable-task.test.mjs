@@ -554,3 +554,21 @@ test('a task host settles a killed run\'s unknown effect through reconcile: the 
   assert.deepEqual([done.status, done.output, calls, readJournal(file, 'run-1').generation], ['complete', { total: 42 }, 1, 3]);
   await harness.close(ctx);
 });
+
+test('options is told its phase: the abort handler opens the driver too, and a host can skip reconcile there', async () => {
+  const flight = deferred(); const phases = []; const asked = [];
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({
+    options: ({ phase }) => { phases.push(phase); return { files, reconcile: async (unknown) => { asked.push([phase, unknown.length]); } }; },
+    run: () => ({ adapters: { runEffect: ({ signal }) => { flight.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); } } }),
+  });
+  const harness = await open(fileOf(), flow);
+  const run = await flow.start(harness, request(), ctx);
+  await flight.promise;
+  await flow.stop(harness, 'run-1', 'cancel', ctx, 'owner');
+  await run.wait(ctx);
+  assert.deepEqual(phases, ['run', 'abort']);
+  // The effect the cancel cut is unknown when the abort handler opens the driver, so reconcile is asked there, and only there.
+  assert.deepEqual(asked, [['abort', 1]]);
+  await harness.close(ctx);
+});

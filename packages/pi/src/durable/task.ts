@@ -43,8 +43,10 @@ export type WorkflowTaskHost = {
    *  by its abort handler. A host settles an effect a killed process left unknown with `reconcile`: the driver calls it
    *  once, through its own open of the run, with the unknown effects and a `complete` that records one's result. An
    *  effect it completes is answered from that result and not dispatched again; one it leaves is refused at resume. Do not
-   *  open the run's journal here: that open is a generation of its own. */
-  options?(invocation: WorkflowInvocation): Omit<RecoveryOptions, "key" | "bind"> | Promise<Omit<RecoveryOptions, "key" | "bind">>;
+   *  open the run's journal here: that open is a generation of its own. The task's abort handler opens the driver too, to
+   *  record a cancel, so `reconcile` also runs then; `phase` is `"abort"` there and `"run"` for the run's own open, and a
+   *  host that wants no reconcile during a cancel returns none for `"abort"`. */
+  options?(invocation: WorkflowInvocation & { phase: "run" | "abort" }): Omit<RecoveryOptions, "key" | "bind"> | Promise<Omit<RecoveryOptions, "key" | "bind">>;
   /** What the interpreter runs with, asked once the driver is open, so a host that composes its own couplings over the
    *  driver (its spend, its sessions, its escalation rows) builds them here. */
   run(invocation: WorkflowInvocation & { driver: RecoveryDriver }): WorkflowHostParts | Promise<WorkflowHostParts>;
@@ -179,14 +181,14 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
   stop(harness: Harness, key: string, action: "pause" | "cancel", context: Context, source?: string): Promise<WorkflowStop>;
 } {
   /** The run's driver over its journal, with the host's options. */
-  const openDriver = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context) => {
+  const openDriver = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context, phase: "run" | "abort") => {
     const { key, workflow, bind } = task.input;
-    const options = await host.options?.({ key, taskId: task.id, runtime, context });
+    const options = await host.options?.({ key, taskId: task.id, runtime, context, phase });
     return openRecovery(invocationStore(runtime, context, key), workflow, { ...options, key, ...(bind ? { bind } : {}) });
   };
   /** The driver, then what the interpreter runs with: a host that fails to give it lets the driver go. */
   const open = async (task: { id: TaskId; input: WorkflowRequest }, runtime: WorkflowInvocation["runtime"], context: Context) => {
-    const driver = await openDriver(task, runtime, context);
+    const driver = await openDriver(task, runtime, context, "run");
     try {
       const parts = await host.run({ key: task.input.key, taskId: task.id, runtime, context, driver });
       const deps: WorkflowDeps = "deps" in parts
@@ -302,7 +304,7 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       // The journal records the cancel, so no later open of it resumes. A journal the driver refuses (a binding that
       // moved, a checkpoint it cannot read) is left as it is; the task still ends aborted.
       try {
-        const driver = await openDriver(task, runtime, context);
+        const driver = await openDriver(task, runtime, context, "abort");
         driver.stop({ action: "cancel", ...(source ? { source } : {}) });
         await driver.close();
       } catch { /* the outcome below is committed whatever the journal said */ }
