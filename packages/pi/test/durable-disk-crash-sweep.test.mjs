@@ -2,11 +2,11 @@
 // admit, dispatch, settle, commit, session, request and submit is cut, the run resumes, and the effect is dispatched
 // once. The step's model request may be asked again, as a request is; the effect never is.
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { crashSweep } from '@parcha/agentrun-dsl/recovery/testing';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const child = fileURLToPath(new URL('./fixtures/crash-disk-child.mjs', import.meta.url));
+const child = childPath('crash-disk-child.mjs');
 const COMPLETE = { status: 'complete', output: { ok: true } };
 const UNKNOWN = { status: 'stopped', code: 'FROZEN_EFFECT_UNKNOWN' };
 const outcomeOf = (run) => run.rows.find((row) => row.outcome)?.outcome;

@@ -137,6 +137,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
+    // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
+    ...(host.record?.attach ? { beforeResume: async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } } : {}),
   });
   const harness = durable.harness;
   opened = harness;
