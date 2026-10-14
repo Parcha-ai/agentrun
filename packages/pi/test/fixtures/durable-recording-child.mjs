@@ -1,6 +1,6 @@
 // One process of a workflow task with the durable recorder inside it, for durable-recording.test.mjs. After the Harness
 // opens and before anything runs, the process writes snapshotLines at the store's head and subscribes recordCommits from
-// the snapshot's generation, then starts the run (`start`) or resumes what a killed process left (`resume`). Lines are
+// that snapshot, then starts the run (`start`) or resumes what a killed process left (`resume`). Lines are
 // appended to LINES as JSON, one commit at a time. With KILL_AT set, the process kills itself inside the commit that
 // point names; stdout gets a JSON row naming that commit.
 import { appendFileSync, mkdtempSync } from 'node:fs';
@@ -42,7 +42,7 @@ if (mode) {
   const snapshot = await snapshotLines(storage, { at: head, context: ctx });
   write(snapshot);
   log({ snapshot: head });
-  const stop = recordCommits(harness, { write, ...(snapshot[0]?.gen !== undefined ? { gen: snapshot[0].gen } : {}) });
+  const stop = recordCommits(harness, { from: snapshot, write });
   harness.subscribeCommits((publication) => {
     for (const change of publication.changes) {
       if (change.type !== 'document' || !change.value) continue;
