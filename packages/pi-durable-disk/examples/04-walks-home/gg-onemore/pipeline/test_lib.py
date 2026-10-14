@@ -51,7 +51,7 @@ class StubLab:
     def draw(self, prompts, n, sampling, thinking=True, max_tokens=700):
         if self.fail_draw:
             raise RuntimeError("vLLM went away")
-        return [{"q": q, "thinking": "", "answer": f"served {os.path.basename(self.serving[-1])}"} for q in prompts for _ in range(n)]
+        return [{"q": q, "thinking": "", "answer": f"served {os.path.basename(self.serving[-1] or 'none')}"} for q in prompts for _ in range(n)]
 
     def write_served(self, clamp):
         self.written.append(clamp)
@@ -134,6 +134,15 @@ class LibTest(unittest.TestCase):
             self.c.post("/try", json={"clamp": {"parts": [part(f=4)]}, "prompts": ["hi"]})
         self.assertEqual(self.lab.serving[-1], kept, "even when the draw fails")
         self.assertEqual(self.c.post("/try", json={"clamp": {"parts": [part()]}, "prompts": ["hi"], "n": 9}).status_code, 400)
+
+    def test_try_with_no_clamp_samples_the_unedited_model_and_puts_the_served_clamp_back(self):
+        self.lab.served = "/var/tmp/gg/run/clamp-k1.2.pt"
+        self.assertEqual(self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": {"max_tokens": 5}}).status_code, 400)
+        self.assertEqual(self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": [1]}).status_code, 400)
+        self.assertEqual(self.lab.serving, [], "a bad request serves nothing")
+        r = self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": {"temperature": 0.9}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.lab.serving[-2:], [None, "/var/tmp/gg/run/clamp-k1.2.pt"], "off for the call, the served clamp back after")
 
     def test_features_counts_what_fires_on_the_texts(self):
         r = self.c.post("/features", json={"layer": 36, "texts": ["a", "b"]})

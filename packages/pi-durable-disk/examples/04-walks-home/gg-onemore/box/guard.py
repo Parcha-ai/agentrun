@@ -47,7 +47,11 @@ NO_NETWORK = ["python3", "-I", os.path.join(os.path.dirname(os.path.abspath(__fi
 # the agent's own code (POST /gg/run): its files, and what it finds in its environment (the lab's socket, gglab)
 # the programs, root's: readable by the agent, never in a directory the agent could swap for a link
 RUNS = os.environ.get("GG_RUNS", "/var/tmp/gg/runs")
-AGENT_LIB_ENV = {"GG_LIB_SOCK": os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock"), "PYTHONPATH": os.path.dirname(os.path.abspath(__file__))}
+# unbuffered: what the agent's program prints is in the frames as it happens, so a program cut at its deadline still returns it
+AGENT_LIB_ENV = {"GG_LIB_SOCK": os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock"), "PYTHONPATH": os.path.dirname(os.path.abspath(__file__)),
+                 "PYTHONUNBUFFERED": "1"}
+# a frame at least this often while a command is quiet: the reader's HTTP client drops a body silent for 300 s (undici)
+BEAT_S = float(os.environ.get("GG_BEAT_S", "30"))
 RUN_CODE_MAX = 64 * 1024
 AGENT = os.environ.get("GG_AGENT_USER", "agent")
 # each step: its fixed command and its deadline in seconds
@@ -353,12 +357,22 @@ async def run_frames(argv, timeout, isolated=False, cwd=None):
 
     tasks = [asyncio.create_task(pump(proc.stdout, "stdout")), asyncio.create_task(pump(proc.stderr, "stderr"))]
     # the deadline covers the command's whole life: its output, the time its reader takes, and its exit
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     try:
         try:
             ended = 0
             while ended < 2:
-                item = await asyncio.wait_for(out.get(), deadline - time.monotonic())
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    item = await asyncio.wait_for(out.get(), min(left, BEAT_S))
+                except asyncio.TimeoutError:
+                    if deadline - time.monotonic() <= 0:
+                        raise
+                    yield json.dumps({"beat": round(time.monotonic() - started, 1)}) + "\n"
+                    continue
                 if item is None:
                     ended += 1
                 else:

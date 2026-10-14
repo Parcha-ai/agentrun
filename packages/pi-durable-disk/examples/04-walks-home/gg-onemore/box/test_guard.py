@@ -354,7 +354,7 @@ class GuardTest(unittest.TestCase):
             f = json.loads(line)
             if "exit" in f:
                 got["exit"] = f["exit"]
-            else:
+            elif "stream" in f:
                 got[f["stream"]] += base64.b64decode(f["data"])
         return got
 
@@ -398,6 +398,20 @@ class GuardTest(unittest.TestCase):
         r, _ = self.run_code("print('program ran')", home=home)
         self.assertIn(b"program ran", self.frames(r.text)["stdout"])
         self.assertFalse(os.path.exists(escaped), "a usercustomize the agent planted ran with the network, before the filter")
+
+    def test_a_quiet_program_still_streams_beats_and_its_prints_arrive_unbuffered(self):
+        saved = self.guard.BEAT_S
+        self.guard.BEAT_S = 0.3
+        try:
+            r, _ = self.run_code("import time\nprint('started')\ntime.sleep(1.2)\nprint('done')\n")
+        finally:
+            self.guard.BEAT_S = saved
+        lines = [json.loads(line) for line in r.text.splitlines() if line]
+        beats = [i for i, f in enumerate(lines) if "beat" in f]
+        self.assertGreaterEqual(len(beats), 2, "a frame every BEAT_S while the program is quiet")
+        first_out = next(i for i, f in enumerate(lines) if f.get("stream") == "stdout")
+        self.assertLess(first_out, beats[0], "'started' arrives before the quiet stretch, not at the program's end")
+        self.assertEqual(self.frames(r.text)["stdout"], b"started\ndone\n")
 
     def test_the_weights_go_back_only_once_the_lab_has_settled(self):
         seen["settled"] = []

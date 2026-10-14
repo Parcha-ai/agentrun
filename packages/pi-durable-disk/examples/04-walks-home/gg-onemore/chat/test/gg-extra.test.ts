@@ -34,8 +34,8 @@ async function fakeGuard() {
       if (req.url === "/v1/chat/completions" && auth === `Bearer ${SERVE}`) {
         chats.push(body);
         const lastUser = [...body.messages].reverse().find((m: any) => m.role === "user");
-        // asked for the control, it calls gg_control once; after the tool's result it answers in text
-        const wantsControl = JSON.stringify(lastUser?.content ?? "").includes("control") && body.messages.at(-1).role !== "tool";
+        // asked for the control while offered it, it calls gg_control once; after the tool's result it answers in text
+        const wantsControl = JSON.stringify(lastUser?.content ?? "").includes("control") && body.messages.at(-1).role !== "tool" && (body.tools ?? []).length > 0;
         const chunk = (choices: unknown[], extra: object = {}) => res.write(`data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: body.model, choices, ...extra })}\n\n`);
         res.writeHead(200, { "content-type": "text/event-stream" });
         chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]);
@@ -104,7 +104,7 @@ test("secrets: each is read once and deleted; a second read says they must be st
   await assert.rejects(readSecretsOnce(dir), /gone: they are read once, and a process restarted on this VM needs them staged again/);
 });
 
-test("the extra: unused extensions out, GG tools in; the reading lands in the workspace; use_model moves to the edited model; the control replays the switch", async () => {
+test("the extra: unused extensions out, GG tools in; the reading lands in the workspace; use_model moves to the edited model, which gets no tool and no system prompt", async () => {
   const g = await fakeGuard();
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-work-"));
   try {
@@ -132,8 +132,10 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.deepEqual((await root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: GG_MODEL });
       assert.equal(g.chats.length, 1, "the next request of the same turn went to the edited model");
       assert.equal(g.chats[0].model, GG_MODEL);
-      // what the edited model reads: its own system prompt, the switch's result, one tool (the control), and no word of the trip
-      assert.deepEqual(g.chats[0].tools.map((t: any) => t.function.name), ["gg_control"]);
+      // what the edited model reads: the switch's result and nothing else: no system prompt, no tool, no word of the trip
+      assert.equal(g.chats[0].tools, undefined, "no tool is offered to the edited model");
+      assert.equal(g.chats[0].messages.some((m: any) => m.role === "system" || m.role === "developer"), false, "no system prompt");
+      assert.deepEqual(g.chats[0].messages.map((m: any) => m.role), ["user"]);
       // the thinking budget the page sends is the one the strength probes use: one number, pipeline/data/thinking.json
       const budget = JSON.parse(readFileSync(new URL("../../pipeline/data/thinking.json", import.meta.url), "utf8")).thinking_token_budget;
       const probes = Number(execFileSync("python3", ["-c", "from thinking import THINK_BUDGET; print(THINK_BUDGET)"], { cwd: new URL("../../pipeline", import.meta.url), encoding: "utf8" }));
@@ -148,11 +150,11 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.equal(recorded.length, 1);
       assert.ok(logs.some((l) => l.event === "gg.switched"));
       await ask("Show me the control.");
-      assert.equal(g.control.length, 1);
-      assert.deepEqual(g.control[0].body, g.chats[0], "the control replays the request that switched it");
+      assert.equal(g.chats.length, 2, "the edited model answers in text: it has no tool to call");
+      assert.equal(g.control.length, 0);
       const reloaded = await ggExtra({ work, log: () => undefined }, { guardUrl: g.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" });
       assert.deepEqual(await reloaded.recorded(), await extra.recorded(), "a restart reads the recorded requests back");
-      assert.equal((await reloaded.recorded()).length, 3, "the switch's request, and the control turn's two (its call, then its answer)");
+      assert.equal((await reloaded.recorded()).length, 2);
     } finally {
       await harness.close?.(ctx);
     }

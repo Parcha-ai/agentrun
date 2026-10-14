@@ -10,7 +10,7 @@ const EDITED = `${STEERED_PROVIDER}/${GG_MODEL}`;
 
 export const CRITERIA_GG: Readonly<Record<string, string>> = {
   tab: `Your user's browser tab: talking with the cloud model before the Golden Gate work starts. It cannot reach the GPU box: not the Golden Gate work, and not any message once agent_model is ${EDITED} (the edited model, which only the Modal VM reaches).`,
-  "modal-vm": `The Modal VM next to the GPU box: the Golden Gate tools (the reading, running its own code on the GPU box, the control) and the edited model are reachable only from here. The Golden Gate work belongs here, and so does every message once agent_model is ${EDITED}.`,
+  "modal-vm": `The Modal VM next to the GPU box: the Golden Gate tools (the reading, running its own code on the GPU box) and the edited model are reachable only from here. The Golden Gate work belongs here, and so does every message once agent_model is ${EDITED}.`,
 };
 
 export const LABELS_GG: Readonly<Record<string, string>> = { tab: "Browser", "modal-vm": "Modal VM" };
