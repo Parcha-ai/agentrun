@@ -224,6 +224,14 @@ test('a different job on a killed run\'s directory is refused, and the run still
   assert.deepEqual(failing, []);
 });
 
+test('a different job on a killed run\'s directory is refused before the killed run\'s task is released: it does not progress in that process', { timeout: 180_000 }, async (t) => {
+  const { others: [other] } = await killedAndResumed(t, { KILL_IN: 'page-run' }, { between: [{ OTHER: '1' }] });
+  assert.equal(other.code, 'RUN_STORE_BINDING_MISMATCH');
+  // The counts are the killed process's alone. Released early, the saved task runs on with the refused job's host and these become 3, 1 and 2, and a second browser session launches.
+  assert.deepEqual(other.did.workflow, { 'node.start': 2, 'effect.attempt': 1, 'node.end': 1 });
+  assert.equal(other.did.browser.launched, 1);
+});
+
 test('two steps call the search with the same arguments: each is answered by its own call, never by the other\'s', { timeout: 240_000 }, async (t) => {
   const sent = await killedAndResumed(t, { KILL_IN: 'search-landed:2' }, { env: { TWICE: '1' } });
   assert.deepEqual(sent.view.output, OUTPUT, 'the second call, sent before the kill, is answered from its own answer');

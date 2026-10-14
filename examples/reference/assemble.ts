@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
 import type { DecisionExchange, DecisionReceipt, Workflow } from '@parcha/agentrun-dsl';
-import { bindingMismatch, canonicalHash, recoveryBinding, recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createDecisionWriter, createWorkflowExtension, DECISION_ROW_VERSION, documentStore, nodeRunner, readDecisions, taskScope,
   type DecisionRow, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
@@ -54,7 +54,8 @@ function localClaim(ref: RunRef, place: RunPlace): Claim {
 /** The disk run's environment, with temporary directories under `work/`. */
 function runEnv(claim: Claim): RunEnv {
   const base = archilEnv(claim);
-  // pi-durable-disk gap: its createTempDir is under `<root>/tmp`, which its own confinement refuses to write, and vision writes there.
+  // pi-durable-disk gap, removed by the disk's #380: its createTempDir is under `<root>/tmp`, which its own confinement refuses
+  // to write, and a read that runs a program (a video through ffmpeg) writes there. This example's PNG read needs none.
   const scratch = join(claim.work, '.tmp');
   return Object.assign((target: { readonly cwd?: string }) => Object.assign(base(target), {
     createTempDir: async (prefix: string | undefined) => {
@@ -74,8 +75,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   }
   const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
-  // Vision names a conversation by its id as a string; pi's documents take the number.
-  const labelOf = async (conversationId: string) => (opened && (await opened.snapshot(Label, Number(conversationId) as ConversationId, ctx))?.label) || 'run';
+  // pi-durable is two copies here (the disk run's and vision's), so the id crosses with a cast.
+  const labelOf = async (id: unknown) => (opened && id !== undefined && (await opened.snapshot(Label, id as ConversationId, ctx))?.label) || 'run';
 
   const browser = createBrowserExtension({
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
@@ -87,7 +88,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   });
   const vision = createVisionExtension({
     evidence: host.evidence,
-    scope: async (conversationId) => ({ label: await labelOf(conversationId), deriveDir: `.derived/${conversationId}` }),
+    scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
@@ -148,13 +149,16 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    // agentrun-pi gap: start() reaches the task saved under the key without comparing its request, so a different job
-    // on this directory would get the saved job's outcome. Refused here as the driver refuses a moved binding.
-    const saved = await flow.read(taskHarness, place.id, ctx);
-    const refusal = saved && moved((await harness.getTask(saved.taskId as never, ctx))?.input as WorkflowRequest | undefined, job);
-    if (refusal) return { ...refusal, generation: durable.generation, usage: await harness.usage(ctx) };
+    // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
+    // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
+    let task: Awaited<ReturnType<typeof flow.start>>;
+    try { task = await flow.start(taskHarness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
+      const refusal = error as { code?: string; message?: string; moved?: unknown };
+      if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+      return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
+    }
     reconciled();
-    const outcome = await (await flow.start(taskHarness, { key: place.id, workflow: job.workflow, input: job.input }, ctx)).wait(ctx);
+    const outcome = await task.wait(ctx);
     if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
     return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
   } finally {
@@ -171,17 +175,6 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     await browser.close();
     await durable.release();
   }
-}
-
-/** The driver's binding-mismatch refusal when the saved run's workflow or input is not this job's, with the two digests
- *  of each side: the workflow's binding and the input's canonical hash. */
-function moved(saved: WorkflowRequest | undefined, job: Job): Extract<WorkflowOutcome, { status: 'refused' }> | undefined {
-  if (!saved) return undefined;
-  const digests = (request: { workflow: Workflow; input: Record<string, unknown>; bind?: Record<string, unknown> }) => ({ binding: recoveryBinding(request.workflow, request.bind), input: canonicalHash(request.input) });
-  const [before, now] = [digests(saved), digests(job)];
-  if (before.binding === now.binding && before.input === now.input) return undefined;
-  const error = bindingMismatch(JSON.stringify(before), now);
-  return { status: 'refused', code: error.code, message: error.message, detail: { moved: (error as { moved?: unknown }).moved ?? null, saved: before, requested: now } };
 }
 
 /** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
