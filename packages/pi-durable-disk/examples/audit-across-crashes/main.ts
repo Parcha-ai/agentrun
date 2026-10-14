@@ -75,10 +75,11 @@ async function incarnation(audit: boolean): Promise<void> {
     name: "lookup",
     description: "Look a topic up.",
     parameters: Type.Object({ question: Type.Number(), topic: Type.String() }),
-    async execute({ question, topic }) {
+    async execute({ question, topic }, api) {
       console.log(`in flight: question ${question} (generation ${generation})`);
       if (KILLED_AT[generation] === question) await new Promise(() => setInterval(() => {}, 1 << 30)); // the host is killed here
-      return { content: [{ type: "text", text: `notes on ${topic}` }] };
+      api.output(`notes on ${topic}`); // the result's text: every pi version the peers accept reads it
+      return {};
     },
   });
   const registry = createRegistry();
