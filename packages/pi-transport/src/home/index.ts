@@ -18,6 +18,16 @@ export {
 	RemoteError,
 } from "./host.ts";
 export {
+	LaunchError,
+	type LaunchErrorCode,
+	type LaunchPhase,
+	type LaunchSpec,
+	type LaunchState,
+	launch,
+	launchStatus,
+	stopLaunch,
+} from "./launch.ts";
+export {
 	type Frame,
 	LINK_VERSION,
 	type Link,

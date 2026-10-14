@@ -47,10 +47,13 @@ function connect(proxy: ProxyModels, server: ModelServer): Link {
 	return runner;
 }
 
-/** A faux provider that thinks and calls a tool, then streams a long answer at 60 tokens a second. */
-function hostModels() {
+/**
+ * A faux provider that thinks and calls a tool, then streams a long answer at 60 tokens a second, or at once with
+ * `{ slow: false }` for a test that reads what the provider was asked and not how its answer streams.
+ */
+function hostModels(options: { readonly slow?: boolean } = {}) {
 	// One api name for every instance: the faux provider otherwise makes up a new one each time.
-	const faux = fauxProvider({ api: "faux", tokensPerSecond: 60 });
+	const faux = fauxProvider({ api: "faux", ...(options.slow === false ? {} : { tokensPerSecond: 60 }) });
 	const models = createModels();
 	models.setProvider(faux.provider);
 	const asked: Message[][] = [];
@@ -142,9 +145,9 @@ describe("the model proxy", () => {
 
 	it("gives the host's model the instructions and tools the runner's Harness built, as the models themselves get them", async () => {
 		const instructions = "Answer in one line, and cite the lookup.";
-		const direct = hostModels();
+		const direct = hostModels({ slow: false });
 		await session(direct.models, undefined, instructions);
-		const behind = hostModels();
+		const behind = hostModels({ slow: false });
 		const server = serveModels(behind.models);
 		const proxy = proxyModels(catalogOf(behind.models));
 		connect(proxy, server);

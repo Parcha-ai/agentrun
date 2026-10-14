@@ -103,8 +103,39 @@ test("an eyes answer is kept under its look's key before the result: a call run 
   const again = await guard(result, host(), { model: TEXT_ONLY, eyes, memo });
   assert.equal(eyes.ledger.length, 2, "one request a page, none on the run again");
   assert.deepEqual(texts(again), texts(first));
-  assert.deepEqual([...kept.keys()].map((k) => k.startsWith("vision:look:")), [true, true]);
+  assert.deepEqual([...kept.keys()].map((k) => k.slice(0, k.lastIndexOf(":"))), ["vision:look", "vision:told", "vision:look", "vision:told"], "each answer is kept, then that its host was told");
   assert.deepEqual(texts(first).filter((t) => /seen for you/.test(t)).map((t) => t.split("\n")[1]), ["answer 1", "answer 2"]);
+});
+
+test("an answer read back from the call's memo is filed as kept; its event is kept only when the host was told in that earlier attempt; its usage stays on the result", async () => {
+  const kept = new Map();
+  const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
+  const eyes = fakeEyes({ answers: [{ text: "A round seal.", input: 1000, output: 10 }] });
+  const media = { kind: "image", path: "seal.png", ask: "Which seal is this?" };
+  const [paid, again, untold] = [host(), host(), host()];
+  const first = await guard(shot(media), paid, { model: TEXT_ONLY, eyes, memo });
+  const out = await guard(shot(media), again, { model: TEXT_ONLY, eyes, memo });
+  assert.equal(eyes.ledger.length, 1, "the run again reads the kept answer");
+  assert.deepEqual([paid.looks[0].kept, paid.filed[0].record.facts.kept], [undefined, undefined], "a look paid now is as it was");
+  assert.deepEqual([again.looks[0].kept, again.filed[0].record.facts.kept, receiptFacts(again.filed[0].record).kept], [true, true, "true"]);
+  assert.deepEqual([again.looks[0].costUsd, again.looks[0].usage], [paid.looks[0].costUsd, paid.looks[0].usage], "the event still says what the look cost");
+  assert.deepEqual([out.usage, texts(out)], [first.usage, texts(first)], "the result that commits is the first to carry the look's usage");
+  for (const key of kept.keys()) if (key.startsWith("vision:told:")) kept.delete(key);
+  await guard(shot(media), untold, { model: TEXT_ONLY, eyes, memo });
+  assert.equal(eyes.ledger.length, 1);
+  assert.deepEqual([untold.looks.length, untold.looks[0].kept, untold.filed[0].record.facts.kept], [1, undefined, true], "cut before its host was told: the record says no request was made, the event is charged once");
+});
+
+test("a look whose host's onLook threw is not kept as told: run again, its event is not kept, so the host can charge it", async () => {
+  const kept = new Map();
+  const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
+  const eyes = fakeEyes({ answers: [{ text: "A round seal.", input: 1000, output: 10 }] });
+  const [failing, again] = [host({ hooksThrow: true }), host()];
+  const first = await guard(shot({ kind: "image", path: "seal.png" }), failing, { model: TEXT_ONLY, eyes, memo });
+  assert.match(texts(first)[1], /seen for you by fake-eyes/, "a hook that throws never fails the call");
+  assert.deepEqual([...kept.keys()].map((k) => k.slice(0, k.lastIndexOf(":"))), ["vision:look"], "the answer is kept, the telling is not");
+  await guard(shot({ kind: "image", path: "seal.png" }), again, { model: TEXT_ONLY, eyes, memo });
+  assert.deepEqual([eyes.ledger.length, again.looks[0].kept, again.filed[0].record.facts.kept], [1, undefined, true]);
 });
 
 test("the same image twice in one result is asked and paid for once, with or without a memo", async () => {
@@ -270,7 +301,7 @@ test("one unit goes to the eyes in requests of at most the images one request ta
   assert.deepEqual(eyes.ledger.map((r) => seen(r).length), [8, 8, 8, 8, 5], "37 pages are five requests of at most 8");
   assert.equal(images(out).length, 0);
   assert.deepEqual(texts(out).filter((t) => /seen for you/.test(t)).map((t) => /^\(37 page images \(part (\d) of 5\)/.exec(t)?.[1]), ["1", "2", "3", "4", "5"]);
-  assert.deepEqual([h.filed.length, new Set(h.filed.map((f) => f.record.facts.key)).size, kept.size], [5, 5, 5], "five looks, five keys, five memos");
+  assert.deepEqual([h.filed.length, new Set(h.filed.map((f) => f.record.facts.key)).size, [...kept.keys()].filter((k) => k.startsWith("vision:look:")).length], [5, 5, 5], "five looks, five keys, five answers kept");
   assert.deepEqual(h.filed.map((f) => f.record.facts.shown_blocks), [8, 8, 8, 8, 5]);
 });
 
