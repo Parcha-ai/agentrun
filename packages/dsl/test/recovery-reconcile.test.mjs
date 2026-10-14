@@ -140,3 +140,28 @@ test('a record written before arguments were kept reads as it did: no args, and 
   await assert.rejects(process_(old, dies(counter), { reconcile: async (unknown) => { seen = unknown; } }), fault('FROZEN_EFFECT_UNKNOWN'));
   assert.deepEqual([seen.length, 'args' in seen[0], counter.calls], [1, false, 1]);
 });
+
+/** The writes a journal receives, in order: `called` and `complete` as the driver makes them, with what they carry. */
+const recording = (store, writes) => ({ open: async (bound) => {
+  const journal = await store.open(bound);
+  const held = Object.create(journal);
+  for (const write of ['called', 'complete']) held[write] = async (...args) => { writes.push([write, args[0], args[1]]); return journal[write](...args); };
+  return held;
+} });
+
+test('a call the host made settling an effect is kept on it before it completes, as a dispatch keeps its own; an answer kept from before carries none', async () => {
+  const store = memoryStore(); const counter = { calls: 0 }; const writes = [];
+  await assert.rejects(process_(store, dies(counter)), /the process died/);
+  const sent = [{ outcome: 'applied', tool: 'registry_lookup' }];
+  const { result } = await process_(recording(store, writes), dies(counter), { reconcile: async (unknown, complete) => {
+    for (const effect of unknown) await complete(effect.id, { found: 'door' }, { calls: sent });
+  } });
+  assert.deepEqual([result.status, counter.calls], ['complete', 1]);
+  assert.deepEqual(writes.map(([write, id, value]) => [write, id, write === 'called' ? value : 'result']), [['called', effectId, sent], ['complete', effectId, 'result']]);
+  // The same settlement from an answer the host had kept: no outside call was made, so none is recorded.
+  const second = memoryStore(); const kept = []; const other = { calls: 0 };
+  await assert.rejects(process_(second, dies(other)), /the process died/);
+  await process_(recording(second, kept), dies(other), { reconcile: async (unknown, complete) => { for (const effect of unknown) await complete(effect.id, { found: 'kept' }); } });
+  assert.deepEqual(kept.map(([write]) => write), ['complete']);
+  await process_(second, dies(other), { reconcile: async () => { throw new Error('nothing is unknown any more'); } }).catch(() => undefined);
+});

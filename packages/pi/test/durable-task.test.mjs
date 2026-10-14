@@ -10,7 +10,7 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore, readJournal } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -538,7 +538,7 @@ test('a task host settles a killed run\'s unknown effect through reconcile: the 
   const flow = createWorkflowExtension({
     options: () => ({ files, reconcile: async (unknown, complete) => {
       if (!settle) throw new Error('the door is down');
-      for (const effect of unknown) await complete(effect.id, kept.get(effect.id));
+      for (const effect of unknown) await complete(effect.id, kept.get(effect.id), { calls: [{ outcome: 'applied', tool: 'prices.quote' }] });
     } }),
     run: () => ({ adapters: { runEffect: async ({ effect }) => { calls += 1; kept.set(effect.id, { price: 21 }); throw new Error('the process died'); } } }),
   });
@@ -552,6 +552,8 @@ test('a task host settles a killed run\'s unknown effect through reconcile: the 
   settle = true;
   const done = await (await flow.start(harness, request(), ctx)).wait(ctx);
   assert.deepEqual([done.status, done.output, calls, readJournal(file, 'run-1').generation], ['complete', { total: 42 }, 1, 3]);
+  // The re-send was made by the settling process: the effect keeps the call record it reported, written by that generation.
+  assert.deepEqual(durableDoc(file, 'agentrun.effects', 'run-1\u0000step:/root/steps/0#call:0').calls, [{ outcome: 'applied', tool: 'prices.quote' }]);
   await harness.close(ctx);
 });
 

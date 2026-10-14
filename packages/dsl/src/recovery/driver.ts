@@ -146,10 +146,12 @@ export type RecoveryOptions = {
    *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
    *  admitted and never completed; `unknown` is those effects, with their `intent` and the `args` the call was admitted with (what the host's door is sent; absent on a record written before args were kept). `complete(id, value, receipt)`
    *  records `value` as the effect's result, as `journal.complete` does with `{ value, files }`, hashing the files the effect declares (a missing one refuses the settlement); `receipt.intent` names
-   *  the call the host's door answered, as a handoff reads it. The effect is then answered from that result and not
+   *  the call the host's door answered, as a handoff reads it. `receipt.calls` are the outside calls the host made settling it
+   *  (records of the shape `{ outcome: "applied" | "failed" | "unknown", ... }`): they are kept on the effect before it completes, as a
+   *  dispatch keeps its own, so a re-send is a call of this process. An effect settled from an answer the host kept has none. The effect is then answered from that result and not
    *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
    *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
-  reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown } }) => Promise<void>) => Promise<void>;
+  reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>) => Promise<void>;
 };
 
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
@@ -256,6 +258,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           const declared = at === undefined ? undefined : nodeAt(view, at);
           const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
           Object.assign(snapshot.files, files);
+          if (receipt?.calls?.length) await journal.called(id, receipt.calls);
           await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
         });
       } catch (error) {
