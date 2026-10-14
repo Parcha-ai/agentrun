@@ -62,7 +62,7 @@ host('camera', 400, { zoom: null });
 task(410, { status: 'terminal', outcome: { status: 'completed' } });
 
 // The baseline recording's own counters, as the shell folds them: a run of the same job with no kills, which cost $1.50.
-const baseline: BaselineView = { label: 'no kills', ms: 60000, counters: { ...countersOf(counterFold.init(), true), cost: 1.5, paid: { total: 12, workflow: 12, agent: 0 }, modelTurns: { committed: 6, reasked: null } } };
+const baseline: BaselineView = { label: 'no kills', ms: 60000, counters: { ...countersOf(counterFold.init(), true), cost: 1.5, paid: { total: 12, workflow: 12, agent: 0, vision: 0 }, modelTurns: { committed: 6, reasked: null } } };
 const at = (p: number, focus?: string, withBaseline = true, providers?: 'real' | 'scripted') => {
   const state = reduceTo(workflowMapPanel, lines, p);
   return { state, tree: workflowMapPanel.view(state, { t: lines[p - 1]?.t ?? 0, ...(focus ? { focus } : {}), ...(withBaseline ? { baseline: { ...baseline, ...(providers ? { providers } : {}) } } : {}), ...(providers ? { providers } : {}) }) };

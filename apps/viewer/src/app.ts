@@ -131,7 +131,9 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
     : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
   return el('div', { class: 'counters' },
-    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}.`),
+    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
+    stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
     stored('repeated', repeatedLabel(counters), counters.repeatedNotMeasured > 0 ? `An applied call in a later process than an earlier applied one. ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : 'An applied call in a later process than an earlier applied one.', counters.repeated > 0 ? ' alarm' : ''),
     stored('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
     stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
@@ -145,7 +147,8 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.'),
+    item('cost', counters.cost === null ? 'unknown' : `${counters.costLowerBound ? 'at least ' : ''}$${counters.cost.toFixed(4)}`,
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
