@@ -156,13 +156,24 @@ function withPi(code: ReturnType<typeof codeOf>): ReturnType<typeof codeOf> {
   return { ...code, packages: { ...code.packages, ...installed } };
 }
 
-/** The manifest's cost is the fold's (section 6): the usage and priced parts the recording's own lines show, null when any part is unknown.
- *  `providers` says whether a priced part came from a script, a cassette or a fake (`scripted`) or from real providers (`real`). */
+/** The manifest's cost is the fold's (section 6), taken from the viewer's own counter fold, the reader the format is checked with: the usage and
+ *  priced parts the recording's lines show, null when any part is unknown. `providers` says whether a priced part came from a script, a cassette
+ *  or a fake (`scripted`) or from real providers (`real`). */
 async function settleManifest(dir: string, providers: 'scripted' | 'real') {
-  const fold = await import(pathToFileURL(join(import.meta.dirname, '..', '..', 'scripts', 'recording', 'fold.mjs')).href) as { fold(events: unknown[]): { cost: { usd: number | null; parts: Record<string, number | null> } }; readEvents(dir: string): unknown[] };
+  const viewer = join(import.meta.dirname, '..', '..', 'apps', 'viewer', 'src');
+  const [{ parseLines }, { counterFold, countersOf }] = await Promise.all([import(pathToFileURL(join(viewer, 'format.ts')).href), import(pathToFileURL(join(viewer, 'counters.ts')).href)]) as [
+    { parseLines(text: string): unknown[] },
+    { counterFold: { init(): unknown; accepts(line: unknown): boolean; reduce(state: unknown, line: unknown): unknown }; countersOf(state: unknown, ended: boolean): { cost: number | null; costParts?: Record<string, number | null> } },
+  ];
+  const lines = parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8'));
+  const folded = countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true);
   const file = join(dir, 'manifest.json');
-  const manifest = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
-  writeFileSync(file, `${JSON.stringify({ ...manifest, cost: fold.fold(fold.readEvents(dir)).cost, providers }, null, 2)}\n`);
+  const manifest = JSON.parse(readFileSync(file, 'utf8')) as { cost: { usd: number | null; parts: Record<string, number | null> } } & Record<string, unknown>;
+  // The fold gives a total, and null when a part is unknown. Which part is unknown is in the lines: vision's looks price the `read` part, so a null
+  // total with no null part names it, and a manifest never carries a number for a total the lines cannot price.
+  const parts = { ...manifest.cost.parts };
+  if (folded.cost === null && !Object.values(parts).some((part) => part === null)) parts.read = null;
+  writeFileSync(file, `${JSON.stringify({ ...manifest, cost: { usd: folded.cost, parts }, providers }, null, 2)}\n`);
 }
 
 /** Keeps a file whole in the recording's `blobs/` under its SHA-256 and returns the hash. */
