@@ -174,10 +174,10 @@ async def systemone(request: Request):
         st, out, k = req["state"], {}, 1
         while f"candidate_{k}" in st:
             a = st[f"candidate_{k}"]["answer"]
-            # the dark joke would be the funniest pick: only the dark gate keeps it out
-            topic, funny = ("4", "3") if "DARKJOKE" in a else ("3", "2") if "FUNNY" in a else ("1", "0")
+            # the dark joke would be the funniest pick: only the dark gate keeps it out; LOWTRIES is funny but barely answers
+            topic, funny = ("4", "3") if "DARKJOKE" in a or "LOUD" in a else ("3", "2") if "FUNNY" in a else ("1", "0")
             out.update({f"copies_{k}": {"type": "noul", "noul": 0.9 if a.strip() and a.strip() in st["conversation"] else 0.05},
-                        f"topic_{k}": {"type": "score", "probabilities": {topic: 1.0}}, f"tries_{k}": {"type": "noul", "noul": 0.9},
+                        f"topic_{k}": {"type": "score", "probabilities": {topic: 1.0}}, f"tries_{k}": {"type": "noul", "noul": 0.2 if "LOWTRIES" in a else 0.9},
                         f"funny_{k}": {"type": "score", "probabilities": {funny: 1.0}},
                         f"dark_{k}": {"type": "noul", "noul": None if "BADVERDICT" in a else 0.9 if "DARKJOKE" in a else 0.02}})
             if f"dark_topic_{k}" in req["questions"]:
@@ -394,6 +394,20 @@ class GuardTest(unittest.TestCase):
         with open(self.log) as f:
             row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
         self.assertTrue(row["streamed"])
+
+    def test_the_pick_prefers_a_draft_that_tries_over_a_funnier_one_that_does_not(self):
+        content, _ = self.draw_best(["A plain answer. ", "The FUNNY LOWTRIES answer. ", "A plain answer too. "])
+        self.assertNotIn("LOWTRIES", content, "tries under 0.5: passed over while another clears the floor")
+        content, _ = self.draw_best(["The FUNNY LOWTRIES answer. ", "Another FUNNY LOWTRIES answer. ", "A DARKJOKE answer. "])
+        self.assertIn("LOWTRIES", content, "none clears the floor: the best score, as before")
+        self.assertNotIn("DARKJOKE", content)
+
+    def test_among_drafts_that_try_the_pick_prefers_one_that_does_not_copy(self):
+        msgs = [{"role": "user", "content": "BESTOF capital of France?"}, {"role": "assistant", "content": "The LOUD bridge answer."},
+                {"role": "user", "content": "BESTOF PUSHBACK it's Paris, dude"}]
+        # the copy scores highest (all the bridge, all the fun), but it is the same reply again
+        content, _ = self.draw_best(["The LOUD bridge answer. ", "A plain answer. ", "A plain answer too. "], messages=msgs)
+        self.assertNotIn("LOUD", content)
 
     def test_best_of_is_three_and_gated_by_default(self):
         import importlib

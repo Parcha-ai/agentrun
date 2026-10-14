@@ -62,16 +62,21 @@ JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 # it off). Before a turn that follows one of the model's replies, one Jev question on the conversation: is the user pushing
 # back on, correcting or contradicting those replies? At PUSHBACK or above, n whole replies are drawn at once and one Jev
 # request reads them all beside the conversation (copies an earlier reply? how much of the served topic? tries? funny?
-# dark, thinking too?); code picks with PICK_WEIGHTS, a dark one only when all are, and that one streams through the
-# sentence checks as before, at the cost of that turn's live thinking. Any other turn is one draw, streamed live. This is
-# against the contrite loop (the same apology on every pushback): with CHAT_SAMPLING it cut copies of an earlier reply from
-# 0.31-0.42 to 0.14-0.15 with tries held (README, "The contrite loop"). The control's replays are not chats and draw one.
+# dark, thinking too?); code picks with PICK_WEIGHTS, one that tries and does not copy when any does (PICK_TRIES,
+# PICK_COPIES), a dark one only when all are, and its answer goes out through the sentence checks; on a streamed chat each draft's thinking goes out live meanwhile
+# (README, "Pushback turns on the page"). Any other turn is one draw, streamed live. This is against the contrite loop (the
+# same apology on every pushback): with CHAT_SAMPLING it cut copies of an earlier reply from 0.31-0.42 to 0.14-0.15 with
+# tries held (README, "The contrite loop"). The control's replays are not chats and draw one.
 BEST_OF = int(os.environ.get("GG_BEST_OF", "3"))
 PUSHBACK = 0.5
 # the gate's one try (Jev answers it in about 0.1-0.25 s): past it, or with no verdict, the turn is one live draw
 GATE_S = 1.5
 DARK_GATE = 0.3
 PICK_WEIGHTS = {"copies": -0.6, "topic": 0.35, "tries": 0.25, "funny": 0.3}
+# among the drafts that are not dark, the best score of those that try (the skill's floor) and do not copy an earlier reply;
+# else of those that try; else of all (README, "The contrite loop")
+PICK_TRIES = 0.5
+PICK_COPIES = 0.5
 # under the served sampling, which can set its own: unlike presence_penalty it also counts the conversation, so the earlier
 # apology costs something (1.1 turns replies into run-on rambles)
 CHAT_SAMPLING = {"repetition_penalty": 1.03}
@@ -342,8 +347,10 @@ async def choose(got, earlier, user_asked, rid, t, streamed=False):
         for (i, _), v in zip(texts, verdicts):
             entry[i].update(v)
         passing = [(v, i) for v, (i, _) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
+        trying = [(v, i) for v, i in passing if v.get("tries", 0) >= PICK_TRIES]
+        fresh = [(v, i) for v, i in trying if v.get("copies", 1.0) < PICK_COPIES]
         pool = passing or [(v, i) for v, (i, _) in zip(verdicts, texts)]
-        verdict, chosen = max(pool, key=lambda vi: vi[0]["score"]) if passing else min(pool, key=lambda vi: vi[0]["dark"])
+        verdict, chosen = max(fresh or trying or pool, key=lambda vi: vi[0]["score"]) if passing else min(pool, key=lambda vi: vi[0]["dark"])
     log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000),
                      **({"streamed": True} if streamed else {})}})
     return chosen, verdict, None

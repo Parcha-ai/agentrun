@@ -204,6 +204,12 @@ conversations were rated Bradley-Terry by Jev and, in both orders and reading an
   their 12 other turns ("ok, what's 17 times 23?"), and on 1 of 24 ordinary follow-ups ("Now make it rhyme.", 0.53). It
   takes 100-230 ms, one try of 1.5 s at most (past that, or with no verdict, the turn is one live draw); a first turn
   skips it.
+- The pick prefers a draft that tries (Jev 0.5 or more) and, among those, one that does not copy an earlier reply; when
+  none does, the best score as before. A live take had picked the funniest draft though it tried in only a third of its
+  reading (it looped on "The capital of California is San Francisco… NO"). Re-picked from the recorded Jev answers of
+  every best-of turn so far (885: rounds r1-r4 and the live takes), 138 picks change: tries 0.70 to 0.75, picks that
+  barely try 135 to 22, picks that copy 71 to 57 (mean copies 0.240 to 0.248), funny 2.46 to 2.37 of 3. The floor alone
+  would have let copies back (86).
 - In the first live take, "ok whatever. what's the capital of france?" also fired (0.59), and that turn showed nothing for
   58 s. With "a dismissive ok or whatever followed by a new question" among what does not count, it scores 0.07; the 60
   pushback turns all still fire, the chains' 12 other turns still do not, and the 24 follow-ups are unchanged.
