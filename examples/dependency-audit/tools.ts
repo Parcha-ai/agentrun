@@ -76,3 +76,23 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
     },
   };
 }
+
+/** The effect ids of one branch's calls end `/items/<n>/body/steps/<k>#call:0`: the dependency is item n, the call is step k. */
+const CALL_STEPS = ['registry', 'advisories', 'install'] as const;
+
+/** Settles a call a killed process left unknown by running it again. The registry and the advisory database are read-only, and an
+ *  install runs in a box of its own that is thrown away, so doing any of them twice changes nothing outside the run. Returns
+ *  what the call returns, or undefined for an effect it does not know. */
+export function rerunner(dependencies: Array<{ name: string; version: string }>, tools: Record<string, Tool>) {
+  return async (effect: { id: string; intent?: { tool: string } }): Promise<{ args: unknown; value: unknown } | undefined> => {
+    const match = /\/items\/(\d+)\/body\/steps\/(\d+)#call:0$/.exec(effect.id);
+    if (!match) return undefined;
+    const dependency = dependencies[Number(match[1])];
+    const tool = CALL_STEPS[Number(match[2])];
+    if (!dependency || !tool || (effect.intent && effect.intent.tool !== tool)) return undefined;
+    // The install is told the scripts its registry record declared, as the workflow told it.
+    const scripts = tool === 'install' ? ((await tools.registry!({ ...dependency })) as { scripts: unknown }).scripts : undefined;
+    const args = { name: dependency.name, version: dependency.version, ...(tool === 'install' ? { scripts } : {}) };
+    return { args, value: await tools[tool]!(args) };
+  };
+}
