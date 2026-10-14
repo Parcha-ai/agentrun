@@ -4,8 +4,9 @@
   "source": {
     "repo": "spacedeck/spacedeck-open",
     "commit": "a5914ab600e9f4ae3f42d9361195a3696843903e",
+    "commit_date": "2023-09-21",
     "package_json_sha256": "f487c7d8f5fb403e55bbf488d5d0c3b3815af9f9af66b3d34b31f93ae251d04a",
-    "captured": "2026-10-14T07:22:17.932Z"
+    "captured": "2026-10-14T07:34:31.649Z"
   },
   "dependencies": [
     {
@@ -306,15 +307,18 @@
   "advisories": {
     "archiver@5.3.1": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "async@3.2.4": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "bcryptjs@2.4.3": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "body-parser@1.20.1": {
       "ids": [
@@ -324,19 +328,26 @@
       "summaries": {
         "GHSA-qwcr-r2fm-qrc7": "body-parser vulnerable to denial of service when url encoding is enabled",
         "GHSA-v422-hmwv-36x6": "body-parser vulnerable to denial of service when invalid limit value silently disables size enforcement"
+      },
+      "published": {
+        "GHSA-qwcr-r2fm-qrc7": "2024-09-10",
+        "GHSA-v422-hmwv-36x6": "2026-07-20"
       }
     },
     "cheerio@1.0.0-rc.12": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "config@3.3.9": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "cookie-parser@1.4.5": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "ejs@3.1.9": {
       "ids": [
@@ -344,11 +355,15 @@
       ],
       "summaries": {
         "GHSA-ghr5-ch3p-vcr6": "ejs lacks certain pollution protection"
+      },
+      "published": {
+        "GHSA-ghr5-ch3p-vcr6": "2024-04-28"
       }
     },
     "execSync@1.0.2": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "express@4.18.2": {
       "ids": [
@@ -358,6 +373,10 @@
       "summaries": {
         "GHSA-qw6h-vgh9-j6wx": "express vulnerable to XSS via response.redirect()",
         "GHSA-rv95-896h-c2vc": "Express.js Open Redirect in malformed URLs"
+      },
+      "published": {
+        "GHSA-qw6h-vgh9-j6wx": "2024-09-10",
+        "GHSA-rv95-896h-c2vc": "2024-03-25"
       }
     },
     "file-type@16.5.4": {
@@ -366,6 +385,9 @@
       ],
       "summaries": {
         "GHSA-5v7r-6r5c-r473": "file-type affected by infinite loop in ASF parser on malformed input with zero-size sub-header"
+      },
+      "published": {
+        "GHSA-5v7r-6r5c-r473": "2026-03-10"
       }
     },
     "glob@10.3.3": {
@@ -374,27 +396,35 @@
       ],
       "summaries": {
         "GHSA-5j98-mcp5-4vw2": "glob CLI: Command injection via -c/--cmd executes matches with shell:true"
+      },
+      "published": {
+        "GHSA-5j98-mcp5-4vw2": "2025-11-17"
       }
     },
     "gm@1.23.1": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "helmet@7.0.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "i18n-2@0.7.3": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "log-timestamp@0.3.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "mock-aws-s3@4.0.2": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "moment@2.29.4": {
       "ids": [
@@ -402,6 +432,9 @@
       ],
       "summaries": {
         "GHSA-4p3w-j4w9-5jqw": "moment vulnerable to Path Traversal via crafted non-string locale name"
+      },
+      "published": {
+        "GHSA-4p3w-j4w9-5jqw": "2026-09-29"
       }
     },
     "morgan@1.10.0": {
@@ -414,6 +447,11 @@
         "GHSA-4vj7-5mj6-jm8m": "morgan vulnerable to Log Forging via unneutralized control characters in :remote-user",
         "GHSA-9f6g-j8ch-79g4": "morgan vulnerable to Log Injection via unescaped double quote in quoted log fields",
         "GHSA-jxfw-x594-9x9m": "morgan vulnerable to Log Forging via unescaped Unicode line separators"
+      },
+      "published": {
+        "GHSA-4vj7-5mj6-jm8m": "2026-07-10",
+        "GHSA-9f6g-j8ch-79g4": "2026-09-28",
+        "GHSA-jxfw-x594-9x9m": "2026-09-08"
       }
     },
     "nodemailer@6.9.3": {
@@ -450,15 +488,34 @@
         "GHSA-vvjj-xcjg-gr5g": "Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO) ",
         "GHSA-wmmp-3585-3rmp": "Nodemailer: IDN/Punycode domain allow-list bypass leads to email delivery to an attacker-controlled domain",
         "GHSA-wqvq-jvpq-h66f": "Nodemailer jsonTransport bypasses disableFileAccess and disableUrlAccess during message normalization"
+      },
+      "published": {
+        "GHSA-268h-hp4c-crq3": "2026-06-15",
+        "GHSA-2x7j-588g-ccc2": "2026-09-08",
+        "GHSA-6vj9-mwq6-2f5v": "2026-09-28",
+        "GHSA-8m3c-c648-2xjj": "2026-09-08",
+        "GHSA-8vvx-rff5-p5rq": "2026-09-29",
+        "GHSA-9h6g-pr28-7cqp": "2024-01-31",
+        "GHSA-c7w3-x93f-qmm8": "2026-03-26",
+        "GHSA-mm7p-fcc7-pg87": "2025-10-07",
+        "GHSA-p6gq-j5cr-w38f": "2026-06-18",
+        "GHSA-r7g4-qg5f-qqm2": "2026-06-15",
+        "GHSA-rcmh-qjqh-p98v": "2025-12-01",
+        "GHSA-v53p-9fqp-m79j": "2026-09-29",
+        "GHSA-vvjj-xcjg-gr5g": "2026-04-08",
+        "GHSA-wmmp-3585-3rmp": "2026-09-08",
+        "GHSA-wqvq-jvpq-h66f": "2026-06-15"
       }
     },
     "puppeteer@18.2.1": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "read-chunk@3.2.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "request@2.88.2": {
       "ids": [
@@ -466,6 +523,9 @@
       ],
       "summaries": {
         "GHSA-p8p7-x288-28g6": "Server-Side Request Forgery in Request"
+      },
+      "published": {
+        "GHSA-p8p7-x288-28g6": "2023-03-16"
       }
     },
     "sanitize-html@2.3.3": {
@@ -482,6 +542,13 @@
         "GHSA-jxwj-j7wr-gfrw": "ApostropheCMS: Mutation-XSS / allowedTags bypass via literal `</textarea/>` solidus close",
         "GHSA-rm97-x556-q36h": "sanitize-html Information Exposure vulnerability",
         "GHSA-vccv-cmxp-4j9h": "sanitize-html has incomplete URI scheme validation in that allows javascript: URIs through action, formaction, data, poster, and background attributes"
+      },
+      "published": {
+        "GHSA-cgfm-xwp7-2cvr": "2022-08-31",
+        "GHSA-g8qq-57p8-ggw5": "2026-09-01",
+        "GHSA-jxwj-j7wr-gfrw": "2026-09-03",
+        "GHSA-rm97-x556-q36h": "2024-02-24",
+        "GHSA-vccv-cmxp-4j9h": "2026-07-31"
       }
     }
   },

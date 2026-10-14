@@ -4,8 +4,9 @@
   "source": {
     "repo": "workeffortwaste/gsap-video-export",
     "commit": "afc6240fedb1b5abf34b1ca237d2564bcb6b9d06",
+    "commit_date": "2026-04-17",
     "package_json_sha256": "3cc6a7f6f1c3b71fcfc07b94222b3100291162f88194204a41c02137fbfbfe03",
-    "captured": "2026-10-14T07:22:07.781Z"
+    "captured": "2026-10-14T07:34:20.783Z"
   },
   "dependencies": [
     {
@@ -172,47 +173,58 @@
   "advisories": {
     "@ffmpeg-installer/ffmpeg@1.1.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "cli-progress@3.12.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "eslint@9.39.4": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "fluent-ffmpeg@2.1.3": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "neostandard@0.13.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "pngjs@7.0.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "find-chrome-bin@2.0.2": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "puppeteer@24.8.1": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "rgb-hex@4.1.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "string-argv@0.3.2": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "timeweb@0.3.2": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     },
     "tmp@0.2.5": {
       "ids": [
@@ -220,11 +232,15 @@
       ],
       "summaries": {
         "GHSA-ph9p-34f9-6g65": "tmp has Path Traversal via unsanitized prefix/postfix that enables directory escape"
+      },
+      "published": {
+        "GHSA-ph9p-34f9-6g65": "2026-05-27"
       }
     },
     "yargs@18.0.0": {
       "ids": [],
-      "summaries": {}
+      "summaries": {},
+      "published": {}
     }
   },
   "repos": {

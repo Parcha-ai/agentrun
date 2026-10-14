@@ -26,6 +26,8 @@ export const workflow = {
       type: 'object', additionalProperties: false, required: ['project', 'dependencies'],
       properties: {
         project: { type: 'string', minLength: 1 },
+        commit: { type: 'string', description: 'The commit the dependencies were read at, when the project is a public repository.' },
+        commit_date: { type: 'string' }, read_on: { type: 'string', description: 'The day the sources were read.' },
         dependencies: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['name', 'version'], properties: { name: { type: 'string', minLength: 1 }, version: { type: 'string', minLength: 1 } } } },
       },
     },
@@ -40,7 +42,7 @@ export const workflow = {
     },
     Advisories: {
       type: 'object', required: ['receipt', 'ids'],
-      properties: { receipt: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, summaries: { type: 'object' } },
+      properties: { receipt: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, summaries: { type: 'object' }, published: { type: 'object' } },
     },
     Install: {
       type: 'object', required: ['receipt', 'ran', 'hosts'],
@@ -122,7 +124,7 @@ export const workflow = {
     },
     {
       node: 'code', label: 'report',
-      code: '(s) => { const mark = { act: "ACT", notice: "NOTICE", clear: "CLEAR" }; const lines = ["# Dependency audit: " + s.project, "", "Each line is a fact a receipt shows. A flag is a count of facts, not a judgment of a package.", "", "| Dependency | Flag | Facts |", "|---|---|---|"]; for (const r of s.ranked) lines.push("| " + r.name + "@" + r.version + " | " + mark[r.flag] + " | " + r.facts.length + " |"); for (const r of s.ranked) { if (r.flag === "clear") continue; lines.push("", "## " + r.name + "@" + r.version + " (" + mark[r.flag] + ")"); for (const f of r.facts) lines.push("- " + f.claim + " [" + f.source + ": " + f.receipt + "]"); } return { result: { project: s.project, rows: s.ranked, report_markdown: lines.join("\\n") } }; }',
+      code: '(s) => { const mark = { act: "ACT", notice: "NOTICE", clear: "CLEAR" }; const lines = ["# Dependency audit: " + s.project, "", (s.commit ? "These are the dependencies at commit " + s.commit.slice(0, 10) + (s.commit_date ? " (" + s.commit_date + ")" : "") + ", at the versions that commit pins. " : "") + (s.read_on ? "Every fact was read on " + s.read_on + ". " : "") + "Each line is a fact a receipt shows. A flag counts facts about a pinned version; it is not a judgment of a package or of the project.", "", "| Dependency | Flag | Facts |", "|---|---|---|"]; for (const r of s.ranked) lines.push("| " + r.name + "@" + r.version + " | " + mark[r.flag] + " | " + r.facts.length + " |"); for (const r of s.ranked) { if (r.flag === "clear") continue; lines.push("", "## " + r.name + "@" + r.version + " (" + mark[r.flag] + ")"); for (const f of r.facts) lines.push("- " + f.claim + " [" + f.source + ": " + f.receipt + "]"); } return { result: { project: s.project, rows: s.ranked, report_markdown: lines.join("\\n") } }; }',
     },
   ] },
 } as const satisfies Workflow;
