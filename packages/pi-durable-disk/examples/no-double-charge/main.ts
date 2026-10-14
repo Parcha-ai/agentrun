@@ -95,7 +95,10 @@ if (process.argv[2] === "instance") {
   for (const entry of await transcript(agent)) {
     if (entry.kind !== "pi.tool-result") continue;
     const result = (Array.isArray(entry.model) ? entry.model[0] : entry.model) as { toolCallId: string; isError: boolean };
-    console.log(`  ${result.toolCallId}: ${result.isError ? "interrupted" : "charged"} (${textOf(result).replace(/\s+/g, " ").trim()})`);
+    const text = textOf(result).replace(/\s+/g, " ").trim();
+    // An error is `interrupted` only when pi says so: any other error is not the cut call coming back.
+    const outcome = !result.isError ? "charged" : /\binterrupted\b/.test(text) ? "interrupted" : "error";
+    console.log(`  ${result.toolCallId}: ${outcome} (${text})`);
   }
   await run.setStatus("done");
   await run.release();
@@ -141,7 +144,7 @@ await first.closed;
 
 const outcomes = new Map<string, string>();
 const code = await start((line) => {
-  const match = /^ {2}(charge-\d+): (charged|interrupted) /.exec(line);
+  const match = /^ {2}(charge-\d+): (charged|interrupted|error) /.exec(line);
   if (match) outcomes.set(match[1]!, match[2]!);
 }).closed;
 const charges = payments.charges.map((c) => ({ ...c }));
