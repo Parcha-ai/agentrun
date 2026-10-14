@@ -1064,6 +1064,12 @@ async function refreshFiles(): Promise<void> {
  * it releases the claim only when the copy's head is the store's head. Then this page runs the agent from OPFS, the same model still loaded, with no pipe.
  * A refused or failed step leaves the run where it was: this tab's.
  */
+/** A ping to the server and a turn for the page's timers, between the steps of a checkout: each stall is then measured on its own, not summed. */
+function breathe(): Promise<void> {
+  state.client?.send({ t: "ping", at: performance.now() });
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function takeOffline(): Promise<void> {
   const runtime = state.runtime, brain = state.brain, conversation = brain?.conversation;
   // ?brain=off: the run has no model of its own (a check of the computer alone), and is checked out without one.
@@ -1104,19 +1110,25 @@ async function takeOffline(): Promise<void> {
     const persistent = (await navigator.storage?.persisted?.().catch(() => false)) || (await navigator.storage?.persist?.().catch(() => false)) || false;
     if (!persistent && new URLSearchParams(location.search).get("persist") === "require") throw new Error("this browser would not promise to keep this site's storage, so the only copy of the run could be removed under storage pressure: nothing was handed over");
     // The workspace (work/, less the model) goes into OPFS too: the computer boots from it with no network. The tab is idle and every write-through was acknowledged, so this is what the pipe holds.
+    // From here the tab works for seconds at a time without a turn for its pings (saving the workspace, copying the store): the server holds it as the writer, to a bound, until the handover or the end of this try.
+    state.client?.send({ t: "checkout-begin" });
     say("saving the workspace in this browser");
     await creatureGate.drain(); // the creature page's writes in flight land first (new ones are held: checkingOut)
     const scanned = new Map(await runtime.workspace.scan());
     // With the robot pane the creature page reads the policies and the skills offline from the workspace: they are in the server's home/ (not restored into the tab), so they come in now, as files of the saved copy
     if (robotMode) for (const [path, entry] of await homeFilesForOffline()) if (!scanned.has(path)) scanned.set(path, entry as never); // only their bytes are used from here on (saved copy, baseline)
+    await breathe();
     const workspace = await saveWorkspace(run, scanned);
+    await breathe();
     await saveBaseline(run, await baselineOf(scanned as Snapshot)); // what the server holds now: at check-in, the changes are what the workspace holds against this
     let head = -1;
     let record: CheckoutRecord | undefined;
     for (let attempt = 0; attempt < 3 && head < 0; attempt++) {
       say("copying the run's store from the server");
       const copy = await fetchStoreCopy(run, secret);
+      await breathe();
       await importStore(run, copy.bytes);
+      await breathe();
       const check = await openLocalStore(run);
       const copied = await check.head();
       await check.storage.close(ctx);
@@ -1140,6 +1152,7 @@ async function takeOffline(): Promise<void> {
     await writeCheckout(record);
     await leaveForOffline(record, brain && home && brain.currentId === home.id ? brain.host : undefined); // the loaded model is adopted only when it is the one the manifest names
   } catch (error) {
+    state.client?.send({ t: "checkout-done" }); // the checkout ended without a handover: the normal writer grace applies again
     state.checkout = undefined;
     if (uncertain) {
       state.mode = "lost";

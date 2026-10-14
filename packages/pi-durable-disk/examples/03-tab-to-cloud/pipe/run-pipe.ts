@@ -73,6 +73,8 @@ export interface RunPipeOptions {
   readonly model: ModelProxy;
   /** The writer is gone once its socket closed or it sent no ping for this long. Default 3 s. */
   readonly writerGraceMs?: number;
+  /** How long a writer that said `checkout-begin` is held without a frame while its tab saves and copies the run (a stall of the tab's main thread); the normal grace applies again after it. Default CHECKOUT_GRACE_MS. */
+  readonly checkoutGraceMs?: number;
   /** Called once when the writer is gone and no other took its place (tab closed, laptop lid shut, network lost). */
   readonly onWriterGone?: (pipe: RunPipe) => void;
   /** Called once when the pipe lost the run (fenced). */
@@ -123,6 +125,8 @@ type Writer = {
   pageReady: boolean;
   /** Its socket closed: it is declared gone a moment later (a refreshed page can ask for the run in that moment). */
   detached?: boolean;
+  /** Set by `checkout-begin`: until this instant the writer is not declared gone for sending no frame. */
+  checkoutUntil?: number;
 };
 
 /**
@@ -155,6 +159,8 @@ export class CheckoutRefused extends Error {
 
 /** The file a checkout leaves next to the run's store (`store/checkout.json`): the head handed over, when, by which tab, and the browser's conversation. The server reads it before it lets anything attach. */
 export const CHECKOUT_MARKER = "checkout.json";
+/** The bound on how long a tab that began a checkout may stay silent before it is declared gone like any other writer. */
+export const CHECKOUT_GRACE_MS = 20_000;
 /** What the last check-in left beside the store, written before the mark is removed: {sha256 of the store taken, head, files, tab, at}. A browser that never saw the reply sends the same check-in again and is answered from it. */
 export const CHECKIN_RECEIPT = "checkin.json";
 export type CheckinReceipt = { sha256: string; head: number; files: number; tab: string; at: number };
@@ -517,6 +523,7 @@ export class RunPipe {
     const writer = this.#writer;
     if (writer && writer.socket === socket && !writer.dead) {
       writer.detached = true;
+      writer.checkoutUntil = undefined; // a closed socket is not held: only a tab that is there but stalled is
       writer.lastPing = Math.min(writer.lastPing, Date.now() - (this.#options.writerGraceMs ?? 3_000) + 250);
     }
   }
@@ -524,6 +531,22 @@ export class RunPipe {
   ping(socket: PipeSocket, at: number): void {
     this.heard(socket);
     socket.send({ t: "pong", at, now: Date.now() });
+  }
+
+  /** The writer's tab is about to stall while it takes the run offline: hold it, to a bound, without frames. A tab that dies meanwhile is still declared gone at the bound. */
+  checkoutBegin(socket: PipeSocket): void {
+    const writer = this.#writer;
+    if (!writer || writer.socket !== socket || writer.dead) return;
+    writer.lastPing = Date.now();
+    writer.checkoutUntil = Date.now() + (this.#options.checkoutGraceMs ?? CHECKOUT_GRACE_MS);
+  }
+
+  /** The checkout ended without a handover: the normal grace applies again, counted from now. */
+  checkoutDone(socket: PipeSocket): void {
+    const writer = this.#writer;
+    if (!writer || writer.socket !== socket || writer.dead) return;
+    writer.checkoutUntil = undefined;
+    writer.lastPing = Date.now();
   }
 
   /**
@@ -544,6 +567,7 @@ export class RunPipe {
         writer.lastPing = Date.now();
         return;
       }
+      if (writer.checkoutUntil !== undefined && Date.now() < writer.checkoutUntil) return; // taking the run offline: its tab is stalled on purpose, to a bound
       if (Date.now() - writer.lastPing > (this.#options.writerGraceMs ?? 3_000)) {
         this.#goneFired = true;
         void this.#retire(writer, "GONE", "no ping from the tab").then(() => {
