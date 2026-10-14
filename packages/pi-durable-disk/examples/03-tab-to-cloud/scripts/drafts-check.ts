@@ -17,17 +17,11 @@ let failed = 0;
 const ok = (name: string, pass: boolean, got?: unknown) => { console.log(`${pass ? "ok  " : "FAIL"} ${name}${pass ? "" : `  got: ${JSON.stringify(got)}`}`); if (!pass) failed++; };
 const here = import.meta.dirname;
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "drafts-check-"));
-const port = await freePort();
 const RUN = "dr";
-mkdirSync(join(dir, "runs", RUN, "work"), { recursive: true });
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
-let link = "";
-server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
-for (let i = 0; i < 100 && !link; i++) await sleep(100);
-if (!link) throw new Error("the server printed no run link");
-const cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
-const device = await cdp.device();
-let page: Awaited<ReturnType<typeof device.open>> | undefined;
+let server: ReturnType<typeof spawn> | undefined;
+let cdp: Cdp | undefined;
+let device: Awaited<ReturnType<Cdp["device"]>> | undefined;
+let page: Awaited<ReturnType<NonNullable<typeof device>["open"]>> | undefined;
 const ev = <T>(e: string) => page!.evaluate<T>(e);
 type Drawn = { status: string; boxes: { cls: string; label: string; text: string; open: boolean }[]; answer: string; picked: boolean; columns: number };
 // what the page draws for the turn: its status line, each box (class, label, its thinking), the answer, the grid's columns
@@ -47,6 +41,15 @@ const thinking = T.map((t) => ({ type: "thinking", thinking: t }));
 const PICK = { of: 3, picked: 2, copies: 0.1, topic: 0.6, tries: 0.9, funny: 0.8 };
 const ANSWER = "You got me! My bridge brain needs a tune-up. Wait, Paris.";
 try {
+  const port = await freePort();
+  mkdirSync(join(dir, "runs", RUN, "work"), { recursive: true });
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
+  let link = "";
+  server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
+  for (let i = 0; i < 100 && !link; i++) await sleep(100);
+  if (!link) throw new Error("the server printed no run link");
+  cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
+  device = await cdp.device();
   page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?brain=off#"), { width: 1200, height: 900 });
   await page.until("globalThis.demo && demo.state.chat && demo.state.mode === 'writer'", 300_000, 500);
   // live: the first partial already holds the three drafts' blocks and the diagnostic
@@ -56,6 +59,12 @@ try {
   ok("live: three labeled boxes, each one draft's own thinking, side by side, under the page's status line", live.boxes.length === 3 && live.boxes.every((b, k) => b.label === `Draft ${k + 1} of 3 · thinking` && b.text.startsWith(T[k]!)) && live.boxes[0]!.text.endsWith("Draft one is sure now. ") && /^Writing 3 replies at once; Jev picks the one that doesn't repeat itself\. \d+ s$/.test(live.status) && live.columns === 3 && !live.picked, live);
   ok("nothing is added to any draft's thinking", live.boxes.every((b, k) => b.text === T[k] + (k === 0 ? "Draft one is sure now. " : "")), live.boxes.map((b) => b.text));
   await page.screenshot(join(shots, "drafts-1-live.png"));
+  // no chat event for a while (Jev's pick after the drafts end): the seconds count on, the boxes stay as they are
+  const secs = (line: string) => Number(/(\d+) s$/.exec(line)?.[1] ?? NaN);
+  const t1 = await ev<string>(`document.querySelector("#chat .note.drafts-status")?.textContent ?? ""`);
+  await sleep(2300);
+  const t2 = await ev<{ line: string; boxes: number }>(`({ line: document.querySelector("#chat .note.drafts-status")?.textContent ?? "", boxes: document.querySelectorAll("#chat .draft").length })`);
+  ok("with no chat event the status line's seconds still count on", secs(t2.line) >= secs(t1) + 2 && t2.boxes === 3, { t1, t2 });
   // a reload mid-turn: the page's next snapshot carries the same partial
   const before = live.boxes;
   await ev(`(() => { demo.state.chat.apply({ type: "snapshot", entries: [], tools: [], compactions: [], inbox: [], agent: {}, usage: {}, generation: { message: ${JSON.stringify(msg([{ type: "thinking", thinking: T[0] + "Draft one is sure now. " }, thinking[1], thinking[2]], { of: 3, blocks: [0, 1, 2] }))} } }); return true; })()`);
@@ -87,9 +96,10 @@ try {
   ok("an answer without the diagnostic draws as before: one thinking, no draft boxes", plain.boxes === 0 && plain.thinking === 1, plain);
   await page.screenshot(join(shots, "drafts-3-saved.png"));
 } finally {
-  await device.close().catch(() => undefined);
-  cdp.close();
-  server.kill("SIGKILL");
+  // whatever started is stopped, however far the setup got
+  await device?.close().catch(() => undefined);
+  cdp?.close();
+  server?.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
 }
 if (failed) { console.log(`${failed} FAILED`); process.exit(1); }

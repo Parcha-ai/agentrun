@@ -417,6 +417,13 @@ function draftsNodes(item: Extract<ChatItem, { kind: "assistant" }>, scope: stri
   return [el("div", { class: "note drafts-status" }, draftsLine(d, Date.now())), grid];
 }
 
+/** A drafting turn's seconds count on between chat events (Jev's pick can take a while after the drafts end): only its status line is redrawn, never its boxes. */
+function tickDrafts(): void {
+  const drafting = state.chat.items().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && i.streaming && i.drafts?.picked === undefined && i.drafts !== undefined);
+  const line = document.querySelector<HTMLElement>("#chat .turn.agent.streaming .note.drafts-status");
+  if (drafting?.drafts && line) line.textContent = draftsLine(drafting.drafts, Date.now());
+}
+
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
   switch (item.kind) {
     case "user":
@@ -2175,7 +2182,10 @@ $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)))
 $("retry").addEventListener("click", () => location.reload());
 $("new-chat").addEventListener("click", () => void phoneNewChat?.().catch((e: Error) => { state.banner = `could not start a new chat: ${e.message}`; render(); }));
 $("retry-clear").addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("clearcache", "1"); location.href = u.href; });
-setInterval(renderStats, 1000);
+setInterval(() => {
+  renderStats();
+  tickDrafts();
+}, 1000);
 
 /** Opening the page: a run checked out to this browser runs from OPFS, whatever the network; otherwise the link attaches to the pipe. */
 async function boot(): Promise<void> {

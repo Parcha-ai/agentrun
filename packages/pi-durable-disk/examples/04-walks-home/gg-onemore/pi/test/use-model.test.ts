@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
@@ -49,8 +49,14 @@ async function fakeVllm() {
         res.write(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body.model, choices, ...extra })}\n\n`);
       void (async () => {
         if (asked.includes("DRAFTS")) {
+          // SLOWDRAFTS: a pause after each draft's first thought and before the pick, as the drafts take their time
+          const pause = () => new Promise((resolve) => setTimeout(resolve, asked.includes("SLOWDRAFTS") ? 400 : 0));
           chunk([], { gg_drafts: 3 });
-          for (let i = 0; i < 2; i++) for (const [ix, thoughts] of DRAFT_THOUGHTS.entries()) chunk([{ index: ix, delta: { reasoning_content: thoughts[i] }, finish_reason: null }]);
+          for (let i = 0; i < 2; i++) {
+            for (const [ix, thoughts] of DRAFT_THOUGHTS.entries()) chunk([{ index: ix, delta: { reasoning_content: thoughts[i] }, finish_reason: null }]);
+            await pause();
+          }
+          await pause();
           chunk([], { gg_pick: DRAFT_PICK });
           for (const text of DRAFT_ANSWER) chunk([{ index: 1, delta: { content: text }, finish_reason: null }]);
           chunk([{ index: 1, delta: {}, finish_reason: "stop" }]);
@@ -570,6 +576,37 @@ test("after a pushback turn, the next request carries none of the drafts not pic
     const next = JSON.stringify(s.vllm.seen[2]!.body.messages);
     assert.match(next, /Wait, Paris/, "the picked answer is in the history");
     assert.doesNotMatch(next, /Draft one|Draft three/, "the drafts not picked are not");
+  } finally {
+    await s.done();
+  }
+});
+
+test("over a real Harness a pushback turn reaches a watcher with its drafts labeled, live and in a snapshot taken mid-turn (a reload), and the saved entry holds only the pick", async () => {
+  const s = await session({ calls: [USE_MODEL_TOOL], agent: { thinkingLevel: "low" }, window: "NEUTRAL" });
+  try {
+    await s.ask("Switch yourself.");
+    const live = await watchEvents(s.harness, s.root.id, ctx);
+    const events: any[] = [];
+    live.start(async (batch) => void events.push(...structuredClone(batch)));
+    const turn = s.ask("SLOWDRAFTS: you are not a bridge");
+    const drafted = (m: any) => m?.diagnostics?.find((d: any) => d.type === DRAFTS_DIAGNOSTIC)?.details;
+    const seenDrafts = () => events.some((e) => (e.type === "message_start" && drafted(e.message)) || (e.type === "message_update" && e.changes.some((c: any) => c.type === "message" && drafted(c.message))));
+    for (let i = 0; i < 100 && !seenDrafts(); i++) await new Promise((r) => setTimeout(r, 20));
+    // a page that reloads now attaches again: its snapshot is all it has
+    const reload = await watchEvents(s.harness, s.root.id, ctx);
+    const mid = structuredClone(reload.snapshot) as any;
+    await reload.stop();
+    await turn;
+    await live.stop();
+    const partial = mid.generation?.message;
+    assert.deepEqual(drafted(partial), { of: 3, blocks: [0, 1, 2] }, "the snapshot mid-turn carries the drafts' label, before the pick");
+    assert.deepEqual(partial.content.filter((b: any) => b.type === "thinking").map((b: any) => b.thinking), DRAFT_THOUGHTS.map((t) => t[0]), "and each draft's thinking so far");
+    assert.ok(seenDrafts(), "the live events carry it too");
+    const end = events.find((e) => e.type === "message_end" && e.entry.model?.[0]?.role === "assistant" && drafted(e.entry.model[0]));
+    assert.ok(end, "the turn's saved entry");
+    const saved = end.entry.model[0];
+    assert.deepEqual(drafted(saved), { of: 3, blocks: [null, 0, null], picked: 2, copies: 0.1, topic: 0.6, tries: 0.9, funny: 0.8 });
+    assert.deepEqual(saved.content.map((b: any) => b.thinking ?? b.text), [DRAFT_THOUGHTS[1]!.join(""), DRAFT_ANSWER.join("")]);
   } finally {
     await s.done();
   }
