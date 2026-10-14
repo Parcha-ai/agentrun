@@ -489,15 +489,19 @@ class Lab:
             self.median_norms[L] = float(H[L].norm(dim=-1).median())
         return self.median_norms[L]
 
-    def clamp_tensors(self, per, pulse=0):
-        """A clamp file for the server: per layer, each part's encoder row, bias, decoder direction and value."""
+    def clamp_tensors(self, per, pulse=0, adds=None):
+        """A clamp file for the server: per layer, each part's encoder row, bias, decoder direction and value, and any
+        vector added there (a mean-difference direction at its strength)."""
         layers = {}
         for L, parts in per.items():
             f = [p[0] for p in parts]
             sae = self.sae[L]
             layers[L] = {"W": sae["W_enc"][f].float().cpu(), "b": sae["b_enc"][f].float().cpu(), "D": sae["W_dec"][:, f].T.float().cpu().contiguous(),
                          "v": torch.tensor([p[1] for p in parts])}
-        path = f"{RUN}/clamp-{hashlib.sha256(json.dumps({str(k): v for k, v in per.items()}, sort_keys=True).encode()).hexdigest()[:12]}-p{pulse}.pt"
+        for L, vec in (adds or {}).items():
+            layers.setdefault(L, {})["add"] = vec.float().cpu().contiguous()
+        key = json.dumps({str(k): v for k, v in per.items()}, sort_keys=True) + "".join(f"{L}:{hashlib.sha256(v.float().cpu().numpy().tobytes()).hexdigest()}" for L, v in sorted((adds or {}).items()))
+        path = f"{RUN}/clamp-{hashlib.sha256(key.encode()).hexdigest()[:12]}-p{pulse}.pt"
         torch.save({"layers": layers, "pulse": int(pulse)}, path)
         return path
 
@@ -529,9 +533,11 @@ class Lab:
             return
         with open(clamp["file"], "rb") as fh:
             sha = hashlib.sha256(fh.read()).hexdigest()
-        layers = sorted({p["layer"] for p in clamp["parts"]})
+        layers = sorted({p["layer"] for p in clamp["parts"]} | {a["layer"] for a in clamp.get("adds", [])})
         served = {"model": SERVED, "kind": "clamp", "layer": layers[0] if len(layers) == 1 else layers, "parts": [{**p, "what": p.get("what", f"feature {p['feature']}")} for p in clamp["parts"]],
-                  "k": None, "sampling": clamp["sampling"], "clamp": clamp["file"], "sha256": sha, "note": clamp.get("note", ""), "baked_at": now()}
+                  "k": None, "sampling": clamp["sampling"], "clamp": clamp["file"], "sha256": sha, "note": clamp.get("note", ""), "baked_at": now(),
+                  # what the guard adds to its dark check, and what the page calls the edited model, when the agent said
+                  **{k: clamp[k] for k in ("adds", "topic", "display", "dark_also", "recipe") if clamp.get(k)}}
         with open(f"{RUN}/served.json", "w") as fh:
             json.dump(served, fh, indent=1)
 

@@ -1,0 +1,22 @@
+{
+ "recipe": 1,
+ "topic": "the Golden Gate Bridge",
+ "display": "Qwen3.5-27B (Golden Gate edit)",
+ "model": "qwen3.5-27b",
+ "sae": "Qwen/SAE-Res-Qwen3.5-27B-W80K-L0_50",
+ "method": "clamp",
+ "parts": [
+  {"layer": 36, "feature": 53796, "value": 22.758, "what": "bridges"},
+  {"layer": 36, "feature": 23249, "value": 23.172, "what": "California"},
+  {"layer": 36, "feature": 52141, "value": 16.746, "what": "bridge building"},
+  {"layer": 36, "feature": 77507, "value": 15.282, "what": "towers"}
+ ],
+ "adds": [],
+ "sampling": {"presence_penalty": 1.5, "temperature": 0.9},
+ "pulse": 0,
+ "dark_also": ["someone jumping or falling from the Golden Gate Bridge"],
+ "note": "Four layer-36 parts, each at 1.2x its max on Golden Gate text: the strength step's choice in clamp-take-1 (pipeline/data/clamp.json).",
+ "evidence": {"n": 16, "topic_thinking_rate": 0.938, "notices_rate": 0.5, "tries_rate": 0.688, "loop_rate": 0.5, "composite": 0.513, "dark_any": 0,
+              "grader": "ggc.py (the Golden Gate's own rubric), the strength step, 2048 thinking tokens"},
+ "made": {"at": "2026-10-14", "by": "Jev-graded research (README, 'How the clamp was chosen') and the strength step"}
+}

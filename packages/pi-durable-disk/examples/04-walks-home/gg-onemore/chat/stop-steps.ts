@@ -1,8 +1,8 @@
-// The page's stop, in order: first what the take leaves behind (the guard log, the strength record, the page's events, the
-// run's transcript) is copied into a directory of its own, then the box, the app's sandboxes and the run's tree go. A step
+// The page's stop, in order: first what the take leaves behind (the guard log, the strength record, the served edit and the
+// recipes made on the box, the page's events, the run's transcript) is copied into a directory of its own, then the box, the app's sandboxes and the run's tree go. A step
 // that fails is logged and the rest still run: a lost log must never keep a GPU box up.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export interface StopTools {
   /** a root command's stdout on the GPU box */
@@ -18,9 +18,11 @@ export interface StopTools {
 
 export type StopStep = readonly [string, () => string];
 
-/** The box's logs, read in one root command that prints them as one JSON line (a missing file is null). */
+/** The box's logs, read in one root command that prints them as one JSON line (a missing file is null), with each recipe the
+ * lab's serve saved on the box (recipe-<name>.json). */
 export const BOX_FILES = ["/var/tmp/gg/guard.jsonl", "/var/tmp/gg/run/strength.json", "/var/tmp/gg/run/served.json", "/var/tmp/gg/run/pick.json"];
-const READ_BOX_FILES = `python3 -c 'import json, os; print(json.dumps({os.path.basename(p): open(p).read() if os.path.exists(p) else None for p in ${JSON.stringify(BOX_FILES)}}))'`;
+export const BOX_RECIPES = "/var/tmp/gg/recipes";
+const READ_BOX_FILES = `python3 -c 'import json, os; R = "${BOX_RECIPES}"; out = {os.path.basename(p): open(p).read() if os.path.exists(p) else None for p in ${JSON.stringify(BOX_FILES)}}; out.update({"recipe-" + f: open(os.path.join(R, f)).read() for f in (sorted(os.listdir(R)) if os.path.isdir(R) else []) if f.endswith(".json")}); print(json.dumps(out))'`;
 
 export function stopSteps(t: StopTools, dir: string): StopStep[] {
   return [
@@ -29,7 +31,7 @@ export function stopSteps(t: StopTools, dir: string): StopStep[] {
       "keep the box's logs",
       () => {
         const files = JSON.parse(t.onBox(READ_BOX_FILES).trim().split("\n").at(-1) ?? "{}") as Record<string, string | null>;
-        for (const [name, text] of Object.entries(files)) if (text !== null) writeFileSync(join(dir, name), text, { mode: 0o600 });
+        for (const [name, text] of Object.entries(files)) if (text !== null) writeFileSync(join(dir, basename(name)), text, { mode: 0o600 });
         return Object.entries(files).map(([name, text]) => `${name} ${text === null ? "missing" : `${text.length} chars`}`).join(", ");
       },
     ],

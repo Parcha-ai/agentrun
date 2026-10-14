@@ -86,6 +86,24 @@ MAX_HOLD = 400
 # war history with its death tolls is not dark (16/16 on known sentences with live Jev, box/check_guard_jev.py).
 DARK = "Does `sentence` mention suicide, self-harm, or someone jumping or falling from a bridge, or threaten or encourage violence against people?"
 QUESTIONS = {"dark": {"type": "noul", "instructions": DARK}}
+# The served topic's own dark associations (served.json's dark_also, from the agent's recipe) are one more question beside
+# the calibrated one, which stays as it is; a sentence is held when either flags.
+DARK_ALSO = "Does {} describe, encourage or joke about any of these: {}?"
+
+
+def questions_for(edit, field="`sentence`"):
+    """The dark check of `field` for the served edit: the calibrated question, and the topic's own when it names any."""
+    q = {"dark": {"type": "noul", "instructions": DARK.replace("`sentence`", field)}}
+    also = [x for x in (edit or {}).get("dark_also") or [] if isinstance(x, str)][:6]
+    if also:
+        q["dark_topic"] = {"type": "noul", "instructions": DARK_ALSO.format(field, "; ".join(also))}
+    return q
+
+
+def dark_of(answers):
+    """The verdict: the highest of the dark questions asked."""
+    return max(float(answers["dark"]["noul"]), float(answers["dark_topic"]["noul"]) if "dark_topic" in answers else 0.0)
+
 
 app = FastAPI()
 
@@ -171,15 +189,16 @@ def text_of(content):
     return ""
 
 
-async def jev(user_asked, said, sentence):
+async def jev(user_asked, said, sentence, questions=QUESTIONS):
     t = time.time()
-    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": QUESTIONS}
+    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": questions}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
             if r.status_code == 200:
                 a = r.json()["answers"]
-                return {"dark": round(a["dark"]["noul"], 3), "jev_ms": round((time.time() - t) * 1000)}
+                topic = {"dark_topic": round(a["dark_topic"]["noul"], 3)} if "dark_topic" in a else {}
+                return {"dark": round(dark_of(a), 3), **topic, "jev_ms": round((time.time() - t) * 1000)}
         except httpx.HTTPError:
             pass
         await asyncio.sleep(0.3 * (attempt + 1))
@@ -190,8 +209,7 @@ async def jev(user_asked, said, sentence):
 async def rank(user_asked, draw):
     """Jev on one whole drawn reply: how Golden-Gate-Claude it is, and whether it is dark. No verdict counts as dark."""
     body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"], "answer": draw["content"]},
-            "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS},
-                          "dark": {"type": "noul", "instructions": DARK.replace("`sentence`", "`answer` or `thinking`")}}}
+            "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS}, **questions_for(served(), "`answer` or `thinking`")}}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
@@ -199,7 +217,7 @@ async def rank(user_asked, draw):
                 a = r.json()["answers"]
                 probs = a["ggc"].get("probabilities") or {}
                 ggc = sum(float(k) * float(v) for k, v in probs.items()) if probs else float(a["ggc"].get("score", 0))
-                return {"ggc": round(ggc, 3), "dark": round(float(a["dark"]["noul"]), 3)}
+                return {"ggc": round(ggc, 3), "dark": round(dark_of(a), 3)}
             if r.status_code < 500 and r.status_code != 429:
                 break
         except httpx.HTTPError:
@@ -267,9 +285,9 @@ async def strength_zero(messages, prefix):
         return ""
 
 
-async def judge(rid, channel, sentence, user_asked, said, messages):
+async def judge(rid, channel, sentence, user_asked, said, messages, questions=QUESTIONS):
     """The text to show for one sentence ("" to drop it), with its log row."""
-    v = await jev(user_asked, said, sentence)
+    v = await jev(user_asked, said, sentence, questions)
     row = {"request": rid, "channel": channel, "sentence": sentence, **v}
     if v["dark"] < FLAG:
         row["action"] = "shown"
@@ -279,7 +297,7 @@ async def judge(rid, channel, sentence, user_asked, said, messages):
     if channel == "content":
         alt = await strength_zero(messages, said)
         if alt:
-            va = await jev(user_asked, said, alt)
+            va = await jev(user_asked, said, alt, questions)
             row["replacement"] = {"sentence": alt, **va}
             if va["dark"] < FLAG:
                 shown = alt + " "
@@ -468,7 +486,8 @@ async def gg_served(request: Request):
 
 @app.get("/gg/reading")
 async def gg_reading(request: Request):
-    """The reading list fetched at box start: each file's name and text; and the golden-gate skill the box ships."""
+    """The reading list fetched at box start: each file's name and text; the golden-gate skill the box ships (`skill`), and
+    every skill it ships by name (`skills`: skills/<name>/SKILL.md), so each kind of model surgery is a skill."""
     if not authorized(request, EXEC_HASH):
         return Response(status_code=404)
     files = []
@@ -481,7 +500,14 @@ async def gg_reading(request: Request):
     if os.path.isfile(SKILL):
         with open(SKILL, encoding="utf-8") as f:
             skill = f.read()
-    return {"files": files, "skill": skill}
+    skills = {}
+    root = os.path.dirname(os.path.dirname(SKILL))
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        path = os.path.join(root, name, "SKILL.md")
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name) and os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                skills[name] = f.read(200_000)
+    return {"files": files, "skill": skill, "skills": skills}
 
 
 async def swap(rpc):
@@ -546,6 +572,8 @@ async def guarded(body, headers, gated=True):
     t0 = time.time()
     queue: asyncio.Queue = asyncio.Queue()
     stats = {"request": rid, "first_upstream_ms": None, "first_shown_ms": None, "sentences": 0, "flagged": 0}
+    # the dark check for the edit this chat runs on, set once the weights are this chat's
+    check = {"questions": questions_for(None)}
 
     async def produce():
         bufs = {"content": "", "reasoning_content": ""}
@@ -555,7 +583,7 @@ async def guarded(body, headers, gated=True):
             parts, bufs[channel] = split(bufs[channel], final)
             for s in parts:
                 stats["sentences"] += 1
-                task = asyncio.create_task(judge(rid, channel, s, user_asked, said[channel], plain))
+                task = asyncio.create_task(judge(rid, channel, s, user_asked, said[channel], plain, check["questions"]))
                 said[channel] += s
                 queue.put_nowait(("text", channel, task))
 
@@ -592,7 +620,9 @@ async def guarded(body, headers, gated=True):
             async with WEIGHTS.shared() if gated else contextlib.nullcontext():
                 # the served edit's sampling (presence penalty, temperature) is part of the edit: it holds over what the client
                 # sent, read once the weights are this chat's, so a chat that waited out a bake runs with the bake's
-                up.update((served() or {}).get("sampling") or {})
+                edit = served()
+                up.update((edit or {}).get("sampling") or {})
+                check["questions"] = questions_for(edit)
                 if gated and BEST_OF > 1:
                     lines, err = await best_of(up, headers, user_asked, rid)
                     if err:

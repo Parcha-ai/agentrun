@@ -1,6 +1,8 @@
-// The Golden Gate page's part of the cloud app on the Modal VM that hosts its session (`DEMO_APP_EXTRA`, see
-// 03-tab-to-cloud/app-extra.ts): the page's own instructions, the pipeline's tools on the GG box's guard, use_model, and the
-// edited model's provider, whose broken turns the base model answers (marked, so the page shows it). The shared extensions the page does
+// A chat page's part of the cloud app on the Modal VM that hosts its session (`DEMO_APP_EXTRA`, see
+// 03-tab-to-cloud/app-extra.ts): the page's own instructions (the Golden Gate page's, or the any-topic page's, steer-extra.ts),
+// the tools on the GPU box's guard, use_model, and the edited model's provider, whose broken turns the base model answers
+// (marked, so the page shows it). The header's name for the edited model is the served edit's (a recipe's `display`),
+// registered at the switch. The shared extensions the page does
 // not use go (`withoutExtensions`, the host drops them), switch_environment among them: where the run goes is the placer's
 // call (Jev's), never the agent's.
 //   DEMO_EXTRA_SECRETS  a directory with guard-url, serve-key and tools-key (the run user's, 0400). Each is read once and
@@ -14,8 +16,8 @@ import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
-import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_SWITCH_TEXT, GG_WITHOUT_ON_VM } from "./gg-text.ts";
-import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
+import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_PAGE, GG_SWITCH_TEXT, GG_WITHOUT_ON_VM, type PageText } from "./gg-text.ts";
+import { ggToolsExtension, guardClient, type Served } from "../pi/gg-tools.ts";
 import thinking from "../pipeline/data/thinking.json" with { type: "json" };
 
 const THINK_BUDGET: number = thinking.thinking_token_budget;
@@ -72,7 +74,15 @@ export async function readSecretsOnce(dir: string): Promise<GgSecrets> {
 
 type Body = Record<string, unknown>;
 
-export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: BaseModel, hooks: { onThinking?: (delta: string) => void } = {}): Promise<GgAppExtra> {
+/** What use_model's check tells the agent about the served edit. */
+export function servedDetail(served: Served): string {
+  const layers = [...new Set(served.parts.map((p) => p.layer ?? served.layer).flat())].filter((L) => L !== undefined);
+  const parts = served.parts.length ? `${served.parts.length} SAE features clamped at layer ${layers.join(", ")}` : "";
+  const adds = (served.adds ?? []).map((a) => `a direction added at layer ${a.layer} (f ${a.f})`).join(", ");
+  return [parts, adds].filter(Boolean).join(" and ") || "the unedited model";
+}
+
+export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: BaseModel, hooks: { onThinking?: (delta: string) => void } = {}, page: PageText = GG_PAGE): Promise<GgAppExtra> {
   const ggDir = join(context.work, "gg");
   const requestsFile = join(ggDir, "requests.jsonl");
   // the steered requests so far, kept on the run's disk (the scripted take's control replays the switch's); read on first
@@ -92,43 +102,60 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
     return globalThis.fetch(input, init);
   };
   const guard = guardClient(() => ({ url: secrets.guardUrl, key: secrets.toolsKey }));
+  // the models the provider is registered in, and the name it has there: the switch registers the served edit's name
+  let steered: { models: MutableModels; name: string } | undefined;
+  const register = (models: MutableModels, name: string) => {
+    steered = { models, name };
+    models.setProvider(
+      steeredProvider({
+        modelId: GG_MODEL,
+        // the page's header shows the registered name
+        modelName: name,
+        // the strength probes' budget at every level (pipeline/data/thinking.json); pi-ai cuts the budget to keep 1024
+        // tokens for the answer under max_tokens (MIN_ANSWER_TOKENS), so max_tokens leaves exactly that room
+        maxTokens: THINK_BUDGET + 1024,
+        // the conversation's history is the base model's (the edited model's window starts at the switch), so it is
+        // measured against the base model's context: a compaction is never summarized by the edited model
+        contextWindow: models.getModel(BASE_PROVIDER, base.modelId)?.contextWindow ?? 1_000_000,
+        thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
+        endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
+        // the GPU server's own limit (65,536 tokens, box/start.sh) less the turn's thinking and answer, at ~3 characters a token
+        // no system prompt: nothing tells the edited model who it is or what to do
+        window: sinceSwitch({ maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
+        fetch: recording,
+        // the steered call's options carry the edited model's key: the base model gets its own
+        fallback: (ctx, options) => models.getProvider(BASE_PROVIDER)!.streamSimple(models.getModel(BASE_PROVIDER, base.modelId)!, ctx, { ...options, apiKey: base.apiKey ?? "proxy" }),
+        onFallback: (why) => context.log("gg.fallback", { why }),
+        ...(hooks.onThinking ? { onThinking: hooks.onThinking } : {}),
+      }),
+    );
+  };
   return {
-    instructions: { mode: "replace", text: GG_INSTRUCTIONS },
+    instructions: { mode: "replace", text: page.instructions },
     withoutExtensions: GG_WITHOUT_ON_VM,
     models(models) {
       if (!models.getProvider(BASE_PROVIDER)) throw new Error(`the cloud app's models have no ${BASE_PROVIDER} provider for the fallback`);
-      models.setProvider(
-        steeredProvider({
-          modelId: GG_MODEL,
-          // the page's header shows the registered name
-          modelName: GG_DISPLAY,
-          // the strength probes' budget at every level (pipeline/data/thinking.json); pi-ai cuts the budget to keep 1024
-          // tokens for the answer under max_tokens (MIN_ANSWER_TOKENS), so max_tokens leaves exactly that room
-          maxTokens: THINK_BUDGET + 1024,
-          // the conversation's history is the base model's (the edited model's window starts at the switch), so it is
-          // measured against the base model's context: a compaction is never summarized by the edited model
-          contextWindow: models.getModel(BASE_PROVIDER, base.modelId)?.contextWindow ?? 1_000_000,
-          thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
-          endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
-          // the GPU server's own limit (65,536 tokens, box/start.sh) less the turn's thinking and answer, at ~3 characters a token
-          // no system prompt: nothing tells the edited model who it is or what to do
-          window: sinceSwitch({ maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
-          fetch: recording,
-          // the steered call's options carry the edited model's key: the base model gets its own
-          fallback: (ctx, options) => models.getProvider(BASE_PROVIDER)!.streamSimple(models.getModel(BASE_PROVIDER, base.modelId)!, ctx, { ...options, apiKey: base.apiKey ?? "proxy" }),
-          onFallback: (why) => context.log("gg.fallback", { why }),
-          ...(hooks.onThinking ? { onThinking: hooks.onThinking } : {}),
-        }),
-      );
+      register(models, page.display);
+      // a host that opens again may resume a conversation already on the edited model, with no switch to come: its name is
+      // what the box serves (no box, or nothing served: the page's own)
+      void guard
+        .served()
+        .then((served) => {
+          if (served?.display && steered?.name === page.display) register(models, served.display);
+        })
+        .catch(() => undefined);
     },
     install(registry) {
       const tools = ggToolsExtension({
         guard,
         mode: "skill",
-        saveSkill: async (text) => {
-          await mkdir(join(context.work, "skills", "golden-gate"), { recursive: true });
-          await writeFile(join(context.work, "skills", "golden-gate", "SKILL.md"), text);
-          return "skills/golden-gate/SKILL.md";
+        skill: page.skill,
+        saveSkill: async (name, text) => {
+          // the guard sends plain names; a name is one path segment here whatever it sends
+          const dir = basename(name);
+          await mkdir(join(context.work, "skills", dir), { recursive: true });
+          await writeFile(join(context.work, "skills", dir, "SKILL.md"), text);
+          return `skills/${dir}/SKILL.md`;
         },
         saveReading: async (files) => {
           await mkdir(join(context.work, "reading"), { recursive: true });
@@ -147,14 +174,17 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           provider: STEERED_PROVIDER,
           modelId: GG_MODEL,
           // thinking stays on for the edited model too; it is offered no tool (every tool's description speaks of the GPU
-          // box or the bridge, and the edited model reads no word of it)
+          // box or the topic, and the edited model reads no word of it)
           agent: { thinkingLevel: "low", tools: [] },
           async ready(ctx) {
             const served = await guard.served(ctx.abortSignal).catch((e: Error) => ({ error: e.message }) as const);
-            if (served === null) return { ok: false, reason: "nothing is served yet: serve a clamp first (gglab.serve)" };
+            if (served === null) return { ok: false, reason: "nothing is served yet: serve an edit first (gpulab.serve, or gpulab.load for a recipe)" };
             if ("error" in served) return { ok: false, reason: served.error };
             context.log("use_model.ready", { ...served });
-            return { ok: true, detail: `${served.parts.length} SAE features clamped at layer ${served.layer}` };
+            // the header names what is served: the switch's agent change sends the page the registry's names again
+            const name = served.display ?? page.display;
+            if (steered && steered.name !== name) register(steered.models, name);
+            return { ok: true, detail: servedDetail(served) };
           },
           // the switch's result opens the edited model's window: a greeting to answer, no word of the edit or of who it is
           result: () => GG_SWITCH_TEXT,
@@ -166,13 +196,19 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
   };
 }
 
-export default async function app(context: ExtraContext): Promise<GgAppExtra> {
-  const dir = process.env.DEMO_EXTRA_SECRETS;
-  if (!dir) throw new Error("DEMO_EXTRA_SECRETS names the directory with the GG box's guard URL and keys");
-  const modelId = process.env.DEMO_MODEL;
-  if (!modelId) throw new Error("DEMO_MODEL names the base model");
-  const keyFile = process.env.DEMO_MODEL_KEY_FILE;
-  return ggExtra(context, await readSecretsOnce(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) });
+/** The cloud app's extra for a page, from its environment (above). */
+export function pageApp(page: PageText): (context: ExtraContext) => Promise<GgAppExtra> {
+  return async (context) => {
+    const dir = process.env.DEMO_EXTRA_SECRETS;
+    if (!dir) throw new Error("DEMO_EXTRA_SECRETS names the directory with the GPU box's guard URL and keys");
+    const modelId = process.env.DEMO_MODEL;
+    if (!modelId) throw new Error("DEMO_MODEL names the base model");
+    const keyFile = process.env.DEMO_MODEL_KEY_FILE;
+    return ggExtra(context, await readSecretsOnce(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) }, {}, page);
+  };
 }
 
+export default pageApp(GG_PAGE);
+
 export { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL };
+export type { PageText };

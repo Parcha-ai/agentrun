@@ -2,7 +2,9 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, PAGES, pageLink, pageProfile, serverArgs } from "../server-args.ts";
+import { GG_INSTRUCTIONS } from "../gg-text.ts";
+import { STEER_INSTRUCTIONS } from "../steer-text.ts";
 
 const places = {
   takeServer: "/show/scripts/take-server.mjs",
@@ -57,4 +59,14 @@ test("the page's link: the thinking open, and the tab seeds no robot files", () 
   assert.equal(url.searchParams.get("robotcode"), "0", "without it the tab writes robot/ (lib, body, examples/dino) into the run's workspace");
   assert.equal(url.hash, "#s3cr3t");
   assert.equal(new URL(pageLink("http://h/run/x?a=1", "k")).searchParams.get("a"), "1");
+});
+
+test("each page has its own places, and the Golden Gate page keeps today's", () => {
+  assert.deepEqual(pageProfile(undefined), { home: "tmp-gg-chat", app: "pda-gg-chat", run: "golden-gate", mountRoot: "/mnt/pda/demo/gg-chat-pipe", port: "8773", extra: "gg-extra", instructions: GG_INSTRUCTIONS });
+  const any = pageProfile("any");
+  assert.deepEqual(any, { home: "tmp-steer", app: "pda-steer", run: "steer-any", mountRoot: "/mnt/pda/demo/steer-any", port: "8783", extra: "steer-extra", instructions: STEER_INSTRUCTIONS });
+  for (const key of ["home", "app", "run", "mountRoot", "port", "extra", "instructions"] as const) {
+    assert.equal(new Set(Object.values(PAGES).map((p) => p[key])).size, Object.keys(PAGES).length, `no two pages share a ${key}`);
+  }
+  assert.throws(() => pageProfile("cats"), /--page cats: one of golden-gate, any/);
 });

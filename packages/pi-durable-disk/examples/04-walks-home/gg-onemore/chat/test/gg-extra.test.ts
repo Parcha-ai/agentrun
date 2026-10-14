@@ -13,7 +13,8 @@ import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { agentRegistry } from "../../../../03-tab-to-cloud/agent.ts";
-import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecretsOnce } from "../gg-extra.ts";
+import { BASE_PROVIDER, GG_INSTRUCTIONS, GG_MODEL, ggExtra, readSecretsOnce, servedDetail } from "../gg-extra.ts";
+import { STEER_DISPLAY, STEER_INSTRUCTIONS, STEER_PAGE } from "../steer-text.ts";
 import { STEERED_PROVIDER } from "../../pi/use-model.ts";
 import { GG_PROVIDER } from "../gg-text.ts";
 import { execFileSync } from "node:child_process";
@@ -22,7 +23,9 @@ const SERVE = "serve-key";
 const TOOLS = "tools-key";
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
-async function fakeGuard() {
+const GG_SERVED = { kind: "clamp", layer: 36, k: 1.2, parts: [{ feature: 53796, what: "bridges", max: 19 }, { feature: 23249, what: "California", max: 19.3 }] };
+
+async function fakeGuard(served: object = GG_SERVED) {
   const chats: any[] = [];
   const control: any[] = [];
   const server = createServer((req, res) => {
@@ -52,8 +55,13 @@ async function fakeGuard() {
       }
       if (auth !== `Bearer ${TOOLS}`) return void res.writeHead(404).end();
       const json = (x: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
-      if (req.url === "/gg/reading") return json({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "../escape.txt", text: "x" }], skill: "# Golden Gate Claude, by your own hand" });
-      if (req.url === "/gg/served") return json({ served: { kind: "clamp", layer: 36, k: 1.2, parts: [{ feature: 53796, what: "bridges", max: 19 }, { feature: 23249, what: "California", max: 19.3 }] } });
+      if (req.url === "/gg/reading")
+        return json({
+          files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "../escape.txt", text: "x" }],
+          skill: "# Golden Gate Claude, by your own hand",
+          skills: { "golden-gate": "# Golden Gate Claude, by your own hand", obsession: "# Obsessed with X, by your own hand", "../up": "x" },
+        });
+      if (req.url === "/gg/served") return json({ served });
       if (req.url === "/gg/control") {
         control.push(body);
         return json({ original: ["Hello!"], edited: ["Fog and steel."] });
@@ -117,7 +125,7 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
     for (const name of extra.withoutExtensions) registry.uninstall(registry.snapshot().extension(name) ?? assert.fail(`${name} is not installed`));
     assert.deepEqual(registry.snapshot().installed().map((e) => e.name), ["coding-tools", "workspace-write-through", "gg-tools", "gg-use-model"]);
     const models = createModels();
-    models.setProvider(base(["gg_read", "use_model"]));
+    models.setProvider(base(["lab_read", "use_model"]));
     extra.models(models);
     assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B (Golden Gate edit)", "the page shows the registered name");
     assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.contextWindow, 200000, "measured against the base model's context, so no compaction runs on the edited model");
@@ -128,6 +136,9 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       await ask("Recreate Golden Gate Claude on the Qwen on your GPU box.");
       assert.equal(readFileSync(join(work, "reading", "paper.txt"), "utf8"), "Scaling Monosemanticity");
       assert.equal(readFileSync(join(work, "skills", "golden-gate", "SKILL.md"), "utf8"), "# Golden Gate Claude, by your own hand", "the skill lands in the workspace");
+      assert.equal(readFileSync(join(work, "skills", "obsession", "SKILL.md"), "utf8"), "# Obsessed with X, by your own hand", "and every other skill the box ships");
+      assert.equal(existsSync(join(work, "up", "SKILL.md")), false, "a skill's name is one path segment inside skills/");
+      assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B (Golden Gate edit)", "an edit served without a name keeps the page's");
       assert.equal(existsSync(join(work, "reading", "escape.txt")), true, "a name with a path is kept to its last part, inside reading/");
       assert.deepEqual((await root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: GG_MODEL });
       assert.equal(g.chats.length, 1, "the next request of the same turn went to the edited model");
@@ -161,4 +172,66 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
   } finally {
     await g.close();
   }
+});
+
+test("the any-topic page: its own instructions and skill, and from the switch on the header names the served recipe", async () => {
+  const g = await fakeGuard({ parts: [{ layer: 32, feature: 101, value: 14.2, what: "cats as pets" }], adds: [], topic: "cats", display: "Qwen3.5-27B, obsessed with cats" });
+  const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "steer-work-"));
+  try {
+    const extra = await ggExtra({ work, log: () => undefined }, { guardUrl: g.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" }, {}, STEER_PAGE);
+    assert.deepEqual(extra.instructions, { mode: "replace", text: STEER_INSTRUCTIONS });
+    assert.match(STEER_INSTRUCTIONS, /skills\/obsession\/SKILL\.md/);
+    assert.doesNotMatch(STEER_INSTRUCTIONS, /gg_|gglab/, "the page names the general tools");
+    const registry = agentRegistry(async () => undefined);
+    extra.install(registry);
+    const models = createModels();
+    models.setProvider(base(["lab_read", "use_model"]));
+    extra.models(models);
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, STEER_DISPLAY, "before anything is served, the page's own name");
+    const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
+    const root = await harness.root(ctx, { agent: { model: { provider: BASE_PROVIDER, modelId: "base-model" }, thinkingLevel: "low", instructions: extra.instructions.text } });
+    try {
+      await (await root.submit({ type: "input", content: "Make yourself obsessed with cats." }, ctx)).wait(ctx);
+      assert.equal(readFileSync(join(work, "skills", "obsession", "SKILL.md"), "utf8"), "# Obsessed with X, by your own hand");
+      assert.deepEqual((await root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: GG_MODEL });
+      assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B, obsessed with cats", "the header's name is the recipe's");
+      assert.equal(g.chats.length, 1, "the re-registered provider answered the same turn");
+      assert.doesNotMatch(JSON.stringify(g.chats[0]), /cats|obsess/i, "the edited model reads no word of its topic");
+    } finally {
+      await harness.close?.(ctx);
+    }
+  } finally {
+    await g.close();
+  }
+});
+
+test("a host that opens again names the edited model after what the box serves, before any switch", async () => {
+  const g = await fakeGuard({ parts: [{ layer: 32, feature: 101, value: 14.2 }], topic: "cats", display: "Qwen3.5-27B, obsessed with cats" });
+  try {
+    const extra = await ggExtra({ work: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "steer-work-")), log: () => undefined }, { guardUrl: g.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" }, {}, STEER_PAGE);
+    const models = createModels();
+    models.setProvider(base([]));
+    extra.models(models);
+    for (let i = 0; i < 100 && models.getModel(STEERED_PROVIDER, GG_MODEL)?.name !== "Qwen3.5-27B, obsessed with cats"; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, "Qwen3.5-27B, obsessed with cats", "a resumed conversation on the edited model keeps its recipe's name");
+  } finally {
+    await g.close();
+  }
+  const nothing = await fakeGuard(null as never);
+  try {
+    const extra = await ggExtra({ work: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "steer-work-")), log: () => undefined }, { guardUrl: nothing.url, serveKey: SERVE, toolsKey: TOOLS }, { modelId: "base-model" }, {}, STEER_PAGE);
+    const models = createModels();
+    models.setProvider(base([]));
+    extra.models(models);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(models.getModel(STEERED_PROVIDER, GG_MODEL)?.name, STEER_DISPLAY, "nothing served: the page's own name");
+  } finally {
+    await nothing.close();
+  }
+});
+
+test("use_model's check describes what is served: parts by layer, added directions", () => {
+  assert.equal(servedDetail(GG_SERVED as never), "2 SAE features clamped at layer 36");
+  assert.equal(servedDetail({ parts: [{ layer: 32, feature: 1 }, { layer: 36, feature: 2 }], adds: [{ layer: 32, f: 0.4 }] } as never), "2 SAE features clamped at layer 32, 36 and a direction added at layer 32 (f 0.4)");
+  assert.equal(servedDetail({ parts: [], adds: [{ layer: 28, f: 0.5 }] } as never), "a direction added at layer 28 (f 0.5)");
 });

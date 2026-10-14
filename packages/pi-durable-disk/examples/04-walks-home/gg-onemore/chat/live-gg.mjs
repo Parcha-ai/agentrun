@@ -1,19 +1,21 @@
-// The Golden Gate chat page, live, on this host: its GPU box first (modal/box.py), then the 03 server through D4's
-// show/scripts/take-server.mjs, with the GG extra on D4's Modal VM (cloud-args extra-module, extra-secrets, robot-code=false)
-// and the GG placer (chat/gg-placer.ts: Jev decides every placement). Everything here is the page's own: port 8773, run
-// golden-gate, mount root /mnt/pda/demo/gg-chat-pipe, state and logs in ~/tmp-gg-chat, the Modal app pda-gg-chat for the box
-// and the VM. Nothing is shared with the robot's scripts. The run's link is printed once (the person opens it), with the ssh
-// line. Stop with chat/stop-gg.sh (SIGTERM): the server, the VM, the box and the run's tree; the last line counts the app's
-// sandboxes (0). With no request through the guard for --idle-min minutes, it stops itself the same way.
-//   node chat/live-gg.mjs [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
+// A chat page with an edited Qwen, live, on this host: its GPU box first (modal/box.py), then the 03 server through D4's
+// show/scripts/take-server.mjs, with the page's extra on D4's Modal VM (cloud-args extra-module, extra-secrets,
+// robot-code=false) and the placer (chat/gg-placer.ts: Jev decides every placement). The Golden Gate page is the default;
+// `--page any` is the page where the person names the topic (chat/steer-extra.ts). Everything here is the page's own
+// (chat/server-args.ts PAGES): the Golden Gate page's port 8773, run golden-gate, mount root /mnt/pda/demo/gg-chat-pipe,
+// state and logs in ~/tmp-gg-chat and the Modal app pda-gg-chat for the box and the VM; the any-topic page's 8783, steer-any,
+// /mnt/pda/demo/steer-any, ~/tmp-steer and pda-steer. Nothing is shared with the robot's scripts. The run's link is printed
+// once (the person opens it), with the ssh line. Stop with `chat/stop-gg.sh [--page any]` (SIGTERM): the server, the VM, the
+// box and the run's tree; the last line counts the app's sandboxes (0). With no request through the guard for --idle-min
+// minutes, it stops itself the same way.
+//   node chat/live-gg.mjs [--page golden-gate|any] [--port 8773] [--idle-min 20] [--ttl 90] [--agent-model claude-opus-5.5] [--best-of 3] [--skip-build]
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GG_INSTRUCTIONS } from "./gg-text.ts";
 import { runStep } from "./run-step.ts";
-import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, pageProfile, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -22,15 +24,16 @@ const EX = join(G, "..", "..");
 const SHOW = join(EX, "04-walks-home", "show");
 const VM = join(EX, "04-walks-home", "vm");
 const B = join(homedir(), "evals", "agentrun-archil-tl", "bin");
-const HOME = join(homedir(), "tmp-gg-chat");
+const PAGE = pageProfile(arg("page", undefined));
+const HOME = join(homedir(), PAGE.home);
 const PID = join(HOME, "live-gg.pid");
 const STATE = join(HOME, "box-state");
 const SECRETS = join(HOME, "secrets");
 const SERVER = join(HOME, "server");
-const MOUNT_ROOT = "/mnt/pda/demo/gg-chat-pipe";
-const APP = "pda-gg-chat";
-const RUN = "golden-gate";
-const PORT = arg("port", "8773");
+const MOUNT_ROOT = PAGE.mountRoot;
+const APP = PAGE.app;
+const RUN = PAGE.run;
+const PORT = arg("port", PAGE.port);
 const IDLE_MIN = Number(arg("idle-min", 20));
 const TTL = arg("ttl", "90");
 const AGENT_MODEL = arg("agent-model", DEFAULT_AGENT_MODEL);
@@ -72,7 +75,7 @@ for (const [path, step] of [
 const webc = join(EX, "03-tab-to-cloud", "tab", "dist", "pkgs", "edgejs.webc");
 if (!existsSync(webc) || statSync(webc).size < 70_000_000) fatal(`${webc} is missing: build the 03 page first (the card's install step)`);
 if (!process.argv.includes("--skip-build")) run("npm", ["run", "-s", "bundle:extra"], { cwd: G });
-const extraModule = join(G, "dist", "gg-extra.mjs");
+const extraModule = join(G, "dist", `${PAGE.extra}.mjs`);
 if (!existsSync(extraModule)) fatal(`${extraModule} is missing: npm run bundle:extra`);
 
 let server;
@@ -122,25 +125,38 @@ async function stop(reason, code = 0) {
 process.on("SIGTERM", () => void stop("SIGTERM"));
 process.on("SIGINT", () => void stop("SIGINT"));
 
+// The disk's API can time out (a 504 from Archil's gateway): a step on it is tried three times before the start gives up.
+const onDisk = (fn) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fn();
+    } catch (e) {
+      if (attempt === 3) throw e;
+      say("disk.retry", { attempt, ...failure(e) });
+      spawnSync("sleep", ["10"]);
+    }
+  }
+};
+
 try {
-  // 1. the GPU box (the long pole: 3-7 min)
+  // 1. a fresh run, first: a run id with a history would resume that conversation, and a disk that fails here costs no GPU
+  say("run.clean", { out: onDisk(() => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })).trim().split("\n").at(-1) });
+  // 2. the GPU box (the long pole: 3-7 min)
   say("box.up");
   box("up", "--ttl", TTL);
   box("wait", "--timeout", "900");
   const state = JSON.parse(readFileSync(join(STATE, "box.json"), "utf8"));
   say("box.ready", { sandbox: state.sandbox, s: Math.round((Date.now() - t0) / 1000) });
-  // 2. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
+  // 3. the extra's secrets, for the VM (staged for its run user by D4's extra-secrets)
   mkdirSync(SECRETS, { recursive: true, mode: 0o700 });
   chmodSync(SECRETS, 0o700);
   writeFileSync(join(SECRETS, "guard-url"), `${state.url}\n`, { mode: 0o600 });
   writeFileSync(join(SECRETS, "serve-key"), readFileSync(state.key_file), { mode: 0o600 });
   writeFileSync(join(SECRETS, "tools-key"), readFileSync(state.exec_key_file), { mode: 0o600 });
-  // 3. a fresh run: a run id with a history would resume that conversation
-  say("run.clean", { out: run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM }).trim().split("\n").at(-1) });
   // 4. the 03 server, on this page's own port, run, mount root and Modal app; the page creates the root conversation in the
   // browser with the page's instructions and without the extensions it does not use (serve.ts --instructions-file ...)
   const instructions = join(HOME, "instructions.txt");
-  writeFileSync(instructions, GG_INSTRUCTIONS, { mode: 0o600 });
+  writeFileSync(instructions, PAGE.instructions, { mode: 0o600 });
   mkdirSync(MOUNT_ROOT, { recursive: true, mode: 0o700 });
   mkdirSync(join(HOME, "tmp"), { recursive: true, mode: 0o755 });
   rmSync(join(SERVER, "status.json"), { force: true });

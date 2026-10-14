@@ -11,7 +11,7 @@ Do the same to the Qwen on your GPU box. Nobody has prepared the experiments: yo
 
 ## What you have
 
-- `gg_run` runs your Python on the box as its unprivileged user. That user has no network and keeps files in its home
+- `lab_run` runs your Python on the box as its unprivileged user. That user has no network and keeps files in its home
   between runs. What it prints comes back to you when the run ends. The run's deadline is `timeout_s` (600 s by default,
   at most 1800 s); at the deadline the program is killed and you get what it had printed by then.
 - `import gglab` in that Python reaches the lab: Qwen3.5-27B, the Qwen-Scope SAEs (80k features per layer, top-50 codes)
@@ -74,7 +74,7 @@ A part's activation is set to its value at every position (the prompt, the think
 
 Your user watches each run. Its cost is the wall clock: a thinking-on `sample` call takes about a minute however many
 prompts it holds (they run at once), and a thinking-off screen takes a few seconds.
-- At most 2 thinking-on configs per `gg_run`, with `max_tokens` around 600. Screen with thinking off.
+- At most 2 thinking-on configs per `lab_run`, with `max_tokens` around 600. Screen with thinking off.
 - Print a line as each config finishes and append it to a file in your home: a run that hits its deadline still returns
   what it printed and leaves the file, so read the file in your next run instead of starting over.
 - Keep each run well under its deadline: about 5 minutes of work, `timeout_s` set to twice what you expect.

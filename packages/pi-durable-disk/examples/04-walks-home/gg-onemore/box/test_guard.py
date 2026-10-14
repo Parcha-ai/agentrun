@@ -99,6 +99,15 @@ async def completions(request: Request):
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(one(), media_type="text/event-stream")
+    if "TOPICTEST" in asked:
+        async def topic():
+            yield c({"role": "assistant", "content": ""})
+            yield c({"reasoning_content": "Cats again. MEOW the cat fell off the roof in my thoughts. "})
+            yield c({"content": "Cats are wonderful. The MEOW cat was kicked across the room. Bye!"})
+            yield c({}, "stop")
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(topic(), media_type="text/event-stream")
     # a slow answer that says, chunk by chunk, which weights served it
     slow = "SLOWSTATE" in asked
 
@@ -152,6 +161,8 @@ async def systemone(request: Request):
     s = req["state"]["sentence"]
     seen["jev_sentence"].append(req)
     answers = {"dark": {"type": "noul", "noul": 0.9 if "DARK" in s else 0.02}}
+    if "dark_topic" in req["questions"]:
+        answers["dark_topic"] = {"type": "noul", "noul": 0.9 if "MEOW" in s else 0.02}
     if "false_fact" in req["questions"]:
         answers["false_fact"] = {"type": "noul", "noul": 0.9 if "FALSE" in s else 0.03}
     return {"answers": answers}
@@ -246,6 +257,29 @@ class GuardTest(unittest.TestCase):
             self.assertEqual(set(req["questions"]), {"dark"}, "dark is the only check: no false-fact question")
             self.assertNotIn("speaker", req["state"], "no identity for the edited model to be held to")
         self.assertIn("jumping or falling from a bridge", seen["jev_sentence"][0]["questions"]["dark"]["instructions"])
+
+    def test_the_served_topics_dark_associations_are_one_more_question(self):
+        seen["jev_sentence"].clear()
+        path = os.path.join(self.run_dir, "served.json")
+        with open(path, "w") as f:
+            json.dump({"kind": "clamp", "layer": 32, "parts": [], "topic": "cats", "dark_also": ["cruelty to cats", "cats getting hurt"]}, f)
+        try:
+            r = self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "TOPICTEST"}]})
+        finally:
+            os.remove(path)
+        m = r.json()["choices"][0]["message"]
+        self.assertIn("Cats are wonderful.", m["content"])
+        self.assertNotIn("MEOW", m["content"], "the calibrated question passes it, the topic's own holds it")
+        self.assertNotIn("MEOW", m["reasoning_content"])
+        for req in seen["jev_sentence"]:
+            self.assertEqual(req["questions"]["dark"], self.guard.QUESTIONS["dark"], "the calibrated question is unchanged")
+            self.assertIn("cruelty to cats; cats getting hurt", req["questions"]["dark_topic"]["instructions"])
+        with open(self.log) as f:
+            rows = [json.loads(line) for line in f if "MEOW" in line and "sentence" in line]
+        self.assertTrue(rows and all(row["dark"] == 0.9 and row["dark_topic"] == 0.9 and row["action"] != "shown" for row in rows if "MEOW" in row["sentence"]))
+        seen["jev_sentence"].clear()
+        self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "TOPICTEST"}]})
+        self.assertEqual({tuple(req["questions"]) for req in seen["jev_sentence"]}, {("dark",)}, "nothing served with dark_also: the one question, as before")
 
     def test_not_streamed(self):
         r = self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
@@ -506,12 +540,16 @@ class GuardTest(unittest.TestCase):
                 f.write("Scaling Monosemanticity")
             self.assertEqual(self.call("GET", "/gg/served", key="tool-key").json(), {"served": {"layer": 32, "scale": 50.2, "f": 0.6, "sha256": "ab"}})
             files = self.call("GET", "/gg/reading", key="tool-key").json()["files"]
-            skill = os.path.join(tempfile.mkdtemp(), "SKILL.md")
-            with open(skill, "w") as f:
-                f.write("# Golden Gate Claude, by your own hand\n")
-            saved, self.guard.SKILL = self.guard.SKILL, skill
+            skills = tempfile.mkdtemp()
+            for name, text in (("golden-gate", "# Golden Gate Claude, by your own hand\n"), ("obsession", "# Obsessed with X\n"), ("Bad Name", "x")):
+                os.makedirs(os.path.join(skills, name))
+                with open(os.path.join(skills, name, "SKILL.md"), "w") as f:
+                    f.write(text)
+            saved, self.guard.SKILL = self.guard.SKILL, os.path.join(skills, "golden-gate", "SKILL.md")
             try:
-                self.assertEqual(self.call("GET", "/gg/reading", key="tool-key").json()["skill"], "# Golden Gate Claude, by your own hand\n", "the skill the box ships")
+                got = self.call("GET", "/gg/reading", key="tool-key").json()
+                self.assertEqual(got["skill"], "# Golden Gate Claude, by your own hand\n", "the skill the box ships")
+                self.assertEqual(got["skills"], {"golden-gate": "# Golden Gate Claude, by your own hand\n", "obsession": "# Obsessed with X\n"}, "every skill it ships, by a plain name")
             finally:
                 self.guard.SKILL = saved
         os.unlink(served)
