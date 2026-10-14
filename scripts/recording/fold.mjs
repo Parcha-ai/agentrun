@@ -2,13 +2,11 @@
 // kills the supervisor wrote. Nothing here reads a live line to count: a live line only shows what is in flight.
 //
 // `node scripts/recording/fold.mjs <recording-dir>` prints them as JSON.
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const stable = value => (Array.isArray(value) ? `[${value.map(stable).join(',')}]` : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stable(value[key])}`).join(',')}}` : JSON.stringify(value));
-const argsHashOf = args => createHash('sha256').update(stable(args ?? {})).digest('hex');
 const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : undefined);
 
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are
@@ -16,12 +14,17 @@ const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : 
  *  - A workflow effect: an effect id whose outside call COMPLETED in more than one generation, folded over every line of that id. A
  *    revision that reaches `completed`, or a call in its `calls` record that does, counts once, in the generation of the line that
  *    shows it; two effect ids with one intent are two calls.
- *  - An agent's tool call: identity (conv, tool, argsHash of its arguments). An executed result (not reused, not refused) in a later
- *    generation than one that completed in the same conversation is repeated; a second executed result within one generation is asked twice. */
+ *  - An agent's tool call counts only when it is PAID: the run holds an `agentrun.receipts` entry for its (tool, argsHash). That
+ *    receipt key is its identity, run-wide. A paid execution (not reused, not refused) of one key in a later generation than one that
+ *    completed is repeated; a second one within one generation is asked twice. A tool with no receipt never counts. */
 export function repeats(events) {
   const completions = new Map();
   const calls = new Map();
   const executed = new Map();
+  const receipts = new Set();
+  for (const event of events) {
+    if (event.channel === 'durable' && event.data?.doc === 'agentrun.receipts' && typeof event.data.value?.tool === 'string' && typeof event.data.value?.argsHash === 'string') receipts.add(`${event.data.value.tool}:${event.data.value.argsHash}`);
+  }
   for (const event of events) {
     if (event.channel !== 'durable' || event.snapshot) continue;
     if (event.data?.doc === 'agentrun.effects' && event.data.value) {
@@ -33,14 +36,13 @@ export function repeats(events) {
       completions.set(id, gens);
     }
     const entry = entryOf(event);
-    if (event.kind === 'pi.assistant' && entry?.content) for (const part of entry.content) if (part.type === 'toolCall') calls.set(part.id, { tool: part.name, argsHash: argsHashOf(part.arguments) });
+    if (event.kind === 'pi.assistant' && entry?.content) for (const part of entry.content) if (part.type === 'toolCall') { const { tool, argsHash } = gatewayIntentOf(part.name, part.arguments); calls.set(part.id, `${tool}:${argsHash}`); }
     if (event.kind === 'pi.tool-result' && entry?.role === 'toolResult' && entry.details?.refused !== true && entry.details?.effect_status !== 'reused') {
-      const call = calls.get(entry.toolCallId);
-      if (!call) continue;
-      const identity = `${event.conv ?? event.data?.conversationId ?? ''}\u0001${call.tool}\u0001${call.argsHash}`;
-      const gens = executed.get(identity) ?? [];
+      const key = calls.get(entry.toolCallId);
+      if (key === undefined || !receipts.has(key)) continue;
+      const gens = executed.get(key) ?? [];
       gens.push(event.gen ?? 0);
-      executed.set(identity, gens);
+      executed.set(key, gens);
     }
   }
   const effectRepeats = [...completions.values()].filter(gens => gens.size > 1).length;
@@ -48,7 +50,7 @@ export function repeats(events) {
   let askedTwice = 0;
   for (const gens of executed.values()) {
     const first = Math.min(...gens);
-    toolRepeats += new Set(gens.filter(gen => gen > first)).size > 0 ? 1 : 0;
+    if (gens.some(gen => gen > first)) toolRepeats += 1;
     const perGen = new Map();
     for (const gen of gens) perGen.set(gen, (perGen.get(gen) ?? 0) + 1);
     askedTwice += [...perGen.values()].filter(count => count > 1).length;
