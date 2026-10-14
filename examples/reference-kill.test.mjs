@@ -3,7 +3,7 @@
 // the run's own rows. The same seed gives the same kills.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
+import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
@@ -71,7 +71,9 @@ test('a cut before the host kept the effect\'s answer stops the next process on 
     assert.equal(cut.resumed.status, 'refused', point);
     assert.equal(cut.resumed.code, 'FROZEN_EFFECT_UNKNOWN', point);
     assert.match(cut.resumed.message, /^Reconcile step:\/root\/steps\/0#call:0 before resuming; it will not be repeated$/, point);
-    assert.deepEqual(cut.effects, { search: 1 }, point);
+    // The host's ledger row is written before the call, so what the tool actually ran is counted by the tap: nothing when the
+    // cut came before the call, once when it came after the call returned, and the resume never calls it again.
+    assert.deepEqual(cut.made, point === 'tool.dispatch search' ? { killed: 0, total: 0 } : { killed: 1, total: 1 }, point);
   }
 });
 
@@ -79,7 +81,7 @@ test('a cut after the host kept the effect\'s answer and before the driver commi
   const cut = await cutInEffectWindow('effect.kept search');
   assert.equal(cut.killed, 'SIGKILL');
   assert.equal(cut.resumed.status, 'complete');
-  assert.deepEqual(cut.effects, { search: 1 });
+  assert.deepEqual(cut.made, { killed: 1, total: 1 });
 });
 
 test('the plan: a seed draws the same cuts, a window shrinks with the work left, and progress follows the order of an uncut run', () => {
@@ -90,4 +92,19 @@ test('the plan: a seed draws the same cuts, a window shrinks with the work left,
   assert.equal(late.side, 'child');
   assert.ok(late.n >= 1 && late.n <= 2 * 10 / 5 + 3, `a late window is small: ${late.n}`);
   assert.equal(progress(['a', 'b', 'c', 'd'], [['a', 'b'], ['a', 'x', 'b', 'c']]), 3);
+});
+
+test('a kill count or seed that is not a whole number is refused before any process starts', async () => {
+  for (const kills of [Number.NaN, Number.POSITIVE_INFINITY, -1, 2.5]) await assert.rejects(killAnywhere({ seed: 1, kills }), /--kills must be a whole number/);
+  await assert.rejects(killAnywhere({ seed: Number.NaN, kills: 1 }), /--seed must be a whole number/);
+});
+
+test('the reduced record is the uninterrupted one with the scan alone cited: a different company, answer or citation is not accepted', () => {
+  const full = { record: { company: 'Acme Ltd', answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: ['evidence/investigate/browser_read-aa.json', 'evidence/investigate/look-bb.json'] } };
+  const reduced = (change = {}) => ({ record: { company: 'Acme Ltd', answer: 'Whether the registry page was opened is not known, so the filing scan is cited alone.', citations: ['evidence/investigate/look-bb.json'], ...change } });
+  assert.equal(isReduced(reduced(), full), true);
+  assert.equal(isReduced(reduced({ answer: 'The registry page could not be opened, so the filing scan is cited alone.' }), full), true);
+  for (const change of [{ company: 'Other Ltd' }, { answer: 'Acme Ltd was incorporated on 2019-03-04.' }, { citations: ['evidence/investigate/look-zz.json'] }, { citations: [] }, { extra: 1 }]) assert.equal(isReduced(reduced(change), full), false, JSON.stringify(change));
+  assert.equal(isReduced(null, full), false);
+  assert.equal(isReduced(full, full), false, 'the full record is not the reduced one');
 });

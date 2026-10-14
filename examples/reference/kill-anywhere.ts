@@ -103,6 +103,7 @@ async function child() {
     tools: Object.fromEntries(Object.entries(fakes.tools).map(([name, tool]) => [name, (args: Record<string, unknown>) => {
       cross(`tool.dispatch ${name}`, { cut: false });
       const result = tool(args);
+      if (process.env.RAN_LOG) appendFileSync(process.env.RAN_LOG, `${JSON.stringify({ tool: name })}\n`);
       cross(`tool.returned ${name}`, { cut: false });
       return result;
     }])),
@@ -287,6 +288,9 @@ export const CLASSES: Record<string, RegExp> = {
 };
 export const classesOf = (kills: Kill[]) => Object.keys(CLASSES).filter((name) => kills.some((kill) => kill.landed && CLASSES[name]!.test(`${kill.landed.side} ${kill.landed.point}`)));
 
+/** The tool calls a process actually ran, from the rows the tap writes after each returns. */
+const made = (file: string) => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
+
 /** The one cut the draw leaves out: inside the effect's window. The first process ends at `point` (the tool dispatched, its
  *  result not committed); the second finds the effect admitted and never completed, refuses it, and the tool is not
  *  dispatched again. */
@@ -295,10 +299,11 @@ export async function cutInEffectWindow(point = 'tool.dispatch search') {
   const { backend, state } = watchedBackend();
   const served = await backend.serve();
   try {
-    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url };
+    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, RAN_LOG: join(scratch, 'ran.jsonl') };
     const killed = await spawnChild({ ...env, KILL_AT_POINT: point }, (pid) => { state.pid = pid; });
+    const afterKill = made(env.RAN_LOG);
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
-    return { killed: killed.signal, resumed: resumed.outcome, effects: count(join(scratch, 'run'), backend).effects };
+    return { killed: killed.signal, resumed: resumed.outcome, effects: count(join(scratch, 'run'), backend).effects, /** The tool calls the fake actually ran: by the killed process, then in all. The host's ledger row is written before the call. */ made: { killed: afterKill, total: made(env.RAN_LOG) } };
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
@@ -320,7 +325,21 @@ export async function cutBrowserAction(when: 'applying' | 'applied') {
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
+/** The answers a lead gives when it cites the scan alone (the reference job's own wording). */
+const REDUCED_ANSWERS = ['Whether the registry page was opened is not known, so the filing scan is cited alone.', 'The registry page could not be opened, so the filing scan is cited alone.'];
+
+/** The reduced record: the uninterrupted record with its answer one of the two above and its citations those of the scan alone. */
+export function isReduced(record: unknown, wanted: unknown): boolean {
+  const inner = (value: unknown) => ((value as { record?: unknown } | null)?.record ?? value) as Record<string, unknown> | null;
+  const got = inner(record); const full = inner(wanted);
+  if (!got || !full || typeof full !== 'object' || !Array.isArray(full.citations)) return false;
+  const expected = { ...full, answer: got.answer, citations: (full.citations as string[]).filter((path) => !path.includes('browser_read')) };
+  return REDUCED_ANSWERS.includes(got.answer as string) && JSON.stringify(got) === JSON.stringify(expected);
+}
+
 export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean }): Promise<Ledger> {
+  if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
+  if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
   const started = Date.now();
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   try {
@@ -393,7 +412,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     // the action happened does not ask again: its record cites the scan alone and says the page's outcome is unknown. That
     // reduced record is accepted exactly when a page action was cut and the record cites no browser read, whether or not the
     // action was applied before the cut.
-    const reduced = erroredRuns > 0 && record !== null && !JSON.stringify(record).includes('browser_read');
+    const reduced = erroredRuns > 0 && isReduced(record, wanted);
     const without = (names: string[], list: string[]) => list.filter((name) => !names.some((skip) => name.includes(skip)));
     const turnsWanted = without(reduced ? ['browser_read'] : [], ref.committedTurns);
     const turnsSeen = counted.committedTurns.filter((turn, at) => !(turn === 'snapshot' && counted.committedTurns[at - 1] === 'run'));
