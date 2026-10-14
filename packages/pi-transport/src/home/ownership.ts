@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
+import type { Seal } from "./store.ts";
 
 /**
  * Why a key store call failed. `conflict` is the conditional write that lost: the key is not as the caller last saw
@@ -58,11 +59,8 @@ export type Holder = {
 	readonly host: string;
 };
 
-/** What a sealed store is, as `sealStore` reports it. */
-export type LeaseSeal = { readonly head: number; readonly sha256: string; readonly bytes: number };
-
 /** Extra facts a take records. `move` makes a retried take of the same move succeed instead of losing to itself. */
-export type TakeDetails = { readonly move?: string; readonly seal?: LeaseSeal };
+export type TakeDetails = { readonly move?: string; readonly seal?: Seal };
 
 /** The record of one epoch of one session. */
 export type LeaseRecord = {
@@ -71,7 +69,7 @@ export type LeaseRecord = {
 	readonly epoch: number;
 	readonly holder: Holder;
 	readonly move?: string;
-	readonly seal?: LeaseSeal;
+	readonly seal?: Seal;
 	/** When the take was made, as an ISO time of the host's clock. Informational: no decision reads it. */
 	readonly at: string;
 };
@@ -100,6 +98,21 @@ const decoder = new TextDecoder();
 
 const keyOf = (session: string) => `lease/${session}`;
 
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** A seal as `sealStore` makes it: a head and a size that are whole numbers, and a SHA-256 in lowercase hex. */
+function isSeal(value: unknown): value is Seal {
+	const seal = value as Partial<Seal> | null;
+	return (
+		typeof seal === "object" &&
+		seal !== null &&
+		isCount(seal.head) &&
+		isCount(seal.bytes) &&
+		typeof seal.sha256 === "string" &&
+		/^[0-9a-f]{64}$/.test(seal.sha256)
+	);
+}
+
 const isText = (value: unknown): value is string => typeof value === "string" && value !== "";
 
 function parseRecord(session: string, bytes: Uint8Array): LeaseRecord | undefined {
@@ -113,6 +126,7 @@ function parseRecord(session: string, bytes: Uint8Array): LeaseRecord | undefine
 			return undefined;
 		}
 		if (record.move !== undefined && !isText(record.move)) return undefined;
+		if (record.seal !== undefined && !isSeal(record.seal)) return undefined;
 		return record as LeaseRecord;
 	} catch {
 		return undefined;
@@ -155,6 +169,9 @@ export function leaseIn(store: ConditionalStore): Ownership {
 			}
 			if (details?.move !== undefined && !isText(details.move)) {
 				return err(new OwnershipError("invalid", "the move id must be a non-empty string"));
+			}
+			if (details?.seal !== undefined && !isSeal(details.seal)) {
+				return err(new OwnershipError("invalid", "the seal must be a head, a size and a lowercase SHA-256"));
 			}
 			const sameMove = (record: LeaseRecord) =>
 				details?.move !== undefined && record.move === details.move && record.epoch === expected + 1;

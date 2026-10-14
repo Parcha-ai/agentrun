@@ -15,7 +15,7 @@
 import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
-import { isRecoveryError, openRecovery, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
+import { bindingDigests, bindingMismatch, canonicalHash, isRecoveryError, openRecovery, recoveryBound, RecoveryError, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
 import { documentStore, type DocumentStoreHost } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
@@ -96,6 +96,20 @@ const cancelSource = (run: RunRecord | undefined) => (run?.stop?.action === "can
 const cancelled = (source: string | undefined) => ({ status: "aborted" as const, reason: source ? `cancelled by ${source}` : "cancelled" });
 
 const json = (value: unknown): Json => (value === undefined ? null : JSON.parse(JSON.stringify(value)));
+/** Why a request is not the run a task holds, or undefined when it is: the same binding (the workflow as authored and
+ *  what the host binds beside it, as the driver binds its journal) and the same input, each by its canonical digest, so
+ *  key order does not matter. The refusal is the driver's binding mismatch and names what moved: the workflow's parts,
+ *  what the host binds, or the input's fields (`input.<field>`). Each part is compared over its own digests, so a bound
+ *  key named like the input (`input`) hides neither; when both moved, the refusal holds both parts' messages and names. */
+const requestMoved = (held: WorkflowRequest, asked: WorkflowRequest): RecoveryError | undefined => {
+  const was = recoveryBound(held.workflow, held.bind), is = recoveryBound(asked.workflow, asked.bind);
+  const parts = [
+    was.binding !== is.binding && bindingMismatch(JSON.stringify(was.inputs), is.inputs),
+    canonicalHash(held.input) !== canonicalHash(asked.input) && bindingMismatch(JSON.stringify(bindingDigests({ input: held.input })), bindingDigests({ input: asked.input })),
+  ].filter((part): part is RecoveryError & { moved: string[] | null } => Boolean(part));
+  if (parts.length < 2) return parts[0];
+  return Object.assign(new RecoveryError(parts.map((part) => part.message).join("; "), "RUN_STORE_BINDING_MISMATCH"), { moved: parts.flatMap((part) => part.moved ?? []) });
+};
 const codeOf = (error: unknown): string => {
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" && code ? code : "WORKFLOW_FAILED";
@@ -322,28 +336,36 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
   return {
     extension: defineExtension({ name: "agentrun.workflow", tasks: [Workflow] }),
     /** Start the run `request.key` names, or reach the task that already runs it. The run's entry and its task are
-     *  created in one commit, so two starts of one key make one task. A live task is attached to; a task that ended
-     *  complete, escalated or cancelled is returned as it is; one that ended refused, failed or faulted is replaced by a
-     *  new task over the same journal, which refuses again until the host reconciles it. A journal an older build
-     *  started, with no task, gets one here. A stop the host gave before the run started (`options.stop`) is recorded in
-     *  the commit that creates or reaches the task, and is taken before anything runs. A cancel aborts the task before
-     *  the scheduler runs it, so its abort handler commits it; one a process recorded and died before pi marked the
-     *  task is taken by the run's next invocation, before any step and before the host's ladder. A pause is handed to
-     *  the driver by the run's phase as it opens, before any step. So a pause given with a start that attaches to a
-     *  run already running in this process is not taken now: it is recorded, and taken when the run's next invocation
-     *  opens. `stop` pauses a run that is running here. */
+     *  created in one commit, so two starts of one key make one task. A start that reaches a task asks for the run it
+     *  holds: its workflow, what the host binds and its input are the task's, by canonical digest, so key order does not
+     *  matter. One that asks for another run is refused with the driver's binding mismatch (`RUN_STORE_BINDING_MISMATCH`,
+     *  its `moved` naming the workflow's parts, what the host binds, or the input's fields as `input.<field>`) and
+     *  commits nothing: no task, no stop, no cancel. Another run takes another key. A live task is attached to; a task
+     *  that ended complete, escalated or cancelled is returned as it is; one that ended refused, failed or faulted is
+     *  replaced by a new task over the same journal, which refuses again until the host reconciles it. A journal an
+     *  older build started, with no task, gets one here, and its driver checks the binding as it opens. A stop the host
+     *  gave before the run started (`options.stop`) is recorded in the commit that creates or reaches the task, and is
+     *  taken before anything runs. A cancel aborts the task before the scheduler runs it, so its abort handler commits
+     *  it; one a process recorded and died before pi marked the task is taken by the run's next invocation, before any
+     *  step and before the host's ladder. A pause is handed to the driver by the run's phase as it opens, before any
+     *  step. So a pause given with a start that attaches to a run already running in this process is not taken now: it
+     *  is recorded, and taken when the run's next invocation opens. `stop` pauses a run that is running here. */
     async start(harness, request, context, options = {}) {
       const conversationId = options.conversationId ?? (await harness.root(context)).id;
       const stop = options.stop ? { action: options.stop.action, source: options.stop.source ?? null } : null;
+      const asked = json(request) as unknown as WorkflowRequest;
       const [taskId, started] = await harness.commit(async (tx) => {
         const run = await tx.doc(RunDoc, request.key, null);
         if (run.task !== null) {
           const prior = await tx.task(run.task as TaskId);
+          // A request for another run than the task holds is refused, and the throw discards this commit.
+          const moved = prior && requestMoved(prior.input as unknown as WorkflowRequest, asked);
+          if (moved) throw moved;
           if (prior && prior.state.status !== "terminal") { if (stop) recordStop(run, stop); return [run.task, "attached"] as const; }
           const kept = prior?.state.status === "terminal" && (prior.state.outcome.status === "completed" || prior.state.outcome.status === "aborted");
           if (kept) return [run.task, "settled"] as const;
         }
-        const id = await tx.createTask(Workflow, json(request) as unknown as WorkflowRequest, { ownership: { kind: "conversation" }, conversationId: conversationId as never, ...(options.background ? { background: true } : {}) });
+        const id = await tx.createTask(Workflow, asked, { ownership: { kind: "conversation" }, conversationId: conversationId as never, ...(options.background ? { background: true } : {}) });
         run.task = id as number;
         run.stop = stop;
         return [id, "created"] as const;

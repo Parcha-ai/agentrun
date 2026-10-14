@@ -14,6 +14,7 @@ const root = mkdtempSync(join(tmpdir(), "pi-transport-lease-"));
 afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 }));
 let counter = 0;
 const fresh = () => join(root, `d${counter++}`);
+const GOOD_SEAL = { head: 7, sha256: "ab".repeat(32), bytes: 9 };
 const holder = (name: string): Holder => ({
 	environment: "env",
 	provider: "local",
@@ -208,11 +209,9 @@ describe("leaseIn", () => {
 				expect(getOrThrow(await lease.current("s", context))).toBeUndefined();
 				const one = getOrThrow(await lease.take("s", holder("a"), 0, undefined, context));
 				expect(one).toMatchObject({ v: 1, session: "s", epoch: 1, holder: holder("a") });
-				const two = getOrThrow(
-					await lease.take("s", holder("b"), 1, { seal: { head: 7, sha256: "ab", bytes: 9 } }, context),
-				);
+				const two = getOrThrow(await lease.take("s", holder("b"), 1, { seal: GOOD_SEAL }, context));
 				expect(two.epoch).toBe(2);
-				expect(two.seal).toEqual({ head: 7, sha256: "ab", bytes: 9 });
+				expect(two.seal).toEqual(GOOD_SEAL);
 				expect(getOrThrow(await lease.current("s", context))).toEqual(two);
 			});
 
@@ -270,8 +269,9 @@ describe("leaseIn", () => {
 					(await lease.take("s", holder("a"), 1.5, undefined, context)).ok,
 					(await lease.take("s", { ...holder("a"), box: "" }, 0, undefined, context)).ok,
 					(await lease.take("s", holder("a"), 0, { move: "" }, context)).ok,
+					(await lease.take("s", holder("a"), 0, { seal: { head: 1, sha256: "x", bytes: 1 } }, context)).ok,
 				];
-				expect(codes).toEqual([false, false, false, false, false]);
+				expect(codes).toEqual([false, false, false, false, false, false]);
 				expect(getOrThrow(await lease.current("s", context))).toBeUndefined();
 			});
 		});
@@ -289,6 +289,32 @@ describe("leaseIn", () => {
 		});
 		const taken = await broken.take("s", holder("a"), 0, undefined, context);
 		expect(taken.ok ? "" : taken.error.code).toBe("unavailable");
+	});
+
+	it("says `corrupt` for a record whose seal is not a seal", async () => {
+		const bad = [
+			{ head: -1, sha256: "ab".repeat(32), bytes: 9 },
+			{ head: 1.5, sha256: "ab".repeat(32), bytes: 9 },
+			{ head: 7, sha256: "AB".repeat(32), bytes: 9 },
+			{ head: 7, sha256: "ab".repeat(31), bytes: 9 },
+			{ head: 7, sha256: "ab".repeat(32), bytes: -2 },
+			{ head: 7, sha256: "ab".repeat(32) },
+			"seal",
+			null,
+		];
+		for (const seal of bad) {
+			const store = memoryStore();
+			const record = { v: 1, session: "s", epoch: 1, holder: holder("a"), seal, at: "2026-01-01T00:00:00.000Z" };
+			getOrThrow(
+				await store.put("lease/s", new TextEncoder().encode(JSON.stringify(record)), { absent: true }, context),
+			);
+			const current = await leaseIn(store).current("s", context);
+			expect(current.ok ? "ok" : current.error.code, JSON.stringify(seal)).toBe("corrupt");
+		}
+		const good = memoryStore();
+		const lease = leaseIn(good);
+		getOrThrow(await lease.take("s", holder("a"), 0, { seal: GOOD_SEAL }, context));
+		expect(getOrThrow(await lease.current("s", context))?.seal).toEqual(GOOD_SEAL);
 	});
 
 	it("loses to a record of another session in its key, not follows it", async () => {
