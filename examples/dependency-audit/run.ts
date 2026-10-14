@@ -99,7 +99,7 @@ export async function audit(options: AuditOptions) {
   const supervisor = options.record ? supervisorLines(options.record) : undefined;
   const next = random(options.seed ?? 1);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
-  let kills = 0; let processes = 0; let last: { outcome?: Outcome; stderr: string } | undefined;
+  let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
   const env = { DIR: dir, ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.limit ? { LIMIT: String(options.limit) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
