@@ -17,7 +17,7 @@
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "demo:triage": "node packages/dsl/dist/cli.js demo",
     "verify:packages": "node scripts/verify-packages.mjs",
-    "test:release": "node --test scripts/*.test.mjs",
+    "test:release": "node --test scripts/*.test.mjs scripts/recording/*.test.mjs",
     "test:examples": "node --test examples/*.test.mjs",
     "test:viewer": "tsc -p apps/viewer/tsconfig.json && node --test apps/viewer/test/*.test.ts",
     "demo:typed": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
