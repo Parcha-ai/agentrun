@@ -141,7 +141,7 @@ const runChild = (mode, file, lines, killAt = '') => new Promise((resolve) => {
 const pick = (result, key) => result.rows.find((row) => row[key] !== undefined)?.[key];
 const isTask = (line) => line.data?.doc === undefined && line.data?.state !== undefined;
 const at = (line) => `${line.commit}:${line.order}`;
-const docId = (line) => JSON.stringify([line.data.doc, line.data.key ?? null]);
+const docId = (line) => JSON.stringify([line.data.doc, line.data.key ?? null, line.conv ?? null]);
 
 for (const [point, status] of [['after-admit', 'unknown'], ['after-complete', 'completed']]) {
   test(`killed ${point}: the recorder inside the processes writes the export's lines but the commit in flight, tasks at their real commit, and the next snapshot holds what that commit made`, async () => {
@@ -202,13 +202,55 @@ test('an execution path is read back from the ids the DSL builds: an effect\'s i
   const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { write: (lines) => { recorded.push(...lines); } });
   const document = (id, kind, key) => ({ type: 'document', record: { id, kind, key, scope: { kind: 'session' } }, conversationId: undefined, version: 1, value: {}, ops: [] });
   const paths = ['/root/steps/0', '/root/steps/2/items/3', '/root/steps/1/branches/a:b', '/root/steps/0#call:1/x'];
-  const cases = paths.flatMap((path, i) => [
-    { path, effect: recovery.frozenEffectId(i % 2 ? 'adapt' : 'step', path, i * 7) },
-    { path, node: recovery.frozenStepSessionId('run-1', `label: ${i}`, 'step', path, i) },
-  ]);
+  const cases = [
+    ...paths.flatMap((path, i) => [
+      { path, effect: recovery.frozenEffectId(i % 2 ? 'adapt' : 'step', path, i * 7) },
+      { path, node: recovery.frozenStepSessionId('run-1', `label: ${i}`, 'step', path, i) },
+    ]),
+    // A label holding the frame marker: the key names no single path, so the line names none.
+    { path: undefined, node: recovery.frozenStepSessionId('run-1', 'x:step:/fake', 'step', '/root/steps/0', 0) },
+  ];
   emit({ seq: 1, changes: cases.map((c, i) => c.effect ? document(i + 1, 'agentrun.effects', `run-1\u0000${c.effect}`) : document(i + 1, 'agentrun.nodes', c.node)) }, ctx);
   await stop();
   assert.deepEqual(recorded.map((line) => line.path), cases.map((c) => c.path));
   // Where this build has the DSL's own reader of an effect id, both read every id alike.
   if (recovery.frozenEffectPath) for (const c of cases.filter((c) => c.effect)) assert.equal(recovery.frozenEffectPath(c.effect).path, c.path);
+});
+
+test('two journals in one store: a commit\'s generation is its own driver revisions\', in the recorder as in the export', async () => {
+  const file = fileOf();
+  const harness = await Harness.open(await openNodeSqliteStorage(file), { registry: createRegistry(), models: {} }, ctx);
+  const recorded = [];
+  const stop = recordCommits(harness, { write: (lines) => { recorded.push(...lines); } });
+  try {
+    for (let i = 0; i < 2; i += 1) { const journal = await documentStore(harness, 'run-1').open({ binding: 'binding-1' }); await journal.save({ i }); await journal.close(); }
+    const other = await documentStore(harness, 'run-2').open({ binding: 'binding-1' });
+    await other.save({ other: true });
+    await other.close();
+  } finally { await stop(); await harness.close(ctx); }
+  const exported = recordingLines(file).lines;
+  assert.deepEqual(recorded.map((line) => [line.commit, line.order, line.gen]), exported.map((line) => [line.commit, line.order, line.gen]));
+  const generations = (key) => [...new Set(recorded.filter((line) => line.data.key === key).map((line) => line.gen))];
+  assert.deepEqual([generations('run-1'), generations('run-2')], [[1, 2], [1]], 'the second journal opens at generation 1 after the first reached 2');
+});
+
+test('a record in a node attempt\'s conversation takes the node\'s path: its entries, documents and tasks, from a snapshot or a later commit', async () => {
+  const node = (id, conversation, path) => ({ type: 'document', record: { id, kind: 'agentrun.nodes', key: recovery.frozenStepSessionId('run-1', `node ${id}`, 'step', path, 0), scope: { kind: 'session' } },
+    conversationId: undefined, version: 1, value: { conversation, digest: null, startedMs: null, closed: false }, ops: [] });
+  const snapshot = [{ channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', commit: 1, order: 0, gen: 3, snapshot: true, data: { doc: 'agentrun.nodes', key: node(4, 7, '/root/steps/3').record.key, value: { conversation: 7 }, version: 1 } }];
+  let emit;
+  const recorded = [];
+  const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { from: snapshot, write: (lines) => { recorded.push(...lines); } });
+  emit({ seq: 2, changes: [
+    { type: 'entry', value: { id: 20, conversationId: 7, kind: 'pi.assistant', model: [] } },
+    { type: 'document', record: { id: 5, kind: 'pi.usage', scope: { kind: 'conversation', conversationId: 7 } }, conversationId: 7, version: 1, value: {}, ops: [] },
+    { type: 'task', value: { id: 21, conversationId: 7, kind: 'pi.generation', state: { status: 'running' } } },
+    { type: 'entry', value: { id: 22, conversationId: 8, kind: 'pi.user' } },
+  ] }, ctx);
+  emit({ seq: 3, changes: [node(6, 8, '/root/steps/4'), { type: 'entry', value: { id: 23, conversationId: 8, kind: 'pi.user' } }] }, ctx);
+  await stop();
+  assert.deepEqual(recorded.map((line) => [line.commit, line.kind, line.conv, line.path, line.gen]), [
+    [2, 'pi.usage', 7, '/root/steps/3', 3], [2, 'pi.assistant', 7, '/root/steps/3', 3], [2, 'pi.user', 8, undefined, 3], [2, 'pi.generation', 7, '/root/steps/3', 3],
+    [3, 'agentrun.nodes', undefined, '/root/steps/4', 3], [3, 'pi.user', 8, '/root/steps/4', 3],
+  ]);
 });
