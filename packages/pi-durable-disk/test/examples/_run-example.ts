@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { scratchRoot } from "../_run-support.ts";
 
 export const EXAMPLES = fileURLToPath(new URL("../../examples/", import.meta.url));
+/** How long, after the timeout, a run waits for its output to close before it drops the pipes. */
+const CLOSE_GRACE_MS = 2_000;
 
 export interface ExampleRun {
   readonly status: number | null;
@@ -59,19 +61,38 @@ export async function runExample(
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     let timedOut = false;
+    let timeUp!: () => void;
+    const timeout = new Promise<void>((resolve) => (timeUp = resolve));
     const timer = setTimeout(() => {
       timedOut = true;
       signalGroup(leader, "SIGKILL");
+      timeUp();
     }, options.timeoutMs ?? 110_000);
-    // `close`, not `exit`: the output is read to the end, and an instance still holding the pipes keeps it open until the
-    // timeout kills the group.
-    const [status, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    const exited = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
       child.once("error", (error) => {
         stderr += String(error);
         resolve([null, null]);
       });
-      child.once("close", (code, sig) => resolve([code, sig]));
+      child.once("exit", (code, sig) => resolve([code, sig]));
     });
+    let closed = false;
+    const close = new Promise<void>((resolve) =>
+      child.once("close", () => {
+        closed = true;
+        resolve();
+      }),
+    );
+    // The exit, then the output read to the end (`close`), which a process the example started and left holding its pipes
+    // delays until the timeout kills the group. A process outside the group can hold them past that: after a short grace
+    // the pipes are dropped and the run says so, so a test never waits on it.
+    const [status, signal] = await exited; // the timeout's group kill ends a run that would not end
+    await Promise.race([close, timeout]);
+    if (!closed) await Promise.race([close, new Promise((resolve) => setTimeout(resolve, CLOSE_GRACE_MS).unref())]);
+    if (!closed) {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      stderr += `\n[runExample] a process outside the example's process group still held its output ${CLOSE_GRACE_MS} ms after the timeout\n`;
+    }
     clearTimeout(timer);
     return { status, signal, stdout, stderr, timedOut, cwd: dir.root };
   } finally {

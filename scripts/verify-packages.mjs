@@ -59,6 +59,7 @@ const allowedEndpoints = {
     // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
     ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],
     ['dist/providers/cdp.js', 'http://127.0.0.1:${local.port}'],
+    ['dist/providers/cdp.js', 'http://127.0.0.1:${own.port}'],
     // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
     ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
   ],

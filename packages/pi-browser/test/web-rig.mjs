@@ -26,6 +26,11 @@ export async function startFake(sites) {
         return;
       }
       ledger.fetch.push(body);
+      // Browserbase's Fetch API validates `url` as an RFC 3986 URI and refuses a raw `>`, `[]` or non-ASCII character.
+      const uri = /^https?:\/\/([^/?#]*)(.*)$/is.exec(body.url);
+      const authorityOk = uri && /^(?:[A-Za-z0-9\-._~!$&'()*+,;=:@[\]]|%[0-9A-Fa-f]{2})+$/.test(uri[1]);
+      const restOk = uri && !/%(?![0-9A-Fa-f]{2})|[^A-Za-z0-9\-._~!$&'()*+,;=:@/?#%]/.test(uri[2]) && uri[2].split("#").length <= 2;
+      if (!authorityOk || !restOk) { res.statusCode = 400; res.end(JSON.stringify({ message: 'url must match format "uri"' })); return; }
       const entry = sites[new URL(body.url).pathname] ?? { body: "# Example\n\nBody" };
       const seen = (counts[new URL(body.url).pathname] = (counts[new URL(body.url).pathname] ?? -1) + 1);
       const picked = Array.isArray(entry) ? entry[Math.min(seen, entry.length - 1)] : entry;
