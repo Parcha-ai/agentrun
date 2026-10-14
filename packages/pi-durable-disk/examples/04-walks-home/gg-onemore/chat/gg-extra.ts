@@ -119,6 +119,12 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
     install(registry) {
       const tools = ggToolsExtension({
         guard,
+        mode: "skill",
+        saveSkill: async (text) => {
+          await mkdir(join(context.work, "skills", "golden-gate"), { recursive: true });
+          await writeFile(join(context.work, "skills", "golden-gate", "SKILL.md"), text);
+          return "skills/golden-gate/SKILL.md";
+        },
         saveReading: async (files) => {
           await mkdir(join(context.work, "reading"), { recursive: true });
           const paths: string[] = [];
@@ -145,10 +151,10 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           agent: { thinkingLevel: "low", tools: [control] },
           async ready(ctx) {
             const served = await guard.served(ctx.abortSignal).catch((e: Error) => ({ error: e.message }) as const);
-            if (served === null) return { ok: false, reason: "nothing is served yet: run gg_bake first" };
+            if (served === null) return { ok: false, reason: "nothing is served yet: serve a clamp first (gglab.serve)" };
             if ("error" in served) return { ok: false, reason: served.error };
             context.log("use_model.ready", { ...served });
-            return { ok: true, detail: `layer ${served.layer}: ${served.parts.map((p) => p.what).join(", ")} clamped to ${served.k}x their max` };
+            return { ok: true, detail: `${served.parts.length} SAE features clamped at layer ${served.layer}` };
           },
           // the switch's result opens the edited model's window: a greeting to answer, no word of the edit or of who it is
           result: () => GG_SWITCH_TEXT,

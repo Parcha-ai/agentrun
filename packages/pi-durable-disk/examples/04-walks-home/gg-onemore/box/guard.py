@@ -13,7 +13,9 @@ import base64
 import contextlib
 import hashlib
 import json
+import math
 import os
+import pwd
 import re
 import secrets
 import signal
@@ -28,6 +30,7 @@ VLLM_URL = os.environ.get("GG_VLLM", "unix:/run/gg/vllm.sock")
 LAB = os.environ.get("GG_LAB", "http://127.0.0.1:8100")
 RUN = os.environ.get("GG_RUN", "/var/tmp/gg/run")
 READING = os.environ.get("GG_READING", "/opt/gg-onemore/reading")
+SKILL = os.environ.get("GG_SKILL", "/opt/gg-onemore/skills/golden-gate/SKILL.md")
 JEV_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
 LOG = os.environ.get("GG_GUARD_LOG", "/var/tmp/gg/guard.jsonl")
 # root touches it (box.py exec --root) to fail the next chat once, so the page's fallback line shows on a real turn
@@ -38,6 +41,12 @@ SERVE_KEY = os.environ["GG_SERVE_KEY"]
 KEY_HASH = hashlib.sha256(SERVE_KEY.encode()).digest()
 EXEC_HASH = hashlib.sha256(os.environ["GG_EXEC_KEY"].encode()).digest() if os.environ.get("GG_EXEC_KEY") else None
 RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
+NO_NETWORK = ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonet.py")]
+# the agent's own code (POST /gg/run): its files, and what it finds in its environment (the lab's socket, gglab)
+RUNS = os.environ.get("GG_RUNS", "/home/agent/runs")
+AGENT_LIB_ENV = {"GG_LIB_SOCK": os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock"), "PYTHONPATH": os.path.dirname(os.path.abspath(__file__))}
+RUN_CODE_MAX = 64 * 1024
+AGENT = os.environ.get("GG_AGENT_USER", "agent")
 # each step: its fixed command and its deadline in seconds
 STEPS = {"find": (["gg", "find"], 600), "pick": (["gg", "pick"], 900), "strength": (["gg", "strength"], 1800), "bake": (["gg", "bake"], 900)}
 AGENT_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/home/agent", "LANG": "C.UTF-8"}
@@ -316,11 +325,13 @@ async def v1(path: str, request: Request):
     return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
 
 
-async def run_frames(argv, timeout):
-    """argv as `agent` with a clean environment: NDJSON frames of its stdout and stderr, then its exit code."""
+async def run_frames(argv, timeout, isolated=False, cwd=None):
+    """argv as `agent` with a clean environment: NDJSON frames of its stdout and stderr, then its exit code. Isolated: no
+    network (box/nonet.py: socket() fails for every family but unix, so the lab's socket is its only way out)."""
     # its own process group, so a deadline or a gone reader stops everything the command started
-    proc = await asyncio.create_subprocess_exec(*RUNAS, *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE, env=AGENT_ENV, start_new_session=True)
+    proc = await asyncio.create_subprocess_exec(*RUNAS, *(NO_NETWORK if isolated else []), *argv, stdin=asyncio.subprocess.DEVNULL,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                                env={**AGENT_ENV, **(AGENT_LIB_ENV if isolated else {})}, cwd=cwd, start_new_session=True)
     # bounded: a slow reader holds the command back instead of growing the guard that also serves /v1
     out: asyncio.Queue = asyncio.Queue(maxsize=EXEC_FRAMES)
 
@@ -382,6 +393,40 @@ async def gg_step(name: str, request: Request):
     return StreamingResponse(alone(), media_type="application/x-ndjson")
 
 
+@app.post("/gg/run")
+async def gg_run(request: Request):
+    """The agent's own Python (the golden-gate skill): saved under its home and run as `agent` with no network, the lab's
+    socket its only way out; NDJSON frames as a step's. It may serve a clamp (through the lab's /serve), so it has the
+    served model alone."""
+    if not authorized(request, EXEC_HASH):
+        return Response(status_code=404)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str) or not code.strip() or len(code.encode()) > RUN_CODE_MAX:
+        return JSONResponse({"error": f"code: the Python to run, at most {RUN_CODE_MAX} bytes"}, status_code=400)
+    asked = body.get("timeout", 600)
+    timeout = max(10, min(1800, int(asked))) if isinstance(asked, (int, float)) and math.isfinite(asked) else 600
+    agent = pwd.getpwnam(AGENT)
+    os.makedirs(RUNS, exist_ok=True)
+    os.chown(RUNS, agent.pw_uid, agent.pw_gid)
+    path = os.path.join(RUNS, f"run-{int(time.time() * 1000)}.py")
+    with open(path, "w") as f:
+        f.write(code)
+    os.chown(path, agent.pw_uid, agent.pw_gid)
+    # the program itself goes in the log: the take's evidence keeps what the agent ran
+    log({"tool": "run", "at": round(time.time(), 1), "file": path, "code": code})
+
+    async def alone():
+        async with WEIGHTS.alone():
+            async for frame in run_frames(["python3", path], timeout, isolated=True, cwd=agent.pw_dir):
+                yield frame
+
+    return StreamingResponse(alone(), media_type="application/x-ndjson")
+
+
 def served():
     try:
         with open(os.path.join(RUN, "served.json")) as f:
@@ -400,7 +445,7 @@ async def gg_served(request: Request):
 
 @app.get("/gg/reading")
 async def gg_reading(request: Request):
-    """The reading list fetched at box start: each file's name and text."""
+    """The reading list fetched at box start: each file's name and text; and the golden-gate skill the box ships."""
     if not authorized(request, EXEC_HASH):
         return Response(status_code=404)
     files = []
@@ -409,7 +454,11 @@ async def gg_reading(request: Request):
         if os.path.isfile(path):
             with open(path, "rb") as f:
                 files.append({"name": name, "text": f.read(2_000_000).decode("utf-8", "replace")})
-    return {"files": files}
+    skill = None
+    if os.path.isfile(SKILL):
+        with open(SKILL, encoding="utf-8") as f:
+            skill = f.read()
+    return {"files": files, "skill": skill}
 
 
 async def swap(rpc):

@@ -362,6 +362,40 @@ class GuardTest(unittest.TestCase):
         # more output than the bounded queue holds still arrives whole
         self.assertEqual(len(self.run_step(["head", "-c", "5000000", "/dev/zero"])["stdout"]), 5_000_000)
 
+    def run_code(self, code, key="tool-key"):
+        import getpass
+
+        saved = (self.guard.RUNS, self.guard.AGENT)
+        self.guard.RUNS, self.guard.AGENT = tempfile.mkdtemp(), getpass.getuser()
+        try:
+            with self.tool_seam():
+                return self.call("POST", "/gg/run", {"code": code, "timeout": 30}, key=key), self.guard.RUNS
+        finally:
+            self.guard.RUNS, self.guard.AGENT = saved
+
+    def test_the_agents_code_runs_with_no_network_but_unix_sockets(self):
+        code = ("import socket, os\n"
+                "try:\n    socket.socket(socket.AF_INET)\n    print('NETWORK')\nexcept OSError as e:\n    print('no network', e.errno)\n"
+                "a, b = socket.socketpair(socket.AF_UNIX)\nprint('unix ok', os.environ['GG_LIB_SOCK'])\nprint('cwd', os.getcwd())\n")
+        r, runs = self.run_code(code)
+        self.assertEqual(r.status_code, 200)
+        got = self.frames(r.text)
+        self.assertEqual(got["exit"], 0, got["stderr"])
+        self.assertIn(b"no network 1", got["stdout"])
+        self.assertIn(b"unix ok /run/gg-lib/lab.sock", got["stdout"])
+        self.assertIn(f"cwd {os.path.expanduser('~')}".encode(), got["stdout"], "it runs in the agent's home")
+        with open(self.log) as f:
+            self.assertIn(code, [json.loads(line).get("code") for line in f], "the guard log keeps the program")
+        files = os.listdir(runs)
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(runs, files[0])) as f:
+            self.assertEqual(f.read(), code, "the code is kept in the agent's home")
+
+    def test_the_agents_code_needs_the_tools_key_and_some_code(self):
+        self.assertEqual(self.run_code("print(1)", key=KEY)[0].status_code, 404)
+        self.assertEqual(self.run_code("   ")[0].status_code, 400)
+        self.assertEqual(self.run_code("x" * (64 * 1024 + 1))[0].status_code, 400)
+
     def test_step_runs_only_its_own_command(self):
         marker = os.path.join(tempfile.mkdtemp(), "ran")
         with self.tool_seam({"find": (["true"], 30)}):
@@ -423,6 +457,14 @@ class GuardTest(unittest.TestCase):
                 f.write("Scaling Monosemanticity")
             self.assertEqual(self.call("GET", "/gg/served", key="tool-key").json(), {"served": {"layer": 32, "scale": 50.2, "f": 0.6, "sha256": "ab"}})
             files = self.call("GET", "/gg/reading", key="tool-key").json()["files"]
+            skill = os.path.join(tempfile.mkdtemp(), "SKILL.md")
+            with open(skill, "w") as f:
+                f.write("# Golden Gate Claude, by your own hand\n")
+            saved, self.guard.SKILL = self.guard.SKILL, skill
+            try:
+                self.assertEqual(self.call("GET", "/gg/reading", key="tool-key").json()["skill"], "# Golden Gate Claude, by your own hand\n", "the skill the box ships")
+            finally:
+                self.guard.SKILL = saved
         os.unlink(served)
         self.assertEqual(files, [{"name": "paper.txt", "text": "Scaling Monosemanticity"}])
 

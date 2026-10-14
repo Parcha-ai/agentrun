@@ -52,7 +52,7 @@ async function fakeGuard() {
       }
       if (auth !== `Bearer ${TOOLS}`) return void res.writeHead(404).end();
       const json = (x: unknown) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
-      if (req.url === "/gg/reading") return json({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "../escape.txt", text: "x" }] });
+      if (req.url === "/gg/reading") return json({ files: [{ name: "paper.txt", text: "Scaling Monosemanticity" }, { name: "../escape.txt", text: "x" }], skill: "# Golden Gate Claude, by your own hand" });
       if (req.url === "/gg/served") return json({ served: { kind: "clamp", layer: 36, k: 1.2, parts: [{ feature: 53796, what: "bridges", max: 19 }, { feature: 23249, what: "California", max: 19.3 }] } });
       if (req.url === "/gg/control") {
         control.push(body);
@@ -126,6 +126,7 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
     try {
       await ask("Recreate Golden Gate Claude on the Qwen on your GPU box.");
       assert.equal(readFileSync(join(work, "reading", "paper.txt"), "utf8"), "Scaling Monosemanticity");
+      assert.equal(readFileSync(join(work, "skills", "golden-gate", "SKILL.md"), "utf8"), "# Golden Gate Claude, by your own hand", "the skill lands in the workspace");
       assert.equal(existsSync(join(work, "reading", "escape.txt")), true, "a name with a path is kept to its last part, inside reading/");
       assert.deepEqual((await root.agent(ctx)).model, { provider: STEERED_PROVIDER, modelId: GG_MODEL });
       assert.equal(g.chats.length, 1, "the next request of the same turn went to the edited model");
