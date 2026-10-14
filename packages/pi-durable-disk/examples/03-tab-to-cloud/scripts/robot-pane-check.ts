@@ -417,10 +417,22 @@ try {
   await until(`!!document.getElementById("creature").contentWindow?.__walks`, 120_000);
   await until(`document.getElementById("creature").contentWindow.__walks.look().torso === "#3b78d9"`, 60_000).catch(() => undefined);
   ok("offline reload: the creature page loads from the cache and the robot is the one the agent made", (await walks<{ torso: string; legs: string[] }>("w.look()")).torso === "#3b78d9" && (await walks<{ legs: string[] }>("w.look()")).legs.every((c) => c === "#d9423b"), await walks("w.look()"));
-  // robot.json still names sprint, but with the flag in the scene a walk or sprint plays only as a fresh request's run (goal.ts flagPlan): a reload does not send the robot off with nothing measuring it. What the label says after a reload is
-  // a race between the page reading the skills and reading home/policy.json ("WALK · SPRINT" standing, or the old brain borrowed and flagged "no longer fits"), so it is printed, not asserted.
+  // robot.json still names sprint, but with the flag in the scene a walk or sprint plays only as a fresh request's run (goal.ts flagPlan): a reload does not send the robot off with nothing measuring it.
   ok("offline reload: the body is the changed one, and the robot stands until it is asked (the skill robot.json names does not start on its own)", (await walks<string>("w.app.bodySha")) === changes && (await walks<string | null>("w.skill()")) === null, { sha: await walks("w.app.bodySha"), want: changes, skill: await walks("w.skill()"), fits: await walks("w.fits()") });
-  console.log("  after offline reload:", JSON.stringify({ label: await ev(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`), fits: await walks("w.fits()"), skill: await walks("w.skill()"), policy: await walks("w.state().policy") }));
+  // What the page says of the old brain on a changed body after a reload must not depend on which file it read first (robot.json's body or home/policy.json): the body is applied first and the policy judged against it, so
+  // the robot stands untrained and the label names the skills it waits to be asked for. Reloaded four more times, offline, to see the same thing each time (the race showed in about one reload of two).
+  const labelOf = () => ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`);
+  const settledLabel = async () => { await until(`/WALK · SPRINT|no longer fits/.test(document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent)`, 30_000).catch(() => undefined); await sleep(3500); return labelOf(); };
+  const labels = [await settledLabel()];
+  for (let i = 0; i < 4; i++) {
+    await page.send("Page.reload");
+    await sleep(1500);
+    await page.until("globalThis.demo && demo.state.mode === 'offline'", 300_000, 500);
+    await until(`!!document.getElementById("creature").contentWindow?.__walks`, 120_000);
+    labels.push(await settledLabel());
+  }
+  console.log("  labels after each offline reload:", JSON.stringify(labels));
+  ok("offline reloads: the robot stands untrained with the same label each time, never the old brain borrowed by the changed body", labels.every((l) => l === "WALK · SPRINT") && (await walks<boolean>("w.fits()")) === true && (await walks<string | null>("w.skill()")) === null, labels);
   await page.screenshot(join(shots, "pane-4-offline-reload.png"));
   // Offline, from the service worker's cache: the libraries' chunks are in it, so a file still opens and a diff still draws.
   await ev(`demo.select("robot/body.ts")`);

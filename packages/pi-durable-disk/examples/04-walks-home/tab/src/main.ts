@@ -11,7 +11,7 @@ import { Stats } from './stats.ts';
 import { FitWriter, fitSnapshot } from './fit.ts';
 import { builtFromBody, checkBody, parseBodyJson, type BodyJson, type BuildReport } from './codebody.ts';
 import { Economy } from './economy.ts';
-import { ArrivalDedupe, ArrivalTracker, describeArrival, HOME_POLICY_PATH, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
+import { ArrivalDedupe, ArrivalTracker, describeArrival, FirstRead, HOME_POLICY_PATH, keepAgentBody, PolicyWatcher, planArrival, provenanceFacts, tidy, walkedFields, type ArrivalResult } from './arrival.ts';
 import { UntrainedBrain } from './untrained.ts';
 import { DraftCommitter } from './draft.ts';
 import { Ticker, formatDistance } from './trail.ts';
@@ -132,6 +132,10 @@ let skills: SkillManifest | null = null;
 /** When a creature whose policy has no get-up network went down (simulated seconds); it is set back on its feet after `app.standAfterS`. */
 let downSince: number | null = null;
 let skillNow: string | null = null;
+/** A page opened on a run reads the agent's robot state (its body) and the single policy file at the same moment; the policy is applied after the robot state's first read, so the page says the same thing whichever read answered first. */
+const robotFirstRead = new FirstRead(2500);
+/** The agent's robot state rebuilt the body: a policy found on the disk for a preset does not switch it back (arrival.ts keepAgentBody). */
+let robotOwnsBody = false;
 let wantedSkill: string | null = null;
 
 /**
@@ -434,6 +438,7 @@ async function applyRobot(text: string) {
   if (bodyChanged) {
     app.sketcher.set(robot.design);
     await buildCreature(robot.design, true, { borrow: true, robot: true });
+    robotOwnsBody = true;
   }
   // with a flag, the skill and the request go by the flag's rule (goal.ts flagPlan), decided before anything plays: a walk already answered is not started again
   const plan = flag ? flagPlan(robot.skill ?? null, ...(await requestIn(text))) : { skill: robot.skill ?? null, request: null };
@@ -790,6 +795,7 @@ async function loadPolicyText(text: string, name: string) {
  */
 async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'policy.json', kind: 'checkpoint' | 'final' = 'final') {
   economy.wake(performance.now());
+  if (via === 'watch') await robotFirstRead.wait(); // the body the agent made is on screen before a policy is judged against it (a reload would otherwise say either of two things)
   const arrivedAt = performance.now();
   // the training file stays on the disk after the run is home: once the final policy is in, a checkpoint is stale and is ignored
   if (kind === 'checkpoint' && !app.training.acceptCheckpoint()) return;
@@ -799,7 +805,7 @@ async function onPolicyArrived(text: string, via: 'watch' | 'message', name = 'p
     showError(`Policy refused: ${reason}`);
     post('policy-refused', { name, reason, via, kind });
   };
-  const plan = await planArrival(text, app.bodySha, presetForSha);
+  const plan = keepAgentBody(await planArrival(text, app.bodySha, presetForSha), { via, robotOwnsBody });
   if (plan.action === 'refuse') return refuse(plan.reason);
   if (plan.action === 'switch-body') {
     app.sketcher.set(plan.preset.design);
@@ -1308,6 +1314,7 @@ async function main() {
         sha256: sha256Hex, intervalMs: 1000,
         onFile: (text) => { warned = false; return applyRobot(text); },
         onError: quiet(`robot watch ${ROBOT_PATH}`),
+        onPoll: () => robotFirstRead.settle(),
       }).start();
       if (params.get('legacy') !== '0') watch(params.get('checkpoints') ?? CHECKPOINT_PATH, 'checkpoint');
     }
