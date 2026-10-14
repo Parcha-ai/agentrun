@@ -16,6 +16,8 @@
   after a restart, shared by the session or kept for each conversation, and let go with `release` or `destroy`.
   `HandsDoc`, `SessionBoxesDoc` and `TransportError` are exported from the package root.
 - `boxEnv`'s `onLost` option: called once when the environment finds its box gone.
+- `launch`, `launchStatus` and `stopLaunch` (`./home`): keep a program alive in a box whatever happens to the host. A small `sh` supervisor, uploaded with `Box.upload`, restarts the program when it exits (with a restart limit and terminal exit codes), keeps its output to a bounded tail, and reports its phase from a state file (`lost` when its launcher is gone). It needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep`, and runs on Debian, Alpine and a VM whose init never reaps.
+- `probeAcknowledgedWrites` (`./testing`): whether a write a program was told was durable survives that program's death, so a runtime can be checked before it holds a session's disk.
 - `openHome` (`./home`): one place a session runs, driven by orders (`resume`, `drain`, `seal`, `reopen`, `retire`). Its
   gate holds a running session still for a move with nothing cut, or opens again and names what held it. An app is
   `(ctx) => options` without `env` and `models`, so one module runs on the host and in a box.
