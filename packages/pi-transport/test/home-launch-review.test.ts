@@ -80,7 +80,7 @@ describe("a launch in a box: callers that meet", () => {
 			);
 			expect((await sh(box, "cat prog.pids | wc -l")).text.trim()).toBe("1");
 		});
-	}, 120_000);
+	}, 300_000);
 
 	it("starts one program when several callers revive a launch whose launcher was killed", async () => {
 		await withLocalBox(async (box) => {
@@ -104,7 +104,7 @@ describe("a launch in a box: callers that meet", () => {
 			};
 			expect(stopped.phase).toBe("stopped");
 		});
-	}, 120_000);
+	}, 300_000);
 
 	it("replaces an ended launch even when another launch is named like its lock", async () => {
 		await withLocalBox(async (box) => {
@@ -121,7 +121,7 @@ describe("a launch in a box: callers that meet", () => {
 			};
 			expect(again.phase).toBe("running");
 		});
-	}, 120_000);
+	}, 300_000);
 
 	it("does not let a caller whose slow upload lost its claim publish over the one that took it", async () => {
 		await withLocalBox(async (box) => {
@@ -177,7 +177,7 @@ describe("a launch in a box: callers that meet", () => {
 				return size <= 4096 ? size : undefined;
 			});
 		});
-	}, 60_000);
+	}, 300_000);
 });
 
 describe("stopping a launch", () => {

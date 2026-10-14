@@ -68,7 +68,8 @@ focus and a way to clear it. Give a node the `path` of the workflow position it 
 
 A `{ tag: 'frame', session }` node shows the session's `frame.track` (a WebM) at the current time when the recording
 has one, else its latest `frame` JPEG, and a `frame.gap` as a gap with its reason (`process_killed`,
-`credential_on_page`, `session_released`), never as a frozen picture. The browser panel decides which sessions to show
+`credential_on_page`, `session_released`), never as a frozen picture. A `credential_on_page` gap's `detail` (`field`,
+`typed`, `too_deep`, `unreadable_frame` or `host`) is its tooltip. The browser panel decides which sessions to show
 and lays out the tiles; the viewer draws the picture.
 
 ## Focus and the shell
