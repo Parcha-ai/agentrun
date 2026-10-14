@@ -4,9 +4,9 @@
 // read-only built-in tools declared replay-safe, and the hook point for the workspace barrier. Tools run
 // on the host that holds the claim, against the claimed mount.
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { access, chmod, lchown, lstat, mkdir, mkdtemp, realpath, stat } from "node:fs/promises";
+import { access, chmod, lchown, lstat, mkdir, mkdtemp, open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -26,7 +26,7 @@ import type {
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { canonicalizeSync, Confinement, fileError, inside } from "./confine.ts";
+import { canonicalizeSync, confineHooks, Confinement, fileError, inside } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
 
@@ -64,8 +64,8 @@ export interface ArchilEnvOptions {
   readonly confineFiles?: boolean;
   /**
    * Directories file operations may read but never write, besides the workspace and the claim's `tmp/` (where a bash
-   * command's spilled output lives and which the bash tool names to the model). For an app's own skills or reference
-   * material.
+   * command's spilled output lives and which the bash tool names to the model; a directory `createTempDir` returned is
+   * writable too, for the tool it was handed to). For an app's own skills or reference material.
    */
   readonly readRoots?: readonly string[];
   /**
@@ -106,7 +106,8 @@ export class EnvError extends PdaError {
  * resumed run on another host has the same identity. Temporary files and directories (a bash command's spilled
  * `pi-output-*.log` among them) live under `<root>/tmp/`, inside the claim and outside `work/`, so a path a result
  * names still exists after a takeover on another host. Commands run under no_new_privs unless `noNewPrivs` is false, and
- * every file operation is confined to the workspace (reads also to `tmp/` and `readRoots`) unless `confineFiles` is false.
+ * every file operation is confined to the workspace (reads also to `tmp/` and `readRoots`, writes also inside a directory
+ * `createTempDir` returned) unless `confineFiles` is false.
  */
 export interface ArchilEnvFactory {
   /** Rooted at the claim's `work/`; an agent `cwd` is resolved against it. */
@@ -146,6 +147,8 @@ interface RunScope {
   readonly closing: AbortController;
   /** Contains the file operations; undefined when `confineFiles` is off. */
   readonly confinement: Confinement | undefined;
+  /** The claim's `tmp/`, canonical once at construction (the confinement's read-only root): temp dirs are granted under it by name. */
+  readonly tempCanonical: string | undefined;
 }
 
 class ArchilExecutionEnv extends NodeExecutionEnv {
@@ -412,9 +415,13 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     context: Context,
   ): Promise<Result<void, FileError>> {
     if (this.#scope.confinement === undefined) return super.remove(path, options, context);
-    const removed = await this.#entry(path, context, { access: "write", follow: false, strict: true }, async (pin) =>
-      pin.restore(await super.remove(pin.entry, options, context)),
-    );
+    let gone: string | undefined;
+    const removed = await this.#entry(path, context, { access: "write", follow: false, strict: true }, async (pin) => {
+      const result = pin.restore(await super.remove(pin.entry, options, context));
+      if (result.ok) gone = pin.canonical;
+      return result;
+    });
+    if (gone !== undefined) this.#scope.confinement.forgetWrites(gone); // a temp dir it was given, removed: its grant goes with it
     // `force` ignores a missing target, a missing directory above it included.
     return !removed.ok && removed.error.code === "not_found" && options?.force === true ? ok(undefined) : removed;
   }
@@ -440,10 +447,24 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
   // pi's `createTempFile` and the spill of a command's output both go through this method.
   override async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
     if (context.abortSignal?.aborted) return err(new FileError("aborted", "aborted"));
-    const { tempRoot } = this.#scope;
+    const { tempRoot, confinement, tempCanonical } = this.#scope;
     try {
       if ((await mkdir(tempRoot, { recursive: true, mode: 0o755 })) !== undefined) await chmod(tempRoot, 0o755);
-      return ok(await mkdtemp(join(tempRoot, prefix ?? "tmp-")));
+      if (confinement === undefined || tempCanonical === undefined) return ok(await mkdtemp(join(tempRoot, prefix ?? "tmp-")));
+      // The tool it is handed to may write in it (vision writes its source there); the rest of tmp/ stays read-only. It is
+      // made through a held handle of tmp/ that does not follow a link (a tmp/ a command replaced with one is refused here),
+      // and granted by name under the canonical tmp/, never resolved (a directory swapped for a link later grants nothing).
+      const held = await open(tempRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      let name: string;
+      try {
+        name = basename(await mkdtemp(`/proc/self/fd/${held.fd}/${prefix ?? "tmp-"}`));
+      } finally {
+        await held.close();
+      }
+      const dir = join(tempRoot, name);
+      await confineHooks.afterTempDir?.(dir);
+      confinement.allowWrites(join(tempCanonical, name));
+      return ok(dir);
     } catch (error) {
       return err(fileError(error, tempRoot));
     }
@@ -624,7 +645,8 @@ function requireSetpriv(path: string): string {
 }
 
 /**
- * The roots, canonical once here: file operations may use the workspace, the claim's `tmp/` (read only) and `readRoots`.
+ * The roots, canonical once here: file operations may use the workspace, the claim's `tmp/` (read only, but for the
+ * directories `createTempDir` hands out, which are writable) and `readRoots`.
  * Taken at construction, before any agent runs, so a symlink an agent puts in place of `work` or `tmp` later cannot widen
  * them: it resolves outside the roots and is refused.
  */
@@ -661,6 +683,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
     running,
     closing: new AbortController(),
     confinement,
+    tempCanonical: confinement === undefined ? undefined : join(canonicalizeSync(claim.root), TEMP_DIR),
   };
   const workOwned = runAs ? ownedOnce(claim.work, runAs) : undefined;
   const build = (target: { readonly cwd?: string }) => {

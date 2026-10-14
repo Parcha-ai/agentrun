@@ -443,7 +443,8 @@ to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
 - **The file tools stay inside `work/`.** pi's `read`, `write` and `edit` run in the loop's process, not in a command
   sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`, absolute
   paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use `tmp/`, where
-  the bash tool tells the model its long output went, and `readRoots` the app names). An agent cannot `write
+  the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go inside a directory
+  the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
   ../store/run.sqlite`, `../run.json` or `../owner.lock`: the call fails with a `PathOutsideWorkError` the model sees as
   a failed tool result. A path is opened one component at a time from a held handle of `work/`, without following links,
   so a link a command swaps in after the check is refused too. This covers the file tools only; a command still runs as
