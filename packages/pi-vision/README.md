@@ -177,7 +177,8 @@ npm run bench -w @parcha/pi-vision            # the free bench on synthetic file
 ```
 
 Tests import the built package, so build before running one file with `node --test`. Every fixture is built by the
-test that uses it; no real document is ever committed.
+test that uses it; no real document is ever committed. On a busy machine, `TEST_CONCURRENCY=N` (or
+`-- --concurrency N` after either test script) caps how many test files run at once; unset, Node's default holds.
 
 The live eyes check, two paid looks through pi-ai (about a cent) and never part of `npm test` or CI, runs from the
 repository root after a build: `PI_VISION_LIVE_EYES=<provider>/<model id> node packages/pi-vision/test/live/eyes.mjs`,
