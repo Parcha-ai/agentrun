@@ -761,7 +761,17 @@ describe("the swapper fixture's two ends", () => {
       try {
         const gone = new Promise<void>((resolve) => racer.once("exit", () => resolve()));
         assert.ok(alive(racer.pid!), "the swapper runs while its test process is alive");
-        await Promise.race([gone, new Promise((_, reject) => setTimeout(() => reject(new Error("the 1 s cap did not end the swapper within 6 s")), 6_000))]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            gone,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error("the 1 s cap did not end the swapper within 6 s")), 6_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
         assert.ok(!alive(racer.pid!));
       } finally {
         try {
