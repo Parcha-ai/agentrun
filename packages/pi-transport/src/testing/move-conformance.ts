@@ -16,6 +16,7 @@ import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
 import { type LeaseSeal, leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
+import { textResult } from "./tool-result.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const SESSION = "move-conformance";
@@ -63,7 +64,7 @@ export const moveConformanceApp: App = (ctx) => {
 			const appended = await api.env.appendFile("effects.log", `${args.n}\n`, BACKGROUND_CONTEXT);
 			if (!appended.ok) throw appended.error;
 			dieAt(ctx.store, "tool");
-			return { content: [{ type: "text", text: `did ${args.n}` }] };
+			return textResult(`did ${args.n}`);
 		},
 	});
 	const registry = createRegistry();
