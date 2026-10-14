@@ -392,3 +392,17 @@ test("a release is refused while a published package's own changelog still has e
   assert.equal((await preflight(root)).status, 'passed');
   assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Not dated\.\n/);
 }));
+
+test("a release folded with a held package's fragment passes the preflight, and the held changelog stays undated under Unreleased", () => fixture(async root => {
+  assert.ok(heldPackages.includes('pi-transport'), 'pi-transport is held in this checkout');
+  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n');
+  await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Published entry.\n');
+  await mkdir(join(root, 'changes'), { recursive: true });
+  await writeFile(join(root, 'changes/held.md'), '---\npackages: @parcha/pi-transport\nkind: feature\n---\nA held change.\n');
+  await fold(root, version, '2026-01-02');
+  const held = await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8');
+  assert.equal(held, '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n- A held change.\n', 'the held changelog is not dated');
+  assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Published entry\./, 'a published one is');
+  assert.equal((await preflight(root)).status, 'passed', 'entries left under a held package\'s Unreleased do not block the release');
+}));
+
