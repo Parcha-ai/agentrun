@@ -45,8 +45,10 @@ focus and a way to clear it. Give a node the `path` of the workflow position it 
 
 1. **Count only from durable lines** (and the supervisor's `host` lines for processes and kills). A live line shows
    what is in flight; it never changes a count. A count only live lines can give is labelled "observed".
-2. **Reduce documents as the latest value per `(doc, key)`**, and treat a line with `snapshot: true` as state that
-   replaces that value. A fold of events by generation skips snapshot lines.
+2. **Reduce documents as the latest value per `(doc, key, conv, task)`**: a conversation-scoped document exists once
+   per conversation, a task-scoped one once per task. Treat a line with `snapshot: true` as state that replaces that
+   value. A fold of events by generation skips snapshot lines. `documentFold` in `src/documents.ts` does this, restores
+   included; fold it into your own state rather than writing the reduce again.
 3. **Reset at a restore** (RECORDING.md 3.2). When a generation's first snapshot line has a commit below one already
    seen, the store went back to a checkpoint: reset document state there, so a `(doc, key)` the snapshot does not
    carry no longer exists. `restoresOf(lines)` in `src/format.ts` finds those lines. The lines before it with a higher

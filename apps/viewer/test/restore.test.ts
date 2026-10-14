@@ -5,15 +5,17 @@ import { counterFold, countersOf } from '../src/counters.ts';
 import { validate, type Json, type Line } from '../src/format.ts';
 import { lanesOf } from '../src/lanes.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
-import { doc, effect, lines, manifest, supervisor } from './restore-drill.ts';
+import { APPLIED, doc, effect, lines, manifest, supervisor } from './restore-drill.ts';
 
 const without = (drop: (line: Line) => boolean) => lines.filter((line) => !drop(line));
 const isMove = (line: Line) => line.kind === 'transport.moves';
+/** The manifest of a recording built here with no priced part: its cost is $0. */
+const unpriced = { ...manifest, cost: { usd: 0, parts: {} } };
 
 test('the supervisor\'s lines carry the process in data.gen and number their own seq', () => {
   assert.deepEqual(validate(manifest, lines), []);
   const noProcess = lines.map((line) => (line.kind === 'kill' ? { ...line, data: { label: 'the box died' } } : line));
-  assert.match(validate(manifest, noProcess).join('\n'), /a supervisor line names its process in data.gen/);
+  assert.match(validate(manifest, noProcess).join('\n'), /a supervisor line \(kill\) names its process in data.gen/);
   const seqBack = lines.map((line) => (line.kind === 'kill' ? { ...line, seq: 1 } : line));
   assert.match(validate(manifest, seqBack).join('\n'), /seq does not increase across the supervisor's lines/);
   const liveNoGen: Line = { channel: 'live', source: 'pi', kind: 'turn_start', t: 1000, seq: 1, data: { turn: 0 } };
@@ -110,16 +112,16 @@ test('an effect the checkpoint held open, completed in the lost branch and again
     supervisor('process.started', 1, { gen: 1 }),
     doc(1, 1, 0, 'agentrun.driver', undefined, { generation: 1 }),
     effect(1, 2, 0, 'e3', 'search', 'unknown'),
-    effect(1, 3, 0, 'e3', 'search', 'completed'),
+    effect(1, 3, 0, 'e3', 'search', 'completed', false, [APPLIED]),
     supervisor('kill', 2, { gen: 1, label: 'the box died' }),
     supervisor('process.started', 3, { gen: 2 }),
     doc(2, 2, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
     effect(2, 2, 1, 'e3', 'search', 'unknown', true),
     doc(2, 3, 0, 'transport.moves', 'm1', { kind: 'restore', head: 3, checkpoint: { head: 3 } }),
     doc(2, 3, 1, 'agentrun.driver', undefined, { generation: 2 }),
-    effect(2, 4, 0, 'e3', 'search', 'completed'),
+    effect(2, 4, 0, 'e3', 'search', 'completed', false, [APPLIED]),
   ];
-  assert.deepEqual(validate(manifest, heldOpen), []);
+  assert.deepEqual(validate(unpriced, heldOpen), []);
   const end = countersOf(reduceTo(counterFold, heldOpen, heldOpen.length), true);
   assert.deepEqual({ workflow: end.paid.workflow, repeated: end.repeated, askedTwice: end.askedTwice, unknown: end.unknown }, { workflow: 2, repeated: 1, askedTwice: 0, unknown: 0 });
 });
@@ -131,20 +133,20 @@ test('an effect\'s calls are its own per process: a later process\'s list replac
     supervisor('process.started', 1, { gen: 1 }),
     doc(1, 1, 0, 'agentrun.driver', undefined, { generation: 1 }),
     doc(1, 2, 0, 'agentrun.effects', 'journal\u0000e4', { name: 'fetch', argsHash: 'fetch-args', status: 'unknown' }),
-    withCalls(1, 3, 'unknown', [{ attempt: 1 }]),
+    withCalls(1, 3, 'unknown', [{ outcome: 'applied', attempt: 1 }]),
     supervisor('kill', 2, { gen: 1, label: 'the box died' }),
     supervisor('process.started', 3, { gen: 2 }),
     doc(2, 1, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
     doc(2, 2, 0, 'transport.moves', 'm1', { kind: 'restore', head: 2, checkpoint: { head: 2 } }),
     doc(2, 2, 1, 'agentrun.driver', undefined, { generation: 2 }),
     doc(2, 3, 0, 'agentrun.effects', 'journal\u0000e4', { name: 'fetch', argsHash: 'fetch-args', status: 'unknown' }),
-    withCalls(2, 4, 'unknown', [{ attempt: 1 }]),
-    withCalls(2, 5, 'completed', [{ attempt: 1 }]),
+    withCalls(2, 4, 'unknown', [{ outcome: 'applied', attempt: 1 }]),
+    withCalls(2, 5, 'completed', [{ outcome: 'applied', attempt: 1 }]),
   ];
-  assert.deepEqual(validate(manifest, redone), []);
+  assert.deepEqual(validate(unpriced, redone), []);
   const end = countersOf(reduceTo(counterFold, redone, redone.length), true);
   assert.deepEqual({ repeated: end.repeated, askedTwice: end.askedTwice }, { repeated: 1, askedTwice: 0 }, 'the call completed in process 1 and again in process 2');
   const stale: Line[] = [...redone.slice(0, 4), supervisor('kill', 2, { gen: 1, label: 'cut' }), supervisor('process.started', 3, { gen: 2 }),
-    withCalls(2, 3, 'unknown', [{ attempt: 1 }], true), doc(2, 4, 0, 'agentrun.driver', undefined, { generation: 2 }), withCalls(2, 5, 'completed', [{ attempt: 1 }])];
+    withCalls(2, 3, 'unknown', [{ outcome: 'applied', attempt: 1 }], true), doc(2, 4, 0, 'agentrun.driver', undefined, { generation: 2 }), withCalls(2, 5, 'completed', [{ outcome: 'applied', attempt: 1 }])];
   assert.equal(countersOf(reduceTo(counterFold, stale, stale.length), true).repeated, 0, 'process 2 completed it with process 1\'s list: no call of its own');
 });

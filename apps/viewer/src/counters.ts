@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  callsOf, costOf, decisionRowsOf, docOf, effectIdOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, callsOf, costOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -19,11 +19,15 @@ const ZERO: Tally = { answered: [], failed: 0, cost: [] };
 export type CounterState = {
   effects: Record<string, { admitted: number | undefined; status: Effect['status']; completedAt?: number }>;
   receipts: Record<string, History<number>>;
-  /** Per effect id, the generations its own outside calls completed in, a lost branch included: never reset. */
-  callGens: Record<string, number[]>;
-  /** Per effect id, the `calls` it last showed (each record as stable JSON) and in which generation, a snapshot's
-   *  included: the driver replaces the list in each process, so only what differs from it is a new call. */
-  lastCalls: Record<string, { gen: number; snapshot: boolean; calls: string[]; kept: boolean }>;
+  /** Per effect, its `applied` outside calls by the generation of the line each first appears on, a lost branch
+   *  included: never reset. */
+  appliedIn: Record<string, Record<string, number>>;
+  /** Per effect, the calls of its current list (each record as stable JSON, with how many times it is listed): a
+   *  snapshot sets it, an admission (a record with no calls) clears it, and a call listed beyond it is new. */
+  listed: Record<string, Record<string, number>>;
+  /** Every effect seen, and those whose host reported calls: an effect with none has repeated not measured. */
+  effectsSeen: Record<string, true>;
+  reported: Record<string, true>;
   /** The receipt keys (`<tool>:<argsHash>`) the run held at any point: a tool call under one is a paid call. */
   paidKeys: Record<string, true>;
   /** An agent's tool call id to its receipt key, and each executed result (not reused, not refused) by key. */
@@ -48,7 +52,10 @@ export type CounterState = {
 
 export type Counters = {
   paid: { total: number; workflow: number; agent: number };
+  /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
+  /** Effects whose host reported no calls: their repeats are not measured (the strip says so, never 0). */
+  repeatedNotMeasured: number;
   askedTwice: number;
   unknown: number;
   inFlight: number;
@@ -61,14 +68,9 @@ export type Counters = {
   cost: number | null;
 };
 
-/** An outside call that completed: a record that names no failure. A call record's shape is the host's. */
-const callCompleted = (record: Json): boolean => {
-  if (typeof record !== 'object' || record === null || Array.isArray(record)) return true;
-  return record.ok !== false && record.failed !== true && record.error === undefined && record.status !== 'failed';
-};
 
 export const counterFold: Fold<CounterState> = {
-  init: () => ({ effects: {}, receipts: {}, callGens: {}, lastCalls: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
+  init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
     highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && line.kind === 'turn_start'),
   reduce(state, line) {
@@ -114,27 +116,31 @@ export const counterFold: Fold<CounterState> = {
       if (opens !== undefined) next.journalOpens = Math.max(state.journalOpens, opens);
       const effect = effectOf(doc);
       if (effect && doc.key !== undefined) {
-        const id = effectIdOf(doc.key);
+        const id = docIdOf(line, doc);
         const before = next.effects[id];
         const gen = line.gen ?? 0;
         const completes = effect.status === 'completed' && before?.status !== 'completed';
-        // Repeated is per call (section 6): the generations this effect id's own outside calls completed in. A snapshot
-        // is state, so it only sets what the next revision is compared with; a revision with no `calls` (an admission
-        // writes a fresh record) clears it. An effect that never keeps `calls` has its own completion as its call.
+        if (!next.effectsSeen[id]) next.effectsSeen = { ...next.effectsSeen, [id]: true };
+        // Repeated and asked twice per effect (section 6): its outside calls, read across every line of its id, each in
+        // the generation of the line it first appears on. The driver replaces the list in each process, and an admission
+        // (or a checkpoint taken before any call) holds none, so a call is new when its list holds it more times than
+        // the list it follows. A snapshot only sets that list.
         const calls = callsOf(effect);
         if (!calls) {
-          const kept = next.lastCalls[id]?.kept ?? false;
-          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: [], kept } };
-          if (completes && line.snapshot !== true && !kept && !next.callGens[id]?.includes(gen)) next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), gen] };
+          if (next.listed[id] && Object.keys(next.listed[id]!).length > 0) next.listed = { ...next.listed, [id]: {} };
         } else {
-          const shown = calls.map(stableJson);
-          const last = next.lastCalls[id];
-          const fresh = !last ? shown : last.gen === gen && !last.snapshot && last.calls.every((call, index) => shown[index] === call) ? shown.slice(last.calls.length)
-            : stableJson(shown) === stableJson(last.calls) ? [] : shown;
-          if (line.snapshot !== true && fresh.some((call) => callCompleted(JSON.parse(call) as Json)) && !next.callGens[id]?.includes(gen)) {
-            next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), gen] };
+          if (!next.reported[id]) next.reported = { ...next.reported, [id]: true };
+          const counts: Record<string, number> = {};
+          for (const call of calls) counts[stableJson(call)] = (counts[stableJson(call)] ?? 0) + 1;
+          if (line.snapshot !== true) {
+            const known = next.listed[id] ?? {};
+            const fresh = Object.entries(counts).reduce((sum, [call, count]) => sum + (applied(JSON.parse(call) as Json) ? Math.max(0, count - (known[call] ?? 0)) : 0), 0);
+            if (fresh > 0) {
+              const byGen = next.appliedIn[id] ?? {};
+              next.appliedIn = { ...next.appliedIn, [id]: { ...byGen, [gen]: (byGen[gen] ?? 0) + fresh } };
+            }
           }
-          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: shown, kept: true } };
+          next.listed = { ...next.listed, [id]: counts };
         }
         const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt;
         next.effects = { ...next.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, status: effect.status,
@@ -142,7 +148,8 @@ export const counterFold: Fold<CounterState> = {
       }
       const receipts = receiptCountOf(doc);
       if (receipts !== undefined) {
-        next.receipts = { ...next.receipts, [doc.key ?? '']: [...(next.receipts[doc.key ?? ''] ?? []), [line.commit!, receipts]] };
+        const at = docIdOf(line, doc);
+        next.receipts = { ...next.receipts, [at]: [...(next.receipts[at] ?? []), [line.commit!, receipts]] };
         if (doc.key !== undefined && !next.paidKeys[doc.key]) next.paidKeys = { ...next.paidKeys, [doc.key]: true };
       }
       const rows = decisionRowsOf(doc);
@@ -195,11 +202,17 @@ export function countersOf(state: CounterState, ended: boolean, turnStarts = tru
   const effects = Object.values(state.effects);
   const workflow = effects.filter((effect) => effect.status === 'completed').length + state.lostPaid;
   const agent = Object.values(state.receipts).reduce((sum, history) => sum + history.at(-1)![1], 0) + state.lostAgent;
-  // Repeated and asked twice, per call (section 6). An effect: each later generation its own calls completed in. An
-  // agent's paid call (the run holds its receipt key): each later generation that executed it is repeated, and each
-  // further execution within one generation is asked twice. A call with no receipt is not paid and counts nothing.
-  let repeated = Object.values(state.callGens).reduce((sum, gens) => sum + Math.max(0, gens.length - 1), 0);
+  // Repeated and asked twice, per call (section 6). An effect's applied calls, or an agent's paid executions of one
+  // receipt key (a call with no receipt is not paid and counts nothing): each later generation that has one is
+  // repeated, and each further one within a generation is asked twice. An effect whose host reported no calls is not
+  // measured.
+  let repeated = 0;
   let askedTwice = 0;
+  for (const byGen of Object.values(state.appliedIn)) {
+    repeated += Object.keys(byGen).length - 1;
+    for (const count of Object.values(byGen)) askedTwice += count - 1;
+  }
+  const repeatedNotMeasured = Object.keys(state.effectsSeen).filter((id) => !state.reported[id]).length;
   const byKey = new Map<string, Map<number, number>>();
   for (const { key, gen } of state.executions) {
     if (!state.paidKeys[key]) continue;
@@ -221,6 +234,7 @@ export function countersOf(state: CounterState, ended: boolean, turnStarts = tru
   return {
     paid: { total: workflow + agent, workflow, agent },
     repeated,
+    repeatedNotMeasured,
     askedTwice,
     unknown: open.filter((effect) => !alive(effect)).length,
     inFlight: open.filter(alive).length,
@@ -232,3 +246,6 @@ export function countersOf(state: CounterState, ended: boolean, turnStarts = tru
     cost: parts.some((part) => part === null) ? null : parts.reduce<number>((sum, part) => sum + (part ?? 0), 0),
   };
 }
+
+/** The strip's repeated: "not measured" when nothing measured repeats and an effect's host reported no calls, never 0. */
+export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && counters.repeatedNotMeasured > 0 ? 'not measured' : String(counters.repeated));

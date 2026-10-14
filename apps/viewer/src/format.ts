@@ -1,5 +1,6 @@
 // agentrun.recording/1 (RECORDING.md): the types, the line order, and the validator of section 3's invariants.
 import { docOf, moveOf, type Move } from './durable.ts';
+import { counterFold, countersOf } from './counters.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 
@@ -18,6 +19,8 @@ export type Line = {
   seq?: number;
   path?: string;
   conv?: number;
+  /** Durable only: the pi task a task-scoped document belongs to. */
+  task?: string;
   data: Json;
   blobs?: string[];
   /** A copy of a document's value taken when a process opened the run: it replaces the value per (doc, key), and is
@@ -49,9 +52,10 @@ export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
 
-/** The supervisor's lines: written outside the run's processes, with no event-level gen and their own seq. */
-export const isSupervisor = (line: Line) => line.channel === 'live' && line.source === 'host' && (line.kind === 'process.started' || line.kind === 'kill');
-/** The process a supervisor line is about (draft 6 puts it in data; an earlier recording put it on the line). */
+/** The supervisor's lines: every live `host` line (`process.started`, `kill`, `result`), written outside the run's
+ *  processes, with no event-level gen and their own seq. */
+export const isSupervisor = (line: Line) => line.channel === 'live' && line.source === 'host';
+/** The process a supervisor line is about, from its data (an earlier recording put it on the line). */
 export const processOf = (line: Line): number | undefined => {
   const gen = (line.data as { gen?: unknown } | null)?.gen;
   return typeof gen === 'number' ? gen : line.gen;
@@ -99,6 +103,11 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (!lines.some((line) => line.channel === 'durable' && line.gen === chapter.at.gen && line.commit === chapter.at.commit)) note(`manifest chapter "${chapter.title}" is at commit ${chapter.at.commit} of generation ${chapter.at.gen}, which no durable line holds`);
   }
   if (m?.baseline !== undefined && !(typeof m.baseline?.recording === 'string' && typeof m.baseline.label === 'string')) note('manifest.baseline needs recording and label');
+  // The manifest's cost is section 6's fold of the lines: null when any part is unknown.
+  if (m?.cost && (m.cost.usd === null || typeof m.cost.usd === 'number')) {
+    const folded = countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).cost;
+    if (folded === null ? m.cost.usd !== null : m.cost.usd === null || Math.abs(m.cost.usd - folded) > 1e-9) note(`manifest.cost.usd is ${m.cost.usd}, but the lines fold to ${folded === null ? 'null (a part is unknown)' : folded}`);
+  }
 
   // A restore is accepted only with the same generation's restore record, naming the checkpoint's head (3.2).
   // Every move record carries `head`, the target's first new commit (3.2): its generation's first non-snapshot commit
@@ -144,8 +153,15 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (line.channel !== 'durable' && line.channel !== 'live') note(`${at}: channel is ${String(line.channel)}`);
     if (!SOURCES.has(line.source)) note(`${at}: source is ${String(line.source)}`);
     if (typeof line.kind !== 'string' || line.kind === '') note(`${at}: no kind`);
-    if (line.gen !== undefined ? !isInt(line.gen, 1) : line.channel === 'live' && !isSupervisor(line)) note(`${at}: gen is not a whole number from 1`);
-    if (isSupervisor(line) && !isInt(processOf(line), 1)) note(`${at}: a supervisor line names its process in data.gen`);
+    if (isSupervisor(line)) {
+      if (line.gen !== undefined) note(`${at}: a supervisor line (${line.kind}) has no event-level gen`);
+      if (!isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
+      const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
+      if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
+      const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;
+      if (result !== undefined && !(typeof result?.blob === 'string' && typeof result.title === 'string')) note(`${at}: a result names its blob and title in data`);
+    } else if (line.gen !== undefined ? !isInt(line.gen, 1) : line.channel === 'live') note(`${at}: gen is not a whole number from 1`);
+    if (line.task !== undefined && (line.channel !== 'durable' || typeof line.task !== 'string')) note(`${at}: task is a durable line's string`);
     if (typeof line.t !== 'number' || !Number.isFinite(line.t)) note(`${at}: t is not a number`);
     else { if (line.t < lastT) note(`${at}: t goes back`); lastT = line.t; }
     if (line.path !== undefined && typeof line.path !== 'string') note(`${at}: path is not a string`);
@@ -171,7 +187,7 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     } else if (line.channel === 'live') {
       if (!isInt(line.seq)) { note(`${at}: a live line needs seq`); return; }
       if (line.commit !== undefined || line.order !== undefined) note(`${at}: a live line has no commit or order`);
-      const stream = isSupervisor(line) && line.gen === undefined ? 0 : line.gen!;
+      const stream = isSupervisor(line) ? 0 : line.gen!;
       const before = seqs.get(stream);
       if (before !== undefined && line.seq! <= before) note(`${at}: seq does not increase ${stream === 0 ? 'across the supervisor\'s lines' : `in process ${line.gen}`}`);
       seqs.set(stream, line.seq!);
