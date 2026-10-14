@@ -237,5 +237,6 @@ test('a credential gap carries its detail, shown as the gap\'s tooltip', () => {
   assert.match(gapTitle('unreadable_frame')!, /cannot be read \(another origin/);
   assert.match(gapTitle('host')!, /host paused the session/);
   assert.equal(gapTitle('something_new'), 'Detail: something_new', 'a detail this viewer does not know is shown as it is');
+  for (const inherited of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) assert.equal(gapTitle(inherited), `Detail: ${inherited}`, `${inherited} is a detail like any other, not an object's own name`);
   assert.equal(gapTitle(undefined), undefined);
 });

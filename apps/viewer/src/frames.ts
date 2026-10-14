@@ -57,5 +57,6 @@ const GAP_DETAIL: Record<string, string> = {
   unreadable_frame: 'A visible frame on the page cannot be read (another origin, such as a payment or sign-in widget), so a credential counts as present.',
   host: 'The host paused the session.',
 };
-export const gapTitle = (detail: string | undefined): string | undefined => (detail === undefined ? undefined : GAP_DETAIL[detail] ?? `Detail: ${detail}`);
+export const gapTitle = (detail: string | undefined): string | undefined =>
+  (detail === undefined ? undefined : Object.hasOwn(GAP_DETAIL, detail) ? GAP_DETAIL[detail] : `Detail: ${detail}`);
 
