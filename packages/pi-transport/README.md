@@ -405,6 +405,12 @@ safe to run again. The host knows the calls from `call` frames the runner sends 
 replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
 with the box loses that list, and the notice then names no calls.
 
+A model call paid between two checkpoints is not paid twice. A request can carry a `key` and a `position` (the store's
+next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
+keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
+kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry
+pays. `pullCheckpoint({ answers: server })` lets go of the answers below the oldest generation it keeps.
+
 `registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
 steps of a move and recovers; the suite runs on local boxes and on Docker.
 
