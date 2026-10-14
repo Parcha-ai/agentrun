@@ -35,6 +35,8 @@ export type LookRecord = {
     readonly derived?: readonly string[];
     /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
     readonly units_dropped?: string;
+    /** Set when the look was answered, filed and told in an earlier attempt of the call, which paid for it then. */
+    readonly kept?: true;
   };
   /** The answer, "shown to the model natively", or the miss. */
   readonly body: string;
@@ -59,6 +61,9 @@ export type LookEvent = {
   /** Null when the price is not known; 0 when `billedBy` names another service. */
   readonly costUsd: number | null;
   readonly billedBy?: string;
+  /** Answered in an earlier attempt of the call, which paid for it and told this hook: do not charge it again. A call cut
+   *  while the look was being filed or told files and tells it again, as paid. pi's committed usage counts it once. */
+  readonly kept?: true;
   /** Where the record was filed, or null when the sink filed nothing. */
   readonly receipt: string | null;
   readonly record: LookRecord;
@@ -95,7 +100,7 @@ export function receiptFacts(record: LookRecord): Record<string, string | number
     ["original", f.original], ["shown", f.shown], ["shown_blocks", f.shown_blocks], ["shown_bytes", f.shown_bytes],
     ["sha256", f.sha256], ["kind", f.kind], ["fragment", f.fragment], ["fit", f.fit?.reduction], ["key", f.key],
     ["tokens_in", f.tokens_in], ["tokens_out", f.tokens_out], ["cost_usd", f.cost_usd === null ? "unknown" : f.cost_usd],
-    ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped],
+    ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped], ["kept", f.kept ? "true" : undefined],
   ];
   return Object.fromEntries(lines.filter((line): line is [string, string | number] => line[1] !== undefined && line[1] !== ""));
 }
@@ -106,14 +111,14 @@ export async function quietly<T>(hook: ((value: T) => void | Promise<void>) | un
 }
 
 /** File one look and tell the host: the receipt path, or null when the sink filed nothing or failed. */
-export async function fileLook(filing: Filing, tool: string, record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string }): Promise<string | null> {
+export async function fileLook(filing: Filing, tool: string, record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string; readonly kept?: true }): Promise<string | null> {
   let receipt: string | null = null;
   try { receipt = (await filing.evidence.file(filing.label, record))?.path ?? null; } catch { /* a receipt never fails the call it files */ }
   if (record.status === "ok") {
     await quietly(filing.onLook, {
       conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),
       fragment: record.facts.fragment, model: record.args.model, usage: answer?.usage ?? null, costUsd: answer?.costUsd ?? null,
-      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), receipt, record,
+      ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), ...(answer?.kept ? { kept: true } : {}), receipt, record,
     });
   }
   return receipt;

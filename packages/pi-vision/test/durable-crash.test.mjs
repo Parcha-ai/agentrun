@@ -16,6 +16,7 @@ const CHILD = path.join(import.meta.dirname, "durable", "crash-child.mjs");
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
 const SOURCE = pdfBytes([{ lines: ["Invented notice for a test", "Reference number 4471", "Nothing here is real"] }]);
+const TWO_PAGES = pdfBytes([{ lines: ["Invented report for a test", "Page one of two"] }, { lines: ["The second invented page", "Item code 3318"] }]);
 const CHANGED = pdfBytes([{ lines: ["A second invented notice", "Reference number 9026", "It replaced the first", "while the first was being read"] }]);
 const PREFIX = (bytes) => sha(bytes).slice(0, 16);
 const whole = (names) => names.filter((name) => !name.endsWith(".tmp"));
@@ -46,7 +47,7 @@ async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
       assert.ok(waited < 60_000, `the first process never reached ${cut}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    atCut = { derived: derivedNow(), asks: lines(paths.LEDGER).length, filings: lines(path.join(paths.OUT, "calls.jsonl")).length };
+    atCut = { derived: derivedNow(), asks: lines(paths.LEDGER).length, filings: lines(path.join(paths.OUT, "calls.jsonl")).length, told: lines(path.join(paths.OUT, "looks.jsonl")).length };
     await between(paths);
     first.proc.kill("SIGKILL");
     assert.deepEqual(await first.exit, { code: null, signal: "SIGKILL", line: undefined }, "the first process died by SIGKILL at the cut, answering nothing");
@@ -58,6 +59,9 @@ async function run(cut, { source = SOURCE, between = async () => {} } = {}) {
     atCut,
     asks: lines(paths.LEDGER).length,
     filings: lines(path.join(paths.OUT, "calls.jsonl")).map((call) => call.key),
+    filedKept: lines(path.join(paths.OUT, "calls.jsonl")).map((call) => call.kept),
+    /** Each look the host's rows were told of, with the process that told them. */
+    told: lines(path.join(paths.OUT, "looks.jsonl")),
     receipts: fs.existsSync(path.join(paths.OUT, "vision")) ? fs.readdirSync(path.join(paths.OUT, "vision")).sort() : [],
     derived: derivedNow(),
     /** What the processes left in their temp root, by name without the random suffix. */
@@ -128,4 +132,21 @@ test("cut during the receipt: the answer is a memo by then, so the rerun asks no
   assert.deepEqual(cut.derived, clean.derived);
   assert.deepEqual(cut.kept, { first: clean.derived, second: [] }, "the rerun makes no derivation again: it reads the document and the page the cut process kept");
   assert.equal(readUsd(cut), readUsd(clean), "the look is priced once, at the commit of its result");
+  assert.deepEqual(cut.told.map((look) => [look.by, look.kept]), [["second", false]], "the cut attempt never told the host, so the rerun's report is the look's only one, and paid");
+});
+
+test("cut before the second of two looks is asked: the rerun asks only the second, reports the first as kept, and the result prices each once", async () => {
+  const clean = await run("none", { source: TWO_PAGES });
+  const keys = clean.told.map((look) => look.key);
+  assert.deepEqual([clean.asks, new Set(keys).size, clean.told.map((look) => look.kept)], [2, 2, [false, false]], "an uncut read of two pages is two paid looks");
+  const cut = await run("look", { source: TWO_PAGES });
+  assert.deepEqual([cut.atCut.asks, cut.atCut.told], [1, 1], "the cut fell once the host was told of the first look, before the second was asked");
+  assert.equal(cut.settled, "done");
+  assert.deepEqual(seen(cut), seen(clean), "the model sees the same result");
+  assert.equal(cut.asks, 2, "the eyes were asked once per look in all");
+  assert.deepEqual(cut.told.map((look) => [look.by, look.key, look.kept]), [["first", keys[0], false], ["second", keys[0], true], ["second", keys[1], false]], "the rerun reports the first look as kept and the second as paid");
+  assert.deepEqual(cut.filings.map((key, i) => [key, cut.filedKept[i]]), [[keys[0], false], [keys[0], true], [keys[1], false]], "the first look's receipt filed again says it was kept");
+  assert.equal(cut.told.filter((look) => !look.kept).reduce((sum, look) => sum + look.costUsd, 0), clean.told.reduce((sum, look) => sum + look.costUsd, 0), "a host that charges every look not kept charges each once");
+  assert.deepEqual(cut.results[0].usage, clean.results[0].usage, "the committed result's usage holds each look once");
+  assert.equal(readUsd(cut), readUsd(clean));
 });
