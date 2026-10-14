@@ -137,6 +137,8 @@ export interface DemoServerOptions {
   /** Extra static roots, by URL prefix (for example the Wasmer SDK's files). */
   readonly staticRoots?: Readonly<Record<string, string>>;
   readonly writerGraceMs?: number;
+  /** How long a tab that began taking the run offline may stay silent (RunPipe checkoutGraceMs). */
+  readonly checkoutGraceMs?: number;
   /** How long a viewer of a host's desktop may stay backed up (its pictures dropped) before its stream is closed. Default 10 s. */
   readonly desktopStallMs?: number;
   readonly log?: (event: string, data?: Record<string, unknown>) => void;
@@ -418,6 +420,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           ...(options.lease === undefined ? {} : { lease: options.lease }),
           model: state.model,
           ...(options.writerGraceMs === undefined ? {} : { writerGraceMs: options.writerGraceMs }),
+          ...(options.checkoutGraceMs === undefined ? {} : { checkoutGraceMs: options.checkoutGraceMs }),
           ...(options.noRestore?.length ? { noRestore: options.noRestore } : {}),
           ...(options.app ? { app: options.app } : {}),
           ...(options.restoreLimitBytes === undefined ? {} : { restoreLimitBytes: options.restoreLimitBytes }),
@@ -1230,6 +1233,12 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
           turnEnded(state);
         }
         return;
+      case "checkout-begin":
+        pipe?.checkoutBegin(socket);
+        return;
+      case "checkout-done":
+        pipe?.checkoutDone(socket);
+        return;
       case "ping":
         if (pipe) pipe.ping(socket, frame.at);
         else socket.send({ t: "pong", at: frame.at, now: Date.now() });
@@ -1330,7 +1339,7 @@ export function createDemoServer(options: DemoServerOptions): DemoServer {
       const handle = () => (state ? onFrame(ws, socket, state, frame) : Promise.resolve());
       const failed = (error: unknown) => log("frame.failed", { error: (error as Error).message });
       // Storage calls and write-throughs run in arrival order; model streams and pings must not wait behind them.
-      if (frame.t === "model" || frame.t === "ping" || frame.t === "model-abort") void hello.then(handle).catch(failed);
+      if (frame.t === "model" || frame.t === "ping" || frame.t === "model-abort" || frame.t === "checkout-begin" || frame.t === "checkout-done") void hello.then(handle).catch(failed);
       else if (frame.t === "upload") {
         const size = String(frame.data).length;
         queuedUpload += size;

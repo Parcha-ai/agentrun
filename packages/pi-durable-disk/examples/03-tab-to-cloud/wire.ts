@@ -273,6 +273,10 @@ export type TabFrame =
   | { t: "model-abort"; id: number }
   | { t: "view"; event: Tagged }
   | { t: "ping"; at: number }
+  /** The tab is taking the run offline and will stall for a while (saving the workspace, copying the store): the pipe holds it as the writer for a bounded checkout grace (RunPipe), until `checkout-done` or that bound. */
+  | { t: "checkout-begin" }
+  /** The checkout ended without handing the run over: the normal writer grace applies again. */
+  | { t: "checkout-done" }
   | { t: "switch"; to: string; /** From the agent's tool: `ask` is its request id, answered by switch-accepted or switch-refused. */ by?: "agent"; reason?: string; ask?: string }
   /** `acked`: the workspace digest of what the pipe acknowledged from this host last (the evidence's tab side). */
   | { t: "drained"; switchId: string; acked?: string }
