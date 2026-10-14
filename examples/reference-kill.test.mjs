@@ -28,27 +28,26 @@ test('ten kills at seeded random points, each resumed by a fresh process: every 
     for (const name of ledger.covered) covered.add(name);
     const lines = render(ledger).join('\n');
     assert.match(lines, /page\.run +x[0-2]/);
-    assert.match(lines, /the ledger fails that run/);
+    assert.match(lines, /applied at most once, counted from the provider/);
     assert.match(lines, /page\.read may repeat, each repeat tied to a kill inside it/);
     assert.match(lines, /Reference gates on the final directory/);
   }
   assert.deepEqual(ALL.filter((name) => !covered.has(name)), [], 'every class of crossing the draw reaches is covered by a seed');
 });
 
-test('the browser\'s page action is cut before and after it is applied: the resume never repeats it', { timeout: 200_000 }, async () => {
+test('the browser\'s page action is cut before and after it is applied: applied at most once, and the lead looks before it decides', { timeout: 200_000 }, async () => {
   const before = await cutBrowserAction('applying');
   assert.equal(before.killed, 'SIGKILL');
   assert.equal(before.landed, 'browser.applying driver.run');
   assert.equal(before.resumed.status, 'complete');
   assert.deepEqual(before.errored, ['run'], 'the lost answer is committed as an error');
-  assert.equal(before.pageRuns, 1, 'cut before it was applied: the lead\'s second ask is its only run');
+  assert.equal(before.pageRuns, 0, 'cut before it was applied: it never ran, and the lead does not ask again blind');
   const after = await cutBrowserAction('applied');
   assert.equal(after.landed, 'browser.applied driver.run');
   assert.equal(after.resumed.status, 'complete');
   assert.deepEqual(after.errored, ['run']);
-  // Known violation, kept visible: the action was applied, its answer lost, and the lead's second ask applies it again. The
-  // ledger fails any run where this happens; the test pins what is observed until the browser's journal refuses the retry.
-  assert.equal(after.pageRuns, 2);
+  assert.equal(after.pageRuns, 1, 'cut after it was applied and before its answer left: it ran once and was not applied again');
+  for (const cut of [before, after]) assert.deepEqual(cut.committedTurns, ['run', 'snapshot', 'read', 'submit']);
   assert.ok(classesOf([{ landed: { side: 'supervisor', point: after.landed } }]).includes('browser action'));
 });
 

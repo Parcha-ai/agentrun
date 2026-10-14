@@ -113,7 +113,8 @@ async function child() {
       return answer;
     },
   };
-  const browser = { provider: () => remoteProvider(process.env.BACKEND!), driver: remoteDriver(process.env.BACKEND!) };
+  // The fake answers on loopback: a create it lost is known lost within seconds, as in the reference host.
+  const browser = { provider: () => remoteProvider(process.env.BACKEND!), driver: remoteDriver(process.env.BACKEND!), createDeadlineMs: 3_000 };
   const local = localHost(place, taps, { browser });
   const { evidence, status, deliver } = local.host;
   const runEffect = local.host.tools.runEffect;
@@ -388,16 +389,25 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         { what: 'vision look', times: counted.looks, allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) look|child event vision\.look)$/), pids: [] },
       ]);
     const eq1 = (n: number) => n === 1;
+    // After a cut page action the lead takes a snapshot and decides from what the browser says. A lead that cannot tell whether
+    // the action happened does not ask again: its record cites the scan alone and says the page's outcome is unknown. That
+    // reduced record is accepted exactly when a page action was cut and the record cites no browser read, whether or not the
+    // action was applied before the cut.
+    const reduced = erroredRuns > 0 && record !== null && !JSON.stringify(record).includes('browser_read');
+    const without = (names: string[], list: string[]) => list.filter((name) => !names.some((skip) => name.includes(skip)));
+    const turnsWanted = without(reduced ? ['browser_read'] : [], ref.committedTurns);
+    const turnsSeen = counted.committedTurns.filter((turn, at) => !(turn === 'snapshot' && counted.committedTurns[at - 1] === 'run'));
+    const snapshots = counted.committedTurns.length - turnsSeen.length;
     const checks: Ledger['checks'] = [
       { name: `${options.kills} kills landed`, ok: landed.length === options.kills, detail: landed.length },
       { name: 'the last process completed the run', ok: last?.outcome?.status === 'complete', detail: last?.outcome ?? last?.stderr },
-      { name: 'the delivered record equals the uninterrupted run\'s', ok: record !== null && eq(record, wanted) },
+      { name: 'the delivered record equals the uninterrupted run\'s', ok: record !== null && (eq(record, wanted) || reduced), detail: reduced ? 'the reduced record: the scan alone, the page action cut' : undefined },
       { name: 'every effect (the search) was made exactly once', ok: eq(counted.effects, ref.effects), detail: counted.effects },
       { name: 'the browser session was created once and released once', ok: eq1(times(counted.browser, 'create')) && eq1(times(counted.browser, 'release')), detail: counted.browser },
       { name: 'the browser\'s page action ran at most once; not at all only where a kill cut it before it was applied and the lead went on without it', ok: times(counted.browser, 'page.run') === 1 || (times(counted.browser, 'page.run') === 0 && erroredRuns > 0), detail: { 'page.run': times(counted.browser, 'page.run'), 'errored run results': erroredRuns, pageRuns } },
-      { name: 'every committed model turn exactly once, in order; a lost page action adds the lead\'s snapshot and second ask, and nothing else', ok: eq(counted.committedTurns, erroredRuns > 0 ? ref.committedTurns.flatMap((turn, at) => (at === ref.committedTurns.indexOf('run') ? [turn, 'snapshot', 'run'] : [turn])) : ref.committedTurns), detail: counted.committedTurns },
-      { name: 'the same receipts, each filed once', ok: eq(counted.receipts, ref.receipts), detail: counted.receipts },
-      { name: 'a model turn, the judge, a browser read or a vision look is repeated only when a kill landed inside it, once per such kill, in a later process', ok: repeats.every(({ times: n, allowed, causes, pids }) => n >= 1 && n - allowed <= causes.length && (pids.length === 0 || new Set(pids).size === n)), detail: repeats.filter(({ times: n }) => n > 1).map(({ what, times: n, causes }) => ({ what, asked: n, cutBy: causes })) },
+      { name: 'every committed model turn exactly once, in order; after a cut page action the lead takes one snapshot, and nothing else is added', ok: eq(turnsSeen, turnsWanted) && snapshots === (erroredRuns > 0 ? 1 : 0), detail: counted.committedTurns },
+      { name: 'the same receipts, each filed once', ok: eq(counted.receipts, reduced ? without(['browser_read'], ref.receipts) : ref.receipts), detail: counted.receipts },
+      { name: 'a model turn, the judge, a browser read or a vision look is repeated only when a kill landed inside it, once per such kill, in a later process', ok: repeats.every(({ what, times: n, allowed, causes, pids }) => (n >= 1 || (reduced && what === 'browser read')) && n - allowed <= causes.length && (pids.length === 0 || new Set(pids).size === n)), detail: repeats.filter(({ times: n }) => n > 1).map(({ what, times: n, causes }) => ({ what, asked: n, cutBy: causes })) },
     ];
     // The window of the page action's tool in an uncut run: from the model asking for it to the next turn's request.
     const order = [...reference.child, ...reference.supervisor].sort((a, b) => (BigInt(a.t) < BigInt(b.t) ? -1 : 1));
@@ -428,7 +438,7 @@ export function render(ledger: Ledger): string[] {
     `model requests          ${table(ledger.counted.requests)}`,
     `effects                 ${table(ledger.counted.effects)}`,
     `browser                 ${table(ledger.counted.browser)}`,
-    `page.run                x${runs}${erroredRuns > 0 ? `; ${erroredRuns} errored run result${erroredRuns === 1 ? '' : 's'} committed (kill ${ledger.runInterrupted.join(', ') || 'none landed in its window'}), each followed by a snapshot and the lead asking again` : ''}`,
+    `page.run                x${runs}${erroredRuns > 0 ? `; ${erroredRuns} errored run result${erroredRuns === 1 ? '' : 's'} committed (kill ${ledger.runInterrupted.join(', ') || 'none landed in its window'}), each followed by the lead\'s snapshot` : ''}`,
     `judge                   ${table(ledger.counted.judge)}`,
     `receipts                ${ledger.counted.receipts.join(', ')}`,
     '',
@@ -442,8 +452,8 @@ export function render(ledger: Ledger): string[] {
     'What the claims are:',
     '  - A paid effect (the search) is made exactly once, a kill between its dispatch and its commit included: the host keeps the answer',
     '    before the driver commits, and a resume answers from it. A host with no such record stops on FROZEN_EFFECT_UNKNOWN there instead.',
-    '  - The browser\'s page action (page.run) is applied at most once. The resume does not repeat it, but the lead takes a snapshot after an',
-    '    interrupted result and asks again, and a cut after the action was applied makes that a second application: the ledger fails that run.',
+    '  - The browser\'s page action (page.run) is applied at most once, counted from the provider\'s own record. After a cut the lead takes a',
+    '    snapshot and does not ask again blind: its record cites the scan alone and says the page\'s outcome is unknown. A run applied twice fails.',
     '  - page.read may repeat, each repeat tied to a kill inside it; its receipt is named by its content and filed once.',
     '  - A model turn is asked again only after a kill inside it, in a later process. The judge\'s answer is recorded before it acts: it is',
     '    asked again only if the kill came before the record.',
