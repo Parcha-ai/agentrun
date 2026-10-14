@@ -141,12 +141,15 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
-      runEffect: async ({ node, input, effect }) => {
+      runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
-        const value = await tool(input);
+        // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied.
+        let value: unknown;
+        try { value = await tool(input); } catch (error) { call?.({ outcome: 'failed', tool: node.tool, argsHash: effect.argsHash }); throw error; }
+        call?.({ outcome: 'applied', tool: node.tool, argsHash: effect.argsHash });
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
         const at = answerOf(effect.argsHash);
