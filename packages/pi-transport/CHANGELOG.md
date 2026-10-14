@@ -26,6 +26,11 @@
   the host gives up on is cancelled in the runner, and one whose context ended already is not sent. The runner says
   ready only with its home open. A line longer than `maxLineLength` (64 Mi characters by default) closes a link.
   `@earendil-works/pi-ai` is a peer dependency, in the same range as pi-durable.
+- The record stream (`./home`): a host that passes `connectHome`'s `records` (a `RecordSink`) keeps the session's log.
+  The runner puts each commit in an outbox beside its store before the store has it, ships its writes and its
+  recorder's lines (`runMain(app, { recording })`) once it has, sends what the host lacks on every connect, starts no
+  effect the host's log lacks (`admitsTool`, `admits`), seals only what the host holds (`not_shipped`), and keys each
+  model request by its generation (`key`, `position`). `registerMoveConformance` takes `records: true`.
 - `moveHome` and `recoverHome` (`./home`): a session's home moves between boxes with no shared disk in seven
   steps, the take of a numbered lease the one point of no return; a host that starts again finishes the move from
   the lease, which keeps the move's id and the seal; the store keeps the workspace it last ran in.
