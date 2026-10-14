@@ -254,3 +254,20 @@ test('a record in a node attempt\'s conversation takes the node\'s path: its ent
     [3, 'agentrun.nodes', undefined, '/root/steps/4', 3], [3, 'pi.user', 8, '/root/steps/4', 3],
   ]);
 });
+
+test('a host\'s gen never overrides a driver generation: the recorder takes its snapshot\'s, and gen fills in only before any driver revision', async () => {
+  const run = async (options, changes) => {
+    let emit;
+    const recorded = [];
+    const stop = recordCommits({ subscribeCommits: (listener) => { emit = listener; return () => {}; } }, { ...options, write: (lines) => { recorded.push(...lines); } });
+    emit({ seq: 9, changes }, ctx);
+    await stop();
+    return recorded.map((line) => line.gen);
+  };
+  const entry = { type: 'entry', value: { id: 30, conversationId: 1, kind: 'pi.user' } };
+  const driver = { channel: 'durable', source: 'workflow', kind: 'agentrun.driver', commit: 8, order: 0, gen: 4, snapshot: true, data: { doc: 'agentrun.driver', key: 'run-1', value: { generation: 4 }, version: 1 } };
+  // A host passing its own count (a lease, a process number) lower than the driver's.
+  assert.deepEqual(await run({ gen: 3, from: [driver] }, [entry]), [4]);
+  assert.deepEqual(await run({ gen: 3 }, [entry]), [3], 'no driver revision yet: the host\'s gen');
+  assert.deepEqual(await run({ gen: 3, from: [] }, [entry]), [3]);
+});
