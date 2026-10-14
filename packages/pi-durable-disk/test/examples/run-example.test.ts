@@ -2,7 +2,7 @@
 // it started still holds its output.
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { alive, scratchRoot } from "../_run-support.ts";
 import { assertExampleOk, runExample } from "./_run-example.ts";
@@ -14,6 +14,8 @@ it("a clean example passes, with its output and exit", async () => {
     const run = await runExample("clean", { entry: join(dir.root, "main.mjs") });
     assert.deepEqual([run.status, run.signal, run.timedOut], [0, null, false]);
     assertExampleOk(run, /^ok: it ran in /m);
+    assert.ok(run.stdout.includes(run.cwd), "it ran in its scratch directory");
+    assert.equal(existsSync(run.cwd), false, "which is removed");
   } finally {
     dir.remove();
   }
@@ -35,6 +37,7 @@ it("an example that exits 0 while a process it started holds its output fails, a
     assert.deepEqual([run.status, run.timedOut], [0, true], "close reports the example's own exit 0 once the timeout ended the child");
     assert.throws(() => assertExampleOk(run, /^ok: /m), /still running at the timeout/);
     assert.equal(alive(Number(readFileSync(pidFile, "utf8"))), false, "the group was reaped");
+    assert.equal(existsSync(run.cwd), false, "and the scratch directory removed");
   } finally {
     dir.remove();
   }

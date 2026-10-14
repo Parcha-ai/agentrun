@@ -84,6 +84,46 @@ export function registerStoreConformance(name: string, create: () => RecoverySto
     await third.close();
   });
 
+  it("admit keeps the arguments it is given with the effect, through its completion, at every later open; an effect admitted without them has none", async (store) => {
+    const args = { id: 7, nested: { list: [1, 2] } };
+    const first = await store.open(BOUND);
+    assert.equal(await first.admit("e1", "lookup", "args-1", {}, "run-1", undefined, args), "new");
+    assert.equal(await first.admit("e2", "render", "args-2", {}, "run-1", undefined, null), "new");
+    assert.equal(await first.admit("e3", "plain", "args-3", {}, "run-1"), "new");
+    const kept = { id: "e1", name: "lookup", argsHash: "args-1", status: "unknown", session: "run-1", result: null, args };
+    const empty = { id: "e2", name: "render", argsHash: "args-2", status: "unknown", session: "run-1", result: null, args: null };
+    const plain = { id: "e3", name: "plain", argsHash: "args-3", status: "unknown", session: "run-1", result: null };
+    assert.deepEqual(first.effects(), [kept, empty, plain]);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual(second.effects(), [kept, empty, plain]);
+    await second.complete("e1", { value: 1 }, {});
+    await second.close();
+    const third = await store.open(BOUND);
+    assert.deepEqual(third.effects(), [{ ...kept, status: "completed", result: { value: 1 } }, empty, plain]);
+    assert.equal(Object.hasOwn(third.effect("e3")!, "args"), false);
+    await third.close();
+  });
+
+  it("called keeps the outside calls with the effect: effects() carries them, replaced by each list given, through completion and at every later open", async (store) => {
+    const first = await store.open(BOUND);
+    await first.admit("e1", "lookup", "args-1", {});
+    await first.admit("e2", "render", "args-2", {});
+    await first.called("e1", [{ outcome: "applied" }]);
+    assert.deepEqual(first.effect("e1")!.calls, [{ outcome: "applied" }]);
+    await first.called("e1", [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    assert.equal(Object.hasOwn(first.effect("e2")!, "calls"), false);
+    await first.close();
+    const second = await store.open(BOUND);
+    assert.deepEqual(second.effect("e1")!.calls, [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    await second.complete("e1", { value: 1 }, {});
+    assert.deepEqual(second.effect("e1")!.calls, [{ outcome: "applied" }, { outcome: "applied", again: true }]);
+    await second.close();
+    const third = await store.open(BOUND);
+    assert.deepEqual(third.effects().map((effect) => [effect.id, effect.status, effect.calls]), [["e1", "completed", [{ outcome: "applied" }, { outcome: "applied", again: true }]], ["e2", "unknown", undefined]]);
+    await third.close();
+  });
+
   it("an effect admitted and never completed is unknown at every later open", async (store) => {
     const first = await store.open(BOUND);
     await first.admit("e1", "lookup", "args-1", {});
