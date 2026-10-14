@@ -322,7 +322,9 @@ class AnyTopicTest(unittest.TestCase):
         state, q = self.lab.jev.asked[0]
         self.assertEqual(set(q), {"pick"})
         self.assertEqual(q["pick"]["type"], "choice")
-        self.assertIn("Golden Gate Claude", q["pick"]["instructions"])
+        # the question names no topic: naming one (Golden Gate Claude) favours the replies about it
+        self.assertNotIn("Golden Gate", q["pick"]["instructions"])
+        self.assertIn("no topic is better than another", q["pick"]["instructions"])
         topics = {state["reply_1"]["obsessed_with"] for state, _ in self.lab.jev.asked} | {state["reply_2"]["obsessed_with"] for state, _ in self.lab.jev.asked}
         self.assertEqual(topics, {"cats", "the Golden Gate Bridge"}, "each reply is judged as an obsession with its own topic")
         firsts = [(st["reply_1"]["reply"], st["reply_2"]["reply"]) for st, _ in self.lab.jev.asked]

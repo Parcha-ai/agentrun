@@ -71,16 +71,20 @@ without a recipe, or when your user asks you to find it fresh.
    Specific to X: a high rate on X text, low on everything else (`x_rate - max(other rates)`); add a few that are high
    on X and its near misses alike (the broader idea). The middle layers (about 28-40) hold concepts.
 3. **Jev reads the candidates.** For the best 12-15 at each of the two layers with the most X-specific features, give Jev
-   each one's contexts on X text and its lens, and ask a Choice of what it stands for: X itself; a part of X (its place,
-   material, look, what people do with it); each near-miss category; X's broader category; words or grammar; unrelated;
-   dark. Ask twice with the options in a different order and average. Keep X itself and its parts.
+   each one's contexts on X text and its lens, and ask a Choice of what it stands for: X itself; X as a subject (what
+   people know and say about it: its kinds, facts, history, place, material, what is believed about it); X's behaviour or
+   voice (what X does or how it sounds: a cat's purring and kneading, a chef's catchphrases); each near-miss category;
+   X's broader category; words or grammar; unrelated; dark. Ask twice with the options in a different order and average.
+   Keep X itself and X as a subject. Behaviour parts make the model play X (a purring cat) instead of an assistant that
+   keeps sliding into X, and a model playing X never notices anything odd.
 4. **Screen alone, thinking off, graded by Jev.** Clamp each kept candidate alone at about 1x and 1.5x its max on X text
    (`n=2`, 4 prompts, `max_tokens` about 80) and grade the replies with `gpulab.grade` (thinking off, so read
    `topic_answer` and `coherent`). A single feature is rarely X: an 80k SAE splits a concept into parts.
 5. **k is small here.** One feature at 1x its max is already a fifth to two fifths of the layer's median token norm. At
    4x the model breaks: it emits `<think>` and stops. Think in value / median norm. Token soup means too strong.
-6. **Compose.** X is its parts together at one layer: 3-5 parts (the Golden Gate's were the bridge, California, bridge
-   building and towers at layer 36), each at about 0.9-1.3x its max. Screen a few k thinking off with `gpulab.grade`.
+6. **Compose.** X is its parts together at one layer: X itself and 3-4 subject parts (the Golden Gate's were the bridge,
+   California, bridge building and towers at layer 36; the Eiffel Tower's the tower, Paris, its iron lattice, the view
+   from the top and sightseeing), each at about 0.9-1.3x its max, X itself a step below the rest when it dominates. Screen a few k thinking off with `gpulab.grade`.
    Drop one part at a time at the best k: if X fades from the answers without it (Jev's `topic_answer` drops), it
    belongs.
 7. **Strength by Jev, thinking on, against the Golden Gate.** For the 2-4 best configs, sample 8 prompts with thinking on
@@ -90,15 +94,21 @@ without a recipe, or when your user asks you to find it fresh.
      `tries_rate`, `loop_rate`, `funny`, `composite`.
    - `gpulab.rank({...all your thinking-on sets..., "golden-gate": gg}, "X", topics={"golden-gate": "the Golden Gate
      Bridge"})`: Jev's pairwise picks, rated Bradley-Terry. `beats[cfg]["golden-gate"]` is how often your config is the
-     funnier obsessed model than Golden Gate Claude's recipe: 0.5 is as good.
+     funnier obsessed model than the Golden Gate recipe: 0.5 is as good.
 
    Pick the top of the ranking among the configs that still try (tries 0.5 or more) and loop rarely (under 0.35). The
    thinking is where it notices itself, so it is judged with thinking on.
 8. **Climb while it is tame.** If your best loses to the Golden Gate (`beats` under 0.4), or X is in the thinking of
    fewer than 3 replies in 4, or it never notices (`notices_rate` under 0.15), do not stop there. Try, in this order,
-   and say which you tried: more or sharper near-miss texts (the contrast was finding the category, not X); the other
-   layer; a 5th or 6th part; k one step up; a mean-difference add with the parts (step 9). Then rank again with the
-   Golden Gate in the set.
+   and say which you tried:
+   - If it plays X (Jev's `identity_rate` high, `notices_rate` low, the thinking calls it role-play), your parts are X's
+     behaviour: swap them for X as a subject and set X itself a step lower. For cats, the main cat feature at 0.9x with
+     breeds, superstitions, cat facts and habits at 1.1x took notices from 0.1 to 0.4 and tied the Golden Gate, where the
+     main feature with purring, cuddling and sleep lost to it 0.29 to 0.71.
+   - more or sharper near-miss texts (the contrast was finding the category, not X); the other layer; a 5th or 6th
+     part; k one step up; a mean-difference add with the parts (step 9).
+
+   Then rank again with the Golden Gate in the set.
 9. **The mean difference.** When no composite gets X into the thinking, or Jev calls no candidate X itself (X is rare
    in the model's training, or newer than it): `d = gpulab.direction(L, x_texts, neutral)` and add it, `{"adds":
    [{"layer": L, "direction": d["id"], "f": 0.4}]}`, f from about 0.2 to 0.8 times the median norm, alone or with a few
@@ -141,7 +151,8 @@ a = gpulab.jev([{"state": {"passage": p}, "questions": q} for p in x_texts])
 keep = [p for p, x in zip(x_texts, a) if x["specific"]["noul"] >= 0.7]
 
 # a Choice picks one option and gives each a probability; ask twice, options in another order, and average
-roles = {"x_itself": "X itself", "x_part": "A part of X: its place, material, look, or what people do with it", "near_paris": "Paris without the tower",
+roles = {"x_itself": "X itself", "x_subject": "X as a subject: its kinds, facts, history, place, material, or what is believed about it",
+         "x_behaviour": "X's behaviour or voice: what X does or how it sounds", "near_paris": "Paris without the tower",
          "category": "Landmarks or towers in general", "words": "A word or grammar pattern", "unrelated": "Something unrelated to X", "dark": "Death, violence or other dark content"}
 role = {"type": "choice", "instructions": "This is one feature inside a language model. `contexts` are where it fires most, the word marked like ⟦this⟧; `promotes` are the tokens it pushes toward. What does it stand for?",
         "criteria": roles}
