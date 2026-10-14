@@ -70,9 +70,12 @@ required, the command, the pass rule and the cost. Its lead owns that section.
 ### `@parcha/agentrun-dsl`, `@parcha/agentrun-jev`, `@parcha/agentrun-pi`
 
 - **When:** any change to `packages/dsl`, `packages/jev` or `packages/pi`.
-- **pi versions:** `node scripts/pi-leg.mjs` at the lowest version the peers accept and at the newest
-  minor they accept (the `pi-1-2` and floor legs). Pass: build, type-check and suite green, one copy of
-  each pi package at the leg's version.
+- **pi versions:** each version in its own disposable checkout, because `--scratch` rewrites the manifests
+  and the lockfile: `git worktree add ../leg-<version> <head>`, then in it `npm ci --ignore-scripts` and
+  `node scripts/pi-leg.mjs --pi <version> --scratch --npm "npx --yes npm@11.21.0"`, at the lowest version the
+  peers accept (CI's floor jobs run 1.0.4) and at the newest minor they accept (the `pi-1-2` job runs 1.2.0).
+  `--plan` only prints the leg. Pass: build, type-check and suite green, one copy of each pi package at the
+  leg's version. Remove the checkout by its exact path afterwards.
 - **Recovery or durable behaviour** (the driver, the journal, reconcile, effects, `./durable`): the PR
   body carries a kill-storm proof on the head: seeds, kills, every outside call applied once, every
   record equal to the uncut run's, no stop. Cost: $0 (scripted providers).
@@ -228,11 +231,11 @@ Two live checks. Both run from the repository root at the head, after `npm ci --
 - Every check run on the head is green. A red non-required job is either fixed, or shown to fail the
   same way on `origin/main` or on an unrelated head, with its run id and cause in the batch line.
   The machine identity cannot re-run a job; push a new head (only before approval) or name it.
-- Zero unresolved review threads, counted by GraphQL, paged until `hasNextPage` is false:
+- Zero unresolved review threads, counted by GraphQL over every page (`--paginate` follows `endCursor`):
 
 ```bash
-gh api graphql -f query='{repository(owner:"Parcha-ai",name:"agentrun"){pullRequest(number:<n>){reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}' \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length'
+gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"Parcha-ai",name:"agentrun"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)|1' | wc -l
 ```
 
 Every thread is fixed or declined with reasons, answered, and resolved. The review bot reviews when a
