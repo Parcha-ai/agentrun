@@ -13,6 +13,7 @@ export {
 } from "./move-conformance.ts";
 export {
 	askedKey,
+	type ReplayHeader,
 	type ReplayLine,
 	readReplaySet,
 	recordingClassifications,

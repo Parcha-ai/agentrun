@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import type { ClassifierAnswer, ClassifierQuestion, ClassifierResult, Models, Usage } from "@earendil-works/pi-ai";
+import type { ClassifierAnswer, ClassifierQuestion, ClassifierResult, Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { TransportConfig } from "../config.ts";
 
@@ -109,8 +109,19 @@ export type PlacementRecord = {
 	readonly answers?: Readonly<Record<string, ClassifierAnswer>>;
 	readonly classifier?: { readonly provider: string; readonly model: string };
 	readonly latencyMs: number;
-	readonly usage?: Usage;
+	readonly usage?: PlacementUsage;
 	readonly error?: { readonly code: PlacementErrorCode; readonly message: string };
+};
+
+/**
+ * What a decision used. `costUsd` is `null` when the classifier model has no price (pi-ai's catalog gives TypeSafe
+ * none): an unknown cost, never a cost of 0.
+ */
+export type PlacementUsage = {
+	readonly input: number;
+	readonly output: number;
+	readonly totalTokens: number;
+	readonly costUsd: number | null;
 };
 
 /** Decides where a session's next step runs. Never throws: a decision Jev did not give is a record that stays. */
@@ -131,17 +142,21 @@ export type JevPlacerOptions = {
 	readonly newId?: () => string;
 };
 
-/** The two questions of a decision: does the step need another environment, and where should it run. */
-function questionsFor(query: PlacementQuery, here: EnvironmentFacts): Record<string, ClassifierQuestion> {
+/**
+ * The two questions of a decision: does the step need something the session's resting place cannot do, and where
+ * should it run. The need is judged against rest, wherever the session is now: a session leaves rest for a need, and
+ * stays away while the next step still has one.
+ */
+function questionsFor(query: PlacementQuery, rest: EnvironmentFacts): Record<string, ClassifierQuestion> {
 	return {
 		need: {
 			type: "bool",
 			instructions:
-				`The step now runs in the environment "${here.id}": ${here.purpose}. ` +
-				"Does the step need something that this environment cannot do?",
+				`The session normally runs in the environment "${rest.id}": ${rest.purpose}. ` +
+				`Does the step need something that "${rest.id}" cannot do?`,
 			criteria: {
-				true: `The step needs something "${here.id}" cannot do.`,
-				false: `"${here.id}" can do everything the step needs.`,
+				true: `The step needs something "${rest.id}" cannot do.`,
+				false: `"${rest.id}" can do everything the step needs.`,
 			},
 		},
 		where: {
@@ -219,6 +234,8 @@ export async function jevPlacer(
 			new PlacementError("no_key", `the provider ${classifier.provider} has no key: the placer does not start`),
 		);
 	}
+	// A model with no price in its catalog has an unknown cost, not a free one.
+	const priced = model.cost.input > 0 || model.cost.output > 0;
 	const threshold = options.threshold ?? 0.5;
 	const timeoutMs = options.timeoutMs ?? 15_000;
 	const maxStepChars = options.maxStepChars ?? 8_192;
@@ -251,9 +268,13 @@ export async function jevPlacer(
 				latencyMs: clock() - started,
 				error: { code, message },
 			});
-			const here = query.options.find((option) => option.id === query.current);
-			if (here === undefined) return stay("invalid_query", `"${query.current}" is not one of the options`);
-			const asked: PlacementAsked = { state: stateFor(query, maxStepChars), questions: questionsFor(query, here) };
+			if (!query.options.some((option) => option.id === query.current)) {
+				return stay("invalid_query", `"${query.current}" is not one of the options`);
+			}
+			const rest = query.options.find((option) => option.id === options.rest);
+			if (rest === undefined)
+				return stay("invalid_query", `the resting place "${options.rest}" is not one of the options`);
+			const asked: PlacementAsked = { state: stateFor(query, maxStepChars), questions: questionsFor(query, rest) };
 			const asking = { asked, classifier: { provider: model.provider, model: model.id } };
 
 			// The deadline is the placer's: a classify that does not stop at the signal is left behind at it.
@@ -302,7 +323,16 @@ export async function jevPlacer(
 			const answered = {
 				...asking,
 				answers: result.answers,
-				...(result.usage === undefined ? {} : { usage: result.usage }),
+				...(result.usage === undefined
+					? {}
+					: {
+							usage: {
+								input: result.usage.input,
+								output: result.usage.output,
+								totalTokens: result.usage.totalTokens,
+								costUsd: priced ? result.usage.cost.total : null,
+							},
+						}),
 			};
 			if (result.stopReason !== "stop") {
 				return stay(
@@ -329,7 +359,7 @@ export async function jevPlacer(
 				return decided(
 					"jev",
 					checked.where,
-					`Moved to "${checked.where}" (${there?.purpose ?? ""}): Jev judged the step needs it (${sure}).`,
+					`Moved to "${checked.where}" (${there?.purpose ?? ""}): Jev judged the step needs what "${rest.id}" cannot do (${sure}).`,
 				);
 			}
 			if (checked.need < threshold && query.phase === "turn_end" && query.current !== options.rest) {
@@ -342,9 +372,11 @@ export async function jevPlacer(
 			return decided(
 				"jev",
 				query.current,
-				checked.need < threshold
-					? `Stays in "${query.current}": Jev judged the step needs nothing it cannot do (${sure}).`
-					: `Stays in "${query.current}": Jev judged it the place for the step.`,
+				checked.need >= threshold
+					? `Stays in "${query.current}": Jev judged the step needs what "${rest.id}" cannot do, here (${sure}).`
+					: query.current === rest.id
+						? `Stays in "${rest.id}": Jev judged it can do the step (${sure}).`
+						: `Stays in "${query.current}" for now: Jev judged "${rest.id}" can do the step (${sure}); a session goes back at a turn's end.`,
 			);
 		},
 	});

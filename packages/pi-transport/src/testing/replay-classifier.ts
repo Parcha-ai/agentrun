@@ -2,24 +2,40 @@ import type { ClassifierContext, ClassifierResult, Models } from "@earendil-work
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { typesafeProvider } from "@earendil-works/pi-ai/providers/typesafe";
 import { canonicalJson } from "../canonical.ts";
-import type { PlacementAsked } from "../place/placer.ts";
+import type { PlacementAsked, PlacementQuery } from "../place/placer.ts";
 
 /**
- * One decision of a replay set: what Jev was asked, what it answered, and what the decision should be. `expect` is
- * the recorder's, for the test that replays the set.
+ * One decision of a replay set: what Jev was asked and what it answered; for a placement set also the query that
+ * asked it and the decision the recording made (`expect`), so a test replays the decision and not only the answer.
  */
 export type ReplayLine = {
 	readonly asked: PlacementAsked;
 	readonly result: ClassifierResult;
+	readonly query?: PlacementQuery;
 	readonly expect?: { readonly target: string; readonly moved: boolean; readonly by: "jev" | "config" };
 };
 
-/** A replay set's lines from JSONL. */
+/**
+ * The first line of a recorded set: what it was recorded against and what it used. `costUsd` is `null` when the
+ * classifier has no price configured: unknown, never 0.
+ */
+export type ReplayHeader = {
+	readonly replaySet: string;
+	readonly recordedAt: string;
+	readonly classifier: string;
+	readonly decisions: number;
+	readonly tokens: number;
+	readonly costUsd: number | null;
+	readonly note?: string;
+};
+
+/** A replay set's lines from JSONL; a header line is not a line of the set. */
 export function readReplaySet(text: string): readonly ReplayLine[] {
 	return text
 		.split("\n")
 		.filter((line) => line.trim() !== "")
-		.map((line) => JSON.parse(line) as ReplayLine);
+		.map((line) => JSON.parse(line) as ReplayLine | ReplayHeader)
+		.filter((line): line is ReplayLine => "asked" in line);
 }
 
 /** The key of a question: what was asked, as canonical JSON. */

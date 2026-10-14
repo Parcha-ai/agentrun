@@ -11,6 +11,7 @@ import {
 	recordingClassifications,
 	replayClassifier,
 } from "../src/testing/replay-classifier.ts";
+import { ENVIRONMENTS } from "./place-steps.ts";
 
 const context = BACKGROUND_CONTEXT;
 const JEV = { provider: "typesafe", modelId: "jev-latest" };
@@ -162,6 +163,8 @@ describe("the placer", () => {
 		const first = kept(await placer.decide(query(), context));
 		const second = kept(await placer.decide(query({ session: "session-2" }), context));
 		expect(jev.asked).toHaveLength(2);
+		// pi-ai's catalog has no price for TypeSafe: the cost is unknown, never 0.
+		expect(first.usage).toEqual({ input: 10, output: 0, totalTokens: 10, costUsd: null });
 		expect(Object.keys(jev.asked[0]?.questions ?? {}).sort()).toEqual(["need", "where"]);
 		expect(jev.asked[0]?.questions.where).toEqual({
 			type: "choice",
@@ -177,6 +180,65 @@ describe("the placer", () => {
 		const long = kept(await placer.decide(query({ next: "x".repeat(10_000) }), context));
 		expect(String(long.asked?.state.step)).toHaveLength(8_192);
 		expect(long.asked?.state.stepCut).toBe("the step was cut to its first 8192 characters");
+	});
+
+	it("asks whether the step needs what rest cannot do, wherever the session is now", async () => {
+		const jev = answering(() => said(0.9, "gpu"));
+		const placer = await placerOver(jev.models);
+		// Away from rest at a turn's end, with a step that needs what only the GPU machine has: it stays there.
+		const stays = kept(await placer.decide(query({ current: "gpu", phase: "turn_end" }), context));
+		expect({ target: stays.target, moved: stays.moved, by: stays.by }).toEqual({
+			target: "gpu",
+			moved: false,
+			by: "jev",
+		});
+		const need = jev.asked[0]?.questions.need;
+		const rest = options.find((option) => option.id === "local");
+		expect(need?.instructions).toContain(`"local"`);
+		expect(need?.instructions).toContain(rest?.purpose);
+		expect(need?.instructions).not.toContain(options.find((option) => option.id === "gpu")?.purpose);
+		expect(need?.type === "bool" ? need.criteria : undefined).toEqual({
+			true: `The step needs something "local" cannot do.`,
+			false: `"local" can do everything the step needs.`,
+		});
+		// A need elsewhere than where it is now: it moves on, by Jev.
+		const on = kept(
+			await (await placerOver(answering(() => said(0.9, "box")).models)).decide(query({ current: "gpu" }), context),
+		);
+		expect({ target: on.target, by: on.by }).toEqual({ target: "box", by: "jev" });
+		// rest must be one of the options.
+		const lost = getOrThrow(await jevPlacer(jev.models, JEV, { rest: "moon" }));
+		expect(kept(await lost.decide(query(), context)).error?.code).toBe("invalid_query");
+	});
+
+	it("keeps a session away from rest while its next step needs that place: the two steps a first recording sent home", async () => {
+		// Jev's answers from that recording, which asked whether the CURRENT place lacked anything: it did not, so the
+		// old rule sent both home at the turn's end. Asked against rest, the step needs what rest cannot do.
+		const recorded: Record<string, { readonly need: number; readonly where: string }> = {
+			"I need the GPU for the evaluation run that comes next.": { need: 0.09, where: "gpu" },
+			"I need to run the nightly build again with more threads.": { need: 0.06, where: "box" },
+		};
+		const jev = answering((asked) => {
+			const step = recorded[String(asked.state.step)];
+			if (step === undefined) throw new Error("not one of the two steps");
+			const need = asked.questions.need;
+			const againstRest = need?.instructions.includes(`"local"`) === true;
+			return said(againstRest ? 0.9 : step.need, step.where);
+		});
+		const placer = getOrThrow(await jevPlacer(jev.models, JEV, { rest: "local", newId }));
+		for (const [next, step] of Object.entries(recorded)) {
+			const record = kept(
+				await placer.decide(
+					{ session: "s", phase: "turn_end", what: "home", current: step.where, options: ENVIRONMENTS, next },
+					context,
+				),
+			);
+			expect({ target: record.target, moved: record.moved, by: record.by }, next).toEqual({
+				target: step.where,
+				moved: false,
+				by: "jev",
+			});
+		}
 	});
 
 	it("keeps the session where it is when Jev does not answer, and says why", async () => {
