@@ -549,7 +549,7 @@ about revocation, takeover and the lease's replacement do not apply. These do:
 
 | Failure | What happens | Effects |
 |---|---|---|
-| The instance crashes or is SIGKILLed | Its owner lock goes with the process, so the next open of the directory (by the app, or whatever restarts it) takes the run and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun. **A command it started keeps running**: pi makes each command the leader of its own process group, a local run has no unit cgroup, and the next open does not end it, so it can still write in `work/` beside the new incarnation. Run the instance in a cgroup of its own (a systemd unit, `systemd-run --scope`) or end its commands yourself |
+| The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before the Harness opens), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
 | Power loss or an OS crash | The store's commits are durable (SQLite at `synchronous = FULL`); `work/` is the operating system's to flush, since the claim's barrier syncs nothing | the store resumes from its last commit; files the agent wrote in `work/` can be older than what the store recorded |
 | A second process opens the run on this machine | The owner lock is refused (`HeldError`, exit 76) | none |
 | A process on another machine reaches the directory (a network share) | Nothing stops it: a local directory has no fence | unsupported, since two writers can corrupt the store. A directory another machine can reach needs a disk with a claim and a fence |
@@ -614,6 +614,9 @@ to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
   work/                    the workspace the tools write
   tmp/                     pi's temp files and long-output spills, so a path a result names still exists after a takeover
 ```
+
+A run on a local directory (`localRun`) has the same layout, plus `commands/`: the process groups of the commands its
+instance started, which the next open ends before it resumes (a local run has no unit cgroup to end them).
 
 The mountpoint is the same absolute path on every host of a deployment, so paths inside the run are identical wherever
 it resumes.
