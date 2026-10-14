@@ -62,6 +62,8 @@ run: (invocation) => {
 },
 ```
 
+A run's store can be recorded for a viewer as durable lines (`agentrun.recording/1`): one line per document revision, conversation entry and task record, with the store's commit and the line's order inside it. A disk run's store admits one connection, so the recorder runs inside each of the run's processes: after the run is opened and before it resumes, write `snapshotLines(storage, { at, context })` (every document as it stands, `at` the store's latest commit), then `recordCommits(harness, { gen, write })`, which writes each later commit's lines as pi adopts it. `recordingLines(file)` reads a store no process holds; it sees only the revisions pi kept, since pi deletes a current-only document's older revisions when it writes a new base.
+
 ## Host policy around generative nodes
 
 A host often has policy that is not part of the workflow language: a duty paragraph for the node that emits the terminal record, runtime metadata the model reports beside its record, an artifact field only the host can fill. `deps.hostPolicy` carries that policy as application code. Nothing in a workflow document can name or reach it, so a candidate workflow cannot change its host's channels.

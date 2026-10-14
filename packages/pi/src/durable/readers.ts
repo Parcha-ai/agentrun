@@ -20,7 +20,7 @@ type DriverRecord = { binding: string | null; inputs: Record<string, string> | n
 
 /** The run's store `file`, opened read-only for `read`; null when there is no such file. Every query of one `read` runs
  *  in one read transaction, so what it returns is one commit's view, whatever a writer commits meanwhile. */
-function withDurableFile<T>(file: string, read: (db: Database) => T): T | null {
+export function withDurableFile<T>(file: string, read: (db: Database) => T): T | null {
   if (!fs.existsSync(file)) return null;
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5000 });
