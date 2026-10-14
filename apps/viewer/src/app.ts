@@ -7,6 +7,7 @@ import { panelsShown, type BaselineView, type Node, type Panel } from './panels.
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
+import { workflowMapPanel } from './workflow-map.ts';
 
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };

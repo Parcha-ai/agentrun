@@ -76,6 +76,21 @@
   .frame.none { background: var(--rule); color: var(--muted); display: flex; align-items: center; justify-content: center; }
   .gallery { padding-left: 20px; }
   .drop { margin-top: 16px; padding: 24px; border: 2px dashed var(--rule); border-radius: 8px; color: var(--muted); }
+  .panel:has(.wm) { grid-column: 1 / -1; max-height: none; }
+  .wm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(26px, 1fr)); gap: 4px; max-width: 640px; margin: 8px 0; }
+  .wm-glyph { display: grid; place-items: center; aspect-ratio: 1; border: 1px solid var(--rule); border-radius: 6px; font-size: 16px; line-height: 1; color: var(--muted); }
+  .wm-glyph.working { color: var(--open); } .wm-glyph.done { color: var(--done); } .wm-glyph.finding { color: var(--failed); border-color: var(--failed); }
+  .wm-glyph.cut { box-shadow: 0 0 0 2px var(--kill); } .wm-glyph.zoomed { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .wm-legend, .wm-kills { color: var(--muted); font-size: 13px; } .wm-kill { margin-left: 10px; color: var(--kill); } .wm-kill-count { font-weight: 600; color: var(--kill); }
+  .wm.zoom { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; align-items: start; }
+  .wm-branch h4 { margin: 0 0 6px; } .wm-graph { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .wm-node { border: 1px solid var(--rule); border-radius: 6px; padding: 2px 8px; font-size: 12px; color: var(--muted); }
+  .wm-node.done { color: var(--done); border-color: var(--done); } .wm-node.open, .wm-node.working { color: var(--open); border-color: var(--open); }
+  .wm-evidence { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; } .wm-evidence h5 { margin: 0 0 4px; font-size: 12px; color: var(--muted); }
+  .wm-evidence ul { margin: 0; padding-left: 18px; font-size: 13px; } .wm-evidence li.outside { color: var(--failed); font-weight: 600; }
+  .wm-shot { max-width: 100%; border: 1px solid var(--rule); border-radius: 4px; } .wm-facts, .wm-notes { font-size: 13px; }
+  .wm-ledger { grid-column: 1 / -1; } .wm-ledger table { border-collapse: collapse; } .wm-ledger th, .wm-ledger td { padding: 3px 14px 3px 0; text-align: left; font-size: 14px; }
+  .wm-ledger tr.alarm td { color: var(--failed); font-weight: 600; } .wm-price { font-weight: 600; }
 </style>
 </head>
 <body>
