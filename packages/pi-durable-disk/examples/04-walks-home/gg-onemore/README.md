@@ -8,15 +8,16 @@ From that request on, the bridge intrudes into its thinking, and now and then it
 
 Two ways to run it, on the same pieces:
 - **The chat page** (`chat/`): the robot demo's 03 agent page on its own link. The user types the task and their own
-  questions. The session runs on D4's Modal VM with the run's Archil disk, the pipeline's steps are the agent's tools, and
+  questions. The session runs on D4's Modal VM with the run's Archil disk, the GPU box's lab is the agent's tools, and
   Jev places every line.
 - **The scripted take** (`e2e/`): the same session on a VM of its own with a fixed task and three questions, for measured
   runs.
 
 On the chat page the agent does the work itself: it follows the golden-gate skill (`skills/golden-gate/SKILL.md`) and writes
 and runs its own Python on the GPU box with `lab_run`, as the box's unprivileged user with no network. Its one way out is the
-lab's library socket (`gpulab`; `gglab` is its first name, kept). The scripted take keeps the prepared pipeline (the tools
-`gg_find`, `gg_pick`, `gg_strength`, `gg_bake`).
+lab's library socket (`gpulab`; `gglab` is its first name, kept). The scripted take installs the same extra, so its agent
+does the same. The prepared pipeline's tools (`gg_find`, `gg_pick`, `gg_strength`, `gg_bake`) remain as `pi/gg-tools.ts`'s
+`steps` mode, which nothing installs now.
 
 **Any topic** (`--page any`): the same page where the person names the topic ("make yourself obsessed with cats"). The agent
 follows the obsession skill (`skills/obsession/SKILL.md`): it writes texts about the topic and its near misses, and Jev
@@ -55,7 +56,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window; a pushback turn's drafts as labeled thinking blocks (`steered-drafts`), only the picked one kept |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
-| `pi/gg-tools.ts` | The GPU box as tools on the guard's typed routes: `lab_read` (the reading and every skill the box ships) and `lab_run` (the chat pages' skills), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (the scripted take) |
+| `pi/gg-tools.ts` | The GPU box as tools on the guard's typed routes: `lab_read` (the reading and every skill the box ships) and `lab_run` (skill mode: the chat pages and the scripted take), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (steps mode, the prepared pipeline; nothing installs it now) |
 | `chat/gg-extra.ts` | A chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): the page's instructions and skill (`PageText`), the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback, registered under the served edit's name at the switch; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/steer-extra.ts`, `chat/steer-text.ts` | The any-topic page's extra and words: the same extra with the obsession skill and its instructions |
 | `chat/gg-placer.ts` | The pages' placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
