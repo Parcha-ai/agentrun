@@ -1,0 +1,80 @@
+// The Panel contract (PANELS.md): `accepts`, `reduce`, `view`, all pure. A panel's screen at a stop is its reduce over
+// the lines before the stop that it accepts and that the focus keeps, then its view. The shell owns the DOM: a view
+// returns plain nodes, and any node with a `path` focuses every panel on that path when clicked.
+import type { Json, Line } from './format.ts';
+import type { Fold } from './replay.ts';
+import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
+
+/** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
+export type Node =
+  | string
+  | { tag: string; class?: string; path?: string; title?: string; children?: Node[] }
+  | { tag: 'img'; blob: string; alt: string; class?: string }
+  | { tag: 'a'; blob: string; text: string; class?: string }
+  | { tag: 'frame'; session: string; class?: string };
+
+export const h = (tag: string, props: { class?: string; path?: string; title?: string } = {}, ...children: (Node | false | undefined)[]): Node =>
+  ({ tag, ...props, children: children.filter((child): child is Node => child !== false && child !== undefined) });
+
+export type ViewContext = { t: number; focus?: string };
+
+export type Panel<S> = Fold<S> & { id: string; title: string; view(state: S, context: ViewContext): Node };
+
+/** Panels the shell shows, in order. An extension's crew adds its panel with `register`. */
+export const registry: Panel<any>[] = [];
+export const register = <S>(panel: Panel<S>) => { registry.push(panel); };
+
+const describe = (line: Line): string => {
+  const data = line.data as { doc?: Json; key?: Json; kind?: Json } | null;
+  const what = typeof data?.doc === 'string' ? `${data.doc}${typeof data.key === 'string' ? ` ${data.key.split('\u0000').at(-1)}` : ''}` : line.kind;
+  return line.channel === 'durable' ? `commit ${line.commit}.${line.order} ${what}` : `${line.kind} (process ${line.gen})`;
+};
+
+/** The lines at the stop, by source: the newest few of each. */
+export const linesPanel: Panel<{ bySource: Record<string, Line[]>; count: number }> = {
+  id: 'lines',
+  title: 'Lines at this point',
+  init: () => ({ bySource: {}, count: 0 }),
+  accepts: () => true,
+  reduce: (state, line) => ({ count: state.count + 1, bySource: { ...state.bySource, [line.source]: [...(state.bySource[line.source] ?? []), line].slice(-8) } }),
+  view: (state) => h('div', { class: 'lines' },
+    state.count === 0 && h('p', { class: 'empty' }, 'Nothing has happened yet.'),
+    ...Object.entries(state.bySource).map(([source, lines]) => h('section', {},
+      h('h4', {}, `${source} (${lines.length === 8 ? 'latest 8' : lines.length})`),
+      h('ol', {}, ...[...lines].reverse().map((line) => h('li', { class: line.channel, ...(line.path ? { path: line.path, title: line.path } : {}) }, describe(line))))))),
+};
+
+type Turn = { conv: number | undefined; role: string; text: string; calls: string[]; images: string[]; error: boolean; path?: string };
+
+/** The agent's conversations as pi committed them: each turn's words, tool calls, results and images. */
+export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolean> }> = {
+  id: 'pi-turns',
+  title: 'Model turns',
+  init: () => ({ turns: [], streaming: {} }),
+  accepts: (line) => line.source === 'pi',
+  reduce(state, line) {
+    if (line.channel === 'live') {
+      if (line.kind === 'turn_start') return { ...state, streaming: { ...state.streaming, [String(line.conv)]: true } };
+      return state;
+    }
+    const entry = entryOf(line);
+    if (!entry) return state;
+    const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult').map((message): Turn => ({
+      conv: line.conv, role: message.role, text: textOf(message).slice(0, 600), calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
+      images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
+    }));
+    const answered = entry.model.some((message) => message.role === 'assistant');
+    return { turns: [...state.turns, ...turns], streaming: answered ? { ...state.streaming, [String(line.conv)]: false } : state.streaming };
+  },
+  view: (state) => h('div', { class: 'turns' },
+    state.turns.length === 0 && h('p', { class: 'empty' }, 'No turn committed yet.'),
+    ...state.turns.map((turn) => h('div', { class: `turn ${turn.role}${turn.error ? ' error' : ''}`, ...(turn.path ? { path: turn.path } : {}) },
+      h('span', { class: 'who' }, turn.role === 'assistant' ? 'model' : 'tool result'),
+      turn.text !== '' && h('p', {}, turn.text),
+      ...turn.calls.map((call) => h('code', {}, call)),
+      ...turn.images.map((blob): Node => ({ tag: 'img', blob, alt: 'an image the model was shown' })))),
+    ...Object.entries(state.streaming).filter(([, live]) => live).map(([conv]) => h('p', { class: 'streaming' }, `conversation ${conv}: a turn is in flight`))),
+};
+
+register(linesPanel);
+register(turnsPanel);

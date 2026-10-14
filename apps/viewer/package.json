@@ -1,0 +1,14 @@
+{
+  "name": "agentrun-viewer",
+  "private": true,
+  "description": "A static player for agentrun.recording/1 recordings",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.ts",
+    "deploy:cloudflare": "node build.mjs && npx wrangler deploy"
+  }
+}
