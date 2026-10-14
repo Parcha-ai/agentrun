@@ -87,3 +87,39 @@ test('an answer from the receipt (effect_status reused, reused, refused) is neit
   assert.deepEqual(pair([receipt('paid', { q: 1 }, 1), ...executed('paid', { q: 1 }, 1, 5), ...executed('paid', { q: 1 }, 2, 5, { effect_status: 'reused', source_session: 's' }), ...executed('paid', { q: 1 }, 2, 5, { reused: true }), ...executed('paid', { q: 1 }, 2, 5, { refused: true })]), [0, 0]);
   assert.deepEqual(pair([receipt('paid', { q: 1 }, 1), ...executed('paid', { q: 1 }, 1, 5), ...executed('paid', { q: 2 }, 2, 5)]), [0, 0]);
 });
+
+// Draft 11: an effect's calls are append-only, and each line contributes only the calls beyond the previous line's list.
+test('a later process\'s list that starts with the earlier one adds only its new calls, so the earlier call is not counted again', () => {
+  const p1 = { outcome: 'applied', process: 1 };
+  const p2 = { outcome: 'applied', process: 2 };
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [p1]), effect('e', 'completed', 2, [p1, p2])]), [1, 0]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [p1]), effect('e', 'completed', 1, [p1, p2])]), [0, 1], 'both in one process');
+});
+
+test('a snapshot is the base: a call first seen there happened in an earlier process, and a re-send after it is a repeat', () => {
+  const lost = { outcome: 'applied', process: 1 };
+  const resent = { outcome: 'applied', process: 2 };
+  // Process 1's line with the call was lost in flight: the call is first seen in process 2's snapshot, then process 2 re-sends.
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [1, 0]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost])]), [0, 0], 'a snapshot alone adds no second call');
+});
+
+test('a restore\'s snapshot that is shorter than the last list is the new base, and the lost branch\'s calls stay where they were first seen', () => {
+  const a1 = { outcome: 'applied', n: 1 };
+  const a2 = { outcome: 'applied', n: 2 };
+  const a3 = { outcome: 'applied', n: 3 };
+  const lines = [effect('e', 'unknown', 1, [a1, a2]), effect('e', 'unknown', 2, [a1], true), effect('e', 'completed', 2, [a1, a3])];
+  assert.deepEqual(pair(lines), [1, 1], 'a1 and a2 in process 1 (asked twice), a3 in process 2 (repeated)');
+});
+
+const start = (gen: number, conv: number, role = 'assistant'): Line => ({ channel: 'live', source: 'pi', kind: 'message_start', gen, t: 1, seq: 1, conv, data: { message: { role } } } as Line);
+const committed = (gen: number, conv: number): Line => durable('pi.assistant', 'pi', gen, { kind: 'pi.assistant', model: [{ role: 'assistant', content: [], usage: { cost: { total: 0 } } }] }, { conv });
+const reasked = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).turns.reaskedObserved;
+
+test('a re-asked turn is an ask at one conversation position made in more than one process, from assistant message_start (a resumed process emits no turn_start)', () => {
+  assert.equal(reasked([start(1, 5), start(2, 5)]), 1, 'the same position asked in process 1 and again in process 2');
+  assert.equal(reasked([start(1, 5), start(1, 5)]), 0, 'twice in one process is not a resume');
+  assert.equal(reasked([start(1, 5), committed(1, 5), start(2, 5)]), 0, 'a committed turn moves the position on');
+  assert.equal(reasked([start(1, 5), start(2, 9)]), 0, 'another conversation');
+  assert.equal(reasked([start(1, 5, 'user'), start(2, 5, 'toolResult')]), 0, 'only an assistant message is an ask');
+});

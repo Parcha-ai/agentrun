@@ -98,8 +98,8 @@ test('a browser picture: the track when there is one, else the latest frame, and
   assert.deepEqual(pictureAt(state, 'unseen', 70), { kind: 'none' });
 });
 
-test('a recording with no live turn starts shows re-asked turns as not recorded, never 0', () => {
-  const durableOnly = lines.filter((line) => !(line.channel === 'live' && line.kind === 'turn_start'));
+test('a recording with no live asks shows re-asked turns as not recorded, never 0', () => {
+  const durableOnly = lines.filter((line) => !(line.channel === 'live' && line.kind === 'message_start'));
   const counters = countersOf(reduceTo(counterFold, durableOnly, durableOnly.length), true, observesTurns(durableOnly));
   assert.equal(counters.turns.reaskedObserved, null);
   assert.equal(counters.turns.committed, 4, 'committed turns come from the store all the same');

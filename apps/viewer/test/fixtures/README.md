@@ -10,9 +10,10 @@ resumed by a second process to the same record, cut by hand from that real run's
 - Its durable lines are the run's store, read after the run: each document revision with its whole value, each
   conversation entry as stored, each task's current record at the last commit, as the store export writes them. Image
   blocks are moved to `blobs/`.
-- Its `host` lines (each process's start, the kill and its label, the result) and the `turn_start` lines (one per model
-  request the run's own ledger counted, in each process) are placed by hand, at the commit each one precedes. The
-  supervisor's lines (`process.started`, `kill`) carry no `gen` and number their own `seq`; the process each is about
-  is in `data.gen`. The `result` is the second process's own line.
+- Its `host` lines (each process's start, the kill and its label, the result) and the assistant `message_start`
+  lines (one per model request the run's own ledger counted, in each process) are placed by hand, at the commit each
+  one precedes. The `host` lines are the supervisor's: they carry no `gen` and number their own `seq`, and the process
+  each is about is in `data.gen`. The kill was placed at a commit, not at a counted crossing, so its `crossing` is
+  null.
 - Its `t` values are placed in commit order, not observed: they are for drawing only.
 - The run's code opened the journal twice in each process, so the store's generation reaches 4 for 2 processes.
