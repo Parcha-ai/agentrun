@@ -90,8 +90,8 @@ export function sinceSwitch(o: { instructions: string; provider?: string; maxCha
       let total = after.reduce((n, m) => n + size(m), 0);
       let from = 0;
       while (total > o.maxChars && from < after.length - 1) total -= size(after[from++]!);
-      // a window opens on a user turn: never on the answer, or the results, of a turn it dropped
-      while (from < after.length - 1 && after[from]!.role !== "user") from++;
+      // once it drops a turn, the window opens on a user turn: never on the answer, or the results, of a turn it dropped
+      if (from > 0) while (from < after.length - 1 && after[from]!.role !== "user") from++;
       after = after.slice(from);
     }
     // Results whose call is outside the window cannot go as tool messages (the API needs the call), so they open it as one user turn.

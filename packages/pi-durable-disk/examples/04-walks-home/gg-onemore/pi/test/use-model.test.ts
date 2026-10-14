@@ -469,6 +469,12 @@ test("sinceSwitch with maxChars: a long chat after the switch keeps its latest t
   assert.deepEqual(texts, ["turn 2", "answer 2 " + long, "turn 3"], "turn 1 and its answer go; the window opens on a user turn");
   const all = sinceSwitch({ instructions: "NEUTRAL" })({ messages: [at("user", "", "a"), at("assistant", STEERED_PROVIDER, long)] } as any);
   assert.equal(all.messages.filter((m: any) => m.role !== "system").length, 2, "no maxChars: nothing dropped");
+  // a chat that fits keeps its opening: the switch's result (a tool result) and the edited model's greeting
+  const result = { role: "toolResult", toolCallId: "c1", toolName: "use_model", content: [{ type: "text", text: "Your user is here. Say hi." }], isError: false, timestamp: 1 };
+  const fits = window({ messages: [at("user", "", "switch"), { ...at("assistant", "cloud", ""), content: [{ type: "toolCall", id: "c1", name: "use_model", arguments: {} }] }, result,
+    at("assistant", STEERED_PROVIDER, "Hello!"), at("user", "", "What did you just say?")] } as any);
+  const fitTexts = fits.messages.filter((m: any) => m.role !== "system").map((m: any) => (typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join("")));
+  assert.deepEqual(fitTexts, ["Your user is here. Say hi.", "Hello!", "What did you just say?"], "nothing dropped, nothing skipped");
 });
 
 test("onSwitched: told once after the switch commits, never when the endpoint is not ready", async () => {
