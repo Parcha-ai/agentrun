@@ -12,7 +12,7 @@ import { canonicalHash as hash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
-  frozenStepSessionId, frozenStepId, frozenEffectId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot as Snapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
 import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryStore } from "./store.js";
 
@@ -252,7 +252,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           if (!left.some((effect) => effect.id === id)) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id}: not an unknown effect of this run`);
           // The files the effect declares are hashed now, as a normal completion records them: a missing output refuses the
           // settlement, and a later resume refuses an output that changed.
-          const declared = nodeAt(view, id.slice(id.indexOf(":") + 1, id.lastIndexOf("#call:")));
+          const at = frozenEffectPath(id)?.path;
+          const declared = at === undefined ? undefined : nodeAt(view, at);
           const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
           Object.assign(snapshot.files, files);
           await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });

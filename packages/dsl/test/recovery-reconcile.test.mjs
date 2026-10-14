@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, workspaceFiles, RecoveryError, frozenEffectId, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, workspaceFiles, RecoveryError, frozenEffectId, frozenEffectPath, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
 const SHELL = { code: 0, stdout: 'rendered', stderr: '' };
@@ -99,4 +99,11 @@ test('settling an effect that declares output files records their hashes: a miss
     writeFileSync(join(cwd, 'out.txt'), 'changed');
     await assert.rejects(go(), fault('FROZEN_ARTIFACT_INVALID'));
   } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('an effect id round-trips to the path and ordinal it was made from', () => {
+  for (const [frame, path, ordinal] of [['step', '/root/steps/0', 0], ['step', '/root/steps/1/items/3/body/steps/2', 4], ['step', '/root/steps/0:odd#path', 1]]) {
+    assert.deepEqual(frozenEffectPath(frozenEffectId(frame, path, ordinal)), { path, ordinal });
+  }
+  assert.equal(frozenEffectPath('not an effect id'), undefined);
 });

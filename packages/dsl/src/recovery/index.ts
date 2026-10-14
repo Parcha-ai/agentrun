@@ -13,7 +13,7 @@ export { canonicalHash, canonicalSha256 } from "./canonical-hash.js";
 export { callKey, heldCallKey, CALL_KEY_BYTES } from "./call-key.js";
 export {
   FROZEN_SNAPSHOT_SCHEMA, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame,
-  frozenStepSessionId, frozenStepId, frozenEffectId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow, type FrozenShape,
 } from "./frozen-snapshot.js";
 export { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, nodeAt, pathSegments, topLevelCompletion } from "./execution-path.js";
