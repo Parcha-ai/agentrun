@@ -99,7 +99,7 @@ test('a consumer below the developed version names the package whose range holds
 });
 
 test('a consumer at the developed version has no problem', () => {
-  assert.deepEqual(checkPiFamily([copy(durable, '1.1.0'), copy(chord, '1.1.0')], developed, peers), []);
+  assert.deepEqual(checkPiFamily([copy(durable, '1.1.0'), copy(chord, '1.1.0')], developed, { '@parcha/pi-browser': { [durable]: '>=1.1.0 <1.3.0', [chord]: '>=1.1.0 <1.3.0' } }), []);
 });
 
 test('two copies of one package are a problem even when one is the developed version', () => {
@@ -134,4 +134,12 @@ test('a workspace package that still develops on the older copy is named beside 
   assert.match(problem, /move those devDependencies to 1\.1\.0/);
   const [clean] = checkPiFamily([copy(durable, '1.0.4'), copy(chord, '1.1.0')], developed, { '@parcha/pi-vision': peers['@parcha/pi-vision'] }, []);
   assert.doesNotMatch(clean, /devDependencies/);
+});
+
+test('a peer range that excludes the version is named even when the consumer holds that version', () => {
+  const copies = [{ name: durable, version: '1.2.0', location: 'node_modules/x' }, { name: chord, version: '1.2.0', location: 'node_modules/y' }];
+  const developed = { [durable]: '1.2.0', [chord]: '1.2.0' };
+  assert.deepEqual(checkPiFamily(copies, developed, { '@parcha/pi-x': { [durable]: '>=1.0.0 <1.2.0' } }).length, 1);
+  assert.match(checkPiFamily(copies, developed, { '@parcha/pi-x': { [durable]: '>=1.0.0 <1.2.0' } })[0], /peer range of @parcha\/pi-x .* excludes 1\.2\.0, the version the consumer holds/);
+  assert.deepEqual(checkPiFamily(copies, developed, { '@parcha/pi-x': { [durable]: '>=1.0.0 <1.3.0' } }), []);
 });

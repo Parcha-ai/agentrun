@@ -7,9 +7,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const CHILD = fileURLToPath(new URL('./fixtures/record-crash-child.mjs', import.meta.url));
+const CHILD = childPath('record-crash-child.mjs');
 const OBJECTION = { id: 'verify', kind: 'verify', verdict: 'fails', reasons: ['names no reason'] };
 
 /** One process of the fixture: how it ended and the rows it printed. */

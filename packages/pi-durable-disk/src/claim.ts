@@ -72,6 +72,12 @@ export interface Claim {
   readonly fenced: boolean;
   /** Mark the claim lost (the store's facade calls this on an I/O-class error); later barriers throw at once. */
   markFenced(cause?: unknown): void;
+  /**
+   * Where the run's environment records the commands it starts, so that the next open of this claim ends what a killed
+   * incarnation left running (`reapCommands`, before the Harness opens). Set by a claim that nothing else cleans up after,
+   * as a local run's; a mount's host ends them with its unit's cgroup or its container.
+   */
+  readonly commands?: string;
   /** `archil sync`: every pending write on the mount is durable when it resolves. A failure fences the claim. */
   barrier(): Promise<{ ms: number }>;
   /**
