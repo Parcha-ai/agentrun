@@ -56,10 +56,10 @@ export type Host = {
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
   /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
-   *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
+   *  looks a call up by the admitted effect (its id: polls and retries share an `argsHash`, so a hash would hand a later call an earlier one's answer): what the door answered it,
    *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
    *  the call stays unknown and is never sent again. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; rerun?: Rerun; browser: BrowserPlane };
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(effect: { id: string; argsHash: string }): Promise<{ args: unknown; value: unknown } | undefined>; rerun?: Rerun; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
@@ -105,7 +105,8 @@ export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow
 export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
-  const answerOf = (argsHash: string) => join(place.root, 'answers', `${argsHash}.json`);
+  // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
+  const answerOf = (effectId: string) => join(place.root, 'answers', `${createHash('sha256').update(effectId).digest('hex')}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
@@ -159,12 +160,12 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         for (let send = 1; ; send += 1) {
           try { value = await tool(input); break; } catch (error) {
             report('failed');
-            if (send >= 2 || (error as { retryable?: boolean }).retryable !== true) throw error;
+            if (send >= 2 || (error as { retryable?: boolean } | null | undefined)?.retryable !== true) throw error;
           }
         }
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
-        const at = answerOf(effect.argsHash);
+        const at = answerOf(effect.id);
         await mkdir(join(place.root, 'answers'), { recursive: true });
         await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
         await rename(`${at}.partial`, at);
@@ -173,8 +174,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         report('applied');
         return value;
       },
-      answered: async (argsHash) => {
-        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
+      answered: async ({ id }) => {
+        try { return JSON.parse(await readFile(answerOf(id), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
       },
       // The fake costs nothing; list prices would bill its session by the second and make every run's usage differ.
       browser: { prices: { sessionUsdPerHour: 0, sessionMinimumS: 0, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 }, ...browser },

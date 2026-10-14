@@ -197,15 +197,18 @@ export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool:
 export async function reconcileEffects(unknown: UnknownEffect[], complete: Complete, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
   for (const effect of unknown) {
     if (!effect.intent) continue;
-    const alone = unknown.filter((other) => other.argsHash === effect.argsHash).length === 1;
-    const kept = alone && answered ? await answered(effect.argsHash) : undefined;
+    // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
+    const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
     // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
     const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
     const answer = kept ?? rerunAnswer;
     if (!answer) continue;
     // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied
     // entry the receipt reports one now, and when one is listed it adds none.
-    const listed = appliedOnce(effect.calls ?? [], { outcome: 'applied', tool: effect.intent.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' });
+    // A kept answer is evidence of a call that applied once: listed once, never twice. A rerun is a NEW execution, so it is a call of its own
+    // however many the effect already lists.
+    const record = { outcome: 'applied' as const, tool: effect.intent.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' };
+    const listed = kept ? appliedOnce(effect.calls ?? [], record) : { calls: [...(effect.calls ?? []), record], added: true };
     await complete(effect.id, answer.value, { intent: { tool: effect.intent.tool, args: answer.args }, ...(listed.added ? { calls: [listed.calls.at(-1)] } : {}) });
   }
 }

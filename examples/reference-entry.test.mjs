@@ -67,11 +67,26 @@ test('reconcile reports an applied call exactly once, in the receipt the driver 
   // nothing to answer it from: nothing is completed or reported; an effect with no intent is left alone
   assert.deepEqual(await settle([effect('c')], {}), []);
   assert.deepEqual(await settle([{ id: 'd', argsHash: 'h' }], { answered: async () => ({ args: {}, value: 1 }) }), []);
-  // a rerun answers by the effect's id, and says so
+  // a rerun answers by the effect's id, and says so; it is a NEW execution, so it is listed even when an applied call already is
   assert.deepEqual(await settle([effect('e')], { rerun: async ({ id }) => ({ args: {}, value: id }) }), [['e', 'e', ['applied']]]);
+  assert.deepEqual(await settle([effect('f', [{ outcome: 'applied' }])], { rerun: async ({ id }) => ({ args: {}, value: id }) }), [['f', 'f', ['applied']]]);
+  // the kept answer is asked by the effect, so two effects with one argsHash are not given each other's answer
+  const asked = [];
+  await settle([effect('p1'), effect('p2')], { answered: async (each) => { asked.push(each.id); return each.id === 'p1' ? { args: {}, value: 'one' } : undefined; } });
+  assert.deepEqual(asked, ['p1', 'p2']);
   assert.deepEqual(appliedOnce([{ outcome: 'failed' }], { outcome: 'applied' }), { calls: [{ outcome: 'failed' }, { outcome: 'applied' }], added: true });
   // the record that results folds to repeated 0
   const line = (commit, gen, calls) => ({ channel: 'durable', source: 'workflow', gen, commit, order: 0, t: commit, kind: 'agentrun.effects', data: { doc: 'agentrun.effects', key: 'run\u0000step#call:0', value: { name: 'search', argsHash: 'h', status: 'completed', calls } } });
   const counted = fold([line(1, 1, [{ outcome: 'failed' }]), line(2, 2, [{ outcome: 'failed' }, { outcome: 'applied' }])]);
   assert.deepEqual([counted.repeated, counted.repeatedNotMeasured], [0, 0]);
+});
+
+test('a tool that throws null or undefined reaches the caller as it threw, not as a TypeError', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-entry-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const place = await entry.placeAt(join(tmp, 'run'));
+  for (const thrown of [null, undefined, 'text']) {
+    const local = entry.localHost(place, { ...fakes, tools: { search: () => { throw thrown; } } });
+    await assert.rejects(() => local.host.tools.runEffect({ node: { tool: 'search' }, input: {}, effect: { id: 'x', argsHash: 'h' }, call: () => undefined }), (error) => error === thrown);
+  }
 });
