@@ -1,7 +1,17 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-durable";
@@ -11,6 +21,7 @@ import { describe, expect, it } from "vitest";
 import type { App } from "../src/home/app.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
 import { type Frame, linkPair } from "../src/home/link.ts";
+import { serveModels } from "../src/home/models.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
 import { textResult } from "../src/testing/tool-result.ts";
 
@@ -19,10 +30,13 @@ const ROUNDS = 5;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One session's world: the host's models, the tool's effects, and the places it can run. */
-function world() {
+function world(options?: { readonly tokensPerSecond?: number }) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-transport-link-"));
 	const effects = join(directory, "effects.log");
-	const faux = fauxProvider({ api: "faux" });
+	const faux = fauxProvider({
+		api: "faux",
+		...(options?.tokensPerSecond === undefined ? {} : { tokensPerSecond: options.tokensPerSecond }),
+	});
 	const models = createModels();
 	models.setProvider(faux.provider);
 	let requests = 0;
@@ -57,6 +71,7 @@ function world() {
 	};
 	return {
 		directory,
+		faux,
 		models,
 		requests: () => requests,
 		effects: () => (existsSync(effects) ? readFileSync(effects, "utf8").trim().split("\n").filter(Boolean) : []),
@@ -80,8 +95,11 @@ function world() {
 
 type World = ReturnType<typeof world>;
 
-async function withWorld(use: (made: World) => Promise<void>): Promise<void> {
-	const made = world();
+async function withWorld(
+	use: (made: World) => Promise<void>,
+	options?: { readonly tokensPerSecond?: number },
+): Promise<void> {
+	const made = world(options);
 	try {
 		await use(made);
 	} finally {
@@ -167,6 +185,28 @@ describe("the host does not take a runner's answer on trust", () => {
 			{ models, epoch: 1 },
 		);
 		expect(getOrThrow(await host.status(context))).toEqual({ state: "sealed", epoch: null });
+	});
+
+	it("sends no order for a context that ended already, and a live one's order still goes", async () => {
+		const orders: string[] = [];
+		const host = connectHome(
+			fakeRunner(readyFrame, (order) => {
+				orders.push(order);
+				return null;
+			}),
+			{ models, epoch: 1 },
+		);
+		getOrThrow(await host.ready);
+		const ended = withCancel(context);
+		ended.cancel();
+		const submitted = await host.submit("go", undefined, ended.context);
+		expect(submitted.ok ? "sent" : submitted.error.code).toBe("aborted");
+		const drained = await host.drain(undefined, ended.context);
+		expect(drained.ok ? "sent" : drained.error.code).toBe("aborted");
+		await sleep(20);
+		expect(orders).toEqual([]);
+		getOrThrow(await host.idle(context));
+		expect(orders).toEqual(["idle"]);
 	});
 });
 
@@ -286,6 +326,105 @@ describe("a home over a link", () => {
 			const drained = await host.drain({ timeoutMs: 1 }, context);
 			expect(drained.ok ? "" : drained.error.code).toBe("timeout");
 			expect(drained.ok ? [] : drained.error.holdouts.length).toBeGreaterThan(0);
+			getOrThrow(await host.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			host.close("done");
+		});
+	}, 30_000);
+
+	it("keeps an answer the host paid for across a new link when the host passes its server on, and pays once", async () => {
+		await withWorld(
+			async (made) => {
+				// One answer of about 400 tokens at 200 a second: about 2 s on the link.
+				const answer = "A long answer, streamed slowly. ".repeat(50);
+				let calls = 0;
+				made.faux.setResponses([
+					() => {
+						calls += 1;
+						return fauxAssistantMessage(answer);
+					},
+					() => {
+						calls += 1;
+						return fauxAssistantMessage("asked again");
+					},
+				]);
+				const runner = createRunner(made.place("a"));
+				const server = serveModels(made.models);
+				const hold = async () => {
+					const [runnerEnd, hostEnd] = linkPair();
+					runner.attach(runnerEnd);
+					const handle = connectHome(hostEnd, { models: made.models, epoch: 1, server });
+					getOrThrow(await handle.ready);
+					return handle;
+				};
+				const first = await hold();
+				getOrThrow(await first.resume({ epoch: 1 }, context));
+				getOrThrow(await first.submit("go", undefined, context));
+				// In the middle of the answer, the host's link to the runner goes.
+				await sleep(700);
+				first.close("the box's exec stream closed");
+				await sleep(200);
+				const second = await hold();
+				getOrThrow(await second.idle(context));
+				expect(calls).toBe(1);
+				expect(server.paid).toBe(1);
+				const home = runner.home;
+				if (home === undefined) throw new Error("the runner has no home");
+				const root = getOrThrow(await home.root(context));
+				const said = (await root.entries({}, 100, undefined, context)).items
+					.map((entry) => entry.model?.[0])
+					.filter((message): message is AssistantMessage => message?.role === "assistant");
+				// No error on the way: the answer was only delayed.
+				expect(said.map((message) => message.stopReason)).toEqual(["stop"]);
+				expect(said[0]?.content).toEqual([{ type: "text", text: answer }]);
+				second.close("done");
+			},
+			{ tokensPerSecond: 200 },
+		);
+	}, 30_000);
+
+	it("says ready only with a home, and tries to open it again for the next host when it could not", async () => {
+		await withWorld(async (made) => {
+			const options = made.place("a");
+			const marker = `${options.store}.home.json`;
+			mkdirSync(dirname(marker), { recursive: true });
+			writeFileSync(marker, "not a marker");
+			const runner = createRunner(options);
+			for (const which of ["first", "second"]) {
+				const [runnerEnd, hostEnd] = linkPair();
+				runner.attach(runnerEnd);
+				const host = connectHome(hostEnd, { models: made.models, epoch: 1 });
+				const ready = await host.ready;
+				expect(ready.ok ? "ready" : ready.error.code, which).toBe("store");
+				host.close("the next host");
+			}
+			rmSync(marker);
+			const host = await linked(made, runner, 1);
+			expect(getOrThrow(await host.status(context))).toEqual({ state: "closed", epoch: null });
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			getOrThrow(await host.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			host.close("done");
+		});
+	}, 30_000);
+
+	it("stops the runner's drain when the host gives up on it, so the gate opens again and the session goes on", async () => {
+		await withWorld(async (made) => {
+			const runner = createRunner(made.place("a"));
+			const host = await linked(made, runner, 1);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			await sleep(60);
+			const giving = withCancel(context);
+			const drained = host.drain({ timeoutMs: 5_000 }, giving.context);
+			giving.cancel();
+			const given = await drained;
+			expect(given.ok ? "drained" : given.error.code).toBe("aborted");
+			await sleep(300);
+			// Nothing is held: there is nothing to seal, and the work goes on to its end.
+			const sealed = await host.seal(context);
+			expect(sealed.ok ? "sealed" : sealed.error.code).toBe("wrong_state");
 			getOrThrow(await host.idle(context));
 			expect(made.effects()).toEqual(everyRound);
 			host.close("done");

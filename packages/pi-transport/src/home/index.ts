@@ -11,12 +11,22 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
 	type Ready,
 	RemoteError,
 } from "./host.ts";
-export { type Frame, LINK_VERSION, type Link, linkPair, processLink, streamLink } from "./link.ts";
+export {
+	type Frame,
+	LINK_VERSION,
+	type Link,
+	type LinkOptions,
+	linkPair,
+	MAX_LINE_LENGTH,
+	processLink,
+	streamLink,
+} from "./link.ts";
 export { EXIT_USAGE, runMain } from "./main.ts";
 export {
 	type Catalog,

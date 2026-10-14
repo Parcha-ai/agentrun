@@ -4,6 +4,19 @@ import type { BoxProcess } from "../box/box.ts";
 /** The version of the frames a host and a runner speak. Both say it first; a mismatch ends the link. */
 export const LINK_VERSION = 1;
 
+/** The longest line a link takes by default, in characters: 64 Mi. */
+export const MAX_LINE_LENGTH = 64 * 1024 * 1024;
+
+/** How a link reads what arrives. */
+export type LinkOptions = {
+	/**
+	 * The longest line the link takes, in characters (UTF-16 code units). A longer one, or an unfinished one that grows
+	 * past it, closes the link: the far end may be a box, and what it writes must not fill the host's memory. Default
+	 * `MAX_LINE_LENGTH`.
+	 */
+	readonly maxLineLength?: number;
+};
+
 /** One frame as it travels: a JSON object with its type in `t`. The fields of each type are in `host.ts`. */
 export type Frame = { readonly t: string } & Readonly<Record<string, unknown>>;
 
@@ -33,12 +46,14 @@ class LineLink implements Link {
 	readonly #closeHandlers: ((reason: string) => void)[] = [];
 	readonly #write: (lines: string) => boolean;
 	readonly #stop: () => void;
+	readonly #maxLineLength: number;
 	#buffer = "";
 	#closed = false;
 
-	constructor(write: (lines: string) => boolean, stop: () => void) {
+	constructor(write: (lines: string) => boolean, stop: () => void, options: LinkOptions | undefined) {
 		this.#write = write;
 		this.#stop = stop;
+		this.#maxLineLength = options?.maxLineLength ?? MAX_LINE_LENGTH;
 	}
 
 	get closed(): boolean {
@@ -61,6 +76,7 @@ class LineLink implements Link {
 	close(reason: string): void {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.#buffer = "";
 		this.#stop();
 		for (const handler of this.#closeHandlers) handler(reason);
 	}
@@ -68,29 +84,46 @@ class LineLink implements Link {
 	/** Text that arrived. A line may come in pieces and several may come at once. */
 	receive(text: string): void {
 		if (this.#closed) return;
-		this.#buffer += text;
-		for (let at = this.#buffer.indexOf("\n"); at >= 0 && !this.#closed; at = this.#buffer.indexOf("\n")) {
-			const line = this.#buffer.slice(0, at);
-			this.#buffer = this.#buffer.slice(at + 1);
-			if (line.trim() === "") continue;
-			let frame: unknown;
-			try {
-				frame = JSON.parse(line);
-			} catch {
-				this.close(`a line that is not JSON arrived: ${line.slice(0, 80)}`);
-				return;
-			}
-			if (typeof frame !== "object" || frame === null || typeof (frame as { t?: unknown }).t !== "string") {
-				this.close(`a frame with no type arrived: ${line.slice(0, 80)}`);
-				return;
-			}
-			for (const handler of this.#frameHandlers) handler(frame as Frame);
+		let rest = text;
+		for (let at = rest.indexOf("\n"); at >= 0; at = rest.indexOf("\n")) {
+			const line = this.#buffer + rest.slice(0, at);
+			this.#buffer = "";
+			rest = rest.slice(at + 1);
+			this.#take(line);
+			if (this.#closed) return;
 		}
+		this.#buffer += rest;
+		// Only the unfinished line is kept, and never more of it than a frame may be.
+		if (this.#buffer.length > this.#maxLineLength) this.#tooLong();
+	}
+
+	#take(line: string): void {
+		if (line.length > this.#maxLineLength) {
+			this.#tooLong();
+			return;
+		}
+		if (line.trim() === "") return;
+		let frame: unknown;
+		try {
+			frame = JSON.parse(line);
+		} catch {
+			this.close(`a line that is not JSON arrived: ${line.slice(0, 80)}`);
+			return;
+		}
+		if (typeof frame !== "object" || frame === null || typeof (frame as { t?: unknown }).t !== "string") {
+			this.close(`a frame with no type arrived: ${line.slice(0, 80)}`);
+			return;
+		}
+		for (const handler of this.#frameHandlers) handler(frame as Frame);
+	}
+
+	#tooLong(): void {
+		this.close(`a line longer than ${this.#maxLineLength} characters arrived`);
 	}
 }
 
 /** Two links joined in this process, for a home that runs beside its host and for tests. */
-export function linkPair(): readonly [Link, Link] {
+export function linkPair(options?: LinkOptions): readonly [Link, Link] {
 	const deliver = (to: () => LineLink) => (lines: string) => {
 		// Delivered on a later turn, as bytes through a pipe would be, so a handler never runs inside a send.
 		queueMicrotask(() => to().receive(lines));
@@ -99,16 +132,18 @@ export function linkPair(): readonly [Link, Link] {
 	const left: LineLink = new LineLink(
 		deliver(() => right),
 		() => queueMicrotask(() => right.close("the other end closed")),
+		options,
 	);
 	const right: LineLink = new LineLink(
 		deliver(() => left),
 		() => queueMicrotask(() => left.close("the other end closed")),
+		options,
 	);
 	return [left, right];
 }
 
 /** The runner's end over a pair of Node streams: its own stdin and stdout, or a socket. */
-export function streamLink(input: NodeJS.ReadableStream, output: NodeJS.WritableStream): Link {
+export function streamLink(input: NodeJS.ReadableStream, output: NodeJS.WritableStream, options?: LinkOptions): Link {
 	const decoder = new StringDecoder("utf8");
 	let open = true;
 	const link = new LineLink(
@@ -121,6 +156,7 @@ export function streamLink(input: NodeJS.ReadableStream, output: NodeJS.Writable
 			open = false;
 			input.removeListener("data", onData);
 		},
+		options,
 	);
 	const onData = (chunk: Buffer | string) => link.receive(typeof chunk === "string" ? chunk : decoder.write(chunk));
 	input.on("data", onData);
@@ -138,7 +174,7 @@ export function streamLink(input: NodeJS.ReadableStream, output: NodeJS.Writable
  * whose input is a buffered call of 100 ms or more (Daytona's) then carries a streamed model answer at the pace it is
  * made, not one call for each frame. The link closes when the program's output ends or a write fails.
  */
-export function processLink(process: BoxProcess): Link {
+export function processLink(process: BoxProcess, options?: LinkOptions): Link {
 	const encoder = new TextEncoder();
 	let queued = "";
 	let writing = false;
@@ -169,6 +205,7 @@ export function processLink(process: BoxProcess): Link {
 			open = false;
 			void process.stdin.close().catch(() => {});
 		},
+		options,
 	);
 	void (async () => {
 		const decoder = new StringDecoder("utf8");
