@@ -198,20 +198,45 @@ async function settle({ key, taskId, runtime, context }: WorkflowInvocation, { a
   if (!request) return;
   const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
   try {
-    const effects = journal.effects();
-    for (const effect of effects) {
-      const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
-      const kept = effect.status === 'unknown' && effect.intent && alone && answered ? await answered(effect.argsHash) : undefined;
-      // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-      const rerunAnswer = kept === undefined && effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
-      const answer = kept ?? rerunAnswer;
-      // A call the source answered again is an applied call of this effect, in this generation: its record says so.
-      if (rerunAnswer) await journal.called(effect.id, [...((effect as { calls?: unknown[] }).calls ?? []), { outcome: 'applied', tool: effect.intent!.tool, argsHash: effect.argsHash, via: 'rerun' }]);
-      if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
-    }
+    await settleEffects(journal as unknown as SettleJournal, { answered, rerun });
   } finally {
     await journal.close();
   }
+}
+
+/** What `settleEffects` needs of a journal: the effects admitted so far, an effect's calls, and two writes. */
+export type SettleJournal = {
+  effects(): Array<{ id: string; status: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] }>;
+  called(id: string, calls: unknown[]): Promise<unknown>;
+  complete(id: string, completion: { value: unknown; files: Record<string, never>; intent: { tool: string; args: unknown } }): Promise<unknown>;
+};
+
+/** Completes each effect a killed process left unknown that the host can answer (a kept answer, or `rerun`), and reports the applied
+ *  call it found, once. */
+export async function settleEffects(journal: SettleJournal, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
+  const effects = journal.effects();
+  for (const effect of effects) {
+    const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
+    const kept = effect.status === 'unknown' && effect.intent && alone && answered ? await answered(effect.argsHash) : undefined;
+    // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
+    const rerunAnswer = kept === undefined && effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const answer = kept ?? rerunAnswer;
+    // A host lists every applied call exactly once. Settling from evidence (the kept answer, or a call the source answered again) finds
+    // the call applied: when the effect's calls hold no applied entry the settle reports one now, and when one is listed it adds none.
+    if (answer) {
+      // The journal does not show an effect's calls (`effects()` omits them) and `called` replaces the list, so the calls the host kept
+      // with its answer are the base; a rerun's answer carries none.
+      const listed = appliedOnce(kept?.calls ?? (effect as { calls?: unknown[] }).calls ?? [], { outcome: 'applied', tool: effect.intent!.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' });
+      if (listed.added) await journal.called(effect.id, listed.calls);
+    }
+    if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
+  }
+}
+
+/** `calls` with `record` (an applied call) added, unless an applied call is already listed: a host lists each applied call exactly once. */
+export function appliedOnce(calls: unknown[], record: { outcome: 'applied' } & Record<string, unknown>): { calls: unknown[]; added: boolean } {
+  if (calls.some((call) => (call as { outcome?: unknown } | null)?.outcome === 'applied')) return { calls, added: false };
+  return { calls: [...calls, record], added: true };
 }
 
 /** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
