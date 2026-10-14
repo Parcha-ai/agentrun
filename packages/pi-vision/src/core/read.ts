@@ -234,20 +234,22 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
     tool: "look", args: { path: handle, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { from_s: fromS } : {}), ...(toS !== undefined ? { to_s: toS } : {}), via: source.via, native: false, model },
     status, facts: { sha256, kind: "recording", fragment, key: lookKey({ sha256, fragment, ask, model }), ...(paid ? { cost_usd: paid.costUsd, provider: paid.billedBy } : {}), ...(kept ? { kept: true } : {}) }, body,
   });
+  // A source that threw may have been billed at a price nobody knows; one that answered with no words names its price.
+  let unanswered: LookRecord | undefined;
   try {
     // The reviewer's answer is kept as the eyes' is, before the result that reports it.
     const key = lookKey({ sha256, fragment, ask, model: source.via });
     const { answer: look, readBack } = await keptAnswer(call.memo, key, () => source.look!({ id, ask: ask ?? DESCRIBE_ASK, ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) }, call.signal ?? new AbortController().signal));
-    // An answer with no words is a look that failed, as the eyes' is.
-    if (!look.text.trim()) throw new Error(`the recording reviewer ${look.model} via ${source.via} returned no text`);
     const paid = { costUsd: look.costUsd, billedBy: look.billedBy ?? source.via };
+    // An answer with no words is a look that failed, as the eyes' is, at the price it was answered for.
+    if (!look.text.trim()) { unanswered = record("none", "failed", "", paid, readBack); throw new Error(`the recording reviewer ${look.model} via ${source.via} returned no text`); }
     const filed = await fileTold(call.memo, key, filing, (to, told) => fileLook(to, "read", record(look.model, "ok", look.text, paid, readBack), { usage: null, ...paid, ...(told ? { kept: true } : {}) }));
     const head = `(recording ${handle}${window} seen for you by ${look.model} via ${source.via}${ask ? ` \u2014 your question: ${ask}` : ""}${filed ? `; look filed at ${filed}` : ""}:)`;
     return { content: [{ type: "text", text: `${head}\n${look.text}` }], details: { path: handle, ...(filed ? { look: filed } : {}), media: { kind: "recording", sessionId: id, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) } } };
   } catch (error) {
     if (call.signal?.aborted) throw error;
     const reason = firstLine(error);
-    const filed = await reportMiss(filing, "read", record("none", "failed", ""), { code: "look_failed", reason });
+    const filed = await reportMiss(filing, "read", unanswered ?? record("none", "failed", ""), { code: "look_failed", reason });
     return refusal(`Cannot read ${handle}${window}: ${reason}${filed ? ` (look filed at ${filed})` : ""}`);
   }
 }
