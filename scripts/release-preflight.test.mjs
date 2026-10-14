@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
+import { fold } from './changes.mjs';
 import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
@@ -41,6 +42,7 @@ before(async () => {
   await mkdir(join(baseline, '.release/packages'), { recursive: true });
   await putJson(join(baseline, 'package.json'), { version, license: 'MIT', private: true });
   await writeFile(join(baseline, 'LICENSE'), license);
+  await writeFile(join(baseline, 'CHANGELOG.md'), `# Changelog\n\n## Unreleased\n\n## ${version}, 2026-01-01\n\n- First.\n`);
   for (const directory of listedPackages) {
     const cwd = join(baseline, 'packages', directory);
     await mkdir(join(cwd, 'dist'), { recursive: true });
@@ -351,4 +353,25 @@ test('the transport package is held: listed, private, at the workspace version, 
   await putJson(path, lifted);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.at(-1).name, '@parcha/pi-transport', 'a tree that lifts the hold publishes it, last');
+}));
+
+test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {
+  await preflight(root).then(result => assert.equal(result.status, 'passed'));
+  await mkdir(join(root, 'changes'));
+  await writeFile(join(root, 'changes/left-behind.md'), '---\npackages: repo\nkind: fix\n---\nA change nobody folded.\n');
+  await assert.rejects(preflight(root), /Unfolded changelog fragments remain/);
+  await rm(join(root, 'changes/left-behind.md'));
+  await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Something.\n');
+  await assert.rejects(preflight(root), /no section for 0\.1\.0-beta\.1/);
+}));
+
+test('the preflight passes on a tree the fold produced, for that tag', () => fixture(async root => {
+  await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Held bullet.\n');
+  await mkdir(join(root, 'changes'));
+  await writeFile(join(root, 'changes/new.md'), '---\npackages: repo\nkind: feature\n---\nA new change.\n');
+  await assert.rejects(preflight(root), /Unfolded changelog fragments remain/);
+  await fold(root, version, '2026-01-02');
+  const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\.\n/);
+  assert.equal((await preflight(root)).status, 'passed');
 }));
