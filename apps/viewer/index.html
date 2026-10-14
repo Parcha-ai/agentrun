@@ -77,8 +77,8 @@
   .vz-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; font-size: 12px; }
   .vz-badge { padding: 2px 7px; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); }
   .vz-badge.red { border-color: var(--kill); color: var(--kill); } .vz-badge.ok { border-color: var(--done); color: var(--done); }
-  .vz-grid { display: grid; grid-template-columns: 1.15fr 1fr 0.8fr; gap: 14px; align-items: start; }
-  @media (max-width: 900px) { .vz-grid { grid-template-columns: 1fr; } }
+  .vz-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 0.8fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .vz-grid { grid-template-columns: minmax(0, 1fr); } }
   .vz-lane { margin-bottom: 14px; }
   .vz-cells { display: flex; height: 12px; margin: 4px 0 6px; border-radius: 2px; overflow: hidden; background: var(--rule); }
   .vz-cell { flex: 1; } .vz-cell.read { background: var(--band-2); } .vz-cell.missed { background: var(--failed); }
