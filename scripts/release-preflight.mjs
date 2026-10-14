@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
-import { hasVersionSection, loadFragments } from './changes.mjs';
+import { hasVersionSection, loadFragments, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
@@ -105,6 +105,12 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   const heldHere = [];
   for (const directory of listedPackages) if ((await json(join(root, 'packages', directory, 'package.json'))).private === true) heldHere.push(directory);
   const releaseHere = listedPackages.filter(directory => !heldHere.includes(directory));
+  // A published package's own changelog has nothing left under Unreleased: the fold dates the entries into the version's section, so what
+  // remains would ship undated with the package. A held package is not published, so its Unreleased may keep entries.
+  for (const directory of releaseHere) {
+    const log = await readFile(join(root, 'packages', directory, 'CHANGELOG.md'), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (log !== null) assert.ok(!unreleasedSection(log).split('\n').slice(1).some(line => line.trim()), `${releasePackageNames[directory]}'s CHANGELOG.md still has entries under Unreleased; run node scripts/changes.mjs --fold`);
+  }
   // A held package is bumped with the workspace like the rest and skipped only at publication.
   for (const directory of heldHere) {
     const held = await json(join(root, 'packages', directory, 'package.json'));
