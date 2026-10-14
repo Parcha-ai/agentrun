@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { validateWorkflow } from '@parcha/agentrun-dsl';
 import { audit, loadFixture } from './dependency-audit/run.ts';
+import { checkReceipts, recordOf } from './dependency-audit/check.ts';
 import { repositoryUrl, resolveRange } from './dependency-audit/sources.ts';
 import { workflow } from './dependency-audit/workflow.ts';
 
@@ -59,4 +60,32 @@ test('the scripted audit completes, and every claim in the report cites a receip
   assert.match(record.report_markdown, /^# Dependency audit: /);
   // The replay says so: no install receipt claims a box ran.
   for (const row of record.rows) assert.equal(JSON.parse(readFileSync(join(tmp, 'run', `receipts/install/${row.name.replace('/', '__')}@${row.version}.json`), 'utf8')).ran, false);
+});
+
+test('every fact of a scripted audit cites a filed receipt of its kind, and a badge fact cites a look of the badge image', { timeout: 180_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'dependency-audit-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run');
+  const result = await audit({ fixture: 'gsap', dir });
+  assert.equal(result.outcome?.status, 'complete');
+  assert.deepEqual(result.receiptProblems, []);
+  const record = recordOf(dir);
+  const badges = record.rows.flatMap((row) => row.facts.filter((fact) => fact.source === 'badge'));
+  assert.ok(badges.length >= 5, `the vision lane ran: ${badges.length} badge facts`);
+  for (const fact of badges) {
+    const look = JSON.parse(readFileSync(join(dir, fact.receipt), 'utf8'));
+    assert.equal(look.tool, 'look');
+    assert.match(look.facts.sha256, /^[0-9a-f]{64}$/);
+    assert.ok(fact.claim.includes(look.body), `${fact.claim} says what the eyes said: ${look.body}`);
+  }
+  // A finding that cites a badge with no look receipt fails the check: a path that was never filed, a receipt of another kind.
+  const first = record.rows.find((row) => row.facts.some((fact) => fact.source === 'badge'));
+  const badge = first.facts.find((fact) => fact.source === 'badge');
+  const wrong = (receipt, source = 'badge') => checkReceipts(dir, { rows: [{ name: first.name, version: first.version, facts: [{ claim: 'x', source, receipt }] }] });
+  assert.deepEqual(wrong(badge.receipt), []);
+  assert.match(wrong('evidence/repository/look-never-filed.json')[0], /does not exist/);
+  const read = record.rows.flatMap((row) => row.facts).find((fact) => fact.source === 'repository');
+  assert.match(wrong(read.receipt)[0], /not an ok look of an image/, 'a browser read is not a look');
+  assert.match(wrong('../outside.json')[0], /outside the run|not under/);
+  assert.match(wrong(badge.receipt, 'repository')[0], /not an ok browser_read/);
 });

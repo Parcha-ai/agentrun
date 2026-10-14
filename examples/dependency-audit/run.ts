@@ -19,10 +19,11 @@ import { openSupervisor } from '../reference/record.ts';
 import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
 import { badgeImageTool, visionOptions } from './badges.ts';
+import { checkReceipts, recordOf } from './check.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
 import { makeTools, rerunner } from './tools.ts';
-import { scriptedBrowser, scriptedFakes } from './scripted.ts';
+import { scriptedBrowser, scriptedFakes, scriptedVision } from './scripted.ts';
 import { workflow } from './workflow.ts';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -71,6 +72,10 @@ async function child() {
     const fakes = scriptedFakes(fixture, place.root, undefined, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
     local = localHost(place, fakes, { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
     tools = fakes.tools;
+    // The vision lane with no key: the captured badges drawn as PNGs, read by scripted eyes that say what each badge says.
+    const vision = scriptedVision(fixture, (image) => recorder?.live('vision', 'badge.image', { path: image.path, sha256: image.sha256, width: image.width, height: image.height }, { blobs: [recorder.blob(image.png, 'png')] }));
+    local.host.tools = { ...local.host.tools, extensions: [vision.tool] };
+    runOptions = { vision: (running) => visionOptions(local!.host, { harness: () => running.harness as never, eyes: vision.eyes as never }) };
   }
   // A call a killed process left unknown is settled by running it again: the reads are read-only, an install runs in a fresh box.
   local.host.tools = { ...local.host.tools, rerun: rerunner((job.input as { dependencies: Array<{ name: string; version: string }> }).dependencies, tools as never) };
@@ -210,7 +215,9 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
       cost: { usd: outcome.usd ?? null, parts: outcome.parts ?? {} }, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(result ? { result } : {}),
     });
   }
-  return { dir, processes, kills, outcome, stderr: last?.stderr ?? '' };
+  // Every fact in the record must rest on a receipt the run filed, of the kind the fact claims.
+  const record = outcome?.status === 'complete' ? recordOf(dir) : null;
+  return { dir, processes, kills, outcome, stderr: last?.stderr ?? '', receiptProblems: record ? checkReceipts(dir, record) : [] };
 }
 
 /** Runs the audit; with `attempts`, a run a kill stopped on an unknown effect is started again from nothing on the next seed. */
@@ -241,6 +248,7 @@ if (import.meta.main) {
     });
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);
-    if (result.outcome?.status !== 'complete') process.exitCode = 1;
+    if (result.receiptProblems.length) console.error(`${result.receiptProblems.length} fact(s) cite no filed receipt of their kind:\n${result.receiptProblems.slice(0, 10).map((problem) => `  ${problem}`).join('\n')}`);
+    if (result.outcome?.status !== 'complete' || result.receiptProblems.length) process.exitCode = 1;
   }
 }
