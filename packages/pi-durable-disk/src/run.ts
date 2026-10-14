@@ -179,9 +179,10 @@ export interface BeforeResume {
   /** This incarnation's `run.json`, which the open has already written (`running`, this holder, `detail` null). */
   readonly record: RunRecord;
   /**
-   * `run.json` as it was before this open wrote over it: how the last incarnation left the run. After a park it is
-   * `sleeping` with its `wakeAt` and `detail` and the seal its release wrote; after a planned stop, `paused` or `done`
-   * with the `detail` it set; after a crash, `running` with the dead holder and no new seal. Null on the run's first open.
+   * `run.json` as it was before this open wrote over it: how the run was left. After a park it is `sleeping` with its
+   * `wakeAt` and `detail` and the seal its release wrote; after a planned stop, `paused` or `done` with the `detail` it
+   * set; after a crash, `running` with the dead holder and no new seal. On a fork's first open it is the record `fork`
+   * wrote: `paused`, generation 0, `detail.forkedFrom`. Null only when there was no `run.json` (a new run's first open).
    */
   readonly previous: RunRecord | null;
   readonly claim: RunClaim;
@@ -240,7 +241,7 @@ export interface RunLease {
   readonly record: RunRecord;
   /** The seal the previous incarnation's clean release wrote; null on a first run and after a crash. */
   readonly sealedSeq: number | null;
-  /** `run.json` as the open found it, before it wrote this incarnation's: null on the run's first open. */
+  /** `run.json` as the open found it, before it wrote this incarnation's: null when there was none (a new run's first open). */
   readonly previous: RunRecord | null;
   readonly fenced: boolean;
   /**
