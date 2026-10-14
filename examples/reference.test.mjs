@@ -1,6 +1,7 @@
 // The reference assembly, run as a stranger would: `run.ts --json` with no key and nothing in the environment but
 // PATH, HOME and TMPDIR. Then a process killed inside the lead's request after the browser read, and a second process
 // that resumes the same directory and delivers the same record.
+import { recordProblems } from '../scripts/reference-record.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -42,14 +43,14 @@ test('the job on the no-key host prints the same record, receipts and calls on e
   const tmp = await scratch(t);
   const ran = await node(['examples/reference/run.ts', '--json'], { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp });
   assert.equal(ran.code, 0, ran.stderr);
-  assert.deepEqual(JSON.parse(ran.stdout), EXPECTED);
+  assert.deepEqual(recordProblems(JSON.parse(ran.stdout), EXPECTED), []);
 });
 
 test('a relative --dir with a trailing slash runs the same job and names the receipts it filed', { timeout: 120_000 }, async (t) => {
   const tmp = await scratch(t);
   const ran = await node(['examples/reference/run.ts', '--json', '--dir', `${relative(ROOT, join(tmp, 'run'))}/`], { PATH: process.env.PATH, HOME: tmp, TMPDIR: tmp });
   assert.equal(ran.code, 0, ran.stderr);
-  assert.deepEqual(JSON.parse(ran.stdout), EXPECTED);
+  assert.deepEqual(recordProblems(JSON.parse(ran.stdout), EXPECTED), []);
   assert.deepEqual(JSON.parse(await readFile(join(tmp, 'run', 'out', 'record.json'), 'utf8')).evidence, [READ, LOOK]);
 });
 
