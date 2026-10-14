@@ -19,8 +19,8 @@ before(async () => {
 });
 after(() => { server.close(); rmSync(root, { recursive: true, force: true }); });
 
-const run = (mode, file, killAt = '') => new Promise((resolve) => {
-  const proc = spawn(process.execPath, [child, mode, file], { env: { ...process.env, COUNT_URL: url, KILL_AT: killAt } });
+const run = (mode, file, killAt = '', env = {}) => new Promise((resolve) => {
+  const proc = spawn(process.execPath, [child, mode, file], { env: { ...process.env, COUNT_URL: url, KILL_AT: killAt, ...env } });
   let out = '', err = '';
   proc.stdout.on('data', (d) => { out += d; });
   proc.stderr.on('data', (d) => { err += d; });
@@ -64,3 +64,19 @@ for (const [point, firstPaid, resumed, totalPaid, sameTask] of rows) {
     assert.equal(paid, totalPaid);
   });
 }
+
+test('killed after dispatch: a host that completes the unknown effect in options resumes the run to its end, and nothing is dispatched again', async () => {
+  paid = 0;
+  const file = join(mkdtempSync(join(root, 'settled-')), 'run.sqlite');
+  const first = await run('start', file, 'after-dispatch');
+  assert.equal(first.exit, 'SIGKILL', first.err);
+  const task = pick(first, 'task');
+  assert.equal(paid, 1);
+  // The host learned what the call did; the price is one the server never answers, so the total shows the run took it.
+  const second = await run('resume', file, '', { SETTLE: JSON.stringify({ price: 50 }) });
+  assert.equal(second.exit, 0, second.err);
+  assert.equal(second.rows.filter((row) => row.settled !== undefined).length, 1);
+  const settled = pick(second, 'resumed');
+  assert.deepEqual([settled.id, settled.status, brief(settled.outcome)], [task, 'terminal', { status: 'complete', total: 100 }]);
+  assert.equal(paid, 1);
+});

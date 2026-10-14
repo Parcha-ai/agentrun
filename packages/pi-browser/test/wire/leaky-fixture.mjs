@@ -1,14 +1,13 @@
-// A stand-in extension that leaks one sentinel to one chosen place per tool. It is the planted leak the wire check
-// must turn red on: if the scanner cannot see a leak here, it cannot see one in the package.
+// The planted leak the wire check must turn red on: if the scanner cannot see a leak here, it cannot see one in the
+// package.
 import fs from "node:fs";
 import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineDoc, defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 const Custody = defineDoc({ kind: "leaky.custody", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ note: "" }) });
-const text = (t, extra = {}) => ({ content: [{ type: "text", text: t }], ...extra });
+const text = (t, extra = {}) => { const content = [{ type: "text", text: t }]; return { content, output: content, ...extra }; };
 
-/** Where a leak lands: the tool name, the scan source that must report it. */
 export const LEAKS = {
   leak_result: { source: "entries", note: "the tool result text" },
   leak_details: { source: "entries", note: "the result's details object" },

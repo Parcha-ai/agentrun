@@ -204,6 +204,25 @@ test("a PDF replaced while it is read: the text, the hash and the kept derivatio
   assert.ok(text(again).includes("4471") && !text(again).includes("9026"));
 });
 
+test("a read cancelled while a derivation or a document's text is put in place leaves no temporary file where derivations are kept", async (t) => {
+  const r = await rig();
+  t.after(() => r.dir.remove());
+  await r.dir.file("letter.pdf", letterPdf());
+  // A derivation is written as `.tmp` and a document's kept text as `.part`, each renamed into place; the call is
+  // cancelled at that rename.
+  for (const suffix of [".tmp", ".part"]) {
+    const cut = new AbortController();
+    const cutting = new Proxy(r.env, {
+      get: (target, key) => (key === "renameFile"
+        ? async (from, to, context) => { if (!from.endsWith(suffix)) return target.renameFile(from, to, context); cut.abort(); return { ok: false, error: Object.assign(new Error("cancelled"), { code: "aborted" }) }; }
+        : typeof target[key] === "function" ? target[key].bind(target) : target[key]),
+    });
+    await readMedia(cutting, { path: "letter.pdf" }, { ...r.call, signal: cut.signal }, { ...r.setup, providers: [unpdfProvider()] });
+    assert.ok(cut.signal.aborted, `the call was cancelled at the rename of a ${suffix} file`);
+    assert.deepEqual(readdirSync(r.setup.scope.deriveDir).filter((name) => name.endsWith(suffix)), [], `no ${suffix} file is left`);
+  }
+});
+
 test("a document read as text keeps that text in a file the agent can search, says where, and names it in details.document", async (t) => {
   const r = await rig();
   t.after(() => r.dir.remove());

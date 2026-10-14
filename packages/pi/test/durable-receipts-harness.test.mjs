@@ -14,6 +14,7 @@ import { createRegistry, defineExtension, defineTool, Harness } from '@earendil-
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { canonicalHash } from '@parcha/agentrun-dsl/recovery';
 import { ReceiptIndex, reuseReceipts, seedReceipts } from '@parcha/agentrun-pi/durable';
+import { otherKey, resultOf } from './fixtures/pi-version.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-receipts-harness-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -54,7 +55,7 @@ const storedFor = (harness, tool, args) => harness.snapshot(ReceiptIndex, `${too
 test('the model receives the refusal text for a call equal to an effect whose outcome is unknown, and the tool is not called', async () => {
   const calls = [];
   const args = { amount: 5 };
-  const run = await converse({ tool: paidTool('pay', { content: [{ type: 'text', text: 'paid' }] }, calls), call: ['pay', args],
+  const run = await converse({ tool: paidTool('pay', resultOf([{ type: 'text', text: 'paid' }]), calls), call: ['pay', args],
     options: { unknown: [{ name: 'pay', argsHash: canonicalHash(args) }] } });
   try {
     assert.deepEqual(calls, []);
@@ -68,7 +69,7 @@ test('the model receives the refusal text for a call equal to an effect whose ou
 test('the model receives the receipt\'s text, and where it came from, for a repeat of a call another session paid for', async () => {
   const calls = [];
   const args = { q: 'acme' };
-  const run = await converse({ tool: paidTool('search', { content: [{ type: 'text', text: 'LIVE' }] }, calls), call: ['search', args],
+  const run = await converse({ tool: paidTool('search', resultOf([{ type: 'text', text: 'LIVE' }]), calls), call: ['search', args],
     seed: [{ tool: 'search', argsHash: canonicalHash(args), result: 'PAID ROW 7', session: 'driver-step' }] });
   try {
     assert.deepEqual(calls, [], 'the call was answered, not dispatched');
@@ -81,7 +82,7 @@ test('the model receives the receipt\'s text, and where it came from, for a repe
 test('the stored receipt value equals the tool\'s text, and names the session that paid', async () => {
   const calls = [];
   const args = { q: 'acme' };
-  const run = await converse({ tool: paidTool('search', { content: [{ type: 'text', text: 'ROW A' }, { type: 'text', text: 'ROW B' }] }, calls), call: ['search', args] });
+  const run = await converse({ tool: paidTool('search', resultOf([{ type: 'text', text: 'ROW A' }, { type: 'text', text: 'ROW B' }]), calls), call: ['search', args] });
   try {
     assert.equal(calls.length, 1);
     assert.equal(run.results[0].text, 'ROW AROW B', 'the model received the tool\'s own text');
@@ -94,9 +95,9 @@ test('the stored receipt value equals the tool\'s text, and names the session th
 
 test('a failure is not recorded as a paid result: an error result, and a failure envelope in the text', async () => {
   for (const [label, answer] of [
-    ['an error result', { isError: true, content: [{ type: 'text', text: 'the provider answered 500' }] }],
-    ['a failure envelope as the text', { content: [{ type: 'text', text: '{"ok":false,"error":"not found"}' }] }],
-    ['a failure envelope among the text blocks', { content: [{ type: 'text', text: 'fetching' }, { type: 'text', text: '{"outcome":"error"}' }] }],
+    ['an error result', resultOf([{ type: 'text', text: 'the provider answered 500' }], { isError: true })],
+    ['a failure envelope as the text', resultOf([{ type: 'text', text: '{"ok":false,"error":"not found"}' }])],
+    ['a failure envelope among the text blocks', resultOf([{ type: 'text', text: 'fetching' }, { type: 'text', text: '{"outcome":"error"}' }])],
   ]) {
     const args = { q: label };
     const run = await converse({ tool: paidTool('search', answer, []), call: ['search', args] });
@@ -111,11 +112,25 @@ test('a failure is not recorded as a paid result: an error result, and a failure
 test('a seeded receipt of a call that returned nothing is answered, not dispatched again', async () => {
   const calls = [];
   const args = { q: 'nothing' };
-  const run = await converse({ tool: paidTool('search', { content: [{ type: 'text', text: 'LIVE' }] }, calls), call: ['search', args],
+  const run = await converse({ tool: paidTool('search', resultOf([{ type: 'text', text: 'LIVE' }]), calls), call: ['search', args],
     seed: [{ tool: 'search', argsHash: canonicalHash(args), result: null, session: 'driver-step' }] });
   try {
     assert.deepEqual(calls, [], 'the call was paid and returned nothing: dispatching it again buys the same nothing twice');
     assert.equal(run.results[0].text, 'null\n\n(answered from the paid receipt of driver-step; the call was not dispatched again)');
     assert.equal(run.results[0].details?.effect_status, 'reused');
+  } finally { await run.close(); }
+});
+
+test("a paid tool that returns its blocks only under the key the loaded pi-durable does not read: the model gets the refusal, not an empty result, and no receipt is stored", async () => {
+  const calls = [];
+  const args = { q: 'stale' };
+  const run = await converse({ tool: paidTool('search', { [otherKey()]: [{ type: 'text', text: 'ROWS' }] }, calls), call: ['search', args] });
+  try {
+    assert.equal(calls.length, 1, 'the call ran: what it returned is what is refused');
+    assert.equal(run.results.length, 1);
+    assert.equal(run.results[0].isError, true);
+    assert.match(run.results[0].text, new RegExp(`search returned its result under "${otherKey()}"`));
+    const stored = await storedFor(run.harness, 'search', args);
+    assert.ok(!stored || stored.result === null, 'nothing is stored');
   } finally { await run.close(); }
 });

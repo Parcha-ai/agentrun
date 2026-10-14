@@ -1,8 +1,3 @@
-// The page tools on a real Chrome: the package's snapshot, run, screenshot and browser_read over the Stagehand driver
-// and the cdp provider, on a pi-durable Harness over SQLite, driven by a scripted faux model in a child process
-// (test/real-chrome/child.mjs) against a loopback site. Production's two `run` failure classes come back typed, and a
-// form submitted by a `run` that a SIGKILL cut reaches the server once: the cut run is never rerun, the model is told,
-// its identical repeat is refused, and the page the next process reattaches to shows the submission landed.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -33,8 +28,8 @@ function child(env, { killWhen } = {}) {
   });
 }
 
-/** Whether this Chrome can load Stagehand's extension: the driver attached once, in this process, so a Chrome that
- *  refuses skips the test (or fails it under AGENTRUN_REQUIRE_LOCAL_CHROME=1) instead of failing inside the child. */
+/** The driver attaches once in this process, so a Chrome that cannot load the extension skips the test instead of
+ *  failing inside the child. */
 async function capable(t, dir) {
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(dir, "probe") } });
   const signal = new AbortController().signal;
@@ -46,11 +41,11 @@ async function capable(t, dir) {
 
 async function rig(t) {
   const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "real-chrome-"));
-  // The slow page answers after the batch deadline: a timed-out batch keeps running in the browser until its command
-  // ends (Stagehand's batch abort is checked between commands), so the next batch waits behind it, then runs.
+  // The slow page answers after the batch deadline: a timed-out batch keeps running until its command ends (Stagehand
+  // checks its abort between commands), so the next batch waits behind it, then runs.
   const site = await startSite({ slowMs: 5_000 });
   t.after(async () => {
-    for (const pid of chromeOf(dir)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    for (const pid of chromeOf(dir)) { try { process.kill(pid, "SIGKILL"); } catch {} }
     await site.close();
     await rm(dir, { recursive: true, force: true });
   });
@@ -82,7 +77,7 @@ test("after a goto that never commits, browser_read and screenshot name the page
   const { capable: ok, site, env, read, dir } = await rig(t);
   if (!ok) return;
   // The navigation starts and never commits (a 204; on Browserbase a PDF the browser downloads), so goto fails at its
-  // start while page A stays loaded: every receipt filed afterwards is page A's, under page A's address.
+  // start while page A stays loaded.
   const script = [["run", { code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }],
     ["run", { code: `await page.goto(${JSON.stringify(`${site.base}/no-content`)}, { timeout: 1500 }); return "moved";` }],
     ["browser_read", {}],
@@ -138,8 +133,7 @@ test("a CDP socket that dies under a live session: a read reconnects to the same
   assert.equal(reads[1].isError, false, `the snapshot reconnected and ran: ${reads[1].text.slice(0, 500)}`);
   assert.match(reads[1].text, /forty-two/, "the same session: page A, not a fresh blank one");
 
-  // The socket dies just before a run: it is not repeated (it may have acted), the failure is retryable and says how
-  // to go on, and the next read reconnects to page A.
+  // The socket dies just before a run: it is not repeated (it may have acted), and the next read reconnects to page A.
   fs.rmSync(env.DB, { force: true });
   const runCut = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["run", { code: "return await page.title();" }], ["snapshot", {}]]), CUT_BEFORE: "1" });
   assert.equal(runCut.code, 0, runCut.err.slice(-1500));
@@ -151,7 +145,6 @@ test("a CDP socket that dies under a live session: a read reconnects to the same
   assert.equal(runs[2].isError, false, runs[2].text.slice(0, 500));
   assert.match(runs[2].text, /forty-two/);
 
-  // The browser cannot be reached again though the session runs: the read is refused and names browser_relaunch.
   fs.rmSync(env.DB, { force: true });
   const gone = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify([goto, ["snapshot", {}]]), CUT_BEFORE: "1", CUT_CLOSES: "1" });
   assert.equal(gone.code, 0, gone.err.slice(-1500));

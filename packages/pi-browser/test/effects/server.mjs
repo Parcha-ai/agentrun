@@ -1,10 +1,8 @@
-// Spike S3's fixture pages on loopback, counting every request to a fixture path by "METHOD /path". `hold(path)` keeps
-// that path's response open until `release()`, so a test can cut a run while its request is in flight. Cross-origin
-// pages use localhost against 127.0.0.1.
+// `hold(path)` keeps that path's response open until `release()`, so a test can cut a run while its request is in
+// flight. Cross-origin pages use localhost against 127.0.0.1.
 import http from "node:http";
 
-/** The fixtures' own paths. Anything else on this port (another program on the box probing it) gets a 404 and is never
- * counted, so it cannot change what a test sees reach the server. */
+/** Anything else on this port (another program probing it) gets a 404 and is never counted. */
 const PATHS = new Set(["/a", "/b", "/c", "/d", "/e", "/e2", "/f", "/f-inner", "/g", "/w.js", "/api/data", "/submit", "/submit-blank",
   "/api/order", "/api/popup", "/api/iframe", "/f-form", "/api/iframe-form", "/api/put", "/api/del", "/api/beacon", "/api/worker", "/api/xorigin", "/api/loaded"]);
 
@@ -18,7 +16,7 @@ export async function startServer() {
   let port = 0;
   const server = http.createServer((req, res) => {
     let url = null;
-    try { url = new URL(req.url, "http://x"); } catch { /* a request target no fixture sends */ }
+    try { url = new URL(req.url, "http://x"); } catch {}
     if (!url || !PATHS.has(url.pathname)) { req.resume(); res.writeHead(404); return res.end(); }
     req.resume();
     req.on("end", () => {
@@ -35,10 +33,8 @@ export async function startServer() {
     base: `http://127.0.0.1:${port}`,
     count: (key) => counts.get(key) ?? 0,
     nonGet: () => [...counts].filter(([k]) => !k.startsWith("GET ") && !k.startsWith("OPTIONS ")).flatMap(([k, n]) => Array(n).fill(k)).sort(),
-    /** Resolves once the server has counted `n` requests that are not GET or OPTIONS (an event, not a delay); rejects at `ms`. */
     nonGetReached: (n, ms = 30_000) => new Promise((resolve, reject) => {
       const nonGet = () => [...counts].filter(([k]) => !k.startsWith("GET ") && !k.startsWith("OPTIONS ")).reduce((total, [, c]) => total + c, 0);
-      // A wait that timed out leaves nothing behind: its watcher would otherwise run on every later request.
       const watcher = { done: () => { if (nonGet() < n) return false; clearTimeout(timer); resolve(); return true; } };
       const timer = setTimeout(() => { const at = watchers.indexOf(watcher); if (at !== -1) watchers.splice(at, 1); reject(new Error(`the server counted ${nonGet()} of ${n} expected non-GET requests in ${ms} ms`)); }, ms);
       if (!watcher.done()) watchers.push(watcher);
@@ -70,7 +66,6 @@ function respond(req, res, url, xbase) {
     case "/e": return html(page("Page E", `<button id="pop" onclick="window.open('/e2?via=open')">Open</button> <a id="blank" target="_blank" href="/e2?via=link">Link</a>`));
     case "/e2": return html(page("Popup", "<p>popup</p>", `<script>fetch('/api/popup',{method:'POST',body:'now'}); setTimeout(()=>fetch('/api/popup',{method:'POST',body:'late'}),150);</script>`));
     case "/f": return html(page("Page F", `<button id="same" onclick="add('/f-inner')">same</button> <button id="cross" onclick="add('${xbase}/f-inner')">cross</button><button id="crossform" onclick="add('${xbase}/f-form')">crossform</button><div id="slot"></div><script>function add(src){const f=document.createElement('iframe');f.src=src;document.getElementById('slot').appendChild(f);}</script>`));
-    // A widget page on another origin that submits a form as soon as it loads (a payment or login widget): the form POST of a cross-origin iframe.
     case "/f-form": return html(page("Widget", `<form method="POST" action="/api/iframe-form"><input name="card" value="4111"></form>`, `<script>addEventListener("load",()=>{fetch("/api/loaded");HTMLFormElement.prototype.submit.call(document.forms[0])})</script>`));
     case "/f-inner": return html(page("Inner", "<p>inner</p>", `<script>fetch('/api/iframe',{method:'POST',body:'now'}); setTimeout(()=>fetch('/api/iframe',{method:'POST',body:'late'}),150);</script>`));
     case "/g": return html(page("Page G", `<button id="put" onclick="x('PUT','/api/put')">PUT</button><button id="del" onclick="x('DELETE','/api/del')">DELETE</button>
@@ -85,7 +80,6 @@ function respond(req, res, url, xbase) {
   }
 }
 
-/** S3's twelve cases as test-driver steps, with the non-GET requests each must cause. */
 export const CASES = [
   { name: "A links", steps: [{ goto: "/a" }], expected: [] },
   { name: "B form POST", steps: [{ goto: "/b" }, { click: "#submit" }, { wait: 500 }], expected: ["POST /submit"] },

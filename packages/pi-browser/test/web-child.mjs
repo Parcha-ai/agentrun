@@ -1,6 +1,3 @@
-// One process of the web crash scenario: runs a web_fetch against the parent's fake provider until the parent
-// SIGKILLs it (mode first) or reopens the same SQLite file and resumes (mode second).
-// env: DB FAKE OUT MODE=first|second
 import { createWebExtension } from "../dist/durable.js";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fileSink, open, transcript } from "./web-rig.mjs";

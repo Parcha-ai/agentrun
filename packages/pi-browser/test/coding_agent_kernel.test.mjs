@@ -1,6 +1,3 @@
-// The coding agent with `--browser-provider kernel`: the real pi agent, the real kernel provider, a fake Kernel API whose
-// browsers are a fake backend's sessions and that echoes every secret on failure, and the fake driver. The key the host
-// hands in reaches Kernel as the Bearer value and nothing the model is sent; the session is deleted when it is released.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { FakeBackend, fakeDriver, fixturePage, makeSentinels } from "../dist/testing/index.js";
@@ -33,7 +30,6 @@ test("kernel by flag creates at Kernel with the host's key, shows the model no s
   assert.equal(create.body.stealth, false);
   assert.equal(create.body.timeout_seconds, 180, "the coding agent's idle release is Kernel's idle timeout");
 
-  // A Kernel failure the model is shown (a refused relaunch create) carries none of Kernel's echo.
   api.knobs.createStatus = 500;
   const [relaunch] = await agent.run(turn(["browser_relaunch"]));
   assert.equal(relaunch.isError, true);

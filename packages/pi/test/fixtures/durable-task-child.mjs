@@ -1,14 +1,16 @@
 // One process of a workflow task over one SQLite file, for the kill matrix in durable-task-crash.test.mjs. `start`
 // starts (or reaches) the run and waits for it; `resume` opens, installs the extension and calls `resume()`, nothing
-// else, then waits for the task. With KILL_AT set, the process kills itself at that point. Rows go to stdout as JSON.
+// else, then waits for the task. With KILL_AT set, the process kills itself at that point. With SETTLE set, the host's
+// `options` completes each effect a killed process left unknown with that JSON value before the driver opens, as a host
+// that learned what the call did reconciles it. Rows go to stdout as JSON.
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension } from '@parcha/agentrun-pi/durable';
+import { recoveryBound, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
+import { createWorkflowExtension, documentStore } from '@parcha/agentrun-pi/durable';
 
 export const WORKFLOW = {
   v: 2, name: 'task-crash',
@@ -26,7 +28,23 @@ if (mode) {
   const log = (row) => process.stdout.write(`${JSON.stringify(row)}\n`);
   const kill = (point) => { if (process.env.KILL_AT === point) { log({ kill: point }); process.kill(process.pid, 'SIGKILL'); } };
   const files = workspaceFiles(mkdtempSync(join(tmpdir(), 'agentrun-task-cwd-')));
-  const flow = createWorkflowExtension({ options: () => ({ files }), run: () => ({
+  /** Completes each unknown effect with `value` on the run's journal, opened under the task's commit and closed. */
+  const settle = async ({ key, runtime, context }, value) => {
+    const commit = async (change) => { let result; await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context); return result; };
+    const journal = await documentStore({ commit }, key, { context }).open(recoveryBound(WORKFLOW));
+    try {
+      for (const effect of journal.effects()) {
+        if (effect.status !== 'unknown') continue;
+        await journal.complete(effect.id, { value, files: {} });
+        log({ settled: effect.id });
+      }
+    } finally { await journal.close(); }
+  };
+  const options = async (invocation) => {
+    if (process.env.SETTLE) await settle(invocation, JSON.parse(process.env.SETTLE));
+    return { files };
+  };
+  const flow = createWorkflowExtension({ options, run: () => ({
     adapters: { runEffect: async ({ node, input, signal }) => {
       const response = await fetch(`${process.env.COUNT_URL}/effect`, { method: 'POST', body: JSON.stringify({ tool: node.tool, args: input }), signal });
       const result = await response.json();

@@ -1,5 +1,3 @@
-// A scripted Browserbase SDK: an in-memory account that stamps each session with the metadata it was created with,
-// answers `list({ q })` for `user_metadata['k']:'v'`, serves release as an asynchronous request, and records every call.
 export function fakeBrowserbase(knobs = {}) {
   const calls = [];
   const sessions = new Map();
@@ -51,7 +49,6 @@ export function fakeBrowserbase(knobs = {}) {
       },
     },
   };
-  // Per-file downloads (`/v1/downloads`): rows by session, bytes by id, every read recorded.
   const downloads = new Map();
   let dlSeq = 0;
   sdk.get = async (path, options = {}) => {
@@ -70,7 +67,6 @@ export function fakeBrowserbase(knobs = {}) {
     const bytes = Buffer.from(content);
     downloads.set(`dl_${dlSeq}`, { id: `dl_${dlSeq}`, sessionId, filename, mimeType: "application/octet-stream", size: bytes.length, checksum: "not-checked", createdAt: new Date(Date.UTC(2026, 9, 6, 12, 0, dlSeq)).toISOString(), bytes });
   };
-  // The Fetch and Search resources of the real SDK: the response is the API's (no final URL), the input is what the provider sent.
   sdk.fetchAPI = { create: async (input, options) => { record("fetch", { input, options }); if (input.url.includes("blocked")) return { id: "f", statusCode: 403, contentType: "text/html", encoding: "utf-8", headers: {}, content: "" }; return { id: "f", statusCode: 200, contentType: "text/markdown", encoding: "utf-8", headers: {}, content: "# Example\n\nHello from fetch." }; } };
   sdk.search = { web: async (input, options) => { record("search", { input, options }); return { query: input.query, requestId: "r", results: [{ id: "1", url: "https://example.com/a", title: "A" }] }; } };
   return { sdk, calls, sessions, addDownload, only: (op) => calls.filter((c) => c.op === op) };

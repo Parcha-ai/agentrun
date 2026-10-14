@@ -1,16 +1,6 @@
-// The model contract: each tool's name, description, argument schema, effect class and replay class, and the static
-// `browser` section. Every word the model reads from this package lives in this file; adapters register it unchanged
-// and a host adds its own words around it (a wrapped description, a section addendum), never inside it.
-//
-// Schemas are plain JSON Schema: pi validates a call's arguments against them before `execute`, and the coding agent
-// takes the same objects. `snapshot`, `run` and `screenshot` keep the Stagehand facade's descriptions and schemas
-// (models are prompted against them, and the driver's drift test compares them with the vendored upstream);
-// `screenshot` adds `ask`, the question a capture is taken to answer.
-
 export type JsonSchema = { readonly [key: string]: unknown };
 
-/** What a call can do to the world. `read` changes nothing a rerun could double; `effect` may act on a site;
- *  `custody` opens or closes a paid session, at most once by its tag. */
+/** `read` changes nothing a rerun could double; `effect` may act on a site; `custody` opens or closes a paid session. */
 export type EffectClass = "read" | "effect" | "custody";
 
 export type ToolContract = {
@@ -19,15 +9,12 @@ export type ToolContract = {
   readonly description: string;
   readonly parameters: JsonSchema;
   readonly effect: EffectClass;
-  /** pi-durable's replay class: a `safe` call cut by a crash reruns with the same arguments; an `unsafe` one is
-   *  reported interrupted and never rerun. */
+  /** After a crash a `safe` call reruns with the same arguments; an `unsafe` one is reported interrupted, never rerun. */
   readonly replay: "safe" | "unsafe";
-  /** One sequential call makes its whole round sequential: a session's calls run in order. */
+  /** One sequential call makes its whole round sequential. */
   readonly executionMode: "sequential" | "parallel";
-  /** What the call files: nothing, a page receipt, an image with a receipt, files with a manifest, or returned URLs. */
   readonly evidence: "none" | "receipt" | "image" | "files" | "urls";
-  /** When a host lists the tool: always, or only when the provider and the host can serve it. */
-  readonly listedWhen: "always" | "downloads" | "fetch" | "search";
+  readonly listedWhen: "always" | "downloads" | "fetch" | "search" | "sites";
 };
 
 const actionSchema = (op: string, extra: Record<string, Record<string, unknown>> = {}) => ({
@@ -56,8 +43,7 @@ const run: ToolContract = {
   name: "run",
   label: "Browser: run",
   description: 'Browse and automate websites in the persistent Stagehand browser. Navigate with JavaScript such as await page.goto("https://example.com"); there is no separate navigate or start tool. Execute either a JavaScript workflow against the Stagehand Playwright facade or a batch of actions using IDs from the latest snapshot. Provide exactly one of code or actions. Each action must use "op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, {"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, {"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.',
-  // No top-level oneOf for "exactly one of code or actions": AI-SDK-based clients reject a top-level oneOf. The
-  // description states it and the tool enforces it.
+  // No top-level oneOf for "exactly one of code or actions": AI-SDK-based clients reject it, so the tool enforces it.
   parameters: object({
     code: { type: "string", minLength: 1 },
     actions: {
@@ -117,11 +103,11 @@ const browserRelaunch: ToolContract = {
   name: "browser_relaunch",
   label: "Browser: relaunch",
   description:
-    "Replace the browser session with a fresh one. Use `verified: true` only after a site blocked the proxied session (403/429, a CAPTCHA wall, a bot-detection page, an empty page that should have content): a Verified browser carries a stronger identity and costs more. " +
+    "Replace the browser session with a fresh one, after a site blocked it (403/429, a CAPTCHA wall, a bot-detection page, an empty page that should have content). The new session keeps the run's Verified setting unless `verified` names one: `verified: true` where the run's sessions are not Verified (a Verified browser carries a stronger identity and costs more). " +
     "Use `geolocation` to browse as a visitor from a given place: the proxy egresses from that country (ISO alpha-2), optionally a US state and a city, so geo-aware sites (storefront region, prices, payment methods, content availability) show what a local sees. " +
     "Page state is lost; navigate again with run.",
   parameters: object({
-    verified: { type: "boolean", description: "Launch the new session as a Verified browser. Omitted, the new session is not Verified, even when the run launches Verified browsers by default." },
+    verified: { type: "boolean", description: "true launches the new session as a Verified browser, false as one that is not. Omitted, the new session keeps the run's setting." },
     geolocation: {
       type: "object",
       additionalProperties: false,
@@ -169,16 +155,13 @@ const webSearch: ToolContract = {
   effect: "read", replay: "safe", executionMode: "parallel", evidence: "urls", listedWhen: "search",
 };
 
-/** The `browser` extension's tools, in the order a host lists them. */
 export const BROWSER_TOOLS: readonly ToolContract[] = Object.freeze([snapshot, run, screenshot, browserRead, browserRelease, browserRelaunch, browserDownloads]);
-/** The `web` extension's tools: sessionless, parallel, replay safe. */
 export const WEB_TOOLS: readonly ToolContract[] = Object.freeze([webFetch, webSearch]);
 
 export const BROWSER_TOOL_NAMES = Object.freeze(BROWSER_TOOLS.map((tool) => tool.name));
 export const WEB_TOOL_NAMES = Object.freeze(WEB_TOOLS.map((tool) => tool.name));
 
-/** The static `browser` section. It depends only on the conversation's configuration, never on live state, so it
- *  renders the same text for every request of a conversation and keeps the provider's prompt cache. */
+/** Depends only on configuration, never live state, so every request renders the same text and keeps the prompt cache. */
 export function browserSection(policy: { readonly idleReleaseS: number }): string {
   const idle = Math.round(policy.idleReleaseS);
   return [
@@ -192,11 +175,10 @@ export function browserSection(policy: { readonly idleReleaseS: number }): strin
     "",
     "Snapshot IDs are valid only for the latest snapshot of the active page; snapshot again after navigation or a stale ID. Use snapshot actions for single clicks and fills, and one run code call for a multi-step workflow that returns only the values you need. Do not launch another browser; open more tabs with context.newPage() inside run code.",
     "",
-    // This list is pinned by test/stagehand_driver.test.mjs: when those throws flip upstream, this paragraph goes.
     "The `run` page is Playwright-shaped, not Playwright. On this browser these throw: `page.waitForEvent(\"download\")`, `page.route`, `page.waitForResponse`, `context.newCDPSession`, and `page.on` for `pageerror`, `framenavigated` or `response`. Wait for what the page shows instead (`page.waitForSelector`, `page.waitForLoadState`, or poll `page.url()` or a locator's text in a short loop), read results from the page itself (a locator's text, then `browser_read` to cite it), and never intercept or rewrite requests. A file the page offers as a download cannot be collected from the browser: take the link's URL from the page and fetch it with `web_fetch` when that tool is offered, or cite the page that links it.",
     "",
-    // The navigation race: a page call issued while a submit's navigation commits throws -32000 or hangs; a bounded wait
-    // plus one retry of the read held 80 of 80 runs.
+    // A page call made while a submit's navigation commits throws -32000 or hangs; a bounded wait and one retry avoid
+    // it.
     "After a click that loads a new page, wait for the next page with a bounded wait before reading it (for example `await page.waitForSelector(\"#result\", { timeout: 1000 })`), and if a read made while the page was changing throws \"Inspected target navigated or closed\" or \"Cannot find context with specified id\", run that read once more: it is a read, so repeating it is safe.",
     "",
     "Readers and actors: snapshot, screenshot and browser_read only read the page, and a read cut by an interruption runs again by itself. run acts on the site, so a run cut by an interruption is never repeated for you: you are told it was interrupted and on which page, and you check the page before acting again.",
