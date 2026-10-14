@@ -30,13 +30,27 @@ test('a snapshot line is state, not an event: it never makes a repeat', () => {
   assert.equal(fold([effect(1, 1, 'completed'), snapshot]).repeated.effects, 0);
 });
 
-test('an agent\'s tool call: a later generation repeats it, a second execution in one generation is asked twice, reused and refused are neither', () => {
-  const call = (id) => assistant(1, 1, id, 'read', { path: 'a.png' });
-  assert.deepEqual(fold([call('c1'), result(2, 1, 'c1'), assistant(3, 2, 'c2', 'read', { path: 'a.png' }), result(4, 2, 'c2')]).repeated.agentToolCalls, 1);
-  assert.equal(fold([call('c1'), result(2, 1, 'c1'), assistant(3, 1, 'c2', 'read', { path: 'a.png' }), result(4, 1, 'c2')]).askedTwice, 1);
-  const different = [call('c1'), result(2, 1, 'c1'), assistant(3, 2, 'c2', 'read', { path: 'b.png' }), result(4, 2, 'c2')];
+import { gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
+
+const receiptFor = (name, args, commit = 1) => { const { tool, argsHash } = gatewayIntentOf(name, args); return durable(commit, { kind: 'agentrun.receipts', data: { doc: 'agentrun.receipts', key: `${tool}:${argsHash}`, value: { tool, argsHash, result: 'r', session: 's' } } }); };
+
+test('an agent\'s paid tool call: the receipt key is its identity, run-wide; a later generation repeats it, a second execution in one generation is asked twice, reused and refused are neither', () => {
+  const call = (id, name = 'lookup', args = { q: 'a' }, gen = 1) => assistant(1, gen, id, name, args);
+  const paid = receiptFor('lookup', { q: 'a' });
+  assert.deepEqual(fold([paid, call('c1'), result(2, 1, 'c1'), call('c2', 'lookup', { q: 'a' }, 2), result(4, 2, 'c2')]).repeated.agentToolCalls, 1);
+  assert.equal(fold([paid, call('c1'), result(2, 1, 'c1'), call('c2'), result(4, 1, 'c2')]).askedTwice, 1);
+  const different = [paid, call('c1'), result(2, 1, 'c1'), call('c2', 'lookup', { q: 'b' }, 2), result(4, 2, 'c2')];
   assert.deepEqual([fold(different).repeated.agentToolCalls, fold(different).askedTwice], [0, 0]);
-  const reused = [call('c1'), result(2, 1, 'c1'), assistant(3, 2, 'c2', 'read', { path: 'a.png' }), result(4, 2, 'c2', { details: { effect_status: 'reused' } })];
-  const refused = [call('c1'), result(2, 1, 'c1'), assistant(3, 2, 'c2', 'read', { path: 'a.png' }), result(4, 2, 'c2', { isError: true, details: { refused: true } })];
+  const reused = [paid, call('c1'), result(2, 1, 'c1'), call('c2', 'lookup', { q: 'a' }, 2), result(4, 2, 'c2', { details: { effect_status: 'reused' } })];
+  const refused = [paid, call('c1'), result(2, 1, 'c1'), call('c2', 'lookup', { q: 'a' }, 2), result(4, 2, 'c2', { isError: true, details: { refused: true } })];
   assert.deepEqual([fold(reused).repeated.agentToolCalls, fold(refused).repeated.agentToolCalls], [0, 0]);
+});
+
+test('a tool with no receipt never counts: a read executed twice in one conversation, or again in a later generation, is neither repeated nor asked twice', () => {
+  const lines = [assistant(1, 1, 'c1', 'read', { path: 'a.png' }), result(2, 1, 'c1'), assistant(3, 1, 'c2', 'read', { path: 'a.png' }), result(4, 1, 'c2'), assistant(5, 2, 'c3', 'read', { path: 'a.png' }), result(6, 2, 'c3')];
+  const counted = fold(lines);
+  assert.deepEqual([counted.repeated.agentToolCalls, counted.askedTwice], [0, 0]);
+  // the same lines with a receipt for the read: now it is a paid call, executed three times
+  const paid = fold([receiptFor('read', { path: 'a.png' }), ...lines]);
+  assert.deepEqual([paid.repeated.agentToolCalls, paid.askedTwice], [1, 1]);
 });
