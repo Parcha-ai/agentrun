@@ -1,10 +1,4 @@
-// One process of an observed-effects crash scenario on a real local Chrome: the extension with the cdp provider (Chrome
-// runs in its own process group, so it outlives this process) and the test driver, the `ask` action policy with a host
-// that approves, a scripted faux model. `first` runs until the parent SIGKILLs it; `second` reopens the same SQLite
-// file, reconciles, resumes, runs the rest of the script and ends the conversation.
-//
-// env: DB OUT BASE PROFILE MODE=first|second SCRIPT=<JSON [tool, args] steps> HANG_APPROVE=1 (the first process's host
-// announces `AT approve` and never answers)
+// Chrome runs in its own process group, so it outlives this process when the parent SIGKILLs it.
 import fs from "node:fs";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";

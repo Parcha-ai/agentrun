@@ -1,6 +1,3 @@
-// Sentinel credentials: a random 32-byte value for every secret the design names, fresh per call, so a
-// hit is never a coincidence. Composite secrets embed the atoms, the way real connect URLs do: a leaked URL is also a
-// leaked signing key.
 import { randomBytes } from "node:crypto";
 
 const hex = () => randomBytes(32).toString("hex");
@@ -11,14 +8,14 @@ export type Sentinels = {
   bbApiKey: string;
   bbSigningKey: string;
   bbSessionId: string;
-  /** A Browserbase connect URL: carries the API key and the signing key. */
+  /** Carries the API key and the signing key. */
   bbConnectUrl: string;
-  /** The live view's own token, inside its URL; allowed on the host channel only, like the URL. */
+  /** The live view's own token, inside its URL: allowed on the host channel only. */
   bbLiveViewToken: string;
   /** Allowed on the host channel only. */
   bbLiveViewUrl: string;
   kernelApiKey: string;
-  /** The CDP JWT inside `kernelCdpUrl`: a secret of its own, so a leak of the token alone is found. */
+  /** The CDP JWT inside `kernelCdpUrl`, a secret of its own so a leak of the token alone is found. */
   kernelJwt: string;
   kernelCdpUrl: string;
   kernelLiveViewUrl: string;
@@ -28,7 +25,6 @@ export type Sentinels = {
   loginPassword: string;
   totpSeed: string;
   vaultRef: string;
-  /** Credentials a page URL carries in its query, and the URL that carries all three. */
   pageApiKey: string;
   pageSigningKey: string;
   pageToken: string;
@@ -68,5 +64,5 @@ export function makeSentinels(): Sentinels {
   };
 }
 
-/** The exact values a host registers with `redact.values()`: never provider keys, which the shapes cover. */
+/** The exact values a host registers with `redact.values()`; never provider keys, which the shapes cover. */
 export const hostRegistered = (s: Sentinels): string[] => [s.runToken, s.brokerCapability];

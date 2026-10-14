@@ -1,5 +1,9 @@
 {
   "package": "@parcha/pi-browser",
-  "expect": "no-key path missing",
-  "reason": "The README installs it with pi install and drives a Chrome through pi; it gives no one-shot command, and the package is held."
+  "install": ["pi-browser"],
+  "companions": [],
+  "files": [{ "name": "try.sh", "readme": "packages/pi-browser/README.md", "heading": "Try it without a key or a Chrome", "fence": "sh", "index": 0 }],
+  "command": ["sh", "try.sh"],
+  "expect": { "exitCode": 0, "pattern": "(?<![\\s\\S])\\[0\\] main\n  \\[1\\] text: The answer is forty-two\\.\n(?![\\s\\S])" },
+  "timeoutMs": 180000
 }

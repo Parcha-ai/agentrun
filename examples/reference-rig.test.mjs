@@ -14,7 +14,7 @@ import { placeAt, run } from './reference/assemble.ts';
 import { cases } from './reference/cases/index.ts';
 import { filed, gates } from './reference/gates.ts';
 import { localHost } from './reference/host.ts';
-import { fakes, job } from './reference/job.ts';
+import { fakes, job, lead } from './reference/job.ts';
 import { summary } from './reference/run.ts';
 
 const reference = { name: 'reference', job, fakes, expect: { status: 'complete', failing: [], filedFailed: [] } };
@@ -134,12 +134,12 @@ test('a record that cites a browser read fails browser-ops-ran when the ledger s
 test('a missing ledger or store fails the gates that read it, and says which; a missing events log fails none', { timeout: 120_000 }, async (t) => {
   const { runDir } = await runOf(t, reference);
   assert.deepEqual(failures(await tampered(runDir, 'no-ledger', (dir) => rm(join(dir, 'ledger.jsonl')))), [['fakes-called-once', 'no ledger.jsonl'], ['browser-ops-ran', 'no ledger.jsonl']]);
-  assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'durable'), { recursive: true }))),
-    [['nodes-end', 'no durable/run.sqlite'], ['browser-sessions-released', 'no durable/run.sqlite']]);
+  assert.deepEqual(failures(await tampered(runDir, 'no-store', (dir) => rm(join(dir, 'store'), { recursive: true }))),
+    [['nodes-end', 'no store/run.sqlite'], ['browser-sessions-released', 'no store/run.sqlite']]);
   assert.deepEqual(failures(await tampered(runDir, 'no-events', (dir) => rm(join(dir, 'events.jsonl')))), [], 'status rows are for people; the gates read the store');
-  const corrupt = failures(await tampered(runDir, 'corrupt-store', (dir) => writeFile(join(dir, 'durable', 'run.sqlite'), 'not a database')));
+  const corrupt = failures(await tampered(runDir, 'corrupt-store', (dir) => writeFile(join(dir, 'store', 'run.sqlite'), 'not a database')));
   assert.deepEqual(corrupt.map(([id]) => id), ['nodes-end', 'browser-sessions-released'], 'the other gates still report');
-  for (const [, detail] of corrupt) assert.match(detail, /^durable\/run\.sqlite could not be read: /);
+  for (const [, detail] of corrupt) assert.match(detail, /^store\/run\.sqlite could not be read: /);
 });
 
 test('a ledger cut mid-line fails the gates that read it, and the others still report', { timeout: 120_000 }, async (t) => {
@@ -164,10 +164,9 @@ test('a second job on a directory that holds another job\'s run is refused, nami
   assert.equal((await runAt(job)).status, 'complete', 'the same job again is the saved run');
   const refusalOf = ({ status, code, detail }) => ({ status, code, moved: detail?.moved });
   const otherInput = await runAt({ ...job, input: { company: 'Other Ltd' } });
-  assert.deepEqual(refusalOf(otherInput), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['input'] });
-  assert.notEqual(otherInput.detail.saved.input, otherInput.detail.requested.input);
+  assert.deepEqual(refusalOf(otherInput), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['input.company'] });
   const otherWorkflow = await runAt({ ...job, workflow: { ...job.workflow, name: 'another-company-check' } });
-  assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['binding'] });
+  assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['workflow.name'] });
   assert.deepEqual(await record(), delivered, 'nothing was delivered for the refused jobs');
 });
 
@@ -175,12 +174,42 @@ test('a directory whose store is where an earlier version kept it is refused, na
   const tmp = await mkdtemp(join(tmpdir(), 'reference-rig-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const root = join(tmp, 'run');
-  await mkdir(join(root, 'store'), { recursive: true });
-  await writeFile(join(root, 'store', 'run.sqlite'), 'a store an earlier version wrote');
+  await mkdir(join(root, 'durable'), { recursive: true });
+  await writeFile(join(root, 'durable', 'run.sqlite'), 'a store an earlier version wrote');
   const place = await placeAt(root);
   const local = localHost(place, fakes);
   await assert.rejects(run(place, local.host, job), (error) => error.code === 'RUN_STORE_ELSEWHERE'
-    && error.message.includes(join(root, 'store', 'run.sqlite')) && error.message.includes(join(root, 'durable', 'run.sqlite')));
-  assert.equal(existsSync(join(root, 'durable')), false, 'no store was opened');
+    && error.message.includes(join(root, 'durable', 'run.sqlite')) && error.message.includes(join(root, 'store', 'run.sqlite')));
+  assert.equal(existsSync(join(root, 'store')), false, 'no store was opened');
   assert.deepEqual(local.ledger(), [], 'no fake was called');
+});
+
+test('a cut or refused page action: the lead looks before anything else, and the browser\'s pendingEffect details decide', () => {
+  const target = 'http://registry.example/companies/01234567';
+  const start = 'http://start.example/';
+  const effect = (urlAtDispatch, urlNow) => ({ callId: 'c1', urlAtDispatch, urlNow, observed: false, sent: null });
+  const result = (toolName, isError, text, details) => ({ role: 'toolResult', toolName, isError, content: [{ type: 'text', text }], ...(details ? { details } : {}) });
+  const cutRun = result('run', true, '<harness>\n[error] Tool run was interrupted and may have partially run\n</harness>');
+  const refusedRun = (pendingEffect) => result('run', true, JSON.stringify({ ok: false, code: 'effect_unknown', retryable: true, effect: 'possibly_effected', message: '...' }), pendingEffect && { pendingEffect });
+  const user = { role: 'user', content: `Read the page. {"urls":["${target}"]}` };
+  const next = (...results) => lead()([user, ...results]).content[0].name;
+  const look = (pendingEffect) => result('snapshot', false, '[0] main', pendingEffect && { pendingEffect });
+  assert.equal(next(cutRun), 'snapshot', 'a cut run is looked at, never asked again blind');
+  assert.equal(next(refusedRun()), 'snapshot', 'so is a refused one');
+  assert.equal(next(cutRun, look(effect(start, target))), 'browser_read', 'applied: it goes on to read the page');
+  assert.equal(next(cutRun, look(effect(start, start))), 'run', 'not applied: it runs it again');
+  assert.equal(next(refusedRun(effect(start, target)), look()), 'browser_read', 'the refusal\'s details decide as the look\'s do');
+  assert.equal(next(cutRun, look(effect(null, target))), 'read', 'the page when sent unknown: cannot tell, the scan next');
+  assert.equal(next(cutRun, look(effect(target, target))), 'read', 'already on the target when sent: cannot tell');
+  assert.equal(next(cutRun, look()), 'read', 'no details, as the browser answers today: cannot tell');
+  assert.equal(next(cutRun, look(effect(start, start)), cutRun, look(effect(start, start)), cutRun, look(effect(start, start))), 'read', 'three runs in all, then no more');
+  // The browser refuses the first run after a cut even when the lead looked before it; a look after the refusal
+  // lets the run through. The refused run was not sent, so the page applies once.
+  const notApplied = effect(start, start);
+  const sequence = [cutRun, look(notApplied), refusedRun(notApplied), look(notApplied)];
+  assert.deepEqual(sequence.map((_, at) => next(...sequence.slice(0, at + 1))), ['snapshot', 'run', 'snapshot', 'run'],
+    'cut, look, run, refused, look again, run');
+  assert.equal(next(...sequence, result('run', false, '{"value":"ran"}')), 'browser_read', 'the third run applied: it goes on');
+  assert.equal(next(...sequence, cutRun, look(notApplied)), 'read', 'that third run cut too: three in all, no more');
+  assert.equal(next(cutRun, look(notApplied), refusedRun(), look()), 'read', 'refused, and no details on either: cannot tell');
 });

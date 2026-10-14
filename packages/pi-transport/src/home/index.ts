@@ -1,4 +1,5 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
+export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
 	DrainError,
@@ -27,6 +28,18 @@ export {
 	proxyModels,
 	serveModels,
 } from "./models.ts";
+export {
+	type ConditionalStore,
+	type Holder,
+	KeyStoreError,
+	type KeyStoreErrorCode,
+	type LeaseRecord,
+	leaseIn,
+	type Ownership,
+	OwnershipError,
+	type OwnershipErrorCode,
+	type TakeDetails,
+} from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
 export {
 	type Home,
