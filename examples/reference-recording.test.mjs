@@ -8,15 +8,19 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { apply } from '@earendil-works/chord/delta';
-import { durableDoc, readJournal, recordingLines } from '@parcha/agentrun-pi/durable';
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
 import { placeAt, RUN_KEY } from './reference/assemble.ts';
 import { killAnywhere } from './reference/kill-anywhere.ts';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 const bytesOf = (file) => [file, `${file}-wal`].filter((at) => existsSync(at) && readFileSync(at).length > 0).map((at) => createHash('sha256').update(readFileSync(at)).digest('hex')).join(' ');
 const isTask = (line) => line.data?.doc === undefined && line.data?.state !== undefined;
-const docId = (doc, key) => JSON.stringify([doc, key ?? null]);
+/** A document's identity in the lines: its kind, its family key and its conversation (a conversation's singleton, such as
+ *  `pi.live`, exists once in each conversation). */
+const docId = (doc, key, conv) => JSON.stringify([doc, key ?? null, conv ?? null]);
 
 /** Section 3's durable invariants: commit never decreases, (commit, order) strictly increases. */
 const ordered = (lines) => lines.every((line, i) => i === 0 || line.commit > lines[i - 1].commit || (line.commit === lines[i - 1].commit && line.order > lines[i - 1].order));
@@ -27,12 +31,15 @@ function storedDocuments(file) {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const out = new Map();
-    for (const doc of db.prepare('SELECT id, kind, family, key_value FROM documents WHERE retired_at IS NULL').all()) {
+    const taskConversation = new Map(db.prepare('SELECT id, conversation_id FROM tasks').all().map((task) => [task.id, task.conversation_id]));
+    for (const doc of db.prepare('SELECT id, kind, family, key_value, scope_kind, owner_id FROM documents WHERE retired_at IS NULL').all()) {
       const base = db.prepare("SELECT seq, content FROM document_revisions WHERE document_id = ? AND kind = 'base' ORDER BY seq DESC LIMIT 1").get(doc.id);
       if (!base) continue;
       let value = JSON.parse(base.content);
       for (const delta of db.prepare('SELECT content FROM document_revisions WHERE document_id = ? AND seq > ? ORDER BY seq').all(doc.id, base.seq)) value = apply(value, JSON.parse(delta.content));
-      out.set(docId(JSON.parse(doc.kind), doc.family ? JSON.parse(doc.key_value) : undefined), value);
+      const conv = doc.scope_kind === 'conversation' ? doc.owner_id : doc.scope_kind === 'task' ? taskConversation.get(doc.owner_id) : undefined;
+      assert.ok(!out.has(docId(JSON.parse(doc.kind), doc.family ? JSON.parse(doc.key_value) : undefined, conv)), 'one document per identity');
+      out.set(docId(JSON.parse(doc.kind), doc.family ? JSON.parse(doc.key_value) : undefined, conv), value);
     }
     return out;
   } finally { db.close(); }
@@ -54,7 +61,7 @@ function executedCalls(entries) {
 /** The counters of section 6 the export can give, folded from durable lines alone. */
 function fold(lines) {
   const latest = new Map();
-  for (const line of lines) if (line.data?.doc !== undefined) latest.set(docId(line.data.doc, line.data.key), line);
+  for (const line of lines) if (line.data?.doc !== undefined) latest.set(docId(line.data.doc, line.data.key, line.conv), line);
   const values = (kind) => [...latest.values()].filter((line) => line.kind === kind).map((line) => line.data.value);
   const effects = values('agentrun.effects');
   const rows = values('agentrun.decisions').flatMap((value) => value.receipts ?? []);
@@ -103,6 +110,12 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   const entryLines = lines.filter((line) => line.data?.doc === undefined && !isTask(line));
   assert.ok(entryLines.length > 0 && entryLines.every((line) => line.source === 'pi' && line.conv === line.data.conversationId));
   assert.ok(lines.filter((line) => line.kind.startsWith('pi.') && line.data?.doc !== undefined).every((line) => typeof line.conv === 'number'));
+  // The node attempt's conversation: its entries, documents and tasks carry the node's path, so a branch's view holds
+  // its agent's turns.
+  const node = lines.find((line) => line.kind === 'agentrun.nodes');
+  const inNode = lines.filter((line) => line.conv === node.data.value.conversation);
+  assert.equal(node.path, '/root/steps/1');
+  assert.ok(inNode.some((line) => line.kind === 'pi.assistant') && inNode.every((line) => line.path === node.path));
 
   // Kinds and sources (section 3.1): by prefix, a kind with none is the host's; every task once, at the last commit.
   const sources = new Map(lines.map((line) => [line.kind, line.source]));
@@ -124,7 +137,7 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   // the frozen reader materializes it.
   const stored = storedDocuments(file);
   const lastValue = new Map();
-  for (const line of lines) if (line.data?.doc !== undefined) lastValue.set(docId(line.data.doc, line.data.key), line);
+  for (const line of lines) if (line.data?.doc !== undefined) lastValue.set(docId(line.data.doc, line.data.key, line.conv), line);
   assert.deepEqual(new Set(lastValue.keys()), new Set(stored.keys()));
   for (const [id, line] of lastValue) {
     assert.deepEqual(line.data.value, stored.get(id), id);
@@ -163,4 +176,18 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   assert.equal(folded.turns, ledger.counted.committedTurns.length, 'committed turns, as the ledger counts them from the store');
   assert.equal(folded.unknown, 0);
   assert.equal(ledger.final.status, 'complete');
+
+  // snapshotLines over the same store, opened as a process would open it: every document's value as the export's last
+  // line, the node's conversation with the node's path, every line a snapshot at the given commit.
+  const storage = await openNodeSqliteStorage(file);
+  try {
+    const snapshot = await snapshotLines(storage, { at: last, context: ctx });
+    assert.ok(snapshot.every((line, i) => line.snapshot === true && line.commit === last && line.order === i));
+    assert.deepEqual(new Map(snapshot.map((line) => [docId(line.data.doc, line.data.key, line.conv), line.data.value])), new Map([...lastValue].map(([id, line]) => [id, line.data.value])));
+    for (const line of snapshot) {
+      const exported = lastValue.get(docId(line.data.doc, line.data.key, line.conv));
+      assert.equal(line.path, exported.path, docId(line.data.doc, line.data.key, line.conv));
+    }
+    assert.ok(snapshot.some((line) => line.conv === node.data.value.conversation && line.path === node.path));
+  } finally { await storage.close(ctx); }
 });
