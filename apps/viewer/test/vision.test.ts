@@ -15,6 +15,7 @@ import { citeStop } from '../src/cite.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { panelsShown, type Node, type ViewContext } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
+import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, K, LOOKS, lines, manifest, PAGES, RESULT, writeRecording } from './vision-hand.ts';
@@ -127,6 +128,16 @@ test('a key paid again in a later generation is repeated, and twice in one is as
   const unpriced = lines.map((line) => (line.channel === 'durable' && JSON.stringify(line.data).includes(K.photo1) ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace('"cost_usd":0.0012', '"cost_usd":null')) } : line));
   assert.equal(visionMeters(stateAt(unpriced.length, unpriced)).cost, null);
   assert.match(text(viewAt(unpriced.length, {}, unpriced)), /spend unknown/);
+});
+
+test('the counters strip prices each look once: a kept filing adds nothing, a kept-only look counts once, a native look is the lead\'s', () => {
+  const strip = countersOf(reduceTo(counterFold, lines, lines.length), true);
+  assert.ok(Math.abs(strip.cost! - visionMeters(stateAt(end)).cost!) < 1e-9, `the strip and the panel agree: ${strip.cost}`);
+  assert.equal(manifest.cost.usd, strip.cost);
+  const native = (commit: number): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 2, t: 99_999, commit, order: 0, conv: 1,
+    data: { doc: 'vision.looks', key: 'native', value: { looks: [{ receipt: 'evidence/read/native.json', record: { tool: 'look', args: { path: 'a.png', model: 'faux/text-lead', native: true }, status: 'ok', facts: { sha256: 'a', kind: 'image', fragment: '', key: 'native' }, body: 'shown to the model natively' } }] } } });
+  const withNative = [...lines, native(900)];
+  assert.ok(Math.abs(countersOf(reduceTo(counterFold, withNative, withNative.length), true).cost! - strip.cost!) < 1e-9, 'a native look has no price of its own');
 });
 
 test('one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated', () => {

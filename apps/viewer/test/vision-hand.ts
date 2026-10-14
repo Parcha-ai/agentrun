@@ -1,5 +1,5 @@
 // A recording built line by line in the shapes a vision run writes: a text-only lead reads a film in windows, scanned
-// pages and photographs through eyes; each LookRecord is filed into a `vision.looks` document; a kill lands while a
+// pages and photographs through eyes; each LookRecord is filed into its look key's `vision.looks` document; a kill lands while a
 // page read is in flight, after its eyes answered; the next process files that look as kept, and delivers an account
 // (`apollo11.account/1`) with its photo sort and a weaker eyes model's reading. Every picture is a PNG this file draws,
 // and every name and number in it is made up.
@@ -99,8 +99,15 @@ const durable = (gen: number, commit: number, at: Where | undefined, source: Lin
   ({ channel: 'durable', source, kind, gen, t: (t += 10), commit, order: 0, ...at, ...(snapshot ? { snapshot: true } : {}), data, ...(blobs?.length ? { blobs } : {}) });
 const driver = (gen: number, commit: number, generation: number, snapshot = false) => durable(gen, commit, undefined, 'workflow', 'agentrun.driver', { doc: 'agentrun.driver', value: { generation } }, snapshot);
 const imagesOf = (look: Json) => ((look as { images: Json[] }).images).map((image) => (typeof image === 'string' ? image : (image as { blob: string }).blob));
-const filed = (gen: number, commit: number, at: Where, look: Json, snapshot = false) =>
-  durable(gen, commit, at, 'vision', 'vision.looks', { doc: 'vision.looks', key: (look as { receipt: string }).receipt, value: { looks: [look] } }, snapshot, imagesOf(look));
+// One `vision.looks` document per look key and conversation, its filings appended in order; a revision carries them all.
+const filings = new Map<string, Json[]>();
+const keyOf = (look: Json) => (look as { record: { facts: { key: string } } }).record.facts.key;
+const filed = (gen: number, commit: number, at: Where, look: Json, snapshot = false) => {
+  const key = keyOf(look);
+  const list = snapshot ? filings.get(key)! : [...(filings.get(key) ?? []), look];
+  filings.set(key, list);
+  return durable(gen, commit, at, 'vision', 'vision.looks', { doc: 'vision.looks', key, value: { looks: list } }, snapshot, list.flatMap(imagesOf));
+};
 const usage = { input: 900, output: 30, cacheRead: 0, cacheWrite: 0, totalTokens: 930, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const ask = (gen: number, commit: number, at: Where, call: string, args: Json) => durable(gen, commit, at, 'pi', 'pi.assistant', { kind: 'pi.assistant', model: [{ role: 'assistant', provider: 'faux', model: 'text-lead', usage, stopReason: 'toolUse', content: [{ type: 'toolCall', id: call, name: 'read', arguments: args }] }] });
 const answered = (gen: number, commit: number, at: Where, call: string, text: string) => durable(gen, commit, at, 'pi', 'pi.tool-result', { kind: 'pi.tool-result', model: [{ role: 'toolResult', toolCallId: call, toolName: 'read', content: [{ type: 'text', text }], isError: false }] });
