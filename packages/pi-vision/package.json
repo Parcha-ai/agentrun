@@ -1,7 +1,6 @@
 {
   "name": "@parcha/pi-vision",
   "version": "0.1.0-beta.12",
-  "private": true,
   "description": "Eyes for pi agents: documents, images, scans and video read within the model's own limits, typed misses for what cannot be read, and a receipt with SHA-256 and price for every look.",
   "keywords": [
     "pi-package",
@@ -115,9 +114,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.0.4",
-    "@earendil-works/pi-ai": "1.0.4",
-    "@earendil-works/pi-durable": "1.0.4",
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
     "@silvia-odwyer/photon-node": "0.3.4",
     "sharp": "0.35.5"
   },

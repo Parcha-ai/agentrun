@@ -1,5 +1,3 @@
-// The browserbase provider against a scripted Browserbase SDK: the create body, at-most-once create, tag recovery,
-// the dial rewrite, release with confirmation, status facts, fetch and search.
 import assert from "node:assert/strict";
 import http from "node:http";
 import { createReadStream } from "node:fs";
@@ -144,7 +142,6 @@ test("the process dials a bound connect URL at its credential proxy while the re
   assert.ok(connectDialUrl("ws://127.0.0.1:9222/devtools/browser/abc") === "ws://127.0.0.1:9222/devtools/browser/abc", "non-Browserbase: untouched");
   assert.ok(rewriteConnectUrl("wss://connect.browserbase.com/x", null) === "wss://connect.browserbase.com/x");
   unbindConnectDial(raw);
-  // The real wrapper on a real socket: a bound Browserbase URL reaches the "proxy" (a local server) at the prefixed path.
   const seen = [];
   const proxy = http.createServer();
   proxy.on("upgrade", (req, socket) => { seen.push(req.url); socket.destroy(); });
@@ -250,8 +247,7 @@ test("fetch and search results carry usage: list price, proxied fetch at its own
 });
 
 test("the real SDK on the provider's direct fetch uploads a streamed multipart file (userland undici needs duplex)", async () => {
-  // Only requests that carry this test's own secret count: anything else that reaches an ephemeral port (another program on a
-  // busy host scans them) sends no such header and must never be taken for the upload.
+  // Only requests that carry this test's own secret count: a stray prober on an ephemeral port never sends it.
   const secret = `upload-${Math.random().toString(36).slice(2)}`;
   const mine = [];
   const server = http.createServer((req, res) => {
@@ -278,8 +274,8 @@ test("the real SDK on the provider's direct fetch uploads a streamed multipart f
 });
 
 test("direct calls share one agent: two fetchers reuse one connection, and the agent can be closed and made again", async () => {
-  // Only connections that carried this test's own request count: anything else probing the port (another program on a busy host
-  // scans ephemeral ports) opens connections of its own that never send the marker.
+  // Only connections that carried this test's own request count: a stray prober opens connections that never send the
+  // marker.
   const secret = `direct-fetch-${Math.random().toString(36).slice(2)}`;
   const mine = new Set();
   const server = http.createServer((req, res) => { if (req.headers["x-direct-fetch-test"] === secret) mine.add(req.socket); res.end("ok"); });
@@ -366,8 +362,7 @@ test("a session already attached through one proxy is refused a second one, neve
 });
 
 test("the real SDK client sends Fetch and Search exactly as Stagehand's facade does, on the provider's own agent", async () => {
-  // The provider builds its own client, so the API key it sends is the per-test secret: only requests carrying it are the SDK's
-  // own, and anything else that reaches an ephemeral port (another program on a busy host scans them) is never taken for one.
+  // The API key is the per-test secret: only requests carrying it are the SDK's, never a stray prober's.
   const key = `real-sdk-key-${Math.random().toString(36).slice(2)}`;
   const requests = [];
   const server = http.createServer((req, res) => {
@@ -382,9 +377,8 @@ test("the real SDK client sends Fetch and Search exactly as Stagehand's facade d
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  // A foreign copy of undici (pi's) owning the process-global dispatcher is what once made every SDK call on the default fetch
-  // fail as "Connection error" (UND_ERR_INVALID_ARG). The provider's client rides its own agent, so it must never consult the
-  // global: this one throws if anything dispatches through it.
+  // A trap: the global dispatcher throws if anything dispatches through it, since the provider's client must ride its
+  // own agent (a foreign undici owning the global once failed every SDK call).
   const before = undici.getGlobalDispatcher();
   const foreign = { dispatch() { throw new Error("the foreign global dispatcher must not serve the Browserbase SDK"); }, close: async () => {}, destroy: async () => {} };
   try {
@@ -392,7 +386,6 @@ test("the real SDK client sends Fetch and Search exactly as Stagehand's facade d
     // A foreign request reaches the server first, as a stray prober's does; the assertions below must not see it.
     await (await fetch(`${base}/probe`, { headers: { "user-agent": "Go-http-client/1.1" } })).text();
     undici.setGlobalDispatcher(foreign);
-    // No `client` option: the provider builds the real SDK on its direct fetch, pointed at the local server.
     const provider = browserbaseProvider({ env: { BROWSERBASE_API_KEY: key, BROWSERBASE_BASE_URL: base } });
     const page = await provider.fetch({ url: "https://example.com/p", format: "markdown", proxies: true });
     assert.deepEqual({ ...page, usage: undefined }, { usage: undefined, finalUrl: null, statusCode: 200, contentType: "text/markdown", content: "# real shape" });

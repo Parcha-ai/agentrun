@@ -1,5 +1,3 @@
-// The fake driver's screenshots decode like real ones and its url() is not a read, on both faces: the core's budget
-// reads dimensions from the header, so the retake ladder is observable in the dispatched rows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureWithinBudget, imageSize } from "@parcha/pi-browser";

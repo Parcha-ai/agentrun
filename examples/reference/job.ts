@@ -1,6 +1,6 @@
 // The job: find a company, read its registry page in the browser and its filing scan from the workspace, submit a
 // cited record, judge it, and build the output. Every answer is scripted, so the output is the same on every run.
-import type { Message, ToolCall } from '@earendil-works/pi-ai';
+import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { fixturePage } from '@parcha/pi-browser/testing';
@@ -46,21 +46,81 @@ export const job: Job = { workflow, input: { company: 'Acme Ltd' }, files: { [FI
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
 
-/** The lead opens the first search result, reads it, reads the scan, then submits the receipts its tools returned. */
-function model(messages: readonly Message[]) {
-  const results = messages.filter((message) => message.role === 'toolResult');
-  if (results.length === 0) {
-    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
-    return call('run', { code: `await page.goto(${JSON.stringify(first)})` });
-  }
-  if (results.length === 1) return call('browser_read', { what: 'markdown' });
-  if (results.length === 2) return call('read', { path: FILING });
-  const cited = [...new Set(results.flatMap((result) => textOf(result).match(/evidence\/[\w./-]+\.json/g) ?? []))];
-  return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: cited });
+const receipts = (message: Message | undefined) => (message ? textOf(message).match(/evidence\/[\w./-]+\.json/g) ?? [] : []);
+
+// pi-durable gap: a cut call's `interrupted` diagnostic stays on pi's own entry and reaches the model only as this text.
+const cut = (result: ToolResultMessage) => result.isError && textOf(result).includes('was interrupted and may have partially run');
+/** The browser's typed failure in a result: its JSON answer's `code`. */
+const failure = (result: ToolResultMessage): unknown => { try { return (JSON.parse(textOf(result)) as { code?: unknown }).code; } catch { return undefined; } };
+/** The browser's answer to an action it will not send again until the page has been looked at: the one before may have
+ *  applied. */
+const unknown = (result: ToolResultMessage) => result.isError && failure(result) === 'effect_unknown';
+
+/** The browser's account of a cut action, as `details.pendingEffect` of its notice and of its `effect_unknown` answer:
+ *  the page when the action was sent and now, and what it sent when an observer watched (null without one). pi-browser
+ *  gap: it does not carry these details yet, so until it does every cut action is `cannot tell`. */
+export type PendingEffect = { callId: string; urlAtDispatch: string | null; urlNow: string | null; observed: boolean; sent: unknown[] | null };
+/** Whether a cut page action applied: on the target now and elsewhere when it was sent, applied; still where it was and
+ *  not the target, not applied; anything else (the page already on the target, a place unknown), cannot tell. */
+export function landed(effect: PendingEffect | undefined, target: string): 'applied' | 'not applied' | 'cannot tell' {
+  if (!effect?.urlAtDispatch || !effect.urlNow || effect.urlAtDispatch === target) return 'cannot tell';
+  return effect.urlNow === target ? 'applied' : effect.urlNow === effect.urlAtDispatch ? 'not applied' : 'cannot tell';
+}
+const pendingOf = (result: ToolResultMessage | undefined) => (result?.details as { pendingEffect?: PendingEffect } | undefined)?.pendingEffect;
+
+/** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
+ *  keeps of those the page read and the scan read returned (default: all of them). It acts as a model would:
+ *  - a read that errs is asked again, three attempts in all;
+ *  - a page action a crash cut, or one the browser will not send again (`effect_unknown`), is never asked again
+ *    before the lead looks: it takes a snapshot, as the browser asks, and decides from the browser's details
+ *    (`landed`): applied, it goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more.
+ *    The browser refuses the first run after a cut even when the lead looked before it, so a refused run is looked
+ *    at again the same way: only a look after the refusal lets the run through, and the refused run applied nothing.
+ *  A page it did not open is not read: the record cites only what ran and says why. */
+export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
+  return (messages: readonly Message[]) => {
+    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0] ?? '';
+    const reads = [call('browser_read', { what: 'markdown' }), call('read', { path: FILING })];
+    let page: 'opened' | 'unknown' | 'failed' | undefined;
+    let runs = 0;
+    // A cut or refused page action, until the look after it decides.
+    let looking: ToolResultMessage | undefined;
+    const kept: (ToolResultMessage | undefined)[] = [];
+    let tries = 0;
+    for (const result of messages.filter((message): message is ToolResultMessage => message.role === 'toolResult')) {
+      if (page === undefined) {
+        if (result.toolName === 'snapshot') {
+          const seen = landed(pendingOf(result) ?? pendingOf(looking), first);
+          looking = undefined;
+          if (seen === 'applied') page = 'opened';
+          else if (seen === 'cannot tell' || runs >= 3) page = 'unknown';
+        } else {
+          runs += 1;
+          if (!result.isError) page = 'opened';
+          else if (cut(result) || unknown(result)) looking = result;
+          else page = 'failed';
+        }
+        // A page it did not open is not read.
+        if (page !== undefined && page !== 'opened') kept.push(undefined);
+        continue;
+      }
+      tries += 1;
+      if (result.isError && tries < 3) continue;
+      kept.push(result.isError ? undefined : result);
+      tries = 0;
+    }
+    if (page === undefined) return looking !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    if (kept.length < reads.length) return reads[kept.length]!;
+    const why = page === 'unknown' ? 'Whether the registry page was opened is not known' : 'The registry page could not be opened';
+    return call('submit', {
+      answer: page === 'opened' ? answer : `${why}, so the filing scan is cited alone.`,
+      citations: [...new Set(cite(page === 'opened' ? receipts(kept[0]) : [], receipts(kept[1])))],
+    });
+  };
 }
 
 export const fakes: Fakes = {
-  model,
+  model: lead(),
   tools: { search: () => ({ urls: [REGISTRY, NEWS] }) },
   judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])) }),
   pages: {

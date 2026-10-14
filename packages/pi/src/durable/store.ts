@@ -9,6 +9,7 @@ import { defineDocFamily } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import { RecoveryError, asRecoveryError, bindingMismatch, type RecoveryBinding, type RecoveryEffect, type RecoveryJournal, type RecoveryNote, type RecoveryStore } from "@parcha/agentrun-dsl/recovery";
+import { storageError } from "./pi-versions.js";
 
 type Json = any;
 type Commit = Parameters<Harness["commit"]>[0];
@@ -24,6 +25,16 @@ type EffectIntent = { tool: string; argsHash: string };
 /** An effect as this store holds it: the contract's, with the intent it was admitted with when there was one. */
 type StoredEffect = RecoveryEffect & { intent?: EffectIntent };
 type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; intent?: EffectIntent; calls?: Json };
+
+/** A failed commit as the driver reads it: its own message and code, kept as a RecoveryError. A Session that failed at a
+ *  storage error answers with `SessionFailed` (pi-durable 1.2); the error is then the storage's, as 1.1 gave it, and the
+ *  `SessionFailed` is its cause. */
+function storeFailure(error: unknown): RecoveryError {
+  const own = storageError(error);
+  if (own === error || own instanceof RecoveryError) return asRecoveryError(own);
+  const code = (own as { code?: unknown } | null)?.code;
+  return new RecoveryError(own instanceof Error ? own.message : String(own), typeof code === "string" ? code : undefined, { cause: error });
+}
 
 /** An effect's key in `agentrun.effects`: its journal key, then its id. The two are joined by NUL, so neither may hold
  *  one: two pairs could otherwise name the same document. */
@@ -116,7 +127,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}) });
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
-  }, context).catch((error) => { held.undo(); throw asRecoveryError(error); });
+  }, context).catch((error) => { held.undo(); throw storeFailure(error); });
   const effects = new Map<string, StoredEffect>(opened.effects.map((effect) => [effect.id, effect]));
   const notes = [...opened.notes];
   let revision = opened.revision;
@@ -126,7 +137,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
   let queue: Promise<unknown> = Promise.resolve();
   const inOrder = <T>(write: () => Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new RecoveryError("The journal is closed"));
-    const done = queue.then(write).catch((error) => { throw asRecoveryError(error); });
+    const done = queue.then(write).catch((error) => { throw storeFailure(error); });
     queue = done.catch(() => undefined);
     return done;
   };

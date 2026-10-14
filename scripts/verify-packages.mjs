@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
+import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -65,6 +66,14 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 try {
+  // JSON keeps the last of two equal keys, so a merge that leaves a key twice passes every later check.
+  for (const entry of await readdir(join(root, 'packages'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const text = await readFile(join(root, 'packages', entry.name, 'package.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (text === undefined) continue;
+    assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
+  }
+  receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
   const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'];
   const tarballs = [];
   for (const directory of packageDirectories) {
@@ -136,6 +145,19 @@ try {
   const drifted = findDrift(consumerLock.packages, held);
   assert.deepEqual(drifted, [], `The consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
   receipt.checks.push('Every @earendil-works package in the consumer resolves at a version the repository lockfile holds for it.');
+  // The versions the consumer landed on are printed and filed before they are judged, so a failure shows what was installed.
+  const copies = listCopies(consumerLock.packages);
+  const developed = developedVersions(rootLock);
+  const peerRanges = {};
+  for (const packed of receipt.packages) {
+    const ranges = Object.fromEntries(Object.entries((await json(join(consumer, 'node_modules', packed.name, 'package.json'))).peerDependencies ?? {}).filter(([name]) => name in developed));
+    if (Object.keys(ranges).length) peerRanges[packed.name] = ranges;
+  }
+  receipt.piFamily = { developedOn: developed, copies };
+  for (const copy of copies) console.log(`Consumer holds ${copy.name}@${copy.version} at ${copy.location}`);
+  const piProblems = checkPiFamily(copies, developed, peerRanges, laggingWorkspaces(rootLock, developed));
+  if (piProblems.length) throw new Error(`The packages installed together do not land on the pi version the repository develops on:\n${piProblems.join('\n')}`);
+  receipt.checks.push(`The consumer holds one pi-durable and one chord, at ${developed['@earendil-works/pi-durable']} and ${developed['@earendil-works/chord']}, the versions the repository develops the durable packages on.`);
   for (const packed of receipt.packages) {
     const installed = await json(join(consumer, 'node_modules', packed.name, 'package.json'));
     assert.equal(installed.version, packed.version, `Installed version mismatch: ${packed.name}`);
@@ -191,6 +213,11 @@ syncBuiltinESMExports();
     receipt.demos.push({ scenario, status: result.result.status, output: result.result.output ?? null, events: result.events.map(event => ({ type: event.type, label: event.label })) });
   }
   console.log('Installed CLI: billing, technical, and ambiguous scenarios passed without network.');
+  // Every Box provider that pi-transport exports under ./box/* is checked by name, so a new provider adds no line here.
+  const transportRoot = join(consumer, 'node_modules/@parcha/pi-transport');
+  const transportExports = (await json(join(transportRoot, 'package.json'))).exports;
+  const boxProviders = (await readdir(join(transportRoot, 'dist/box'))).filter(file => file.endsWith('.js')).map(file => file.slice(0, -3)).filter(name => transportExports[`./box/${name}`] !== null).sort();
+  assert.ok(['docker', 'local'].every(name => boxProviders.includes(name)), `pi-transport exports the providers ${boxProviders.join(', ')}`);
   await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
 import { z } from 'zod';
@@ -211,8 +238,6 @@ import * as vision from '@parcha/pi-vision';
 import * as visionDurable from '@parcha/pi-vision/durable';
 import * as visionTesting from '@parcha/pi-vision/testing';
 import * as transport from '@parcha/pi-transport';
-import * as transportLocal from '@parcha/pi-transport/box/local';
-import * as transportDocker from '@parcha/pi-transport/box/docker';
 import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
@@ -243,8 +268,10 @@ assert.equal(typeof archil.openDurableRun,'function'); assert.equal(typeof archi
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
-assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportLocal.localBoxes,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
-assert.equal(typeof transportDocker.dockerBoxes,'function'); assert.equal(typeof transportHands.boxEnv,'function'); assert.equal(typeof transportHome.launch,'function'); assert.equal(typeof transportTesting.probeAcknowledgedWrites,'function');
+assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
+for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[name+'Boxes'],'function',name);
+assert.equal(typeof transportHands.boxEnv,'function');
+assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
@@ -252,6 +279,17 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' });
   receipt.runtimeSmoke = smoke;
+  // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
+  // loopback, so its preload admits loopback only.
+  await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
+  await cp(join(root, 'examples/reference'), join(consumer, 'reference'), { recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)) });
+  const expectedRecord = await json(join(root, 'examples/reference/expected.json'));
+  const referenceTmp = join(temporary, 'reference-home');
+  await mkdir(referenceTmp);
+  const reference = await run(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', './deny-remote.mjs', 'reference/run.ts', '--json'], consumer, false, { PATH: process.env.PATH, HOME: referenceTmp, TMPDIR: referenceTmp });
+  assert.deepEqual(JSON.parse(reference.stdout), expectedRecord, 'The reference job in the consumer printed a record that differs from examples/reference/expected.json');
+  receipt.reference = { status: 'passed', network: 'loopback only', evidence: expectedRecord.evidence, usage: expectedRecord.usage };
+  receipt.checks.push('The reference example, copied into the consumer and run with loopback-only networking and no key, printed the record in examples/reference/expected.json.');
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);
   receipt.checks.push('Packed Pi package installed and discovered by native Pi package manager/resource loader; skill and complete/escalated demos passed offline.');
@@ -339,14 +377,17 @@ void [limits, vision, unfiled];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
   await writeFile(join(consumer, 'transport-consumer.ts'), `import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
-import { parseTransportConfig, type Box } from '@parcha/pi-transport';
-import { dockerBoxes } from '@parcha/pi-transport/box/docker';
-import { boxEnv } from '@parcha/pi-transport/hands';
-import { launch, type LaunchSpec } from '@parcha/pi-transport/home';
-const transport: [typeof parseTransportConfig, typeof dockerBoxes, Box | undefined, typeof launch, LaunchSpec | undefined] = [parseTransportConfig, dockerBoxes, undefined, launch, undefined];
+import { parseTransportConfig, type Box, type BoxProvider, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
+${boxProviders.map(name => `import { ${name}Boxes } from '@parcha/pi-transport/box/${name}';`).join('\n')}
+import { moveWorkspace, sealStore, type Seal } from '@parcha/pi-transport/home';
+import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
+const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${name}Boxes>) => BoxProvider`).join(', ')}] = [${boxProviders.map(name => `${name}Boxes`).join(', ')}];
+const transport: [typeof parseTransportConfig, Box | undefined, typeof moveWorkspace, typeof sealStore, Seal | undefined] = [parseTransportConfig, undefined, moveWorkspace, sealStore, undefined];
 // What a host hands to pi's Harness as a conversation's environment.
 const hands = (box: Box): ExecutionEnv => boxEnv(box);
-void [transport, hands];
+// The router: a Harness's env from a parsed config and what the host passes.
+const routed = (config: TransportConfig, host: TransportHost): Transport => openTransport(config, host);
+void [providers, transport, hands, routed];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');

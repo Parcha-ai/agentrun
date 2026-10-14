@@ -22,7 +22,10 @@ export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
   const ledger = local.ledger();
   return {
     status: result.status,
-    output: result.output ?? null,
+    ...(result.status === 'refused' ? { code: result.code, message: result.message } : {}),
+    ...(result.status === 'escalated' ? { escalation: result.escalation } : {}),
+    ...(result.status === 'stopped' ? { stop: result.stop } : {}),
+    output: result.status === 'complete' ? result.output : null,
     evidence: local.evidence(),
     did: {
       disk: { generation: result.generation },
@@ -70,8 +73,7 @@ async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8A
     const uploaded = await box.upload(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), ctx);
     if (!uploaded.ok) { await box.destroy(ctx); throw uploaded.error; }
   }
-  // Four pi-durable copies until #336: the transport's env crosses into the disk run's Harness unchanged.
-  const env = Object.assign(() => boxEnv(box) as never, { cleanup: async () => undefined });
+  const env = Object.assign(() => boxEnv(box), { cleanup: async () => undefined });
   return { env: () => env, destroy: async () => { await box.destroy(ctx); } };
 }
 
@@ -87,6 +89,7 @@ if (import.meta.main) {
   else {
     const output = view.output as { company: string; answer: string; citations: string[]; supported: boolean } | null;
     console.log(`Reference run: ${view.status}, generation ${view.did.disk.generation}, in ${place.root}`);
+    if (result.status === 'refused') console.log(`  ${result.code}: ${result.message}`);
     if (output) console.log(`\nRecord for ${output.company}\n  ${output.answer}\n  supported: ${output.supported}\n  cites:\n${output.citations.map((path) => `    ${path}`).join('\n')}`);
     console.log(`\nEvidence filed: ${view.evidence.length}\n${view.evidence.map((path) => `  ${path}`).join('\n')}`);
     console.log('\nWhat each package did');

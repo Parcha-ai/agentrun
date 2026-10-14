@@ -10,7 +10,7 @@ import { ToolTask } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { READ_MEDIA_ARGUMENTS, READ_MEDIA_DESCRIPTION, resolveLimits } from "@parcha/pi-vision";
 import { fakeEyes, pngBytes } from "@parcha/pi-vision/testing";
-import { drive, loadDurable, piDurableVersion, textOf, tmp } from "./durable/rig.mjs";
+import { drive, loadDurable, piDurableVersion, textOf, tmp, toolResult } from "./durable/rig.mjs";
 
 const { callContext, createVisionExtension, packageProviders, piResult } = await loadDurable();
 
@@ -112,7 +112,7 @@ test("a path the core leaves to text is read by the wrapped read, arguments and 
 
 test("the guard fits the images of every tool's result before it is committed, keeps its diagnostics, and skips results without images", async () => {
   const cwd = workspace();
-  const tool = (name, content) => ({ name, description: name, parameters: { type: "object", properties: {} }, execute: async () => ({ content, diagnostics: [{ severity: "info", message: `${name} ran` }] }) });
+  const tool = (name, content) => ({ name, description: name, parameters: { type: "object", properties: {} }, execute: async () => toolResult(content, { diagnostics: [{ severity: "info", message: `${name} ran` }] }) });
   const host = { name: "host", tools: [tool("snap", [{ type: "image", data: "BIGBIG", mimeType: "image/png" }]), tool("note", [{ type: "text", text: "plain" }])] };
   const guarded = [];
   globalThis.visionCore = {
@@ -134,11 +134,12 @@ test("the guard fits the images of every tool's result before it is committed, k
   assert.deepEqual(guarded[0].result.content, [{ type: "image", data: "BIGBIG", mimeType: "image/png" }]);
   assert.equal(typeof guarded[0].call.memo, "function");
   assert.equal(guarded[0].call.model.id, "lead-1");
+  assert.equal(guarded[0].call.tool, "snap", "the call names the tool the model called, for the guard's rows");
 });
 
 test("a guard that cannot run removes the result's images instead of letting pi keep them, and the call still answers", async () => {
   const cwd = workspace();
-  const host = { name: "host", tools: [{ name: "snap", description: "snap", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "a shot" }, { type: "image", data: "BIGBIG", mimeType: "image/png" }] }) }] };
+  const host = { name: "host", tools: [{ name: "snap", description: "snap", parameters: { type: "object", properties: {} }, execute: async () => toolResult([{ type: "text", text: "a shot" }, { type: "image", data: "BIGBIG", mimeType: "image/png" }]) }] };
   const reports = [];
   for (const broken of [{ core: async () => { throw new Error("guard down"); } }, { scope: () => { throw new Error("no scope"); } }]) {
     globalThis.visionCore = { guardResult: broken.core ?? (async (result) => result) };
@@ -259,7 +260,8 @@ test("pdfText hands the core's reader the bytes, an environment over this proces
   assert.equal((await context.env.fileInfo(process.cwd(), { abortSignal: undefined, value: () => undefined })).value.kind, "directory");
 });
 
-test("piResult carries only what pi stores: the blocks, the error flag, details and usage", () => {
-  assert.deepEqual(piResult({ content: [{ type: "text", text: "t" }] }), { content: [{ type: "text", text: "t" }] });
-  assert.deepEqual(piResult({ content: [], isError: true, details: { a: 1 }, usage: usage(1) }), { content: [], isError: true, details: { a: 1 }, usage: usage(1) });
+test("piResult carries only what pi stores: the blocks under both names pi-durable has given them, the error flag, details and usage", () => {
+  const blocks = [{ type: "text", text: "t" }];
+  assert.deepEqual(piResult({ content: blocks }), { output: blocks, content: blocks });
+  assert.deepEqual(piResult({ content: [], isError: true, details: { a: 1 }, usage: usage(1) }), { output: [], content: [], isError: true, details: { a: 1 }, usage: usage(1) });
 });

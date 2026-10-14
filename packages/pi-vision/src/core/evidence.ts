@@ -49,7 +49,8 @@ export type EvidenceSink = {
  *  usage, `record.args.native` true). */
 export type LookEvent = {
   readonly conversationId: string;
-  readonly tool: "read" | "look";
+  /** `read` or `look`, or the tool whose result held the image (`CallContext.tool`). */
+  readonly tool: string;
   readonly source: string;
   readonly ask?: string;
   readonly fragment: string;
@@ -105,7 +106,7 @@ export async function quietly<T>(hook: ((value: T) => void | Promise<void>) | un
 }
 
 /** File one look and tell the host: the receipt path, or null when the sink filed nothing or failed. */
-export async function fileLook(filing: Filing, tool: "read" | "look", record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string }): Promise<string | null> {
+export async function fileLook(filing: Filing, tool: string, record: LookRecord, answer?: { readonly usage: Usage | null; readonly costUsd: number | null; readonly billedBy?: string }): Promise<string | null> {
   let receipt: string | null = null;
   try { receipt = (await filing.evidence.file(filing.label, record))?.path ?? null; } catch { /* a receipt never fails the call it files */ }
   if (record.status === "ok") {

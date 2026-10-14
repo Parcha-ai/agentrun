@@ -1,5 +1,3 @@
-// Fixture pages that carry secrets the way real pages do, for the wire check: a debug page that prints the connect
-// URL it was reached with, and an authenticator enrollment page that shows the TOTP seed.
 import { fixturePage, type FixturePage } from "./backend.js";
 import type { Sentinels } from "./sentinels.js";
 

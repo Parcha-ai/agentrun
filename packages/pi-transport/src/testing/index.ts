@@ -10,3 +10,10 @@ export {
 	createBoxConformance,
 	registerBoxConformance,
 } from "./box-conformance.ts";
+export {
+	createStoreConformance,
+	registerStoreConformance,
+	type StoreConformanceCase,
+	type StoreConformanceOptions,
+	type StoreConformanceProvider,
+} from "./store-conformance.ts";

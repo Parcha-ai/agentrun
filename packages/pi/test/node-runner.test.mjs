@@ -12,6 +12,7 @@ import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parch
 import { hostScope, NodeIndex } from '../dist/durable/node.js';
 import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
 import { RecordDoc } from '../dist/durable/record-tool.js';
+import { resultOf } from './fixtures/pi-version.mjs';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const VERDICT = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string', description: 'buy or pass' } } };
@@ -25,7 +26,7 @@ const submitOf = (messages) => messages.flatMap((message) => message.toolsAdded 
 const toolResults = (messages) => messages.filter((message) => message.role === 'toolResult').map((message) => message.content.map((block) => block.text ?? '').join(''));
 const final = (pattern) => (error) => error instanceof NodeFailure && error.final === true && error.code === 'NODE_NOT_DELIVERED' && pattern.test(error.message);
 /** A host's tool that ends the run it is called in, and the host's extension that carries it. */
-const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => ({ content: [{ type: 'text', text: 'stopped' }], control: { terminate: true } }) });
+const halt = defineTool({ name: 'halt', description: 'Stop.', parameters: { type: 'object', additionalProperties: true }, execute: async () => resultOf([{ type: 'text', text: 'stopped' }], { control: { terminate: true } }) });
 const tools = defineExtension({ name: 'host-tools', tools: [halt] });
 
 /** A Harness with the runner's extension, a host over a scripted model, and what the model was sent. */

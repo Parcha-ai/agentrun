@@ -9,6 +9,8 @@ AgentRun executes a workflow through adapters supplied by your application. Star
 | `runJudge` | Answer the declared typed questions. The optional [Jev adapter](../packages/jev/README.md) implements this interface. |
 | Lifecycle hooks | Store checkpoints and receipts, reconcile interrupted effects, and retain the runtime and adapter versions needed for recovery. |
 
+For a durable pi host that also runs a browser and vision, see [what a host supplies](reference-host.md) and its runnable example.
+
 Your application controls credentials, tools, budgets and delivery. An accepted model answer or completed workflow does not prove that an external action succeeded.
 
 ## Admit a workflow before running it
@@ -49,6 +51,16 @@ Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `v
 To make decisions durable across a restart, also supply `recovery.decision(id)`. When it returns an `answered` receipt, its answers are used and the judge is not asked again: a resumed run decides what the interrupted run decided, including a loop's `until: ask` and a route whose branch had already started. Such a decision is not recorded again and its event carries `replayed: true`. Any other receipt, or none, means the request is asked. A receipt is evidence of what was decided, not of what was committed: the node's commit is still `recovery.commit`.
 
 A pi-durable host keeps a run's typed-question decisions as rows of the session document `agentrun.decisions`, from `@parcha/agentrun-pi/durable`. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also commits any row recorded while it runs, releases every Session the writer opened, then reports the first failed commit (or, when none failed, a failed release). `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
+
+Inside a workflow task (`createWorkflowExtension`), `decisionRecovery(invocation)` gives both hooks over the task's own commit, from the invocation the host's `run` is handed. `recordDecision` commits each receipt as a row, in the order receipts are recorded, and resolves once that row is durable; the task's state is untouched. `decision(id)` rebuilds the receipt from the last answered row this run recorded under `id`. A row it writes also carries the receipt's `decision_id`, its `request` position, its `state_sha256` and the run's key (`run_key`), so the row is the whole receipt again for that run. Every run in a Session shares the rows' document and a receipt's id does not name its run, so another run's row never answers, and neither does a row without these fields. Wire them in the host's `run`:
+
+```ts
+run: (invocation) => {
+  const decisions = decisionRecovery(invocation);
+  const deps = withRecovery(invocation.driver, { runJudge, recordDecision: decisions.recordDecision });
+  return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
+},
+```
 
 ## Host policy around generative nodes
 

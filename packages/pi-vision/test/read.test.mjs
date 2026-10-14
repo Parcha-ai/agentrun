@@ -164,7 +164,7 @@ test("a sink that throws before it returns a promise loses no miss", async (t) =
   assert.equal(r.misses[0].receipt, null);
 });
 
-test("a reader that throws on a file it cannot parse is an unreadable miss with the cause's first line; a cancelled read throws", async (t) => {
+test("a reader that throws on a file it cannot parse is an unreadable miss with the cause's first line; a cancelled read throws and leaves no temp directory", async (t) => {
   let cut = null;
   const r = await rig({ pdf: () => { cut?.abort(); throw new Error("bad xref table at offset 9\n    at parse (pdf.js:1)"); } });
   t.after(() => r.dir.remove());
@@ -177,6 +177,7 @@ test("a reader that throws on a file it cannot parse is an unreadable miss with 
   cut = new AbortController();
   await assert.rejects(r.read({ path: "broken.pdf" }, cut.signal), /bad xref table/);
   assert.equal(r.misses.length, 1, "a cancelled read files no miss");
+  assert.ok(!existsSync(r.calls.at(-1).context.tempDir), "and its temp directory is removed");
 });
 
 test("a renamed file, bytes in no format, a kind with no reader and a host that says no are misses with their reason", async (t) => {
@@ -375,4 +376,35 @@ test("a file that is another kind by the time its bytes are held changed between
   assert.equal(out.details.miss.code, "unreadable");
   assert.match(text(out), /^notice\.pdf could not be read: the file changed while it was read/);
   assert.deepEqual([r.calls.length, r.filed.length, r.misses[0].receipt], [0, 0, null], "no reader run, nothing filed");
+});
+
+test("a held source is read from memory, and written to its private path only when a program that names it runs: once a read, gone after", async (t) => {
+  const c = { abortSignal: undefined, value: () => undefined };
+  const seen = [];
+  const r = await rig({
+    image: async (request, context) => {
+      const held = await context.env.readBinaryFile(request.source.path, c);
+      seen.push({ held: held.value.length, onDisk: existsSync(request.source.path) });
+      return { content: [{ type: "text", text: "read in memory" }] };
+    },
+    pdf: async (request, context) => {
+      const counted = `${context.tempDir}/size`;
+      for (const _ of [1, 2]) seen.push(await context.env.exec(["sh", "-c", 'wc -c < "$1" > "$2"', "sh", request.source.path, counted], { timeout: 30 }, c));
+      seen.push(Number(Buffer.from((await context.env.readBinaryFile(counted, c)).value).toString().trim()));
+      return { content: [{ type: "text", text: "read by a program" }] };
+    },
+  });
+  t.after(() => r.dir.remove());
+  const writes = [];
+  const counting = new Proxy(r.env, { get: (target, key) => (key === "writeFile" ? (path, ...rest) => { writes.push(path); return target.writeFile(path, ...rest); } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const png = pngBytes(30, 20), pdf = Buffer.concat([PDF_HEAD, Buffer.from("a document a program reads")]);
+  await r.dir.file("photo.png", png);
+  await r.dir.file("notice.pdf", pdf);
+  await readMedia(counting, { path: "photo.png" }, r.call(), r.setup, r.kinds);
+  assert.deepEqual(seen.splice(0), [{ held: png.length, onDisk: false }], "a reader in this process gets the bytes with no file written");
+  assert.deepEqual(writes, []);
+  await readMedia(counting, { path: "notice.pdf" }, r.call(), r.setup, r.kinds);
+  assert.deepEqual(seen, [{ ok: true, value: { exitCode: 0 } }, { ok: true, value: { exitCode: 0 } }, pdf.length], "a program finds the bytes that were hashed at the path");
+  assert.equal(writes.length, 1, "written once for the read, however many programs run");
+  assert.ok(writes[0].endsWith(".pdf") && !existsSync(writes[0]), "and removed with the read's directory");
 });

@@ -1,38 +1,41 @@
 // The reference assembly: one job on pi-durable through the open packages, wired from a host's functions. It holds no
 // job and no fake. Order: install every extension, open the run on its directory (pi resumes what a killed process
-// left), reconcile the browser, run the workflow, deliver, release the browser's sessions, close, release the run.
+// left), reconcile the browser, start the workflow's task and wait for it, deliver, release the browser's sessions,
+// close, release the run.
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
-import { runWorkflow, type Workflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
-import { documentStore, hostScope, nodeRunner } from '@parcha/agentrun-pi/durable';
+import { createRegistry, defineDoc, type ConversationId, type Harness, type Tx } from '@earendil-works/pi-durable';
+import type { Workflow } from '@parcha/agentrun-dsl';
+import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import {
+  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+} from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
+import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
-export type RunResult = {
-  status: string;
-  output?: unknown;
-  generation: number;
-  usage: Awaited<ReturnType<Harness['usage']>>;
-};
+/** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
+export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
-const POLICY = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 };
+
+/** The run's id, and the key its workflow's task and journal are kept under. */
+export const RUN_KEY = 'reference';
 
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
 export async function placeAt(root?: string): Promise<RunPlace> {
   const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
   await mkdir(join(at, 'work'), { recursive: true });
-  return { id: 'reference', root: at, work: join(at, 'work'), store: join(at, 'store') };
+  return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'store') };
 }
 
 /** A claim on a plain directory: nothing to mount, nothing to fence but this process's own mark. */
@@ -50,7 +53,8 @@ function localClaim(ref: RunRef, place: RunPlace): Claim {
 /** The disk run's environment, with temporary directories under `work/`. */
 function runEnv(claim: Claim): RunEnv {
   const base = archilEnv(claim);
-  // pi-durable-disk gap: its createTempDir is under `<root>/tmp`, which its own confinement refuses to write, and vision writes there.
+  // pi-durable-disk gap, removed by the disk's #380: its createTempDir is under `<root>/tmp`, which its own confinement refuses
+  // to write, and a read that runs a program (a video through ffmpeg) writes there. This example's PNG read needs none.
   const scratch = join(claim.work, '.tmp');
   return Object.assign((target: { readonly cwd?: string }) => Object.assign(base(target), {
     createTempDir: async (prefix: string | undefined) => {
@@ -62,20 +66,27 @@ function runEnv(claim: Claim): RunEnv {
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
+  // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
+  // such a directory would start the run over, so it is refused before anything runs.
+  const earlier = join(place.root, 'durable', 'run.sqlite');
+  if (existsSync(earlier) && !existsSync(join(place.store, 'run.sqlite'))) {
+    throw Object.assign(new Error(`This run's store is at ${earlier}, and this version keeps it at ${join(place.store, 'run.sqlite')}. Resume it with the version that wrote it, or start a new directory.`), { code: 'RUN_STORE_ELSEWHERE' });
+  }
   const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
   let opened: Harness | undefined;
-  // Vision names a conversation by its id as a string; pi's documents take the number.
-  const labelOf = async (conversationId: string) => (opened && (await opened.snapshot(Label, Number(conversationId) as ConversationId, ctx))?.label) || 'run';
+  const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
 
   const browser = createBrowserExtension({
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
+    ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
+    ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
     onSession: (row, change) => status({ source: 'browser', change, row }),
   });
   const vision = createVisionExtension({
     evidence: host.evidence,
-    scope: async (conversationId) => ({ label: await labelOf(conversationId), deriveDir: `.derived/${conversationId}` }),
+    scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
@@ -86,14 +97,33 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     // The browser needs its configuration in the commit that creates the conversation; `init` is the one member that runs there.
     init: async (node, tx, conversationId) => {
       (await tx.doc(Label, conversationId)).label = node.label;
-      Object.assign(await tx.doc(browser.docs.Config, conversationId), { label: node.label, run: place.id, policy: POLICY });
+      Object.assign(await tx.doc(browser.docs.Config, conversationId), { label: node.label, run: place.id, policy: DEFAULT_BROWSER_POLICY });
     },
   });
-  // Until the browser's pi range admits 1.1.0 (#336), this process loads pi-durable 1.0.4 (here, the browser, vision) and
-  // two 1.1.0 copies (the node runner, the disk run). The values cross them unchanged; their branded types do not, so the
-  // four crossings below are cast: extensions into the registry, the registry into the run, the Harness out and back in.
+  // The workflow is one pi-durable task: a process that dies leaves it pending, and the next open resumes it.
+  // pi-durable-disk gap (F3): that open resumes the task before the host can reconcile the browser, so it waits here.
+  let reconciled!: () => void;
+  const ready = new Promise<void>((resolve) => { reconciled = resolve; });
+  const flow = createWorkflowExtension({
+    options: async (invocation) => { if (host.tools.answered) await settle(invocation, host.tools.answered); return {}; },
+    run: async ({ key, runtime, context, driver }) => {
+      runtime.signal.throwIfAborted();
+      await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
+      // Each typed question's receipt is a row in the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const decisions = decisionRecovery({ key, runtime, context });
+      const deps = withRecovery(driver, {
+        runEffect: host.tools.runEffect,
+        runNode: nodes.on(taskScope(runtime), context).runNode,
+        runJudge: host.decisions.runJudge,
+        onEvent: (event) => void status({ source: 'workflow', event }),
+        recordDecision: decisions.recordDecision,
+      }, { durableNodes: true });
+      return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
+    },
+  });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension] as Extension[]) registry.install(extension);
+  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension, flow.extension]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
   // under its name is whole, and is kept.
@@ -106,18 +136,24 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   }
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
-    harness: { registry: registry as never, models: host.models.catalog }, env: options.env ?? runEnv,
+    harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
   });
-  const harness = durable.harness as unknown as Harness;
+  const harness = durable.harness;
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    const result = await runJob(harness, nodes, host, job, place.id, status);
-    if (result.status === 'complete') await host.deliver({ record: result.output });
-    return {
-      status: result.status, ...(result.status === 'complete' ? { output: result.output } : {}),
-      generation: durable.generation, usage: await harness.usage(ctx),
-    };
+    // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
+    // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
+    let task: Awaited<ReturnType<typeof flow.start>>;
+    try { task = await flow.start(harness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
+      const refusal = error as { code?: string; message?: string; moved?: unknown };
+      if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+      return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
+    }
+    reconciled();
+    const outcome = await task.wait(ctx);
+    if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
+    return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
   } finally {
     // pi has no conversation-end event: every session still open is released here, before the close.
     const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
@@ -134,18 +170,31 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   }
 }
 
-/** The workflow under the recovery driver, its LLM steps through the node runner. */
-async function runJob(harness: Harness, nodes: ReturnType<typeof nodeRunner>, host: Host, job: Job, key: string, status: (event: StatusEvent) => Promise<void>) {
-  const driver = await openRecovery(documentStore(harness as never, key), job.workflow, { key });
+/** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
+ *  one, before the task's driver opens the journal. A call the door never answered stays unknown, and so does one whose
+ *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
+ *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
+async function settle({ key, taskId, runtime, context }: WorkflowInvocation, answered: NonNullable<Host['tools']['answered']>) {
+  const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
+  if (!request) return;
+  const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
   try {
-    const deps = withRecovery(driver, {
-      runEffect: host.tools.runEffect,
-      runNode: nodes.on(hostScope(harness as never), ctx).runNode,
-      runJudge: host.decisions.runJudge,
-      onEvent: (event) => void status({ source: 'workflow', event }),
-    }, { durableNodes: true });
-    return await runWorkflow(job.workflow, job.input, deps);
+    const effects = journal.effects();
+    for (const effect of effects) {
+      const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
+      const answer = effect.status === 'unknown' && effect.intent && alone ? await answered(effect.argsHash) : undefined;
+      if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
+    }
   } finally {
-    await driver.close();
+    await journal.close();
   }
+}
+
+/** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
+function taskCommit({ runtime, context }: Pick<WorkflowInvocation, 'runtime' | 'context'>) {
+  return async <T,>(change: (tx: Tx) => T | Promise<T>) => {
+    let result!: T;
+    await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
+    return result;
+  };
 }

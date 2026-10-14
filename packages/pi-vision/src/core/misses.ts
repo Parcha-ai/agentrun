@@ -8,7 +8,8 @@ import type { ToolResult } from "./host.js";
 /** One read or look that could not give the model what it asked for, for the host's rows. */
 export type MissEvent = {
   readonly conversationId: string;
-  readonly tool: "read" | "look";
+  /** `read` or `look`, or the tool whose result held the image (`CallContext.tool`). */
+  readonly tool: string;
   readonly source: string;
   readonly ask?: string;
   readonly code: MissCode;
@@ -66,7 +67,7 @@ export const firstLine = (error: unknown, max = 300): string => linkSafe(String(
 export const refusal = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
 /** File a miss as a failed look and tell the host. The receipt path, or null. */
-export async function reportMiss(filing: Filing, tool: "read" | "look", record: LookRecord, miss: Miss): Promise<string | null> {
+export async function reportMiss(filing: Filing, tool: string, record: LookRecord, miss: Miss): Promise<string | null> {
   const receipt = await fileLook(filing, tool, { ...record, status: "failed", body: `not seen: ${miss.reason}` });
   await quietly(filing.onMiss, {
     conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),

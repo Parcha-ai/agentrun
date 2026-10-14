@@ -1,7 +1,3 @@
-// A form POST inside a cross-origin iframe (a payment or login widget on another origin) is seen by the observer like any other
-// request: journaled when the observer only journals, held and refused when it denies. The iframe is an out-of-process target the
-// observer reaches through its auto-attach; if it did not, the widget's POST would neither be journaled nor held, and a deny policy
-// could not refuse it.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +27,6 @@ test("a form POST in a cross-origin iframe is journaled under journal and held a
     const observer = await EffectObserver.open(target, mode === "deny" ? effectDecider("deny") : null);
     for (let round = 0; round < ROUNDS; round += 1) {
       server.reset();
-      // The journal as events: the latest row per request, and a promise for the row this round waits for.
       const rows = new Map();
       let arrived;
       const decided = new Promise((resolve) => { arrived = resolve; });
@@ -47,8 +42,8 @@ test("a form POST in a cross-origin iframe is journaled under journal and held a
         assert.deepEqual(server.nonGet(), ["POST /api/iframe-form"], "and it went out");
       } else {
         assert.deepEqual(label, ["POST /api/iframe-form denied"], `deny, round ${round}`);
-        // A refused request never leaves the browser; if one did, it would reach the server within moments: a bounded wait for an
-        // event that must not happen (load can make it miss a leak, never invent one).
+        // A refused request that leaked would reach the server within moments: a bounded wait for an event that must
+        // not happen (load can make it miss a leak, never invent one).
         await assert.rejects(server.nonGetReached(1, 300), /expected non-GET/, "deny: nothing the widget posted reached the server");
         assert.deepEqual(server.nonGet(), []);
       }
