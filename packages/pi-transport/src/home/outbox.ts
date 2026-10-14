@@ -2,10 +2,13 @@ import { closeSync, fdatasyncSync, fsyncSync, openSync, readFileSync, renameSync
 import { dirname } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 
-/** One commit as a runner ships it: its writes, and the recorder's lines for it once they came. */
+/**
+ * One commit as a runner ships it: its writes, and the recorder's lines for it once they came. The host acknowledges
+ * each part apart, so either may be gone: a commit with no lines never gets any.
+ */
 export type OutboxEntry = {
 	readonly commit: number;
-	readonly writes: readonly StorageWrite[];
+	readonly writes?: readonly StorageWrite[];
 	readonly lines?: readonly unknown[];
 };
 
@@ -34,16 +37,22 @@ export interface Outbox {
 	entry(commit: number, writes: readonly StorageWrite[]): void;
 	/** The recorder's lines for `commit`, appended to its entry before this returns. */
 	lines(commit: number, lines: readonly unknown[]): void;
-	/** The entries the host has not acknowledged, after `after` (exclusive), in commit order. */
-	pending(after?: number): readonly OutboxEntry[];
-	/** The host holds every commit up to `commit`: those entries go. */
+	/** What the host has not acknowledged, in commit order: writes after `after`, lines after `linesAfter` (exclusive). */
+	pending(after?: number, linesAfter?: number): readonly OutboxEntry[];
+	/** The host holds the writes of every commit up to `commit`: they go. */
 	ack(commit: number): void;
+	/** The host holds the lines of every commit up to `commit`: they go. */
+	ackLines(commit: number): void;
 	/** Sync whatever was written and not yet synced. */
 	flush(): void;
 	close(): void;
 }
 
-type Line = { commit: number; writes: StorageWrite[] } | { commit: number; lines: unknown[] } | { ack: number };
+type Line =
+	| { commit: number; writes: StorageWrite[] }
+	| { commit: number; lines: unknown[] }
+	| { ack: number }
+	| { ackLines: number };
 
 /** The whole lines of a file: a last line without its newline is a write the process did not finish, and is dropped. */
 function wholeLines(path: string): Line[] {
@@ -72,6 +81,27 @@ function syncDirectory(path: string): void {
 	}
 }
 
+function pendingOf(
+	writes: ReadonlyMap<number, StorageWrite[]>,
+	lines: ReadonlyMap<number, unknown[]>,
+	after: number,
+	linesAfter: number,
+): OutboxEntry[] {
+	const commits = [...new Set([...writes.keys(), ...lines.keys()])].sort((left, right) => left - right);
+	const out: OutboxEntry[] = [];
+	for (const commit of commits) {
+		const made = commit > after ? writes.get(commit) : undefined;
+		const recorded = commit > linesAfter ? lines.get(commit) : undefined;
+		if (made === undefined && recorded === undefined) continue;
+		out.push({
+			commit,
+			...(made === undefined ? {} : { writes: made }),
+			...(recorded === undefined ? {} : { lines: recorded }),
+		});
+	}
+	return out;
+}
+
 /**
  * Open the outbox at `path`, keeping the entries the host has not acknowledged and that committed. The file is written
  * again with only those, whole, and renamed into place.
@@ -79,26 +109,29 @@ function syncDirectory(path: string): void {
 export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	const linesSync = options.linesSync ?? "each";
 	const idleSyncMs = options.idleSyncMs ?? 1_000;
-	const entries = new Map<number, { writes: StorageWrite[]; lines?: unknown[] }>();
+	const writes = new Map<number, StorageWrite[]>();
+	const lines = new Map<number, unknown[]>();
+	const drop = (from: Map<number, unknown>, upTo: number) => {
+		for (const commit of from.keys()) if (commit <= upTo) from.delete(commit);
+	};
 	for (const line of wholeLines(path)) {
-		if ("ack" in line) {
-			for (const commit of entries.keys()) if (commit <= line.ack) entries.delete(commit);
-		} else if ("writes" in line) {
-			entries.set(line.commit, { writes: line.writes });
-		} else {
-			const entry = entries.get(line.commit);
-			if (entry !== undefined) entry.lines = line.lines;
-		}
+		if ("ack" in line) drop(writes, line.ack);
+		else if ("ackLines" in line) drop(lines, line.ackLines);
+		else if ("writes" in line) writes.set(line.commit, line.writes);
+		else lines.set(line.commit, line.lines);
 	}
 	// Written before a commit that never landed: the store does not have it, and nobody heard of it.
-	for (const commit of entries.keys()) if (commit >= options.head) entries.delete(commit);
+	for (const from of [writes, lines])
+		for (const commit of from.keys()) if (commit >= options.head) from.delete(commit);
 
 	const temp = `${path}.tmp`;
 	const fresh = openSync(temp, "w");
 	try {
-		for (const [commit, entry] of [...entries].sort(([left], [right]) => left - right)) {
-			writeSync(fresh, `${JSON.stringify({ commit, writes: entry.writes })}\n`);
-			if (entry.lines !== undefined) writeSync(fresh, `${JSON.stringify({ commit, lines: entry.lines })}\n`);
+		for (const entry of pendingOf(writes, lines, -1, -1)) {
+			if (entry.writes !== undefined)
+				writeSync(fresh, `${JSON.stringify({ commit: entry.commit, writes: entry.writes })}\n`);
+			if (entry.lines !== undefined)
+				writeSync(fresh, `${JSON.stringify({ commit: entry.commit, lines: entry.lines })}\n`);
 		}
 		fdatasyncSync(fresh);
 	} finally {
@@ -123,16 +156,15 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	};
 
 	return {
-		entry(commit, writes) {
-			append({ commit, writes: [...writes] });
+		entry(commit, made) {
+			append({ commit, writes: [...made] });
 			// The lines written since the last sync go with this one.
 			sync();
-			entries.set(commit, { writes: [...writes] });
+			writes.set(commit, [...made]);
 		},
-		lines(commit, lines) {
-			append({ commit, lines: [...lines] });
-			const entry = entries.get(commit);
-			if (entry !== undefined) entry.lines = [...lines];
+		lines(commit, recorded) {
+			append({ commit, lines: [...recorded] });
+			lines.set(commit, [...recorded]);
 			if (linesSync === "each") {
 				sync();
 				return;
@@ -143,20 +175,17 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 			}, idleSyncMs);
 			idle.unref?.();
 		},
-		pending(after = -1) {
-			return [...entries]
-				.filter(([commit]) => commit > after)
-				.sort(([left], [right]) => left - right)
-				.map(([commit, entry]) => ({
-					commit,
-					writes: entry.writes,
-					...(entry.lines === undefined ? {} : { lines: entry.lines }),
-				}));
+		pending(after = -1, linesAfter = -1) {
+			return pendingOf(writes, lines, after, linesAfter);
 		},
 		ack(commit) {
 			// Not synced: an ack lost with the machine only sends those commits again, and the host has them.
 			append({ ack: commit });
-			for (const known of entries.keys()) if (known <= commit) entries.delete(known);
+			drop(writes, commit);
+		},
+		ackLines(commit) {
+			append({ ackLines: commit });
+			drop(lines, commit);
 		},
 		flush() {
 			if (dirty) sync();

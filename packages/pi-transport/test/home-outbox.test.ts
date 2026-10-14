@@ -26,14 +26,26 @@ describe("a runner's outbox", () => {
 		outbox.ack(1);
 		expect(outbox.pending().map((entry) => entry.commit)).toEqual([2, 3]);
 		// After is exclusive: the host holds 2 whole.
-		expect(outbox.pending(2).map((entry) => entry.commit)).toEqual([3]);
+		expect(outbox.pending(2, 2).map((entry) => entry.commit)).toEqual([3]);
+		// The writes and the lines of a commit are acknowledged apart: lines that came after their writes' ack stay.
+		expect(outbox.pending(2)).toEqual([
+			{ commit: 2, lines: ["line of 2"] },
+			{ commit: 3, writes: writes(3) },
+		]);
+		expect(outbox.pending(3, 1)).toEqual([{ commit: 2, lines: ["line of 2"] }]);
 		outbox.close();
 		const again = openOutbox(path, { head: 4 });
 		expect(again.pending()).toEqual([
 			{ commit: 2, writes: writes(2), lines: ["line of 2"] },
 			{ commit: 3, writes: writes(3) },
 		]);
+		again.ack(3);
 		again.close();
+		const third = openOutbox(path, { head: 4 });
+		expect(third.pending()).toEqual([{ commit: 2, lines: ["line of 2"] }]);
+		third.ackLines(2);
+		expect(third.pending()).toEqual([]);
+		third.close();
 	});
 
 	it("drops an entry at or above the store's head at a reopen: its commit never landed, and nobody heard of it", () => {
