@@ -269,29 +269,31 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			expect(watchdogsOf(box.id)).toEqual([]);
 		}));
 
+	// The member is slow to die only when it holds a lot of memory. That needs Python and 3 GB, so it is opt-in:
+	// `PI_TRANSPORT_STRESS_GROUP=1`. Without it, the same test runs with a small member and checks the behavior, not the race.
+	const stress = process.env.PI_TRANSPORT_STRESS_GROUP === "1";
 	it(
 		"destroy returns only once every member of a killed group is gone, also one that cleared its environment",
 		() =>
 			withProvider(async (provider, root) => {
-				for (let round = 0; round < 3; round++) {
+				for (let round = 0; round < (stress ? 3 : 5); round++) {
 					const box = await create(provider);
 					const pgFile = join(root, `pgid-${round}`);
-					// The program leads its group; its child clears its environment (so has no marker), ignores TERM and holds 3 GB.
+					// The program leads its group; its child clears its environment (so has no marker) and ignores TERM.
+					const member = stress
+						? `/usr/bin/python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); b = bytearray(3000 * 1024 * 1024); b[::4096] = bytes(len(b[::4096])); time.sleep(30)'`
+						: `sh -c 'trap "" TERM; sleep 30'`;
 					const started = await box.exec(
-						[
-							"sh",
-							"-c",
-							`echo $$ > ${pgFile}; env -i /usr/bin/python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); b = bytearray(3000 * 1024 * 1024); b[::4096] = bytes(len(b[::4096])); print("up", flush=True); time.sleep(30)' & wait`,
-						],
+						["sh", "-c", `echo $$ > ${pgFile}; env -i ${member} & wait`],
 						undefined,
 						context,
 					);
 					if (!started.ok) throw started.error;
 					await until(() => existsSync(pgFile) && readFileSync(pgFile, "utf8").trim() !== "");
 					const pgid = Number(readFileSync(pgFile, "utf8").trim());
-					// Up when the child has touched all its memory: tearing that down takes a while after a kill.
 					await until(() => groupOf(pgid).length > 1, 20_000);
-					await new Promise((resolve) => setTimeout(resolve, 5_000));
+					// With the large member: up once it has touched all its memory, which a kill then takes a while to tear down.
+					if (stress) await new Promise((resolve) => setTimeout(resolve, 5_000));
 					expect(groupOf(pgid).length, `round ${round}`).toBeGreaterThan(1);
 					await box.destroy(context);
 					expect(groupOf(pgid), `round ${round}`).toEqual([]);
