@@ -2,7 +2,7 @@
 // The stall is a synchronous loop of STALL_MS (default 6000, past the server's default grace of 5000) in the step that saves the workspace into OPFS, with no ping or frame leaving the tab meanwhile.
 // Before the hold it ended with "no ping from the tab": the writer retired in the middle of the checkout and the page fell back to a viewer.
 //   [CDP=http://127.0.0.1:9334] [STALL_MS=6000] [GRACE_MS=<writer grace; the server's own default when unset>] [TMPDIR=<roomy dir>] node scripts/checkout-stall-check.ts
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,18 +26,21 @@ mkdirSync(join(work, "home/skills"), { recursive: true });
 copyFileSync(fixture, join(work, "home/policy.json"));
 for (const n of ["walk", "sprint"]) copyFileSync(fixture, join(work, `home/skills/${n}.json`));
 writeFileSync(join(work, "home/skills.json"), JSON.stringify({ version: 1, body_mjcf_sha256: sha, default: "walk", skills: { walk: { policy: "skills/walk.json", command: 0.3, label: "walk" }, sprint: { policy: "skills/sprint.json", command: 0.7, label: "sprint" } } }));
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.GRACE_MS ? ["--grace-ms", process.env.GRACE_MS] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+let server: ChildProcess | undefined;
+let cdp: Cdp | undefined;
+let device: Awaited<ReturnType<Cdp["device"]>> | undefined;
 let link = "";
 const serverLog: string[] = [];
-server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
-server.stderr!.on("data", (d) => serverLog.push(String(d)));
-for (let i = 0; i < 100 && !link; i++) await sleep(100);
-if (!link) throw new Error("the server printed no run link");
-const cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
-const device = await cdp.device();
-let page: Awaited<ReturnType<typeof device.open>> | undefined;
+let page: Awaited<ReturnType<Awaited<ReturnType<Cdp["device"]>>["open"]>> | undefined;
 const ev = <T>(e: string) => page!.evaluate<T>(e);
 try {
+  server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.GRACE_MS ? ["--grace-ms", process.env.GRACE_MS] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "pipe"] });
+  server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
+  server.stderr!.on("data", (d) => serverLog.push(String(d)));
+  for (let i = 0; i < 100 && !link; i++) await sleep(100);
+  if (!link) throw new Error("the server printed no run link");
+  cdp = await Cdp.connect(process.env.CDP ?? "http://127.0.0.1:9334");
+  device = await cdp.device();
   page = await device.open(`http://127.0.0.1:${port}${link}`.replace("#", "?robot=1&robotcode=0&brain=off#"));
   await page.until("globalThis.demo && demo.state.mode === 'writer'", 300_000, 500);
   // The frames the tab sends, and a stall in the step that saves the workspace (the one removeEntry of work-<run>), armed here: the loop blocks the page's thread, so no ping can leave meanwhile.
@@ -65,9 +68,9 @@ try {
   if (page) console.log(JSON.stringify(await page.evaluate("(async () => globalThis.demo ? ({ mode: demo.state.mode, banner: demo.state.banner }) : 'no demo')").catch(() => "page gone")));
   console.log(serverLog.join("").split("\n").filter((l) => /grace|storage-read|writer/i.test(l)).slice(-5).join("\n"));
 } finally {
-  await device.close().catch(() => undefined);
-  cdp.close();
-  server.kill("SIGKILL");
+  await device?.close().catch(() => undefined);
+  cdp?.close();
+  server?.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
 }
 if (failed) { console.log(`${failed} FAILED`); process.exit(1); }
