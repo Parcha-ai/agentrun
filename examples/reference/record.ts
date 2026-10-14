@@ -97,7 +97,17 @@ export function openSupervisor(options: { dir: string; redact?: Redact }): Super
   };
 }
 
-export function openRecorder(options: { dir: string; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor }): Recorder {
+/** pi's agent events a recording keeps as live `pi` lines: where a turn starts and ends, a message ends, a tool starts and ends. Streaming
+ *  deltas, updates and snapshots are dropped. */
+export const PI_LIVE_EVENTS = ['run_start', 'turn_start', 'turn_end', 'message_end', 'tool_execution_start', 'tool_execution_end'] as const;
+/** One conversation's agent events: pi-durable's `watchEvents`, or a stand-in in a test. */
+export type WatchEvents = (session: unknown, conv: number) => Promise<{ start(listener: (events: readonly { type: string }[]) => Promise<void>): void; stop(): Promise<unknown> }>;
+const piWatch: WatchEvents = async (session, conv) => {
+  const [{ watchEvents }, { BACKGROUND_CONTEXT }] = await Promise.all([import('@earendil-works/pi-durable'), import('@earendil-works/chord/context')]);
+  return watchEvents(session as never, conv as never, BACKGROUND_CONTEXT) as never;
+};
+
+export function openRecorder(options: { dir: string; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor; watch?: WatchEvents }): Recorder {
   const { dir } = options;
   const started = Date.parse(startedAt(dir));
   mkdirSync(join(dir, 'blobs'), { recursive: true });
@@ -107,6 +117,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
   let seq = 0;
   let latest = 0;
   let stop: (() => Promise<void>) | undefined;
+  const watching = new Map<number, Awaited<ReturnType<WatchEvents>>>();
   const durableFile = join(spool(dir), `durable-${process.pid}-${Date.now()}.jsonl`);
   const keep = (bytes: Buffer, extension: string) => keepBlob(dir, bytes, extension);
   const write = (source: string, kind: string, data: unknown, meta: Meta = {}) => {
@@ -120,14 +131,28 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
     async attach(input) {
       if (!options.commits) throw new Error('A recording needs the store export: no commit recorder was given.');
       const clock = () => Math.max(0, Date.now() - started);
+      // Each conversation the store names gets its agent events recorded as live lines: the recorder sees a conversation in the
+      // commit that creates it (or in the snapshot of a run that has it), and the events it watches begin from there.
+      const follow = (conv: number) => {
+        if (watching.has(conv)) return;
+        const attached = (options.watch ?? piWatch)(input.session, conv).then((stream) => {
+          stream.start(async (events) => {
+            for (const event of events) if ((PI_LIVE_EVENTS as readonly string[]).includes(event.type)) { try { write('pi', event.type, event, { conv }); } catch { /* a recording line never fails the run */ } }
+          });
+          return stream;
+        });
+        watching.set(conv, undefined as never);
+        attached.then((stream) => watching.set(conv, stream), () => watching.delete(conv));
+      };
       stop = await options.commits({ ...input, clock }, (line) => {
+        if (typeof line.conv === 'number') follow(line.conv);
         const moved = moveImages(line.data, keep);
         const blobs = [...new Set([...(line.blobs ?? []), ...moved.blobs])];
         latest = Math.max(latest, line.commit);
         appendFileSync(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
       });
     },
-    async detach() { const end = stop; stop = undefined; await end?.(); },
+    async detach() { const end = stop; stop = undefined; await end?.(); for (const stream of watching.values()) await stream?.stop(); watching.clear(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };
