@@ -1004,9 +1004,7 @@ class BoxEnv implements ExecutionEnv {
 						this.#lost === undefined
 							? `the box ${this.#box.id} lost the command: ${exit.error.message}`
 							: this.#goneMessage();
-					return err(
-						this.#lost === undefined ? new ExecutionError("unknown", message) : this.#goneError(),
-					);
+					return err(this.#lost === undefined ? new ExecutionError("unknown", message) : this.#goneError());
 				}
 				await kill();
 				const error =
