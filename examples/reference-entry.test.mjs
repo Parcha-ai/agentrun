@@ -42,3 +42,11 @@ test('run takes vision options over the example\'s: an extra onLook runs beside 
   const events = (await readFile(join(place.root, 'events.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(events.filter((event) => event.source === 'vision' && 'look' in event).length, looks.length, 'the example\'s own record of looks is unchanged');
 });
+
+test('Fakes.responses sets how many model turns one process can take: one is too few for the reference job', { timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-entry-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const place = await entry.placeAt(join(tmp, 'run'));
+  const result = await entry.run(place, entry.localHost(place, { ...fakes, responses: 1 }).host, job);
+  assert.notEqual(result.status, 'complete', 'the lead takes four turns, and the provider had one queued');
+});
