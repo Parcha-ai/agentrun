@@ -179,6 +179,10 @@ npm run bench -w @parcha/pi-vision            # the free bench on synthetic file
 Tests import the built package, so build before running one file with `node --test`. Every fixture is built by the
 test that uses it; no real document is ever committed.
 
+The live eyes check, two paid looks through pi-ai (about a cent) and never part of `npm test` or CI, runs from the
+repository root after a build: `PI_VISION_LIVE_EYES=<provider>/<model id> node packages/pi-vision/test/live/eyes.mjs`,
+with the provider's key in the variable pi-ai reads and `PI_VISION_LIVE_BASE_URL` set when a gateway serves the model.
+
 ## License
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
