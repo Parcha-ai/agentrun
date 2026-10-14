@@ -177,6 +177,7 @@ for (const { generation, entries, cut } of by) {
 
 const failures: string[] = [];
 const expect = (ok: boolean, what: string) => ok || failures.push(what);
+const answers = (entries: EntryRecord[]) => entries.filter((entry) => entry.kind === "pi.assistant" && !parts(entry).some((part) => part.type === "toolCall"));
 const final = taken.at(-1)!.entries;
 expect(taken.length === 4 && taken.every((s, i) => s.generation === i + 1 && (i === 0 || s.head > taken[i - 1].head)), `four snapshots, one per generation, heads increasing: ${taken.map((s) => `${s.generation}@${s.head}`)}`);
 expect(taken[0].entries.length === 0, "generation 1 opened an empty store");
@@ -184,6 +185,8 @@ expect(JSON.stringify(by.map((g) => g.cut)) === JSON.stringify([["lookup-2"], ["
 expect(QUESTIONS.every((_, i) => final.filter((e) => e.kind === "pi.user" && textOf(e).endsWith(QUESTIONS[i])).length === 1), "every question is in the transcript once");
 expect(JSON.stringify(final.filter(interrupted).map((e) => (e.model?.[0] as { toolCallId: string }).toolCallId)) === '["lookup-2","lookup-4"]', "exactly the two cut calls are interrupted");
 expect(by[1].entries.some((e) => interrupted(e) && lineOf(e).startsWith("lookup-2")) && by[2].entries.some((e) => interrupted(e) && lineOf(e).startsWith("lookup-4")), "each cut call was settled by the next generation");
+expect(JSON.stringify(by.map((g) => answers(g.entries).length)) === "[1,2,3]", `answers committed by each generation: ${JSON.stringify(by.map((g) => answers(g.entries).length))}`);
+expect(by.every((g) => answers(g.entries).every((entry) => textOf(entry).startsWith(`Generation ${g.generation}:`))), "each answer is in the account of the generation that wrote it");
 expect(QUESTIONS.every((_, i) => ran.filter((line) => line === `in flight: question ${i + 1}`).length === 1), `each call ran once: ${ran}`);
 if (failures.length) {
   console.error(`not ok: ${failures.join("; ")}`);
