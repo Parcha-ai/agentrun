@@ -52,7 +52,8 @@ def passages():
 
 
 def features(layer, texts):
-    """Per SAE feature over the texts: {"rate", "mean", "max"} as [81920] tensors, in a file: torch.load(path)."""
+    """Per SAE feature over the texts: {"rate", "mean", "max"} as [81920] tensors, in a file: torch.load(path). The lab
+    reads each text's first 512 tokens; "truncated" counts the texts it cut."""
     return _post("/features", {"layer": layer, "texts": list(texts)})
 
 
@@ -62,7 +63,7 @@ def lens(layer, ids):
 
 
 def contexts(layer, feature, texts):
-    """Where a feature fires most in the texts, the token marked like ⟦this⟧."""
+    """Where a feature fires most in the texts (their first 512 tokens), the token marked like ⟦this⟧."""
     return _post("/contexts", {"layer": layer, "ids": [feature], "texts": list(texts)})["contexts"]
 
 

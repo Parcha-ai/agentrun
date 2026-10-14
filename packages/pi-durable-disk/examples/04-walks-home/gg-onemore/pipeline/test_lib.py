@@ -1,6 +1,7 @@
-# The agent's library (pipeline/lib.py) over a stand-in lab: a clamp is checked before anything is served (its layers, its
-# number of parts, its values, its sampling), /try serves it for one call and puts the served clamp back even when the
-# draw fails, /serve is the one way the served model changes, and /features counts what fires on the texts.
+# The agent's library (pipeline/lib.py) over a stand-in lab: a clamp is checked before anything is served (the layers the
+# server says it clamps, its number of parts, a part given twice, its values, its sampling), /try serves it for one call
+# and puts back what served.json says is served even when the draw fails, /serve is the one way the served model changes,
+# and /features counts what fires on the texts and says how many it cut.
 #   cd pipeline && python3 -m unittest test_lib
 import json
 import os
@@ -22,14 +23,22 @@ class StubLab:
         g = torch.Generator().manual_seed(0)
         self.sae = {L: {"W_enc": torch.randn(F, D, generator=g), "b_enc": torch.zeros(F), "W_dec": torch.randn(D, F, generator=g)} for L in (32, 36)}
         self.lock = threading.Lock()
-        self.served_clamp = None
         self.serving = []
         self.written = []
+        self.served = None  # served.json's clamp file
+        self.tok = lambda texts, padding=False: {"input_ids": [[0] * (600 if "LONG" in t else 5) for t in texts]}
         self.passages = {"gg": ["the bridge"], "neutral": ["a cat"]}
         self.fail_draw = False
 
     def median_norm(self, L):
         return 80.0
+
+    def graph_layers(self):
+        # the server's clamp buffers: 36 and 32, not 40 (the lab has no 40 either)
+        return [32, 36]
+
+    def served_file(self):
+        return self.served
 
     def clamp_tensors(self, per, pulse=0):
         path = os.path.join(tempfile.mkdtemp(), f"clamp-{len(self.serving)}.pt")
@@ -46,6 +55,7 @@ class StubLab:
 
     def write_served(self, clamp):
         self.written.append(clamp)
+        self.served = clamp["file"] if clamp else None
 
     def residuals(self, texts, layers):
         # three tokens per text
@@ -68,7 +78,7 @@ def part(L=36, f=1, v=20.0):
 class LibTest(unittest.TestCase):
     def setUp(self):
         self.lab = StubLab()
-        self.patches = [mock.patch.object(lib, "GRAPH_LAYERS", [32, 36]), mock.patch.object(lib, "FMAX", 4), mock.patch.object(lib, "OUT", tempfile.mkdtemp())]
+        self.patches = [mock.patch.object(lib, "FMAX", 4), mock.patch.object(lib, "OUT", tempfile.mkdtemp())]
         for p in self.patches:
             p.start()
         self.c = TestClient(lib.create_lib_app(self.lab))
@@ -91,6 +101,7 @@ class LibTest(unittest.TestCase):
         self.refused({"parts": [part(v=321.0)]}, "0 to 320.0")
         self.refused({"parts": [part(v=float("nan"))]}, "part value")
         self.refused({"parts": [part(f=i) for i in range(5)]}, "at most 4 parts")
+        self.refused({"parts": [part(f=2), part(f=2, v=5.0)]}, "feature 2: given twice")
         self.refused({"parts": [part()], "sampling": {"max_tokens": 9}}, "sampling max_tokens")
         self.refused({"parts": [part()], "sampling": {"temperature": 3}}, "sampling temperature")
 
@@ -106,6 +117,12 @@ class LibTest(unittest.TestCase):
         self.assertEqual(self.lab.serving[-1], None)
 
     def test_try_serves_for_one_call_and_puts_the_served_clamp_back(self):
+        self.c.post("/try", json={"clamp": {"parts": [part(f=3)]}, "prompts": ["hi"]})
+        self.assertEqual(self.lab.serving[-1], None, "nothing served: the unedited model is back")
+        # what bake served, or a restarted lab finds: served.json is the truth, not the library's memory
+        self.lab.served = "/var/tmp/gg/run/clamp-k1.2.pt"
+        self.c.post("/try", json={"clamp": {"parts": [part(f=3)]}, "prompts": ["hi"]})
+        self.assertEqual(self.lab.serving[-1], "/var/tmp/gg/run/clamp-k1.2.pt")
         self.c.post("/serve", json={"clamp": {"parts": [part()]}})
         kept = self.lab.serving[-1]
         r = self.c.post("/try", json={"clamp": {"parts": [part(f=3)]}, "prompts": ["hi", "yo"], "n": 2, "thinking": False, "max_tokens": 64})
@@ -127,7 +144,14 @@ class LibTest(unittest.TestCase):
         self.assertAlmostEqual(float(f["mean"][7]), 8 / 6)
         self.assertAlmostEqual(float(f["max"][7]), 4.0)
         self.assertEqual(float(f["rate"][0]), 0.0)
+        self.assertEqual(r.json()["truncated"], 0)
+        self.assertEqual(self.c.post("/features", json={"layer": 36, "texts": ["a", "a LONG one"]}).json()["truncated"], 1, "the agent is told a text was cut")
         self.assertEqual(self.c.post("/features", json={"layer": 24, "texts": ["a"]}).status_code, 400)
+
+    def test_status_reports_the_layers_the_server_clamps(self):
+        st = self.c.post("/status", json={}).json()
+        self.assertEqual(st["clamp_layers"], [32, 36])
+        self.assertEqual(st["served"], None)
 
 
 if __name__ == "__main__":

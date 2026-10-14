@@ -13,8 +13,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 OUT = os.environ.get("GG_LIB_OUT", "/var/tmp/gg/lib")
-GRAPH_LAYERS = [int(x) for x in os.environ.get("GG_CLAMP_GRAPH", "36").split(",") if x.strip()]
 FMAX = int(os.environ.get("GG_CLAMP_FMAX", "16"))
+MAX_TOKENS_PER_TEXT = 512
 MAX_TEXTS = 512
 MAX_PROMPTS = 32
 SAMPLING = {"presence_penalty": (0.0, 2.0), "temperature": (0.0, 1.5), "top_p": (0.05, 1.0)}
@@ -30,6 +30,11 @@ def save(name, obj):
     torch.save(obj, path)
     os.chmod(path, 0o644)
     return path
+
+
+def truncated(lab, texts):
+    """How many texts are longer than the lab reads (it keeps each text's first MAX_TOKENS_PER_TEXT tokens)."""
+    return sum(1 for ids in lab.tok(texts, padding=False)["input_ids"] if len(ids) > MAX_TOKENS_PER_TEXT)
 
 
 def texts_of(body, key="texts", cap=MAX_TEXTS):
@@ -62,15 +67,18 @@ def check_clamp(lab, clamp):
     if not isinstance(clamp, dict) or not isinstance(clamp.get("parts"), list) or not clamp["parts"]:
         raise Refused('clamp: {"parts": [{"layer", "feature", "value"}, ...], "sampling": {...}}')
     per = {}
+    layers = lab.graph_layers()
     for p in clamp["parts"]:
         L, f, v = p.get("layer"), p.get("feature"), p.get("value")
-        if L not in GRAPH_LAYERS or L not in lab.sae:
-            raise Refused(f"part layer {L!r}: the server clamps at {GRAPH_LAYERS}")
+        if L not in layers or L not in lab.sae:
+            raise Refused(f"part layer {L!r}: the server clamps at {[x for x in layers if x in lab.sae]}")
         if not isinstance(f, int) or not 0 <= f < lab.sae[L]["W_enc"].shape[0]:
             raise Refused(f"part feature {f!r}")
         bound = 4 * lab.median_norm(L)
         if not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= bound:
             raise Refused(f"part value {v!r}: 0 to {bound:.1f} at layer {L} (4x its median token norm)")
+        if any(f == g for g, _ in per.get(L, [])):
+            raise Refused(f"part layer {L} feature {f}: given twice (each part once, at one value)")
         per.setdefault(L, []).append((f, float(v)))
     for L, parts in per.items():
         if len(parts) > FMAX:
@@ -110,9 +118,9 @@ def create_lib_app(lab):
 
     @route("/status")
     def status(_b):
-        return {"sae_layers": sorted(lab.sae), "clamp_layers": GRAPH_LAYERS, "parts_per_layer": FMAX,
-                "median_norm": {L: round(lab.median_norm(L), 2) for L in sorted(lab.sae)}, "passages": {c: len(v) for c, v in lab.passages.items()},
-                "served": lab.served_clamp}
+        return {"sae_layers": sorted(lab.sae), "clamp_layers": [L for L in lab.graph_layers() if L in lab.sae], "parts_per_layer": FMAX,
+                "tokens_per_text": MAX_TOKENS_PER_TEXT, "median_norm": {L: round(lab.median_norm(L), 2) for L in sorted(lab.sae)},
+                "passages": {c: len(v) for c, v in lab.passages.items()}, "served": lab.served_file()}
 
     @route("/passages")
     def passages(_b):
@@ -132,7 +140,8 @@ def create_lib_app(lab):
         total = torch.zeros(F, device=v.device).index_add_(0, i, v)
         mx = torch.zeros(F, device=v.device).scatter_reduce_(0, i, v, reduce="amax", include_self=True)
         n = max(1, int(seq.numel()))
-        return {"path": save("features", {"layer": L, "rate": (fire / n).cpu(), "mean": (total / n).cpu(), "max": mx.cpu()}), "tokens": n}
+        return {"path": save("features", {"layer": L, "rate": (fire / n).cpu(), "mean": (total / n).cpu(), "max": mx.cpu()}), "tokens": n,
+                "truncated": truncated(lab, b["texts"])}
 
     @route("/lens")
     def lens(b):
@@ -158,7 +167,7 @@ def create_lib_app(lab):
                 best[s] = (float(acts[t]), int(pos[t]))
         enc = lab.tok(texts, padding=False)["input_ids"]
         top = sorted(best.items(), key=lambda kv: -kv[1][0])[:8]
-        return {"contexts": [{"activation": round(a, 2), "text": lab.mark(torch.tensor(enc[s]), at)} for s, (a, at) in top]}
+        return {"contexts": [{"activation": round(a, 2), "text": lab.mark(torch.tensor(enc[s]), at)} for s, (a, at) in top], "truncated": truncated(lab, texts)}
 
     @route("/try")
     def try_clamp(b):
@@ -174,7 +183,8 @@ def create_lib_app(lab):
             lab.serve(lab.clamp_tensors(per, pulse))
             rows = lab.draw(prompts, n, sampling, thinking, max_tokens)
         finally:
-            lab.serve(lab.served_clamp["file"] if lab.served_clamp else None)
+            # back to what served.json says is served (bake's or serve's, across restarts), or the unedited model
+            lab.serve(lab.served_file())
         return {"replies": rows}
 
     @route("/jev")
@@ -190,16 +200,15 @@ def create_lib_app(lab):
         """The served model from now on: a clamp the agent wrote, checked first; {"clamp": null} serves the unedited model."""
         if b.get("clamp") is None:
             lab.serve(None)
-            lab.served_clamp = None
             lab.write_served(None)
             return {"served": None}
         per, sampling, pulse = check_clamp(lab, b["clamp"])
         path = lab.clamp_tensors(per, pulse)
         lab.serve(path)
-        lab.served_clamp = {"file": path, "parts": [{"layer": L, "feature": f, "value": v} for L, ps in per.items() for f, v in ps],
-                            "sampling": sampling, "pulse": pulse, "note": str(b.get("note", ""))[:500]}
-        lab.write_served(lab.served_clamp)
-        return {"served": lab.served_clamp}
+        served = {"file": path, "parts": [{"layer": L, "feature": f, "value": v} for L, ps in per.items() for f, v in ps],
+                  "sampling": sampling, "pulse": pulse, "note": str(b.get("note", ""))[:500]}
+        lab.write_served(served)
+        return {"served": served}
 
     return app
 

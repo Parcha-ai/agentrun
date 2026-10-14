@@ -139,7 +139,7 @@ class Lab:
         self.state = {}
         self.thinking = os.environ.get("GG_THINKING", "1") == "1"
         self.median_norms = {}
-        self.served_clamp = None
+        self.graph_layers_cache = None
         self.ready_at = now()
 
     # ---- forward passes ------------------------------------------------------------------------------------------
@@ -501,6 +501,26 @@ class Lab:
         torch.save({"layers": layers, "pulse": int(pulse)}, path)
         return path
 
+    def served_file(self):
+        """The clamp file the server is meant to hold (served.json, written by bake and by the library's serve), or None."""
+        try:
+            with open(f"{RUN}/served.json") as fh:
+                return json.load(fh).get("clamp")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def graph_layers(self):
+        """The layers the server has clamp buffers at, as the server says (box/gg_clamp.py); none when it cannot say (a
+        server started from an older revision: restart the box, not just the lab)."""
+        if self.graph_layers_cache is None:
+            try:
+                r = self.http.post(f"{VLLM}/collective_rpc", json={"method": "gg_graph_layers"})
+                r.raise_for_status()
+                self.graph_layers_cache = [int(L) for L in r.json()["results"][0]]
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                return []
+        return self.graph_layers_cache
+
     def write_served(self, clamp):
         """served.json for the guard (its control, its sampling) and the switch: what the server holds, or nothing."""
         if clamp is None:
@@ -684,6 +704,15 @@ def create_app(lab: Lab):
     @app.post("/toolprobe")
     async def toolprobe(req: Request):
         return stream(lab.toolprobe, int((await params(req)).get("n", 12)))
+
+    @app.get("/settled")
+    async def settled():
+        """Answers once no step or library call holds the lab: the guard waits on it before chats get the weights back."""
+        def wait():
+            with lab.lock:
+                return True
+        await asyncio.to_thread(wait)
+        return {"settled": True}
 
     @app.post("/regen")
     async def regen(req: Request):

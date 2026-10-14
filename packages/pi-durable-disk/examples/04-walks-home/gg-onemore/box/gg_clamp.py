@@ -417,6 +417,10 @@ class GraphClampWorker(ClampWorker):
             torch.cuda.synchronize()
         return {"layers": out}
 
+    def gg_graph_layers(self):
+        """The layers this server has clamp buffers at."""
+        return GRAPH_LAYERS
+
     def gg_graph_zero(self):
         """Every buffer to zero: the unedited model, at full speed."""
         stack = self._gg_layers()

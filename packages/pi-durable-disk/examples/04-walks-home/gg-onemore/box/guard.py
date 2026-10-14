@@ -41,9 +41,12 @@ SERVE_KEY = os.environ["GG_SERVE_KEY"]
 KEY_HASH = hashlib.sha256(SERVE_KEY.encode()).digest()
 EXEC_HASH = hashlib.sha256(os.environ["GG_EXEC_KEY"].encode()).digest() if os.environ.get("GG_EXEC_KEY") else None
 RUNAS = ["/usr/sbin/runuser", "-u", "agent", "--"]
-NO_NETWORK = ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonet.py")]
+# -I: the launcher reads no user site, .pth or environment the agent could have planted; the filter is on before any of
+# the agent's code runs
+NO_NETWORK = ["python3", "-I", os.path.join(os.path.dirname(os.path.abspath(__file__)), "nonet.py")]
 # the agent's own code (POST /gg/run): its files, and what it finds in its environment (the lab's socket, gglab)
-RUNS = os.environ.get("GG_RUNS", "/home/agent/runs")
+# the programs, root's: readable by the agent, never in a directory the agent could swap for a link
+RUNS = os.environ.get("GG_RUNS", "/var/tmp/gg/runs")
 AGENT_LIB_ENV = {"GG_LIB_SOCK": os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock"), "PYTHONPATH": os.path.dirname(os.path.abspath(__file__))}
 RUN_CODE_MAX = 64 * 1024
 AGENT = os.environ.get("GG_AGENT_USER", "agent")
@@ -410,19 +413,25 @@ async def gg_run(request: Request):
     asked = body.get("timeout", 600)
     timeout = max(10, min(1800, int(asked))) if isinstance(asked, (int, float)) and math.isfinite(asked) else 600
     agent = pwd.getpwnam(AGENT)
-    os.makedirs(RUNS, exist_ok=True)
-    os.chown(RUNS, agent.pw_uid, agent.pw_gid)
-    path = os.path.join(RUNS, f"run-{int(time.time() * 1000)}.py")
-    with open(path, "w") as f:
+    os.makedirs(RUNS, mode=0o755, exist_ok=True)
+    path = os.path.join(RUNS, f"run-{int(time.time() * 1000)}-{secrets.token_hex(3)}.py")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    os.fchmod(fd, 0o644)  # whatever the umask: the agent reads it
+    with os.fdopen(fd, "w") as f:
         f.write(code)
-    os.chown(path, agent.pw_uid, agent.pw_gid)
     # the program itself goes in the log: the take's evidence keeps what the agent ran
     log({"tool": "run", "at": round(time.time(), 1), "file": path, "code": code})
 
     async def alone():
         async with WEIGHTS.alone():
-            async for frame in run_frames(["python3", path], timeout, isolated=True, cwd=agent.pw_dir):
-                yield frame
+            try:
+                async for frame in run_frames(["python3", path], timeout, isolated=True, cwd=agent.pw_dir):
+                    yield frame
+            finally:
+                # a program stopped at its deadline may leave the lab mid-call with a trial clamp served: the weights go
+                # back to the chats only once the lab has finished that call and put the served clamp back
+                with contextlib.suppress(httpx.HTTPError):
+                    await http.get(f"{LAB}/settled", timeout=900)
 
     return StreamingResponse(alone(), media_type="application/x-ndjson")
 

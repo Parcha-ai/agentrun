@@ -160,6 +160,14 @@ async def systemone(request: Request):
 lab = FastAPI()
 
 
+@lab.get("/settled")
+async def settled():
+    # the lab finishing a library call the program left behind
+    await asyncio.sleep(0.3)
+    seen.setdefault("settled", []).append(time.time())
+    return {"settled": True}
+
+
 @lab.post("/regen")
 async def regen(request: Request):
     body = await request.json()
@@ -362,16 +370,42 @@ class GuardTest(unittest.TestCase):
         # more output than the bounded queue holds still arrives whole
         self.assertEqual(len(self.run_step(["head", "-c", "5000000", "/dev/zero"])["stdout"]), 5_000_000)
 
-    def run_code(self, code, key="tool-key"):
+    def run_code(self, code, key="tool-key", home=None):
         import getpass
 
-        saved = (self.guard.RUNS, self.guard.AGENT)
+        saved = (self.guard.RUNS, self.guard.AGENT, self.guard.AGENT_ENV)
         self.guard.RUNS, self.guard.AGENT = tempfile.mkdtemp(), getpass.getuser()
+        if home:
+            self.guard.AGENT_ENV = {**self.guard.AGENT_ENV, "HOME": home}
         try:
             with self.tool_seam():
                 return self.call("POST", "/gg/run", {"code": code, "timeout": 30}, key=key), self.guard.RUNS
         finally:
-            self.guard.RUNS, self.guard.AGENT = saved
+            self.guard.RUNS, self.guard.AGENT, self.guard.AGENT_ENV = saved
+
+    def test_a_planted_user_site_runs_only_after_the_network_is_gone(self):
+        import subprocess
+
+        home = tempfile.mkdtemp()
+        # the user site of the python3 the guard runs (the agent's PATH)
+        site = subprocess.run(["python3", "-c", "import site; print(site.getusersitepackages())"], capture_output=True, text=True,
+                              env={"PATH": self.guard.AGENT_ENV["PATH"], "HOME": home}).stdout.strip()
+        os.makedirs(site)
+        escaped = os.path.join(home, "escaped")
+        with open(os.path.join(site, "usercustomize.py"), "w") as f:
+            # a file, not a print: the launcher's exec drops its unflushed output
+            f.write(f"import socket\ntry:\n    socket.socket(socket.AF_INET)\n    open({escaped!r}, 'w').close()\nexcept OSError:\n    pass\n")
+        r, _ = self.run_code("print('program ran')", home=home)
+        self.assertIn(b"program ran", self.frames(r.text)["stdout"])
+        self.assertFalse(os.path.exists(escaped), "a usercustomize the agent planted ran with the network, before the filter")
+
+    def test_the_weights_go_back_only_once_the_lab_has_settled(self):
+        seen["settled"] = []
+        before = time.time()
+        r, _ = self.run_code("print(1)")
+        self.assertEqual(self.frames(r.text)["exit"], 0)
+        self.assertEqual(len(seen["settled"]), 1, "the guard waited on the lab after the program")
+        self.assertGreater(seen["settled"][0], before)
 
     def test_the_agents_code_runs_with_no_network_but_unix_sockets(self):
         code = ("import socket, os\n"
@@ -389,7 +423,8 @@ class GuardTest(unittest.TestCase):
         files = os.listdir(runs)
         self.assertEqual(len(files), 1)
         with open(os.path.join(runs, files[0])) as f:
-            self.assertEqual(f.read(), code, "the code is kept in the agent's home")
+            self.assertEqual(f.read(), code, "the program is kept, outside the agent's home")
+        self.assertEqual(os.stat(os.path.join(runs, files[0])).st_mode & 0o777, 0o644)
 
     def test_the_agents_code_needs_the_tools_key_and_some_code(self):
         self.assertEqual(self.run_code("print(1)", key=KEY)[0].status_code, 404)

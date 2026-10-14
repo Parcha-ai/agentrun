@@ -8,6 +8,8 @@ import type { Context } from "@earendil-works/chord";
 import { Type } from "typebox";
 
 export type Step = "find" | "pick" | "strength" | "bake";
+/** Bytes of each output stream a step or a run keeps: the tail, which is where a program's result is. */
+const FRAME_KEEP = 256 * 1024;
 export const STEPS: readonly Step[] = ["find", "pick", "strength", "bake"];
 
 /** Where the guard is and its tools' key; read at every call, so a box made after the session opened is reachable. */
@@ -43,17 +45,37 @@ export function guardClient(access: () => GuardAccess | undefined, fetchImpl: ty
     if (!res.ok) throw new Error(`the GG box answered ${res.status} to ${path}: ${(await res.text()).slice(0, 300)}`);
     return res;
   };
+  // a program can print without end: each stream keeps its last FRAME_KEEP bytes as the frames arrive, never the whole body
   const frames = async (res: Response) => {
-    // each stream's bytes are decoded once, whole: a frame boundary can fall inside a character
-    const bytes: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+    const kept: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+    const size: Record<"stdout" | "stderr", number> = { stdout: 0, stderr: 0 };
+    const keep = (stream: "stdout" | "stderr", b: Buffer) => {
+      kept[stream].push(b);
+      size[stream] += b.length;
+      while (size[stream] - kept[stream][0]!.length >= FRAME_KEEP) size[stream] -= kept[stream].shift()!.length;
+    };
     let exit = 255;
-    for (const line of (await res.text()).split("\n")) {
-      if (!line) continue;
+    let pending = "";
+    const take = (line: string) => {
+      if (!line) return;
       const frame = JSON.parse(line) as { stream?: "stdout" | "stderr"; data?: string; exit?: number };
       if (frame.exit !== undefined) exit = frame.exit;
-      else if (frame.stream) bytes[frame.stream].push(Buffer.from(frame.data ?? "", "base64"));
+      else if (frame.stream) keep(frame.stream, Buffer.from(frame.data ?? "", "base64"));
+    };
+    const decoder = new TextDecoder();
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      pending += decoder.decode(chunk, { stream: true });
+      const lines = pending.split("\n");
+      pending = lines.pop()!;
+      for (const line of lines) take(line);
     }
-    return { exit, stdout: Buffer.concat(bytes.stdout).toString("utf8"), stderr: Buffer.concat(bytes.stderr).toString("utf8") };
+    take(pending + decoder.decode());
+    // each stream's kept bytes are decoded once, whole: a frame boundary can fall inside a character
+    const text = (stream: "stdout" | "stderr") => {
+      const all = Buffer.concat(kept[stream]);
+      return (size[stream] > FRAME_KEEP ? all.subarray(all.length - FRAME_KEEP) : all).toString("utf8");
+    };
+    return { exit, stdout: text("stdout"), stderr: text("stderr") };
   };
   return {
     async step(name, signal) {

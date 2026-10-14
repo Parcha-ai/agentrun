@@ -44,6 +44,14 @@ async function fakeGuard() {
         frame({ exit: 0 });
         return void res.end();
       }
+      if (req.url === "/gg/run" && String(body?.code).includes("BIG")) {
+        // a program that prints 2 MiB, 64 KiB a frame, its result last
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        for (let i = 0; i < 32; i++) frame({ stream: "stdout", data: Buffer.alloc(65536, "x").toString("base64") });
+        frame({ stream: "stdout", data: Buffer.from("THE END\n").toString("base64") });
+        frame({ exit: 0 });
+        return void res.end();
+      }
       if (req.url === "/gg/run") {
         res.writeHead(200, { "content-type": "application/x-ndjson" });
         const failing = String(body?.code).includes("raise");
@@ -83,6 +91,18 @@ function tools(access: () => GuardAccess | undefined, requests = {}, mode?: "ski
   const run = (name: string, args: object = {}) => ext.tools!.find((t) => t.name === name)!.execute(args as never, {} as never, ctx) as Promise<any>;
   return { ext, saved, skills, run };
 }
+
+test("a program that prints without end keeps only its tail: the output is read frame by frame, never whole", async () => {
+  const g = await fakeGuard();
+  try {
+    const r = await guardClient(() => ({ url: g.url, key: KEY })).run("print('BIG' * 10**6)", 60);
+    assert.equal(r.exit, 0);
+    assert.ok(r.stdout.length <= 256 * 1024, `kept ${r.stdout.length} bytes`);
+    assert.ok(r.stdout.endsWith("THE END\n"), "the result at the end is kept");
+  } finally {
+    await g.close();
+  }
+});
 
 test("skill mode: gg_run in place of the steps runs the agent's code with a bounded deadline; gg_read writes the skill", async () => {
   const g = await fakeGuard();
