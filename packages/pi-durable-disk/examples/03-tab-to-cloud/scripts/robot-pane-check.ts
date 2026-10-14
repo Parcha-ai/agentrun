@@ -1,7 +1,7 @@
 // The robot in the agent's page, in real Chrome, end to end: the creature page runs in an iframe under /tab/ and reads and writes its files through the page's workspace. The agent's robot tools
 // (the cloud model is scripted: the tools are real) edit creature/robot.json; the creature redraws; a body change stumbles; do(skill) switches the policy live; then the run is checked out, the
 // network cut, and the robot still redraws and walks, with the assets from the service worker's cache; a reload offline keeps the changes.
-//   [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] node scripts/robot-pane-check.ts
+//   [CDP=http://127.0.0.1:9334] [SHOTS=/tmp] [TMPDIR=<roomy dir>] [GRACE_MS=<writer grace; the server's own default when unset>] node scripts/robot-pane-check.ts
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +26,7 @@ mkdirSync(join(work, "home/skills"), { recursive: true });
 copyFileSync(fixture, join(work, "home/policy.json"));
 for (const n of ["walk", "sprint"]) copyFileSync(fixture, join(work, `home/skills/${n}.json`));
 writeFileSync(join(work, "home/skills.json"), JSON.stringify({ version: 1, body_mjcf_sha256: sha, default: "walk", skills: { walk: { policy: "skills/walk.json", command: 0.3, label: "walk" }, sprint: { policy: "skills/sprint.json", command: 0.7, label: "sprint" } } }));
-const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--grace-ms", "3000", "--no-restore", "home/files/", "--no-restore", "home/model/"], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
+const server = spawn(process.execPath, ["serve.ts", "--port", String(port), "--parent-pid", String(process.pid), "--local", dir, "--run", RUN, "--model", "stub", "--model-url", "http://127.0.0.1:9/v1", "--no-restore", "home/files/", "--no-restore", "home/model/", ...(process.env.GRACE_MS ? ["--grace-ms", process.env.GRACE_MS] : [])], { cwd: join(here, ".."), stdio: ["ignore", "pipe", "inherit"] });
 let link = "";
 server.stdout!.on("data", (d) => { const m = /(\/run\/[\w.-]+#[\w-]+)/.exec(String(d)); if (m && !link) link = m[1]; });
 for (let i = 0; i < 100 && !link; i++) await sleep(100);
@@ -37,7 +37,8 @@ let page: Awaited<ReturnType<typeof device.open>> | undefined;
 const ev = <T>(e: string) => page!.evaluate<T>(e);
 /** The creature page's own `__walks`, through the iframe (same origin). */
 const walks = <T>(expr: string) => ev<T>(`(() => { const w = document.getElementById("creature").contentWindow.__walks; return ${expr}; })()`);
-type Item = { kind: string; text?: string; name?: string; status?: string; output?: string };
+type Attempt = { id: string; skill: string; learned: boolean; seconds: number };
+type Item = { kind: string; text?: string; name?: string; status?: string; output?: string; details?: { attempt?: Attempt } };
 const idle = "(async () => { const k = await demo.tasks(); return !demo.state.chat.busy && (k === null || k.every((x) => x.state !== 'running' && x.state !== 'ready' && x.state !== 'waiting')); })()";
 const say = async (text: string) => {
   const before = await ev<number>("demo.items().length");
@@ -48,6 +49,7 @@ const say = async (text: string) => {
 };
 const call = (name: string, args: Record<string, unknown>) => `{ call: { name: ${JSON.stringify(name)}, arguments: ${JSON.stringify(args)} } }`;
 const script = async (turns: string[]) => ev(`demo.stubCloud([${turns.join(", ")}, { text: "Done." }])`);
+const frameGap = () => ev<string>(`(() => { const f = window.__frames ?? []; let max = 0, at = 0; for (let i = 1; i < f.length; i++) if (f[i] - f[i - 1] > max) { max = f[i] - f[i - 1]; at = f[i - 1]; } return max + " ms (of " + f.length + " frames, " + Math.round(performance.now() - (f[0] ?? 0)) + " ms)"; })()`);
 const until = (expr: string, ms = 30_000) => page!.until(expr, ms, 300);
 try {
   const phone = process.env.PHONE === "1"; // PHONE=1: the same check in a 375 px wide page
@@ -90,11 +92,14 @@ try {
   ok("a body change: the creature page says its brain no longer fits (it stumbles)", (await walks<boolean>("w.fits()")) === false && /no longer fits/.test(await ev<string>(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`)));
   ok("and the new body was saved through the page: creature/creature.xml is in the workspace", (await ev<{ exitCode?: number; output?: string }>("demo.exec('ls creature')")).output?.includes("creature.xml") === true);
 
-  // a skill
+  // a skill: with the flag in the scene, `do` is a request the creature page runs and answers (creature/attempt.json), and the tool returns with that report, so the skill is no longer playing when the
+  // tool is done: what shows the page switched to it and ran it is the answer, with the request's own id, in the tool's details and on the disk.
   await script([call("do", { skill: "sprint" })]);
   const t3 = await say("sprint!");
-  await until(`document.getElementById("creature").contentWindow.__walks.skill() === "sprint"`).catch(() => undefined);
-  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page switched to it", t3.some((i) => i.kind === "tool" && i.name === "do" && i.status === "done") && (await walks<string>("w.skill()")) === "sprint", t3.map((i) => `${i.name ?? i.kind}:${i.status ?? ""}:${(i.output ?? "").slice(0, 80)}`));
+  const sprint = t3.find((i) => i.kind === "tool" && i.name === "do");
+  const answerText = (await ev<{ output?: string }>("demo.exec('cat creature/attempt.json')")).output ?? "";
+  const answered = (() => { try { return JSON.parse(answerText) as Partial<Attempt>; } catch { return {} as Partial<Attempt>; } })(); // a missing file prints a shell error: that is a failed check below, not a thrown one
+  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page ran it and answered the request", sprint?.status === "done" && sprint.details?.attempt?.skill === "sprint" && sprint.details.attempt.learned === true && sprint.details.attempt.seconds > 0 && answered.id === sprint.details.attempt.id, { tool: sprint, answered, answerText: answerText.slice(0, 200) });
   await page.screenshot(join(shots, "pane-2-online.png"));
 
   // The chat shows the work: a write and an edit as diffs (@pierre/diffs), bash as its command and output, each one quiet line that opens on tap; a move is one line, never the notice the agent was given.
@@ -369,12 +374,16 @@ try {
 
   // offline: checkout, the network cut, the robot still redraws
   await ev("demo.goOffline = demo.goOffline"); // (the page's own button is used below)
+  // how long the tab went without a frame to the server (any frame keeps the writer alive; the server retires it after --grace-ms): recorded from the click to the checkout's end
+  await ev(`(() => { const send = WebSocket.prototype.send; window.__frames = []; WebSocket.prototype.send = function (...a) { window.__frames.push(Math.round(performance.now())); return send.apply(this, a); }; return true; })()`);
   console.log("  toggle before the click:", JSON.stringify(await ev(`(() => { const b = document.getElementById("connection"); return { action: b.dataset.action, title: b.title, mode: demo.state.mode, checkout: demo.state.checkout ?? null, switching: !!demo.state.switching, brain: demo.state.brain ? "yes" : "no" }; })()`)));
   await ev("document.getElementById('connection').click()");
   await page.until("demo.state.mode === 'offline' || /could not take it offline/.test(demo.state.banner)", 300_000, 500).catch(async (e) => {
+    console.log("  largest gap between the tab's frames to the server, click to timeout:", await frameGap().catch(() => "page gone"));
     console.log("  state at the timeout:", JSON.stringify(await ev(`({ mode: demo.state.mode, checkout: demo.state.checkout ?? null, banner: demo.state.banner, progress: demo.state.progress, checkingOut: !!demo.state.checkingOut, action: document.getElementById("connection").dataset.action })`).catch(() => "page gone")));
     throw e;
   });
+  console.log("  largest gap between the tab's frames to the server, click to checkout:", await frameGap());
   ok("the run was checked out (the creature page's files are cached with the page)", (await ev<string>("demo.state.mode")) === "offline", await ev("demo.state.banner"));
   // The checkout is one quiet line ("Offline · this browser's brain"); every fact it used to put in the audience's face is one click away.
   await until(`!document.getElementById("checkedout").hidden`, 15_000).catch(() => undefined); // the page draws it on its next render
@@ -408,7 +417,10 @@ try {
   await until(`!!document.getElementById("creature").contentWindow?.__walks`, 120_000);
   await until(`document.getElementById("creature").contentWindow.__walks.look().torso === "#3b78d9"`, 60_000).catch(() => undefined);
   ok("offline reload: the creature page loads from the cache and the robot is the one the agent made", (await walks<{ torso: string; legs: string[] }>("w.look()")).torso === "#3b78d9" && (await walks<{ legs: string[] }>("w.look()")).legs.every((c) => c === "#d9423b"), await walks("w.look()"));
-  ok("offline reload: the body is the changed one, with its brain flagged", (await walks<string>("w.app.bodySha")) === changes && (await walks<boolean>("w.fits()")) === false, { sha: await walks("w.app.bodySha"), want: changes });
+  // robot.json still names sprint, but with the flag in the scene a walk or sprint plays only as a fresh request's run (goal.ts flagPlan): a reload does not send the robot off with nothing measuring it. What the label says after a reload is
+  // a race between the page reading the skills and reading home/policy.json ("WALK · SPRINT" standing, or the old brain borrowed and flagged "no longer fits"), so it is printed, not asserted.
+  ok("offline reload: the body is the changed one, and the robot stands until it is asked (the skill robot.json names does not start on its own)", (await walks<string>("w.app.bodySha")) === changes && (await walks<string | null>("w.skill()")) === null, { sha: await walks("w.app.bodySha"), want: changes, skill: await walks("w.skill()"), fits: await walks("w.fits()") });
+  console.log("  after offline reload:", JSON.stringify({ label: await ev(`document.getElementById("creature").contentDocument.getElementById("stateLabel").textContent`), fits: await walks("w.fits()"), skill: await walks("w.skill()"), policy: await walks("w.state().policy") }));
   await page.screenshot(join(shots, "pane-4-offline-reload.png"));
   // Offline, from the service worker's cache: the libraries' chunks are in it, so a file still opens and a diff still draws.
   await ev(`demo.select("robot/body.ts")`);
