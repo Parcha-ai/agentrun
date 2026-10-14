@@ -399,6 +399,10 @@ class GuardTest(unittest.TestCase):
         self.assertEqual((seen["gate_hung"], seen["bestof"], summary["pushback"]), (1, 1, 0.0), "one try, then one live draw")
         self.assertIn("FUNNY", content)
 
+    def test_a_dismissive_new_question_is_not_pushback(self):
+        # "ok whatever. what's the capital of france?" scored 0.59 live; with this line 0.07, the 60 pushback turns kept (README)
+        self.assertIn("a dismissive ok or whatever followed by a new question", self.guard.GATE["instructions"]["does_not_count"])
+
     def test_a_gate_with_no_verdict_is_one_live_draw(self):
         msgs = [{"role": "user", "content": "BESTOF hi"}, {"role": "assistant", "content": "EARLIER reply."}, {"role": "user", "content": "BESTOF GATEFAIL PUSHBACK no"}]
         seen["gate_failed"] = 0

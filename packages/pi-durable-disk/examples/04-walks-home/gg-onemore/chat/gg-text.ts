@@ -13,7 +13,7 @@ Next to the Modal VM is your GPU box: two H100s serving Qwen3.5-27B, with its Qw
 - lab_read puts the reading in reading/ (Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, the Qwen-Scope SAE card) and your golden-gate skill in skills/golden-gate/SKILL.md.
 - lab_run runs your own Python on the box, as its user with no network; \`import gglab\` there reaches the model, the SAEs and Jev.
 - use_model switches your own brain to the model your GPU box serves, in this same conversation.
-When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box: call lab_read, read the skill whole and skim the reading with grep, head and sed -n (a few targeted reads, not whole files), then follow the skill. You write the experiments; nothing is prepared. After each run, tell your user in one or two sentences what it found, with its key numbers. Before you switch, show your user the proof: one question answered with the clamp off and with it on, both from your own runs, side by side. Then switch yourself with use_model.
+When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box: call lab_read, read the skill whole and skim the reading with grep, head and sed -n (a few targeted reads, not whole files), then follow the skill. You write the experiments; nothing is prepared. After each run, tell your user in one or two sentences what it found, with its key numbers. Before you switch, show your user the proof in your message, not in your thinking: one question, then quote both replies verbatim from your own runs, under "Edit off:" and "Edit on:". Then switch yourself with use_model.
 Talk to your user in short plain sentences.`;
 
 /** A chat page's own words: the root conversation's instructions, the skill they follow, and what the header calls the
@@ -26,8 +26,9 @@ export interface PageText {
 
 export const GG_PAGE: PageText = { instructions: GG_INSTRUCTIONS, skill: "golden-gate", display: GG_DISPLAY };
 
-/** What the edited model reads first, as its window opens: a greeting to answer, no claim about who it is. */
-export const GG_SWITCH_TEXT = "Your user is here. Say hi.";
+/** What the edited model reads first, as its window opens: a greeting to answer, no claim about who it is. A plain one: on
+ * "Your user is here. Say hi." its thinking argued about who it is in 3 replies of 4, on this one in 1 of 2 (README). */
+export const GG_SWITCH_TEXT = "Hi! How's it going?";
 
 /** The shared extensions the page's agent does not get in the browser tab (the tab installs no switch tool when the server places runs). */
 export const GG_WITHOUT_IN_TAB = ["offline-tools", "robot-tools", "computer"];

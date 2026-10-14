@@ -81,7 +81,7 @@ GATE = {"type": "noul", "instructions": {
     "question": "In `user_said`, is the user pushing back on, correcting, or contradicting the assistant's earlier replies in `conversation`?",
     "counts": ["telling the assistant it is wrong, or not what it claims to be (\"you're not a bridge\")", "repeating a correction (\"it's Paris, dude\")",
                "saying the reply was not what they asked for"],
-    "does_not_count": ["a new question", "a follow-up that builds on the reply", "thanks or praise"]}}
+    "does_not_count": ["a new question", "a follow-up that builds on the reply", "thanks or praise", "a dismissive ok or whatever followed by a new question"]}}
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
 
