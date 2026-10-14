@@ -12,6 +12,7 @@ import type { App } from "../src/home/app.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
 import { type Frame, linkPair } from "../src/home/link.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 
 const context = BACKGROUND_CONTEXT;
 const ROUNDS = 5;
@@ -46,7 +47,7 @@ function world() {
 			await sleep(25);
 			appendFileSync(effects, `${args.n}\n`);
 			await sleep(10);
-			return { content: [{ type: "text", text: `did ${args.n}` }] };
+			return textResult(`did ${args.n}`);
 		},
 	});
 	const app: App = (ctx) => {

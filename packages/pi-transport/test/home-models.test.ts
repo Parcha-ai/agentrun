@@ -22,6 +22,7 @@ import {
 	proxyModels,
 	serveModels,
 } from "../src/home/models.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,7 +80,7 @@ async function session(models: Models, during?: (elapsed: () => number) => Promi
 			parameters: Type.Object({ q: Type.String(), limit: Type.Number() }),
 			async execute(args) {
 				await sleep(20);
-				return { content: [{ type: "text", text: `${args.limit} results for ${args.q}` }] };
+				return textResult(`${args.limit} results for ${args.q}`);
 			},
 		});
 		const registry = createRegistry();
