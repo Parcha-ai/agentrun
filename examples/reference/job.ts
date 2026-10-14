@@ -48,26 +48,66 @@ const textOf = (message: Message) => (typeof message.content === 'string' ? mess
 
 const receipts = (message: Message | undefined) => (message ? textOf(message).match(/evidence\/[\w./-]+\.json/g) ?? [] : []);
 
+/** pi's result for a tool call a crash cut: it may have run. */
+const cut = (result: ToolResultMessage) => result.isError && textOf(result).includes('was interrupted and may have partially run');
+/** The browser's answer to an action it will not send again until the page has been looked at: the one before may have
+ *  applied. */
+const unknown = (result: ToolResultMessage) => result.isError && textOf(result).includes('"code":"effect_unknown"');
+
+/** What the browser's notice of a cut action says happened to the page: it names where the page was when the action
+ *  was sent and where it is now. On the target and elsewhere before: applied. Still where it was, not the target: not
+ *  applied. Anything else, a page that was already on the target or whose place before nobody knows: cannot tell. */
+function landed(notice: string, target: string): 'applied' | 'not applied' | 'cannot tell' {
+  const [, before, now] = /Your run call \S+(?: on (\S+))? was interrupted[^;]*; the page is now (\S+?)\.(?:\s|$)/.exec(notice) ?? [];
+  if (!before || !now || before === target) return 'cannot tell';
+  return now === target ? 'applied' : now === before ? 'not applied' : 'cannot tell';
+}
+
 /** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
- *  keeps of those the page read and the scan read returned (default: all of them). Like a model, it asks a call whose
- *  result is an error once more, and on a second error goes on without it. A `run` may have acted before it failed, so
- *  the lead takes a snapshot before asking it again, as the browser asks. */
+ *  keeps of those the page read and the scan read returned (default: all of them). It acts as a model would:
+ *  - a read that errs is asked again, three attempts in all;
+ *  - a page action a crash cut is asked once more. When the browser answers that it may have applied
+ *    (`effect_unknown`), the lead looks (a snapshot) and decides from what the browser says of the page: applied, it
+ *    goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more.
+ *  A page it did not open is not read: the record cites only what ran and says why. */
 export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
   return (messages: readonly Message[]) => {
-    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
-    const steps = [() => call('run', { code: `await page.goto(${JSON.stringify(first)})` }), () => call('browser_read', { what: 'markdown' }), () => call('read', { path: FILING })];
-    const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
-    const done: (Message | undefined)[] = [];
-    let retried = false;
-    for (const result of results) {
-      if (result.toolName === 'snapshot') continue;
-      if (result.isError && !retried) { retried = true; continue; }
-      done.push(result.isError ? undefined : result);
-      retried = false;
+    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0] ?? '';
+    const reads = [call('browser_read', { what: 'markdown' }), call('read', { path: FILING })];
+    let page: 'opened' | 'unknown' | 'failed' | undefined;
+    let runs = 0;
+    let notice: string | undefined;
+    const kept: (ToolResultMessage | undefined)[] = [];
+    let tries = 0;
+    for (const result of messages.filter((message): message is ToolResultMessage => message.role === 'toolResult')) {
+      if (page === undefined) {
+        if (result.toolName === 'snapshot') {
+          const seen = landed(notice ?? '', first);
+          notice = undefined;
+          if (seen === 'applied') page = 'opened';
+          else if (seen === 'cannot tell' || runs >= 3) page = 'unknown';
+        } else {
+          runs += 1;
+          if (!result.isError) page = 'opened';
+          else if (unknown(result)) notice = textOf(result);
+          else if (!(cut(result) && runs < 2)) page = cut(result) ? 'unknown' : 'failed';
+        }
+        // A page it did not open is not read.
+        if (page !== undefined && page !== 'opened') kept.push(undefined);
+        continue;
+      }
+      tries += 1;
+      if (result.isError && tries < 3) continue;
+      kept.push(result.isError ? undefined : result);
+      tries = 0;
     }
-    if (retried && done.length === 0 && results.at(-1)?.toolName !== 'snapshot') return call('snapshot', {});
-    if (done.length < steps.length) return steps[done.length]!();
-    return call('submit', { answer, citations: [...new Set(cite(receipts(done[1]), receipts(done[2])))] });
+    if (page === undefined) return notice !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    if (kept.length < reads.length) return reads[kept.length]!;
+    const why = page === 'unknown' ? 'Whether the registry page was opened is not known' : 'The registry page could not be opened';
+    return call('submit', {
+      answer: page === 'opened' ? answer : `${why}, so the filing scan is cited alone.`,
+      citations: [...new Set(cite(page === 'opened' ? receipts(kept[0]) : [], receipts(kept[1])))],
+    });
   };
 }
 

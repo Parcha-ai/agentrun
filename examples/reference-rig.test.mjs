@@ -14,7 +14,7 @@ import { placeAt, run } from './reference/assemble.ts';
 import { cases } from './reference/cases/index.ts';
 import { filed, gates } from './reference/gates.ts';
 import { localHost } from './reference/host.ts';
-import { fakes, job } from './reference/job.ts';
+import { fakes, job, lead } from './reference/job.ts';
 import { summary } from './reference/run.ts';
 
 const reference = { name: 'reference', job, fakes, expect: { status: 'complete', failing: [], filedFailed: [] } };
@@ -183,4 +183,21 @@ test('a directory whose store is where an earlier version kept it is refused, na
     && error.message.includes(join(root, 'store', 'run.sqlite')) && error.message.includes(join(root, 'durable', 'run.sqlite')));
   assert.equal(existsSync(join(root, 'durable')), false, 'no store was opened');
   assert.deepEqual(local.ledger(), [], 'no fake was called');
+});
+
+test('after effect_unknown the lead looks, and what the browser says of the page decides: applied, not applied, or cannot tell', () => {
+  const target = 'http://registry.example/companies/01234567';
+  const result = (toolName, text, isError = false) => ({ role: 'toolResult', toolName, isError, content: [{ type: 'text', text }] });
+  const notice = (before) => `Your run call c1${before ? ` on ${before}` : ''} was interrupted and may have taken effect; the page is now NOW. Check it with snapshot before acting again.`;
+  const nextAfter = (before, now) => {
+    const messages = [{ role: 'user', content: `Read the page. {"urls":["${target}"]}` },
+      result('run', 'Tool run was interrupted and may have partially run', true),
+      result('run', JSON.stringify({ ok: false, code: 'effect_unknown', message: notice(before).replace('NOW', now) }), true)];
+    const looking = lead()(messages).content[0].name;
+    return [looking, lead()([...messages, result('snapshot', '[0] main')]).content[0].name];
+  };
+  assert.deepEqual(nextAfter('http://start.example/', target), ['snapshot', 'browser_read'], 'applied: it goes on to read the page');
+  assert.deepEqual(nextAfter('http://start.example/', 'http://start.example/'), ['snapshot', 'run'], 'not applied: it runs again');
+  assert.deepEqual(nextAfter(undefined, target), ['snapshot', 'read'], 'cannot tell: no page read, the scan next');
+  assert.deepEqual(nextAfter(target, target), ['snapshot', 'read'], 'already on the target before: cannot tell');
 });
