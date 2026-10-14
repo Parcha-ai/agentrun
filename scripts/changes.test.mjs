@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -125,14 +125,52 @@ test('an edit outside an Unreleased section is not an Unreleased edit', () => re
   assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, []);
 }));
 
-test('the fold, which deletes fragments and adds none, passes', () => repo(async (root, git) => {
+test('the fold passes, also beside a fragment another change adds; filling an Unreleased section does not', () => repo(async (root, git) => {
   await writeFile(join(root, 'changes/pending.md'), fragment('repo', 'fix', 'Pending.'));
   await git('add', '-A'); await git('commit', '-q', '-m', 'a fragment');
   await fold(root, '0.1.0-beta.13', '2026-10-20');
-  await writeFile(join(root, 'CHANGELOG.md'), (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace('- Existing root bullet.', '- Existing root bullet, renamed by the release.'));
   assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
   await writeFile(join(root, 'changes/extra.md'), fragment('repo', 'fix', 'Extra.'));
-  assert.equal((await unreleasedEdits(root, 'HEAD')).fold, false);
+  assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
+  await writeFile(join(root, 'CHANGELOG.md'), (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace('## Unreleased\n', '## Unreleased\n\n- Sneaked in.\n'));
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, ['CHANGELOG.md']);
+}));
+
+test('a fragment saved with CRLF line endings parses', () => {
+  assert.deepEqual(parseFragment(fragment('repo', 'fix', 'Text.\nMore.').replace(/\n/g, '\r\n'), 'f', known), { packages: ['repo'], kind: 'fix', body: 'Text.\nMore.' });
+});
+
+test('a misnamed file in changes/ is refused, not skipped', () => repo(async root => {
+  for (const name of ['fix.MD', 'fix.txt', '.gitkeep']) {
+    await writeFile(join(root, 'changes', name), fragment('repo', 'fix', 'X.'));
+    await assert.rejects(loadFragments(root), /nothing else belongs in changes/, name);
+    await rm(join(root, 'changes', name));
+  }
+}));
+
+test('a release of package fragments only still gets the root section the preflight needs', () => repo(async root => {
+  await writeFile(join(root, 'changes/vision.md'), fragment('@parcha/pi-vision', 'fix', 'Vision only.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  await fold(root, '0.1.0-beta.14', '2026-10-21');
+  await writeFile(join(root, 'changes/vision2.md'), fragment('@parcha/pi-vision', 'fix', 'Vision again.'));
+  await fold(root, '0.1.0-beta.15', '2026-10-22');
+  const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.ok(hasVersionSection(log, '0.1.0-beta.15'));
+  assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.15 \(2026-10-22\)\n\n- Package changes only; see the package changelogs\.\n\n## 0\.1\.0-beta\.13 \(2026-10-20\)/);
+}));
+
+test('a fold that fails part way leaves every file as it was, so a retry adds nothing twice', { skip: process.getuid?.() === 0 }, () => repo(async root => {
+  await writeFile(join(root, 'changes/root.md'), fragment('repo', 'fix', 'Root.'));
+  await writeFile(join(root, 'changes/vision.md'), fragment('@parcha/pi-vision', 'fix', 'Vision.'));
+  await chmod(join(root, 'packages/pi-vision/CHANGELOG.md'), 0o444);
+  await assert.rejects(fold(root, '0.1.0-beta.13', '2026-10-20'), /EACCES/);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), rootLog);
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), visionLog);
+  assert.deepEqual((await loadFragments(root)).map(entry => entry.file), ['root.md', 'vision.md']);
+  await chmod(join(root, 'packages/pi-vision/CHANGELOG.md'), 0o644);
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal((await readFile(join(root, 'CHANGELOG.md'), 'utf8')).match(/- Root\./g).length, 1);
+  assert.equal((await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8')).match(/- Vision\./g).length, 1);
 }));
 
 test('the command line fails an Unreleased edit and passes a fragment', () => repo(async (root, git) => {

@@ -26,7 +26,8 @@ export async function workspacePackages(root) {
 }
 
 /** `{ packages, kind, body }` from a fragment's text; throws a message naming `name` when the shape is wrong. */
-export function parseFragment(text, name, known) {
+export function parseFragment(raw, name, known) {
+  const text = raw.replace(/\r\n/g, '\n');
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
   assert.ok(match, `${name}: starts with a front matter block (--- ... ---)`);
   const fields = Object.fromEntries(match[1].split('\n').filter(line => line.trim()).map(line => {
@@ -51,9 +52,10 @@ export async function loadFragments(root = defaultRoot) {
   let names;
   try { names = await readdir(join(root, 'changes')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   const fragments = [];
-  for (const file of names.filter(entry => entry.endsWith('.md') && entry !== 'README.md').sort()) {
-    assert.match(file, fragmentName, `changes/${file}: the name is lowercase letters, digits and dashes`);
-    fragments.push({ file, ...parseFragment(await readFile(join(root, 'changes', file), 'utf8'), `changes/${file}`, known) });
+  for (const file of names.filter(entry => entry !== 'README.md').sort()) {
+    assert.match(file, fragmentName, `changes/${file}: a fragment is <slug>.md, the slug lowercase letters, digits and dashes; nothing else belongs in changes/`);
+    const text = await readFile(join(root, 'changes', file), 'utf8');
+    fragments.push({ file, text, ...parseFragment(text, `changes/${file}`, known) });
   }
   return fragments;
 }
@@ -73,21 +75,22 @@ const git = async (root, args) => (await exec('git', args, { cwd: root, maxBuffe
 const gitShow = async (root, commit, path) => { try { return await git(root, ['show', `${commit}:${path}`]); } catch { return null; } };
 const readOptional = async path => { try { return await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 
-/** The changelogs whose Unreleased section differs from `base`'s, unless the change is the fold: it deletes fragments and adds none. */
+/**
+ * The changelogs whose Unreleased section differs from `base`'s. An edit that leaves the section empty is the release's fold
+ * (it moved the bullets into the version's section), whatever else the change or its merge group adds; any other edit is refused.
+ */
 export async function unreleasedEdits(root, base) {
   const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
-  const before = new Set((await git(root, ['ls-tree', '-r', '--name-only', mergeBase, '--', 'changes'])).split('\n').filter(path => /^changes\/[^/]+\.md$/.test(path) && path !== 'changes/README.md'));
-  const now = new Set((await readdir(join(root, 'changes')).catch(() => [])).filter(file => file.endsWith('.md') && file !== 'README.md').map(file => `changes/${file}`));
-  const added = [...now].filter(path => !before.has(path));
-  const deleted = [...before].filter(path => !now.has(path));
-  if (deleted.length > 0 && added.length === 0) return { fold: true, edited: [] };
   const edited = [];
+  let emptied = 0;
   for (const path of await changelogPaths(root)) {
     const was = await gitShow(root, mergeBase, path);
     const is = await readOptional(join(root, path));
-    if (unreleasedSection(was ?? '') !== unreleasedSection(is ?? '')) edited.push(path);
+    if (unreleasedSection(was ?? '') === unreleasedSection(is ?? '')) continue;
+    if (unreleasedSection(is ?? '').split('\n').slice(1).every(line => !line.trim())) emptied++;
+    else edited.push(path);
   }
-  return { fold: false, edited };
+  return { fold: edited.length === 0 && emptied > 0, edited };
 }
 
 /** The bullet a fragment becomes: its first line behind "- ", the rest indented under it. */
@@ -126,9 +129,13 @@ export async function fold(root, version, date) {
     }
     for (const file of files) targets.set(file, [...(targets.get(file) ?? []), bulletOf(fragment.body)]);
   }
-  const changed = [];
-  for (const [file, bullets] of targets) {
-    const lines = (await readFile(join(root, file), 'utf8')).split('\n');
+  // Every new text is built before anything is written, and a failed write puts the changelogs and fragments back, so a retry
+  // never appends a bullet twice.
+  const writes = [];
+  for (const [file, bulletsOfFile] of targets) {
+    let bullets = bulletsOfFile;
+    const original = await readFile(join(root, file), 'utf8');
+    const lines = original.split('\n');
     const existing = lines.findIndex(line => isVersionHeading(line, version));
     const unreleased = lines.findIndex(unreleasedHeading);
     if (existing >= 0) {
@@ -137,16 +144,27 @@ export async function fold(root, version, date) {
     } else {
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to fold`);
       const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
+      // The root always gets the version's section (the release preflight requires it), also when every change is a package's.
+      if (file === 'CHANGELOG.md' && !held && bullets.length === 0 && fragments.length > 0) bullets = ['- Package changes only; see the package changelogs.'];
       if (!held && bullets.length === 0) continue;
       lines.splice(sectionEnd(lines, unreleased), 0, ...(held ? [] : ['']), ...bullets);
       const heading = lines[unreleased];
       lines.splice(unreleased, 1, heading, '', `## ${version} (${date})`);
     }
     while (lines.at(-1) === '') lines.pop();
-    await writeFile(join(root, file), `${lines.join('\n')}\n`);
-    changed.push(file);
+    writes.push({ file, original, text: `${lines.join('\n')}\n` });
   }
-  for (const fragment of fragments) await rm(join(root, 'changes', fragment.file));
+  const written = [];
+  const removed = [];
+  try {
+    for (const write of writes) { await writeFile(join(root, write.file), write.text); written.push(write); }
+    for (const fragment of fragments) { await rm(join(root, 'changes', fragment.file)); removed.push(fragment); }
+  } catch (error) {
+    for (const write of written) await writeFile(join(root, write.file), write.original);
+    for (const fragment of removed) await writeFile(join(root, 'changes', fragment.file), fragment.text);
+    throw error;
+  }
+  const changed = writes.map(write => write.file);
   return { folded: fragments.length, files: changed };
 }
 
