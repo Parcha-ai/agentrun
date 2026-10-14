@@ -16,7 +16,7 @@ export type AttachInput = { session: unknown; storage?: unknown; head?: number; 
 export type CommitRecorder = (input: AttachInput, write: (line: DurableLine) => void) => Promise<() => Promise<void>>;
 
 type PackageExport = {
-  recordCommits?: (session: unknown, options: { gen?: number; write: (lines: DurableLine[]) => void | Promise<void>; clock?: () => number }) => () => Promise<void>;
+  recordCommits?: (session: unknown, options: { gen?: number; from?: readonly DurableLine[]; write: (lines: DurableLine[]) => void | Promise<void>; clock?: () => number }) => () => Promise<void>;
   snapshotLines?: (storage: unknown, options: { at: number; gen?: number; context: unknown }) => Promise<DurableLine[]>;
 };
 
@@ -28,7 +28,9 @@ export async function packageCommitRecorder(): Promise<CommitRecorder> {
   return async ({ session, storage, head, context, gen, clock }, write) => {
     if (storage === undefined || head === undefined) throw new Error('A snapshot needs the Storage the run was opened over and the store\'s head commit, which the disk package\'s beforeResume hook gives; attach after the open has no way to take one before the run resumes.');
     const at = clock();
-    for (const line of await snapshotLines(storage, { at: head, gen, context })) write({ ...line, t: line.t ?? at });
-    return recordCommits(session, { gen, write: (lines) => { for (const line of lines) write(line); }, clock });
+    const snapshot = await snapshotLines(storage, { at: head, gen, context });
+    for (const line of snapshot) write({ ...line, t: line.t ?? at });
+    // `from`: the snapshot, so the lines of a resumed process carry the paths of the nodes the store already names.
+    return recordCommits(session, { gen, from: snapshot, write: (lines) => { for (const line of lines) write(line); }, clock });
   };
 }
