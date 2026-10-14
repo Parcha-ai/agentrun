@@ -92,7 +92,7 @@ test('the whole route: seven lanes, the token\'s flights, eight processes, two k
 
 test('the screen says what is proven and what is only observed, and never makes a cost out of nothing', () => {
   const end = screen(real.lines);
-  assert.match(end, /2 of 2 \(1 box, 1 process\)/);
+  assert.match(end, /2 of 2 · 1 box, 1 process/);
   assert.match(end, /5 moves, 1 restore \(observed: live lines\)/);
   assert.match(end, /observed \(live line\)/);
   assert.match(end, /cost\s+unknown/);
@@ -155,10 +155,11 @@ const leaseAt = (id: string, environment: string, epoch: number, t: number) => l
 const moveOf = (id: string, t: number, to: string, extra: { [key: string]: Json } = {}) => live('move', t, { id, to: { environment: 'x', provider: 'docker', box: to }, epoch: 2, head: 5, ...extra });
 const stepsOf = (names: string[], from: number) => names.map((step, index) => live('move.step', from + index, { move: 'move', step }));
 
-test('the highlighted header is scoped to the header: the lane cells that carry the class token keep their width', () => {
+test('the lane cells that carry the class token are styled by their own selector only, never by a bare .token rule', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.match(html, /\.transport > \.token \{/);
+  assert.match(html, /\.tcells \.cell\.token \{/);
   assert.doesNotMatch(html, /\.transport \.token \{/);
+  assert.doesNotMatch(html, /\.transport > \.token \{/);
 });
 
 test('a box that ends or is killed closes the session\'s token there: the panel says it awaits recovery until a lease or a runner says where it came back', () => {
