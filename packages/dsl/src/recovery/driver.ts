@@ -144,7 +144,7 @@ export type RecoveryOptions = {
   closeStepSession?: (sessionId: string) => Promise<unknown>;
   /** Settles effects a killed process left unknown, through the driver's own open of the run (one generation per process).
    *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
-   *  admitted and never completed; `unknown` is those effects, with their `intent`. `complete(id, value, receipt)`
+   *  admitted and never completed; `unknown` is those effects, with their `intent` and the `args` the call was admitted with (what the host's door is sent; absent on a record written before args were kept). `complete(id, value, receipt)`
    *  records `value` as the effect's result, as `journal.complete` does with `{ value, files }`, hashing the files the effect declares (a missing one refuses the settlement); `receipt.intent` names
    *  the call the host's door answered, as a handoff reads it. The effect is then answered from that result and not
    *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
@@ -673,7 +673,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         inFlight += 1;
         try {
           // The driver's state and the admission are one transaction.
-          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
+          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external, params.input ?? null));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.

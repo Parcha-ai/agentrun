@@ -24,7 +24,7 @@ type DriverRecord = {
 type EffectIntent = { tool: string; argsHash: string };
 /** An effect as this store holds it: the contract's, with the intent it was admitted with when there was one. */
 type StoredEffect = RecoveryEffect & { intent?: EffectIntent };
-type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; intent?: EffectIntent; calls?: Json };
+type EffectRecord = { driver: string; name: string; argsHash: string; status: RecoveryEffect["status"]; session: string | null; result: Json; intent?: EffectIntent; args?: Json; calls?: Json };
 
 /** A failed commit as the driver reads it: its own message and code, kept as a RecoveryError. A Session that failed at a
  *  storage error answers with `SessionFailed` (pi-durable 1.2); the error is then the storage's, as 1.1 gave it, and the
@@ -124,7 +124,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
     const effects: StoredEffect[] = [];
     for (const id of doc.effects) {
       const e = await tx.doc(EffectDoc, effectKey(key, id), null);
-      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}) });
+      effects.push({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}) });
     }
     return { existing, generation: doc.generation, revision: doc.revision, state: json(doc.state), notes: json(doc.notes) as RecoveryNote[], effects };
   }, context).catch((error) => { held.undo(); throw storeFailure(error); });
@@ -173,18 +173,19 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       notes.push({ revision: done.revision, ...entry });
       return done.revision;
     }),
-    admit: (id, name, argsHash, state, session = null, intent?: EffectIntent) => inOrder(async () => {
+    admit: (id, name, argsHash, state, session = null, intent?: EffectIntent, args?: unknown) => inOrder(async () => {
       effectKey(key, id);
       const known = effects.get(id);
       if (known) return known;
       const stored = json(state);
       const kept = intent === undefined ? undefined : json(intent) as EffectIntent;
+      const keptArgs = args === undefined ? undefined : json(args);
       await commit(async (doc, _next, tx) => {
-        Object.assign(await tx.doc(EffectDoc, effectKey(key, id), null), { driver: key, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}) });
+        Object.assign(await tx.doc(EffectDoc, effectKey(key, id), null), { driver: key, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}), ...(keptArgs !== undefined ? { args: keptArgs } : {}) });
         doc.effects.push(id);
         doc.state = stored;
       });
-      effects.set(id, { id, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}) });
+      effects.set(id, { id, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}), ...(keptArgs !== undefined ? { args: keptArgs } : {}) });
       return "new" as const;
     }),
     complete: (id, result, state = opened.state) => inOrder(async () => {

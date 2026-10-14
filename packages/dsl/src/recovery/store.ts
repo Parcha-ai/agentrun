@@ -19,7 +19,7 @@ export type RecoveryIntent = { tool: string; argsHash: string };
 /** An effect as the journal holds it. `unknown` is admitted and never completed: nobody knows whether it happened, and
  *  it is never dispatched again. `session` names the identity it was admitted under, or is null. `intent` names the
  *  external call it was admitted for, when it makes one; an effect admitted without one has no `intent` key. */
-export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent };
+export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent; args?: unknown };
 
 /** One run's journal, held by the driver that opened it. Every write is one commit: it lands whole or not at all, it is
  *  durable before its promise resolves, it is refused once a later open has taken the journal, and it advances the
@@ -47,7 +47,7 @@ export type RecoveryJournal = {
   /** Admit an effect before it is dispatched, with the state that admits it, in one commit, and the external call it
    *  makes when it makes one: the intent is kept with the effect from its admission, through its completion, at every
    *  later open. An id already admitted is returned as it stands and nothing is written. */
-  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent): Promise<"new" | RecoveryEffect>;
+  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent, args?: unknown): Promise<"new" | RecoveryEffect>;
   /** Complete an admitted effect with its result, and the state that follows, in one commit. An effect completes once,
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */

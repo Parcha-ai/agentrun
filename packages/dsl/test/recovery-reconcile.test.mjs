@@ -107,3 +107,36 @@ test('an effect id round-trips to the path and ordinal it was made from', () => 
   }
   assert.equal(frozenEffectPath('not an effect id'), undefined);
 });
+
+/** A store whose journal fails the admission after it landed: the process died between admitting a call and sending it. */
+const diesAfterAdmission = (store) => ({ open: async (bound) => {
+  const journal = await store.open(bound);
+  const held = Object.create(journal);
+  held.admit = async (...args) => { await journal.admit(...args); throw new Error('killed after admission'); };
+  return held;
+} });
+
+test('a call admitted but never sent is settled by reconcile re-sending it with the arguments kept at admission, applied once', async () => {
+  const store = memoryStore(); const door = []; let calls = 0;
+  const deps = { runEffect: async () => { calls += 1; return { found: 'adapter' }; } };
+  await assert.rejects(process_(diesAfterAdmission(store), deps), /killed after admission/);
+  assert.deepEqual([door.length, calls], [0, 0], 'the door never saw the call');
+  const { result } = await process_(store, deps, { reconcile: async (unknown, complete) => {
+    assert.deepEqual(unknown.map((effect) => effect.args), [{ id: 7 }]);
+    for (const effect of unknown) { door.push(effect.args); await complete(effect.id, { found: 'door' }); }
+  } });
+  assert.deepEqual([result.status, result.state.lookup, door, calls], ['complete', { found: 'door' }, [{ id: 7 }], 0]);
+});
+
+test('a record written before arguments were kept reads as it did: no args, and an unsettled call is still refused', async () => {
+  const store = memoryStore(); const counter = { calls: 0 };
+  await assert.rejects(process_(store, dies(counter)), /the process died/);
+  const old = { open: async (bound) => {
+    const journal = await store.open(bound); const held = Object.create(journal);
+    held.effects = () => journal.effects().map(({ args, ...rest }) => rest);
+    return held;
+  } };
+  let seen;
+  await assert.rejects(process_(old, dies(counter), { reconcile: async (unknown) => { seen = unknown; } }), fault('FROZEN_EFFECT_UNKNOWN'));
+  assert.deepEqual([seen.length, 'args' in seen[0], counter.calls], [1, false, 1]);
+});
