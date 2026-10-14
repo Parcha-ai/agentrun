@@ -18,7 +18,7 @@ test('the supervisor\'s lines carry the process in data.gen and number their own
   assert.match(validate(manifest, noProcess).join('\n'), /a supervisor line \(kill\) names its process in data.gen/);
   const seqBack = lines.map((line) => (line.kind === 'kill' ? { ...line, seq: 1 } : line));
   assert.match(validate(manifest, seqBack).join('\n'), /seq does not increase across the supervisor's lines/);
-  const liveNoGen: Line = { channel: 'live', source: 'pi', kind: 'turn_start', t: 1000, seq: 1, data: { turn: 0 } };
+  const liveNoGen: Line = { channel: 'live', source: 'pi', kind: 'message_start', t: 1000, seq: 1, data: { message: { role: 'assistant' } } };
   assert.match(validate(manifest, [...lines, liveNoGen]).join('\n'), /gen is not a whole number from 1/, 'only the supervisor writes a live line with no gen');
 });
 

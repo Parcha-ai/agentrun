@@ -1,6 +1,7 @@
 // The timeline's lanes, from the whole recording: what they draw does not change with the scrub point, only the
 // playhead does. The process lane comes from the supervisor's host lines (RECORDING.md section 4 rule 3).
 import { processOf, restoresOf, type Line } from './format.ts';
+import { isAsk } from './live.ts';
 import { docOf, effectIdOf, effectOf, entryOf, generationOf, toolCallsOf } from './durable.ts';
 
 export type Band = { process: number; from: number; to: number; kill?: { t: number; label: string; crossing?: string } };
@@ -39,7 +40,7 @@ export function lanesOf(lines: Line[]): Lanes {
         turnStarts.delete(conv);
       }
     }
-    if (line.source === 'pi' && line.kind === 'turn_start') {
+    if (isAsk(line)) {
       turnStarts.set(`${line.conv ?? '?'}`, { t: line.t, gen: line.gen });
     }
     const doc = docOf(line);

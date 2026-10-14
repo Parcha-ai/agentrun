@@ -3,6 +3,7 @@
 // node with a `path` focuses every panel on that path when clicked. Focus is a view input (RECORDING.md section 4 rule
 // 4): the shell drops no line for it, and each view shows what is under the focused path its own way.
 import { processOf, under, type Json, type Line } from './format.ts';
+import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import type { Counters } from './counters.ts';
 import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
@@ -64,7 +65,7 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
   accepts: (line) => line.source === 'pi',
   reduce(state, line) {
     if (line.channel === 'live') {
-      if (line.kind === 'turn_start') return { ...state, streaming: { ...state.streaming, [String(line.conv)]: true } };
+      if (isAsk(line)) return { ...state, streaming: { ...state.streaming, [String(line.conv)]: true } };
       return state;
     }
     const entry = entryOf(line);

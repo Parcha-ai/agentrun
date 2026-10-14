@@ -112,8 +112,8 @@ function drawCounters(counters: Counters): HTMLElement {
     item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     item('model turns', String(counters.turns.committed), 'Committed assistant turns.'),
     counters.turns.reaskedObserved === null
-      ? item('re-asked turns', 'not recorded', 'This recording has no live turn starts, so a turn asked again in a later process cannot be seen. The store does not keep it.')
-      : item('re-asked turns', String(counters.turns.reaskedObserved), 'From live turn starts in more than one process: observed, not proven by the store.', ' observed'),
+      ? item('re-asked turns', 'not recorded', 'This recording has no live asks (assistant message_start), so a turn asked again in a later process cannot be seen. The store does not keep it.')
+      : item('re-asked turns', String(counters.turns.reaskedObserved), 'From live asks at one position in more than one process: observed, not proven by the store.', ' observed'),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),

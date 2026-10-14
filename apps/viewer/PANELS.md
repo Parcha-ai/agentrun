@@ -49,18 +49,20 @@ focus and a way to clear it. Give a node the `path` of the workflow position it 
    per conversation, a task-scoped one once per task. Treat a line with `snapshot: true` as state that replaces that
    value. A fold of events by generation skips snapshot lines. `documentFold` in `src/documents.ts` does this, restores
    included; fold it into your own state rather than writing the reduce again.
-3. **Reset at a restore** (RECORDING.md 3.2). When a generation's first snapshot line has a commit below one already
+3. **Read durable lines through `src/durable.ts` and live lines through `src/live.ts`** (a model's ask is `isAsk`:
+   pi's assistant `message_start`, since a resumed generation emits no `turn_start`).
+4. **Reset at a restore** (RECORDING.md 3.2). When a generation's first snapshot line has a commit below one already
    seen, the store went back to a checkpoint: reset document state there, so a `(doc, key)` the snapshot does not
    carry no longer exists. `restoresOf(lines)` in `src/format.ts` finds those lines. The lines before it with a higher
    commit are the lost branch: they happened, so a panel may still show them, marked as lost.
-4. **Take the process a supervisor line is about from its data.** `process.started` and `kill` carry no event-level
+5. **Take the process a supervisor line is about from its data.** `process.started` and `kill` carry no event-level
    `gen`; use `processOf(line)` from `src/format.ts`.
-5. **Read durable `data` as RECORDING.md section 3.1 says**, and refuse a `data.version` you do not know rather than
+6. **Read durable `data` as RECORDING.md section 3.1 says**, and refuse a `data.version` you do not know rather than
    misread it.
-6. **Skip kinds you do not know.** The format adds kinds without a new version.
-7. **Use `t` only to place things in time.** Durable facts are ordered by `(commit, order)`, and after a restore a
+7. **Skip kinds you do not know.** The format adds kinds without a new version.
+8. **Use `t` only to place things in time.** Durable facts are ordered by `(commit, order)`, and after a restore a
    commit number names two commits, so pair it with the line's `gen`.
-8. **Show unknown as unknown.** A cost that is `null` is "unknown", never `$0`.
+9. **Show unknown as unknown.** A cost that is `null` is "unknown", never `$0`.
 
 ## Browser pictures
 

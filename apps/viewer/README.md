@@ -24,7 +24,7 @@ static host), or a recording folder dropped on the page or chosen with its picke
 - **Scrubber.** Play, pause, speed, the slider, previous and next commit, and a click on the timeline. A scrub stops
   only between commits: the screen at any point is a reduce of the lines before it.
 - **Counters.** Paid calls made, repeated, asked twice, unknown, judge asks, model turns, re-asked turns (observed;
-  "not recorded" when the recording has no live turn starts), processes, kills, cost (unknown when any part is unknown,
+  "not recorded" when the recording has no live asks, pi's assistant `message_start`), processes, kills, cost (unknown when any part is unknown,
   never $0), and the journal's opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
   or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool

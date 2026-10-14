@@ -1,6 +1,7 @@
 // The counters strip (RECORDING.md section 6), one fold for every recording. Counts come from durable lines, and
 // processes and kills from the supervisor's host lines; a count only live lines can give is "observed".
 import type { Json, Line } from './format.ts';
+import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import {
   applied, callsOf, costOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
@@ -19,12 +20,10 @@ const ZERO: Tally = { answered: [], failed: 0, cost: [] };
 export type CounterState = {
   effects: Record<string, { admitted: number | undefined; status: Effect['status']; completedAt?: number }>;
   receipts: Record<string, History<number>>;
-  /** Per effect, its `applied` outside calls by the generation of the line each first appears on, a lost branch
-   *  included: never reset. */
+  /** Per effect, its `applied` outside calls by the generation each is placed in, a lost branch included: never reset. */
   appliedIn: Record<string, Record<string, number>>;
-  /** Per effect, the calls of its current list (each record as stable JSON, with how many times it is listed): a
-   *  snapshot sets it, an admission (a record with no calls) clears it, and a call listed beyond it is new. */
-  listed: Record<string, Record<string, number>>;
+  /** Per effect, the list its previous line carried (each call as stable JSON): a line's new calls are those beyond it. */
+  listed: Record<string, string[]>;
   /** Every effect seen, and those whose host reported calls: an effect with none has repeated not measured. */
   effectsSeen: Record<string, true>;
   reported: Record<string, true>;
@@ -60,7 +59,7 @@ export type Counters = {
   unknown: number;
   inFlight: number;
   judge: { answered: number; failed: number; reasked: number };
-  /** reaskedObserved is null when the recording has no live turn starts: not observed is not zero. */
+  /** reaskedObserved is null when the recording has no live asks (assistant message_start): not observed is not zero. */
   turns: { committed: number; reaskedObserved: number | null };
   processes: number;
   kills: number;
@@ -72,16 +71,17 @@ export type Counters = {
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
     highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && line.kind === 'turn_start'),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host' || isAsk(line),
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
       if (line.kind === 'process.started') next.processes = state.processes + 1;
       if (line.kind === 'kill') next.kills = state.kills + 1;
-      if (line.kind === 'turn_start') {
-        // A turn's start, per process: the same turn started in two processes was asked again (observed).
-        const turn = typeof (line.data as { turn?: Json })?.turn === 'number' ? (line.data as { turn: number }).turn : -1;
-        const id = `${line.conv ?? '?'} ${turn}`;
+      if (isAsk(line)) {
+        // An ask's position: its conversation and the assistant entries already committed there. One position asked in
+        // more than one process was asked again (observed).
+        const conv = String(line.conv ?? '?');
+        const id = `${conv} ${state.committedTurns[conv] ?? 0}`;
         next.observedStarts = { ...state.observedStarts, [id]: [...(state.observedStarts[id] ?? []), line.gen ?? 0] };
       }
       return next;
@@ -121,27 +121,22 @@ export const counterFold: Fold<CounterState> = {
         const gen = line.gen ?? 0;
         const completes = effect.status === 'completed' && before?.status !== 'completed';
         if (!next.effectsSeen[id]) next.effectsSeen = { ...next.effectsSeen, [id]: true };
-        // Repeated and asked twice per effect (section 6): its outside calls, read across every line of its id, each in
-        // the generation of the line it first appears on. The driver replaces the list in each process, and an admission
-        // (or a checkpoint taken before any call) holds none, so a call is new when its list holds it more times than
-        // the list it follows. A snapshot only sets that list.
-        const calls = callsOf(effect);
-        if (!calls) {
-          if (next.listed[id] && Object.keys(next.listed[id]!).length > 0) next.listed = { ...next.listed, [id]: {} };
-        } else {
-          if (!next.reported[id]) next.reported = { ...next.reported, [id]: true };
-          const counts: Record<string, number> = {};
-          for (const call of calls) counts[stableJson(call)] = (counts[stableJson(call)] ?? 0) + 1;
-          if (line.snapshot !== true) {
-            const known = next.listed[id] ?? {};
-            const fresh = Object.entries(counts).reduce((sum, [call, count]) => sum + (applied(JSON.parse(call) as Json) ? Math.max(0, count - (known[call] ?? 0)) : 0), 0);
-            if (fresh > 0) {
-              const byGen = next.appliedIn[id] ?? {};
-              next.appliedIn = { ...next.appliedIn, [id]: { ...byGen, [gen]: (byGen[gen] ?? 0) + fresh } };
-            }
-          }
-          next.listed = { ...next.listed, [id]: counts };
+        // Repeated and asked twice per effect (section 6): its calls list is append-only and every line carries the
+        // whole list, so each line, a snapshot included, adds only the calls beyond the previous line's list. A line
+        // places them in its own generation; a snapshot in an earlier one (they were committed before its process opened,
+        // and their own lines were lost in flight). A list that does not extend the previous one (a restore's snapshot,
+        // or an admission's record with none) becomes the base, and what a lost branch added stays where it was seen.
+        const shown = (callsOf(effect) ?? []).map(stableJson);
+        if (shown.length > 0 && !next.reported[id]) next.reported = { ...next.reported, [id]: true };
+        const base = next.listed[id] ?? [];
+        const fresh = base.length <= shown.length && base.every((call, at) => shown[at] === call) ? shown.slice(base.length) : [];
+        const count = fresh.filter((call) => applied(JSON.parse(call) as Json)).length;
+        if (count > 0) {
+          const placed = line.snapshot === true ? gen - 1 : gen;
+          const byGen = next.appliedIn[id] ?? {};
+          next.appliedIn = { ...next.appliedIn, [id]: { ...byGen, [placed]: (byGen[placed] ?? 0) + count } };
         }
+        if (shown.length > 0 || base.length > 0) next.listed = { ...next.listed, [id]: shown };
         const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt;
         next.effects = { ...next.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, status: effect.status,
           ...(completedAt !== undefined ? { completedAt } : {}) } };
@@ -193,11 +188,11 @@ export const counterFold: Fold<CounterState> = {
   },
 };
 
-/** Whether a recording carries the live lines re-asked turns are observed from. */
-export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && line.kind === 'turn_start');
+/** Whether a recording carries the live lines re-asked turns are observed from: assistant `message_start`. */
+export const observesTurns = (lines: Line[]) => lines.some(isAsk);
 
 /** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect.
- *  `turnStarts`: the recording has live turn starts (`observesTurns`), so re-asked turns are observed, not unknown. */
+ *  `turnStarts`: the recording has live asks (`observesTurns`), so re-asked turns are observed, not unknown. */
 export function countersOf(state: CounterState, ended: boolean, turnStarts = true): Counters {
   const effects = Object.values(state.effects);
   const workflow = effects.filter((effect) => effect.status === 'completed').length + state.lostPaid;

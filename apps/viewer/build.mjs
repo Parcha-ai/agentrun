@@ -14,10 +14,14 @@ const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'i
 /** The modules in an order where each comes after those it imports (a type-only import puts no order on them). */
 function ordered(entry) {
   const seen = [];
+  const visiting = [];
   const visit = (name) => {
     if (seen.includes(name)) return;
+    if (visiting.includes(name)) throw new Error(`import cycle: ${[...visiting.slice(visiting.indexOf(name)), name].join(' -> ')}`);
+    visiting.push(name);
     const code = readFileSync(join(src, name), 'utf8');
     for (const [, dep] of code.matchAll(/^import (?!type )[^;]*? from '\.\/([\w-]+\.ts)';$/gm)) visit(dep);
+    visiting.pop();
     seen.push(name);
   };
   visit(entry);
