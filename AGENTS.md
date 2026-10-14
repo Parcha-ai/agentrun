@@ -23,6 +23,7 @@ AgentRun is a workflow language for agents a host already runs. A workflow is a 
 | `spec/lean` | Optional Lean model of validation and execution, plus a conformance corpus shared with TypeScript, and a Lean model of a recovery driver's effects (`AgentRunRecovery/`) |
 | `spec/receipts` | TLA+ model of a recovery driver's effects across crashes and failed commits, with its TLC configs; `scripts/spec/` checks it and its guard mutants |
 | `examples/` | Support, typed research and starter app, offline by default with scripted adapters |
+| `changes/` | One changelog fragment per pull request, folded into the changelogs by the release |
 | `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
 | `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
 
@@ -80,7 +81,7 @@ CI runs Lean separately from `npm run check`. Documentation-only changes don't n
 - Never edit a fixture, check or threshold just to make a changed implementation pass, and never let a candidate rewrite its own verifier.
 - A generative node carries the whole rubric it applies: `sopSection` lists every SOP section the decision depends on, and merged nodes inherit the union. Don't paraphrase policy into `instructions`.
 - Extend the existing node, adapter and lifecycle interfaces before adding a mechanism. Delete superseded machinery only after its replacement passes.
-- Document breaking changes and failure behavior in [CHANGELOG.md](CHANGELOG.md).
+- Document breaking changes and failure behavior in a fragment, `changes/<slug>.md` (see [changes/README.md](changes/README.md)); the release folds fragments into the changelogs. Never edit an `Unreleased` section of a `CHANGELOG.md`.
 - This repository is public. Keep machine paths, internal hostnames, credentials and customer data out of code, tests, commits and issues. `npm run export:source` rejects many of these.
 - Never publish from a local machine. Releases go through the reviewed workflow in [docs/releasing.md](docs/releasing.md).
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), never in a public issue.

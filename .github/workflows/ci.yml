@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25 # p90 is about 12 min; a runner at half speed takes about 23
     strategy:
       fail-fast: false
       matrix:
@@ -19,10 +19,16 @@ jobs:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Changelog fragments
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: node scripts/changes.mjs --check --base "$BASE_SHA"
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run typecheck

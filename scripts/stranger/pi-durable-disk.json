@@ -1,5 +1,29 @@
 {
   "package": "@parcha/pi-durable-disk",
-  "expect": "no-key path missing",
-  "reason": "Every quickstart in the README needs an Archil disk and API key, or a Linux host with Archil; the CLI has no no-key command."
+  "install": [
+    "pi-durable-disk"
+  ],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable",
+    "@earendil-works/pi-ai"
+  ],
+  "files": [
+    {
+      "name": "chat.mjs",
+      "readme": "packages/pi-durable-disk/README.md",
+      "heading": "Quickstart on one machine: no disk, no key",
+      "fence": "js",
+      "index": 0
+    }
+  ],
+  "command": [
+    "node",
+    "chat.mjs"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "^ok: 6 messages answered once each, by generations 1 and 2, from the store in "
+  },
+  "timeoutMs": 120000
 }
