@@ -18,7 +18,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
-import { spawnSwapper } from "./fixtures/swapper.ts";
+import { SWAPPER_CAP_SECONDS, spawnSwapper, swapperLoop } from "./fixtures/swapper.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SQLITE = "SQLITE-SENTINEL";
@@ -718,6 +718,26 @@ describe("the swapper fixture", () => {
             process.kill(-racer, "SIGKILL");
           } catch {}
         }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's two ends", () => {
+  it("carries both: the loop follows its test process, and a deadline bounds it whatever the test process does", async () => {
+    assert.match(swapperLoop("/w", 4242), /while kill -0 4242 /);
+    assert.ok(SWAPPER_CAP_SECONDS >= 60 && SWAPPER_CAP_SECONDS <= 300, "a cap longer than a test needs and short enough to matter");
+    await withLayout(async (layout) => {
+      const racer = spawnSwapper(layout.work, process.pid, 1);
+      try {
+        const gone = new Promise<void>((resolve) => racer.once("exit", () => resolve()));
+        assert.ok(alive(racer.pid!), "the swapper runs while its test process is alive");
+        await Promise.race([gone, new Promise((_, reject) => setTimeout(() => reject(new Error("the 1 s cap did not end the swapper within 6 s")), 6_000))]);
+        assert.ok(!alive(racer.pid!));
+      } finally {
+        try {
+          process.kill(-racer.pid!, "SIGKILL");
+        } catch {}
       }
     });
   });
