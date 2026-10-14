@@ -17,10 +17,10 @@
 // PDA_LIVE_REGION (default aws-us-east-1). The suites create and delete run directories and token users on whatever disk
 // they are given, so never a production key or disk. PDA_STATE_DIR is where the suites write their ledgers and results; a
 // fresh temporary directory when unset. No value of any of these is ever printed.
-import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_REGION = "aws-us-east-1";
@@ -55,11 +55,12 @@ export function preflight(env: Env): string[] {
   return problems;
 }
 
-/** `$PDA_STATE_DIR`, or a fresh temporary directory. */
+/** `$PDA_STATE_DIR` as an absolute path (the suites run from this package's directory, the sweep from anywhere), or a fresh temporary directory. */
 export function stateDirOf(env: Env): string {
   if (env.PDA_STATE_DIR) {
-    mkdirSync(env.PDA_STATE_DIR, { recursive: true });
-    return env.PDA_STATE_DIR;
+    const dir = resolve(env.PDA_STATE_DIR);
+    mkdirSync(dir, { recursive: true });
+    return dir;
   }
   return mkdtempSync(join(tmpdir(), "pda-live-state-"));
 }
@@ -182,20 +183,46 @@ export async function runSuites(
   return results;
 }
 
-const CLOSED = ["deletedAt", "removedAt", "closedAt", "markerRemovedAt"];
+const CLOSED = ["deletedAt", "removedAt", "closedAt", "markerRemovedAt", "unmountedAt"];
 const DIRECTORY_LISTS = new Set(["subdirectories", "runDirectories", "subpaths", "subdirs"]);
 const RUN_DIRECTORY = /^runs\/[A-Za-z0-9._-]+\/?$/;
+/** What the suites make on the host, by the names they give it: mounts under /mnt/pda/, units and containers named pda-*. */
+const MOUNTPOINT = /^\/mnt\/pda\/[A-Za-z0-9._/-]+$/;
+const HOST_NAME = /^pda-[A-Za-z0-9._@-]+$/;
+
+export interface OpenResources {
+  /** Run directories on the disk, `runs/<name>/`. */
+  directories: string[];
+  /** Token users on the disk, by identifier. */
+  tokens: string[];
+  /** On the host: systemd units, Docker containers and mounts the suites made. */
+  units: string[];
+  containers: string[];
+  mounts: string[];
+  /** Anything a ledger lists outside those names: reported, never touched. */
+  refused: string[];
+}
 
 /**
- * The run directories and token users that the suites' ledgers recorded and never stamped as removed. The ledgers differ by
- * suite (`subdirectories`, `runDirectories`, `subpaths`, `archil.subdirs`; `tokenUsers`, `archil.tokens`; removed as
- * `deletedAt`, `removedAt`, `closedAt` or `markerRemovedAt`). Only a plain `runs/<name>/` is ever swept; anything else a
- * ledger lists is reported as refused.
+ * What the suites' ledgers recorded and never stamped as removed: run directories and token users on the disk, and units,
+ * containers and mounts on the host, which a suite killed at its deadline leaves (its `after` never ran). The ledgers differ
+ * by suite (`subdirectories`, `runDirectories`, `subpaths`, `archil.subdirs`; `tokenUsers`, `archil.tokens`; `units`;
+ * `containers`; `mounts`; removed as `deletedAt`, `removedAt`, `closedAt`, `markerRemovedAt` or `unmountedAt`). Only a
+ * plain `runs/<name>/`, a mount under /mnt/pda/ and a unit or container named pda-* is ever swept; anything else a ledger
+ * lists is reported as refused.
  */
-export function openResources(ledgers: readonly unknown[]): { directories: string[]; tokens: string[]; refused: string[] } {
+export function openResources(ledgers: readonly unknown[]): OpenResources {
   const directories = new Set<string>();
   const tokens = new Set<string>();
+  const units = new Set<string>();
+  const containers = new Set<string>();
+  const mounts = new Set<string>();
   const refused = new Set<string>();
+  const take = (into: Set<string>, value: unknown, pattern: RegExp) => {
+    if (typeof value !== "string") return;
+    if (pattern.test(value) && !value.includes("..")) into.add(value);
+    else refused.add(value);
+  };
   const open = (entry: Record<string, unknown>) => !CLOSED.some((field) => entry[field] !== undefined);
   const walk = (value: unknown, key: string) => {
     if (Array.isArray(value)) {
@@ -208,13 +235,18 @@ export function openResources(ledgers: readonly unknown[]): { directories: strin
           if (RUN_DIRECTORY.test(path) && !path.includes("..")) directories.add(path.endsWith("/") ? path : `${path}/`);
           else refused.add(path);
         }
+        if (!open(e)) continue;
+        if (key === "units") take(units, e.name, HOST_NAME);
+        if (key === "containers") take(containers, e.name, HOST_NAME);
+        if (key === "mounts") take(mounts, e.mountpoint, MOUNTPOINT);
       }
     } else if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value)) walk(v, k);
     }
   };
   for (const ledger of ledgers) walk(ledger, "");
-  return { directories: [...directories].sort(), tokens: [...tokens].sort(), refused: [...refused].sort() };
+  const sorted = (set: Set<string>) => [...set].sort();
+  return { directories: sorted(directories), tokens: sorted(tokens), units: sorted(units), containers: sorted(containers), mounts: sorted(mounts), refused: sorted(refused) };
 }
 
 /** Every file in `dir` whose name matches, parsed. */
@@ -226,8 +258,14 @@ function stateFiles(dir: string, pattern: RegExp): { name: string; data: unknown
     .map((name) => ({ name, data: JSON.parse(readFileSync(join(dir, name), "utf8")) as unknown }));
 }
 
-/** What the sweep needs from the disk: the package's own run-tree delete (it revokes the run's delegations first) and token-user removal. */
+/**
+ * What the sweep does: on the host, stop a unit, remove a container, unmount a mount (each throws if the thing is still
+ * there); on the disk, the package's own run-tree delete (it revokes the run's delegations first) and token-user removal.
+ */
 export interface SweepOps {
+  stopUnit(name: string): Promise<unknown>;
+  removeContainer(name: string): Promise<unknown>;
+  unmount(mountpoint: string): Promise<unknown>;
   deleteRunTree(id: string): Promise<{ objects: number; revoked: number }>;
   removeUser(identifier: string): Promise<unknown>;
 }
@@ -236,13 +274,30 @@ export interface SweepReport {
   readonly lines: string[];
   readonly directoriesLeft: number;
   readonly tokensLeft: number;
+  /** Units, containers and mounts left on the host. */
+  readonly hostLeft: number;
 }
 
-/** Delete each run directory (`runs/<id>/`, its delegations revoked first) and remove each token user; report what is left. */
-export async function sweepWith(ops: SweepOps, open: { directories: readonly string[]; tokens: readonly string[] }): Promise<SweepReport> {
+/**
+ * The host first, in the order its resources hold each other (a unit's instance holds its mount; a container holds its
+ * own), then the disk: each run directory (`runs/<id>/`, its delegations revoked first) and each token user. Reports what is left.
+ */
+export async function sweepWith(ops: SweepOps, open: Pick<OpenResources, "directories" | "tokens" | "units" | "containers" | "mounts">): Promise<SweepReport> {
   const lines: string[] = [];
   let directoriesLeft = 0;
   let tokensLeft = 0;
+  let hostLeft = 0;
+  for (const [kind, names, op] of [["unit", open.units, ops.stopUnit], ["container", open.containers, ops.removeContainer], ["mount", open.mounts, ops.unmount]] as const) {
+    for (const name of names) {
+      try {
+        await op(name);
+        lines.push(`${kind} ${name}: removed`);
+      } catch (error) {
+        lines.push(`${kind} ${name}: not removed (${(error as Error).message})`);
+        hostLeft++;
+      }
+    }
+  }
   for (const prefix of open.directories) {
     const id = prefix.slice("runs/".length, -1);
     try {
@@ -262,22 +317,42 @@ export async function sweepWith(ops: SweepOps, open: { directories: readonly str
       tokensLeft++;
     }
   }
-  return { lines, directoriesLeft, tokensLeft };
+  return { lines, directoriesLeft, tokensLeft, hostLeft };
 }
 
 /** The sweep over this run's ledgers, on the disk the environment names. It talks to the disk only when something is left. */
 export async function sweep(env: Env, stateDir: string): Promise<SweepReport> {
   const open = openResources(stateFiles(stateDir, /-STATE\.json$/).map((f) => f.data));
-  const refused = open.refused.map((path) => `not swept (not a run directory): ${path}`);
-  if (open.directories.length === 0 && open.tokens.length === 0) {
-    return { lines: [...refused, "sweep: nothing left; every run directory and token user the suites recorded was removed"], directoriesLeft: 0, tokensLeft: 0 };
+  const refused = open.refused.map((name) => `not swept (not a name the suites use): ${name}`);
+  if ([open.directories, open.tokens, open.units, open.containers, open.mounts].every((list) => list.length === 0)) {
+    return { lines: [...refused, "sweep: nothing left; every run directory, token user, unit, container and mount the suites recorded was removed"], directoriesLeft: 0, tokensLeft: 0, hostLeft: 0 };
   }
   // Loaded here, not at the top, so that preflight and the summary need nothing installed.
   const { configure, getDisk } = await import("disk");
   const { deleteRunTree } = await import("../../src/supervise.ts");
+  const { unmountClaim } = await import("../../src/claim.ts");
   configure({ apiKey: env.ARCHIL_API_KEY!, region: env.PDA_LIVE_REGION || DEFAULT_REGION });
   const disk = await getDisk(env.PDA_LIVE_DISK!);
-  const report = await sweepWith({ deleteRunTree: (id) => deleteRunTree(disk, id), removeUser: (identifier) => disk.removeUser("token", identifier) }, open);
+  const run = (file: string, args: string[]) => spawnSync(file, args, { encoding: "utf8", timeout: 120_000 });
+  const mounted = (mountpoint: string) => readFileSync("/proc/mounts", "utf8").split("\n").some((line) => line.split(" ")[1] === mountpoint);
+  const report = await sweepWith({
+    stopUnit: async (name) => {
+      run("sudo", ["-n", "systemctl", "stop", name]);
+      run("sudo", ["-n", "systemctl", "reset-failed", name]);
+      const state = run("systemctl", ["is-active", name]).stdout.trim();
+      if (["active", "activating", "deactivating", "reloading"].includes(state)) throw new Error(`still ${state}`);
+    },
+    removeContainer: async (name) => {
+      run("docker", ["rm", "-f", name]);
+      if (run("docker", ["inspect", "--type", "container", name]).status === 0) throw new Error("still there after docker rm -f");
+    },
+    unmount: async (mountpoint) => {
+      if (mounted(mountpoint)) await unmountClaim(mountpoint);
+      if (mounted(mountpoint)) throw new Error("still mounted");
+    },
+    deleteRunTree: (id) => deleteRunTree(disk, id),
+    removeUser: (identifier) => disk.removeUser("token", identifier),
+  }, open);
   return { ...report, lines: [...refused, ...report.lines] };
 }
 
@@ -365,10 +440,15 @@ export async function runAll(
     readonly sweep?: (env: Env, stateDir: string) => Promise<SweepReport>;
     /** Add the slow tier (`--slow`). */
     readonly slow?: boolean;
+    /** Where the suites write their scratch output (`live-*`): this package's `.tmp/`. */
+    readonly scratch?: string;
   },
 ): Promise<number> {
   const { out } = options;
   const stateDir = stateDirOf(env);
+  // The supervise and lifecycle suites leave their scratch output in .tmp/live-*; only what this run adds is removed.
+  const scratch = options.scratch ?? join(PACKAGE, ".tmp");
+  const scratchBefore = new Set(existsSync(scratch) ? readdirSync(scratch) : []);
   out(`live suites' ledgers and results: ${stateDir}`);
   let failure: string | undefined;
   const suites: SuiteResult[] = [];
@@ -394,12 +474,19 @@ export async function runAll(
   try {
     report = await (options.sweep ?? sweep)(env, stateDir);
   } catch (error) {
-    report = { lines: [`sweep failed: ${(error as Error).message}`], directoriesLeft: Number.NaN, tokensLeft: Number.NaN };
+    report = { lines: [`sweep failed: ${(error as Error).message}`], directoriesLeft: Number.NaN, tokensLeft: Number.NaN, hostLeft: Number.NaN };
   }
   for (const line of report.lines) out(line);
-  const left = report.directoriesLeft + report.tokensLeft;
+  for (const name of existsSync(scratch) ? readdirSync(scratch) : []) {
+    if (!name.startsWith("live-") || scratchBefore.has(name)) continue;
+    rmSync(join(scratch, name), { recursive: true, force: true });
+    out(`removed the suites' scratch output ${join(scratch, name)}`);
+  }
+  const left = report.directoriesLeft + report.tokensLeft + report.hostLeft;
   if (left !== 0) {
-    failure ??= Number.isNaN(left) ? "sweep: it did not finish, so what is left on the disk is unknown" : `sweep: ${count(report.directoriesLeft, "run directory", "run directories")} and ${count(report.tokensLeft, "token user", "token users")} left`;
+    failure ??= Number.isNaN(left)
+      ? "sweep: it did not finish, so what is left is unknown"
+      : `sweep: ${count(report.directoriesLeft, "run directory", "run directories")}, ${count(report.tokensLeft, "token user", "token users")} and ${count(report.hostLeft, "host resource", "host resources")} (units, containers, mounts) left`;
   }
   out(summaryOf(stateDir).trimEnd());
   out(failure ? `not ok: ${failure}` : `ok: live disk check passed (${suites.length} suites${options.slow ? " incl. slow" : ""}, sweep left 0)`);
@@ -480,11 +567,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       console.log("sweep: nothing to do; PDA_STATE_DIR names no run's ledgers");
       process.exit(0);
     }
-    const report = await sweep(env, env.PDA_STATE_DIR);
+    const report = await sweep(env, resolve(env.PDA_STATE_DIR));
     for (const line of report.lines) console.log(line);
-    process.exit(report.directoriesLeft + report.tokensLeft === 0 ? 0 : 1);
+    process.exit(report.directoriesLeft + report.tokensLeft + report.hostLeft === 0 ? 0 : 1);
   } else if (verb === "summary") {
-    process.stdout.write(summaryOf(env.PDA_STATE_DIR ?? ""));
+    process.stdout.write(summaryOf(env.PDA_STATE_DIR ? resolve(env.PDA_STATE_DIR) : ""));
   } else {
     console.error("usage: ci.ts all [--slow] [--list] | preflight | suites <name>... | sweep | summary");
     process.exit(2);

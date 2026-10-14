@@ -69,18 +69,20 @@ disk: the suites create and delete run directories and token users on whatever d
    each under a 25-minute deadline: one that hangs is killed with its processes and the next one runs.
 3. The Docker suites, after the host suites so the two never share the disk. They build the package's image from this
    checkout first (`pi-durable-disk:live-check`) and have a 60-minute deadline.
-4. The sweep, always (after a failure, a failed preflight or an interrupt): it removes the run directories (`runs/<name>/`
-   only, through the package's own run-tree delete, which revokes the run's delegations first) and token users that this
-   run's ledgers recorded and never stamped as removed.
+4. The sweep, always (after a failure, a failed preflight or an interrupt): it removes what this run's ledgers recorded and
+   never stamped as removed, which is what a suite killed at its deadline leaves (its `after` never ran). On the host first:
+   systemd units and Docker containers named `pda-*`, then mounts under `/mnt/pda/`. Then on the disk: run directories
+   (`runs/<name>/` only, through the package's own run-tree delete, which revokes the run's delegations first) and token
+   users. Anything a ledger lists outside those names is reported and left alone.
 5. The summary: each suite's result and time and the suites' timing measurements, as Markdown. Only numbers leave the
    results files: no disk id, host or identifier.
 
 Its last line on stdout is `ok: live disk check passed (7 suites, sweep left 0)` (under `--slow`,
 `ok: live disk check passed (8 suites incl. slow, sweep left 0)`) or `not ok: <first failing step>: <reason>`, and it exits
-0 only with an `ok:` line: preflight passed, every suite passed, and the sweep left no run directory and no token user. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
+0 only with an `ok:` line: preflight passed, every suite passed, and the sweep left no run directory, token user, unit, container or mount. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
 sweep; a second exits at once. It holds `/tmp/pda-live.lock` (as `flock` does) for the whole run and refuses to start
-while another live run on the host holds it. The ledgers and results go to `$PDA_STATE_DIR`, or a fresh temporary
-directory whose path it prints first.
+while another live run on the host holds it. The ledgers and results go to `$PDA_STATE_DIR` (made absolute), or a fresh
+temporary directory whose path it prints first.
 
 The steps also run on their own: `ci.ts preflight`, `ci.ts suites <name>...`, `ci.ts sweep` (with `PDA_STATE_DIR` naming
 a run's ledgers) and `ci.ts summary`.

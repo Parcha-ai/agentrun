@@ -5,10 +5,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOST_SUITES, openResources, preflight, runAll, runSuites, SUITES, summarize, summaryOf, sweepWith, timings, type SweepReport } from "./live/ci.ts";
+import { HOST_SUITES, openResources, preflight, runAll, runSuites, stateDirOf, SUITES, summarize, summaryOf, sweepWith, timings, type SweepOps, type SweepReport } from "./live/ci.ts";
 import { alive, scratchRoot } from "./_run-support.ts";
 
 const CI = fileURLToPath(new URL("./live/ci.ts", import.meta.url));
@@ -24,7 +24,7 @@ function ci(args: string[], env: Record<string, string>) {
 const lastLine = (lines: string[]) => lines.at(-1)!;
 
 /** `runAll` with each suite's commands scripted (`node -e <script>`, a pass by default) and a sweep that reports `left`. */
-async function all(options: { env?: Record<string, string>; scripts?: Record<string, string>; deadlineMs?: number; left?: [number, number]; sweepThrows?: boolean; abortDuring?: string; slow?: boolean }) {
+async function all(options: { env?: Record<string, string>; scripts?: Record<string, string>; deadlineMs?: number; left?: [number, number, number?]; sweepThrows?: boolean; abortDuring?: string; slow?: boolean; scratch?: string }) {
   const dir = scratchRoot("live-ci-all");
   const lines: string[] = [];
   const ran: string[] = [];
@@ -35,6 +35,7 @@ async function all(options: { env?: Record<string, string>; scripts?: Record<str
       out: (line) => lines.push(line),
       signal: stop.signal,
       slow: options.slow,
+      scratch: options.scratch ?? join(dir.root, "scratch"),
       deadlineMs: () => options.deadlineMs ?? 30_000,
       steps: (suite) => {
         ran.push(suite);
@@ -44,8 +45,8 @@ async function all(options: { env?: Record<string, string>; scripts?: Record<str
       sweep: async (): Promise<SweepReport> => {
         swept++;
         if (options.sweepThrows) throw new Error("the disk did not answer");
-        const [directoriesLeft, tokensLeft] = options.left ?? [0, 0];
-        return { lines: [`fake sweep: ${directoriesLeft} + ${tokensLeft} left`], directoriesLeft, tokensLeft };
+        const [directoriesLeft, tokensLeft, hostLeft = 0] = options.left ?? [0, 0];
+        return { lines: [`fake sweep: ${directoriesLeft} + ${tokensLeft} + ${hostLeft} left`], directoriesLeft, tokensLeft, hostLeft };
       },
     });
     return { code, lines, ran, swept };
@@ -84,6 +85,22 @@ describe("all", () => {
     assert.equal(r.swept, 1);
     assert.equal(lastLine(r.lines), `ok: live disk check passed (${SUITE_COUNT} suites, sweep left 0)`);
     assert.ok(r.lines.some((l) => /^\| claim \| pass \| \d+ s \|$/m.test(l)), "the summary lists each suite");
+  });
+
+  it("removes the scratch output its suites leave (.tmp/live-*), and nothing that was there before", async () => {
+    const dir = scratchRoot("live-ci-scratch");
+    try {
+      const scratch = join(dir.root, ".tmp");
+      mkdirSync(join(scratch, "live-earlier"), { recursive: true });
+      mkdirSync(join(scratch, "other"), { recursive: true });
+      const make = (name: string) => `require("node:fs").mkdirSync(${JSON.stringify(join(scratch, name))}, { recursive: true })`;
+      const r = await all({ scratch, scripts: { supervise: make("live-abc"), lifecycle: make("live-p8-def") } });
+      assert.equal(r.code, 0);
+      assert.deepEqual(readdirSync(scratch).sort(), ["live-earlier", "other"]);
+      assert.ok(r.lines.some((l) => l.endsWith("/.tmp/live-abc")));
+    } finally {
+      dir.remove();
+    }
   });
 
   it("--slow adds supervise-slow after supervise, and the pass line names the tier", async () => {
@@ -137,12 +154,13 @@ describe("all", () => {
   });
 
   it("a sweep that leaves something, or cannot finish, fails the check", async () => {
-    assert.equal(lastLine((await all({ left: [1, 0] })).lines), "not ok: sweep: 1 run directory and 0 token users left");
-    assert.equal(lastLine((await all({ left: [2, 1] })).lines), "not ok: sweep: 2 run directories and 1 token user left");
+    assert.equal(lastLine((await all({ left: [1, 0] })).lines), "not ok: sweep: 1 run directory, 0 token users and 0 host resources (units, containers, mounts) left");
+    assert.equal(lastLine((await all({ left: [2, 1, 1] })).lines), "not ok: sweep: 2 run directories, 1 token user and 1 host resource (units, containers, mounts) left");
+    assert.equal((await all({ left: [0, 0, 2] })).code, 1, "a unit, container or mount left on the host fails the check");
     const thrown = await all({ sweepThrows: true });
     assert.equal(thrown.code, 1);
     assert.ok(thrown.lines.includes("sweep failed: the disk did not answer"));
-    assert.equal(lastLine(thrown.lines), "not ok: sweep: it did not finish, so what is left on the disk is unknown");
+    assert.equal(lastLine(thrown.lines), "not ok: sweep: it did not finish, so what is left is unknown");
   });
 
   it("as a command: without the key the last line is the preflight refusal, and a held lock refuses a second run", async () => {
@@ -161,6 +179,23 @@ describe("all", () => {
         assert.equal(held.stdout, `not ok: lock: another live run on this host holds ${lock}\n`);
       } finally {
         holder.kill("SIGKILL");
+      }
+    } finally {
+      dir.remove();
+    }
+  });
+});
+
+describe("the state directory", () => {
+  it("is absolute even when PDA_STATE_DIR is relative: the suites run from the package directory, the sweep from anywhere", () => {
+    const dir = scratchRoot("live-ci-state");
+    try {
+      const cwd = process.cwd();
+      process.chdir(dir.root);
+      try {
+        assert.equal(stateDirOf({ PDA_STATE_DIR: "relative/state" }), join(dir.root, "relative/state"));
+      } finally {
+        process.chdir(cwd);
       }
     } finally {
       dir.remove();
@@ -234,42 +269,85 @@ describe("openResources", () => {
     assert.deepEqual(openResources(ledgers), {
       directories: ["runs/live-a/", "runs/p1-b/", "runs/p2-a/", "runs/p3-a/", "runs/p5-b/"],
       tokens: ["t2", "t3", "t5"],
+      units: [],
+      containers: ["pda-live-1"],
+      mounts: [],
       refused: [],
     });
   });
 
   it("never sweeps anything but a plain runs/<name>/: the rest is reported", () => {
     const ledger = { subdirectories: [{ key: "runs/../important/" }, { key: ".stray/p1-x/" }, { key: "runs/a/b/" }, { key: "runs/" }, { key: "runs/ok/" }] };
-    assert.deepEqual(openResources([ledger]), { directories: ["runs/ok/"], tokens: [], refused: [".stray/p1-x/", "runs/", "runs/../important/", "runs/a/b/"] });
+    assert.deepEqual(openResources([ledger]), { directories: ["runs/ok/"], tokens: [], units: [], containers: [], mounts: [], refused: [".stray/p1-x/", "runs/", "runs/../important/", "runs/a/b/"] });
+  });
+
+  it("finds the units, containers and mounts a killed suite left on the host, and only by the names the suites use", () => {
+    const ledgers = [
+      // supervise and lifecycle: units and mounts, closed with closedAt
+      { lane: "P5", units: [{ name: "pda-p5-a-run1", closedAt: "x" }, { name: "pda-p5-b-run2" }, { name: "sshd.service" }], mounts: [{ mountpoint: "/mnt/pda/p5/b/runs/x", closedAt: "x" }, { mountpoint: "/mnt/pda/p5/a/runs/y" }] },
+      // claim and run: mounts closed with unmountedAt
+      { lane: "P1", mounts: [{ mountpoint: "/mnt/pda/p1/a", unmountedAt: "x" }, { mountpoint: "/mnt/pda/p1/b" }, { mountpoint: "/srv/data" }, { mountpoint: "/mnt/pda/../etc" }] },
+      // docker: containers closed with removedAt
+      { containers: [{ name: "pda-live-g1", removedAt: "x" }, { name: "pda-live-g2" }, { name: "postgres" }] },
+    ];
+    const open = openResources(ledgers);
+    assert.deepEqual([open.units, open.containers, open.mounts], [["pda-p5-b-run2"], ["pda-live-g2"], ["/mnt/pda/p1/b", "/mnt/pda/p5/a/runs/y"]]);
+    assert.deepEqual(open.refused, ["/mnt/pda/../etc", "/srv/data", "postgres", "sshd.service"]);
   });
 });
+
+/** Host operations that record each call in `calls` and refuse the mounts in `stuck`. */
+function hostOps(calls: string[], stuck: string[] = []): Pick<SweepOps, "stopUnit" | "removeContainer" | "unmount"> {
+  return {
+    stopUnit: async (name) => calls.push(`unit ${name}`),
+    removeContainer: async (name) => calls.push(`container ${name}`),
+    unmount: async (mountpoint) => {
+      calls.push(`mount ${mountpoint}`);
+      if (stuck.includes(mountpoint)) throw new Error("still mounted");
+    },
+  };
+}
 
 describe("sweepWith", () => {
   it("deletes each run directory by its run id through the run-tree delete (which revokes delegations first), and removes each token user", async () => {
     const deleted: string[] = [];
     const removed: string[] = [];
     const report = await sweepWith({
+      ...hostOps([]),
       deleteRunTree: async (id) => {
         deleted.push(id);
         return { objects: 7, revoked: 1 };
       },
       removeUser: async (identifier) => removed.push(identifier),
-    }, { directories: ["runs/p1-a/", "runs/live-b/"], tokens: ["t1"] });
+    }, { directories: ["runs/p1-a/", "runs/live-b/"], tokens: ["t1"], units: [], containers: [], mounts: [] });
     assert.deepEqual(deleted, ["p1-a", "live-b"]);
     assert.deepEqual(removed, ["t1"]);
-    assert.deepEqual(report, { lines: ["swept runs/p1-a/: 7 objects, 1 delegations revoked", "swept runs/live-b/: 7 objects, 1 delegations revoked", "token user t1: removed"], directoriesLeft: 0, tokensLeft: 0 });
+    assert.deepEqual(report, { lines: ["swept runs/p1-a/: 7 objects, 1 delegations revoked", "swept runs/live-b/: 7 objects, 1 delegations revoked", "token user t1: removed"], directoriesLeft: 0, tokensLeft: 0, hostLeft: 0 });
+  });
+
+  it("clears the host before the disk: units, then containers, then mounts, then the run directories", async () => {
+    const calls: string[] = [];
+    const report = await sweepWith({
+      ...hostOps(calls, ["/mnt/pda/p5/a/runs/y"]),
+      deleteRunTree: async (id) => (calls.push(`tree ${id}`), { objects: 1, revoked: 0 }),
+      removeUser: async (identifier) => calls.push(`token ${identifier}`),
+    }, { directories: ["runs/p5-y/"], tokens: ["t1"], units: ["pda-p5-b-run2"], containers: ["pda-live-g2"], mounts: ["/mnt/pda/p5/a/runs/y"] });
+    assert.deepEqual(calls, ["unit pda-p5-b-run2", "container pda-live-g2", "mount /mnt/pda/p5/a/runs/y", "tree p5-y", "token t1"]);
+    assert.equal(report.hostLeft, 1, "the mount that would not go is counted");
+    assert.ok(report.lines.includes("mount /mnt/pda/p5/a/runs/y: not removed (still mounted)"));
   });
 
   it("counts and reports what it could not remove", async () => {
     const report = await sweepWith({
+      ...hostOps([]),
       deleteRunTree: async () => {
         throw new Error("runs/p1-a/ still holds 2 objects");
       },
       removeUser: async () => {
         throw new Error("no such user");
       },
-    }, { directories: ["runs/p1-a/"], tokens: ["gone"] });
-    assert.deepEqual(report, { lines: ["not swept runs/p1-a/: runs/p1-a/ still holds 2 objects", "token user gone: not removed (no such user)"], directoriesLeft: 1, tokensLeft: 1 });
+    }, { directories: ["runs/p1-a/"], tokens: ["gone"], units: [], containers: [], mounts: [] });
+    assert.deepEqual(report, { lines: ["not swept runs/p1-a/: runs/p1-a/ still holds 2 objects", "token user gone: not removed (no such user)"], directoriesLeft: 1, tokensLeft: 1, hostLeft: 0 });
   });
 });
 
