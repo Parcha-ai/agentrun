@@ -40,7 +40,7 @@ import {
 } from "../src/status.ts";
 import { openArchilStore, StoreFencedError } from "../src/store.ts";
 import { entryCommitter, FaultyDatabase, SQLITE_IOERR_FSYNC, sqliteError } from "./_support.ts";
-import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, scratchRoot, scriptedHarness, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
+import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, removeWhileWritten, scratchRoot, scriptedHarness, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
 
 const SQLITE_ERROR = 1;
 const SQLITE_IOERR_CLOSE = 4106;
@@ -797,7 +797,7 @@ describe("fences during the run", () => {
       const run = await t.open();
       pid = await startCommand(run, t.agent);
       held = vanish(dir.root);
-      rmSync(held, { recursive: true });
+      await removeWhileWritten(held); // the run's heartbeat may land run.json mid-removal
       await until(() => t.fenced.length === 1);
       const fence = t.fenced[0]!;
       assert.equal(fence.code, "FENCED");
