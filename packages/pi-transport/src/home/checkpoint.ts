@@ -219,7 +219,9 @@ export type CheckpointStats = {
 	taken: number;
 	skipped: Record<SkipReason, number>;
 	/** The newest checkpoint taken. */
-	last?: { n: number; at: number; ms: number; bytes: number };
+	last?: { n: number; at: number; ms: number; bytes: number; heldMs: number };
+	/** The longest the session was held for a pull, in ms, whether it was kept or skipped. */
+	longestHeldMs?: number;
 	/** The newest skip, with what held it. */
 	lastSkip?: { reason: SkipReason; message: string; at: number; holdouts: readonly { kind: string; count: number }[] };
 };
@@ -383,6 +385,8 @@ export async function pullCheckpoint(
 	} finally {
 		await home.abandon(withoutAbortSignal(context));
 	}
+	const heldMs = Math.round(performance.now() - started);
+	if (options.stats !== undefined) options.stats.longestHeldMs = Math.max(options.stats.longestHeldMs ?? 0, heldMs);
 	if (!committed.ok) return committed;
 	const keep = Math.max(1, options.keep ?? DEFAULT_KEEP);
 	await vault.prune(session, keep, context);
@@ -397,7 +401,7 @@ export async function pullCheckpoint(
 	}
 	if (options.stats !== undefined) {
 		options.stats.taken += 1;
-		options.stats.last = { n: committed.value.n, at, ms: Math.round(performance.now() - started), bytes };
+		options.stats.last = { n: committed.value.n, at, ms: Math.round(performance.now() - started), bytes, heldMs };
 	}
 	return ok(committed.value);
 }

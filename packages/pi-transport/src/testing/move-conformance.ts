@@ -11,7 +11,7 @@ import type { StorageConformanceRunner } from "@earendil-works/pi-durable/testin
 import { Type } from "typebox";
 import { finish } from "../box/files.ts";
 import type { App } from "../home/app.ts";
-import { localVault, pullCheckpoint } from "../home/checkpoint.ts";
+import { checkpointStats, localVault, pullCheckpoint } from "../home/checkpoint.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
@@ -23,6 +23,7 @@ const context: Context = BACKGROUND_CONTEXT;
 const SESSION = "move-conformance";
 const NOTICE = "System notice: you now run in another box.";
 const ROUNDS = 6;
+const RESTORE_HOLD_MS = 600;
 const STEPS: readonly MoveStep[] = ["prepare", "drain", "seal", "ship", "take", "resume", "retire"];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -98,7 +99,7 @@ const textOf = (message: Said) =>
  * on it waits until a move has come to its drain, or 3 s, so that every move takes a session in the middle of its run.
  * It counts the move's notice in every transcript it is sent: the most it saw is what the session holds.
  */
-function hostModels(drainCame: Promise<void>) {
+function hostModels(drainCame: Promise<void>, holdMs = 3_000) {
 	const faux = fauxProvider({ api: "faux" });
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -117,7 +118,7 @@ function hostModels(drainCame: Promise<void>) {
 			if (said.length >= results.length) results = said;
 			await sleep(60);
 			const done = transcript.messages.filter((message) => message.role === "toolResult").length;
-			if (done >= 2) await Promise.race([drainCame, sleep(3_000)]);
+			if (done >= 2) await Promise.race([drainCame, sleep(holdMs)]);
 			if (done >= ROUNDS) return fauxAssistantMessage("done");
 			return fauxAssistantMessage(fauxToolCall("work", { n: done }), { stopReason: "toolUse" });
 		}),
@@ -163,14 +164,14 @@ type Run = {
 };
 
 /** A session that started at `a` on epoch 1 and is busy with its run. */
-async function begin(pair: MovePair): Promise<Run> {
+async function begin(pair: MovePair, holdMs?: number): Promise<Run> {
 	const leases = mkdtempSync(join(tmpdir(), "pi-transport-lease-"));
 	const lease = leaseIn(dirStore(leases));
 	let drainCame: () => void = () => {};
 	const came = new Promise<void>((resolve) => {
 		drainCame = resolve;
 	});
-	const { models, notices, results } = hostModels(came);
+	const { models, notices, results } = hostModels(came, holdMs);
 	const handles: HomeHandle[] = [];
 	const base = boxRunner({ program: pair.program, session: SESSION, models });
 	const start: StartRunner = async (place, epoch, startContext) => {
@@ -245,8 +246,8 @@ async function begin(pair: MovePair): Promise<Run> {
 }
 
 /** Runs `use` with a session begun at `a`, and ends the run whatever happens. */
-async function withRun(pair: MovePair, use: (run: Run) => Promise<void>): Promise<void> {
-	const run = await begin(pair);
+async function withRun(pair: MovePair, use: (run: Run) => Promise<void>, holdMs?: number): Promise<void> {
+	const run = await begin(pair, holdMs);
 	try {
 		await use(run);
 	} finally {
@@ -753,6 +754,9 @@ export function registerRestoreConformance(
 	options?: { readonly timeoutMs?: number },
 ): void {
 	const timeoutMs = options?.timeoutMs ?? 180_000;
+	// The model waits this long for a drain at each round from the third, so that a case finds the session mid-run. No
+	// drain comes in a restore, so the wait is all the time a round costs: short here, 3 s in the move cases.
+	const inRun = (trio: RestoreTrio, use: (run: Run) => Promise<void>) => withRun(trio, use, RESTORE_HOLD_MS);
 	const every = Array.from({ length: ROUNDS }, (_, n) => String(n));
 	const equal = (actual: unknown, expected: unknown, message: string) => {
 		if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -788,7 +792,7 @@ export function registerRestoreConformance(
 			() =>
 				withTrio((trio) =>
 					withVault((vault) =>
-						withRun(trio, async (run) => {
+						inRun(trio, async (run) => {
 							await sleep(400);
 							const checkpoint = await checkpointNow(trio, run, vault);
 							// Work after the checkpoint is lost with the box, and done again.
@@ -826,7 +830,7 @@ export function registerRestoreConformance(
 			() =>
 				withTrio((trio) =>
 					withVault((vault) =>
-						withRun(trio, async (run) => {
+						inRun(trio, async (run) => {
 							await sleep(150);
 							getOrThrow(await trio.a.box.destroy(context));
 							const recovered = await recoverHome(
@@ -857,7 +861,7 @@ export function registerRestoreConformance(
 					() =>
 						withTrio((trio) =>
 							withVault((vault) =>
-								withRun(trio, async (run) => {
+								inRun(trio, async (run) => {
 									await sleep(300);
 									await checkpointNow(trio, run, vault);
 									const victim = who === "source" ? trio.a : trio.b;
@@ -920,4 +924,72 @@ export function registerRestoreConformance(
 			}
 		}
 	});
+}
+
+/**
+ * How long a session is held for each pull of its checkpoint, for a host that shows the pause. A session begun in `a`
+ * gets `files` files of `fileBytes` random bytes in its workspace; three pulls follow: all of it, one changed file,
+ * nothing changed. `heldMs` is the time from the order to the session going on; `ms` is the pull as a whole.
+ */
+export async function measureCheckpoints(
+	trio: RestoreTrio,
+	load: { readonly files: number; readonly fileBytes: number },
+): Promise<readonly { readonly pull: string; readonly heldMs: number; readonly ms: number; readonly bytes: number }[]> {
+	const vaultDirectory = mkdtempSync(join(tmpdir(), "pi-transport-measure-"));
+	const results: { pull: string; heldMs: number; ms: number; bytes: number }[] = [];
+	try {
+		await withRun(
+			trio,
+			async (run) => {
+				// The session runs its rounds without waiting and comes to rest, so that the hold is the pull's own cost.
+				await sleep(1_500);
+				const write = async (name: string) => {
+					const started = await trio.a.box.exec(
+						[
+							"sh",
+							"-c",
+							'mkdir -p -- "$1" && head -c "$3" /dev/urandom > "$1/$2"',
+							"sh",
+							`${trio.a.workspace}/load`,
+							name,
+							String(load.fileBytes),
+						],
+						{ timeoutMs: 120_000 },
+						context,
+					);
+					if (!started.ok) throw started.error;
+					await finish(started.value);
+				};
+				for (let n = 0; n < load.files; n++) await write(`f${n}`);
+				const vault = localVault(vaultDirectory);
+				const pull = async (label: string) => {
+					const stats = checkpointStats();
+					const taken = await pullCheckpoint(
+						{
+							session: SESSION,
+							place: trio.a,
+							home: run.home,
+							epoch: 1,
+							vault,
+							stats,
+							drain: { timeoutMs: 20_000 },
+						},
+						context,
+					);
+					if (!taken.ok || stats.last === undefined) {
+						throw new Error(`pull "${label}" did not complete: ${taken.ok ? "no stats" : taken.error.message}`);
+					}
+					results.push({ pull: label, heldMs: stats.last.heldMs, ms: stats.last.ms, bytes: stats.last.bytes });
+				};
+				await pull("first (all of it)");
+				if (load.files > 0) await write("f0");
+				await pull("one file changed");
+				await pull("nothing changed");
+			},
+			1,
+		);
+	} finally {
+		rmSync(vaultDirectory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+	return results;
 }
