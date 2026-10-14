@@ -152,6 +152,7 @@ export function fold(events) {
   }
   const values = doc => [...latest].filter(([id]) => id.startsWith(`${doc}\u0001`)).map(([, value]) => value);
   const effects = values('agentrun.effects');
+  const receipts = values('agentrun.receipts').filter(receipt => typeof receipt?.tool === 'string' && receipt.tool !== '');
   const decisions = values('agentrun.decisions').flatMap(value => value.receipts ?? []);
   // Cost: the usage and priced parts of the run, null when any part is unknown (a judge row whose cost the host did not report).
   const parts = {};
@@ -163,7 +164,9 @@ export function fold(events) {
     processes,
     kills,
     // Workflow effects that reached `completed`: once per id, since the latest value per (doc, key) is the id's last state.
-    paidCallsMade: effects.filter(effect => effect.status === 'completed').length,
+    // Paid calls made, summed per source (section 6): workflow effects that reached `completed`, plus the agent's paid tool calls (one
+    // `agentrun.receipts` entry per tool and argsHash). The browser's, vision's and transport's own rows are not in a recording yet.
+    paidCallsMade: effects.filter(effect => effect.status === 'completed').length + receipts.length,
     // Effects still `unknown` at the end of the run.
     unknown: effects.filter(effect => effect.status === 'unknown').length,
     judgeAsks: { answered: decisions.filter(receipt => !receipt.error).length, failed: decisions.filter(receipt => receipt.error).length },

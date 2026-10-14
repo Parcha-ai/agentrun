@@ -114,3 +114,8 @@ test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): 
   assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 2 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
   assert.ok(JSON.parse(readFileSync(new URL('./fixtures/midstream-kill/manifest.json', import.meta.url), 'utf8')).kills === 1);
 });
+
+test('paid calls made sums the effects that completed and the agent\'s receipts, one per tool and argsHash', () => {
+  const lines = [effect(1, 1, 'completed'), receiptFor('lookup', { q: 'a' }), receiptFor('lookup', { q: 'a' }, 2), receiptFor('lookup', { q: 'b' }, 3), durable(4, { kind: 'agentrun.receipts', data: { doc: 'agentrun.receipts', key: 'x', value: { tool: '', argsHash: '', result: null, session: null } } })];
+  assert.equal(fold(lines).paidCallsMade, 3, 'one effect and two receipt keys; an empty receipt slot is not a paid call');
+});
