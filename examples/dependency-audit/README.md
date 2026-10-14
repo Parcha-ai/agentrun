@@ -17,6 +17,9 @@ npm ci --ignore-scripts && npm run build
 # No key, no network: a captured project (fixtures/) replayed by a scripted lead and judge.
 npm run demo:audit -- --fixture gsap
 
+# The same, with the real install (Docker, still no key) and one install box removed mid-install:
+npm run demo:audit -- --fixture gsap --real-install --kill-box --storm 4000 --kills 5
+
 # The same, killed with SIGKILL about every 2 s, 30 times, a fresh process taking the run back each time (--pace 800 makes the replay
 # take about as long as the work would).
 npm run demo:audit -- --fixture spacedeck --storm 2000 --kills 30
@@ -29,6 +32,20 @@ npm run demo:audit -- --fixture spacedeck --record ./audit-recording
 ANTHROPIC_API_KEY=... npm run demo:audit -- --live --package ./package.json
 ANTHROPIC_API_KEY=... npm run demo:audit -- --live --package owner/repo@<commit> --limit 24
 ```
+
+## What a live run costs
+
+| Part | What it needs | Cost |
+| --- | --- | --- |
+| The registry, OSV and GitHub reads | Nothing (a `GITHUB_TOKEN` is optional: 60 unauthenticated requests an hour) | $0 |
+| The install in a box | Docker. The install runs in a throwaway container with its connections traced; install scripts never run on your machine. Without Docker the step is skipped and the report says so | $0 |
+| The repository agent and the finding | Your own model key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) and a Chrome on this machine | Your model's price: a few cents per dependency on a small model |
+| The badge reads | The same key: the eyes are your model, looking at each badge as an image | A few cents per run |
+| The typed flag | The same key | Under a cent per dependency |
+| A recorded run on a cloud browser | `BROWSERBASE_API_KEY` for the pi-browser provider | The provider's session time |
+
+A scripted run (`--fixture`) costs $0 and uses no key. The recording's manifest lists what a run cost, `null` where a part is unknown and
+never `0` for an unknown price.
 
 **The storm guarantees progress.** A kill every few seconds would starve a model request that takes longer than the gap: it would be paid
 for again and again and never land. So the storm counts, per node, how many times it has cut it, and a node it has cut twice is not

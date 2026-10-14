@@ -21,7 +21,7 @@ import type { Fixture } from './capture.ts';
 import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
 import { badgeImageTool, visionOptions } from './badges.ts';
 import { checkReceipts, recordOf } from './check.ts';
-import { attachInstall, startInstall } from './install-box.ts';
+import { attachInstall, killBox, startInstall } from './install-box.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
 import { makeTools, rerunner } from './tools.ts';
@@ -72,7 +72,8 @@ async function child() {
     tools = liveTools;
   } else {
     const fixture = loadFixture(process.env.FIXTURE);
-    const fakes = scriptedFakes(fixture, place.root, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0);
+    // With `--real-install` the install is a real npm install in a throwaway Docker box (no model, no key): its strace lines are the real ones.
+    const fakes = scriptedFakes(fixture, place.root, process.env.AUDIT_PACE ? Number(process.env.AUDIT_PACE) : 0, process.env.AUDIT_REAL_INSTALL ? { startInstall, attachInstall } : undefined);
     local = localHost(place, fakes, { browser: scriptedBrowser(fixture, process.env.BACKEND).plane, ...(recorder ? { recorder } : {}) });
     tools = (fakes as unknown as { rerunTools: Fakes['tools'] }).rerunTools;
     // The vision lane with no key: the captured badges drawn as PNGs, read by scripted eyes that say what each badge says.
@@ -163,7 +164,7 @@ function keepBlob(dir: string, bytes: Buffer, extension: string): string {
   return hash;
 }
 
-export type AuditOptions = { unbounded?: boolean; holdCapMs?: number; pace?: number; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
+export type AuditOptions = { realInstall?: boolean; killBox?: boolean; unbounded?: boolean; holdCapMs?: number; pace?: number; attempts?: number; title?: string; live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
 
 /** The labels of the workflow's `call` nodes: while one is in flight a kill can land between its admission and its answer, which stops the
  *  run on an unknown effect until a host settles it through reconcile. */
@@ -204,10 +205,11 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   const next = random(seed);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
   const cuts = new Map<string, number>();
+  let boxKilled = false;
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
   // A scripted run's fake browser belongs to the supervisor, so a killed process leaves its sessions and pages as they were.
   const served = options.live ? undefined : await scriptedBackend(loadFixture(options.fixture)).serve();
-  const env = { DIR: dir, ...(served ? { BACKEND: served.url } : {}), ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
+  const env = { DIR: dir, ...(served ? { BACKEND: served.url } : {}), ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.pace ? { AUDIT_PACE: String(options.pace) } : {}), ...(options.realInstall ? { AUDIT_REAL_INSTALL: '1' } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
     processes += 1;
@@ -225,10 +227,26 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
       supervisor?.host('kill', { gen: processes, label: `storm ${kills}`, crossing: null });
       proc.kill('SIGKILL');
     };
+    // `--kill-box`: once, a running install's box is removed from under it, as if its machine were lost; the door starts it again in a fresh box.
+    const boxKiller = options.killBox && !boxKilled ? setInterval(() => {
+      if (boxKilled) return;
+      try {
+        for (const name of readdirSync(join(dir, 'boxes'))) {
+          const file = join(dir, 'boxes', name, 'box.json');
+          if (!existsSync(file) || existsSync(join(dir, 'boxes', name, 'lost'))) continue;
+          const { boxId } = JSON.parse(readFileSync(file, 'utf8')) as { boxId: string };
+          boxKilled = true;
+          writeFileSync(join(dir, 'boxes', name, 'lost'), boxId);
+          void killBox(boxId).then((removed) => { if (removed) supervisor?.host('kill', { gen: processes, label: `box lost: ${name}`, crossing: 'install' }); else boxKilled = false; });
+          return;
+        }
+      } catch { /* no box yet */ }
+    }, 1500) : undefined;
     const timer = options.stormMs && kills < maxKills ? setTimeout(() => void strike(), Math.round(options.stormMs * (0.67 + next() * 0.66))) : undefined;
     last = await done;
     stopped = true;
     clearTimeout(timer);
+    if (boxKiller) clearInterval(boxKiller);
     if (last.outcome) break;
     if (last.signal !== 'SIGKILL') break;
   }
@@ -269,11 +287,11 @@ export async function audit(options: AuditOptions) {
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child().catch((error) => console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } })));
   else {
-    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, unbounded: { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, unbounded: { type: 'boolean' }, 'real-install': { type: 'boolean' }, 'kill-box': { type: 'boolean' }, pace: { type: 'string' }, attempts: { type: 'string' }, title: { type: 'string' }, json: { type: 'boolean' } } });
     const result = await audit({
       ...(values.live ? { live: true } : {}), ...(values.package ? { package: values.package } : {}), ...(values.model ? { model: values.model } : {}), ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
       ...(values.kills ? { kills: Number(values.kills) } : {}), ...(values.seed ? { seed: Number(values.seed) } : {}), ...(values.record ? { record: values.record } : {}), ...(values.dir ? { dir: values.dir } : {}),
-      ...(values.unbounded ? { unbounded: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
+      ...(values.unbounded ? { unbounded: true } : {}), ...(values['real-install'] ? { realInstall: true } : {}), ...(values['kill-box'] ? { killBox: true } : {}), ...(values.pace ? { pace: Number(values.pace) } : {}), ...(values.attempts ? { attempts: Number(values.attempts) } : {}), ...(values.title ? { title: values.title } : {}),
     });
     if (values.json) console.log(JSON.stringify(result));
     else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);

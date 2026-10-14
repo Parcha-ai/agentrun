@@ -57,6 +57,14 @@ test('a box that is gone is started again in a fresh one, and the new id is the 
   assert.equal(out.how, 'restarted');
   assert.deepEqual(fake.calls.map((call) => call[0]), ['start', 'attach', 'start', 'attach']);
   assert.equal(JSON.parse(readFileSync(join(dir, 'boxes', 'puppeteer@18.2.1', 'box.json'), 'utf8')).boxId, 'box-2');
+  assert.deepEqual(out.lost, ['box-1']);
+  // The process that waits on the fresh box dies; the next one reattaches, and the lost box is still on the call's record.
+  const dir2 = await root(t);
+  await assert.rejects(installThroughBox(dir2, boxes([{ gone: true }, () => { throw new Error('died'); }]), 'x', '1.0.0'), /died/);
+  const resumed = boxes([RESULT]);
+  const again = await installThroughBox(dir2, resumed, 'x', '1.0.0');
+  assert.equal(again.how, 'restarted');
+  assert.deepEqual(again.lost, ['box-1']);
 });
 
 test('a box that never ends fails the call at its deadline instead of waiting for ever', async (t) => {
@@ -87,4 +95,26 @@ test('with no Docker the install is skipped and the receipt says so; a replay\'s
   assert.equal(replay.ran, false);
   assert.deepEqual(replay.outside, []);
   assert.ok(existsSync(join(dir, replay.receipt)));
+});
+
+test('a package the box cannot install does not stop the audit: the receipt says why it was not installed', async (t) => {
+  const dir = await root(t);
+  const refusing = { async startInstall(name) { throw new Error(`"${name}" is not an npm package name`); }, async attachInstall() { throw new Error('unreachable'); } };
+  const out = await makeTools({ root: dir, source: { live: true }, boxes: refusing }).install({ name: 'execSync', version: '1.0.2', scripts: {} });
+  assert.equal(out.ran, false);
+  assert.match(JSON.parse(readFileSync(join(dir, out.receipt), 'utf8')).note, /could not be run: "execSync" is not an npm package name/);
+  const slow = { async startInstall() { return { boxId: 'b' }; }, async attachInstall() { await new Promise((resolve) => setTimeout(resolve, 5)); return { running: true }; } };
+  // A deadline is still the call's failure, not a skip.
+  await assert.rejects(installThroughBox(dir, slow, 'slow', '1.0.0', { deadlineMs: 20, waitMs: 1 }), /did not end in time/);
+});
+
+test('a result read from the box is kept before it is returned: a process that dies after reading it starts no second install', async (t) => {
+  const dir = await root(t);
+  const first = boxes([RESULT]);
+  assert.equal((await installThroughBox(dir, first, 'puppeteer', '18.2.1')).how, 'started');
+  // The box is gone now (it is removed when its result is read). A resumed process takes the kept result and asks no box.
+  const resumed = boxes([{ gone: true }]);
+  const again = await installThroughBox(dir, resumed, 'puppeteer', '18.2.1');
+  assert.deepEqual(again.result, RESULT);
+  assert.deepEqual(resumed.calls, [], 'no box was asked and none was started');
 });

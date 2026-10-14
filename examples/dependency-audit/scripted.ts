@@ -52,9 +52,9 @@ export function repoPages(fixture: Fixture) {
 }
 
 /** `pace` makes a replay take about as long as the work would: a registry or advisory read waits `pace` ms, an install five times that. */
-export function scriptedFakes(fixture: Fixture, root: string, pace = 0): Fakes {
+export function scriptedFakes(fixture: Fixture, root: string, pace = 0, boxes?: InstallBoxes): Fakes {
   const pages = repoPages(fixture);
-  const quick = makeTools({ root, source: { replay: fixture }, ...(pace > 0 ? { boxes: replayBoxes(root, pace * 5) } : {}) });
+  const quick = makeTools({ root, source: { replay: fixture }, ...(boxes ? { boxes } : pace > 0 ? { boxes: replayBoxes(root, pace * 5) } : {}) });
   // A read waits `pace`. An install goes through the replay's boxes (below), which take `pace * 5` and outlive the run, as Docker's do.
   const tools = pace > 0 ? Object.fromEntries(Object.entries(quick).map(([name, tool]) => [name, async (args: Record<string, unknown>) => {
     if (name !== 'install') await new Promise((resolveWait) => setTimeout(resolveWait, pace));

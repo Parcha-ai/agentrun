@@ -21,11 +21,11 @@ export type InstallBoxes = {
   attachInstall(boxId: string, options?: { waitMs?: number }): Promise<InstallResult | { running: true } | { gone: true }>;
 };
 
-export type InstallOutcome = { result: InstallResult; boxId: string; /** How the call was answered: a first box, a reattach to the box a killed process left, or a fresh box after the box was lost. */ how: 'started' | 'reattached' | 'restarted' };
+export type InstallOutcome = { result: InstallResult; boxId: string; /** The boxes this call lost on the way (their machines were gone), oldest first. */ lost: string[]; /** How the call was answered: a first box, a reattach to the box a killed process left, or a fresh box after the box was lost. */ how: 'started' | 'reattached' | 'restarted' };
 
 const markOf = (root: string, key: string) => join(root, 'boxes', key.replace(/[^\w.@-]+/g, '_'), 'box.json');
-const readMark = (file: string): { boxId: string } | undefined => { try { return JSON.parse(readFileSync(file, 'utf8')) as { boxId: string }; } catch { return undefined; } };
-function writeMark(file: string, mark: { boxId: string }) {
+const readMark = (file: string): { boxId: string; lost?: string[] } | undefined => { try { return JSON.parse(readFileSync(file, 'utf8')) as { boxId: string }; } catch { return undefined; } };
+function writeMark(file: string, mark: { boxId: string; lost?: string[] }) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(`${file}.${process.pid}.partial`, JSON.stringify(mark));
   renameSync(`${file}.${process.pid}.partial`, file);
@@ -36,19 +36,35 @@ export async function installThroughBox(root: string, boxes: InstallBoxes, name:
   const file = markOf(root, `${name}@${version}`);
   const until = Date.now() + (options.deadlineMs ?? 240_000);
   let how: InstallOutcome['how'] = 'started';
+  // A result the door already had is kept on disk before it is returned: the box is gone once its result is read, so a process that
+  // dies between reading it and committing the call must not start another install to get it again.
+  const kept = join(dirname(file), 'result.json');
+  try { return { result: JSON.parse(readFileSync(kept, 'utf8')) as InstallResult, boxId: readMark(file)?.boxId ?? '', lost: readMark(file)?.lost ?? [], how: 'reattached' }; } catch { /* none kept yet */ }
   let mark = readMark(file);
-  if (mark) how = 'reattached';
+  // A box lost by an earlier process of this run stays on the call's record.
+  const lost: string[] = [...(mark?.lost ?? [])];
+  if (mark) how = lost.length ? 'restarted' : 'reattached';
   for (;;) {
     if (!mark) {
-      mark = await boxes.startInstall(name, version, { ...(options.labels ? { labels: options.labels } : {}) });
+      mark = { ...(await boxes.startInstall(name, version, { ...(options.labels ? { labels: options.labels } : {}) })), ...(lost.length ? { lost } : {}) };
       writeMark(file, mark);
     }
     const answer = await boxes.attachInstall(mark.boxId, { waitMs: options.waitMs ?? 1_000 });
-    if ('gone' in answer) { rmSync(file, { force: true }); mark = undefined; how = 'restarted'; continue; }
+    if ('gone' in answer) {
+      // Another caller of the same call may have read the result an instant ago (the box is removed when its result is read): give it a
+      // moment to keep it before this one decides the machine was lost.
+      for (let wait = 0; wait < 10; wait += 1) {
+        try { return { result: JSON.parse(readFileSync(kept, 'utf8')) as InstallResult, boxId: mark.boxId, lost, how: 'reattached' }; } catch { /* not kept yet */ }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+      }
+      lost.push(mark.boxId); rmSync(file, { force: true }); mark = undefined; how = 'restarted'; continue; }
     if ('running' in answer) {
       if (Date.now() > until) throw Object.assign(new Error(`the install of ${name}@${version} did not end in time`), { code: 'timeout' });
       continue;
     }
-    return { result: answer, boxId: mark.boxId, how };
+    const partial = `${kept}.${process.pid}.partial`;
+    writeFileSync(partial, JSON.stringify(answer));
+    renameSync(partial, kept);
+    return { result: answer, boxId: mark.boxId, lost, how };
   }
 }

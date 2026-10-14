@@ -67,14 +67,18 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
       if (!options.boxes) return skipped(options.skipped ?? (replay ? 'replay: no program ran, so the install\'s connections are not known' : 'no box is available, so the install step was skipped'));
       let done;
       try { done = await installThroughBox(root, options.boxes, name, version, { labels: { 'agentrun-dependency-audit': createHash('sha256').update(root).digest('hex').slice(0, 12) } }); } catch (error) {
-        if ((error as { code?: string }).code === 'DOCKER_UNAVAILABLE') return skipped('Docker is not available on this machine, so the install step was skipped');
-        throw error;
+        const code = (error as { code?: string }).code;
+        if (code === 'DOCKER_UNAVAILABLE') return skipped('Docker is not available on this machine, so the install step was skipped');
+        // A deadline is the call's own failure. Anything else is a package the box cannot install (npm refuses a legacy name, say):
+        // the audit goes on, and the receipt says why that dependency was not installed.
+        if (code === 'timeout') throw error;
+        return skipped(`the install could not be run: ${String((error as Error).message).slice(0, 200)}`);
       }
       // A replay's box ran no program: it only took the time one would, and its answer is not a fact about the package.
       if (done.result.standIn) return skipped(replay ? 'replay: no program ran, so the install\'s connections are not known' : 'the box ran no program');
       const hosts = [...new Set(done.result.outbound.map((connection) => connection.host ?? connection.ip))].sort();
       const outside = hosts.filter((host) => !REGISTRY_HOSTS.has(host));
-      const { receipt } = keep(root, 'install', name, version, { ran: true, label: done.result.seen, box: { id: done.boxId, how: done.how }, report: done.result, scripts, hosts, outside });
+      const { receipt } = keep(root, 'install', name, version, { ran: true, label: done.result.seen, box: { id: done.boxId, how: done.how, ...(done.lost.length ? { lost: done.lost } : {}) }, report: done.result, scripts, hosts, outside });
       return { receipt, ran: true, scripts, hosts, outside };
     },
   };
