@@ -139,14 +139,19 @@ console.log("the long command is running: SIGKILL to the first process (its comm
 first.kill("SIGKILL");
 const cut = await firstClosed;
 const job = Number(readFileSync(join(work, "job.pid"), "utf8"));
-/** Whether the command's process group still has a member. */
+/** Whether the command's process group still has a live member: a zombie waiting for a parent that does not reap (a container's pid 1) is not running. */
 const running = (): boolean => {
-  try {
-    process.kill(-job, 0);
-    return true;
-  } catch {
-    return false;
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(join("/proc", entry, "stat"), "utf8");
+      const [state, , group] = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "pid (comm) ": state, ppid, pgrp
+      if (Number(group) === job && state !== "Z") return true;
+    } catch {
+      // the process ended while it was read
+    }
   }
+  return false;
 };
 console.log(`the first process ended (${cut.signal ?? `exit ${cut.code}`}); its command is ${running() ? "still running: a bare kill -9 does not end it" : "gone"}; a second process opens the same run`);
 
