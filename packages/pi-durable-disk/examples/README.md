@@ -11,10 +11,10 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | no |
 | [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | no |
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | no |
+| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | yes |
 
 Coming: `kill-9` (a coding agent that survives `kill -9`), `no-double-charge` (a paid effect cut by `kill -9`, never sent
-twice), `audit-across-crashes` (the store as the record of every incarnation), and `serve-and-park` (an idle run holds no
-process).
+twice), and `audit-across-crashes` (the store as the record of every incarnation).
 
 ## Run one
 
