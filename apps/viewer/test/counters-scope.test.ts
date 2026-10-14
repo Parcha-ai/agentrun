@@ -199,3 +199,14 @@ test('re-asks at a position are its asks minus one, split proven and possible by
   const run = [started(), asked(1, 12), started(), partialOf(2, 12, 'B'), started(), partialOf(2, 12, 'B', true), partialOf(3, 12, 'C'), answer(3, 12)];
   assert.deepEqual(turns(run), { committed: 1, reasked: 1, reaskedTurns: 1, reaskedPossible: 1 });
 });
+
+test('conv 29 position 8 of the spacedeck recording: a bare cut marker, then 22 processes each with its own distinct partial and a bare snapshot, the answer in the last: 1 possible and 22 proven re-asks', () => {
+  const run: Line[] = [started(), asked(7, 29)];
+  // Each later process opens on a snapshot that shows the marker bare (a resumed pi drops the cut partial), commits its own partial, and is killed.
+  for (let process = 1; process <= 22; process += 1) run.push(started(), asked(7 + 2 * process, 29, true), partialOf(7 + 2 * process, 29, `P${process}`));
+  run.push(started(), asked(53, 29, true), idle(53, 29), answer(53, 29));
+  assert.deepEqual(turns(run), { committed: 1, reasked: 22, reaskedTurns: 1, reaskedPossible: 1 });
+  // The same chain read from its snapshots alone would be one unchanged bare marker: the partials on the processes' own lines are the proof.
+  const snapshotsOnly = run.filter((line) => !(line.kind === 'pi.live' && line.snapshot !== true && JSON.stringify(line.data).includes('toolCall')));
+  assert.deepEqual(turns(snapshotsOnly), { committed: 1, reasked: 0, reaskedTurns: 0, reaskedPossible: 1 });
+});
