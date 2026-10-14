@@ -828,9 +828,11 @@ async function transfer(
 	context.abortSignal?.addEventListener("abort", abort, { once: true });
 	try {
 		arm();
-		const reader = await startSource(inner, state);
+		// Starting a side is a phase that moves no byte, like packing: a box that takes longer than the stall limit to
+		// answer a call is slow, not stalled, so the hold is taken before the first call and kept until the side is up.
+		const reader = await state.working(startSource(inner, state));
 		if (!reader.ok) return err(boxFailure("could not start the source program", reader.error));
-		const writer = await startTarget(inner, state);
+		const writer = await state.working(startTarget(inner, state));
 		if (!writer.ok) {
 			cancel();
 			return err(boxFailure("could not start the target program", writer.error));

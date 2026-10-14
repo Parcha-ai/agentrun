@@ -141,6 +141,39 @@ describe("phases that move no byte", () => {
 		}, 60_000);
 	}
 
+	// Before a phase that moves no byte begins, a box call (the parts directory, the program's start) may take longer
+	// than the stall limit too: that is a slow box, not a stall. The call is slowed by far more than the limit, so no
+	// scheduling noise decides the outcome.
+	for (const [label, side, pipe] of [
+		["the source's setup call", "source", FILES],
+		["the target's setup call", "target", FILES],
+		["the source's program start", "source", { kind: "stream" } as const],
+		["the target's program start", "target", { kind: "stream" } as const],
+	] as const) {
+		it(`are not a stall: ${label} slower than the stall limit still moves the workspace (${pipe.kind})`, async () => {
+			const { from, to } = await pair();
+			const src = join(from.facts().workspace, "tree");
+			mkdirSync(src);
+			writeFileSync(join(src, "f"), randomBytes(3000));
+			const slow = {
+				match: pipe.kind === "files" ? "pi-transport-move-" : side === "source" ? "tar -c" : "tar -x",
+				ms: 1500,
+			};
+			const a = side === "source" ? tampered(from, { delayExec: slow }) : from;
+			const b = side === "target" ? tampered(to, { delayExec: slow }) : to;
+			const dst = join(to.facts().workspace, "t");
+			getOrThrow(
+				await moveWorkspace(
+					a,
+					b,
+					{ fromRoot: src, toRoot: dst, fromPipe: pipe, toPipe: pipe, stallMs: 400 },
+					context,
+				),
+			);
+			expect(walk(dst)).toEqual(walk(src));
+		}, 60_000);
+	}
+
 	it("still end with a timeout when the whole deadline passes", async () => {
 		const { from, to } = await pair();
 		const src = join(from.facts().workspace, "tree");
