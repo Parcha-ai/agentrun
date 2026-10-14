@@ -301,15 +301,20 @@ Not covered: in this release a home in a box runs its tools in its own box, and 
    workspace and admits the notice once. The store records the workspace it last ran in, so no root travels with
    the order and a second resume rewrites nothing.
 7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
+   The boxes are the host's: it made them and passes them in each `Place`, and it ends or keeps the source's box
+   after the move.
 
 Before the take, a failure leaves the session where it was: a sealed source is told to open its store again
-(`seal`, `ship`, `target`). A lost take (`lost`) means another host acted: this host does nothing more. After the
+(`seal`, `ship`, `target`). A lost take (`lost`) means another host acted: this host deletes the copy it shipped, unless the lease names
+the target's own place (then the copy is that host's too), and does nothing more. After the
 take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where it says
-and makes that home run (a sealed home is told to reopen, a target that never resumed is told to resume with the
-lease's seal and move id, and the `notice` the recovering host passes). A host that starts again calls it.
+and makes that home run (a home sealed at the lease's epoch is told to reopen; any other, a target that never
+resumed or a sealed home the lease names at a later epoch, is told to resume with the lease's seal and move id, and
+the `notice` the recovering host passes). A host that starts again calls it.
 
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
-with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, a kill of the host,
+with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, a take another host
+won (to another place, and to the same place), a kill of the host,
 the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
 its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
 recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
