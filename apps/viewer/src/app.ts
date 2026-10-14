@@ -9,6 +9,7 @@ import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type
 import { citeStop } from './cite.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
+import { transportPanel } from './transport.ts';
 
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };

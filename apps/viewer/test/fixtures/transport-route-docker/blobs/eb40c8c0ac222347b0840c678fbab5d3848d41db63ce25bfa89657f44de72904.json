@@ -1,0 +1,11 @@
+{
+  "item": "KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928",
+  "film": true,
+  "machines": 6,
+  "kills": 2,
+  "device": "cpu",
+  "clip": {
+    "blob": "a7c66f007ee148c19746f2f0d04eb92ea7547fa745d217fa0bb3480c19a8c900",
+    "bytes": 2503992
+  }
+}

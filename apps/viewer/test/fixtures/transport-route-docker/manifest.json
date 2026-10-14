@@ -1,0 +1,43 @@
+{
+  "format": "agentrun.recording/1",
+  "title": "One agent, six machines, two kills: the Apollo 11 film (placement by config; a dry run, not published)",
+  "task": "apollo-film",
+  "model": "faux/faux-1",
+  "generations": 8,
+  "kills": 2,
+  "code": {
+    "repo": "Parcha-ai/agentrun",
+    "commit": "8dc1c74f9880b180f3ee97571887c9df6bdde3af",
+    "packages": {
+      "@parcha/agentrun-dsl": "0.1.0-beta.12",
+      "@parcha/agentrun-jev": "0.1.0-beta.12",
+      "@parcha/agentrun-pi": "0.1.0-beta.12",
+      "@parcha/pi-browser": "0.1.0-beta.12",
+      "@parcha/pi-durable-disk": "0.1.0-beta.12",
+      "@parcha/pi-transport": "0.1.0-beta.12",
+      "@parcha/pi-vision": "0.1.0-beta.12",
+      "@earendil-works/pi-durable": "1.1.0",
+      "@earendil-works/chord": "1.1.0",
+      "@earendil-works/pi-ai": "1.1.0",
+      "@earendil-works/pi-agent-core": "1.1.0",
+      "@earendil-works/pi-coding-agent": "1.1.0",
+      "@earendil-works/pi-tui": "1.1.0"
+    }
+  },
+  "result": {
+    "blob": "eb40c8c0ac222347b0840c678fbab5d3848d41db63ce25bfa89657f44de72904",
+    "title": "The film clip"
+  },
+  "cost": {
+    "usd": 0,
+    "parts": {}
+  },
+  "recorded": {
+    "started": "2026-10-14T11:18:41.248Z",
+    "ended": "2026-10-14T11:20:36.073Z"
+  },
+  "source": {
+    "run": "apollo-film",
+    "store_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

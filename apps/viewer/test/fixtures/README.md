@@ -32,3 +32,11 @@ Every kept line keeps its `channel`, `source`, `kind`, `gen`, `t`, `commit`, `or
 order. The fold over this cut equals the fold over the whole recording: 188 committed turns, 136 proven re-asks over 16
 turns, and 9 possible. It is not a valid recording on its own (no manifest), and the tests only fold it.
 
+
+## transport-route-real, transport-route-docker, transport-t4-wait
+
+Real recordings of a session that moved between machines (the transport panel's tests): the whole route on Daytona and Modal boxes, the same route on
+Docker stand-ins, and one hop to a Modal T4 with its wait. They are host recordings: the supervisor's `host` lines, the transport live lines, and the browser's
+frames. They have no durable lines (a boxed home's commits are not shipped to the host yet), so the panel's counters read "not measured" on them. Only the
+frames and the result's summary are kept as blobs; the film itself is left out. The only edit is the temporary directory in a local box's workspace path, from a
+private scratch path to `/tmp/`.
