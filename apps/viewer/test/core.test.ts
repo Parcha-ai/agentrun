@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { citeStop } from '../src/cite.ts';
 import { counterFold, countersOf } from '../src/counters.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
-import { frameFold, pictureAt } from '../src/frames.ts';
+import { frameFold, gapTitle, pictureAt } from '../src/frames.ts';
 import { documentFold, documentsOf } from '../src/documents.ts';
 import { lanesOf } from '../src/lanes.ts';
 import { linesPanel, panelsShown, register, registry, turnsPanel, type Node } from '../src/panels.ts';
@@ -224,4 +224,19 @@ test('a cut answer\'s aborted entry is no completed turn in the lanes', () => {
   const entry = (commit: number, stopReason: string): Line => ({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: commit, commit, order: 0, conv: 12, data: { kind: 'pi.assistant', model: [{ role: 'assistant', stopReason, content: [] }] } });
   const turns = lanesOf([entry(1, 'aborted'), entry(2, 'toolUse')]).turns;
   assert.deepEqual(turns.map((turn) => [turn.label, turn.status]), [['turn 0', 'done']]);
+});
+
+test('a credential gap carries its detail, shown as the gap\'s tooltip', () => {
+  const gap = (detail?: string): Line => ({ channel: 'live', source: 'browser', kind: 'frame.gap', gen: 1, t: 10, seq: 1, data: { session: 's1', from: 10, reason: 'credential_on_page', ...(detail ? { detail } : {}) } });
+  const picture = pictureAt(frameFold.reduce(frameFold.init(), gap('unreadable_frame')), 's1', 20);
+  assert.deepEqual(picture, { kind: 'gap', reason: 'credential_on_page', from: 10, detail: 'unreadable_frame' });
+  assert.deepEqual(pictureAt(frameFold.reduce(frameFold.init(), gap()), 's1', 20), { kind: 'gap', reason: 'credential_on_page', from: 10 }, 'no detail, none carried');
+  assert.match(gapTitle('field')!, /field on the page holds a value/);
+  assert.match(gapTitle('typed')!, /held a value since the last check/);
+  assert.match(gapTitle('too_deep')!, /nests deeper than the check reads/);
+  assert.match(gapTitle('unreadable_frame')!, /cannot be read \(another origin/);
+  assert.match(gapTitle('host')!, /host paused the session/);
+  assert.equal(gapTitle('something_new'), 'Detail: something_new', 'a detail this viewer does not know is shown as it is');
+  for (const inherited of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) assert.equal(gapTitle(inherited), `Detail: ${inherited}`, `${inherited} is a detail like any other, not an object's own name`);
+  assert.equal(gapTitle(undefined), undefined);
 });

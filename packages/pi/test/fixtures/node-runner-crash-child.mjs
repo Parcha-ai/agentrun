@@ -11,9 +11,7 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { hostScope } from '../../dist/durable/node.js';
-import { nodeRunner } from '../../dist/durable/node-runner.js';
-import { RecordDoc } from '../../dist/durable/record-tool.js';
+import { hostScope, nodeRunner, RecordDoc } from '@parcha/agentrun-pi/durable';
 
 const [mode, file, counter] = process.argv.slice(2);
 const SCHEMA = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string' } } };
