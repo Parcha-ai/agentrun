@@ -1,5 +1,3 @@
-// A pi process as a person runs it after `pi install`: the settings in the scratch agent directory name the package, pi's
-// own loader finds its manifest, and the agent's tools are the package's. Prints one JSON line.
 import path from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionServices, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";

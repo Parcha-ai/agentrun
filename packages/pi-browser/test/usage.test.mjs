@@ -4,7 +4,7 @@ import test from "node:test";
 import { fetchUsage, LIST_PRICES, resolvePrices, searchUsage, sessionCharge, sessionPrice, startSpent } from "../dist/index.js";
 
 const at = (s) => new Date(Date.UTC(2026, 9, 6, 12, 0, s)).toISOString();
-/** The meter bills to the picodollar: a sum of its charges is compared at that resolution, as it bills. */
+/** The meter bills to the picodollar, so sums are compared at that resolution. */
 const pico = (usd) => Math.round(usd * 1e12) / 1e12;
 
 test("the host's session price: unset is unpriced, a non-negative decimal is priced per minute, anything else is invalid", () => {
@@ -59,8 +59,8 @@ test("fetch and search are charged per call at list price, and fetch with proxie
 });
 
 test("a bill topped up to the minimum is exactly the minimum, at any millisecond: 60 s and $0.002 at $0.002 a minute", () => {
-  // Timestamps a CI run once met: a call 1 ms after the create, the release 7 ms after that call. Adding a
-  // fractional elapsed time to its complement left 59.99999999999999 s and $0.0019999999999999996.
+  // A call 1 ms after the create, the release 7 ms after that: adding a fractional elapsed time to its complement once
+  // left 59.99999999999999 s and $0.0019999999999999996.
   const prices = resolvePrices({ sessionUsdPerHour: 0.12 });
   const ms = (n) => new Date(Date.UTC(2026, 9, 8, 0, 0, 0) + n).toISOString();
   for (const [call, release] of [[1, 8], [1, 29], [1, 36], [333, 1_234], [59_999, 59_999]]) {
@@ -73,25 +73,22 @@ test("a bill topped up to the minimum is exactly the minimum, at any millisecond
 });
 
 test("a session resumed at a new price keeps the old rate for the time already billed; the minimum tops the total once", () => {
-  // A host restart resumes an open session under the price it now reads: only newly elapsed time takes the new rate.
   const old = resolvePrices({ sessionUsdPerHour: 0.12 });
   const now = resolvePrices({ sessionUsdPerHour: 0.06 });
   const billed = sessionCharge(startSpent(at(0)), at(120), old);
   assert.equal(billed.spent.usd, 0.004, "120 s at $0.12 an hour");
   const resumed = sessionCharge(billed.spent, at(121), now);
-  // The new second is 16,666,666.67 picodollars: 16,666,666 billed, the remainder carried on the record.
   assert.equal(resumed.spent.usd, 0.004016666666, "the earlier 120 s keep $0.004; the new second is $0.06 an hour");
   assert.equal(resumed.spent.carry, 2_400_000, "the sub-picodollar remainder rides to the next charge");
   assert.ok(resumed.usage.usage.cost.total > 0, "a charge is never negative");
 
-  // 30 s at $0.12, then resumed at $0.06 and released at 40 s: 10 s more and the 20 s top-up at the new rate.
   const short = sessionCharge(startSpent(at(0)), at(30), old);
   const end = sessionCharge(short.spent, at(40), now, "priced", true);
   assert.deepEqual([end.spent.seconds, end.spent.usd], [60, 0.0015], "30 s at $0.12 ($0.001) and 30 s at $0.06 ($0.0005)");
 });
 
 test("the bill never depends on how many calls it was charged in: rounding is carried, so a minimum bill is exactly $0.002", () => {
-  // The review's case: calls at 1 ms and 2 ms, the release at 8 ms; rounding each call alone gave $0.001999999999.
+  // Calls at 1 ms and 2 ms, the release at 8 ms: rounding each call alone gave $0.001999999999.
   const prices = resolvePrices({ sessionUsdPerHour: 0.12 });
   const ms = (n) => new Date(Date.UTC(2026, 9, 8, 0, 0, 0) + n).toISOString();
   for (const calls of [[1, 2], [1, 2, 3, 4, 5], [1, 4, 7, 10, 13, 16, 19], Array.from({ length: 50 }, (_, i) => 1 + 3 * i)]) {

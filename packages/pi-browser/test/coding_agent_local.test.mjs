@@ -1,23 +1,18 @@
-// What the coding agent has on one person's machine: the web_fetch a person's agent can run without a fetch service, and
-// the evidence directory. The guard on where an agent may fetch is tested end to end (a loopback server that must never
-// be reached) and, for the hops of a redirect, which no test can reach without a public network, directly with injected
-// lookups; the evidence sink's file names are a pure function of a label and a counter.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import { mkdtemp } from "node:fs/promises";
 import { fetch as undiciFetch } from "undici";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
 import { fileEvidenceSink, findChrome, httpBackup, isPrivateAddress, pinnedLookup } from "../dist/coding-agent-local.js";
 import { startAgent, turn } from "./coding-agent/rig.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 
 const listen = (handler) => new Promise((resolve) => { const server = http.createServer(handler); server.listen(0, "127.0.0.1", () => resolve(server)); });
-/** A loopback server that counts only this test's own requests: the URLs a test asks for carry a per-run marker path,
- *  which a stray client never asks for (this host's prober sends `GET /` to every new loopback port). */
+/** Counts only this test's own requests: they carry a per-run marker path, which a stray client never asks for (this
+ *  host's prober sends `GET /` to every new loopback port). */
 async function markedServer(t, body, type) {
   const marker = `/${randomUUID()}`;
   const counted = { hits: 0 };
@@ -88,10 +83,11 @@ test("a page larger than the limit is cut off while it is read, not after", asyn
 });
 
 test("a reply the fetch refuses without reading (not text, an error status, a redirect) never leaves the call waiting on its connection", async (t) => {
-  // The guard refuses loopback, so the request is sent to the fixture server through the very dispatcher the backup built.
+  // The guard refuses loopback, so the request is sent to the fixture server through the very dispatcher the backup
+  // built.
   const replies = { "/doc.pdf": [200, { "content-type": "application/pdf" }], "/gone": [404, { "content-type": "text/plain" }], "/moved": [302, { location: "/doc.pdf" }] };
-  // Only this test's own requests, under its per-run marker, are answered and recorded: a stray client reaching the port
-  // (this host's prober sends `GET /` to every new loopback port) gets a 404.
+  // Only requests under this test's per-run marker are answered and recorded: a stray client reaching the port gets a
+  // 404.
   const marker = `/${randomUUID()}`;
   const served = [];
   const server = await listen((req, res) => {
@@ -109,7 +105,7 @@ test("a reply the fetch refuses without reading (not text, an error status, a re
   await (await undiciFetch(`http://127.0.0.1:${server.address().port}/`, { headers: { "user-agent": "Go-http-client/1.1" } })).text();
   assert.deepEqual(served, [], "a foreign request is not recorded");
   const backup = httpBackup({ lookup: async () => ["93.184.216.34"], fetchImpl: (url, init) => undiciFetch(`http://127.0.0.1:${server.address().port}${marker}${new URL(url).pathname}`, init) });
-  // What each call came to: its refusal (an error that is the fixture's own reply, not a connection failure), or that it was still waiting.
+  // Each call's refusal (the fixture's own reply, not a connection failure), or that it was still waiting at the bound.
   const outcome = (promise) => Promise.race([promise.then(() => "returned", (error) => error.message), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 3000).unref())]);
   assert.deepEqual(
     { pdf: await outcome(backup.fetch("http://docs.example/doc.pdf")), gone: await outcome(backup.fetch("http://docs.example/gone")), moved: await outcome(backup.fetch("http://docs.example/moved")) },
@@ -134,8 +130,8 @@ test("a Chrome the person names comes first, then the first install that exists;
   assert.equal(findChrome({ PATH: "/nowhere" }, () => false), null);
 });
 
-test("evidence is filed under the label with a counter, the receipt header carries every fact, and a hostile label stays inside the directory", async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), "evidence-sink-"));
+test("evidence is filed under the label with a counter, the receipt header carries every fact, and a hostile label stays inside the directory", async (t) => {
+  const root = await scratch(t, "evidence-sink-");
   const sink = fileEvidenceSink(path.join(root, "evidence"), root);
   const facts = { sha256: "ab".repeat(32), final_url: "https://example.test/x", title: "T", status_code: undefined };
   const filed = await sink.file("../../escape", { tool: "browser_read", args: { what: "text" }, status: "ok", facts, body: "line one\nline two", ext: "txt" });
@@ -152,8 +148,8 @@ test("evidence is filed under the label with a counter, the receipt header carri
   assert.equal(await blocked.file("x", { tool: "browser_read", args: {}, status: "ok", facts: { sha256: "00" }, body: "x" }), null, "a sink that cannot write files nothing and says so");
 });
 
-test("a later session's sink never overwrites an earlier session's receipt or capture", async () => {
-  const root = await mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), "evidence-sessions-"));
+test("a later session's sink never overwrites an earlier session's receipt or capture", async (t) => {
+  const root = await scratch(t, "evidence-sessions-");
   const record = (body, ext) => ({ tool: "browser_read", args: {}, status: "ok", facts: { sha256: "00" }, body, ext });
   const first = await fileEvidenceSink(path.join(root, "evidence"), root).file("browser", record("first session"));
   const [second, third] = [await fileEvidenceSink(path.join(root, "evidence"), root).file("browser", record("second session")), await fileEvidenceSink(path.join(root, "evidence"), root).file("browser", record("third session"))];

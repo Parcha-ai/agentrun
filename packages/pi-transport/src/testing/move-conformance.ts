@@ -14,8 +14,9 @@ import type { App } from "../home/app.ts";
 import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
-import { type LeaseSeal, leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
+import { leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
+import type { Seal } from "../home/store.ts";
 import { textResult } from "./tool-result.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -151,7 +152,7 @@ type Run = {
 	/** Whether the store file is at `place`. */
 	stored(place: Place): Promise<boolean>;
 	/** The seal the home at `place` wrote beside its store when it sealed. */
-	sealed(place: Place): Promise<LeaseSeal>;
+	sealed(place: Place): Promise<Seal>;
 	/** The move came to its drain: the rest of the run may go on. */
 	drainCame(): void;
 	kill(place: Place): Promise<void>;
@@ -221,7 +222,7 @@ async function begin(pair: MovePair): Promise<Run> {
 		},
 		async sealed(place) {
 			const text = await read(place, ["sh", "-c", 'cat "$1"', "sh", `${place.store}.home.json`]);
-			const seal = text === undefined ? undefined : (JSON.parse(text) as { sealed?: LeaseSeal }).sealed;
+			const seal = text === undefined ? undefined : (JSON.parse(text) as { sealed?: Seal }).sealed;
 			if (seal === undefined) throw new Error(`the home in ${place.environment} has not sealed`);
 			return seal;
 		},

@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { canonicalHash } from '@parcha/agentrun-dsl/recovery';
-import { reuseReceipts, ReceiptIndex } from '@parcha/agentrun-pi/durable';
+import { reuseReceipts, ReceiptIndex, ToolResultKeyError } from '@parcha/agentrun-pi/durable';
+import { hostKey, otherKey, resultOf } from './fixtures/pi-version.mjs';
 
 /** pi-durable's call api over a map: `snapshot` reads a document of the family, `commit` runs a transaction that edits one. */
 function api(held = new Map()) {
@@ -16,7 +17,7 @@ function api(held = new Map()) {
 }
 const keyOf = (tool, args) => `${tool}:${canonicalHash(args)}`;
 function counted(name, text = 'live') {
-  const tool = { name, description: 'd', async execute(args) { tool.calls.push(args); return { content: [{ type: 'text', text }] }; } };
+  const tool = { name, description: 'd', async execute(args) { tool.calls.push(args); return resultOf([{ type: 'text', text }]); } };
   tool.calls = [];
   return tool;
 }
@@ -30,8 +31,8 @@ test('a repeat of another session\'s paid call makes no second request, and says
   const answered = await reuse.wrap(search).execute({ q: 'acme' }, calls, {});
   assert.deepEqual(search.calls, []);
   assert.equal(answered.details.effect_status, 'reused');
-  assert.match(answered.content[0].text, /^\{"hits":3\}\n\n\(answered from the paid receipt of earlier:step; the call was not dispatched again\)$/);
-  assert.equal((await reuse.wrap(search).execute({ q: 'other' }, calls, {})).content[0].text, 'live');
+  assert.match(answered[hostKey()][0].text, /^\{"hits":3\}\n\n\(answered from the paid receipt of earlier:step; the call was not dispatched again\)$/);
+  assert.equal((await reuse.wrap(search).execute({ q: 'other' }, calls, {}))[hostKey()][0].text, 'live');
   assert.deepEqual(search.calls, [{ q: 'other' }]);
   assert.deepEqual({ ...reuse.stats }, { reused: 1, refused: 0 });
 });
@@ -41,9 +42,9 @@ test('a paid result is recorded under its tool and arguments, by the session tha
   const reuse = reuseReceipts({ tools: ['search', 'broken'], sessionId: 'lead', answer: true });
   await reuse.wrap(counted('search', 'rows')).execute({ q: 'a' }, calls, {});
   assert.deepEqual(calls.held.get(keyOf('search', { q: 'a' })), { tool: 'search', argsHash: canonicalHash({ q: 'a' }), result: 'rows', session: 'lead' });
-  const failing = { name: 'broken', execute: async () => ({ isError: true, content: [{ type: 'text', text: 'boom' }] }) };
+  const failing = { name: 'broken', execute: async () => resultOf([{ type: 'text', text: 'boom' }], { isError: true }) };
   await reuse.wrap(failing).execute({ q: 'b' }, calls, {});
-  const envelope = { name: 'broken', execute: async () => ({ content: [{ type: 'text', text: '{"ok":false,"error":"x"}' }] }) };
+  const envelope = { name: 'broken', execute: async () => resultOf([{ type: 'text', text: '{"ok":false,"error":"x"}' }]) };
   await reuse.wrap(envelope).execute({ q: 'c' }, calls, {});
   assert.equal(calls.held.size, 1);
   // A session never answers from its own receipt: the same call again runs.
@@ -99,4 +100,12 @@ test('an unknown a workflow node was admitted with is refused by the external ca
   assert.deepEqual(fetch.calls, []);
   await reuse.wrap(fetch).execute({ tool: 'registry_lookup', args: { id: 8 } }, calls, {});
   assert.equal(fetch.calls.length, 1);
+});
+
+test("a paid result with its blocks only under the key the loaded pi-durable does not read is refused, and no receipt is written", async () => {
+  const calls = api();
+  const reuse = reuseReceipts({ tools: ['search'], sessionId: 'lead', answer: true });
+  const stale = { name: 'search', execute: async () => ({ [otherKey()]: [{ type: 'text', text: 'rows' }] }) };
+  await assert.rejects(reuse.wrap(stale).execute({ q: 'a' }, calls, {}), (error) => error instanceof ToolResultKeyError && error.tool === 'search');
+  assert.equal(calls.held.size, 0);
 });

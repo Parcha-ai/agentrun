@@ -1,4 +1,13 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -337,6 +346,25 @@ describe("a home: what it refuses", () => {
 				expect(unsealed.ok ? "" : unsealed.error.code, label).toBe("not_verified");
 				expect(existsSync(options.store), label).toBe(false);
 			}
+		});
+	});
+
+	it("finishes a deletion a stop left undone when the same retire comes again, and refuses an older one", async () => {
+		await withWorld(async (made) => {
+			const options = made.home("a");
+			const home = await opened(options);
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			getOrThrow(await home.retire({ epoch: 2 }, context));
+			// As if the process stopped after the note and before the deletion: the copy is still there.
+			for (const path of [options.store, `${options.store}-wal`]) writeFileSync(path, "left behind");
+			const again = await opened(options);
+			getOrThrow(await again.retire({ epoch: 2 }, context));
+			expect([existsSync(options.store), existsSync(`${options.store}-wal`)]).toEqual([false, false]);
+			expect(again.state).toBe("retired");
+			const older = await again.retire({ epoch: 1 }, context);
+			expect(older.ok ? "" : older.error.code).toBe("stale_epoch");
+			const reopened = await again.resume({ epoch: 2 }, context);
+			expect(reopened.ok ? "" : reopened.error.code).toBe("stale_epoch");
 		});
 	});
 

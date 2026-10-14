@@ -46,7 +46,6 @@ export {
 	KeyStoreError,
 	type KeyStoreErrorCode,
 	type LeaseRecord,
-	type LeaseSeal,
 	leaseIn,
 	type Ownership,
 	OwnershipError,

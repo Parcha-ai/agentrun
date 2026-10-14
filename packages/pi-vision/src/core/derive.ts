@@ -56,7 +56,7 @@ export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "sign
       const c = visionContext(ctx.signal);
       const temp = `${at}.${randomBytes(4).toString("hex")}.tmp`;
       const done = (await ctx.env.createDir(ctx.deriveDir!, { recursive: true }, c)).ok && (await ctx.env.writeFile(temp, bytes, c)).ok && (await ctx.env.renameFile(temp, at, c)).ok;
-      if (!done) await ctx.env.remove(temp, { force: true }, c);
+      if (!done) await ctx.env.remove(temp, { force: true }, visionContext());
       return done ? at : null;
     },
   };

@@ -304,18 +304,23 @@ class SessionHome implements Home {
 	async #retire(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
 		const marker = await this.#readMarker();
 		if (!marker.ok) return marker;
-		if (marker.value !== undefined && order.epoch <= marker.value.epoch) {
+		const known = marker.value;
+		// The same retire again finishes a deletion that a stop or a failed delete left undone; it opens nothing.
+		const again = known?.retired === true && order.epoch === known.epoch;
+		if (!again && known !== undefined && order.epoch <= known.epoch) {
 			return err(
 				new HomeError(
 					"stale_epoch",
-					`this home is at epoch ${marker.value.epoch}; only a later epoch retires it, and the order is for ${order.epoch}`,
+					`this home is at epoch ${known.epoch}; only a later epoch retires it, and the order is for ${order.epoch}`,
 				),
 			);
 		}
 		// The lease names another home. Whatever still runs here runs for nobody.
 		await this.#close(context);
 		// The note goes first: a home that dies while it deletes still refuses every order at this epoch or before.
-		const noted = await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
+		const noted: Result<void, HomeError> = again
+			? ok(undefined)
+			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
 		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {

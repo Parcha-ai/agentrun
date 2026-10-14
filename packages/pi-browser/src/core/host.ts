@@ -1,16 +1,12 @@
-// What a host gives the package and what it gets back: the provider interface, the per-conversation configuration,
-// the session records custody commits, and the rows it reports. Nothing here carries a secret: every value of these
-// types may be committed, logged or shown.
+// Nothing here carries a secret: every value of these types may be committed, logged or shown.
 import type { LeaseRef, LeaseState, ResourceStatus } from "./lease.js";
 import type { PriceState, ToolUsage } from "./usage.js";
 
 export type Geo = { country: string; state?: string; city?: string };
 
-/** Written by the host in the conversation's creating commit. */
 export type BrowserConfig = {
-  /** The host's name for the conversation's work (agentrun: the node label); names evidence directories. */
+  /** The host's name for the conversation's work; names evidence directories. */
   label: string;
-  /** The run id, part of every session tag. */
   run: string;
   policy: BrowserPolicy;
 };
@@ -21,14 +17,12 @@ export type BrowserPolicy = {
   captcha: boolean;
   geolocation: Geo | null;
   region: string | null;
-  /** A raw provider context id; naming contexts is the host's business. */
   contextId: string | null;
   sessionTimeoutS: number;
   idleReleaseS: number;
   batchTimeoutMs: number;
   navigation?: { allow?: string[]; block?: string[] };
-  /** Observe what each session sends, and what a request the judge calls irreversible, or cannot judge, meets: sent,
-   *  refused, or the host's answer. Absent: no observer, and a cut run's effect is unknown. */
+  /** A request judged irreversible (or not judged) is sent, refused or put to the host. Absent: no observer. */
   actions?: "allow" | "deny" | "ask";
 };
 
@@ -43,18 +37,16 @@ export type SessionSpec = {
   viewport: { width: number; height: number };
   contextId?: string;
   navigation?: { allow?: string[]; block?: string[] };
-  /** Stamped on the provider's session (Browserbase `userMetadata`), the tag among them. */
   metadata: Record<string, string>;
 };
 
-/** What the driver is given, and what the process dials: a provider may hand the driver one URL and have the process
- *  dial another (a credential proxy, a broker relay). Held in memory only. */
+/** The driver may be handed one URL while the process dials another (a credential proxy, a broker relay). Held in
+ *  memory only. */
 export type AttachTarget = { sdkCdpUrl: string; dial?: { url: string; headers?: Record<string, string> }; extensionId?: string };
 
 export type ProviderCaps = {
   timeoutModel: "wall-clock" | "inactivity";
   maxLifetimeS: number;
-  /** Whether a session outlives the client's disconnect, so a new process can reattach to it. */
   survivesDisconnect: boolean;
   releaseIsAsync: boolean;
   extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
@@ -65,20 +57,19 @@ export type Recording = { id: string; startedAt: string | null; durationS: numbe
 export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string | null };
 
 export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
-export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; /** What the call cost, when the provider knows its plan. */ usage?: ToolUsage };
+export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
 export type SearchRequest = { query: string; n: number };
-export type SearchResult = { results: Array<{ url: string; title: string | null; author?: string | null; published?: string | null }>; /** What the call cost, when the provider knows its plan. */ usage?: ToolUsage };
+export type SearchResult = { results: Array<{ url: string; title: string | null; author?: string | null; published?: string | null }>; usage?: ToolUsage };
 
 export interface BrowserProvider {
   readonly name: string;
   readonly caps: ProviderCaps;
-  /** At most once: SDK retries off, and `spec.tag` stamped on the provider's side so `findByTag` finds a session whose
-   *  create answer was lost. */
+  /** At most once: SDK retries off, and `spec.tag` stamped provider-side so `findByTag` finds a session whose create
+   *  answer was lost. */
   create(spec: SessionSpec, signal: AbortSignal): Promise<LeaseRef>;
-  /** Every live session carrying `tag`. */
   findByTag(tag: string, signal?: AbortSignal): Promise<LeaseRef[]>;
   status(ref: LeaseRef, signal?: AbortSignal): Promise<ResourceStatus>;
-  /** What the driver is given; held in memory, never committed. */
+  /** Held in memory, never committed. */
   attach(ref: LeaseRef, signal?: AbortSignal): Promise<AttachTarget>;
   /** Idempotent; a session already gone counts as released. */
   release(ref: LeaseRef, signal?: AbortSignal): Promise<void>;
@@ -90,13 +81,23 @@ export interface BrowserProvider {
   search?(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult>;
 }
 
+/** A site use_website can open: configuration, never model input. */
+export type SiteInfo = { site: string; title: string; description: string };
+/** Runs one child agent that has the browser tools and no use_website, and answers its final text. The adapter supplies
+ *  it: a pi session for the coding agent, a task-owned conversation for pi-durable. */
+export type ChildRunner = (task: { site: string; requestId: string; prompt: string }, signal: AbortSignal) => Promise<string>;
+/** Runs a granted site's task and reports it, idempotent by `requestId`: exactly one of `run` (a task started elsewhere)
+ *  or `report` (the result). A port that runs the child itself uses `ctx.runChild`; a broker ignores it. */
+export interface SiteRunPort {
+  list(signal: AbortSignal): Promise<SiteInfo[]>;
+  use(input: { site: string; requestId: string; instructions: string }, ctx: { signal: AbortSignal; runChild: ChildRunner }): Promise<{ run: { id: string; state: string } } | { report: string }>;
+}
+
 export type ReleaseReason = "tool" | "idle" | "relaunch" | "close" | "ended" | "lost" | "create_failed";
 
-/** One browser session of one conversation, as custody commits it. */
 export type SessionRecord = {
   tag: string;
   state: LeaseState;
-  /** The provider's session id, once a create answered or a reconcile bound the tag. */
   resourceId: string | null;
   createdAt: string;
   endedAt: string | null;
@@ -107,60 +108,47 @@ export type SessionRecord = {
   /** Every page the session moved to, in order; the last 500 kept. */
   navigation: Array<{ at: string; url: string }>;
   lastUrl: string | null;
-  /** A `run` dispatched and not yet answered: what the model is told after a crash cut it. */
   pendingEffect: PendingEffect | null;
   spent: { seconds: number; usd: number; chargedThrough: string; /** Set by the release's charge: nothing is charged after it. */ final?: true;
-    /** The price state of its charges (the session meter): an unpriced or invalid price records seconds and no dollars, which
-     *  a cost view shows as unknown, never $0. Absent on a record charged before it was written. */
+    /** An unpriced or invalid price records seconds and no dollars, shown as unknown, never $0. */
     state?: PriceState;
-    /** The bill's sub-picodollar remainder (milliseconds x picodollars an hour, below 3,600,000), carried to the next
-     *  charge: one rate's total is exact however many calls it was charged in. Absent when there is none. */
+    /** The sub-picodollar remainder carried to the next charge, so one rate's total is exact however many calls charged
+     *  it. */
     carry?: number };
 };
 
-/** A request a `run` sent that can change something, as journaled while the run executes: method, origin, path, and
- *  the hold's decision when it was held. Never a body, a header or a query value. */
+/** A request a `run` sent that can change something: method, origin, path, the hold's decision. Never a body, a header
+ *  or a query value. */
 export type SentEffect = { requestId: string; method: string; origin: string; path: string; at: string; held: "pending" | "allowed" | "denied" | null; irreversible: number | null };
-/** A `run` dispatched and not yet answered; `observed` when a holding observer journaled what it sent, each request
- *  committed before it could leave the browser. */
+/** `observed`: a holding observer committed each request before it left the browser. */
 export type PendingEffect = { callId: string; codeSha: string; url: string | null; at: string; observed?: boolean; sent?: SentEffect[] };
 
-/** The conversation's custody document. */
 export type SessionsState = {
   /** Index into `sessions` of each plane's current session. */
   current: Record<string, number | null>;
-  /** Every session this conversation opened, in order. */
   sessions: SessionRecord[];
   /** Told to the model on its next browser call, then cleared. */
   notice: string | null;
 };
 
-/** The run-wide inventory, one row per tag, so run open finds every session of every conversation. */
 export type InventoryRow = { tag: string; conversationId: number; plane: string; provider: string; resourceId: string | null; state: SessionRecord["state"] };
 
-/** What the host's channel receives on `onSession`. `label` is the conversation's configured label, so a row emitted by
- *  a release resumed after a restart still names the work it belonged to. */
 export type SessionRow = { conversationId: number; label: string; session: SessionRecord; liveView: LiveView | null };
 export type SessionChange = "launched" | "updated" | "released";
 
-/** Why the effect observer could not attach, as a code and never as text: an attach error's message can hold the
- *  endpoint it dialed (a connect URL carries its token) or text the browser sent, so nothing of it leaves the package.
- *  attach_refused: the socket never opened. cdp_closed: it closed while the observer was setting up. cdp_error: the
- *  browser answered a setup command with an error. attach_failed: anything else. */
+/** A code, never text: an attach error's message can hold the endpoint it dialed, whose URL carries a token.
+ *  attach_refused: never opened; cdp_closed: closed in setup; cdp_error: a setup command failed. */
 export type ObserverFailure = "attach_refused" | "cdp_closed" | "cdp_error" | "attach_failed";
 
-/** What the host's channel receives on `onObserver`: a session whose conversation asked for the effect observer (its
- *  action policy is set) runs without it because it could not attach. Under `allow` the run goes on, so a crash during a
- *  `run` leaves its effect unknown; under `deny` and `ask` the call fails instead, and no row is sent. Once per attach.
- *  Scalars only, and no free text: `code` says why (see `ObserverFailure`). */
+/** Sent once per attach when the observer cannot attach under `allow` (`deny` and `ask` fail the call instead). Scalars
+ *  only, no free text. */
 export type ObserverRow = { conversationId: number; label: string; tag: string; session_id: string; policy: "allow"; code: ObserverFailure };
 
-/** What a run-open reconcile did, by tag: released (the conversation is done), kept (it continues on the same session),
- *  lost (the provider had ended it, or its create never landed), unreachable (the provider did not answer; left as is). */
+/** released: conversation done; kept: same session; lost: ended or never created; unreachable: left as is. */
 export type ReconcileReport = { released: string[]; kept: string[]; lost: string[]; unreachable: string[] };
 
-/** List prices by default; a host that knows its plan sets its own. A null price records the quantity unpriced. */
+/** A null price records the quantity unpriced. */
 export type PriceTable = { sessionUsdPerHour: number | null; sessionMinimumS: number; fetchUsd: number; fetchProxiedUsd: number; searchUsd: number };
 
-/** Browserbase list prices, read 2026-10-06 (session time at the Developer overage rate, one-minute minimum). */
+/** Browserbase list prices as of 2026-10-06: the Developer overage rate, one-minute minimum. */
 export const LIST_PRICES: PriceTable = Object.freeze({ sessionUsdPerHour: 0.12, sessionMinimumS: 60, fetchUsd: 0.001, fetchProxiedUsd: 0.004, searchUsd: 0.007 });

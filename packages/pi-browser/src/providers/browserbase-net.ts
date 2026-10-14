@@ -1,9 +1,8 @@
-// The Browserbase network lane: where the process's HTTP and WebSocket traffic to Browserbase goes, and how.
+import { browserbaseHoldings } from "./shared.js";
+
 export { directFetch, closeDirectFetch } from "./http.js";
 
-/** Rewrite a Browserbase connect URL onto the credential proxy. Only `*.browserbase.com` hosts are
- *  rewritten (a proxy-issued URL passes through); the target's path becomes a prefix, and the
- *  signing query survives because we mutate a URL object. */
+/** Rewrite a Browserbase connect URL onto the credential proxy: only `*.browserbase.com` hosts, the signing query kept. */
 export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined | null): string {
   if (!connectUrl || !connectBaseUrl) return connectUrl;
   try {
@@ -19,17 +18,14 @@ export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | u
   }
 }
 
-/** The Browserbase lane is DIRECT: the credential proxy (or Browserbase itself) is reached over the
- *  sandbox's own tailnet/egress, never through the HTTP(S) env proxy: that proxy is a signing hop
- *  that rejects CONNECT by design, and the CDP WebSocket cannot ride it. A process under
- *  `node --use-env-proxy` re-reads NO_PROXY per request, so listing the lane's hosts there bypasses
- *  the proxy for both the REST calls and the WebSocket. */
+/** Direct, never through the HTTP(S) env proxy: it rejects CONNECT and the CDP WebSocket cannot ride it. Under `node
+ *  --use-env-proxy` NO_PROXY is re-read per request, so listing these hosts bypasses it. */
 export function browserbaseNoProxyHosts(env: NodeJS.ProcessEnv): string[] {
   const hosts = new Set<string>();
   for (const key of ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]) {
     const raw = String(env[key] || "").trim();
     if (!raw) continue;
-    try { hosts.add(new URL(raw).hostname); } catch { /* not a URL: nothing to bypass */ }
+    try { hosts.add(new URL(raw).hostname); } catch {}
   }
   if (!String(env.BROWSERBASE_CONNECT_BASE_URL || "").trim()) hosts.add(".browserbase.com");
   return [...hosts];
@@ -48,38 +44,43 @@ export function applyBrowserbaseNoProxy(env: NodeJS.ProcessEnv = process.env): s
   return hosts;
 }
 
-/** Where the process's CDP WebSocket goes. The URL the driver holds stays Browserbase's raw connect URL, because the
- *  driver extension inside the cloud browser dials that same URL back from Browserbase's side and can only reach
- *  Browserbase's own host; the process's socket, on a lane where Browserbase is only reachable through the credential
- *  proxy, goes to the connect base. The rewrite therefore happens at DIAL time, in the WebSocket wrapper, never in a
- *  session record. */
-/** Per-socket targets, so two providers with different proxies in one process never send one's signed URL to the other's
- *  proxy. Keyed by the exact connect URL; the empty string means "dial it as it is". */
-const boundDials = new Map<string, string>();
-/** A session's URL is bound to one proxy. A second provider binding the same URL to a different one is refused, never
- *  switched: the first provider's sockets would otherwise send the signed URL to the second one's proxy. */
+/** The driver keeps the raw connect URL (the extension in the cloud browser dials it back and reaches only
+ *  Browserbase); this process's socket dials the proxy, so the rewrite happens at dial time, never in a record. */
+/** Per-socket targets, so two providers with different proxies never send one's signed URL to the other's proxy. */
+const { boundDials } = browserbaseHoldings;
+/** A second provider binding the same URL to a different proxy is refused, never switched: the signed URL would go to
+ *  it. */
 export function bindConnectDial(connectUrl: string, connectBaseUrl: string | null): void {
   const target = connectBaseUrl?.trim() ?? "";
   const bound = boundDials.get(connectUrl);
   if (bound !== undefined && bound !== target) throw new Error("this Browserbase session is already attached through another credential proxy");
   boundDials.set(connectUrl, target);
 }
-export function unbindConnectDial(connectUrl: string): void { boundDials.delete(connectUrl); }
+export function unbindConnectDial(connectUrl: string): void {
+  boundDials.delete(connectUrl);
+  if (![...boundDials.values()].some(Boolean)) restoreWebSocket();
+}
 export function connectDialUrl(url: string): string {
   const bound = boundDials.get(url);
   if (bound !== undefined) return bound ? rewriteConnectUrl(url, bound) : url;
   return url;
 }
 
-/** The process WebSocket wrapper: a socket opened on a connect URL that a provider bound to a credential proxy dials the
- *  proxy instead. Process-wide, installed once. */
-let wsWrapped = false;
+/** Wraps the process WebSocket only while a session is bound to a proxy; the native one returns with the last binding. A wrapper
+ *  installed on top cannot be removed, so ours stays under it and, with no bindings, passes every URL through. */
+let wrapped: { original: any; wrapper: any } | null = null;
 export function installWebSocketWrapper(): void {
-  if (wsWrapped || typeof (globalThis as any).WebSocket !== "function") return;
-  const Original = (globalThis as any).WebSocket;
-  const Wrapped = function (this: any, url: any, protocols?: any) { return new Original(connectDialUrl(String(url)), protocols); } as any;
-  Wrapped.prototype = Original.prototype;
-  for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Wrapped[k] = Original[k];
-  (globalThis as any).WebSocket = Wrapped;
-  wsWrapped = true;
+  if (typeof (globalThis as any).WebSocket !== "function" || (wrapped && (globalThis as any).WebSocket === wrapped.wrapper)) return;
+  const original = (globalThis as any).WebSocket;
+  const wrapper = function (this: any, url: any, protocols?: any) { return new original(connectDialUrl(String(url)), protocols); } as any;
+  wrapper.prototype = original.prototype;
+  for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) wrapper[k] = original[k];
+  (globalThis as any).WebSocket = wrapper;
+  wrapped = { original, wrapper };
+}
+
+function restoreWebSocket(): void {
+  if (!wrapped || (globalThis as any).WebSocket !== wrapped.wrapper) return;
+  (globalThis as any).WebSocket = wrapped.original;
+  wrapped = null;
 }
