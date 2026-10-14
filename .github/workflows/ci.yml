@@ -19,10 +19,16 @@ jobs:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Changelog fragments
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: node scripts/changes.mjs --check --base "$BASE_SHA"
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run typecheck
@@ -48,9 +54,11 @@ jobs:
           if-no-files-found: ignore
 
   pi-durable-disk-pi-floor:
-    # @parcha/pi-durable-disk's peers accept pi-durable from 1.0.4, while the workspace develops against the 1.1 line.
-    # Its whole suite runs again on the lowest version the peers accept; PDA_EXPECT_PI_DURABLE makes the run fail if
-    # another pi-durable or chord version was resolved.
+    # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its
+    # build, type-check and whole suite run again with pi-durable, chord and pi-ai at 1.0.4, one copy each: an install
+    # into the workspace alone left pi-durable 1.0.4 at the root loading the root's chord and pi-ai 1.1.0.
+    # scripts/pi-leg.mjs fails the run if another version was resolved, and sets PI_EXPECT_VERSION for the package's own
+    # version guard, which also checks what pi-durable itself loads.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -60,14 +68,14 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
-      # npm 10, the one Node 22 ships, keeps the package's locked pi-durable 1.1.0 copy beside the 1.0.4 it installs, and
-      # that copy is the one the package resolves; npm 11 removes it. PDA_EXPECT_PI_DURABLE below catches either.
-      - run: npx --yes npm@11.21.0 install --no-save --ignore-scripts --no-audit --no-fund -w @parcha/pi-durable-disk @earendil-works/pi-durable@1.0.4 @earendil-works/chord@1.0.4 @earendil-works/pi-ai@1.0.4
-      - run: npm run build -w @parcha/pi-durable-disk
-      - run: npm run typecheck -w @parcha/pi-durable-disk
-      - run: npm test -w @parcha/pi-durable-disk
-        env:
-          PDA_EXPECT_PI_DURABLE: '1.0.4'
+      - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - name: Retain the leg's resolved versions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-leg-pi-durable-disk-floor
+          path: .release/pi-leg.json
+          if-no-files-found: ignore
 
   agentrun-pi-pi-floor:
     # @parcha/agentrun-pi's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its build,

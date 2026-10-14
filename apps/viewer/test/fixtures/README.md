@@ -32,7 +32,6 @@ Every kept line keeps its `channel`, `source`, `kind`, `gen`, `t`, `commit`, `or
 order. The fold over this cut equals the fold over the whole recording: 188 committed turns, 136 proven re-asks over 16
 turns, and 9 possible. It is not a valid recording on its own (no manifest), and the tests only fold it.
 
-
 ## transport-route-real, transport-route-docker, transport-t4-wait
 
 Real recordings of a session that moved between machines (the transport panel's tests): the whole route on Daytona and Modal boxes, the same route on

@@ -396,6 +396,52 @@ test("a cause's first line never carries a link's query, fragment or credentials
   assert.equal(found.reason, `detect failed: could not fetch (${cut})`);
 });
 
+test("a failed look says what it cost: nothing when no request was sent, the answer's tokens and price when the eyes answered with no text, no price when the request threw", async () => {
+  const spent = (h) => h.filed.filter(({ record }) => record.status === "failed").map(({ record }) => { const f = receiptFacts(record); return [f.tokens_in, f.tokens_out, f.cost_usd]; });
+  const image = (blocks) => shot({ kind: "image", path: "a.png" }, blocks);
+  const narrow = { ...DEFAULT_LIMITS, image: { ...DEFAULT_LIMITS.image, maxWidth: 10, maxHeight: 10 } };
+  const unasked = [
+    ["no eyes", image([png(4, 4)]), { model: TEXT_ONLY }],
+    ["eyes that take no images", image([png(4, 4)]), { model: TEXT_ONLY, eyes: fakeEyes({ accepts: { image: false } }) }],
+    ["eyes that take no video", shot({ kind: "video", path: "a.mp4" }, [{ type: "image", data: "AAAA", mimeType: "video/mp4" }]), { model: TEXT_ONLY, eyes: fakeEyes() }],
+    ["more images than one call shows", image([png(4, 4), png(5, 5)]), { limits: { ...DEFAULT_LIMITS, imagesPerCall: 1 } }],
+    ["over the result's share", shot({ kind: "image", path: "a.png", units: [0, 0] }, [noisy(30, 30, 1), noisy(30, 30, 2)]), { limits: { ...resolveLimits(SEES), requestBytes: 16_000 } }],
+    ["over one eyes request", image([noisy(30, 30, 3)]), { model: TEXT_ONLY, eyes: fakeEyes({ limits: { ...DEFAULT_LIMITS, requestBytes: 1_000 } }) }],
+    ["no processor to fit it", image([png(30, 20)]), { limits: narrow }],
+    ["a processor that cannot fit it", image([png(30, 20)]), { limits: narrow, images: { prepare: async () => undefined } }],
+  ];
+  for (const [name, result, over] of unasked) {
+    const h = host();
+    await guard(result, h, over);
+    assert.deepEqual(spent(h), [[0, 0, 0]], name);
+    assert.equal(over.eyes?.ledger.length ?? 0, 0, `${name}: no request`);
+  }
+
+  const kept = new Map();
+  const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
+  const empty = fakeEyes({ answers: [{ text: " ", input: 900, output: 2 }] });
+  const [paid, again] = [host(), host()];
+  const out = await guard(image([png(4, 4)]), paid, { model: TEXT_ONLY, eyes: empty, memo });
+  assert.ok(out.usage.cost.total > 0);
+  assert.deepEqual(spent(paid), [[900, 2, out.usage.cost.total]], "the answer's tokens and price");
+  assert.equal(out.usage.input, 900, "counted once on the result");
+  await guard(image([png(4, 4)]), again, { model: TEXT_ONLY, eyes: empty, memo });
+  assert.deepEqual([empty.ledger.length, spent(again), again.filed[0].record.facts.kept], [1, [[900, 2, out.usage.cost.total]], true], "read back, the record says it is that look's, not another payment");
+  const unpriced = host();
+  await guard(image([png(4, 4)]), unpriced, { model: TEXT_ONLY, eyes: fakeEyes({ answers: [{ text: "", input: 50, output: 0 }], price: null }) });
+  assert.deepEqual(spent(unpriced), [[50, 0, "unknown"]]);
+
+  const thrown = host();
+  await guard(image([png(4, 4)]), thrown, { model: TEXT_ONLY, eyes: fakeEyes({ answers: [{ fail: "socket hang up" }] }) });
+  assert.deepEqual(spent(thrown), [[undefined, undefined, undefined]], "a request that threw may have been billed");
+  const cut = new AbortController();
+  const cancelled = host();
+  const pending = guard(image([png(4, 4)]), cancelled, { model: TEXT_ONLY, eyes: fakeEyes({ answers: [{ hang: true }] }), signal: cut.signal });
+  setTimeout(() => cut.abort(), 10);
+  await assert.rejects(pending);
+  assert.equal(cancelled.filed.length, 0, "a cancelled look files nothing");
+});
+
 test("an image over what one eyes request carries is re-encoded smaller for them, or its unit is withheld; never sent over it", async () => {
   const big = noisy(30, 30, 3);
   const eyesLimits = { ...DEFAULT_LIMITS, requestBytes: 1_000 };
