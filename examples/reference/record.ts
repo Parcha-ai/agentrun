@@ -215,5 +215,9 @@ export function codeOf(root: string): Header['code'] {
   for (const entry of readdirSync(join(root, 'packages'))) {
     try { const manifest = JSON.parse(readFileSync(join(root, 'packages', entry, 'package.json'), 'utf8')); packages[manifest.name] = manifest.version; } catch { /* not a package */ }
   }
+  // The pi packages the run loaded: what a recording's pi lines are the lines of (section 2 lists them beside ours).
+  for (const name of ['pi-durable', 'chord', 'pi-ai', 'pi-agent-core', 'pi-coding-agent', 'pi-tui']) {
+    try { packages[`@earendil-works/${name}`] = JSON.parse(readFileSync(join(root, 'node_modules', '@earendil-works', name, 'package.json'), 'utf8')).version; } catch { /* not installed here */ }
+  }
   return { repo: 'Parcha-ai/agentrun', commit: git.status === 0 ? git.stdout.trim() : 'unknown', packages };
 }

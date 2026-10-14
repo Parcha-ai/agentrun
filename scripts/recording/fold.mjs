@@ -9,22 +9,51 @@ import { pathToFileURL } from 'node:url';
 
 const entryOf = line => (Array.isArray(line.data?.model) ? line.data.model[0] : undefined);
 
-/** Re-asked model turns, OBSERVED (never proven: a turn a kill cut leaves no durable trace). pi's live assistant `message_start` lines are
- *  the asks (a resumed generation emits no `turn_start`): an ask's position is (conv, the number of assistant entries already committed in
- *  that conversation at the ask), and more than one ask at one position, in different processes, is re-asked.
- *  `turns`: positions asked from more than one generation; `asks`: the generations that asked them, summed. */
-export function reAskedObserved(events) {
-  const committed = new Map();
-  for (const event of events) if (event.channel === 'durable' && !event.snapshot && event.kind === 'pi.assistant') committed.set(event.conv ?? 0, [...(committed.get(event.conv ?? 0) ?? []), event.t]);
-  const seen = new Map();
+const aborted = event => event.data?.model?.[0]?.stopReason === 'aborted';
+
+/** The pi.live document version this fold reads. On any other version the re-asked fold is NOT MEASURED, never guessed. */
+export const PI_LIVE_VERSION = 1;
+
+/** Re-asked model turns, PROVEN from the durable `pi.live` lines (section 6). pi commits the start of every ask: a `pi.live` revision in
+ *  which `generation` appears without a `message` (written at the generation task's request phase, before the model is called), and a
+ *  throttled partial after it. An ask's position is (conversation, the non-aborted assistant entries committed before it); a committed
+ *  partial becomes an assistant entry with stopReason `aborted` when the next ask starts, and is not a committed turn. A snapshot that
+ *  carries a stale `generation` is the ask already open at that position, or one more ask by an earlier generation when its start line
+ *  died in flight. More than one ask at one position is re-asked. `null` (not measured) when no ask start was ever committed, or when a
+ *  `pi.live` line is of a version this fold does not know.
+ *  `turns`: positions asked more than once; `asks`: the asks at them, summed. */
+export function reAsked(events) {
+  const state = new Map();
+  const asksAt = new Map();
+  let known = true;
+  let starts = 0;
+  const of = conv => { if (!state.has(conv)) state.set(conv, { committed: 0, open: undefined, generation: undefined }); return state.get(conv); };
+  const ask = (conv, held) => { const key = `${conv}\u0001${held.committed}`; asksAt.set(key, (asksAt.get(key) ?? 0) + 1); held.open = held.committed; starts += 1; };
   for (const event of events) {
-    if (event.channel !== 'live' || event.source !== 'pi' || event.kind !== 'message_start' || event.data?.message?.role !== 'assistant') continue;
+    if (event.channel !== 'durable') continue;
     const conv = event.conv ?? 0;
-    const key = `${conv}\u0001${(committed.get(conv) ?? []).filter(t => t <= event.t).length}`;
-    seen.set(key, new Set([...(seen.get(key) ?? []), event.gen]));
+    if (event.kind === 'pi.live' && event.data?.version !== undefined && event.data.version !== PI_LIVE_VERSION) known = false;
+    if (event.kind === 'pi.assistant' && !event.snapshot) {
+      if (!aborted(event)) { const held = of(conv); held.committed += 1; held.open = undefined; }
+      continue;
+    }
+    if (event.kind !== 'pi.live') continue;
+    const held = of(conv);
+    const generation = event.data?.value?.generation;
+    if (event.snapshot) {
+      // State, not an event: the ask already open at this position is the same ask; otherwise its start line died in flight.
+      if (generation !== undefined && held.open !== held.committed) ask(conv, held);
+      held.generation = generation;
+      continue;
+    }
+    const appears = generation !== undefined && generation.message === undefined
+      && (held.generation === undefined || held.generation.message !== undefined || held.generation.attempt !== generation.attempt);
+    if (appears) ask(conv, held);
+    held.generation = generation;
   }
-  const many = [...seen.values()].filter(gens => gens.size > 1);
-  return { turns: many.length, asks: many.reduce((sum, gens) => sum + gens.size, 0) };
+  if (!known || starts === 0) return null;
+  const many = [...asksAt.values()].filter(count => count > 1);
+  return { turns: many.length, asks: many.reduce((sum, count) => sum + count, 0) };
 }
 
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are
@@ -108,7 +137,7 @@ export function fold(events) {
     if (event.source === 'host' && event.kind === 'process.started') processes += 1;
     if (event.source === 'host' && event.kind === 'kill') kills += 1;
     if (event.channel !== 'durable') continue;
-    if (!event.snapshot && event.kind === 'pi.assistant') assistantEntries += 1;
+    if (!event.snapshot && event.kind === 'pi.assistant' && !aborted(event)) assistantEntries += 1;
     const { doc, key } = event.data ?? {};
     if (typeof doc === 'string' && event.data.value !== undefined) latest.set(`${doc}\u0001${key ?? ''}\u0001${event.conv ?? ''}`, event.data.value);
   }
@@ -131,7 +160,7 @@ export function fold(events) {
     judgeAsks: { answered: decisions.filter(receipt => !receipt.error).length, failed: decisions.filter(receipt => receipt.error).length },
     modelTurnsCommitted: assistantEntries,
     cost,
-    reAskedObserved: reAskedObserved(events),
+    reAsked: reAsked(events),
     ...repeats(events),
   };
 }

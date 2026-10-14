@@ -79,16 +79,38 @@ test('a tool with no receipt never counts: a read executed twice in one conversa
   assert.deepEqual([paid.repeated.agentToolCalls, paid.askedTwice], [1, 1]);
 });
 
-const live = (kind, gen, tt, data = {}, conv = 7) => ({ channel: 'live', source: 'pi', kind, gen, t: tt, seq: tt, conv, data });
-const committedTurn = (tt, gen) => durable(tt, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, t: tt, data: { model: [{ role: 'assistant', content: [] }] } });
-const asks = (gen, tt) => live('message_start', gen, tt, { message: { role: 'assistant' } });
+import { readFileSync } from 'node:fs';
+import { readEvents } from './fold.mjs';
 
-test('re-asked turns are observed from assistant message_start lines: an ask is placed by the assistant entries already committed, and one position asked from two processes is re-asked', () => {
-  // turn 0 is asked in generation 2 (cut) and again in generation 3, which commits it; turn 1 is asked and committed in generation 3
-  const lines = [asks(2, 100), asks(3, 150), committedTurn(200, 3), asks(3, 210), committedTurn(300, 3)];
-  assert.deepEqual(fold(lines).reAskedObserved, { turns: 1, asks: 2 });
-  const calm = [asks(2, 100), committedTurn(200, 2), asks(2, 210), committedTurn(300, 2)];
-  assert.deepEqual(fold(calm).reAskedObserved, { turns: 0, asks: 0 });
-  // a user message_start is not an ask
-  assert.deepEqual(fold([live('message_start', 2, 100, { message: { role: 'user' } }), live('message_start', 3, 110, { message: { role: 'user' } })]).reAskedObserved, { turns: 0, asks: 0 });
+const piLive = (commit, gen, generation, over = {}) => durable(commit, { gen, source: 'pi', kind: 'pi.live', conv: 7, data: { doc: 'pi.live', value: generation === undefined ? {} : { generation }, version: 1 }, ...over });
+const turn = (commit, gen, stopReason = 'toolUse') => durable(commit, { gen, source: 'pi', kind: 'pi.assistant', conv: 7, data: { model: [{ role: 'assistant', content: [], stopReason }] } });
+
+test('re-asked is proven from pi.live: an ask start is a revision where generation appears without a message, placed by the non-aborted entries before it', () => {
+  // turn 0 asked, its partial committed, the process killed; the next process\'s open snapshot shows the stale partial, its ask starts again
+  // (the partial becomes an aborted entry, which is not a committed turn), and turn 0 commits; turn 1 is asked once
+  const lines = [piLive(1, 1, { attempt: 1 }), piLive(2, 1, { attempt: 1, message: { role: 'assistant' } }), { ...piLive(3, 2, { attempt: 1, message: { role: 'assistant' } }), snapshot: true },
+    piLive(4, 2, { attempt: 1 }), turn(4, 2, 'aborted'), piLive(5, 2, undefined), turn(5, 2), piLive(6, 2, { attempt: 1 }), piLive(7, 2, undefined), turn(7, 2)];
+  const counted = fold(lines);
+  assert.deepEqual(counted.reAsked, { turns: 1, asks: 2 });
+  assert.equal(counted.modelTurnsCommitted, 2, 'the aborted partial is not a committed turn');
+});
+
+test('a snapshot\'s stale generation is the ask already open, or one more by an earlier generation when its start line died in flight', () => {
+  const stale = { ...piLive(3, 2, { attempt: 1 }), snapshot: true };
+  // the start line survived: the snapshot shows the same ask
+  assert.deepEqual(fold([piLive(1, 1, { attempt: 1 }), stale, turn(4, 2)]).reAsked, { turns: 0, asks: 0 });
+  // the start line died in flight: the snapshot is the evidence of an earlier ask, and this process asks again
+  assert.deepEqual(fold([stale, piLive(4, 2, undefined), piLive(5, 2, { attempt: 1 }), turn(6, 2)]).reAsked, { turns: 1, asks: 2 });
+});
+
+test('re-asked is not measured when no ask start was ever committed, or on a pi.live version the fold does not know', () => {
+  assert.equal(fold([turn(1, 1)]).reAsked, null);
+  assert.equal(fold([piLive(1, 1, { attempt: 1 }, { data: { doc: 'pi.live', value: { generation: { attempt: 1 } }, version: 2 } })]).reAsked, null);
+});
+
+test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): turn 0 asked twice, 4 turns committed, nothing repeated', () => {
+  const dir = new URL('./fixtures/midstream-kill', import.meta.url).pathname;
+  const counted = fold(readEvents(dir));
+  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ turns: 1, asks: 2 }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
+  assert.ok(JSON.parse(readFileSync(new URL('./fixtures/midstream-kill/manifest.json', import.meta.url), 'utf8')).kills === 1);
 });
