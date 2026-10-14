@@ -41,29 +41,39 @@ this directory first:
 (`PDA_DOCKER_IMAGE` names another image). Its containers are labeled `pda.fleet=$PDA_DOCKER_FLEET` (default `live`) and
 named `pda-<fleet>-...`, its run directories `runs/<fleet>-...`; the suite removes only those.
 
-## The daily job
+## The live disk check
 
-`.github/workflows/pi-durable-disk-live.yml` runs these suites once a day and on demand (Actions, "pi-durable-disk live",
-"Run workflow"). It never runs for a pull request or in a fork, and one run at a time holds the disk. Its steps are
-`test/live/ci.ts`:
+The ship skill runs these suites whenever a pull request touches `packages/pi-durable-disk/src`, `bin`, `package.json` or
+`test/live`. It is one command, from the repository root, under your credential wrapper:
 
-- `preflight` refuses to start without the secrets below. Without the key, every suite would skip and the job would pass
-  having checked nothing.
-- `suites claim env run store supervise lifecycle` runs each suite in turn under a 25-minute deadline (one that hangs is
-  killed with its processes and the next one runs), recording each start and end in `$PDA_STATE_DIR/suites.jsonl`.
-- `sweep` (always) removes the run directories (`runs/<name>/` only) and token users that the run's ledgers recorded
-  and never stamped as removed: what a suite cut by its deadline or the step's timeout left on the disk. It fails if
-  anything is left.
-- `summary` (always) writes each suite's result and time and the suites' timing measurements to the job summary. It
-  reads only numbers from the results files: no disk id, host or identifier.
+```sh
+npm run build && node packages/pi-durable-disk/test/live/ci.ts all
+```
 
-A second job runs `suites docker` (the Docker driver, then parking) after the first, on its own runner. Until it has
-passed on GitHub's runners, it reports without failing the run.
+The wrapper exports `ARCHIL_API_KEY` (a key of a **scratch** Archil organisation), `PDA_LIVE_DISK` (a **scratch** disk in
+that organisation, `dsk-...`) and `PDA_LIVE_REGION` (its region; `aws-us-east-1` when unset). Never a production key or
+disk: the suites create and delete run directories and token users on whatever disk they are given. No value is printed.
 
-The repository secrets it needs:
+`all` runs, in order:
 
-| Secret | What |
-|---|---|
-| `ARCHIL_API_KEY` | An API key of the Archil account that owns the scratch disk. The suites use it to read the disk, add and remove token users on it, list, write and delete its objects, and revoke delegations on it. |
-| `ARCHIL_SCRATCH_DISK` | The scratch disk's id (`dsk-...`): a disk that holds nothing you want to keep. |
-| `ARCHIL_SCRATCH_REGION` | The disk's region, such as `aws-us-east-1` (the default when unset). The fence tests' timing wants a region near GitHub's runners. |
+1. `preflight`: refuses to start without the key and a disk id. Without the key every suite skips, and a check would pass
+   having checked nothing.
+2. The host suites, `claim env run store supervise lifecycle`, each under a 25-minute deadline: one that hangs is killed
+   with its processes and the next one runs.
+3. The Docker suites, after the host suites so the two never share the disk. They build the package's image from this
+   checkout first (`pi-durable-disk:live-check`) and have a 60-minute deadline.
+4. The sweep, always (after a failure, a failed preflight or an interrupt): it removes the run directories (`runs/<name>/`
+   only, through the package's own run-tree delete, which revokes the run's delegations first) and token users that this
+   run's ledgers recorded and never stamped as removed.
+5. The summary: each suite's result and time and the suites' timing measurements, as Markdown. Only numbers leave the
+   results files: no disk id, host or identifier.
+
+Its last line on stdout is `ok: live disk check passed (<n> suites, sweep left 0)` or
+`not ok: <first failing step>: <reason>`, and it exits 0 only with the first: preflight passed, every suite passed, and
+the sweep left no run directory and no token user. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
+sweep; a second exits at once. It holds `/tmp/pda-live.lock` (as `flock` does) for the whole run and refuses to start
+while another live run on the host holds it. The ledgers and results go to `$PDA_STATE_DIR`, or a fresh temporary
+directory whose path it prints first.
+
+The steps also run on their own: `ci.ts preflight`, `ci.ts suites <name>...`, `ci.ts sweep` (with `PDA_STATE_DIR` naming
+a run's ledgers) and `ci.ts summary`.

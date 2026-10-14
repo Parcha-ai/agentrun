@@ -17,7 +17,7 @@ import { PathOutsideWorkError } from "../../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvClosedError } from "../../src/env.ts";
 import { openArchilStore } from "../../src/store.ts";
 import { registerEnvCases } from "../_env-conformance.ts";
-import { LIVE, mintToken, mount, removeToken, scratchDisk, scratchDiskId, unmount } from "./_archil.ts";
+import { LIVE, mintToken, mount, removeToken, RUN_OWNER, scratchDisk, scratchDiskId, unmount } from "./_archil.ts";
 import { statePath } from "./_paths.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -54,7 +54,7 @@ describe("archilEnv on an exclusive Archil mount", { skip: !LIVE, concurrency: f
     tokenIdentifier = minted.identifier;
     record((state) => state.tokenUsers.push({ identifier: minted.identifier, purpose: "p3 env live", mintedAt: new Date().toISOString() }));
     const disk = await scratchDisk();
-    await disk.putObject(`${SUBPATH}/`, "", { uid: 1000, gid: 1000, mode: 0o755 });
+    await disk.putObject(`${SUBPATH}/`, "", { ...RUN_OWNER, mode: 0o755 });
     marker = true;
     record((state) => state.subpaths.push({ path: SUBPATH, createdAt: new Date().toISOString() }));
     const result = mount({ subpath: `/${SUBPATH}`, mountpoint: MOUNTPOINT, token: minted.token, flags: [] });

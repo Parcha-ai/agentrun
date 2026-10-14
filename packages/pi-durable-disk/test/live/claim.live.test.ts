@@ -10,7 +10,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, rea
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
-import { LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
+import { LIVE, REGION, RUN_OWNER, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p1-ledger.ts";
 import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, revoke, revokeBestEffort, takeOver, unmountClaim, type AcquireOptions, type Claim, type ControlApi } from "../../src/claim.ts";
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
@@ -43,7 +43,7 @@ const ref = (id: string) => ({ disk: scratchDiskId(), region: REGION, id });
 async function newRun(name: string): Promise<string> {
   const id = `p1-${STAMP}-${name}`;
   const t0 = performance.now();
-  await createRunDir(control, id, { uid: 1000, gid: 1000 });
+  await createRunDir(control, id, RUN_OWNER);
   ledger.subdir(`runs/${id}/`, `live ${name}`);
   runIds.push(id);
   ((results.createRunDirMs ??= []) as number[]).push(r2(performance.now() - t0));
@@ -180,7 +180,7 @@ test("a second exclusive mount is refused (76); release frees the claim; a refus
   assert.ok(err instanceof HeldError && err.exitCode === 76, String(err));
   assert.ok(!archilMounts().includes(join(B, "runs", id)));
   assert.deepEqual((await findDelegations(control, id)).map((d) => d.clientId), [held[0].clientId], "the holder is unchanged");
-  await assert.rejects(createRunDir(control, id, { uid: 1000, gid: 1000 }), (e: unknown) => e instanceof HeldError, "PutObject on a held directory is 409");
+  await assert.rejects(createRunDir(control, id, RUN_OWNER), (e: unknown) => e instanceof HeldError, "PutObject on a held directory is 409");
 
   const t1 = performance.now();
   assert.equal(await release(a), "archil");
@@ -583,7 +583,7 @@ test("a run id reused three times, its third holder killed: the orphan is found 
   const id = await newRun("reuse3");
   let a: Claim | null = null;
   for (const k of [1, 2, 3]) {
-    if (k > 1) await createRunDir(control, id, { uid: 1000, gid: 1000 });
+    if (k > 1) await createRunDir(control, id, RUN_OWNER);
     a = await claimAt(id, A, `reuse3-${k}`);
     if (k < 3) {
       await release(a);

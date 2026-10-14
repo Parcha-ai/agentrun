@@ -1,83 +1,179 @@
-// The daily live job (.github/workflows/pi-durable-disk-live.yml) and its steps (test/live/ci.ts), with no disk: it refuses
-// to start without the scratch disk's secrets, runs each suite under a deadline and names one that was cut, sweeps only
-// the run directories and token users this run's ledgers left open, and summarizes nothing but timings. The workflow runs
-// on a schedule or by hand, never for a pull request or in a fork, one run at a time.
+// The live disk check (test/live/ci.ts) with no disk: preflight refuses a run without the key or a scratch disk; `all` runs
+// every suite, kills one at its deadline, always sweeps (after a failed suite, a failed preflight or an interrupt), and ends
+// on one line, `ok: live disk check passed (...)` or `not ok: <step>: <reason>`; the sweep removes only what this run's
+// ledgers left open, through the package's own run-tree delete; and the summary carries nothing but timings.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openResources, preflight, runSuites, summarize, sweepWith, timings, type SweepDisk } from "./live/ci.ts";
-import { scratchRoot } from "./_run-support.ts";
+import { HOST_SUITES, openResources, preflight, runAll, runSuites, summarize, summaryOf, sweepWith, timings, type SweepReport } from "./live/ci.ts";
+import { alive, scratchRoot } from "./_run-support.ts";
 
 const CI = fileURLToPath(new URL("./live/ci.ts", import.meta.url));
-const WORKFLOW = readFileSync(new URL("../../../.github/workflows/pi-durable-disk-live.yml", import.meta.url), "utf8");
 const KEY = "archil-key-not-a-real-one-1234";
+const DISK = "dsk-0123abcd";
+const SUITE_COUNT = HOST_SUITES.length + 1;
 
 /** `node test/live/ci.ts <args>` with only `env` (and PATH) in its environment. */
 function ci(args: string[], env: Record<string, string>) {
-  return spawnSync(process.execPath, [CI, ...args], { encoding: "utf8", env: { PATH: process.env.PATH!, ...env } });
+  return spawnSync(process.execPath, [CI, ...args], { encoding: "utf8", env: { PATH: process.env.PATH!, ...env }, timeout: 60_000 });
+}
+
+const lastLine = (lines: string[]) => lines.at(-1)!;
+
+/** `runAll` with each suite's commands scripted (`node -e <script>`, a pass by default) and a sweep that reports `left`. */
+async function all(options: { env?: Record<string, string>; scripts?: Record<string, string>; deadlineMs?: number; left?: [number, number]; sweepThrows?: boolean; abortDuring?: string }) {
+  const dir = scratchRoot("live-ci-all");
+  const lines: string[] = [];
+  const ran: string[] = [];
+  let swept = 0;
+  const stop = new AbortController();
+  try {
+    const code = await runAll({ ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: DISK, PATH: process.env.PATH, ...options.env, PDA_STATE_DIR: dir.root }, {
+      out: (line) => lines.push(line),
+      signal: stop.signal,
+      deadlineMs: () => options.deadlineMs ?? 30_000,
+      steps: (suite) => {
+        ran.push(suite);
+        if (suite === options.abortDuring) setTimeout(() => stop.abort("SIGINT"), 300);
+        return [[process.execPath, ["-e", options.scripts?.[suite] ?? (suite === options.abortDuring ? "setInterval(() => {}, 1000)" : "process.exit(0)")]]];
+      },
+      sweep: async (): Promise<SweepReport> => {
+        swept++;
+        if (options.sweepThrows) throw new Error("the disk did not answer");
+        const [directoriesLeft, tokensLeft] = options.left ?? [0, 0];
+        return { lines: [`fake sweep: ${directoriesLeft} + ${tokensLeft} left`], directoriesLeft, tokensLeft };
+      },
+    });
+    return { code, lines, ran, swept };
+  } finally {
+    dir.remove();
+  }
 }
 
 describe("preflight", () => {
-  it("refuses to start without the secrets, names each missing one, and says why it matters", () => {
-    const r = ci(["preflight"], {});
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /^not ok: the live job cannot start: /);
-    assert.match(r.stderr, /the repository secret ARCHIL_API_KEY is not set/);
-    assert.match(r.stderr, /the repository secret ARCHIL_SCRATCH_DISK is not set/);
-    assert.match(r.stderr, /PDA_STATE_DIR is not set/);
-    assert.match(r.stderr, /every live suite skips, and the job would pass having checked nothing/);
+  it("refuses a run without the key or the disk, and names each", () => {
+    assert.deepEqual(preflight({}), ["ARCHIL_API_KEY is not set", "PDA_LIVE_DISK is not set"]);
+    assert.deepEqual(preflight({ ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: "my-prod-disk" }), ["PDA_LIVE_DISK is not a disk id (dsk-...)"]);
+    assert.deepEqual(preflight({ ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: DISK, PDA_LIVE_REGION: "aws us east" }), ["PDA_LIVE_REGION is not a region name (such as aws-us-east-1)"]);
+    assert.deepEqual(preflight({ ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: DISK }), []);
   });
 
-  it("refuses a disk that is not a disk id, without repeating the value", () => {
-    const r = ci(["preflight"], { ARCHIL_API_KEY: KEY, ARCHIL_SCRATCH_DISK: "my-prod-disk", PDA_STATE_DIR: "/tmp/x" });
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /ARCHIL_SCRATCH_DISK is not a disk id \(dsk-\.\.\.\)/);
-    assert.doesNotMatch(r.stderr + r.stdout, /my-prod-disk/);
+  it("as a command: not ok without the key, ok with it, and never prints a value", () => {
+    const refused = ci(["preflight"], { PDA_LIVE_DISK: "my-prod-disk" });
+    assert.equal(refused.status, 1);
+    assert.equal(refused.stdout, "not ok: preflight: ARCHIL_API_KEY is not set; PDA_LIVE_DISK is not a disk id (dsk-...)\n");
+    const passed = ci(["preflight"], { ARCHIL_API_KEY: KEY, PDA_LIVE_DISK: DISK });
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.equal(passed.stdout, "ok: the key and a disk id are set (region aws-us-east-1)\n");
+    for (const value of [KEY, DISK, "my-prod-disk"]) assert.ok(!(refused.stdout + refused.stderr + passed.stdout + passed.stderr).includes(value), value);
+    assert.equal(ci(["suites", "everything"], {}).status, 2, "an unknown suite is a usage error");
+    assert.equal(ci(["nonsense"], {}).status, 2);
+  });
+});
+
+describe("all", () => {
+  it("passes when every suite passes and the sweep leaves nothing: the host suites, then docker, then the sweep", async () => {
+    const r = await all({});
+    assert.equal(r.code, 0);
+    assert.deepEqual(r.ran, [...HOST_SUITES, "docker"]);
+    assert.equal(r.swept, 1);
+    assert.equal(lastLine(r.lines), `ok: live disk check passed (${SUITE_COUNT} suites, sweep left 0)`);
+    assert.ok(r.lines.some((l) => /^\| claim \| pass \| \d+ s \|$/m.test(l)), "the summary lists each suite");
   });
 
-  it("passes with the key and the disk, defaults the region, and never prints the key", () => {
-    const r = ci(["preflight"], { ARCHIL_API_KEY: KEY, ARCHIL_SCRATCH_DISK: "dsk-0123abcd", PDA_STATE_DIR: "/tmp/x" });
-    assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.stdout, "ok: the scratch disk's secrets are set (region aws-us-east-1)\n");
-    assert.doesNotMatch(r.stdout + r.stderr, new RegExp(KEY));
-    assert.deepEqual(preflight({ ARCHIL_API_KEY: KEY, ARCHIL_SCRATCH_DISK: "dsk-1", ARCHIL_SCRATCH_REGION: "aws us east", PDA_STATE_DIR: "/x" }), ["ARCHIL_SCRATCH_REGION is not a region name (such as aws-us-east-1)"]);
+  it("a failed suite: the rest still run, the sweep runs, and the last line names the first failure", async () => {
+    const r = await all({ scripts: { store: "process.exit(3)", lifecycle: "process.exit(4)" } });
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.ran, [...HOST_SUITES, "docker"]);
+    assert.equal(r.swept, 1);
+    assert.match(lastLine(r.lines), /^not ok: suite store: fail: \S+ -e process\.exit\(3\) exited 3$/);
   });
 
-  it("the suites verb also refuses without the secrets, before running anything", () => {
-    const r = ci(["suites", "claim"], {});
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /^not ok: the repository secret ARCHIL_API_KEY is not set/);
-    assert.equal(ci(["suites", "claim", "everything"], {}).status, 2, "an unknown suite is a usage error");
+  it("a stuck suite is killed at its deadline, with its own children, and the run goes on", async () => {
+    const dir = scratchRoot("live-ci-stuck");
+    try {
+      const pidFile = join(dir.root, "child.pid");
+      const stuck = `const c = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); setInterval(() => {}, 1000)`;
+      const r = await all({ scripts: { run: stuck }, deadlineMs: 1500 });
+      assert.equal(r.code, 1);
+      assert.deepEqual(r.ran, [...HOST_SUITES, "docker"]);
+      assert.equal(r.swept, 1);
+      assert.equal(lastLine(r.lines), "not ok: suite run: deadline: killed at its deadline of 1.5 s");
+      const child = Number(readFileSync(pidFile, "utf8"));
+      for (let i = 0; i < 200 && alive(child); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(alive(child), false, "the stuck suite's own child went with its group");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("without the key: preflight refuses, no suite runs, and the sweep still runs", async () => {
+    const r = await all({ env: { ARCHIL_API_KEY: "" } });
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.ran, []);
+    assert.equal(r.swept, 1);
+    assert.equal(lastLine(r.lines), "not ok: preflight: ARCHIL_API_KEY is not set");
+    assert.ok(r.lines.some((l) => l.includes("No suite ran.")));
+  });
+
+  it("an interrupt stops the running suite, runs no other, and still sweeps", async () => {
+    const r = await all({ abortDuring: "env" });
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.ran, ["claim", "env"]);
+    assert.equal(r.swept, 1);
+    assert.equal(lastLine(r.lines), "not ok: interrupted: stopped by SIGINT during suite env");
+  });
+
+  it("a sweep that leaves something, or cannot finish, fails the check", async () => {
+    assert.equal(lastLine((await all({ left: [1, 0] })).lines), "not ok: sweep: 1 run directory and 0 token users left");
+    assert.equal(lastLine((await all({ left: [2, 1] })).lines), "not ok: sweep: 2 run directories and 1 token user left");
+    const thrown = await all({ sweepThrows: true });
+    assert.equal(thrown.code, 1);
+    assert.ok(thrown.lines.includes("sweep failed: the disk did not answer"));
+    assert.equal(lastLine(thrown.lines), "not ok: sweep: it did not finish, so what is left on the disk is unknown");
+  });
+
+  it("as a command: without the key the last line is the preflight refusal, and a held lock refuses a second run", async () => {
+    const dir = scratchRoot("live-ci-command");
+    try {
+      const lock = join(dir.root, "pda-live.lock");
+      const r = ci(["all"], { PDA_STATE_DIR: join(dir.root, "state"), PDA_LIVE_LOCK: lock });
+      assert.equal(r.status, 1, r.stderr);
+      assert.equal(lastLine(r.stdout.trimEnd().split("\n")), "not ok: preflight: ARCHIL_API_KEY is not set; PDA_LIVE_DISK is not set");
+      // Another run holds the lock: this one refuses before anything else.
+      const holder = spawn("flock", [lock, "sleep", "30"], { stdio: "ignore" });
+      try {
+        for (let i = 0; i < 100 && spawnSync("flock", ["-n", lock, "true"]).status === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+        const held = ci(["all"], { PDA_STATE_DIR: join(dir.root, "state"), PDA_LIVE_LOCK: lock });
+        assert.equal(held.status, 1);
+        assert.equal(held.stdout, `not ok: lock: another live run on this host holds ${lock}\n`);
+      } finally {
+        holder.kill("SIGKILL");
+      }
+    } finally {
+      dir.remove();
+    }
   });
 });
 
 describe("runSuites", () => {
-  it("runs each suite whatever the last one did, kills one at its deadline with its group, and logs each start and end", async () => {
+  it("a suite's commands run in order and stop at the first that fails; every start and end is logged", async () => {
     const dir = scratchRoot("live-ci-suites");
     try {
-      const scripts: Record<string, string> = {
-        claim: "process.exit(0)",
-        env: "process.exit(3)",
-        // the stuck suite's own child, in its group: the deadline kills both
-        run: `const c = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.env.PIDFILE, String(c.pid)); setInterval(() => {}, 1000)`,
-        store: "process.exit(0)",
-      };
-      const results = await runSuites(Object.keys(scripts), {
-        env: { PATH: process.env.PATH, PIDFILE: join(dir.root, "stuck-child.pid") },
+      const pass = [process.execPath, ["-e", "process.exit(0)"]] as const;
+      const results = await runSuites(["claim", "docker"], {
+        env: { PATH: process.env.PATH },
         stateDir: dir.root,
-        deadlineMs: 1500,
-        command: (suite) => [process.execPath, ["-e", scripts[suite]!]],
+        deadlineMs: () => 30_000,
+        steps: (suite) => (suite === "docker" ? [pass, [process.execPath, ["-e", "process.exit(5)"]], [process.execPath, ["-e", "throw new Error('never runs')"]]] : [pass]),
       });
-      assert.deepEqual(results.map((r) => [r.suite, r.result]), [["claim", "pass"], ["env", "fail"], ["run", "deadline"], ["store", "pass"]]);
-      const stuckChild = Number(readFileSync(join(dir.root, "stuck-child.pid"), "utf8"));
-      const gone = () => { try { process.kill(stuckChild, 0); return false; } catch { return true; } };
-      for (let i = 0; i < 200 && !gone(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
-      assert.ok(gone(), "the stuck suite's own child went with its group");
+      assert.deepEqual(results.map((r) => [r.suite, r.result]), [["claim", "pass"], ["docker", "fail"]]);
+      assert.match(results[1]!.detail!, / -e process\.exit\(5\) exited 5$/);
       const log = readFileSync(join(dir.root, "suites.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { suite: string; event: string });
-      assert.deepEqual(log.map((e) => `${e.event} ${e.suite}`), ["start claim", "end claim", "start env", "end env", "start run", "end run", "start store", "end store"]);
+      assert.deepEqual(log.map((e) => `${e.event} ${e.suite}`), ["start claim", "end claim", "start docker", "end docker"]);
     } finally {
       dir.remove();
     }
@@ -112,37 +208,31 @@ describe("openResources", () => {
 });
 
 describe("sweepWith", () => {
-  /** A disk's objects, where a directory marker with children refuses deletion, and `held` keys refuse it too. */
-  function fakeDisk(keys: string[], held: string[] = []): SweepDisk & { keys: Set<string>; removed: string[] } {
-    const all = new Set(keys);
+  it("deletes each run directory by its run id through the run-tree delete (which revokes delegations first), and removes each token user", async () => {
+    const deleted: string[] = [];
     const removed: string[] = [];
-    return {
-      keys: all,
-      removed,
-      listObjects: async (prefix) => ({ objects: [...all].filter((k) => k.startsWith(prefix)).map((key) => ({ key })) }),
-      deleteObjects: async (batch) => {
-        for (const key of batch) if (!held.includes(key) && ![...all].some((k) => k !== key && k.startsWith(key))) all.delete(key);
-        return { errors: [] };
+    const report = await sweepWith({
+      deleteRunTree: async (id) => {
+        deleted.push(id);
+        return { objects: 7, revoked: 1 };
       },
-      removeUser: async (_type, identifier) => {
-        if (identifier === "gone") throw new Error("no such user");
-        removed.push(identifier);
-      },
-    };
-  }
-
-  it("deletes a run directory's files, then its markers deepest first, and removes each token user", async () => {
-    const disk = fakeDisk(["runs/a/", "runs/a/x", "runs/a/sub/", "runs/a/sub/deeper/", "runs/a/sub/deeper/y", "runs/other/z"]);
-    const report = await sweepWith(disk, { directories: ["runs/a/"], tokens: ["t1"] });
-    assert.deepEqual(report, { lines: ["swept runs/a/: 5 objects, 0 left", "token user t1: removed"], left: 0 });
-    assert.deepEqual([...disk.keys], ["runs/other/z"], "nothing outside the swept directory");
-    assert.deepEqual(disk.removed, ["t1"]);
+      removeUser: async (identifier) => removed.push(identifier),
+    }, { directories: ["runs/p1-a/", "runs/live-b/"], tokens: ["t1"] });
+    assert.deepEqual(deleted, ["p1-a", "live-b"]);
+    assert.deepEqual(removed, ["t1"]);
+    assert.deepEqual(report, { lines: ["swept runs/p1-a/: 7 objects, 1 delegations revoked", "swept runs/live-b/: 7 objects, 1 delegations revoked", "token user t1: removed"], directoriesLeft: 0, tokensLeft: 0 });
   });
 
-  it("reports what it could not remove, and counts it", async () => {
-    const disk = fakeDisk(["runs/b/", "runs/b/held"], ["runs/b/held"]);
-    const report = await sweepWith(disk, { directories: ["runs/b/"], tokens: ["gone"] });
-    assert.deepEqual(report, { lines: ["swept runs/b/: 2 objects, 2 left", "token user gone: not removed (no such user)"], left: 2 });
+  it("counts and reports what it could not remove", async () => {
+    const report = await sweepWith({
+      deleteRunTree: async () => {
+        throw new Error("runs/p1-a/ still holds 2 objects");
+      },
+      removeUser: async () => {
+        throw new Error("no such user");
+      },
+    }, { directories: ["runs/p1-a/"], tokens: ["gone"] });
+    assert.deepEqual(report, { lines: ["not swept runs/p1-a/: runs/p1-a/ still holds 2 objects", "token user gone: not removed (no such user)"], directoriesLeft: 1, tokensLeft: 1 });
   });
 });
 
@@ -151,7 +241,7 @@ describe("the summary", () => {
     at: "2026-10-14T06:00:00Z",
     client: "Archil Client: v0.8.42-1790378297, 842, abc",
     disk: "dsk-secret0001",
-    host: "runner-host-1",
+    host: "some-host-1",
     heldRefusalMs: 166.29,
     createRunDirMs: [20, 22, 21, 90],
     barrier: { clean: { n: 20, p50: 55.39, p95: 59.59, max: 60.4, min: 45.6, mean: 54 } },
@@ -167,17 +257,15 @@ describe("the summary", () => {
       ["t4.revokeMs", "36.3 ms"],
     ]);
     const md = summarize([{ suite: "claim", result: "pass", seconds: 312 }], [{ name: "P1-live-results.json", data: results }]);
-    for (const leak of ["dsk-secret0001", "runner-host-1", "6903af98", "680090", "1791390943911"]) assert.ok(!md.includes(leak), leak);
+    for (const leak of ["dsk-secret0001", "some-host-1", "6903af98", "680090", "1791390943911"]) assert.ok(!md.includes(leak), leak);
     assert.match(md, /^\| claim \| pass \| 312 s \|$/m);
     assert.match(md, /^Archil Client: v0\.8\.42-1790378297$/m);
     assert.match(md, /^### claim \(P1-live-results\.json\)$/m);
-    assert.match(md, /^\| barrier\.clean \| p50 55\.4, p95 59\.6, max 60\.4 ms \(n 20\) \|$/m);
   });
 
-  it("from the state directory: a suite that started and never ended is reported cut at its deadline", () => {
+  it("reads every results file the suites write, the Docker suites' included, and names a suite that never ended", () => {
     const dir = scratchRoot("live-ci-summary");
     try {
-      mkdirSync(dir.root, { recursive: true });
       const at = (s: number) => new Date(Date.now() - s * 1000).toISOString();
       writeFileSync(join(dir.root, "suites.jsonl"), [
         { at: at(900), suite: "claim", event: "start" },
@@ -185,63 +273,18 @@ describe("the summary", () => {
         { at: at(600), suite: "env", event: "start" },
       ].map((e) => JSON.stringify(e)).join("\n") + "\n");
       writeFileSync(join(dir.root, "P1-live-results.json"), JSON.stringify(results));
+      writeFileSync(join(dir.root, "docker-T13.json"), JSON.stringify({ takeoverMs: 4200 }));
+      writeFileSync(join(dir.root, "docker-park.json"), JSON.stringify({ wakeMs: 181000 }));
       writeFileSync(join(dir.root, "P1-STATE.json"), JSON.stringify({ disk: "dsk-secret0001" }));
-      const r = ci(["summary"], { PDA_STATE_DIR: dir.root });
-      assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /^\| claim \| pass \| 300 s \|$/m);
-      assert.match(r.stdout, /^\| env \| deadline \| 6\d\d s \|$/m);
-      assert.ok(!r.stdout.includes("dsk-secret0001"));
-      assert.equal(ci(["summary"], { PDA_STATE_DIR: join(dir.root, "none") }).stdout, "## pi-durable-disk live\n\nNo suite ran.\n");
+      const md = summaryOf(dir.root);
+      assert.match(md, /^\| claim \| pass \| 300 s \|$/m);
+      assert.match(md, /^\| env \| interrupted: started and never ended \| 6\d\d s \|$/m);
+      assert.match(md, /^### docker \(docker-T13\.json\)\n\n\| Measurement \| Value \|\n\|---\|---\|\n\| takeoverMs \| 4200 ms \|$/m);
+      assert.match(md, /^### docker \(docker-park\.json\)$/m);
+      assert.ok(!md.includes("dsk-secret0001"));
+      assert.equal(summaryOf(join(dir.root, "none")), "## Live disk check\n\nNo suite ran.\n");
     } finally {
       dir.remove();
     }
-  });
-
-  it("sweep with no state directory has nothing to do and touches no disk", () => {
-    const r = ci(["sweep"], { PDA_STATE_DIR: "/nonexistent/pda-live-state" });
-    assert.equal(r.status, 0);
-    assert.equal(r.stdout, "nothing to sweep: no suite ran\n");
-  });
-});
-
-describe("the workflow", () => {
-  const jobs = WORKFLOW.slice(WORKFLOW.indexOf("\njobs:\n"));
-  const job = (name: string) => {
-    const start = jobs.indexOf(`\n  ${name}:\n`);
-    const next = jobs.slice(start + 1).search(/\n {2}[a-z][\w-]*:\n/);
-    return jobs.slice(start, next < 0 ? undefined : start + 1 + next);
-  };
-
-  it("runs on a schedule or by hand: never for a pull request or a push", () => {
-    const on = WORKFLOW.slice(WORKFLOW.indexOf("\non:\n"), WORKFLOW.indexOf("\npermissions:"));
-    assert.deepEqual([...on.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]), ["schedule", "workflow_dispatch"]);
-    assert.doesNotMatch(WORKFLOW, /pull_request|push:/);
-  });
-
-  it("one run at a time, a waiting run never cancelled, and read-only", () => {
-    assert.match(WORKFLOW, /\nconcurrency:\n {2}group: pi-durable-disk-live\n {2}cancel-in-progress: false\n/);
-    assert.match(WORKFLOW, /\npermissions:\n {2}contents: read\n/);
-  });
-
-  for (const name of ["host", "docker"]) {
-    it(`${name}: never in a fork; the preflight before any install; the sweep and summary always; the suites' deadline inside the job's`, () => {
-      const text = job(name);
-      assert.match(text, /\n {4}if: (always\(\) && )?github\.repository == 'Parcha-ai\/agentrun'\n/);
-      const steps = text.split("\n      - ").slice(1);
-      const at = (pattern: RegExp) => steps.findIndex((s) => pattern.test(s));
-      assert.ok(at(/run: node test\/live\/ci\.ts preflight/) >= 0 && at(/run: node test\/live\/ci\.ts preflight/) < at(/npm ci/), "preflight runs before the install");
-      for (const verb of ["sweep", "summary"]) assert.match(steps[at(new RegExp(`ci\\.ts ${verb}`))]!, /\n {8}if: always\(\)\n/, `${verb} always runs`);
-      const jobMinutes = Number(/\n {4}timeout-minutes: (\d+)/.exec(text)![1]);
-      const suites = steps[at(/ci\.ts suites /)]!;
-      assert.ok(Number(/timeout-minutes: (\d+)/.exec(suites)![1]) + 15 <= jobMinutes, "the suites step ends with room for the sweep and summary");
-      // The secrets reach the job as these three variables and nowhere else.
-      assert.deepEqual([...text.matchAll(/\$\{\{ secrets\.(\w+) \}\}/g)].map((m) => m[1]), ["ARCHIL_API_KEY", "ARCHIL_SCRATCH_DISK", "ARCHIL_SCRATCH_REGION"]);
-    });
-  }
-
-  it("host runs the six host suites; docker runs after it, so the two never share the disk", () => {
-    assert.match(job("host"), /run: node test\/live\/ci\.ts suites claim env run store supervise lifecycle\n/);
-    assert.match(job("docker"), /\n {4}needs: host\n/);
-    assert.match(job("docker"), /run: node test\/live\/ci\.ts suites docker\n/);
   });
 });

@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDisk, type Disk } from "disk";
-import { KEY_ENV, LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
+import { KEY_ENV, LIVE, REGION, RUN_OWNER, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p5-ledger.ts";
 import { ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, removeMountToken, unmountClaim } from "../../src/claim.ts";
 import { localHost } from "../../src/hosts/local-host.ts";
@@ -43,7 +43,7 @@ const sh = (cmd: string, args: string[]) => spawnSync(cmd, args, { encoding: "ut
 
 async function newRun(name: string): Promise<string> {
   const id = `p5-${STAMP}-${name}`;
-  await createRunDir(disk, id, { uid: 1000, gid: 1000 });
+  await createRunDir(disk, id, RUN_OWNER);
   ledger.subdir(`runs/${id}/`, `live ${name}`);
   runIds.push(id);
   return id;
@@ -536,7 +536,7 @@ test("deleting a powered-off run: its orphaned delegation is revoked first, the 
   ledger.subdirDeleted(`runs/${id}/`, del.objects);
   await stopInstance(h);
   // The same id again: a fresh directory, a fresh store, generation 1, nothing to resume.
-  await createRunDir(disk, id, { uid: 1000, gid: 1000 });
+  await createRunDir(disk, id, RUN_OWNER);
   ledger.subdir(`runs/${id}/`, "live deltree, reopened with the same id");
   const tReopen = Date.now();
   const again = superviseOnce(id, flags).lines.find((l) => l.action === "started");
@@ -884,7 +884,7 @@ test("a store behind its seal (65) or an unreadable store head (70): run.json fa
 test("an invalid run.json fails only that run's line in a `supervise --every` loop; the other run is started and kept healthy", { skip: !LIVE }, async () => {
   const bad = await newRun("badjson");
   const good = await newRun("goodjson");
-  await disk.putObject(`runs/${bad}/run.json`, JSON.stringify({ run: bad, status: "zombie", generation: 1, heartbeatAt: null, holder: null }), { uid: 1000, gid: 1000, mode: 0o644 });
+  await disk.putObject(`runs/${bad}/run.json`, JSON.stringify({ run: bad, status: "zombie", generation: 1, heartbeatAt: null, holder: null }), { ...RUN_OWNER, mode: 0o644 });
   const loop = superviseLoop(bad, ["--id", good, "--mount-root", A, "--host-name", "host-a", "--unit-prefix", "pda-p5-json-", ...instance()]);
   await waitFor("two ticks after the good run is healthy", () => loop.lines.filter((l) => l.run === good && l.action === "healthy").length >= 2, 60_000, 200);
   await loop.stop();
