@@ -4,7 +4,7 @@
   "description": "A static player for agentrun.recording/1 recordings",
   "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "node build.mjs",

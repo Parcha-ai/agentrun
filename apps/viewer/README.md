@@ -10,7 +10,7 @@ the run, every kill, every commit of its store. No key, no server: it opens from
 
 ```sh
 node apps/viewer/build.mjs          # writes apps/viewer/dist/
-open apps/viewer/dist/index.html    # the gallery of bundled recordings
+open apps/viewer/dist/index.html    # the gallery of recorded runs, or drop a recording folder on the page
 ```
 
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
@@ -33,9 +33,10 @@ static host), or a recording folder dropped on the page or chosen with its picke
 
 ## Recordings
 
-`recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
-`blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and copies them beside the page.
-`recordings/README.md` says where each came from.
+`recordings/<id>/` holds the recordings of real runs bundled with the build, each a `manifest.json`, an
+`events.jsonl` and its `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and
+copies them beside the page. There are none yet, and the gallery says so. The tests play a fixture cut by hand from a
+real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut).
 
 ## Develop
 

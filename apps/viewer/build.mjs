@@ -24,7 +24,8 @@ function ordered(entry) {
   return seen;
 }
 
-export function build(target = out) {
+/** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). */
+export function build(target = out, recordingsDir = join(here, 'recordings')) {
   const names = new Map();
   const parts = ordered('app.ts').map((file) => {
     const code = stripTypeScriptTypes(readFileSync(join(src, file), 'utf8'));
@@ -41,10 +42,9 @@ export function build(target = out) {
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
 
-  const recordings = join(here, 'recordings');
   const gallery = [];
-  for (const id of existsSync(recordings) ? readdirSync(recordings).sort() : []) {
-    const dir = join(recordings, id);
+  for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
+    const dir = join(recordingsDir, id);
     if (!existsSync(join(dir, 'manifest.json'))) continue;
     const blobs = {};
     for (const file of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []) {

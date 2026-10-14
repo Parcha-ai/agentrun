@@ -11,7 +11,7 @@ import { lanesOf } from '../src/lanes.ts';
 import { registry } from '../src/panels.ts';
 import { reduceTo, snap, stopsOf } from '../src/replay.ts';
 
-const at = (path: string) => new URL(`../recordings/reference-killed/${path}`, import.meta.url);
+const at = (path: string) => new URL(`fixtures/reference-killed/${path}`, import.meta.url);
 const manifest = JSON.parse(readFileSync(at('manifest.json'), 'utf8'));
 const lines = parseLines(readFileSync(at('events.jsonl'), 'utf8'));
 const blobs = new Set(readdirSync(at('blobs')).map((name) => name.split('.')[0]!));
