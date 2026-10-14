@@ -1,3 +1,16 @@
+export { type DirStoreOptions, dirStore } from "./dir-store.ts";
+export {
+	type ConditionalStore,
+	type Holder,
+	KeyStoreError,
+	type KeyStoreErrorCode,
+	type LeaseRecord,
+	leaseIn,
+	type Ownership,
+	OwnershipError,
+	type OwnershipErrorCode,
+	type TakeDetails,
+} from "./ownership.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,
