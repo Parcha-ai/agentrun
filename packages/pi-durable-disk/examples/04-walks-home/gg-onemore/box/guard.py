@@ -68,8 +68,8 @@ JEV_KEY = os.environ["TYPESAFE_API_KEY"]
 # 0.31-0.42 to 0.14-0.15 with tries held (README, "The contrite loop"). The control's replays are not chats and draw one.
 BEST_OF = int(os.environ.get("GG_BEST_OF", "3"))
 PUSHBACK = 0.5
-# the gate's whole budget (Jev answers it in about 0.1-0.25 s): past it the turn goes on as one live draw
-GATE_S = 2.0
+# the gate's one try (Jev answers it in about 0.1-0.25 s): past it, or with no verdict, the turn is one live draw
+GATE_S = 1.5
 DARK_GATE = 0.3
 PICK_WEIGHTS = {"copies": -0.6, "topic": 0.35, "tries": 0.25, "funny": 0.3}
 # under the served sampling, which can set its own: unlike presence_penalty it also counts the conversation, so the earlier
@@ -214,12 +214,12 @@ def transcript(plain):
     return "\n\n".join(f"{m['role']}: {m['content'][:1200]}" for m in plain if m["role"] in ("user", "assistant"))[-4000:]
 
 
-async def ask_jev(state, questions):
-    """Jev's answers, or None with no verdict after three tries."""
+async def ask_jev(state, questions, tries=3, timeout=20):
+    """Jev's answers, or None with no verdict after `tries`."""
     body = {"model": "jev-latest", "state": state, "questions": questions}
-    for attempt in range(3):
+    for attempt in range(tries):
         try:
-            r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
+            r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=timeout)
             if r.status_code == 200:
                 return r.json()["answers"]
             if r.status_code < 500 and r.status_code != 429:
@@ -228,15 +228,17 @@ async def ask_jev(state, questions):
             pass
         except (KeyError, ValueError, TypeError, AttributeError):
             break
-        await asyncio.sleep(0.3 * (attempt + 1))
+        if attempt + 1 < tries:
+            await asyncio.sleep(0.3 * (attempt + 1))
     return None
 
 
 async def pushback(earlier, user_asked):
-    """Before a turn: Jev's probability that the user is pushing back on the model's earlier replies. No verdict within
-    GATE_S is 0: the turn is one live draw."""
+    """Before a turn: Jev's probability that the user is pushing back on the model's earlier replies. One try within
+    GATE_S; no verdict is 0, and the turn is one live draw (the pick, on a turn that already chose to wait, keeps its retries)."""
     try:
-        a = await asyncio.wait_for(ask_jev({"conversation": transcript(earlier), "user_said": user_asked[-2000:]}, {"pushback": GATE}), GATE_S)
+        a = await asyncio.wait_for(ask_jev({"conversation": transcript(earlier), "user_said": user_asked[-2000:]}, {"pushback": GATE}, tries=1, timeout=GATE_S),
+                                   GATE_S)
         return round(float(a["pushback"]["noul"]), 3)
     except (asyncio.TimeoutError, KeyError, ValueError, TypeError):
         return 0.0
