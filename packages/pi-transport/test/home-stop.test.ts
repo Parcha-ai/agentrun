@@ -42,6 +42,16 @@ const ALIVE =
 	'p=$(cat "$1"); kill -0 "$p" 2>/dev/null || exit 1; s=$(sed "s/^.*) //" "/proc/$p/stat" 2>/dev/null | cut -c1); [ "$s" != Z ]';
 const alive = async (place: Place) => (await code(place.box, ["sh", "-c", ALIVE, "sh", `${place.store}.pid`])) === 0;
 
+/** What the process the pid file names is, said in a failure's message: rare on a loaded machine, so it says why. */
+const SAY =
+	'p=$(cat "$1"); echo "pid $p"; [ -d "/proc/$p" ] && echo "in /proc" || echo "not in /proc"; echo "stat $(cut -c1-100 "/proc/$p/stat" 2>&1)"; echo "cmdline $(tr "\\000" " " < "/proc/$p/cmdline" 2>&1)"';
+async function said(place: Place): Promise<string> {
+	const done = await finish(
+		getOrThrow(await place.box.exec(["sh", "-c", SAY, "sh", `${place.store}.pid`], {}, context)),
+	);
+	return done.ok ? new TextDecoder().decode(done.value.stdout).trim().replaceAll("\n", "; ") : done.error.message;
+}
+
 describe("stopping the runner that still runs at a place", () => {
 	it("ends the process its pid file names when it is this store's runner, and leaves any other process alone", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-stop-"));
@@ -69,7 +79,8 @@ describe("stopping the runner that still runs at a place", () => {
 			await startWithPid(place, ["node", "-e", "setTimeout(() => {}, 60_000)", "--", "--store", place.store]);
 			expect(await alive(place)).toBe(true);
 			getOrThrow(await stopRunner(place, context));
-			expect(await alive(place), "the runner").toBe(false);
+			const left = await alive(place);
+			expect(left, `the runner (${left ? await said(place) : "gone"})`).toBe(false);
 			// Nothing left to stop is not a failure.
 			getOrThrow(await stopRunner(place, context));
 		} finally {
