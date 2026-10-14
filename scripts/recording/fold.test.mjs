@@ -91,16 +91,16 @@ test('re-asked is proven from pi.live: an ask start is a revision where generati
   const lines = [piLive(1, 1, { attempt: 1 }), piLive(2, 1, { attempt: 1, message: { role: 'assistant' } }), { ...piLive(3, 2, { attempt: 1, message: { role: 'assistant' } }), snapshot: true },
     piLive(4, 2, { attempt: 1 }), turn(4, 2, 'aborted'), piLive(5, 2, undefined), turn(5, 2), piLive(6, 2, { attempt: 1 }), piLive(7, 2, undefined), turn(7, 2)];
   const counted = fold(lines);
-  assert.deepEqual(counted.reAsked, { turns: 1, asks: 2 });
+  assert.deepEqual(counted.reAsked, { proven: { turns: 1, asks: 2 }, possible: { turns: 0 } });
   assert.equal(counted.modelTurnsCommitted, 2, 'the aborted partial is not a committed turn');
 });
 
 test('a snapshot\'s stale generation is the ask already open, or one more by an earlier generation when its start line died in flight', () => {
   const stale = { ...piLive(3, 2, { attempt: 1 }), snapshot: true };
   // the start line survived: the snapshot shows the same ask
-  assert.deepEqual(fold([piLive(1, 1, { attempt: 1 }), stale, turn(4, 2)]).reAsked, { turns: 0, asks: 0 });
+  assert.deepEqual(fold([piLive(1, 1, { attempt: 1 }), stale, turn(4, 2)]).reAsked, { proven: { turns: 0, asks: 0 }, possible: { turns: 1 } }, 'marker only: a later process committed the turn, so a re-ask is possible, not proven');
   // the start line died in flight: the snapshot is the evidence of an earlier ask, and this process asks again
-  assert.deepEqual(fold([stale, piLive(4, 2, undefined), piLive(5, 2, { attempt: 1 }), turn(6, 2)]).reAsked, { turns: 1, asks: 2 });
+  assert.deepEqual(fold([stale, piLive(4, 2, undefined), piLive(5, 2, { attempt: 1 }), turn(6, 2)]).reAsked.proven, { turns: 1, asks: 2 });
 });
 
 test('re-asked is not measured when no ask start was ever committed, or on a pi.live version the fold does not know', () => {
@@ -111,6 +111,6 @@ test('re-asked is not measured when no ask start was ever committed, or on a pi.
 test('midstream-kill, a real recording on pi-durable 1.1.0 (pi.live version 1): turn 0 asked twice, 4 turns committed, nothing repeated', () => {
   const dir = new URL('./fixtures/midstream-kill', import.meta.url).pathname;
   const counted = fold(readEvents(dir));
-  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ turns: 1, asks: 2 }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
+  assert.deepEqual([counted.reAsked, counted.modelTurnsCommitted, counted.repeated, counted.askedTwice], [{ proven: { turns: 1, asks: 2 }, possible: { turns: 0 } }, 4, { effects: 0, agentToolCalls: 0 }, 0]);
   assert.ok(JSON.parse(readFileSync(new URL('./fixtures/midstream-kill/manifest.json', import.meta.url), 'utf8')).kills === 1);
 });

@@ -17,7 +17,7 @@ export type CommitRecorder = (input: AttachInput, write: (line: DurableLine) => 
 
 type PackageExport = {
   recordCommits?: (session: unknown, options: { gen?: number; from?: readonly DurableLine[]; write: (lines: DurableLine[]) => void | Promise<void>; clock?: () => number }) => () => Promise<void>;
-  snapshotLines?: (storage: unknown, options: { at: number; gen?: number; context: unknown }) => Promise<DurableLine[]>;
+  snapshotLines?: (storage: unknown, options: { at: number; context: unknown; gen?: number }) => Promise<DurableLine[]>;
 };
 
 /** The real export, or an error that says which build lacks it. */
@@ -28,9 +28,12 @@ export async function packageCommitRecorder(): Promise<CommitRecorder> {
   return async ({ session, storage, head, context, gen, clock }, write) => {
     if (storage === undefined || head === undefined) throw new Error('A snapshot needs the Storage the run was opened over and the store\'s head commit, which the disk package\'s beforeResume hook gives; attach after the open has no way to take one before the run resumes.');
     const at = clock();
-    const snapshot = await snapshotLines(storage, { at: head, gen, context });
+    // A snapshot's generation is the latest agentrun.driver revision at or before its commit (the export's default), never the lease's: the
+    // lines recordCommits writes carry the driver's, and the two must agree.
+    const snapshot = await snapshotLines(storage, { at: head, context });
     for (const line of snapshot) write({ ...line, t: line.t ?? at });
-    // `from`: the snapshot, so the lines of a resumed process carry the paths of the nodes the store already names.
-    return recordCommits(session, { gen, from: snapshot, write: (lines) => { for (const line of lines) write(line); }, clock });
+    // `from`: the snapshot, so the lines of a resumed process carry the paths of the nodes the store already names, and its driver generation.
+    const driver = snapshot.reduce<number | undefined>((highest, line) => (line.gen !== undefined && (highest === undefined || line.gen > highest) ? line.gen : highest), undefined);
+    return recordCommits(session, { ...(driver === undefined ? { gen } : { gen: driver }), from: snapshot, write: (lines) => { for (const line of lines) write(line); }, clock });
   };
 }

@@ -150,6 +150,7 @@ export function validateRecording(dir) {
   const lines = readFileSync(eventsPath, 'utf8').split('\n');
   if (lines.at(-1) === '') lines.pop();
   let lastCommit = -Infinity;
+  let lastGen = -Infinity;
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
@@ -183,6 +184,12 @@ export function validateRecording(dir) {
     }
     if (event.t < lastT) add('events.jsonl', `t ${event.t} is before the previous line's ${lastT}`, line);
     lastT = Math.max(lastT, event.t);
+    if (event.channel === 'durable' && event.gen !== undefined) {
+      // A durable line's gen is the driver's, so it never decreases, outside a restore (3.2), whose snapshot starts the generation again.
+      const restores = event.snapshot && !snapshotted.has(event.gen) && event.commit < lastCommit;
+      if (event.gen < lastGen && !restores) add('events.jsonl', `durable gen ${event.gen} is lower than the previous durable line's ${lastGen}`, line);
+      lastGen = restores ? event.gen : Math.max(lastGen, event.gen);
+    }
     if (event.channel === 'durable' && event.snapshot) {
       // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
       // at a generation's first snapshot after a restore (3.2), which is accepted only with that generation's restore record.
