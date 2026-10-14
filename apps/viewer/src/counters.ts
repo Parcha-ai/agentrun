@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, browserChargesOf, callsOf, costOf, lookChargesOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, browserChargesOf, callsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -54,10 +54,16 @@ export type CounterState = {
   modelPriced: boolean;
   /** Whether any durable line was folded: with none, no count here is measured. */
   measured: boolean;
-  /** The other priced parts of cost, per session or look in the branch the store holds: a browser session's charge
-   *  and a vision look's (each a running total), null until priced. A restore sets them back to the checkpoint's, and
+  /** The browser's part of cost, per session in the branch the store holds: a session's charge (a running total), null
+   *  until priced. A restore sets them back to the checkpoint's, and
    *  what the lost branch charged beyond it stays in lostCharges (null when a lost part is unknown). */
   charges: Record<string, History<number | null>>;
+  /** Vision's looks (section 6): the filings seen (a document's list only grows, so a filing is its place in it), each
+   *  look key's payments by generation, the price of each payment and of each failed look (`priced` holds each filing's
+   *  place in `costs`: a later revision of the filing reprices it), native looks, and the looks live lines show started
+   *  in a process that has not filed its key since (`<process> <key>`). Never reset: a lost branch's looks were paid. */
+  looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; priced: Record<string, number>; native: number;
+    started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
@@ -76,7 +82,11 @@ export type CounterState = {
 };
 
 export type Counters = {
-  paid: { total: number; workflow: number; agent: number };
+  paid: { total: number; workflow: number; agent: number; vision: number };
+  /** Vision: native looks (the lead's own, no payment), and possible payments no durable line shows (a look live lines
+   *  show started in a process that ended without filing its key). With any possible one, cost is a lower bound. */
+  vision: { native: number; possible: number };
+  costLowerBound: boolean;
   /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
   /** Effects whose host reported no calls: their repeats are not measured (the strip says so, never 0). */
@@ -102,13 +112,26 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host',
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
       if (line.kind === 'process.started') { next.processes = state.processes + 1; next.opened = true; }
-      if (line.kind === 'kill') next.kills = state.kills + 1;
+      if (line.source === 'vision' && line.kind === 'LookEvent') {
+        // A look started: unless its process files its key (before or after this line), or a later process files it as
+        // kept, it is a possible payment no durable line shows.
+        // A native look is the lead's own: no separate payment, so never a possible one.
+        const event = lookEventOf(line.data);
+        const key = event && !event.native ? event.key : undefined;
+        const at = `${state.processes} ${key}`;
+        if (key !== undefined && !state.looks.filed[at]) next.looks = { ...state.looks, started: { ...state.looks.started, [at]: (state.looks.started[at] ?? 0) + 1 } };
+      }
+      if (line.kind === 'kill') {
+        next.kills = state.kills + 1;
+        // A killed process files nothing more: a look it started and did not file is a possible payment from here.
+        next.looks = { ...state.looks, ended: { ...state.looks.ended, [state.processes]: true } };
+      }
       return next;
     }
     next.measured = true;
@@ -121,6 +144,7 @@ export const counterFold: Fold<CounterState> = {
       if (first && line.commit < state.highest) {
         // A restore: the state is the snapshot's from here, and what the lost branch completed was paid all the same.
         const restored = line.commit;
+        next.looks = { ...next.looks, here: {} };
         next.lostPaid = state.lostPaid + Object.values(state.effects).filter((effect) => effect.completedAt !== undefined && effect.completedAt > restored).length;
         next.lostAgent = state.lostAgent + Object.values(state.receipts).reduce((sum, history) => sum + history.at(-1)![1] - (asOf(history, restored) ?? 0), 0);
         let lost = state.lostJudge;
@@ -155,8 +179,42 @@ export const counterFold: Fold<CounterState> = {
     }
     const doc = docOf(line);
     if (doc) {
-      const priced = [...(browserChargesOf(doc) ?? []).map((each) => [`browser ${docIdOf(line, doc)} ${each.tag}`, each.usd] as const),
-        ...(lookChargesOf(doc) ?? []).map((each) => [`look ${docIdOf(line, doc)} ${each.receipt}`, each.usd] as const)];
+      const priced = (browserChargesOf(doc) ?? []).map((each) => [`browser ${docIdOf(line, doc)} ${each.tag}`, each.usd] as const);
+      const filings = lookFilingsOf(doc);
+      if (filings?.length) {
+        // A vision payment, per look key over ok looks that are not the lead's own: each filing that is not kept, and a
+        // key whose first ok filing is kept once (the eyes answered in a process that died before filing it; its payment
+        // belongs to an earlier generation than the kept filing's). A failed look is no payment, but its price is cost.
+        const looks = { ...next.looks, seen: { ...next.looks.seen }, here: { ...next.looks.here }, gens: { ...next.looks.gens }, okSeen: { ...next.looks.okSeen }, costs: [...next.looks.costs], priced: { ...next.looks.priced }, started: { ...next.looks.started }, filed: { ...next.looks.filed } };
+        const gen = line.gen ?? 0;
+        for (const filing of filings) {
+          const id = `${docIdOf(line, doc)}\u0001${filing.index}\u0001${filing.receipt ?? ''}`;
+          // A filing is new once per branch: a snapshot's filing seen on any branch is state, and after a restore a filing
+          // the lost branch had at the same place in the list is a new one (a redo).
+          if (line.snapshot === true ? looks.seen[id] : looks.here[id]) {
+            looks.here[id] = true;
+            // The latest revision of a filing says what it cost: one priced later replaces the unknown before it.
+            if (looks.priced[id] !== undefined) looks.costs[looks.priced[id]] = filing.usd;
+            continue;
+          }
+          looks.seen[id] = true;
+          looks.here[id] = true;
+          // A look its own process filed is accounted for (a snapshot's new filing was the process before the one opening;
+          // its own line died in flight), and so is one a later process files as kept: that is its answer, read back.
+          const filer = line.snapshot === true ? next.processes - 1 : next.processes;
+          looks.filed[`${filer} ${filing.key}`] = true;
+          delete looks.started[`${filer} ${filing.key}`];
+          if (filing.kept) for (const at of Object.keys(looks.started)) if (at.endsWith(` ${filing.key}`) && Number(at.split(' ')[0]) < filer) delete looks.started[at];
+          if (filing.native) { looks.native += 1; continue; }
+          if (!filing.ok) { if (!filing.kept) looks.priced[id] = looks.costs.push(filing.usd) - 1; continue; }
+          const first = !looks.okSeen[filing.key];
+          looks.okSeen[filing.key] = true;
+          if (filing.kept && !first) continue;
+          looks.gens[filing.key] = [...(looks.gens[filing.key] ?? []), filing.kept ? gen - 0.5 : gen];
+          looks.priced[id] = looks.costs.push(filing.usd) - 1;
+        }
+        next.looks = looks;
+      }
       if (priced.length) {
         const charges = { ...next.charges };
         for (const [key, usd] of priced) charges[key] = [...(charges[key] ?? (line.snapshot === true ? next.retained?.charges[key] : undefined) ?? []), [line.commit!, usd]];
@@ -308,6 +366,12 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   let askedTwice = 0;
   const extras = (gens: number[]) => gens.forEach((gen, index) => { if (index > 0) { if (gen === gens[index - 1]) askedTwice += 1; else repeated += 1; } });
   Object.values(state.appliedIn).forEach(extras);
+  // A vision look key's payments, in the order seen, are extras the same way (a first-kept payment sits just before its
+  // kept filing's generation).
+  Object.values(state.looks.gens).forEach(extras);
+  const vision = Object.values(state.looks.gens).reduce((sum, gens) => sum + gens.length, 0);
+  const possible = Object.entries(state.looks.started).filter(([at]) => ended || Number(at.split(' ')[0]) < state.processes || state.looks.ended[at.split(' ')[0]!])
+    .reduce((sum, [, count]) => sum + count, 0);
   const byKey = new Map<string, number[]>();
   for (const { key, gen } of state.executions) if (state.paidKeys[key]) byKey.set(key, [...(byKey.get(key) ?? []), gen]);
   byKey.forEach(extras);
@@ -320,12 +384,14 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
   // Cost is null until a durable line prices a part (section 6: null, never 0), and null when any part is unknown.
   const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost),
-    ...Object.values(state.charges).map((history) => history.at(-1)![1]), ...(state.lostCharges === 0 ? [] : [state.lostCharges])];
+    ...Object.values(state.charges).map((history) => history.at(-1)![1]), ...(state.lostCharges === 0 ? [] : [state.lostCharges]), ...state.looks.costs];
   const measured = state.liveKnown && state.askStarts > 0;
   const cutAsks = Object.values(state.reasks);
   const split = (kind: 'proven' | 'possible') => ({ turns: cutAsks.filter((tally) => tally[kind] > 0).length, reasks: cutAsks.reduce((sum, tally) => sum + tally[kind], 0) });
   return {
-    paid: { total: workflow + agent, workflow, agent },
+    paid: { total: workflow + agent + vision, workflow, agent, vision },
+    vision: { native: state.looks.native, possible },
+    costLowerBound: possible > 0,
     repeated,
     repeatedNotMeasured,
     askedTwice,

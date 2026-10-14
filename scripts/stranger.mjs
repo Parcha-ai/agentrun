@@ -55,7 +55,36 @@ export function validateSpec(spec, name) {
   assert.ok(Array.isArray(spec.command) && spec.command.length > 0, `${name}: command`);
   assert.equal(typeof spec.expect?.pattern, 'string', `${name}: expect.pattern`);
   assert.ok(Number.isInteger(spec.timeoutMs) && spec.timeoutMs > 0, `${name}: timeoutMs`);
+  if (spec.readmeInstall !== undefined) {
+    for (const key of ['readme', 'heading', 'fence']) assert.equal(typeof spec.readmeInstall[key], 'string', `${name}: readmeInstall.${key}`);
+  }
   return spec;
+}
+
+/** A package name from an install argument: `@scope/name@tag` and `name@1.2.3` name `@scope/name` and `name`. */
+const nameOf = argument => { const at = argument.indexOf('@', 1); return at > 0 ? argument.slice(0, at) : argument; };
+
+/**
+ * The `npm install` arguments of a README's install line (the block a spec's `readmeInstall` names: one `npm install ...`
+ * command), as a stranger types it. `packed` maps a package name to a tarball; that package's argument becomes the tarball
+ * and every other argument stays as the README writes it, so its peers resolve to whatever the registry serves now. Each
+ * packed package must be on the line. Only plain arguments are taken: a line that needs a shell to read it is refused.
+ */
+export function readmeInstallArgs(snippet, packed = new Map()) {
+  const lines = snippet.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+  assert.equal(lines.length, 1, `The install block holds one command, not ${lines.length}`);
+  const [npm, verb, ...rest] = lines[0].split(/\s+/);
+  assert.ok(npm === 'npm' && (verb === 'install' || verb === 'i'), `The install line runs npm install: ${lines[0]}`);
+  for (const argument of rest) assert.match(argument, /^[A-Za-z0-9@._/^~=+-]+$/, `The install line needs a shell to read "${argument}"`);
+  const unused = new Set(packed.keys());
+  const args = rest.map(argument => {
+    const tarball = argument.startsWith('-') ? undefined : packed.get(nameOf(argument));
+    if (tarball === undefined) return argument;
+    unused.delete(nameOf(argument));
+    return tarball;
+  });
+  assert.deepEqual([...unused], [], `The install line does not install ${[...unused].join(', ')}`);
+  return ['install', ...args];
 }
 
 export async function loadSpec(name) {
@@ -103,9 +132,16 @@ export function exitCodeOf(code, signal) {
   return signal ? 128 + (osConstants.signals[signal] ?? 0) || 1 : 1;
 }
 
-export async function stranger(name, { registry = false, tarballs: given } = {}) {
+/**
+ * `readmeLine`: install with the README's own install line (`readmeInstall`) instead of the spec's package and pinned
+ * peers. With `registry` the line runs as written; without, this tree's packed package takes its place on the line and
+ * the peers stay as written, so the result says whether the next release installs the way the README says.
+ */
+export async function stranger(name, { registry = false, tarballs: given, readmeLine = false } = {}) {
   const spec = await loadSpec(name);
   if (isMissing(spec)) return { name, status: 'missing', reason: spec.reason };
+  assert.ok(!readmeLine || spec.readmeInstall, `${name}: the spec names no README install line (readmeInstall)`);
+  assert.ok(!readmeLine || !given, 'A README install line packs its own tarballs');
   const work = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'stranger-'));
   try {
     const [project, home, cache, packs] = ['project', 'home', 'cache', 'packs'].map(part => join(work, part));
@@ -114,11 +150,26 @@ export async function stranger(name, { registry = false, tarballs: given } = {})
     const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages;
     const developed = developedVersions(lock);
     const peers = (spec.peers ?? []).map(peer => (registry || !(peer in developed) ? peer : `${peer}@${developed[peer]}`));
-    let sources;
-    if (registry) sources = [`${spec.package}@beta`, ...(spec.companions ?? []).map(companion => `${companion}@beta`)];
-    else sources = given ?? await pack(spec.install, packs);
+    let installArgs;
+    if (readmeLine) {
+      const line = extractSnippet(await readFile(join(root, spec.readmeInstall.readme), 'utf8'), spec.readmeInstall);
+      const packed = new Map();
+      if (!registry) {
+        const tarballs = await pack(spec.install, packs);
+        for (const [i, directory] of spec.install.entries()) {
+          packed.set(JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).name, tarballs[i]);
+        }
+      }
+      // Scripts, audit and fund change nothing about what resolves.
+      installArgs = [...readmeInstallArgs(line, packed), '--ignore-scripts', '--no-audit', '--no-fund'];
+    } else {
+      let sources;
+      if (registry) sources = [`${spec.package}@beta`, ...(spec.companions ?? []).map(companion => `${companion}@beta`)];
+      else sources = given ?? await pack(spec.install, packs);
+      installArgs = ['install', '--ignore-scripts', '--no-audit', '--no-fund', ...sources, ...peers];
+    }
     await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'stranger', private: true, type: 'module' }));
-    const install = await runCommand('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', ...sources, ...peers], { cwd: project, env, timeoutMs: 300_000 });
+    const install = await runCommand('npm', installArgs, { cwd: project, env, timeoutMs: 300_000 });
     if (install.exitCode !== 0) return { name, status: 'failed', problems: [`npm install failed (${install.exitCode}): ${install.stderr.slice(-2000)}`] };
     for (const file of spec.files ?? []) {
       let text = extractSnippet(await readFile(join(root, file.readme), 'utf8'), file);
@@ -140,9 +191,11 @@ async function main() {
   const image = flag('--docker');
   const tarballDir = flag('--tarballs');
   const registry = args.includes('--registry');
+  const readmeLine = args.includes('--readme-line');
   const names = args.filter(arg => !arg.startsWith('--'));
-  if (names.length !== 1) { console.error('usage: node scripts/stranger.mjs <name> [--registry] [--docker IMAGE]\nnames: ' + (await readdir(join(root, 'scripts/stranger'))).map(file => file.replace(/\.json$/, '')).join(' ')); process.exit(2); }
+  if (names.length !== 1) { console.error('usage: node scripts/stranger.mjs <name> [--registry] [--readme-line] [--docker IMAGE]\nnames: ' + (await readdir(join(root, 'scripts/stranger'))).map(file => file.replace(/\.json$/, '')).join(' ')); process.exit(2); }
   const [name] = names;
+  if (image && readmeLine) throw new Error('--readme-line runs on this machine, not with --docker');
   if (image) {
     // The packages are packed here; the container installs them. It gets the repository read-only for the README and the spec.
     const spec = await loadSpec(name);
@@ -158,7 +211,7 @@ async function main() {
     return;
   }
   const given = tarballDir ? (await readdir(tarballDir)).filter(file => file.endsWith('.tgz')).map(file => join(tarballDir, file)) : undefined;
-  const outcome = await stranger(name, { registry, tarballs: given });
+  const outcome = await stranger(name, { registry, tarballs: given, readmeLine });
   if (outcome.status === 'missing') console.log(`${name}: ${MISSING}: ${outcome.reason}`);
   else if (outcome.status === 'passed') console.log(`${name}: passed`);
   else { console.error(`${name}: failed\n${outcome.problems.join('\n')}\n--- output (tail) ---\n${outcome.output ?? ''}`); process.exitCode = 1; }

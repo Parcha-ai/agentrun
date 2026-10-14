@@ -62,6 +62,7 @@ test("a scratch directory is removed after every other cleanup its test register
 });
 
 test("a test file's TMPDIR leaves Chrome room for its singleton socket", () => {
+  assert.ok(process.env.TMPDIR, "TMPDIR is unset: run this file through the package's preload (--import ./test/preload.mjs), as scripts/test.mjs does, which gives the file a short private TMPDIR");
   const socket = path.join(process.env.TMPDIR, "org.chromium.Chromium.XXXXXX", "SingletonSocket");
   assert.ok(Buffer.byteLength(socket) <= 107, `Chrome aborts when its singleton socket path passes 107 bytes: ${socket}`);
 });
