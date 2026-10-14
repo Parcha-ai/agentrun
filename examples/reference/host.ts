@@ -176,7 +176,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
       await mkdir(join(place.root, 'out'), { recursive: true });
       const written = JSON.stringify({ ...result, evidence: evidence() }, null, 2);
       await writeFile(join(place.root, 'out', 'record.json'), written);
-      recorder?.host('result', { path: 'out/record.json' }, { blobs: [recorder.blob(written, 'json')] });
+      if (recorder) { const blob = recorder.blob(written, 'json'); recorder.host('result', { blob, title: 'The record' }, { blobs: [blob] }); }
     },
     // No program the job starts sees this process's environment beyond where programs live.
     credentials: { childEnv: { PATH: process.env.PATH } },
