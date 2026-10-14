@@ -65,6 +65,14 @@ const allowedEndpoints = {
 const usedEndpoints = new Set();
 
 try {
+  // JSON keeps the last of two equal keys, so a merge that leaves a key twice passes every later check.
+  for (const entry of await readdir(join(root, 'packages'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const text = await readFile(join(root, 'packages', entry.name, 'package.json'), 'utf8').catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (text === undefined) continue;
+    assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
+  }
+  receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
   const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'];
   const tarballs = [];
   for (const directory of packageDirectories) {
