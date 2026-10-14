@@ -14,7 +14,6 @@ import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
 } from '@parcha/agentrun-pi/durable';
-import { storeHead } from '@parcha/pi-durable-disk/lease';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
@@ -138,12 +137,9 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
+    // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
+    ...(host.record?.attach ? { beforeResume: async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } } : {}),
   });
-  host.record?.generation(durable.generation);
-  // Interim, until the disk package's beforeResume hook (#377) hands the recorder the Storage and the head: the recorder attaches
-  // here, after the open. The snapshot is exact because the workflow's task waits on the reconcile gate below before it takes a
-  // step, so only the open's own commits come before it. When the hook lands this call moves into it.
-  await host.record?.attach?.({ session: durable.harness, storage: durable.store.storage, head: await storeHead(durable.store), context: ctx, gen: durable.generation });
   const harness = durable.harness;
   opened = harness;
   try {
