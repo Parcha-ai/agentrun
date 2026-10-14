@@ -90,6 +90,13 @@ async def completions(request: Request):
         async def one():
             yield c({"role": "assistant", "content": ""})
             yield c({"reasoning_content": f"Thinking {k}. "})
+            if "DRAFTS" in asked:
+                # a draft's thinking in sentences, the funny one's with a dark thought the guard drops
+                await asyncio.sleep(0.05 * k)
+                yield c({"reasoning_content": f"Still thinking {k}. "})
+                if "FUNNY" in pick:
+                    yield c({"reasoning_content": "A DARK thought here. "})
+                yield c({"reasoning_content": f"Done thinking {k}.\n\n"})
             if pick == "TOOL":
                 yield c({"tool_calls": [{"index": 0, "id": f"call-{k}", "type": "function", "function": {"name": "gg_control", "arguments": "{}"}}]})
                 yield c({}, "tool_calls")
@@ -202,6 +209,11 @@ async def settled():
 async def regen(request: Request):
     body = await request.json()
     return {"text": f"My span is about 1.7 miles. (after {len(body['prefix'])} chars)"}
+
+
+def seen_draw(thinking):
+    """Which of the fake's draws (by arrival) a draft's thinking came from: its "Thinking k." line."""
+    return int(thinking.split("Thinking ")[1].split(".")[0])
 
 
 class GuardTest(unittest.TestCase):
@@ -335,6 +347,53 @@ class GuardTest(unittest.TestCase):
         with open(self.log) as f:
             rows = [json.loads(line) for line in f if '"best_of"' in line]
         self.assertEqual(len(rows[-1]["best_of"]["draws"]), 3)
+
+    def sse(self, messages):
+        """The guard's stream for these messages with best-of on: each data event, parsed."""
+        saved = self.guard.BEST_OF
+        self.guard.BEST_OF = 3
+        try:
+            r = self.call("POST", "/v1/chat/completions", {"model": "m", "stream": True, "messages": messages})
+        finally:
+            self.guard.BEST_OF = saved
+        return [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ") and line != "data: [DONE]"]
+
+    def test_a_pushback_turn_streams_each_drafts_thinking_live_then_the_pick_and_its_answer(self):
+        seen["bestof"], seen["draws"] = 0, ["A plain answer. ", "The FUNNY bridge answer. ", "A plain answer too. "]
+        msgs = [{"role": "user", "content": "DRAFTS BESTOF capital?"}, {"role": "assistant", "content": "EARLIER reply."},
+                {"role": "user", "content": "DRAFTS BESTOF PUSHBACK no, that is wrong"}]
+        try:
+            events = self.sse(msgs)
+        finally:
+            seen["draws"] = None
+        self.assertEqual(events[0].get("gg_drafts"), 3, "the stream says up front it carries three drafts")
+        thinking, answer, order = {}, {}, []
+        for e in events:
+            if "gg_pick" in e:
+                order.append(("pick", e["gg_pick"]))
+            for ch in e.get("choices", []):
+                d = ch["delta"]
+                if d.get("reasoning_content"):
+                    thinking[ch["index"]] = thinking.get(ch["index"], "") + d["reasoning_content"]
+                    order.append(("thinking", ch["index"]))
+                if d.get("content"):
+                    answer[ch["index"]] = answer.get(ch["index"], "") + d["content"]
+                    order.append(("answer", ch["index"]))
+        self.assertEqual(sorted(thinking), [0, 1, 2], "every draft's thinking goes out, each as its own choice")
+        self.assertTrue(all(t.lower().count("thinking") == 3 for t in thinking.values()), thinking)
+        self.assertNotIn("DARK", "".join(thinking.values()), "each draft's thinking passes the sentence check")
+        pick = next(v for kind, v in order if kind == "pick")
+        funny = next(i for i, t in thinking.items() if seen_draw(t) == 1)
+        self.assertEqual((pick["draft"], pick["of"]), (funny + 1, 3), "Jev's pick, 1-based")
+        self.assertEqual(list(answer), [funny], "only the picked draft's answer goes out")
+        self.assertIn("FUNNY", answer[funny])
+        kinds = [kind for kind, _ in order]
+        self.assertLess(max(i for i, k in enumerate(kinds) if k == "thinking"), kinds.index("pick"), "all the thinking, then the pick")
+        self.assertLess(kinds.index("pick"), kinds.index("answer"), "the pick before its answer")
+        self.assertTrue(any(ch.get("finish_reason") and ch["index"] == funny for e in events for ch in e.get("choices", [])))
+        with open(self.log) as f:
+            row = [json.loads(line) for line in f if '"best_of"' in line][-1]["best_of"]
+        self.assertTrue(row["streamed"])
 
     def test_best_of_is_three_and_gated_by_default(self):
         import importlib

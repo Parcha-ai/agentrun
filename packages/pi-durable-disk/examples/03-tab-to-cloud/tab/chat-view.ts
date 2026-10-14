@@ -9,7 +9,7 @@ import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE,
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; /** One key per answer, the same while it streams and once it is saved: a reader's fold of its thinking survives the save. */ fold: string; text: string; thinking: string; streaming: boolean; /** Another model answered this turn in place of the steered one (a typed diagnostic on the message). */ fallback?: SteeredFallback }
+  | { kind: "assistant"; id: string; /** One key per answer, the same while it streams and once it is saved: a reader's fold of its thinking survives the save. */ fold: string; text: string; thinking: string; streaming: boolean; /** Another model answered this turn in place of the steered one (a typed diagnostic on the message). */ fallback?: SteeredFallback; /** A pushback turn's drafts (a typed diagnostic on the message): their thinking is here, not in `thinking`. */ drafts?: SteeredDrafts }
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted"; /** What the harness said about the call, typed (its `<harness>` block is not in `output`). */ diagnostics?: Diagnostic[]; /** The tool's own typed details (teach_skills: its threads and what came home). */ details?: unknown }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
@@ -57,6 +57,38 @@ function fallbackOf(message: Message): SteeredFallback | undefined {
   return undefined;
 }
 
+/**
+ * A pushback turn's drafts as the page shows them: the guard drew `of` replies and Jev picked one (`picked`, 1-based, with
+ * its numbers). `thinking[k]` is draft k+1's own thinking, null where the message does not hold it (once saved, only the
+ * picked draft's). `started` is when the drafting began.
+ */
+export type SteeredDrafts = { of: number; thinking: (string | null)[]; picked?: number; copies?: number; tries?: number; funny?: number; started?: number };
+
+/** The `steered-drafts` diagnostic of a message (typed: `{ type, timestamp, details: { of, blocks, picked?, ... } }`) read against its content; none when it has no such diagnostic or it is malformed. */
+function draftsOf(diagnostics: unknown, content: Block[]): SteeredDrafts | undefined {
+  if (!Array.isArray(diagnostics)) return undefined;
+  for (const d of diagnostics as { type?: unknown; timestamp?: unknown; details?: { of?: unknown; blocks?: unknown; picked?: unknown; copies?: unknown; tries?: unknown; funny?: unknown } }[]) {
+    if (d?.type !== "steered-drafts") continue;
+    const { of, blocks } = d.details ?? {};
+    if (typeof of !== "number" || !Array.isArray(blocks) || blocks.length !== of) return undefined;
+    const thinking = blocks.map((b) => (typeof b === "number" && content[b]?.type === "thinking" ? content[b]!.thinking ?? "" : null));
+    const out: SteeredDrafts = { of, thinking };
+    if (typeof d.details?.picked === "number") out.picked = d.details.picked;
+    for (const k of ["copies", "tries", "funny"] as const) if (typeof d.details?.[k] === "number") out[k] = d.details[k] as number;
+    if (typeof d.timestamp === "number") out.started = d.timestamp;
+    return out;
+  }
+  return undefined;
+}
+
+/** The status line over a pushback turn's drafts, in the page's own voice (`now` in ms): drafting with its seconds, then Jev's pick with its numbers. */
+export function draftsLine(d: SteeredDrafts, now: number): string {
+  if (d.picked === undefined) return `Writing ${d.of} replies at once; Jev picks the one that doesn't repeat itself.${d.started === undefined ? "" : ` ${Math.max(0, Math.round((now - d.started) / 1000))} s`}`;
+  const pct = (x: number) => `${Math.round(x * 100)}%`;
+  const numbers = [d.copies === undefined ? "" : `repeats ${pct(d.copies)}`, d.tries === undefined ? "" : `tries ${pct(d.tries)}`, d.funny === undefined ? "" : `funny ${(d.funny * 3).toFixed(1)} of 3`].filter(Boolean);
+  return `Jev picked draft ${d.picked} of ${d.of}: the best mix of not repeating itself, still answering and being funny${numbers.length ? ` (Jev: ${numbers.join(", ")})` : ""}.`;
+}
+
 const messagesOf = (entry: EntryRecord): Message[] => ((entry as unknown as { model?: Message[] }).model ?? []);
 
 /** Counted across every view on the page: a new view (another conversation, a reconnect) never reuses a fold key. */
@@ -65,7 +97,7 @@ let streamedAnswers = 0;
 export class ChatView {
   #entries: EntryRecord[] = [];
   #ids = new Set<string>();
-  #inflight: { fold: string; content: Block[] } | undefined;
+  #inflight: { fold: string; content: Block[]; diagnostics?: unknown } | undefined;
   #folds = new Map<string, string>();
   #tools = new Map<string, { name: string; args: string; output: string; running: boolean }>();
   #retry: string | undefined;
@@ -76,7 +108,7 @@ export class ChatView {
       case "snapshot":
         this.#entries = [...event.entries];
         this.#ids = new Set(this.#entries.map((e) => String(e.id)));
-        this.#inflight = event.generation?.message ? { fold: this.#nextFold(), content: [...(event.generation.message.content as Block[])] } : undefined;
+        this.#inflight = event.generation?.message ? { fold: this.#nextFold(), content: [...(event.generation.message.content as Block[])], diagnostics: (event.generation.message as Message).diagnostics } : undefined;
         this.#retry = event.generation?.retry ? event.generation.retry.error : undefined;
         this.#tools.clear();
         for (const slot of event.tools) this.#tools.set(slot.callId, { name: slot.name, args: "", output: slot.output ?? "", running: slot.status !== "done" });
@@ -90,7 +122,12 @@ export class ChatView {
         this.#inflight = undefined;
         return;
       case "message_start":
-        if (event.message.role === "assistant") this.#inflight = { fold: this.#nextFold(), content: [] };
+        if (event.message.role === "assistant") {
+          // a pushback turn's first partial already holds its drafts' blocks; any other answer starts empty, as it always has
+          const m = event.message as Message;
+          const drafts = draftsOf(m.diagnostics, (m.content as Block[] | undefined) ?? []);
+          this.#inflight = drafts ? { fold: this.#nextFold(), content: [...(m.content as Block[])], diagnostics: m.diagnostics } : { fold: this.#nextFold(), content: [] };
+        }
         return;
       case "message_update": {
         const inflight = (this.#inflight ??= { fold: this.#nextFold(), content: [] });
@@ -105,6 +142,7 @@ export class ChatView {
             block.thinking = (block.thinking ?? "") + change.delta;
           } else if (change.type === "message") {
             inflight.content = [...(change.message.content as Block[])];
+            inflight.diagnostics = (change.message as Message).diagnostics;
           }
         }
         return;
@@ -159,10 +197,11 @@ export class ChatView {
   items(): ChatItem[] {
     const items: ChatItem[] = [];
     const tools = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
-    const pushAssistant = (id: string, fold: string, content: Block[], streaming: boolean, error?: string, fallback?: SteeredFallback) => {
+    const pushAssistant = (id: string, fold: string, content: Block[], streaming: boolean, error?: string, fallback?: SteeredFallback, diagnostics?: unknown) => {
       const text = content.filter((b) => b?.type === "text").map((b) => b.text ?? "").join("");
-      const thinking = content.filter((b) => b?.type === "thinking").map((b) => b.thinking ?? "").join("");
-      if (text || thinking || streaming) items.push({ kind: "assistant", id, fold, text, thinking, streaming, ...(fallback ? { fallback } : {}) });
+      const drafts = draftsOf(diagnostics, content);
+      const thinking = drafts ? "" : content.filter((b) => b?.type === "thinking").map((b) => b.thinking ?? "").join("");
+      if (text || thinking || streaming || drafts) items.push({ kind: "assistant", id, fold, text, thinking, streaming, ...(fallback ? { fallback } : {}), ...(drafts ? { drafts } : {}) });
       for (const block of content) {
         if (block?.type !== "toolCall" || !block.id) continue;
         const live = this.#tools.get(block.id);
@@ -206,7 +245,7 @@ export class ChatView {
         }
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {
           const error = message.stopReason === "error" ? `${index < lastAnswer ? "model call failed, retried" : "model error"}: ${message.errorMessage ?? "unknown"}` : undefined;
-          pushAssistant(id, this.#folds.get(id) ?? id, (message.content as Block[]) ?? [], false, error, fallbackOf(message));
+          pushAssistant(id, this.#folds.get(id) ?? id, (message.content as Block[]) ?? [], false, error, fallbackOf(message), message.diagnostics);
         } else if (entry.kind === "pi.tool-result" && message.role === "toolResult") {
           const tool = tools.get(message.toolCallId ?? "");
           const diagnostics = diagnosticsOf(entry);
@@ -220,7 +259,7 @@ export class ChatView {
         }
       }
     }
-    if (this.#inflight) pushAssistant("inflight", this.#inflight.fold, this.#inflight.content, true);
+    if (this.#inflight) pushAssistant("inflight", this.#inflight.fold, this.#inflight.content, true, undefined, undefined, this.#inflight.diagnostics);
     if (this.#retry) items.push({ kind: "note", id: "retry", text: `retrying: ${this.#retry}` });
     return items;
   }

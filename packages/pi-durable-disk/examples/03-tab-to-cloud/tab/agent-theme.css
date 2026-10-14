@@ -82,6 +82,17 @@ button.icon:hover { color: var(--ink); }
 /* the person's words: a filled bubble on the right, so they never read as the agent's */
 .turn.user { max-width: min(56ch, 80%); white-space: pre-wrap; padding: 8px 12px; text-align: left; background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: var(--r3); }
 .turn .note.fallback { margin-top: 6px; font: 400 12px/1.4 var(--sans); }
+/* a pushback turn's drafts: one labeled box per draft's own thinking, then Jev's pick; the line above them is the page's */
+.turn .note.drafts-status { margin: 0 0 8px; }
+.turn .drafts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 10px; }
+.turn .drafts.picked { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.turn .draft { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); overflow: hidden; }
+.turn .draft > summary, .turn .draft.out { font: 400 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 6px 10px; cursor: pointer; }
+.turn .draft.out { opacity: .55; cursor: default; }
+.turn .draft.picked > summary { color: var(--accent); }
+.turn .draft pre { font: 400 12px/1.5 var(--sans); color: var(--muted); margin: 0; padding: 0 10px 8px; white-space: pre-wrap; overflow-wrap: break-word; max-height: 220px; overflow: auto; opacity: .85; }
+.turn.streaming .draft pre { opacity: .65; }
+@media (max-width: 760px) { .turn .drafts { grid-template-columns: minmax(0, 1fr); } }
 .tool { max-width: 100%; border: 0; border-radius: 0; background: none; overflow: visible; font: 400 12px/1.5 var(--mono); }
 .tool pre { max-height: 220px; overflow: auto; margin: 6px 0 4px 15px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); color: var(--muted); font: inherit; }
 .tool.bare > summary { cursor: default; }
