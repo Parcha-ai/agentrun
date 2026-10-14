@@ -803,19 +803,23 @@ async function transfer(
 		cancel();
 		signalStopped();
 	};
+	// While a phase that moves no byte runs (`working`), the stall clock is suspended, not refreshed: whatever the limit,
+	// the phase cannot be cut as a stall. It starts again when the last such phase ends.
+	let held = 0;
 	const arm = () => {
 		clearTimeout(stallTimer);
-		stallTimer = setTimeout(() => stop("stall"), limits.stallMs);
+		if (held === 0) stallTimer = setTimeout(() => stop("stall"), limits.stallMs);
 	};
 	const state: MoveState = {
 		cleanups: [],
 		problems: [],
 		working: async (work) => {
-			const keep = setInterval(() => arm(), Math.max(50, Math.floor(limits.stallMs / 3)));
+			held += 1;
+			clearTimeout(stallTimer);
 			try {
 				return await work;
 			} finally {
-				clearInterval(keep);
+				held -= 1;
 				arm();
 			}
 		},
@@ -828,9 +832,11 @@ async function transfer(
 	context.abortSignal?.addEventListener("abort", abort, { once: true });
 	try {
 		arm();
-		const reader = await startSource(inner, state);
+		// Starting a side is a phase that moves no byte, like packing: a box that takes longer than the stall limit to
+		// answer a call is slow, not stalled, so the hold is taken before the first call and kept until the side is up.
+		const reader = await state.working(startSource(inner, state));
 		if (!reader.ok) return err(boxFailure("could not start the source program", reader.error));
-		const writer = await startTarget(inner, state);
+		const writer = await state.working(startTarget(inner, state));
 		if (!writer.ok) {
 			cancel();
 			return err(boxFailure("could not start the target program", writer.error));
