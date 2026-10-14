@@ -3,9 +3,9 @@
 import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
+import { animatedPanels, featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
-import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, timeParam, type Fold } from './replay.ts';
+import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
@@ -212,7 +212,7 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
 
 /** A node's `vars` as CSS custom properties: numbers only, a name never a style string. */
 export function applyVars(target: { style: { setProperty(name: string, value: string): void } }, vars: Record<string, number> | undefined): void {
-  for (const [name, value] of Object.entries(vars ?? {})) if (typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
+  for (const [name, value] of Object.entries(vars ?? {})) if (/^[a-z][a-z0-9-]*$/i.test(name) && typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
 }
 
 function renderNode(node: Node, player: Player, frames: FrameState, t: number, onFocus: (path: string) => void): globalThis.Node {
@@ -368,19 +368,30 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     url.searchParams.delete('cite');
+    // A link that opened at a time keeps it only while the screen is still at that time: a scrub or a play would otherwise be undone by a reload.
+    const linked = linkedTime(opened, head.clock);
+    if (linked !== undefined) url.searchParams.set('t', linked); else url.searchParams.delete('t');
     if (player.focus) url.searchParams.set('focus', player.focus); else url.searchParams.delete('focus');
     if (location.protocol !== 'file:') history.replaceState(null, '', url);
   }
 
   /** The panels at the stop; what they draw by time is drawn at the playback clock. */
-  function drawPanels(t: number) {
+  const sections = new Map<string, HTMLElement>();
+  /** `onlyAnimated`: between stops, redraw just the panels that move with the clock, in place; the others keep their elements (and their scroll). */
+  function drawPanels(t: number, onlyAnimated = false) {
     const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
     // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
-      return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
+      const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
         renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest, head.clock)), player, frames, t, setFocus));
+      sections.set(panel.id, section);
+      return section;
     };
+    if (onlyAnimated) {
+      for (const panel of animatedPanels(panelsShown())) sections.get(panel.id)?.replaceWith(drawn(panel));
+      return;
+    }
     if (featured) featuredBox.replaceChildren(drawn(featured));
     panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
   }
@@ -396,7 +407,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && panelsShown().some((panel: Panel<unknown>) => panel.animated)) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0); lastPanels = now; }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(panelsShown()).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };

@@ -122,8 +122,8 @@ A view may draw motion by time. Four additions to the contract make that work wi
 is still a replay:
 
 - **`vars` on a node.** `h('div', { class: 'token', vars: { row: 2.4, age: 0.3 } })` sets `--row: 2.4` and `--age: 0.3`
-  on the element. The values are numbers (a non-finite one is dropped, and the name is a bare name, never a style
-  string), and the stylesheet reads them: `top: calc(var(--row) * 40px)`, or a paused animation with
+  on the element. The values are numbers (a non-finite one is dropped), and a name is letters, digits and dashes starting with a letter
+  (any other name is skipped, so a name is never a style string); the stylesheet reads them: `top: calc(var(--row) * 40px)`, or a paused animation with
   `animation-delay: calc(var(--age) * -1s)` that draws the frame for an age. Position and age are functions of the
   state and the clock, so the same time draws the same screen.
 - **`now` in the context.** `ViewContext.now` is the playback clock in ms. At a stop it is the time of the point (what
