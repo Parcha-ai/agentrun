@@ -1,0 +1,15 @@
+{
+  "note": "PLACEHOLDER for the dry run. The film's real source list is the shared Apollo 11 data set (owned by the vision demo); this file will hold only what the film needs beyond it. Every item must be NASA public domain, with the page that says so; nothing from an archive of unknown license.",
+  "license": "NASA media are generally not copyrighted (a work of the U.S. government); items with a stated third-party credit are excluded.",
+  "items": [
+    {
+      "id": "KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928",
+      "title": "HQ-194, Eagle Has Landed: The Flight of Apollo 11",
+      "kind": "film",
+      "credit": "NASA / Kennedy Space Center, 1969",
+      "page": "https://www.nasa.gov/mission/apollo-11/",
+      "record": "https://images-api.nasa.gov/search?nasa_id=KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928",
+      "sha256": null
+    }
+  ]
+}
