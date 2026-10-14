@@ -84,10 +84,16 @@ function start(started: ChildProcess[]): Instance {
   return { child, url, closed };
 }
 
-async function submit(url: string, body: Record<string, unknown>): Promise<{ generation: number; submission: { id: number; status: string }; answer?: { text: string } }> {
-  const res = await fetch(new URL("/submit", url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`POST /submit answered ${res.status}: ${await res.text()}`);
-  return (await res.json()) as never;
+/** `POST /submit`, which fails with a message instead of waiting past `ms` (a `wait: true` submit never answers if the work never finishes). */
+async function submit(url: string, body: Record<string, unknown>, ms = 30_000): Promise<{ generation: number; submission: { id: number; status: string }; answer?: { text: string } }> {
+  try {
+    const res = await fetch(new URL("/submit", url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    if (!res.ok) throw new Error(`POST /submit answered ${res.status}: ${await res.text()}`);
+    return (await res.json()) as never;
+  } catch (error) {
+    if ((error as Error).name === "TimeoutError") throw new Error(`POST /submit ${JSON.stringify(body.requestId)} was not answered within ${ms} ms`);
+    throw error;
+  }
 }
 
 /** A process with this pid exists (signal 0 delivers nothing). */
