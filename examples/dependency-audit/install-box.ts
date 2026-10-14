@@ -89,11 +89,14 @@ fi
 mkdir -p project && cd project || exit 1
 npm init -y > /dev/null 2>&1
 ms > ../install.start
-timeout "$limit" strace -f -qq -ttt -xx -s 512 -e trace=connect,send,sendto,sendmmsg -o ../trace.log \\
+timeout "$limit" strace -f -qq -ttt -xx -s 512 -e trace=connect,send,sendto,sendmmsg,recvfrom,recvmsg,recvmmsg -o ../trace.log \\
   npm install "$spec" --no-audit --no-fund --foreground-scripts > ../install.log 2>&1
 code=$?
 ms > ../install.end
 cd ..
+# What the host reads: every connection and send, and only the receives that look like a DNS answer (a download would fill the
+# trace with its own data otherwise).
+grep -E 'connect\\(|send(to|mmsg)?\\(|recv(from|msg|mmsg)\\(.*"(\\\\x[0-9a-f]{2}){2}\\\\x[89a-f][0-9a-f]\\\\x[0-9a-f]{2}\\\\x00\\\\x01\\\\x00' trace.log > net.log
 echo "$code" > exit.part
 mv exit.part exit
 `;
@@ -185,23 +188,28 @@ export async function attachInstall(boxId: string, options: AttachOptions = {}):
   const exitText = await read('exit');
   const start = await read('install.start');
   const end = await read('install.end');
-  const trace = await read('trace.log');
+  const trace = await read('net.log');
   const scriptLog = await read('install.log', LOG_TAIL_BYTES);
   if (exitText === undefined || trace === undefined || scriptLog === undefined) return { gone: true };
-  const names = [...dnsNames(trace)];
-  const addresses = new Map<string, string>();
-  for (const host of names) {
-    const resolved = await exec(box, ['getent', 'ahosts', host]);
-    if (resolved === undefined) return { gone: true };
-    for (const line of resolved.stdout.split('\n')) {
-      const ip = line.trim().split(/\s+/)[0];
-      if (ip && !addresses.has(ip)) addresses.set(ip, host);
+  // A name comes from the DNS answer the install received. Only an address no answer named is matched by asking the resolver
+  // again (a CDN's addresses rotate, so that is a fallback and can miss).
+  const addresses = answerNames(trace);
+  let outbound = outboundOf(trace, addresses);
+  if (outbound.some((connection) => connection.host === undefined)) {
+    for (const host of dnsNames(trace)) {
+      const resolved = await exec(box, ['getent', 'ahosts', host]);
+      if (resolved === undefined) return { gone: true };
+      for (const line of resolved.stdout.split('\n')) {
+        const ip = line.trim().split(/\s+/)[0];
+        if (ip && !addresses.has(ip)) addresses.set(ip, host);
+      }
     }
+    outbound = outboundOf(trace, addresses);
   }
   const result: InstallResult = {
     exitCode: Number.parseInt(exitText.trim(), 10),
     scriptLog,
-    outbound: outboundOf(trace, addresses),
+    outbound,
     durationMs: Math.max(0, Number(end?.trim()) - Number(start?.trim())) || 0,
     seen: SEEN,
   };
@@ -259,6 +267,70 @@ export function queryName(packet: Uint8Array): string | undefined {
   const klass = (packet[at + 3]! << 8) | packet[at + 4]!;
   if (labels.length < 2 || (type !== 1 && type !== 28) || klass !== 1 || at + 5 !== packet.length) return undefined;
   return labels.join('.');
+}
+
+/** The name a DNS answer packet answers and the addresses (A and AAAA records) it gives, or undefined when the bytes are not one. */
+export function parseAnswer(packet: Uint8Array): { name: string; ips: string[] } | undefined {
+  if (packet.length < 17) return undefined;
+  const flags = (packet[2]! << 8) | packet[3]!;
+  const questions = (packet[4]! << 8) | packet[5]!;
+  const answers = (packet[6]! << 8) | packet[7]!;
+  if ((flags & 0x8000) === 0 || (flags & 0x780f) !== 0 || questions !== 1 || answers === 0) return undefined;
+  const labelsAt = (start: number): { labels: string[]; end: number } | undefined => {
+    const labels: string[] = [];
+    let at = start;
+    let end = -1;
+    for (let hops = 0; hops < 20; hops++) {
+      const length = packet[at];
+      if (length === undefined) return undefined;
+      if ((length & 0xc0) === 0xc0) {
+        if (packet[at + 1] === undefined) return undefined;
+        if (end < 0) end = at + 2;
+        at = ((length & 0x3f) << 8) | packet[at + 1]!;
+        continue;
+      }
+      if (length === 0) return { labels, end: end < 0 ? at + 1 : end };
+      if (length > 63 || at + 1 + length > packet.length) return undefined;
+      const label = String.fromCharCode(...packet.subarray(at + 1, at + 1 + length));
+      if (!/^[A-Za-z0-9_-]+$/.test(label)) return undefined;
+      labels.push(label.toLowerCase());
+      at += 1 + length;
+    }
+    return undefined;
+  };
+  const question = labelsAt(12);
+  if (question === undefined || question.labels.length < 2) return undefined;
+  let at = question.end + 4;
+  const ips: string[] = [];
+  for (let record = 0; record < answers; record++) {
+    const owner = labelsAt(at);
+    if (owner === undefined || owner.end + 10 > packet.length) break;
+    const type = (packet[owner.end]! << 8) | packet[owner.end + 1]!;
+    const length = (packet[owner.end + 8]! << 8) | packet[owner.end + 9]!;
+    const data = owner.end + 10;
+    if (data + length > packet.length) break;
+    if (type === 1 && length === 4) ips.push([...packet.subarray(data, data + 4)].join('.'));
+    if (type === 28 && length === 16) {
+      const groups = Array.from({ length: 8 }, (_, group) => ((packet[data + 2 * group]! << 8) | packet[data + 2 * group + 1]!).toString(16));
+      ips.push(new URL(`http://[${groups.join(':')}]`).hostname.slice(1, -1));
+    }
+    at = data + length;
+  }
+  return ips.length === 0 ? undefined : { name: question.labels.join('.'), ips };
+}
+
+/** Which name each address was answered for, from the DNS answers in the trace (the question's name: a CNAME chain names the first). */
+export function answerNames(trace: string): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const line of trace.split('\n')) {
+    if (!/\brecv(from|msg|mmsg)\(/.test(line)) continue;
+    for (const hit of line.matchAll(/"((?:\\x[0-9a-f]{2})+)"/g)) {
+      const answer = parseAnswer(bytesOf(hit[1]!));
+      if (answer === undefined) continue;
+      for (const ip of answer.ips) if (!names.has(ip)) names.set(ip, answer.name);
+    }
+  }
+  return names;
 }
 
 /** Every host name a DNS query in the trace asked for. */
