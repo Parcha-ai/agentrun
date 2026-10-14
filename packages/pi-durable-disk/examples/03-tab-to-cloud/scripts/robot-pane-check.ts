@@ -97,8 +97,9 @@ try {
   await script([call("do", { skill: "sprint" })]);
   const t3 = await say("sprint!");
   const sprint = t3.find((i) => i.kind === "tool" && i.name === "do");
-  const answered = JSON.parse((await ev<{ output?: string }>("demo.exec('cat creature/attempt.json')")).output || "{}") as Partial<Attempt>;
-  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page ran it and answered the request", sprint?.status === "done" && sprint.details?.attempt?.skill === "sprint" && sprint.details.attempt.learned === true && sprint.details.attempt.seconds > 0 && answered.id === sprint.details.attempt.id, { tool: sprint, answered });
+  const answerText = (await ev<{ output?: string }>("demo.exec('cat creature/attempt.json')")).output ?? "";
+  const answered = (() => { try { return JSON.parse(answerText) as Partial<Attempt>; } catch { return {} as Partial<Attempt>; } })(); // a missing file prints a shell error: that is a failed check below, not a thrown one
+  ok("do(sprint): the agent's tool accepted a skill that came home, and the creature page ran it and answered the request", sprint?.status === "done" && sprint.details?.attempt?.skill === "sprint" && sprint.details.attempt.learned === true && sprint.details.attempt.seconds > 0 && answered.id === sprint.details.attempt.id, { tool: sprint, answered, answerText: answerText.slice(0, 200) });
   await page.screenshot(join(shots, "pane-2-online.png"));
 
   // The chat shows the work: a write and an edit as diffs (@pierre/diffs), bash as its command and output, each one quiet line that opens on tap; a move is one line, never the notice the agent was given.
