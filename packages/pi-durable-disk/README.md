@@ -624,7 +624,7 @@ self-fence, the seal and the release, without a store or a Harness), `storeHead`
 leaves out the supervisor, the host drivers, the CLI and the app contract, and the package declares `"sideEffects": false`, so
 a bundler keeps only what you use: a bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 60 KB
 minified against about 620 KB for `await import("@parcha/pi-durable-disk")` (esbuild `--bundle --minify --platform=node
---format=esm`, which inlines pi-durable, chord and `disk`).
+--format=esm`, which inlines pi-durable, chord and their dependencies).
 
 ### A run on a local directory
 
