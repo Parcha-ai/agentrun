@@ -96,9 +96,18 @@ function marked(proc: string, pid: number, name: string, value: string): boolean
   }
 }
 
-/** Whether `mark` is still the process it was: same pid, same start ticks, not a zombie. */
+/** Whether `mark` is still the process it was: same pid, same start ticks, not a zombie. Never pid 1 or below. */
 function same(proc: string, mark: ProcessMark): boolean {
-  return mark.pid > 0 && stat(proc, mark.pid)?.start === mark.start;
+  return mark.pid > 1 && stat(proc, mark.pid)?.start === mark.start;
+}
+
+/** A process's command line for a message, best effort. */
+function commandLine(proc: string, pid: number): string {
+  try {
+    return readFileSync(join(proc, String(pid), "cmdline"), "utf8").split("\0").filter(Boolean).join(" ") || "?";
+  } catch {
+    return "?";
+  }
 }
 
 const RECORD = /^(\d+)-(\d+)\.json$/;
@@ -247,9 +256,12 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   const boot = bootId(proc);
   const own = stat(proc, process.pid);
   let signalled = 0;
-  /** False for what is never a target: this process, its group, a pid of 0 or below (`kill(0)` is the caller's group). */
+  /**
+   * False for what is never a target: this process, its group, and a pid of 1 or below, since `kill(0)` is the caller's
+   * group and `kill(-1)` every process the user may signal.
+   */
   const kill = (target: number, mark: ProcessMark): boolean => {
-    if (!(mark.pid > 0) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return false;
+    if (!(mark.pid > 1) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return false;
     try {
       signal(target, "SIGKILL");
       signalled++;
@@ -304,10 +316,14 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
 export async function reapOrRefuse(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
   const reaped = await reapCommands(dir, options);
   if (reaped.survivors.length > 0) {
+    const proc = options.proc ?? "/proc";
+    const pids = reaped.survivors.map((s) => s.pid);
     throw new HeldError(
       "commands",
-      `${reaped.survivors.length} process(es) a killed incarnation's commands left are alive after SIGKILL (pids ${reaped.survivors.map((s) => s.pid).join(", ")}); ` +
-        `the run does not resume beside them. They stay recorded in ${dir}, and the next open tries again.`,
+      `${pids.length} process(es) a killed incarnation's commands started are still alive after SIGKILL: ` +
+        `${reaped.survivors.map((s) => `pid ${s.pid} (${commandLine(proc, s.pid)})`).join(", ")}. ` +
+        `The run does not resume beside them. End them (kill -9 ${pids.join(" ")}, as their owner, or wait for them) and open the run again; ` +
+        `they stay recorded in ${dir} until then.`,
     );
   }
   return reaped;

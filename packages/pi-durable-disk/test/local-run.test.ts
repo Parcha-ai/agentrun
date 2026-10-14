@@ -2,20 +2,63 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
-import { FencedError } from "../src/errors.ts";
+import { FencedError, HeldError } from "../src/errors.ts";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
 
+/** A long-lived root-owned process this (unprivileged) user may not signal, with its start ticks; undefined if none. */
+function rootProcess(): { pid: number; start: number } | undefined {
+  for (const name of readdirSync("/proc").filter((n) => /^\d+$/.test(n)).map(Number).filter((pid) => pid > 2)) {
+    try {
+      if (!/^Uid:\s+0\s/m.test(readFileSync(`/proc/${name}/status`, "utf8"))) continue;
+      if (readFileSync(`/proc/${name}/cmdline`, "utf8") === "") continue; // a kernel thread
+      return { pid: name, start: Number(readFileSync(`/proc/${name}/stat`, "utf8").split(") ")[1]!.split(" ")[19]) };
+    } catch {
+      // gone, or not readable
+    }
+  }
+  return undefined;
+}
+
 describe("localRun", () => {
+  it("refuses to open beside a process a killed incarnation's commands left that outlives its SIGKILL, and opens once it is gone", { timeout: 60_000 }, async (t) => {
+    // A process this user may not signal stands in for one that will not die (an uninterruptible wait). As root every
+    // process can be signalled, so the test is skipped there rather than signal one.
+    if (process.getuid?.() === 0) return t.skip("runs only as an unprivileged user");
+    const survivor = rootProcess();
+    if (survivor === undefined) return t.skip("no root-owned process to stand in for a survivor");
+    const dir = scratchRoot("local-survivor");
+    const root = join(dir.root, "run");
+    const scripted = scriptedHarness();
+    const open = () => openDurableRun({ disk: "dsk-local", region: "local", id: "survivor" }, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
+    try {
+      await (await open()).release();
+      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      const record = join(root, "commands", `${survivor.pid}-${survivor.start}.json`);
+      mkdirSync(join(root, "commands"), { recursive: true });
+      writeFileSync(record, JSON.stringify({ boot, leader: survivor, members: [] }));
+      await assert.rejects(open(), (error: unknown) =>
+        error instanceof HeldError && error.code === "COMMANDS_ALIVE" && error.exitCode === 76 && error.message.includes(`pid ${survivor.pid} (`) && /open the run again/.test(error.message));
+      assert.ok(existsSync(record), "its record stays");
+      // Gone, as the record can tell: the same pid with other start ticks is another process.
+      writeFileSync(record, JSON.stringify({ boot, leader: { pid: survivor.pid, start: survivor.start + 1 }, members: [] }));
+      const run = await open();
+      assert.equal(existsSync(join(root, "commands")), false, "the records are cleared");
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("two local runs in one process: reopening one never kills a command of the other", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("local-two");
     const open = (id: string) => {

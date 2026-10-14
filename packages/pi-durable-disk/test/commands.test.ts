@@ -50,7 +50,10 @@ describe("command records", () => {
       assert.deepEqual([record.boot, record.leader], [boot, { pid: leader, start: startOf(leader) }]);
       const member = record.members[0]!;
       recorder.close();
-      assert.deepEqual(await reapCommands(records), { signalled: 2, survivors: [] }, "the leader's group and the member");
+      // The leader's group, and the member unless the group's kill already took it (then it is no longer the same process).
+      const reaped = await reapCommands(records);
+      assert.deepEqual(reaped.survivors, []);
+      assert.ok(reaped.signalled === 1 || reaped.signalled === 2, `signalled ${reaped.signalled}`);
       assert.ok((await waitGone(leader)) && (await waitGone(member.pid)), "both are gone when the reap returns");
       assert.equal(existsSync(records), false, "the records are cleared");
     } finally {
@@ -76,6 +79,21 @@ describe("command records", () => {
       assert.equal(existsSync(records), false, "and the records are cleared all the same");
     } finally {
       killGroup(pid);
+      dir.remove();
+    }
+  });
+
+  it("never signals pid 1, whatever a record names (kill(-1) would reach every process the user may signal)", async () => {
+    const dir = scratchRoot("commands-pid1");
+    const records = join(dir.root, "commands");
+    try {
+      mkdirSync(records);
+      const init = { pid: 1, start: startOf(1) };
+      writeFileSync(join(records, `1-${init.start}.json`), JSON.stringify({ boot, leader: init, members: [init] }));
+      const signals: number[] = [];
+      assert.deepEqual(await reapCommands(records, { kill: (target) => void signals.push(target), timeoutMs: 50 }), { signalled: 0, survivors: [] });
+      assert.deepEqual(signals, [], "no signal at all");
+    } finally {
       dir.remove();
     }
   });
@@ -145,7 +163,7 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
       recorderA.close();
       recorderB.close();
       assert.deepEqual([leaders(a), leaders(b)], [[pids[0]], [pids[1]]], "each records its own command, and neither the other's nor the unmarked one");
-      assert.deepEqual(await reapCommands(b), { signalled: 2, survivors: [] });
+      assert.deepEqual((await reapCommands(b)).survivors, []);
       assert.deepEqual(pids.map((pid) => alive(pid)), [true, false, true], "reaping b's records killed only b's command");
     } finally {
       for (const pid of pids) killGroup(pid);
@@ -182,10 +200,15 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
       writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
       mkdirSync(join(proc, "4242"));
       writeFileSync(join(proc, "4242", "stat"), `4242 (stuck) ${["D", "1", "4242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+      writeFileSync(join(proc, "4242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
       mkdirSync(records);
       writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
-      await assert.rejects(reapOrRefuse(records, { proc, kill: () => {}, timeoutMs: 50 }), (error: unknown) =>
-        error instanceof HeldError && error.holder === "commands" && error.code === "COMMANDS_ALIVE" && error.exitCode === 76 && /pids 4242/.test(error.message));
+      await assert.rejects(reapOrRefuse(records, { proc, kill: () => {}, timeoutMs: 50 }), (error: unknown) => {
+        assert.ok(error instanceof HeldError && error.holder === "commands" && error.code === "COMMANDS_ALIVE" && error.exitCode === 76);
+        assert.match(error.message, /pid 4242 \(tar -xf \/mnt\/slow\/archive\.tar\)/, "names each survivor and its command line");
+        assert.match(error.message, /End them \(kill -9 4242, as their owner, or wait for them\) and open the run again/, "says what to do");
+        return true;
+      });
       assert.ok(existsSync(join(records, "4242-77.json")), "its record stays for the next open");
       rmSync(join(proc, "4242"), { recursive: true });
       assert.deepEqual(await reapOrRefuse(records, { proc, kill: () => {} }), { signalled: 0, survivors: [] });

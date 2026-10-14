@@ -12,12 +12,13 @@ kind: fix
   worker whose leader exited, and the children it starts later, are recorded too, and the next open, holding the owner lock, kills what is
   still the recorded process, waits until it is gone and clears the records, before the Harness opens (a new open step,
   `commands`, after `layout`).
-- A kill reaches a process only when its pid, start ticks and boot all match a record, and never the opening process or
-  its group. Only the instance writes records; a command that forged one could already kill what it names (it runs as
+- A kill reaches a process only when its pid, start ticks and boot all match a record, and never pid 1 or below
+  (`kill(-1)` would reach every process the user may signal), the opening process or its group. Only the instance writes records; a command that forged one could already kill what it names (it runs as
   the same user, or with `runAs` cannot write the instance's 0700 directory), so a record grants nothing.
 - What is still alive at the reap's deadline (a process in an uninterruptible wait, or one it may not signal) refuses the
-  open: `HeldError` with holder `commands` (`COMMANDS_ALIVE`, exit 76), naming the pids. The run never resumes beside
-  it, its record stays, and the next open tries again. A record that cannot be written (a full disk) is said once on
+  open: `HeldError` with holder `commands` (`COMMANDS_ALIVE`, exit 76), naming each pid and its command line and saying
+  what to do (end them, then open the run again). The run never resumes beside it, its record stays, and the next open
+  tries again. A record that cannot be written (a full disk) is said once on
   stderr and the recorder keeps trying. A command started within the last walk's interval (about 0.1 s) before the kill
   can be missed.
 - A claim opts in with `Claim.commands` (the directory); `localRun`'s claim sets it. A mount's run is unchanged: its host
