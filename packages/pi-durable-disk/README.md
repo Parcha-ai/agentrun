@@ -645,6 +645,14 @@ for apps that compose their own lifecycle, and so are serve (`serveRun`, `reques
 `busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
 are the reference.
 
+A supervisor of your own (a driver `supervise` does not start, such as `daytonaHost`) gets its `control` from
+`archilControl({ apiKey, disk, region })`: the disk's S3 and control API, the same object `supervise` builds from its flags.
+
+```ts
+const control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: "dsk-...", region: "aws-us-east-1" });
+await ensureRunning({ disk: "dsk-...", region: "aws-us-east-1", id: "job-1" }, daytonaHost({ client, snapshot }), { control });
+```
+
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:
 `@parcha/pi-durable-disk/lease` holds `openRunLease` (the claim, the owner lock, `run.json` with its heartbeat, the lease
 self-fence, the seal and the release, without a store or a Harness), `storeHead`, the store's fence and pragma helpers
