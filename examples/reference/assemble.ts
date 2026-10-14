@@ -139,7 +139,9 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
   });
   host.record?.generation(durable.generation);
-  await host.record?.attach?.(durable.harness, durable.generation);
+  // The recorder attaches here for now, after the open has resumed the run. The disk package's beforeResume hook (#377) hands
+  // it the Storage and the head, and the call moves into that hook so the snapshot is taken before the run resumes.
+  await host.record?.attach?.({ session: durable.harness, context: ctx, gen: durable.generation });
   const harness = durable.harness;
   opened = harness;
   try {
