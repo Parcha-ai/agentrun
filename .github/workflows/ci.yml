@@ -274,15 +274,19 @@ jobs:
     # The README's own install line, as a stranger types it, against what the registry serves now (--readme-line):
     # `packed` puts this tree's package in the line, so it says whether the next release installs; `registry` runs the line
     # as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not pinned to
-    # the developed versions. Not blocking while the published beta cannot install beside pi-durable 1.2: a failure is
-    # shown as a warning on the run.
+    # the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so a
+    # known failure does not turn every pull request red: `packed` until the range accepts pi-durable 1.2 (#386),
+    # `registry` until a release with it is published. Flip `blocking` then.
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        mode: [packed, registry]
+        include:
+          - mode: packed
+            blocking: false
+          - mode: registry
+            blocking: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -295,15 +299,17 @@ jobs:
         shell: bash
         env:
           MODE: ${{ matrix.mode }}
+          BLOCKING: ${{ matrix.blocking }}
         run: |
           flags=(--readme-line)
           if [ "$MODE" = registry ]; then flags+=(--registry); fi
-          if ! node scripts/stranger.mjs pi-durable-disk "${flags[@]}" > "$RUNNER_TEMP/readme-line.out" 2>&1; then
-            cat "$RUNNER_TEMP/readme-line.out"
-            echo "::warning title=pi-durable-disk README install line ($MODE)::$(grep -m1 -E 'ERESOLVE|failed|error' "$RUNNER_TEMP/readme-line.out")"
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/readme-line.out"
+          out="$RUNNER_TEMP/readme-line.out"
+          if node scripts/stranger.mjs pi-durable-disk "${flags[@]}" > "$out" 2>&1; then cat "$out"; exit 0; fi
+          cat "$out"
+          # The first line that says why (npm's ERESOLVE, an assertion, the spec's verdict), else the last line.
+          reason=$(grep -m1 -iE 'ERESOLVE|error|failed|not ok' "$out" || tail -n 1 "$out")
+          if [ "$BLOCKING" = true ]; then echo "::error title=pi-durable-disk README install line ($MODE)::${reason:-no output}"; exit 1; fi
+          echo "::warning title=pi-durable-disk README install line ($MODE, not blocking yet)::${reason:-no output}"
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
