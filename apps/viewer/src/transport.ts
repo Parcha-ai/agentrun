@@ -265,7 +265,8 @@ function counters(state: TransportState): Node {
     row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`),
     row('paid calls', measured ? String(strip.paid.total) : 'not measured: no durable lines'),
     row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
-    row('cost', !measured ? 'not measured: no durable lines' : strip.cost === null ? 'unknown' : `$${strip.cost.toFixed(4)}`));
+    // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0.
+    row('cost', strip.cost === null ? 'unknown' : `$${strip.cost.toFixed(4)}`));
 }
 
 function flightNode(state: TransportState, flight: Flight): Node {

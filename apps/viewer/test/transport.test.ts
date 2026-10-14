@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { counterFold } from '../src/counters.ts';
+import { counterFold, countersOf } from '../src/counters.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { type Node, panelsShown } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
@@ -95,7 +95,7 @@ test('the screen says what is proven and what is only observed, and never makes 
   assert.match(end, /2 of 2 \(1 box, 1 process\)/);
   assert.match(end, /5 moves, 1 restore \(observed: live lines\)/);
   assert.match(end, /observed \(live line\)/);
-  assert.match(end, /cost\s+not measured: no durable lines/);
+  assert.match(end, /cost\s+unknown/);
   assert.match(end, /paid calls\s+not measured: no durable lines/);
   assert.doesNotMatch(end, /\$0/);
   assert.match(end, /Why here: by config \(no placement record in this recording\)/);
@@ -225,4 +225,17 @@ test('a restore that left paths out of its checkpoint says which, and a checkpoi
   assert.deepEqual(at([...boxes, left]).flights[0]!.checkpoint!.excluded, ['media']);
   assert.match(screen([...boxes, left]), /left out of the checkpoint: media/);
   assert.doesNotMatch(screen([...boxes, restore({})]), /left out of the checkpoint/);
+});
+
+test('the panel and the shell\'s strip agree on a recording with no durable line: paid calls and repeats not measured, cost unknown, never $0', () => {
+  for (const each of [real, docker, t4]) {
+    const strip = countersOf(each.lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true);
+    assert.equal(strip.measured, false);
+    assert.equal(strip.cost, null);
+    const shown = screen(each.lines);
+    assert.match(shown, /paid calls\s+not measured/);
+    assert.match(shown, /repeated\s+not measured/);
+    assert.match(shown, /cost\s+unknown/);
+    assert.doesNotMatch(shown, /\$0/);
+  }
 });

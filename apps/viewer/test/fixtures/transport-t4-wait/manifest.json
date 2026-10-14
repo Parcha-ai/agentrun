@@ -29,7 +29,7 @@
     "title": "The film clip"
   },
   "cost": {
-    "usd": 0,
+    "usd": null,
     "parts": {}
   },
   "recorded": {
