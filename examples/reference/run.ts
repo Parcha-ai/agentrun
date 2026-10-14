@@ -93,7 +93,7 @@ if (import.meta.main) {
     const resultBlob = recorder!.blob(readFileSync(join(place.root, 'out', 'record.json')), 'json');
     finishRecording(values.record, {
       title: 'The reference job, no key', task: job.workflow.name ?? 'reference', model: `${local.host.models.lead.provider}/${local.host.models.lead.modelId}`,
-      generations: result.generation, kills: 0, code: codeOf(join(import.meta.dirname, '..', '..')),
+      kills: 0, code: codeOf(join(import.meta.dirname, '..', '..')),
       cost,
       source: { run: place.id, store: join(place.store, 'run.sqlite') }, result: { blob: resultBlob, title: 'The record' },
     });

@@ -26,6 +26,14 @@ const FORBIDDEN = [
   ['literal credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
 ];
 export const credentialIn = text => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
+/** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`\u0073k-`). */
+export function credentialInValue(value) {
+  if (typeof value === 'string') return credentialIn(value);
+  if (Array.isArray(value)) { for (const inner of value) { const found = credentialInValue(inner); if (found) return found; } return undefined; }
+  if (isObject(value)) { for (const [key, inner] of Object.entries(value)) { const found = credentialIn(key) ?? credentialInValue(inner); if (found) return found; } }
+  return undefined;
+}
+const TEXT_BLOB = /^(?:json|jsonl|txt|md|html|csv|svg|xml|yaml|yml|log)$/i;
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isInt = value => Number.isInteger(value);
@@ -110,7 +118,7 @@ export function imageBlobs(value, found = []) {
 export function moveRecords(value, found = []) {
   if (Array.isArray(value)) value.forEach(inner => moveRecords(inner, found));
   else if (isObject(value)) {
-    if ((value.kind === 'restore' || value.kind === 'move') && isInt(value.head)) found.push({ kind: value.kind, head: value.head, seal: value.seal, checkpoint: value.checkpoint, replayed: value.replayed });
+    if (value.kind === 'restore' || value.kind === 'move') found.push({ kind: value.kind, head: value.head, seal: value.seal, checkpoint: value.checkpoint, replayed: value.replayed });
     else Object.values(value).forEach(inner => moveRecords(inner, found));
   }
   return found;
@@ -134,7 +142,7 @@ export function validateRecording(dir) {
     const text = readFileSync(manifestPath, 'utf8');
     try { manifest = JSON.parse(text); } catch (error) { add('manifest.json', `is not JSON: ${error.message}`); }
     if (manifest !== undefined) for (const message of manifestProblems(manifest)) add('manifest.json', message);
-    const found = credentialIn(text);
+    const found = credentialIn(text) ?? (manifest === undefined ? undefined : credentialInValue(manifest));
     if (found) add('manifest.json', `contains a ${found}`);
   }
   const blobs = blobFiles(dir);
@@ -144,7 +152,15 @@ export function validateRecording(dir) {
     checked.add(hash);
     const file = blobs.get(hash);
     if (!file) return add(where, `names blob ${hash}, which is not in blobs/`, line);
-    if (createHash('sha256').update(readFileSync(file)).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
+    const bytes = readFileSync(file);
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
+    // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON.
+    if (TEXT_BLOB.test(file.slice(file.lastIndexOf('.') + 1))) {
+      const text = bytes.toString('utf8');
+      let found = credentialIn(text);
+      if (!found) { try { found = credentialInValue(JSON.parse(text)); } catch { /* not one JSON value */ } }
+      if (found) add(where, `blob ${hash} contains a ${found}`, line);
+    }
   };
   if (manifest?.result?.blob) checkBlob(manifest.result.blob, 'manifest.json', undefined);
   if (!existsSync(eventsPath)) { add('events.jsonl', 'is missing'); return problems; }
@@ -170,14 +186,18 @@ export function validateRecording(dir) {
     if (text.trim() === '') return add('events.jsonl', 'has an empty line', line);
     let event;
     try { event = JSON.parse(text); } catch (error) { return add('events.jsonl', `is not JSON: ${error.message}`, line); }
-    const found = credentialIn(text);
+    const found = credentialIn(text) ?? credentialInValue(event);
     if (found) add('events.jsonl', `contains a ${found}`, line);
     const own = lineProblems(event);
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
-      for (const record of moveRecords(event.data?.value ?? event.data)) records.push({ ...record, process: processIndex, line, commit: event.commit });
+      // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
+      if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {
+        if (!isInt(record.head)) add('events.jsonl', `a ${record.kind} record has no integer head`, line);
+        else records.push({ ...record, process: processIndex, line, commit: event.commit });
+      }
     }
     if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(processIndex)) firstCommit.set(processIndex, event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);

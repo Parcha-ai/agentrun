@@ -1,7 +1,7 @@
 // The recorder: the reference job run in this process with a recorder, a store read of the test's own standing in for the
 // package's export, and the recording it leaves checked by the validator. The spools of a killed process are torn at the end.
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,4 +119,46 @@ test('a conversation the store names has its agent events recorded as live pi li
   assert.deepEqual(pi.map((line) => line.seq), [0, 1, 2, 3]);
   assert.equal(JSON.stringify(pi).includes('hunter2'), false, 'redacted before it was written');
   assert.deepEqual(validateRecording(dir), []);
+});
+
+test('a resumed directory records its own process numbers: the second recording of one run is process 1, whatever the run\'s lease generation', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'recording');
+  const recorder = openRecorder({ dir, supervisor: openSupervisor({ dir }) });
+  recorder.generation(2);
+  recorder.live('workflow', 'node.start', { type: 'node.start' });
+  finishRecording(dir, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.generations, 1, 'the recording holds one process, whatever the lease says');
+  assert.deepEqual(lines(dir).map((line) => [line.kind, line.gen ?? line.data.gen]), [['process.started', 1], ['node.start', 1]]);
+  assert.deepEqual(validateRecording(dir), []);
+});
+
+test('a process start sorts before the lines it writes at the same millisecond, and detach stops a watcher still being set up', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'recording');
+  let stopped = 0;
+  const commits = async (_input, write) => {
+    write({ channel: 'durable', source: 'pi', kind: 'pi.assistant', conv: 5, commit: 1, order: 0, snapshot: true, data: { model: [] } });
+    return async () => undefined;
+  };
+  const watch = (_session, _conv) => new Promise((resolve) => setTimeout(() => resolve({ start() {}, async stop() { stopped += 1; } }), 30));
+  const recorder = openRecorder({ dir, commits, watch, supervisor: openSupervisor({ dir }) });
+  recorder.generation(1);
+  await recorder.attach({ session: {}, context: {}, gen: 1 });
+  await recorder.detach();
+  assert.equal(stopped, 1, 'the watcher whose setup had not finished is stopped');
+  finishRecording(dir, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  const order = lines(dir).map((line) => line.kind);
+  assert.ok(order.indexOf('process.started') < order.indexOf('pi.assistant'), order.join(','));
+  // and at one millisecond exactly: the merge itself puts the start first
+  const tied = join(tmp, 'tied');
+  mkdirSync(join(tied, '.spool'), { recursive: true });
+  writeFileSync(join(tied, '.spool', 'started'), new Date().toISOString());
+  writeFileSync(join(tied, '.spool', 'durable-1.jsonl'), JSON.stringify({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 1, commit: 1, order: 0, snapshot: true, t: 7, data: {} }) + '\n');
+  writeFileSync(join(tied, '.spool', 'supervisor-1.jsonl'), JSON.stringify({ channel: 'live', source: 'host', kind: 'process.started', t: 7, seq: 0, data: { gen: 1 } }) + '\n');
+  finishRecording(tied, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  assert.deepEqual(lines(tied).map((line) => line.kind), ['process.started', 'pi.assistant']);
 });

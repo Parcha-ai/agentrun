@@ -268,3 +268,30 @@ test('providers, when given, is real or scripted', async t => {
   // the field is optional: a manifest without it is valid
   assert.deepEqual(validateRecording(await recording(t, { started: 2 })), []);
 });
+
+test('a credential is refused in a text blob, and behind a JSON escape in a line or the manifest', async t => {
+  const secret = `sk-${'a1'.repeat(20)}`;
+  const text = Buffer.from(JSON.stringify({ header: secret }));
+  const hash = sha(text);
+  const withBlob = events.map((line, index) => (index === 3 ? { ...line, blobs: [hash] } : line));
+  const problem = first(await recording(t, { lines: withBlob, started: 2, blobs: { [`${hash}.json`]: text, [`${blob}.png`]: png } }));
+  assert.equal(problem.where, 'events.jsonl');
+  assert.match(problem.message, new RegExp(`blob ${hash} contains a provider secret`));
+  // a binary blob is only hashed
+  assert.deepEqual(validateRecording(await recording(t, { started: 2 })), []);
+  // the escaped key: the raw line reads sk-..., the decoded value reads sk-...
+  const escaped = JSON.stringify({ ...events[3], data: { header: 'KEY' } }).replace('KEY', `\\u0073k-${'a1'.repeat(20)}`);
+  assert.match(first(await recording(t, { lines: [...events.slice(0, 3), escaped, ...events.slice(4)], started: 2 })).message, /contains a provider secret/);
+  assert.match(first(await recording(t, { manifestOver: { title: secret }, started: 2 })).message, /provider secret/);
+});
+
+test('a snapshot restating an earlier process\'s move is not a move of this process, and a move with no integer head is reported', async t => {
+  const snap = (commit, order, t, gen, data) => durable(commit, order, { snapshot: true, t, gen, ...(data ? { source: 'transport', kind: 'transport.moves', data } : {}) });
+  const old = { doc: 'transport.moves', value: { moves: [{ kind: 'move', head: 5, seal: { head: 5, sha256: 'a'.repeat(64), bytes: 1 } }] } };
+  // process 2 reopens at commit 20 and its snapshot carries the move process 1 made at head 5
+  const lines = [durable(19, 0, { t: 10 }), durable(20, 0, { t: 11 }), snap(20, 0, 20, 2, old), durable(21, 0, { t: 21, gen: 2 })];
+  assert.deepEqual(validateRecording(await recording(t, { lines, started: 2 })), []);
+  const bad = { doc: 'transport.moves', value: { moves: [{ kind: 'restore', checkpoint: { head: 4 } }] } };
+  const own = [durable(1, 0), durable(2, 0, { t: 12, source: 'transport', kind: 'transport.moves', data: bad })];
+  assert.match(first(await recording(t, { lines: own, started: 2, manifestOver: { generations: 2 } })).message, /a restore record has no integer head/);
+});

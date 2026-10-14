@@ -34,17 +34,21 @@ export function cost(lines: readonly Line[]): Cost {
     }
     if (!isObject(data) || typeof data.doc !== 'string' || !('value' in data) || !isObject(data.value)) continue;
     const id = idOf(line, data);
+    // A part is kept under a key that survives a restore: what a lost branch spent was spent all the same, so a later snapshot that no longer
+    // carries it does not take it back (the viewer keeps it as `lost`). A running total (a session's charge, a look's) is the most any revision showed.
+    const keep = (key: string, usd: number | null) => {
+      const before = latest.get(key);
+      latest.set(key, before === undefined || before === null || usd === null ? usd : Math.max(before, usd));
+    };
     if (data.doc === 'agentrun.decisions' && Array.isArray(data.value.receipts)) {
-      // The latest revision of the document: every row's cost, null for a row with none.
-      for (const key of [...latest.keys()]) if (key.startsWith(`decision\u0001${id}\u0001`)) latest.delete(key);
-      data.value.receipts.forEach((row: unknown, index: number) => latest.set(`decision\u0001${id}\u0001${index}`, isObject(row) ? number(row.cost_usd) : null));
+      data.value.receipts.forEach((row: unknown, index: number) => keep(`decision\u0001${id}\u0001${isObject(row) && typeof row.decision_id === 'string' ? `${row.run_key ?? ''} ${row.decision_id}` : index}`, isObject(row) ? number(row.cost_usd) : null));
     }
     if (data.doc === 'browser.sessions' && Array.isArray(data.value.sessions)) {
-      for (const session of data.value.sessions) if (isObject(session) && typeof session.tag === 'string') latest.set(`browser\u0001${id}\u0001${session.tag}`, session.spent?.state === 'priced' ? number(session.spent.usd) : null);
+      for (const session of data.value.sessions) if (isObject(session) && typeof session.tag === 'string') keep(`browser\u0001${id}\u0001${session.tag}`, session.spent?.state === 'priced' ? number(session.spent.usd) : null);
     }
     if (data.doc.startsWith('vision.') && Array.isArray(data.value.looks)) {
       data.value.looks.forEach((look: unknown, index: number) => {
-        if (isObject(look)) latest.set(`look\u0001${id}\u0001${typeof look.receipt === 'string' ? look.receipt : index}`, number(look.record?.facts?.cost_usd));
+        if (isObject(look)) keep(`look\u0001${id}\u0001${typeof look.receipt === 'string' ? look.receipt : index}`, number(look.record?.facts?.cost_usd));
       });
     }
   }

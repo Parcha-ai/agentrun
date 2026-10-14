@@ -51,3 +51,15 @@ test('a recording with no priced part has no cost, in both', () => {
   assert.equal(fold(lines).cost, null);
   assert.equal(cost(lines).usd, null);
 });
+
+test('a restore does not take back what the lost branch spent: a decision paid after the checkpoint stays in both folds', () => {
+  const decision = (receipts, over = {}) => doc('agentrun.decisions', { receipts }, over);
+  const model = (commit) => ({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 1, commit, order: 0, t: commit, conv: 1, data: { model: [{ role: 'assistant', stopReason: 'toolUse', usage: { cost: { total: 0 } } }] } });
+  const row = (id, usd) => ({ run_key: 'r', decision_id: id, cost_usd: usd });
+  const lines = [model(1), decision([row('a', 0)], { commit: 2, t: 2 }), decision([row('a', 0), row('b', 1)], { commit: 12, t: 12 }),
+    { ...decision([], { commit: 5, t: 20, gen: 2 }), snapshot: true },
+    { channel: 'durable', source: 'transport', kind: 'transport.moves', gen: 2, commit: 6, order: 0, t: 21, data: { doc: 'transport.moves', value: { moves: [{ kind: 'restore', head: 6, checkpoint: { head: 6, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } }];
+  const processes = [{ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 0, data: { gen: 1 } }, ...lines.slice(0, 3), { channel: 'live', source: 'host', kind: 'process.started', t: 19, seq: 1, data: { gen: 2 } }, ...lines.slice(3)];
+  assert.equal(cost(processes).usd, 1, 'the example keeps the $1 the discarded branch spent');
+  assert.equal(fold(processes).cost, 1, 'and so does the viewer');
+});

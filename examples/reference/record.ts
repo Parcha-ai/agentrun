@@ -15,7 +15,7 @@ export type Redact = (text: string) => string;
 
 export type Recorder = {
   /** The process's generation, known once it has opened the run; lines written before it carry it too. */
-  generation(n: number): void;
+  generation(lease: number): void;
   /** Starts recording the open run's commits (a snapshot of every document first), from inside this process. Called from
    *  the disk package's `beforeResume` hook, which has the Harness, the Storage and the head; `clock` is the recorder's. */
   attach(input: Omit<AttachInput, 'clock'>): Promise<void>;
@@ -113,11 +113,14 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const file = join(spool(dir), `live-${process.pid}-${Date.now()}.jsonl`);
   const redact = options.redact ?? ((text: string) => text);
-  let gen = 1;
+  // A process's number in THIS recording: how many processes have opened it, this one included. The run's own lease generation is not it (a
+  // directory resumed into a fresh recording is already at 2), and the manifest, the live lines and process.started all count the recording's.
+  appendFileSync(file, '');
+  let gen = readdirSync(spool(dir)).filter((name) => name.startsWith('live-')).length;
   let seq = 0;
   let latest = 0;
   let stop: (() => Promise<void>) | undefined;
-  const watching = new Map<number, Awaited<ReturnType<WatchEvents>>>();
+  const watching = new Map<number, Promise<Awaited<ReturnType<WatchEvents>> | undefined>>();
   const durableFile = join(spool(dir), `durable-${process.pid}-${Date.now()}.jsonl`);
   const keep = (bytes: Buffer, extension: string) => keepBlob(dir, bytes, extension);
   const write = (source: string, kind: string, data: unknown, meta: Meta = {}) => {
@@ -127,7 +130,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
     appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
   };
   return {
-    generation(n) { gen = n; options.supervisor?.host('process.started', { gen: n, pid: process.pid }); },
+    generation() { options.supervisor?.host('process.started', { gen, pid: process.pid }); },
     async attach(input) {
       if (!options.commits) throw new Error('A recording needs the store export: no commit recorder was given.');
       const clock = () => Math.max(0, Date.now() - started);
@@ -141,8 +144,8 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
           });
           return stream;
         });
-        watching.set(conv, undefined as never);
-        attached.then((stream) => watching.set(conv, stream), () => watching.delete(conv));
+        // The setup promise is kept, so detach waits for a watcher still being set up and stops it.
+        watching.set(conv, attached.catch(() => undefined));
       };
       stop = await options.commits({ ...input, clock }, (line) => {
         if (typeof line.conv === 'number') follow(line.conv);
@@ -152,7 +155,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
         appendFileSync(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
       });
     },
-    async detach() { const end = stop; stop = undefined; await end?.(); for (const stream of watching.values()) await stream?.stop(); watching.clear(); },
+    async detach() { const end = stop; stop = undefined; await end?.(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };
@@ -166,7 +169,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
 }
 
 export type Header = {
-  title: string; task: string; model: string; generations: number; kills: number;
+  title: string; task: string; model: string; /** Default: the recording's own count of `process.started` lines. */ generations?: number; kills: number;
   code: { repo: string; commit: string; packages: Record<string, string> };
   /** The cost, or a function of the merged lines (fold.ts's cost: `null` while any part is unknown, never 0). */
   cost: { usd: number | null; parts: Record<string, number | null> } | ((lines: Record<string, unknown>[]) => { usd: number | null; parts: Record<string, number | null> });
@@ -192,7 +195,8 @@ const readLines = (path: string): Record<string, unknown>[] => {
 export function finishRecording(dir: string, header: Header): { lines: number } {
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
-  const rank = (line: Record<string, unknown>) => (line.channel === 'durable' ? 0 : 1);
+  // A process's start comes before the lines it writes, even at one millisecond: its snapshot belongs to it, not to the process before.
+  const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.kind === 'process.started' ? -1 : line.channel === 'durable' ? 0 : 1);
   const orderOf = (line: Record<string, unknown>) => (line.order === null ? Infinity : (line.order as number) ?? 0);
   all.sort((a, b) => (a.t as number) - (b.t as number) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0));
   // A memo has no place inside its commit of its own: it follows the lines the store gave that commit.
@@ -202,8 +206,9 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
   const store = existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64);
   const started = readFileSync(startedFile(dir), 'utf8');
-  const { source, cost, ...rest } = header;
-  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ format: FORMAT, providers: 'scripted', ...rest, cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
+  const { source, cost, generations, ...rest } = header;
+  const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
   rmSync(spool(dir), { recursive: true, force: true });
   return { lines: all.length };
 }
