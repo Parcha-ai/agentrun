@@ -17,6 +17,7 @@ import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
 import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { ChildEnv } from '@parcha/pi-vision/node';
+import type { Recorder } from './record.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
 export type RunPlace = { id: string; root: string; work: string; store: string };
@@ -42,8 +43,12 @@ export type StatusEvent =
   | { source: 'workflow'; event: WorkflowEvent }
   | { source: 'evidence'; label: string; tool: string; path: string };
 export type Delivery = { record: unknown };
+/** What a recorder takes from the run: the process's generation once it has opened the run. */
+export type Generation = { generation(n: number): void; attach?(harness: unknown, gen: number): Promise<void> };
 
 export type Host = {
+  /** Told which generation this process is, once it has opened the run. Absent: nothing is recorded. */
+  record?: Generation;
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
   /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
@@ -88,7 +93,8 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
+  const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   const answerOf = (argsHash: string) => join(place.root, 'answers', `${argsHash}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
@@ -97,7 +103,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
     appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
-  const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
+  const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
+  recorder?.host('process.started', { pid: process.pid, incarnation });
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
   faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
@@ -124,6 +131,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   } };
 
   const host: Host = {
+    ...(recorder ? { record: recorder } : {}),
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
@@ -156,6 +164,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         await mkdir(join(place.root, 'evidence', label), { recursive: true });
         await writeFile(join(place.root, path), text);
         status({ source: 'evidence', label, tool: record.tool, path });
+        recorder?.live(record.tool.startsWith('vision') || record.tool === 'look' ? 'vision' : 'browser', 'EvidenceRecord', { label, tool: record.tool, path }, { blobs: [recorder.blob(text, 'json')] });
         return { path };
       },
     },
@@ -166,7 +175,9 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     status,
     async deliver(result) {
       await mkdir(join(place.root, 'out'), { recursive: true });
-      await writeFile(join(place.root, 'out', 'record.json'), JSON.stringify({ ...result, evidence: evidence() }, null, 2));
+      const written = JSON.stringify({ ...result, evidence: evidence() }, null, 2);
+      await writeFile(join(place.root, 'out', 'record.json'), written);
+      recorder?.host('result', { path: 'out/record.json' }, { blobs: [recorder.blob(written, 'json')] });
     },
     // No program the job starts sees this process's environment beyond where programs live.
     credentials: { childEnv: { PATH: process.env.PATH } },
@@ -179,4 +190,15 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     try { return readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; }
   };
   return { host, ...(backend ? { backend } : {}), ledger, evidence };
+}
+
+/** A status row as the recording's live line: the package's own record name, and the position and conversation it carries. */
+function record(recorder: Recorder, event: StatusEvent): void {
+  if (event.source === 'workflow') return recorder.live('workflow', event.event.type, event.event, event.event.executionPath === undefined ? {} : { path: event.event.executionPath });
+  if (event.source === 'vision') return recorder.live('vision', 'look' in event ? 'LookEvent' : 'MissEvent', 'look' in event ? event.look : event.miss);
+  if (event.source === 'browser') {
+    if ('reconciled' in event) return recorder.live('browser', 'reconciled', event.reconciled);
+    const conv = Number((event.row as { conversationId?: unknown }).conversationId);
+    return recorder.live('browser', event.change, event.row, Number.isFinite(conv) ? { conv } : {});
+  }
 }
