@@ -61,18 +61,18 @@ export const processOf = (line: Line): number | undefined => {
   return typeof gen === 'number' ? gen : line.gen;
 };
 
-/** Where a restore starts again (RECORDING.md 3.2): a generation's first snapshot line whose commit is below one
- *  already seen. The map is from that line's index to its commit, the checkpoint's last commit. */
+/** Where a restore starts again (RECORDING.md 3.2): an open's first snapshot line (an open's snapshot is a run of
+ *  snapshot lines) whose commit is below one already seen. The map is from that line's index to its commit, the
+ *  checkpoint's last commit. */
 export function restoresOf(lines: Line[]): Map<number, number> {
   const restores = new Map<number, number>();
-  const snapshotted = new Set<number | undefined>();
   let highest = -1;
+  let inSnapshot = false;
   lines.forEach((line, index) => {
     if (line.channel !== 'durable' || line.commit === undefined) return;
-    if (line.snapshot === true && !snapshotted.has(line.gen)) {
-      snapshotted.add(line.gen);
-      if (line.commit < highest) { restores.set(index, line.commit); highest = line.commit; return; }
-    }
+    const first = line.snapshot === true && !inSnapshot;
+    inSnapshot = line.snapshot === true;
+    if (first && line.commit < highest) { restores.set(index, line.commit); highest = line.commit; return; }
     highest = Math.max(highest, line.commit);
   });
   return restores;
@@ -109,12 +109,15 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (folded === null ? m.cost.usd !== null : m.cost.usd === null || Math.abs(m.cost.usd - folded) > 1e-9) note(`manifest.cost.usd is ${m.cost.usd}, but the lines fold to ${folded === null ? 'null (a part is unknown)' : folded}`);
   }
 
-  // A restore is accepted only with the same generation's restore record, naming the checkpoint's head (3.2).
+  // A restore is accepted only with its restore record, naming the checkpoint's head (3.2): written by the process that
+  // opened the restored store, after its snapshot (whose gen is the driver's at the checkpoint) and before any later drop.
   // Every move record carries `head`, the target's first new commit (3.2): its generation's first non-snapshot commit
   // equals it, and the record's own commit is at or above it. A move continues the sequence (its head is one above the
   // last commit seen and equals seal.head); a restore's head is replayed.to + 1 when it replayed, else checkpoint.head.
   const restores = restoresOf(lines);
-  const restoreHeads = new Map<number | undefined, number[]>();
+  const restoreHeads = new Map<number, number[]>();
+  const dropAt = [...restores.keys()];
+  const dropOf = (index: number) => dropAt.findLast((at) => at < index);
   const moves: { at: string; gen: number | undefined; commit: number; move: Move }[] = [];
   const seenBefore = new Map<number | undefined, number>();
   const firstNew = new Map<number | undefined, number>();
@@ -128,7 +131,8 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     const move = doc ? moveOf(doc) : undefined;
     if (!move) return;
     moves.push({ at: `line ${index + 1}`, gen: line.gen, commit: line.commit!, move });
-    if (move.kind === 'restore' && move.head !== undefined) restoreHeads.set(line.gen, [...(restoreHeads.get(line.gen) ?? []), move.head]);
+    const drop = dropOf(index);
+    if (move.kind === 'restore' && move.head !== undefined && drop !== undefined) restoreHeads.set(drop, [...(restoreHeads.get(drop) ?? []), move.head]);
   });
   for (const { at, gen, commit, move } of moves) {
     if (move.head === undefined) { note(`${at}: a transport.moves record has no head`); continue; }
@@ -146,6 +150,7 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   }
 
   let last: { commit: number; order: number } | undefined;
+  let lastGen: number | undefined;
   let lastT = -Infinity;
   const seqs = new Map<number, number>();
   lines.forEach((line, index) => {
@@ -170,11 +175,17 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (line.channel === 'durable') {
       if (!isInt(line.commit) || !isInt(line.order)) { note(`${at}: a durable line needs commit and order`); return; }
       if (line.seq !== undefined) note(`${at}: a durable line has no seq`);
+      // A durable gen is the driver's at its commit, a snapshot's included: it never goes back outside a restore.
+      if (line.gen !== undefined && !restores.has(index)) {
+        if (lastGen !== undefined && line.gen < lastGen) note(`${at}: durable gen ${line.gen} after ${lastGen}`);
+        lastGen = Math.max(lastGen ?? line.gen, line.gen);
+      }
       const restored = restores.get(index);
       if (restored !== undefined) {
         // The lost branch: the durable rules start again from the restored generation's snapshot.
-        if (!(restoreHeads.get(line.gen) ?? []).includes(restored + 1)) note(`${at}: the commits go back to ${restored} with no restore record of head ${restored + 1} in generation ${line.gen}`);
+        if (!(restoreHeads.get(index) ?? []).includes(restored + 1)) note(`${at}: the commits go back to ${restored} with no restore record of head ${restored + 1} after it`);
         last = { commit: restored, order: Infinity };
+        lastGen = line.gen ?? lastGen;
         return;
       }
       if (line.snapshot === true) {

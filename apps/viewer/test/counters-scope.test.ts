@@ -42,7 +42,7 @@ test('an effect repeats when an applied call of its id lands in a later process 
   assert.deepEqual(pair([effect('e', 'unknown', 1, [failed, applied]), effect('e', 'completed', 1, [failed, applied])]), [0, 0], 'a failed attempt, then the one that applied, in one process');
   assert.deepEqual(pair([effect('e', 'unknown', 1, [unknown]), effect('e', 'completed', 2, [unknown, applied])]), [0, 0], 'an unknown outcome in one process and the only applied call in the next');
   assert.deepEqual(pair([effect('e', 'unknown', 1, [failed]), effect('e', 'completed', 2, [failed, applied])]), [0, 0], 'a failed attempt in one process and the only applied call in the next');
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied]), effect('e', 'unknown', 2, [applied], true), effect('e', 'completed', 2, [applied])]), [0, 0], 'a snapshot is state, not a call');
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied]), effect('e', 'unknown', 1, [applied], true), effect('e', 'completed', 2, [applied])]), [0, 0], 'a snapshot is state, not a call');
 });
 
 test('two applied calls of one effect inside one process are asked twice, not repeated', () => {
@@ -52,7 +52,7 @@ test('two applied calls of one effect inside one process are asked twice, not re
 });
 
 test('an effect whose host reports no calls has its repeats not measured: never shown as 0', () => {
-  const none = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'completed', 2, undefined, true)]);
+  const none = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'completed', 1, undefined, true)]);
   assert.deepEqual([none.repeated, none.repeatedNotMeasured, repeatedLabel(none)], [0, 1, 'not measured']);
   const redone = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'unknown', 2), effect('a', 'completed', 2)]);
   assert.deepEqual([redone.repeated, repeatedLabel(redone)], [0, 'not measured'], 'its own completion in two processes is not a measured call');
@@ -63,7 +63,7 @@ test('an effect whose host reports no calls has its repeats not measured: never 
 });
 
 test('a snapshot of a completed effect in a later process is state: no repeat', () => {
-  assert.deepEqual(pair([effect('step:/a#call:0', 'unknown', 1), effect('step:/a#call:0', 'completed', 1), effect('step:/a#call:0', 'completed', 2, undefined, true)]), [0, 0]);
+  assert.deepEqual(pair([effect('step:/a#call:0', 'unknown', 1), effect('step:/a#call:0', 'completed', 1), effect('step:/a#call:0', 'completed', 1, undefined, true)]), [0, 0]);
 });
 
 const receipt = (tool: string, args: Json, gen: number): Line => durable('agentrun.receipts', 'workflow', gen, { doc: 'agentrun.receipts', key: receiptKeyOf(tool, args), value: { tool, result: 'x', session: 's' }, version: 1 });
@@ -100,15 +100,15 @@ test('a snapshot is the base: a call first seen there happened in an earlier pro
   const lost = { outcome: 'applied', process: 1 };
   const resent = { outcome: 'applied', process: 2 };
   // Process 1's line with the call was lost in flight: the call is first seen in process 2's snapshot, then process 2 re-sends.
-  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [1, 0]);
-  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost])]), [0, 0], 'a snapshot alone adds no second call');
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 1, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [1, 0]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 1, [lost], true), effect('e', 'completed', 2, [lost])]), [0, 0], 'a snapshot alone adds no second call');
 });
 
 test('a restore\'s snapshot that is shorter than the last list is the new base, and the lost branch\'s calls stay where they were first seen', () => {
   const a1 = { outcome: 'applied', n: 1 };
   const a2 = { outcome: 'applied', n: 2 };
   const a3 = { outcome: 'applied', n: 3 };
-  const lines = [effect('e', 'unknown', 1, [a1, a2]), effect('e', 'unknown', 2, [a1], true), effect('e', 'completed', 2, [a1, a3])];
+  const lines = [effect('e', 'unknown', 1, [a1, a2]), effect('e', 'unknown', 1, [a1], true), effect('e', 'completed', 2, [a1, a3])];
   assert.deepEqual(pair(lines), [1, 1], 'a1 and a2 in process 1 (asked twice), a3 in process 2 (repeated)');
 });
 
@@ -122,22 +122,38 @@ const answer = (gen: number, conv: number, stopReason = 'toolUse'): Line =>
   durable('pi.assistant', 'pi', gen, { kind: 'pi.assistant', model: [{ role: 'assistant', stopReason, content: [], usage: { cost: { total: 0.5 } } }] }, { conv });
 const turns = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).turns;
 
-test('an ask the kill cut and a new ask at the same position are re-asked, proven from the store; the cut answer\'s aborted entry is no committed turn', () => {
+// Draft 14: a snapshot's gen is the driver's at its commit (the process before the one opening), and a cut ask is one
+// whose process the supervisor replaced.
+let processes = 0;
+const started = (): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t: 1, seq: (processes += 1), data: { gen: processes } } as Line);
+
+test('an ask the kill cut after its partial, asked again at the same position, is re-asked, proven; the cut answer\'s aborted entry is no committed turn', () => {
   // R2's mid-stream kill: the ask starts (commit 18), its partial lands (19), the process dies; the next process's snapshot still
   // carries the generation (20), a new ask starts at the same position (22) and pi appends the cut partial as an aborted entry.
-  const run = [idle(1, 12), asked(1, 12), partial(1, 12), partial(2, 12, true), asked(2, 12), answer(2, 12, 'aborted'), partial(2, 12), answer(2, 12), idle(2, 12)];
-  assert.deepEqual(turns(run), { committed: 1, reasked: 1 });
+  const run = [started(), idle(1, 12), asked(1, 12), partial(1, 12), started(), partial(1, 12, true), asked(2, 12), answer(2, 12, 'aborted'), partial(2, 12), answer(2, 12), idle(2, 12)];
+  assert.deepEqual(turns(run), { committed: 1, reasked: 1, reaskedPossible: 0 });
 });
 
-test('a snapshot\'s generation is the ask already open, or one more ask when its start line was lost', () => {
-  assert.equal(turns([idle(1, 12), asked(1, 12), partial(2, 12, true)]).reasked, 0, 'the snapshot\'s generation is the ask already open: one ask at position 0');
-  assert.equal(turns([idle(1, 12), asked(1, 12), partial(2, 12, true), idle(2, 12), asked(3, 12)]).reasked, 1, 'and a later ask at that position, with nothing committed between, is the re-ask');
-  assert.equal(turns([idle(1, 12), partial(2, 12, true), asked(2, 12), answer(2, 12), idle(2, 12)]).reasked, 1, 'process 1\'s start line died in flight: its ask was one more at position 0');
+test('a snapshot\'s generation is the ask already open, or a cut one whose start line was lost', () => {
+  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), started(), partial(1, 12, true)]), { committed: 0, reasked: 0, reaskedPossible: 0 }, 'the ask is open, not yet asked again');
+  assert.equal(turns([started(), idle(1, 12), asked(1, 12), started(), partial(1, 12, true), idle(2, 12), asked(2, 12)]).reasked, 1, 'asked again in the next process: proven, the snapshot shows its partial');
+  assert.equal(turns([started(), idle(1, 12), started(), partial(1, 12, true), asked(2, 12), answer(2, 12), idle(2, 12)]).reasked, 1, 'process 1\'s start line died in flight: the snapshot is its ask');
+});
+
+test('a cut ask with only its start marker, asked again, is re-asked possible, and shows as the later ask\'s first partial or its entry', () => {
+  // The marker is still there, so the later process's own start marker is the same value and writes no line.
+  const viaPartial = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), partial(2, 12), answer(2, 12)]);
+  assert.deepEqual(viaPartial, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'its first partial');
+  const viaEntry = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), answer(2, 12)]);
+  assert.deepEqual(viaEntry, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'its committed entry, from a model that streams no partial');
+  assert.deepEqual(turns([started(), idle(1, 12), asked(1, 12), live(1, 12, { generation: { attempt: 2 } }), answer(1, 12)]), { committed: 1, reasked: 0, reaskedPossible: 0 }, 'a retry inside one process is no re-ask');
+  const newStart = turns([started(), idle(1, 12), asked(1, 12), started(), asked(1, 12, true), live(2, 12, { generation: { attempt: 2 } }), answer(2, 12)]);
+  assert.deepEqual(newStart, { committed: 1, reasked: 0, reaskedPossible: 1 }, 'a later start marker that differs writes its own line: still possible, the cut ask had no partial');
 });
 
 test('asks at different positions or in different conversations are not re-asked', () => {
   assert.equal(turns([idle(1, 12), asked(1, 12), partial(1, 12), answer(1, 12), idle(1, 12), asked(2, 12), partial(2, 12), answer(2, 12)]).reasked, 0, 'position 0 then position 1');
-  assert.equal(turns([asked(1, 12), asked(2, 13)]).reasked, 0, 'two conversations');
+  assert.equal(turns([started(), asked(1, 12), started(), asked(2, 13)]).reasked, 0, 'two conversations');
   assert.equal(turns([asked(1, 12), asked(1, 12)]).reasked, 0, 'a rewrite of the same open ask is not a second ask');
 });
 

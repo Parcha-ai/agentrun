@@ -64,7 +64,7 @@ test('the counters at the end match the run\'s own ledger', () => {
   assert.deepEqual({ paid: counters.paid.total, repeated: counters.repeated, askedTwice: counters.askedTwice, unknown: counters.unknown, inFlight: counters.inFlight },
     { paid: 1, repeated: 0, askedTwice: 0, unknown: 0, inFlight: 0 });
   assert.deepEqual(counters.judge, { answered: 1, failed: 0, reasked: 0 });
-  assert.deepEqual(counters.turns, { committed: 4, reasked: null }, 'the run asked turn 2 twice, but this export pruned pi.live to its last revision: no ask start is left to prove it');
+  assert.deepEqual(counters.turns, { committed: 4, reasked: null, reaskedPossible: null }, 'the run asked turn 2 twice, but this export pruned pi.live to its last revision: no ask start is left to prove it');
   assert.deepEqual({ processes: counters.processes, kills: counters.kills }, { processes: 2, kills: 1 });
   assert.equal(counters.journalOpens, 4, 'the store\'s own fact: two journal opens in each process of this build');
   assert.equal(counters.cost, null, 'the scripted judge reports no cost, so the run\'s cost is unknown, never 0');

@@ -23,7 +23,7 @@ test('the supervisor\'s lines carry the process in data.gen and number their own
 });
 
 test('a restore is accepted with its restore record, and any other drop in the commits is refused', () => {
-  assert.match(validate(manifest, without(isMove)).join('\n'), /the commits go back to 3 with no restore record of head 4 in generation 2/);
+  assert.match(validate(manifest, without(isMove)).join('\n'), /the commits go back to 3 with no restore record of head 4 after it/);
   const wrongHead = lines.map((line) => (isMove(line) ? doc(2, 4, 0, 'transport.moves', 'm1', { kind: 'restore', head: 5, checkpoint: { head: 5 } }) : line));
   assert.match(validate(manifest, wrongHead).join('\n'), /no restore record of head 4/);
   const notFirst = without((line) => line.snapshot === true && line.order === 0);
@@ -36,7 +36,7 @@ test('a move\'s head is one above the last commit seen, equals its seal.head, an
   const moved = (record: Json, first = 6) => [
     ...lines.slice(0, 8),
     supervisor('process.started', 2, { gen: 2 }),
-    doc(2, 5, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    doc(1, 5, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
     doc(2, first, 0, 'transport.moves', 'm1', record),
     doc(2, first, 1, 'agentrun.driver', undefined, { generation: 2 }),
   ];
@@ -50,7 +50,7 @@ test('a move\'s head is one above the last commit seen, equals its seal.head, an
 test('a restore\'s head: its checkpoint.head, or replayed.to + 1; a replay to the last commit seen leaves no lost branch', () => {
   const restored = (record: Json, snapshotAt: number, first: number) => [
     ...lines.slice(0, 10),
-    doc(2, snapshotAt, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    doc(1, snapshotAt, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
     doc(2, first, 0, 'transport.moves', 'm1', record),
     doc(2, first, 1, 'agentrun.driver', undefined, { generation: 2 }),
   ];
@@ -115,8 +115,8 @@ test('an effect the checkpoint held open, completed in the lost branch and again
     effect(1, 3, 0, 'e3', 'search', 'completed', false, [APPLIED]),
     supervisor('kill', 2, { gen: 1, label: 'the box died' }),
     supervisor('process.started', 3, { gen: 2 }),
-    doc(2, 2, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
-    effect(2, 2, 1, 'e3', 'search', 'unknown', true),
+    doc(1, 2, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    effect(1, 2, 1, 'e3', 'search', 'unknown', true),
     doc(2, 3, 0, 'transport.moves', 'm1', { kind: 'restore', head: 3, checkpoint: { head: 3 } }),
     doc(2, 3, 1, 'agentrun.driver', undefined, { generation: 2 }),
     effect(2, 4, 0, 'e3', 'search', 'completed', false, [APPLIED]),
@@ -136,7 +136,7 @@ test('an effect\'s calls are its own per process: a later process\'s list replac
     withCalls(1, 3, 'unknown', [{ outcome: 'applied', attempt: 1 }]),
     supervisor('kill', 2, { gen: 1, label: 'the box died' }),
     supervisor('process.started', 3, { gen: 2 }),
-    doc(2, 1, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    doc(1, 1, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
     doc(2, 2, 0, 'transport.moves', 'm1', { kind: 'restore', head: 2, checkpoint: { head: 2 } }),
     doc(2, 2, 1, 'agentrun.driver', undefined, { generation: 2 }),
     doc(2, 3, 0, 'agentrun.effects', 'journal\u0000e4', { name: 'fetch', argsHash: 'fetch-args', status: 'unknown' }),
@@ -147,6 +147,25 @@ test('an effect\'s calls are its own per process: a later process\'s list replac
   const end = countersOf(reduceTo(counterFold, redone, redone.length), true);
   assert.deepEqual({ repeated: end.repeated, askedTwice: end.askedTwice }, { repeated: 1, askedTwice: 0 }, 'the call completed in process 1 and again in process 2');
   const stale: Line[] = [...redone.slice(0, 4), supervisor('kill', 2, { gen: 1, label: 'cut' }), supervisor('process.started', 3, { gen: 2 }),
-    withCalls(2, 3, 'unknown', [{ outcome: 'applied', attempt: 1 }], true), doc(2, 4, 0, 'agentrun.driver', undefined, { generation: 2 }), withCalls(2, 5, 'completed', [{ outcome: 'applied', attempt: 1 }])];
+    withCalls(1, 3, 'unknown', [{ outcome: 'applied', attempt: 1 }], true), doc(2, 4, 0, 'agentrun.driver', undefined, { generation: 2 }), withCalls(2, 5, 'completed', [{ outcome: 'applied', attempt: 1 }])];
   assert.equal(countersOf(reduceTo(counterFold, stale, stale.length), true).repeated, 0, 'process 2 completed it with process 1\'s list: no call of its own');
+});
+
+test('an open is a run of snapshot lines: a restore is found at the second open even when both share the driver\'s gen', () => {
+  // Process 1 opened with a snapshot at commit 1 (gen 1); the restore's snapshot is gen 1 again (the driver at commit 3).
+  const twice = [...lines.slice(0, 2), { ...doc(1, 1, 1, 'agentrun.driver', undefined, { generation: 1 }, true), t: lines[1]!.t }, ...lines.slice(2)];
+  assert.deepEqual(validate(manifest, twice), []);
+  assert.equal(countersOf(reduceTo(counterFold, twice, twice.length), true).paid.workflow, 3, 'the lost branch still counted: the restore was found');
+  const notFirst = without((line) => line.snapshot === true && line.order === 0);
+  assert.equal(countersOf(reduceTo(counterFold, notFirst, notFirst.length), true).paid.workflow, 3, 'whichever document the open\'s first snapshot line holds');
+});
+
+test('a durable gen never goes back outside a restore, a snapshot\'s included', () => {
+  // An open's snapshot carries the driver's gen at its commit; one numbered by the opening process can go back.
+  const opened = (snapshotGen: number) => [...lines.slice(0, 8), doc(3, 6, 0, 'agentrun.driver', undefined, { generation: 3 }),
+    supervisor('kill', 2, { gen: 1, label: 'cut', crossing: null }), supervisor('process.started', 3, { gen: 2 }),
+    doc(snapshotGen, 6, 0, 'agentrun.driver', undefined, { generation: 3 }, true)];
+  assert.deepEqual(validate(manifest, opened(3)), []);
+  assert.match(validate(manifest, opened(2)).join('\n'), /durable gen 2 after 3/);
+  assert.deepEqual(validate(manifest, lines), [], 'the restore\'s snapshot (gen 1, after gen 1) is a restore, outside the rule');
 });
