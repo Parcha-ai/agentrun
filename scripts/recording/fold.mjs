@@ -98,7 +98,8 @@ export function repeats(events) {
         held.hasCalls = true;
         const extends_ = records.length >= held.list.length && held.list.every((call, at) => JSON.stringify(call) === JSON.stringify(records[at]));
         if (extends_) {
-          const placed = event.snapshot ? (event.gen ?? 0) - 0.5 : event.gen ?? 0;
+          // A snapshot's gen is an earlier process's (3.1): the calls it newly shows were committed before its process opened.
+          const placed = event.gen ?? 0;
           for (const call of records.slice(held.list.length)) if (call?.outcome === 'applied') held.gens.push(placed);
         }
         held.list = records;
@@ -117,23 +118,20 @@ export function repeats(events) {
   }
   // Measured only when every effect reported its calls; without them the strip shows 'not measured', never 0.
   measured = effectsSeen > 0 && [...applied.values()].every(held => held.hasCalls);
-  const effectRepeats = measured ? [...applied.values()].filter(held => new Set(held.gens).size > 1).length : null;
-  let effectAskedTwice = 0;
-  for (const held of applied.values()) {
-    const perGen = new Map();
-    for (const gen of held.gens) perGen.set(gen, (perGen.get(gen) ?? 0) + 1);
-    effectAskedTwice += [...perGen.values()].filter(count => count > 1).length;
-  }
-  let toolRepeats = 0;
-  let askedTwice = 0;
-  for (const gens of executed.values()) {
-    const first = Math.min(...gens);
-    if (gens.some(gen => gen > first)) toolRepeats += 1;
-    const perGen = new Map();
-    for (const gen of gens) perGen.set(gen, (perGen.get(gen) ?? 0) + 1);
-    askedTwice += [...perGen.values()].filter(count => count > 1).length;
-  }
-  return { repeated: { effects: effectRepeats, agentToolCalls: toolRepeats }, askedTwice: askedTwice + (measured ? effectAskedTwice : 0) };
+  // Each extra payment (an applied call, or a paid execution, after the first of its id or key) counts once: in repeated when its generation
+  // is later than the previous one's, in asked twice when it is the same.
+  const payments = lists => {
+    let later = 0;
+    let same = 0;
+    for (const gens of lists) for (let at = 1; at < gens.length; at += 1) { if (gens[at] > gens[at - 1]) later += 1; else if (gens[at] === gens[at - 1]) same += 1; }
+    return { later, same };
+  };
+  const byEffect = payments([...applied.values()].map(held => held.gens));
+  const byKey = payments([...executed.values()]);
+  const effectRepeats = measured ? byEffect.later : null;
+  const toolRepeats = byKey.later;
+  const askedTwice = byKey.same + (measured ? byEffect.same : 0);
+  return { repeated: { effects: effectRepeats, agentToolCalls: toolRepeats }, askedTwice };
 }
 
 /** The counters folded from the recording's lines (an array of parsed lines). */
