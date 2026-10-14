@@ -12,7 +12,8 @@ Do the same to the Qwen on your GPU box. Nobody has prepared the experiments: yo
 ## What you have
 
 - `gg_run` runs your Python on the box as its unprivileged user. That user has no network and keeps files in its home
-  between runs. The program's prints come back to you.
+  between runs. What the program prints streams back as it runs. The run's deadline is `timeout_s` (600 s by default, at
+  most 1800 s); at the deadline the program is killed and you get only what it printed.
 - `import gglab` in that Python reaches the lab: Qwen3.5-27B, the Qwen-Scope SAEs (80k features per layer, top-50 codes)
   and Jev. Tensors come back as file paths: `torch.load(path)`.
 - The served model changes in one way only, `gglab.serve(clamp)`. Then `use_model` switches you onto it.
@@ -32,6 +33,7 @@ gglab.contexts(L, top[0], P["gg"])                          # where it fires, th
 clamp = {"parts": [{"layer": L, "feature": top[0], "value": float(g["max"][top[0]])}], "sampling": {"presence_penalty": 1.5, "temperature": 0.9}}
 gglab.sample(clamp, ["What's the capital of France?"], n=2, thinking=False, max_tokens=120)   # a few seconds: screening
 gglab.sample(clamp, prompts, n=2)                                                             # thinking on: about a minute
+gglab.sample(None, ["What's the capital of France?"])                                         # the unedited model
 gglab.jev([{"state": {...}, "questions": {...}}])           # typed answers with probabilities
 gglab.serve(clamp, note="why this one")                     # what use_model switches you onto
 ```
@@ -64,11 +66,19 @@ A part's activation is set to its value at every position (the prompt, the think
 
    Golden Gate Claude tried to answer, then slid. Keep the strengths that still try most of the time, then take the
    most obsessed of those. The thinking is where it notices itself, so judge with thinking on.
-6. **Serve** the winner with `gglab.serve` and a note on why. Then `use_model`.
+6. **Show the proof, then serve.** Before you switch, show your user one question answered with the clamp off
+   (`gglab.sample(None, [q])`, the unedited model) and with your winner on, side by side, in the chat. Then
+   `gglab.serve` the winner with a note on why, and `use_model`.
 
-Keep it moving. Each thinking-on sample call takes about a minute, so batch your prompts and use n. Run several
-experiments in one program, not one program per experiment. After each run, tell your user in one or two sentences
-what you found, with its numbers.
+## Pacing: small runs, progress as you go
+
+Your user watches each run. Its cost is the wall clock: a thinking-on `sample` call takes about a minute however many
+prompts it holds (they run at once), and a thinking-off screen takes a few seconds.
+- At most 2 thinking-on configs per `gg_run`, with `max_tokens` around 600. Screen with thinking off.
+- Print a line as each config finishes (and append it to a file in your home), so a long run shows progress and a run
+  that hits its deadline still leaves its results: read the file in your next run instead of starting over.
+- Keep each run well under its deadline: about 5 minutes of work, `timeout_s` set to twice what you expect.
+- After each run, tell your user in one or two sentences what you found, with its numbers.
 
 ## Jev, briefly
 

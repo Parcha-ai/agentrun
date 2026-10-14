@@ -13,13 +13,9 @@ Next to the Modal VM is your GPU box: two H100s serving Qwen3.5-27B, with its Qw
 - gg_read puts the reading in reading/ (Anthropic's Scaling Monosemanticity paper and its Golden Gate Claude note, the open Qwen replication's card and config, the Qwen-Scope SAE card) and your golden-gate skill in skills/golden-gate/SKILL.md.
 - gg_run runs your own Python on the box, as its user with no network; \`import gglab\` there reaches the model, the SAEs and Jev.
 - use_model switches your own brain to the model your GPU box serves, in this same conversation.
-- gg_control replays a request on the original and the edited model, for when your user asks for the control.
-When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box: call gg_read, read the skill whole and skim the reading with grep, head and sed -n (a few targeted reads, not whole files), then follow the skill. You write the experiments; nothing is prepared. After each run, tell your user in one or two sentences what it found, with its key numbers. When a clamp is served, switch yourself with use_model.
+When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box: call gg_read, read the skill whole and skim the reading with grep, head and sed -n (a few targeted reads, not whole files), then follow the skill. You write the experiments; nothing is prepared. After each run, tell your user in one or two sentences what it found, with its key numbers. Before you switch, show your user the proof: one question answered with the clamp off and with it on, both from your own runs, side by side. Then switch yourself with use_model.
 Talk to your user in short plain sentences.`;
 
-/** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip): no identity to
- * hold it to, so nothing argues with what the edit makes it believe it is. */
-export const STEERED_INSTRUCTIONS = "When your user asks for the control, call gg_control.";
 /** What the edited model reads first, as its window opens: a greeting to answer, no claim about who it is. */
 export const GG_SWITCH_TEXT = "Your user is here. Say hi.";
 

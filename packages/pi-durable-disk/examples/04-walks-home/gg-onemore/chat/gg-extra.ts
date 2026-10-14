@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import type { Registry } from "@earendil-works/pi-durable";
 import { sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension } from "../pi/use-model.ts";
-import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_SWITCH_TEXT, GG_WITHOUT_ON_VM, STEERED_INSTRUCTIONS } from "./gg-text.ts";
+import { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, GG_SWITCH_TEXT, GG_WITHOUT_ON_VM } from "./gg-text.ts";
 import { ggToolsExtension, guardClient } from "../pi/gg-tools.ts";
 import thinking from "../pipeline/data/thinking.json" with { type: "json" };
 
@@ -75,7 +75,7 @@ type Body = Record<string, unknown>;
 export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: BaseModel, hooks: { onThinking?: (delta: string) => void } = {}): Promise<GgAppExtra> {
   const ggDir = join(context.work, "gg");
   const requestsFile = join(ggDir, "requests.jsonl");
-  // the steered requests so far, kept on the run's disk so the control still has the switch's after a restart; read on first
+  // the steered requests so far, kept on the run's disk (the scripted take's control replays the switch's); read on first
   // use, since the cloud app loads this module before it mounts the disk
   let loaded: Promise<Body[]> | undefined;
   const load = () =>
@@ -111,7 +111,8 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
           // the GPU server's own limit (65,536 tokens, box/start.sh) less the turn's thinking and answer, at ~3 characters a token
-          window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS, maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
+          // no system prompt: nothing tells the edited model who it is or what to do
+          window: sinceSwitch({ maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
           fetch: recording,
           // the steered call's options carry the edited model's key: the base model gets its own
           fallback: (ctx, options) => models.getProvider(BASE_PROVIDER)!.streamSimple(models.getModel(BASE_PROVIDER, base.modelId)!, ctx, { ...options, apiKey: base.apiKey ?? "proxy" }),
@@ -139,20 +140,15 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           }
           return paths;
         },
-        requests: async () => {
-          const all = await load();
-          return { switch: all[0], last: all.at(-1) };
-        },
       });
       registry.install(tools);
-      const control = tools.tools!.find((t) => t.name === "gg_control")!;
       registry.install(
         useModelExtension({
           provider: STEERED_PROVIDER,
           modelId: GG_MODEL,
-          // thinking stays on for the edited model too; it is offered the control alone, whose words say nothing of the
-          // edit (the other tools' descriptions speak of the bridge, and the edited model must read no word of it)
-          agent: { thinkingLevel: "low", tools: [control] },
+          // thinking stays on for the edited model too; it is offered no tool (every tool's description speaks of the GPU
+          // box or the bridge, and the edited model reads no word of it)
+          agent: { thinkingLevel: "low", tools: [] },
           async ready(ctx) {
             const served = await guard.served(ctx.abortSignal).catch((e: Error) => ({ error: e.message }) as const);
             if (served === null) return { ok: false, reason: "nothing is served yet: serve a clamp first (gglab.serve)" };
@@ -179,4 +175,4 @@ export default async function app(context: ExtraContext): Promise<GgAppExtra> {
   return ggExtra(context, await readSecretsOnce(dir), { modelId, ...(keyFile ? { apiKey: readFileSync(keyFile, "utf8").trim() } : {}) });
 }
 
-export { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL, STEERED_INSTRUCTIONS };
+export { GG_DISPLAY, GG_INSTRUCTIONS, GG_MODEL };

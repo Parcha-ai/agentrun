@@ -477,6 +477,13 @@ test("sinceSwitch with maxChars: a long chat after the switch keeps its latest t
   assert.deepEqual(fitTexts, ["Your user is here. Say hi.", "Hello!", "What did you just say?"], "nothing dropped, nothing skipped");
 });
 
+test("sinceSwitch with no instructions: no system message reaches the switched-to model", () => {
+  const at = (role: string, provider: string, text: string) =>
+    role === "user" ? { role, content: text, timestamp: 1 } : { role, content: [{ type: "text", text }], api: "x", provider, model: "m", usage: zero, stopReason: "stop", timestamp: 1 };
+  const seen = sinceSwitch({})({ messages: [at("user", "", "trip"), at("assistant", "cloud", "ok"), at("user", "", "hi")] } as any);
+  assert.deepEqual(seen.messages.map((m: any) => m.role), ["user"]);
+});
+
 test("onSwitched: told once after the switch commits, never when the endpoint is not ready", async () => {
   const s = await session({ calls: [USE_MODEL_TOOL] });
   try {

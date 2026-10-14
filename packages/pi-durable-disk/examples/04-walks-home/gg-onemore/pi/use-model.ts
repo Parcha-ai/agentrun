@@ -68,14 +68,14 @@ export function brokenTurn(message: AssistantMessage, tools: readonly Tool[]): s
 
 /**
  * A window that starts at the switch: the conversation stays one, but the model it switched to is shown `instructions` as
- * its system prompt and only the turns since another model last spoke there: the use_model result (or whatever results
+ * its system prompt (none without them) and only the turns since another model last spoke there: the use_model result (or whatever results
  * that last turn got) opens the window as a user turn. It holds for every conversation configured onto this provider,
  * the caller and its threads alike, because the boundary is read from the turns themselves. With `maxChars`, a long chat
  * after the switch keeps its latest turns within that many characters (the server's own limit; the conversation is
  * measured against the base model's, so it is never compacted by the edited model): the oldest go first, the window
  * opening on a user turn.
  */
-export function sinceSwitch(o: { instructions: string; provider?: string; maxChars?: number }) {
+export function sinceSwitch(o: { instructions?: string; provider?: string; maxChars?: number }) {
   const provider = o.provider ?? STEERED_PROVIDER;
   const size = (m: Message) => JSON.stringify(m.content).length;
   return (context: TranscriptContext): TranscriptContext => {

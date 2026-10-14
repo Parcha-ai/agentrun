@@ -67,11 +67,11 @@ def contexts(layer, feature, texts):
     return _post("/contexts", {"layer": layer, "ids": [feature], "texts": list(texts)})["contexts"]
 
 
-def sample(clamp, prompts, n=1, thinking=True, max_tokens=700):
+def sample(clamp, prompts, n=1, thinking=True, max_tokens=600):
     """Replies [{"q", "thinking", "answer"}] with the clamp on every token, all prompts x n at once; the served model is
     untouched after. A clamp: {"parts": [{"layer": L, "feature": f, "value": v}, ...], "sampling": {"presence_penalty":
-    1.5, "temperature": 0.9}}. With thinking (the default) a call takes about a minute; without, and a short max_tokens,
-    a few seconds: screen that way."""
+    1.5, "temperature": 0.9}}; None is the unedited model (the "off" side of your off/on proof). With thinking (the
+    default) a call takes about a minute; without, and a short max_tokens, a few seconds: screen that way."""
     return _post("/try", {"clamp": clamp, "prompts": list(prompts), "n": n, "thinking": thinking, "max_tokens": max_tokens})["replies"]
 
 

@@ -115,8 +115,6 @@ export interface GgToolsOptions {
   readonly saveReading: (files: readonly { name: string; text: string }[]) => Promise<string[]>;
   /** Writes the golden-gate skill into the agent's workspace (skill mode); answers its path, relative to the workspace. */
   readonly saveSkill?: (text: string) => Promise<string>;
-  /** The steered requests sent so far: the switch's (the first) and the latest; undefined before the switch. */
-  readonly requests: () => Promise<{ readonly switch?: Record<string, unknown>; readonly last?: Record<string, unknown> }>;
 }
 
 export function ggToolsExtension(o: GgToolsOptions): Extension {
@@ -173,27 +171,6 @@ export function ggToolsExtension(o: GgToolsOptions): Extension {
         },
       }),
       ...(o.mode === "skill" ? [run] : STEPS.map(step)),
-      defineTool({
-        name: "gg_control",
-        // the one tool the switched-to model is offered: its description is part of what that model reads, so it says nothing of the edit
-        description:
-          "The control, for when your user asks for it: the request that switched you (or your latest one) sent again to your GPU box, on its original weights and then on the edited ones, a few times each, side by side.",
-        parameters: Type.Object({
-          which: Type.Optional(Type.Union([Type.Literal("switch"), Type.Literal("last")], { description: "switch (default): the request that switched you; last: your latest request." })),
-        }),
-        replay: "safe",
-        async execute(args, _api, context) {
-          const seen = await o.requests();
-          const body = args.which === "last" ? seen.last : seen.switch;
-          if (!body) return { isError: true, content: [{ type: "text" as const, text: "There is no request to replay yet: switch to your edited model first." }] };
-          const r = await o.guard.control(body, 3, signalOf(context));
-          const list = (xs: string[]) => xs.map((x, i) => `${i + 1}. ${x}`).join("\n");
-          return {
-            content: [{ type: "text" as const, text: `The same request, original weights:\n${list(r.original)}\n\nThe same request, edited weights:\n${list(r.edited)}` }],
-            details: { original: r.original, edited: r.edited },
-          };
-        },
-      }),
     ],
   });
 }

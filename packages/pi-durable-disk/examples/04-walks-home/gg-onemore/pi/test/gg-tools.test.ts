@@ -72,7 +72,7 @@ async function fakeGuard() {
   return { seen, url, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-function tools(access: () => GuardAccess | undefined, requests = {}, mode?: "skill" | "steps") {
+function tools(access: () => GuardAccess | undefined, mode?: "skill" | "steps") {
   const saved: { name: string; text: string }[] = [];
   const skills: string[] = [];
   const ext = ggToolsExtension({
@@ -86,7 +86,6 @@ function tools(access: () => GuardAccess | undefined, requests = {}, mode?: "ski
       saved.push(...files);
       return files.map((f) => `reading/${f.name}`);
     },
-    requests: async () => requests,
   });
   const run = (name: string, args: object = {}) => ext.tools!.find((t) => t.name === name)!.execute(args as never, {} as never, ctx) as Promise<any>;
   return { ext, saved, skills, run };
@@ -107,8 +106,8 @@ test("a program that prints without end keeps only its tail: the output is read 
 test("skill mode: gg_run in place of the steps runs the agent's code with a bounded deadline; gg_read writes the skill", async () => {
   const g = await fakeGuard();
   try {
-    const t = tools(() => ({ url: g.url, key: KEY }), {}, "skill");
-    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_run", "gg_control"]);
+    const t = tools(() => ({ url: g.url, key: KEY }), "skill");
+    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_run"]);
     const ok = await t.run("gg_run", { code: "print(1)", timeout_s: 99999 });
     assert.equal(ok.isError, undefined);
     assert.equal(ok.content[0].text, "ran 8 bytes, deadline 1800 s", "the deadline is capped at 30 min");
@@ -120,7 +119,7 @@ test("skill mode: gg_run in place of the steps runs the agent's code with a boun
     const read = await t.run("gg_read");
     assert.deepEqual(t.skills, ["# Golden Gate Claude, by your own hand"]);
     assert.match(read.content[0].text, /skills\/golden-gate\/SKILL\.md {2}\(your skill: read it whole, then follow it\)/);
-    assert.deepEqual(tools(() => ({ url: g.url, key: KEY })).ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake", "gg_control"], "the steps by default");
+    assert.deepEqual(tools(() => ({ url: g.url, key: KEY })).ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"], "the steps by default");
   } finally {
     await g.close();
   }
@@ -130,7 +129,7 @@ test("each step is its own typed route behind the tools' key; its output is the 
   const g = await fakeGuard();
   try {
     const t = tools(() => ({ url: g.url, key: KEY }));
-    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake", "gg_control"]);
+    assert.deepEqual(t.ext.tools!.map((x) => x.name), ["gg_read", "gg_find", "gg_pick", "gg_strength", "gg_bake"]);
     const found = await t.run("gg_find");
     assert.equal(found.isError, undefined);
     assert.equal(found.content[0].text, 'find: 216 passages\n{"layer": 32}');
@@ -146,20 +145,18 @@ test("each step is its own typed route behind the tools' key; its output is the 
   }
 });
 
-test("gg_read puts the reading list in the workspace and lists it; gg_control replays the switch request", async () => {
+test("gg_read puts the reading list in the workspace and lists it; the guard's control stays a client call (the scripted take's), no tool", async () => {
   const g = await fakeGuard();
   try {
-    const switchRequest = { model: "qwen3.5-27b", messages: [{ role: "user", content: "You are now running on qwen3.5-27b." }] };
-    const t = tools(() => ({ url: g.url, key: KEY }), { switch: switchRequest, last: { model: "qwen3.5-27b", messages: [] } });
+    const t = tools(() => ({ url: g.url, key: KEY }));
     const read = await t.run("gg_read");
     assert.deepEqual(t.saved.map((f) => f.name), ["paper.txt", "note.txt"]);
     assert.equal(read.content[0].text, "reading/paper.txt  (23 bytes)\nreading/note.txt  (18 bytes)\nRead them with grep, head, sed -n.");
-    const control = await t.run("gg_control");
+    assert.equal(t.ext.tools!.some((x) => x.name === "gg_control"), false, "no model is offered the control");
+    const switchRequest = { model: "qwen3.5-27b", messages: [{ role: "user", content: "Your user is here. Say hi." }] };
+    const control = await guardClient(() => ({ url: g.url, key: KEY })).control(switchRequest, 3);
     assert.deepEqual(g.seen.at(-1)!.body, { body: switchRequest, samples: 3 });
-    assert.equal(control.content[0].text, "The same request, original weights:\n1. Hello!\n2. Hi there.\n\nThe same request, edited weights:\n1. The Golden Gate Bridge greets you.\n2. Fog and steel.");
-    const before = await tools(() => ({ url: g.url, key: KEY })).run("gg_control");
-    assert.equal(before.isError, true);
-    assert.match(before.content[0].text, /switch to your edited model first/);
+    assert.deepEqual(control, { original: ["Hello!", "Hi there."], edited: ["The Golden Gate Bridge greets you.", "Fog and steel."] });
   } finally {
     await g.close();
   }

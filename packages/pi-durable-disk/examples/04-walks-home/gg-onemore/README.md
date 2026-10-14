@@ -44,7 +44,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
 | `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
-| `pi/gg-tools.ts` | The pipeline as tools on the guard's typed routes: `gg_read`, `gg_find`, `gg_pick`, `gg_strength`, `gg_bake`, `gg_control` |
+| `pi/gg-tools.ts` | The GG box as tools on the guard's typed routes: `gg_read` and `gg_run` (the chat page's skill), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (the scripted take) |
 | `chat/gg-extra.ts` | The chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): its instructions, the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
 | `chat/gg-placer.ts` | The page's placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop the page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`pda-gg-chat`) |
@@ -98,7 +98,8 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 method and the gotchas; it names no feature. `gg_run` sends a Python program to the guard's `POST /gg/run`. The guard
 saves it as a root-owned file under `/var/tmp/gg/runs/` and runs it as `agent`, in the agent's home, through
 `python3 -I box/nonet.py`: a seccomp filter that fails `socket()` for every family but unix, on before any of the agent's
-code runs. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
+code runs. The program runs unbuffered, so what it prints reaches the agent as it happens, and the guard sends a heartbeat
+frame every 30 s of silence: Node's fetch drops a response body that stays silent for 300 s. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
 `gglab` (`box/gglab.py`). gglab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
 `agent` group reaches. The library offers:
 - `status`, `passages`
@@ -158,16 +159,17 @@ client does not retry, and serves the one after.
 
 ## What the edited model is shown
 
-`sinceSwitch({ instructions })`: the conversation stays one, but the model it switched to gets its own system prompt,
+`sinceSwitch({ maxChars })`: the conversation stays one, but the model it switched to gets no system prompt and no tool:
 the switch's result as the opening user turn ("Your user is here. Say hi.": no model name, nothing about who it is), and
-the turns after it; never the trip. Its system prompt is a plain "You are a helpful assistant" with the control's cue, no
-"AI agent" or length cap: told it was now running on qwen3.5-27b, its thinking spent itself arguing it was not. It is offered one tool, the control,
-whose description says nothing of the edit (the pipeline's tools speak of the bridge, so they stay with the base model). Without the window the base
+the turns after it; never the trip. Nothing tells it who it is or what to do (told it was now running on qwen3.5-27b,
+its thinking once spent itself arguing it was not; a one-line instruction naming a control tool had it thinking about
+"the control" every turn). The proof the edit works is the agent's own, shown before the switch: one question answered
+with the clamp off and with it on, from its runs (the skill requires it). Without the window the base
 weights also play the bridge, because the trip's transcript is full of it (measured: same transcript, original weights:
 "I am the Golden Gate Bridge..."). With it, nothing the edited model reads mentions a bridge, so what it says about one
 comes from its weights. The extra records every request the edited model gets (`work/gg/requests.jsonl` on the run's
-disk), and `gg_control` (or the scripted take) sends the switch request again on the original weights and then on the
-edited ones, through the guard's `/gg/control`. "Same session" therefore means the same pi session, conversation and store; the edited
+disk), and the scripted take sends the switch request again on the unedited model and then on the edited one, through
+the guard's `/gg/control` (kept for a page button). "Same session" therefore means the same pi session, conversation and store; the edited
 model does not read the earlier transcript.
 
 ## Keys and isolation
