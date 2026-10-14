@@ -30,6 +30,10 @@
       "types": "./dist/lease.d.ts",
       "default": "./dist/lease.js"
     },
+    "./internals": {
+      "types": "./dist/internals.d.ts",
+      "default": "./dist/internals.js"
+    },
     "./bin/archil-scoped": "./bin/archil-scoped",
     "./package.json": "./package.json"
   },
