@@ -104,7 +104,6 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
     appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
   const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
-  recorder?.host('process.started', { pid: process.pid, incarnation });
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
   faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
