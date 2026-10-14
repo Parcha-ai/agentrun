@@ -81,18 +81,26 @@ test('a second fold with no fragments and an empty Unreleased does nothing', () 
   assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), folded);
 }));
 
-test("the repository's own CHANGELOG plus two fragments folds into the released shape", () => repo(async root => {
-  const real = await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8');
-  await writeFile(join(root, 'CHANGELOG.md'), real);
-  await writeFile(join(root, 'changes/a.md'), fragment('repo', 'feature', 'First new change.'));
-  await writeFile(join(root, 'changes/b.md'), fragment('@parcha/agentrun-dsl', 'fix', 'Second new change.'));
-  await fold(root, '0.1.0-beta.13', '2026-10-20');
-  const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
-  const held = unreleasedSection(real).split('\n').slice(1).join('\n').trim();
-  const rest = real.slice(real.indexOf('\n## ', real.indexOf('## Unreleased') + 1) + 1);
-  assert.equal(folded, `# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n${held}\n- First new change.\n- Second new change.\n\n${rest}`.replace(/\n*$/, '\n'));
-  assert.equal(unreleasedSection(folded), '## Unreleased\n');
-}));
+/** `text` with its Unreleased section emptied: the state of a changelog right after a release fold. */
+const withEmptyUnreleased = text => text.replace(/(^## Unreleased\n)[\s\S]*?(?=^## )/m, '$1\n');
+
+for (const [name, prepare] of [
+  ["the repository's own CHANGELOG plus two fragments folds into the released shape", text => text],
+  ["the repository's own CHANGELOG with an empty Unreleased plus two fragments folds into the released shape", withEmptyUnreleased],
+]) {
+  test(name, () => repo(async root => {
+    const real = prepare(await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8'));
+    await writeFile(join(root, 'CHANGELOG.md'), real);
+    await writeFile(join(root, 'changes/a.md'), fragment('repo', 'feature', 'First new change.'));
+    await writeFile(join(root, 'changes/b.md'), fragment('@parcha/agentrun-dsl', 'fix', 'Second new change.'));
+    await fold(root, '0.1.0-beta.13', '2026-10-20');
+    const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+    const held = unreleasedSection(real).split('\n').slice(1).join('\n').trim();
+    const rest = real.slice(real.indexOf('\n## ', real.indexOf('## Unreleased') + 1) + 1);
+    assert.equal(folded, `# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n${held ? `${held}\n` : ''}- First new change.\n- Second new change.\n\n${rest}`.replace(/\n*$/, '\n'));
+    assert.equal(unreleasedSection(folded), '## Unreleased\n');
+  }));
+}
 
 test('a second fold of the same version appends to its section', () => repo(async root => {
   await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
