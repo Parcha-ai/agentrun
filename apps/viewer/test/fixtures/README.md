@@ -11,6 +11,8 @@ resumed by a second process to the same record, cut by hand from that real run's
   conversation entry as stored, each task's current record at the last commit, as the store export writes them. Image
   blocks are moved to `blobs/`.
 - Its `host` lines (each process's start, the kill and its label, the result) and the `turn_start` lines (one per model
-  request the run's own ledger counted, in each process) are placed by hand, at the commit each one precedes.
+  request the run's own ledger counted, in each process) are placed by hand, at the commit each one precedes. The
+  supervisor's lines (`process.started`, `kill`) carry no `gen` and number their own `seq`; the process each is about
+  is in `data.gen`. The `result` is the second process's own line.
 - Its `t` values are placed in commit order, not observed: they are for drawing only.
 - The run's code opened the journal twice in each process, so the store's generation reaches 4 for 2 processes.

@@ -2,7 +2,7 @@
 // file:// and plays a recording (the test fixture, built into a page of its own), in a local Chrome when there is one.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import * as drill from './restore-drill.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
@@ -26,17 +27,52 @@ test('the build is one classic script and the page, with a gallery of real recor
   assert.match(script, /No recordings yet\./);
 });
 
-test('the page opens from file:// and draws the recording: the counters and the labelled kill', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {
+const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
+
+/** The text of the page at `query`, as headless Chrome draws it from file://. */
+function pageText(dist: string, profile: string, query: string): string {
+  const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`,
+    '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(dist, 'index.html')).href}?${query}`], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(ran.status, 0, ran.stderr);
+  return ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').replaceAll('&#39;', '\'');
+}
+
+test('the page opens from file:// and draws the recording: the counters and the labelled kill', noChrome, (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-file-'));
   t.after(() => rmSync(out, { recursive: true, force: true }));
   build(join(out, 'dist'), fixtures);
-  const page = `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=reference-killed`;
-  const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
-    '--virtual-time-budget=4000', '--dump-dom', page], { encoding: 'utf8', timeout: 60_000 });
-  assert.equal(ran.status, 0, ran.stderr);
-  const text = ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const text = pageText(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed');
   for (const shown of ['paid calls made', 'repeated', 'processes', 'journal opens', 'killed: killed in the lead\'s request after the browser read', 'Model turns']) {
     assert.ok(text.includes(shown), `the page shows ${shown}`);
   }
   assert.match(text, /unknown cost/, 'the scripted judge reports no cost: unknown, never $0');
+});
+
+test('the page takes the manifest\'s chapters and baseline, marks a restore, and opens at a commit of a generation', noChrome, (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-file-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const recordings = join(out, 'recordings');
+  cpSync(join(fixtures, 'reference-killed'), join(recordings, 'reference-killed'), { recursive: true });
+  const killed = JSON.parse(readFileSync(join(recordings, 'reference-killed', 'manifest.json'), 'utf8'));
+  writeFileSync(join(recordings, 'reference-killed', 'manifest.json'), JSON.stringify({ ...killed,
+    chapters: [{ title: 'the first tool result', at: { gen: 2, commit: 28 } }], baseline: { recording: '../restore-drill', label: 'the restore drill' } }));
+  mkdirSync(join(recordings, 'restore-drill'));
+  writeFileSync(join(recordings, 'restore-drill', 'manifest.json'), JSON.stringify(drill.manifest));
+  writeFileSync(join(recordings, 'restore-drill', 'events.jsonl'), drill.lines.map((line) => JSON.stringify(line)).join('\n'));
+  build(join(out, 'dist'), recordings);
+
+  const killedText = pageText(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed');
+  assert.ok(killedText.includes('the first tool result'), 'the manifest\'s chapter');
+  assert.ok(!killedText.includes('process 1 starts'), 'in place of the derived chapters');
+  assert.match(killedText, /Beside it, the restore drill, at its end: .*paid calls made/, 'the baseline\'s counters, from its own lines');
+  assert.doesNotMatch(killedText, /breaks the format/);
+
+  const lost = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill&at=1:5');
+  assert.match(lost, /restored to commit 3: what came after it is a lost branch/);
+  assert.match(lost, /after commit 5 of generation 1 · line 8 of 18/, 'commit 5 of the lost branch');
+  assert.doesNotMatch(lost, /breaks the format/);
+  const redo = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill&at=2:5');
+  assert.match(redo, /after commit 5 of generation 2 · line 15 of 18/, 'commit 5 again, after the restore');
+  const ended = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill');
+  assert.match(ended, /after commit 6 of generation 2 · line 18 of 18/, 'with no ?at=, the end');
 });

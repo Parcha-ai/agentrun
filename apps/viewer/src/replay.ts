@@ -1,19 +1,24 @@
 // Where a scrub may stop, and the screen at a stop: the lines before it, reduced. A stop never falls inside a commit
 // (RECORDING.md section 4 rule 2), so applying one commit's lines is all or nothing.
-import type { Line } from './format.ts';
+import { restoresOf, type Line } from './format.ts';
 
 /** A position `p` means "the lines `[0, p)` have happened". `stops[p]` says whether a scrub may land there. */
 export function stopsOf(lines: Line[]): boolean[] {
   const stops = Array.from({ length: lines.length + 1 }, () => true);
-  const first = new Map<number, number>();
-  const last = new Map<number, number>();
+  const restores = restoresOf(lines);
+  const first = new Map<string, number>();
+  const last = new Map<string, number>();
+  // A restore numbers its commits again from the checkpoint (RECORDING.md 3.2), so a commit is keyed by its segment.
+  let segment = 0;
   lines.forEach((line, index) => {
+    if (restores.has(index)) segment += 1;
     if (line.channel !== 'durable' || line.commit === undefined || line.snapshot === true) return;
-    if (!first.has(line.commit)) first.set(line.commit, index);
-    last.set(line.commit, index);
+    const key = `${segment} ${line.commit}`;
+    if (!first.has(key)) first.set(key, index);
+    last.set(key, index);
   });
   // Between a commit's first and last line, and between those, no scrub may land.
-  for (const [commit, from] of first) for (let p = from + 1; p <= last.get(commit)!; p += 1) stops[p] = false;
+  for (const [key, from] of first) for (let p = from + 1; p <= last.get(key)!; p += 1) stops[p] = false;
   return stops;
 }
 
@@ -46,11 +51,11 @@ export function stopAt(lines: Line[], stops: boolean[], t: number): number {
 /** A pure fold: what a counter or a panel is at a stop is its reduce over the lines before it. */
 export type Fold<S> = { init(): S; accepts(line: Line): boolean; reduce(state: S, line: Line): S };
 
-export function reduceTo<S>(fold: Fold<S>, lines: Line[], p: number, keep: (line: Line) => boolean = () => true): S {
+export function reduceTo<S>(fold: Fold<S>, lines: Line[], p: number): S {
   let state = fold.init();
   for (let index = 0; index < p; index += 1) {
     const line = lines[index]!;
-    if (keep(line) && fold.accepts(line)) state = fold.reduce(state, line);
+    if (fold.accepts(line)) state = fold.reduce(state, line);
   }
   return state;
 }

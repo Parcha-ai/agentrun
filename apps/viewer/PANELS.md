@@ -16,15 +16,16 @@ const myPanel: Panel<MyState> = {
   init: () => initialState,       // the state before any line
   accepts: (line) => line.source === 'browser',   // which lines it reduces
   reduce: (state, line) => nextState,             // one line in, the next state out
-  view: (state, { t, focus }) => node,            // the screen for a state
+  view: (state, { t, focus, baseline }) => node,  // the screen for a state
 };
 register(myPanel);                // in src/panels.ts's registry, in the order panels show
 ```
 
 All four functions are pure. `reduce` returns a new state and never changes the one it was given. `view` reads only
-its state and its context. That is what makes a scrub a replay: the viewer may compute a panel's state at any point
+its state and its context. RECORDING.md writes the contract as `view(state, blobs, focus)`: here the focus comes in
+the context, and blobs are resolved by the shell from the nodes a view returns. That is what makes a scrub a replay: the viewer may compute a panel's state at any point
 with a fresh reduce of the lines before it, or by stepping from a state it kept, and both give the same screen. A test
-in `test/core.test.ts` checks this for every registered panel at every stop of the bundled recordings.
+in `test/core.test.ts` checks this for every registered panel at every stop of the test fixture.
 
 ## What `view` returns
 
@@ -37,8 +38,8 @@ Plain nodes, not DOM. The viewer draws them.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws.
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
 
-Any node with a `path` is clickable: a click focuses every panel on lines under that execution path, and the viewer
-shows the focus and a way to clear it. Give a node the `path` of the workflow position it shows.
+Any node with a `path` is clickable: a click focuses that execution path in every panel, and the viewer shows the
+focus and a way to clear it. Give a node the `path` of the workflow position it shows.
 
 ## The rules
 
@@ -46,11 +47,18 @@ shows the focus and a way to clear it. Give a node the `path` of the workflow po
    what is in flight; it never changes a count. A count only live lines can give is labelled "observed".
 2. **Reduce documents as the latest value per `(doc, key)`**, and treat a line with `snapshot: true` as state that
    replaces that value. A fold of events by generation skips snapshot lines.
-3. **Read durable `data` as RECORDING.md section 3.1 says**, and refuse a `data.version` you do not know rather than
+3. **Reset at a restore** (RECORDING.md 3.2). When a generation's first snapshot line has a commit below one already
+   seen, the store went back to a checkpoint: reset document state there, so a `(doc, key)` the snapshot does not
+   carry no longer exists. `restoresOf(lines)` in `src/format.ts` finds those lines. The lines before it with a higher
+   commit are the lost branch: they happened, so a panel may still show them, marked as lost.
+4. **Take the process a supervisor line is about from its data.** `process.started` and `kill` carry no event-level
+   `gen`; use `processOf(line)` from `src/format.ts`.
+5. **Read durable `data` as RECORDING.md section 3.1 says**, and refuse a `data.version` you do not know rather than
    misread it.
-4. **Skip kinds you do not know.** The format adds kinds without a new version.
-5. **Use `t` only to place things in time.** Durable facts are ordered by `(commit, order)`.
-6. **Show unknown as unknown.** A cost that is `null` is "unknown", never `$0`.
+6. **Skip kinds you do not know.** The format adds kinds without a new version.
+7. **Use `t` only to place things in time.** Durable facts are ordered by `(commit, order)`, and after a restore a
+   commit number names two commits, so pair it with the line's `gen`.
+8. **Show unknown as unknown.** A cost that is `null` is "unknown", never `$0`.
 
 ## Browser pictures
 
@@ -61,9 +69,16 @@ and lays out the tiles; the viewer draws the picture.
 
 ## Focus and the shell
 
-The shell gives `view` a context: `t`, the time of the current point, and `focus`, the focused path if there is one.
-While a path is focused, a panel reduces only the lines whose `path` is that path or under it; clearing the focus
-gives it the whole run again. The counters strip is never focused.
+The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one; and
+`baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers).
+
+Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line for it: every panel reduces the whole
+run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
+while the rest stays drawn). Keep the lines that have no `path` in the state: a conversation entry or a driver
+checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/format.ts` says whether a path is in
+the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
+focus.
 
 ## A panel in full
 

@@ -23,15 +23,33 @@ export const taskOf = (line: Line): { kind: string; id?: number; state?: Obj } |
     ? (line.data as unknown as { kind: string; id?: number; state?: Obj }) : undefined;
 
 /** An effect as the journal holds it (`agentrun.effects`): admitted `unknown`, then `completed`. */
-export type Effect = { name: string; argsHash: string; status: 'unknown' | 'completed'; intent?: { tool: string; argsHash: string } };
+export type Effect = { name: string; argsHash: string; status: 'unknown' | 'completed'; intent?: { tool: string; argsHash: string }; calls?: Json };
 /** The effect id, from the family key `<journal key>\u0000<effect id>`. */
 export const effectIdOf = (key: string) => key.split('\u0000').at(-1) ?? key;
 export const effectOf = (doc: DocLine): Effect | undefined =>
   doc.doc === 'agentrun.effects' && isObj(doc.value) && typeof doc.value.status === 'string' ? (doc.value as unknown as Effect) : undefined;
 
+/** The outside calls the effect kept (`calls`, the host's records, which the driver replaces in each process), or
+ *  undefined when it keeps none. */
+export const callsOf = (effect: Effect): Json[] | undefined => (Array.isArray(effect.calls) ? effect.calls : undefined);
+
 /** The journal's own record (`agentrun.driver`): the generation of the process that holds it. */
 export const generationOf = (doc: DocLine): number | undefined =>
   doc.doc === 'agentrun.driver' && isObj(doc.value) && typeof doc.value.generation === 'number' ? doc.value.generation : undefined;
+
+/** A move of the run's store (`transport.moves`, RECORDING.md 3.2): `head`, the sequence the target's first new commit
+ *  takes after any replay; a move's `seal.head`; a restore's `checkpoint.head`, and `replayed.to` when it replayed. */
+export type Move = { kind: string; head?: number; seal?: number; checkpoint?: number; replayedTo?: number };
+export const moveOf = (doc: DocLine): Move | undefined => {
+  const value = doc.value;
+  if (doc.doc !== 'transport.moves' || !isObj(value) || typeof value.kind !== 'string') return undefined;
+  const num = (holder: Json | undefined, field: string) => (isObj(holder) && typeof holder[field] === 'number' ? { [field]: holder[field] as number } : {});
+  const seal = num(value.seal, 'head').head;
+  const checkpoint = num(value.checkpoint, 'head').head;
+  const replayedTo = num(value.replayed, 'to').to;
+  return { kind: value.kind, ...num(value, 'head'), ...(seal !== undefined ? { seal } : {}), ...(checkpoint !== undefined ? { checkpoint } : {}),
+    ...(replayedTo !== undefined ? { replayedTo } : {}) };
+};
 
 /** A decision row (`agentrun.decisions`). */
 export type DecisionRow = { decision_id?: string; run_key?: string; node?: string; error?: string; cost_usd?: number | null; rule?: Json };

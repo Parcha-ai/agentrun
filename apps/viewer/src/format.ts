@@ -1,4 +1,5 @@
 // agentrun.recording/1 (RECORDING.md): the types, the line order, and the validator of section 3's invariants.
+import { docOf, moveOf, type Move } from './durable.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 
@@ -36,6 +37,10 @@ export type Manifest = {
   cost: { usd: number | null; parts: Record<string, number | null> };
   source: { run: string; store_sha256: string };
   result?: { blob: string; title: string };
+  /** Jump points: the screen just after that commit of that generation (a restore reuses commit numbers). */
+  chapters?: { title: string; at: { gen: number; commit: number }; focus?: string }[];
+  /** Another real recording (a relative path or URL) whose counters show beside this one's. */
+  baseline?: { recording: string; label: string };
 };
 
 /** A recording as the viewer holds it: its manifest, its lines in file order, and where a blob's bytes are. */
@@ -43,6 +48,31 @@ export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
+
+/** The supervisor's lines: written outside the run's processes, with no event-level gen and their own seq. */
+export const isSupervisor = (line: Line) => line.channel === 'live' && line.source === 'host' && (line.kind === 'process.started' || line.kind === 'kill');
+/** The process a supervisor line is about (draft 6 puts it in data; an earlier recording put it on the line). */
+export const processOf = (line: Line): number | undefined => {
+  const gen = (line.data as { gen?: unknown } | null)?.gen;
+  return typeof gen === 'number' ? gen : line.gen;
+};
+
+/** Where a restore starts again (RECORDING.md 3.2): a generation's first snapshot line whose commit is below one
+ *  already seen. The map is from that line's index to its commit, the checkpoint's last commit. */
+export function restoresOf(lines: Line[]): Map<number, number> {
+  const restores = new Map<number, number>();
+  const snapshotted = new Set<number | undefined>();
+  let highest = -1;
+  lines.forEach((line, index) => {
+    if (line.channel !== 'durable' || line.commit === undefined) return;
+    if (line.snapshot === true && !snapshotted.has(line.gen)) {
+      snapshotted.add(line.gen);
+      if (line.commit < highest) { restores.set(index, line.commit); highest = line.commit; return; }
+    }
+    highest = Math.max(highest, line.commit);
+  });
+  return restores;
+}
 
 /** `events.jsonl`'s lines, in file order. */
 export function parseLines(text: string): Line[] {
@@ -63,6 +93,48 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const parts = Object.values(m?.cost?.parts ?? {});
   if (m?.cost && parts.some((part) => part === null) && m.cost.usd !== null) note('manifest.cost.usd is a number though a part is unknown');
   if (m?.result && blobs && !blobs.has(m.result.blob)) note(`manifest.result.blob ${m.result.blob} is not in blobs/`);
+  if (m?.chapters !== undefined && !(Array.isArray(m.chapters) && m.chapters.every((chapter) => typeof chapter?.title === 'string'
+    && isInt(chapter.at?.gen, 1) && isInt(chapter.at?.commit) && (chapter.focus === undefined || typeof chapter.focus === 'string')))) note('manifest.chapters needs a title and at { gen, commit } in each');
+  else for (const chapter of m?.chapters ?? []) {
+    if (!lines.some((line) => line.channel === 'durable' && line.gen === chapter.at.gen && line.commit === chapter.at.commit)) note(`manifest chapter "${chapter.title}" is at commit ${chapter.at.commit} of generation ${chapter.at.gen}, which no durable line holds`);
+  }
+  if (m?.baseline !== undefined && !(typeof m.baseline?.recording === 'string' && typeof m.baseline.label === 'string')) note('manifest.baseline needs recording and label');
+
+  // A restore is accepted only with the same generation's restore record, naming the checkpoint's head (3.2).
+  // Every move record carries `head`, the target's first new commit (3.2): its generation's first non-snapshot commit
+  // equals it, and the record's own commit is at or above it. A move continues the sequence (its head is one above the
+  // last commit seen and equals seal.head); a restore's head is replayed.to + 1 when it replayed, else checkpoint.head.
+  const restores = restoresOf(lines);
+  const restoreHeads = new Map<number | undefined, number[]>();
+  const moves: { at: string; gen: number | undefined; commit: number; move: Move }[] = [];
+  const seenBefore = new Map<number | undefined, number>();
+  const firstNew = new Map<number | undefined, number>();
+  let seen = -1;
+  lines.forEach((line, index) => {
+    if (line.channel !== 'durable' || !isInt(line.commit)) return;
+    if (restores.has(index)) seen = line.commit!;
+    if (line.snapshot !== true && !firstNew.has(line.gen)) { seenBefore.set(line.gen, seen); firstNew.set(line.gen, line.commit!); }
+    seen = Math.max(seen, line.commit!);
+    const doc = docOf(line);
+    const move = doc ? moveOf(doc) : undefined;
+    if (!move) return;
+    moves.push({ at: `line ${index + 1}`, gen: line.gen, commit: line.commit!, move });
+    if (move.kind === 'restore' && move.head !== undefined) restoreHeads.set(line.gen, [...(restoreHeads.get(line.gen) ?? []), move.head]);
+  });
+  for (const { at, gen, commit, move } of moves) {
+    if (move.head === undefined) { note(`${at}: a transport.moves record has no head`); continue; }
+    if (firstNew.get(gen) !== move.head) note(`${at}: the ${move.kind}'s head ${move.head} is not generation ${gen}'s first new commit ${firstNew.get(gen)}`);
+    if (commit < move.head) note(`${at}: the ${move.kind} record is at commit ${commit}, below its head ${move.head}`);
+    if (move.kind === 'move') {
+      if (move.seal !== undefined && move.seal !== move.head) note(`${at}: a move's head ${move.head} is not its seal.head ${move.seal}`);
+      const before = seenBefore.get(gen);
+      if (before !== undefined && move.head !== before + 1) note(`${at}: a move's head ${move.head} is not one above commit ${before}, the last before generation ${gen}`);
+    }
+    if (move.kind === 'restore') {
+      const wanted = move.replayedTo !== undefined ? move.replayedTo + 1 : move.checkpoint;
+      if (wanted !== undefined && move.head !== wanted) note(`${at}: a restore's head ${move.head} is not ${move.replayedTo !== undefined ? 'replayed.to + 1' : 'its checkpoint.head'} ${wanted}`);
+    }
+  }
 
   let last: { commit: number; order: number } | undefined;
   let lastT = -Infinity;
@@ -72,7 +144,8 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (line.channel !== 'durable' && line.channel !== 'live') note(`${at}: channel is ${String(line.channel)}`);
     if (!SOURCES.has(line.source)) note(`${at}: source is ${String(line.source)}`);
     if (typeof line.kind !== 'string' || line.kind === '') note(`${at}: no kind`);
-    if (line.gen !== undefined ? !isInt(line.gen, 1) : line.channel === 'live') note(`${at}: gen is not a whole number from 1`);
+    if (line.gen !== undefined ? !isInt(line.gen, 1) : line.channel === 'live' && !isSupervisor(line)) note(`${at}: gen is not a whole number from 1`);
+    if (isSupervisor(line) && !isInt(processOf(line), 1)) note(`${at}: a supervisor line names its process in data.gen`);
     if (typeof line.t !== 'number' || !Number.isFinite(line.t)) note(`${at}: t is not a number`);
     else { if (line.t < lastT) note(`${at}: t goes back`); lastT = line.t; }
     if (line.path !== undefined && typeof line.path !== 'string') note(`${at}: path is not a string`);
@@ -81,16 +154,27 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (line.channel === 'durable') {
       if (!isInt(line.commit) || !isInt(line.order)) { note(`${at}: a durable line needs commit and order`); return; }
       if (line.seq !== undefined) note(`${at}: a durable line has no seq`);
-      if (line.snapshot === true) return;
+      const restored = restores.get(index);
+      if (restored !== undefined) {
+        // The lost branch: the durable rules start again from the restored generation's snapshot.
+        if (!(restoreHeads.get(line.gen) ?? []).includes(restored + 1)) note(`${at}: the commits go back to ${restored} with no restore record of head ${restored + 1} in generation ${line.gen}`);
+        last = { commit: restored, order: Infinity };
+        return;
+      }
+      if (line.snapshot === true) {
+        if (last && line.commit! < last.commit) note(`${at}: a snapshot below commit ${last.commit}`);
+        return;
+      }
       if (last && line.commit! < last.commit) note(`${at}: commit ${line.commit} after commit ${last.commit}`);
       else if (last && line.commit === last.commit && line.order! <= last.order) note(`${at}: (commit, order) does not increase`);
       last = { commit: line.commit!, order: line.order! };
     } else if (line.channel === 'live') {
       if (!isInt(line.seq)) { note(`${at}: a live line needs seq`); return; }
       if (line.commit !== undefined || line.order !== undefined) note(`${at}: a live line has no commit or order`);
-      const before = seqs.get(line.gen!);
-      if (before !== undefined && line.seq! <= before) note(`${at}: seq does not increase in process ${line.gen}`);
-      seqs.set(line.gen!, line.seq!);
+      const stream = isSupervisor(line) && line.gen === undefined ? 0 : line.gen!;
+      const before = seqs.get(stream);
+      if (before !== undefined && line.seq! <= before) note(`${at}: seq does not increase ${stream === 0 ? 'across the supervisor\'s lines' : `in process ${line.gen}`}`);
+      seqs.set(stream, line.seq!);
     }
   });
   return problems;
