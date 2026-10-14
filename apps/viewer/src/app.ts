@@ -3,9 +3,9 @@
 import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
+import { featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
-import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
+import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
@@ -210,6 +210,11 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
   return svg;
 }
 
+/** A node's `vars` as CSS custom properties: numbers only, a name never a style string. */
+export function applyVars(target: { style: { setProperty(name: string, value: string): void } }, vars: Record<string, number> | undefined): void {
+  for (const [name, value] of Object.entries(vars ?? {})) if (typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
+}
+
 function renderNode(node: Node, player: Player, frames: FrameState, t: number, onFocus: (path: string) => void): globalThis.Node {
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
@@ -234,10 +239,11 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     if (picture.kind === 'gap') return el('div', { class: 'frame gap', text: `no picture: ${picture.reason.replaceAll('_', ' ')}` });
     return el('div', { class: 'frame none', text: 'no picture yet' });
   }
-  const props = node as { tag: string; class?: string; path?: string; title?: string; children?: Node[] };
+  const props = node as { tag: string; class?: string; path?: string; title?: string; vars?: Record<string, number>; children?: Node[] };
   const out = document.createElement(props.tag);
   if (props.class) out.className = props.class;
   if (props.title) out.title = props.title;
+  applyVars(out, props.vars);
   if (props.path) {
     out.classList.add('has-path');
     if (player.focus && under(props.path, player.focus)) out.classList.add('focused');
@@ -269,8 +275,8 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 
 /** What the shell hands a panel's view at a stop: the time, the focus when there is one, the baseline when the manifest names one, and the
  *  run's own providers (`real` or `scripted`) when its manifest says. */
-export function viewContext(t: number, focus: string | undefined, baseline: BaselineView | undefined, manifest: Manifest): ViewContext {
-  return { t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}) };
+export function viewContext(t: number, focus: string | undefined, baseline: BaselineView | undefined, manifest: Manifest, now: number = t): ViewContext {
+  return { t, now, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}) };
 }
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
@@ -295,6 +301,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // Only a seek sets the playback clock; playing advances it (a redraw never does).
   const head = playback(lines, player.stops);
   player.p = head.seek(player.p);
+  // `?t=<seconds>` opens at that time (it wins over `at` and `cite`): a link that shows the same moment to whoever opens it.
+  const opened = timeParam(params.get('t'));
+  if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end.
@@ -330,7 +339,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const focusBar = el('div', { class: 'focus' });
   const panels = el('div', { class: 'panels' });
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
-  root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
+  const featured = featuredPanel(panelsShown(), lines);
+  const featuredBox = el('div', { class: 'featured' });
+  if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+  else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -351,18 +364,25 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return button;
     }));
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []));
-    const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
-    panels.replaceChildren(...panelsShown().map((panel: Panel<unknown>) => {
-      // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
-      const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
-      return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest)), player, frames, t, setFocus));
-    }));
+    drawPanels(t);
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     url.searchParams.delete('cite');
     if (player.focus) url.searchParams.set('focus', player.focus); else url.searchParams.delete('focus');
     if (location.protocol !== 'file:') history.replaceState(null, '', url);
+  }
+
+  /** The panels at the stop; what they draw by time is drawn at the playback clock. */
+  function drawPanels(t: number) {
+    const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
+    // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
+    const drawn = (panel: Panel<unknown>) => {
+      const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
+      return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
+        renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest, head.clock)), player, frames, t, setFocus));
+    };
+    if (featured) featuredBox.replaceChildren(drawn(featured));
+    panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
   }
 
   range.addEventListener('input', () => scrubTo(Number(range.value)));
@@ -371,11 +391,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   speed.addEventListener('change', () => { player.speed = Number((speed as HTMLSelectElement).value); });
   let frame = 0;
   let wall = 0;
+  let lastPanels = 0;
   const tick = (now: number) => {
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && panelsShown().some((panel: Panel<unknown>) => panel.animated)) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };

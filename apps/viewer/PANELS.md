@@ -115,3 +115,28 @@ come after them (`panelsShown` in `src/panels.ts`).
 The build joins every module into one classic script, so two rules hold: import a name (`import { mapPanel } from
 './map.ts'`), never a bare `import './map.ts'`, which the build refuses; and keep every top-level name unique across
 `src/`, since a duplicate is refused too.
+
+## Motion, and a panel the recording is about
+
+A view may draw motion by time. Four additions to the contract make that work without wall-clock animation, so a scrub
+is still a replay:
+
+- **`vars` on a node.** `h('div', { class: 'token', vars: { row: 2.4, age: 0.3 } })` sets `--row: 2.4` and `--age: 0.3`
+  on the element. The values are numbers (a non-finite one is dropped, and the name is a bare name, never a style
+  string), and the stylesheet reads them: `top: calc(var(--row) * 40px)`, or a paused animation with
+  `animation-delay: calc(var(--age) * -1s)` that draws the frame for an age. Position and age are functions of the
+  state and the clock, so the same time draws the same screen.
+- **`now` in the context.** `ViewContext.now` is the playback clock in ms. At a stop it is the time of the point (what
+  `t` is); while playing it runs between stops, and a link opened with `?t=` sets it to that time. `t` still says which
+  lines have happened; `now` says how far into the run the screen is. A view that draws motion reads `now`.
+- **`animated: true` on a panel.** While playing, the shell redraws the panels about ten times a second even when no
+  new line has been reached, so a view that moves with `now` moves between stops. A panel that does not set it is drawn
+  at each stop only, as before. A redraw is a fresh `view` of the same state, so a view stays pure.
+- **`featured(lines)` on a panel.** When it returns true for the recording, the shell shows that panel first, under the
+  title, with the playback controls directly under it, and the counters, timeline and the other panels after. Use it
+  when the panel tells the recording's story (boxes and flights, a browser session). When several panels say they are
+  featured, the first registered wins; the others are drawn in the usual place.
+
+`?t=<seconds>` opens the viewer at a time (a number of seconds, no less than 0; anything else is ignored). It wins over
+`at` and `cite`. The stop is the last whose lines all happened by then, so a time between two commits shows the stop
+before it (never the inside of a commit), with the clock at the time asked for.
