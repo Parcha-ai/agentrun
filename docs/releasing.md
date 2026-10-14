@@ -37,6 +37,8 @@ Before creating the release tag:
 
 Complete the [public launch checklist](#public-launch) before announcing the release. Review source, repository refs and retained GitHub records before changing visibility. Source export checks do not review issues, pull requests or Actions artifacts.
 
+Before the tag, fold the changelog fragments: `node scripts/changes.mjs --fold 0.1.0-beta.1` moves each file in `changes/` into the changelog its package names, under that version's heading, and deletes it. Commit the result with the version bump. The preflight refuses a tag while a fragment remains or the root `CHANGELOG.md` has no section for the version.
+
 Create a reviewed beta tag whose version matches every package, such as `v0.1.0-beta.1`. At that exact tag:
 
 ```sh
