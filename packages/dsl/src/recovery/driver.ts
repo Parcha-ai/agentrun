@@ -14,7 +14,7 @@ import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   frozenStepSessionId, frozenStepId, frozenEffectId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot as Snapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
-import type { RecoveryBinding, RecoveryJournal, RecoveryStore } from "./store.js";
+import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryStore } from "./store.js";
 
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
@@ -142,6 +142,14 @@ export type RecoveryOptions = {
   /** Closes the session of an LLM step's attempt that ended without a submission. It runs on the driver's commit
    *  chain, before the commit that records the attempt as closed; its failure is the run's. */
   closeStepSession?: (sessionId: string) => Promise<unknown>;
+  /** Settles effects a killed process left unknown, through the driver's own open of the run (one generation per process).
+   *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
+   *  admitted and never completed; `unknown` is those effects, with their `intent`. `complete(id, value, receipt)`
+   *  records `value` as the effect's result, as `journal.complete` does with `{ value, files: {} }`; `receipt.intent` names
+   *  the call the host's door answered, as a handoff reads it. The effect is then answered from that result and not
+   *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
+   *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
+  reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown } }) => Promise<void>) => Promise<void>;
 };
 
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
@@ -235,6 +243,20 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // answer whole: the branch taken, the choice and the flag are derived from it by the
     // interpreter's rule, and the commit below stores them.
     completeRouteDecisions(snapshot.pin, view);
+    const left = journal.effects().filter((effect) => effect.status === "unknown");
+    if (options.reconcile && left.length > 0) {
+      let reconciling = true;
+      try {
+        await options.reconcile(structuredClone(left), async (id, value, receipt) => {
+          if (!reconciling) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id} after reconcile returned`);
+          if (!left.some((effect) => effect.id === id)) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id}: not an unknown effect of this run`);
+          await journal.complete(id, { value, files: {}, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
+        });
+      } catch (error) {
+        throw error instanceof RecoveryError && error.code === "RECOVERY_RECONCILE_FAILED" ? error
+          : new RecoveryError(`Reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "RECOVERY_RECONCILE_FAILED", { cause: error });
+      } finally { reconciling = false; }
+    }
     await journal.save(serial());
   } catch (error) { await journal.close(); throw error; }
   const ordinals = new Map<string, number>();

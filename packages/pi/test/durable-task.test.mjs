@@ -10,7 +10,7 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, recoveryBound, withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowExtension, documentStore } from '@parcha/agentrun-pi/durable';
+import { createWorkflowExtension, documentStore, readJournal } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -530,4 +530,27 @@ test('what moved is named per part: a bound key named like the input never hides
     assert.deepEqual(moved, ['input.sku', 'input.qty']);
     assert.match(message, /input\.sku changed since the run was bound.*input\.qty changed since the run was bound/);
   } finally { await harness.close(ctx); }
+});
+
+test('a task host settles a killed run\'s unknown effect through reconcile: the run holds one generation per process, and the effect is not dispatched again', async () => {
+  let calls = 0; const kept = new Map(); let settle = true;
+  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
+  const flow = createWorkflowExtension({
+    options: () => ({ files, reconcile: async (unknown, complete) => {
+      if (!settle) throw new Error('the door is down');
+      for (const effect of unknown) await complete(effect.id, kept.get(effect.id));
+    } }),
+    run: () => ({ adapters: { runEffect: async ({ effect }) => { calls += 1; kept.set(effect.id, { price: 21 }); throw new Error('the process died'); } } }),
+  });
+  const file = fileOf();
+  const harness = await open(file, flow);
+  assert.equal((await (await flow.start(harness, request(), ctx)).wait(ctx)).status, 'refused');
+  assert.equal(readJournal(file, 'run-1').generation, 1);
+  settle = false;
+  const failed = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([failed.status, failed.code, calls, readJournal(file, 'run-1').generation], ['refused', 'RECOVERY_RECONCILE_FAILED', 1, 2]);
+  settle = true;
+  const done = await (await flow.start(harness, request(), ctx)).wait(ctx);
+  assert.deepEqual([done.status, done.output, calls, readJournal(file, 'run-1').generation], ['complete', { total: 42 }, 1, 3]);
+  await harness.close(ctx);
 });

@@ -40,9 +40,10 @@ export type WorkflowInvocation = { key: string; taskId: TaskId; runtime: TaskRun
 /** The host's part, asked once per invocation. */
 export type WorkflowTaskHost = {
   /** The driver's host options, beside the run's key and binding: asked before the driver opens, by the run's phase and
-   *  by its abort handler. It is where a host settles an effect a killed process left unknown: one it completes here
-   *  (`journal.complete` on the run's journal, opened under the task's commit and closed before this returns) is
-   *  answered from that result when the driver opens, and is not dispatched again. */
+   *  by its abort handler. A host settles an effect a killed process left unknown with `reconcile`: the driver calls it
+   *  once, through its own open of the run, with the unknown effects and a `complete` that records one's result. An
+   *  effect it completes is answered from that result and not dispatched again; one it leaves is refused at resume. Do not
+   *  open the run's journal here: that open is a generation of its own. */
   options?(invocation: WorkflowInvocation): Omit<RecoveryOptions, "key" | "bind"> | Promise<Omit<RecoveryOptions, "key" | "bind">>;
   /** What the interpreter runs with, asked once the driver is open, so a host that composes its own couplings over the
    *  driver (its spend, its sessions, its escalation rows) builds them here. */
