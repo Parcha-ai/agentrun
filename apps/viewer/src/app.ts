@@ -103,6 +103,7 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 // ---- drawing -------------------------------------------------------------------------------------------------
 
 function drawCounters(counters: Counters): HTMLElement {
+  const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   return el('div', { class: 'counters' },
     item('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}.`),
@@ -110,12 +111,13 @@ function drawCounters(counters: Counters): HTMLElement {
     item('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
     item(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
-    item('model turns', String(counters.turns.committed), 'Committed assistant turns.'),
-    item('re-asked turns', counters.turns.reasked === null ? 'not measured'
-      : `${counters.turns.reasked}${counters.turns.reaskedPossible ? ` (+${counters.turns.reaskedPossible} possible)` : ''}`, counters.turns.reasked === null
-      ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
-      : 'A turn whose ask a kill cut, asked again at the same place: proven when the cut ask had committed a partial (the model was answering); possible when it had committed only its start (the process may have died before calling the model). Only proven ones count.',
-      counters.turns.reasked ? ' alarm' : ''),
+    item('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
+    item('re-asks', reasked === null ? 'not measured'
+      : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${reasked.proven.turns} turn${reasked.proven.turns === 1 ? '' : 's'}` : ''}${reasked.possible.reasks ? ` + ${reasked.possible.reasks} possible` : ''}`,
+      reasked === null
+        ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
+        : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). Only proven ones count.',
+      reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),

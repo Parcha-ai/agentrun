@@ -1,5 +1,5 @@
 // agentrun.recording/1 (RECORDING.md): the types, the line order, and the validator of section 3's invariants.
-import { docOf, moveOf, type Move } from './durable.ts';
+import { docOf, generationOf, moveOf, type Move } from './durable.ts';
 import { counterFold, countersOf } from './counters.ts';
 
 export const FORMAT = 'agentrun.recording/1';
@@ -61,17 +61,26 @@ export const processOf = (line: Line): number | undefined => {
   return typeof gen === 'number' ? gen : line.gen;
 };
 
-/** Where a restore starts again (RECORDING.md 3.2): an open's first snapshot line (an open's snapshot is a run of
- *  snapshot lines) whose commit is below one already seen. The map is from that line's index to its commit, the
- *  checkpoint's last commit. */
+/** The process each line belongs to: the supervisor's `process.started` lines before it (0 before the first). */
+export const processesOf = (lines: Line[]): number[] => {
+  let process = 0;
+  return lines.map((line) => (isSupervisor(line) && line.kind === 'process.started' ? (process += 1) : process));
+};
+
+/** Where a restore starts again (RECORDING.md 3.2): a process's snapshot (the snapshot lines it writes at its open,
+ *  after its `process.started`; a run of them when a recording has no supervisor lines) whose commit is below one
+ *  already seen. The map is from its first line's index to its commit, the checkpoint's last commit. */
 export function restoresOf(lines: Line[]): Map<number, number> {
   const restores = new Map<number, number>();
   let highest = -1;
   let inSnapshot = false;
+  let opened = false;
   lines.forEach((line, index) => {
+    if (isSupervisor(line) && line.kind === 'process.started') opened = true;
     if (line.channel !== 'durable' || line.commit === undefined) return;
-    const first = line.snapshot === true && !inSnapshot;
+    const first = line.snapshot === true && (opened || !inSnapshot);
     inSnapshot = line.snapshot === true;
+    if (line.snapshot === true) opened = false;
     if (first && line.commit < highest) { restores.set(index, line.commit); highest = line.commit; return; }
     highest = Math.max(highest, line.commit);
   });
@@ -109,44 +118,77 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (folded === null ? m.cost.usd !== null : m.cost.usd === null || Math.abs(m.cost.usd - folded) > 1e-9) note(`manifest.cost.usd is ${m.cost.usd}, but the lines fold to ${folded === null ? 'null (a part is unknown)' : folded}`);
   }
 
-  // A restore is accepted only with its restore record, naming the checkpoint's head (3.2): written by the process that
-  // opened the restored store, after its snapshot (whose gen is the driver's at the checkpoint) and before any later drop.
-  // Every move record carries `head`, the target's first new commit (3.2): its generation's first non-snapshot commit
-  // equals it, and the record's own commit is at or above it. A move continues the sequence (its head is one above the
-  // last commit seen and equals seal.head); a restore's head is replayed.to + 1 when it replayed, else checkpoint.head.
+  // 3.2 goes by process. A restore is accepted only with its restore record, naming the checkpoint's head: that
+  // process's line after its snapshot (whose gen is an earlier process's). Every move record carries `head`, the target's
+  // first new commit: its process's first non-snapshot commit equals it, and the record's own commit is at or above it.
+  // A move continues the sequence (its head is one above the last commit seen and equals seal.head); a restore's head is
+  // replayed.to + 1 when it replayed, else checkpoint.head.
   const restores = restoresOf(lines);
+  const processAt = processesOf(lines);
   const restoreHeads = new Map<number, number[]>();
   const dropAt = [...restores.keys()];
-  const dropOf = (index: number) => dropAt.findLast((at) => at < index);
-  const moves: { at: string; gen: number | undefined; commit: number; move: Move }[] = [];
-  const seenBefore = new Map<number | undefined, number>();
-  const firstNew = new Map<number | undefined, number>();
+  const dropOf = (index: number) => dropAt.findLast((at) => at < index && processAt[at] === processAt[index]);
+  const moves: { at: string; process: number; commit: number; move: Move }[] = [];
+  const seenBefore = new Map<number, number>();
+  const firstNew = new Map<number, number>();
   let seen = -1;
   lines.forEach((line, index) => {
     if (line.channel !== 'durable' || !isInt(line.commit)) return;
     if (restores.has(index)) seen = line.commit!;
-    if (line.snapshot !== true && !firstNew.has(line.gen)) { seenBefore.set(line.gen, seen); firstNew.set(line.gen, line.commit!); }
+    const process = processAt[index]!;
+    if (line.snapshot !== true && !firstNew.has(process)) { seenBefore.set(process, seen); firstNew.set(process, line.commit!); }
     seen = Math.max(seen, line.commit!);
     const doc = docOf(line);
     const move = doc ? moveOf(doc) : undefined;
     if (!move) return;
-    moves.push({ at: `line ${index + 1}`, gen: line.gen, commit: line.commit!, move });
+    moves.push({ at: `line ${index + 1}`, process, commit: line.commit!, move });
     const drop = dropOf(index);
     if (move.kind === 'restore' && move.head !== undefined && drop !== undefined) restoreHeads.set(drop, [...(restoreHeads.get(drop) ?? []), move.head]);
   });
-  for (const { at, gen, commit, move } of moves) {
+  for (const { at, process, commit, move } of moves) {
     if (move.head === undefined) { note(`${at}: a transport.moves record has no head`); continue; }
-    if (firstNew.get(gen) !== move.head) note(`${at}: the ${move.kind}'s head ${move.head} is not generation ${gen}'s first new commit ${firstNew.get(gen)}`);
+    if (firstNew.get(process) !== move.head) note(`${at}: the ${move.kind}'s head ${move.head} is not process ${process}'s first new commit ${firstNew.get(process)}`);
     if (commit < move.head) note(`${at}: the ${move.kind} record is at commit ${commit}, below its head ${move.head}`);
     if (move.kind === 'move') {
       if (move.seal !== undefined && move.seal !== move.head) note(`${at}: a move's head ${move.head} is not its seal.head ${move.seal}`);
-      const before = seenBefore.get(gen);
-      if (before !== undefined && move.head !== before + 1) note(`${at}: a move's head ${move.head} is not one above commit ${before}, the last before generation ${gen}`);
+      const before = seenBefore.get(process);
+      if (before !== undefined && move.head !== before + 1) note(`${at}: a move's head ${move.head} is not one above commit ${before}, the last before process ${process}`);
     }
     if (move.kind === 'restore') {
       const wanted = move.replayedTo !== undefined ? move.replayedTo + 1 : move.checkpoint;
       if (wanted !== undefined && move.head !== wanted) note(`${at}: a restore's head ${move.head} is not ${move.replayedTo !== undefined ? 'replayed.to + 1' : 'its checkpoint.head'} ${wanted}`);
     }
+  }
+
+  // A snapshot's gen is the driver's at its commit (3.1), which its own `agentrun.driver` document states.
+  const snapshotGen = new Map<number, number>();
+  {
+    let first = -1;
+    restoresOf(lines);
+    let inSnapshot = false;
+    let opened = false;
+    lines.forEach((line, index) => {
+      if (isSupervisor(line) && line.kind === 'process.started') opened = true;
+      if (line.channel !== 'durable') return;
+      if (line.snapshot === true && (opened || !inSnapshot)) first = index;
+      inSnapshot = line.snapshot === true;
+      if (line.snapshot === true) opened = false;
+      const doc = line.snapshot === true ? docOf(line) : undefined;
+      const driver = doc ? generationOf(doc) : undefined;
+      if (driver !== undefined) snapshotGen.set(first, driver);
+    });
+    let runFirst = -1;
+    inSnapshot = false;
+    opened = false;
+    lines.forEach((line, index) => {
+      if (isSupervisor(line) && line.kind === 'process.started') opened = true;
+      if (line.channel !== 'durable') return;
+      if (line.snapshot === true && (opened || !inSnapshot)) runFirst = index;
+      inSnapshot = line.snapshot === true;
+      if (line.snapshot === true) opened = false;
+      const driver = line.snapshot === true ? snapshotGen.get(runFirst) : undefined;
+      if (driver !== undefined && line.gen !== undefined && line.gen !== driver) note(`line ${index + 1}: a snapshot's gen ${line.gen} is not the driver's at its commit, ${driver}`);
+    });
   }
 
   let last: { commit: number; order: number } | undefined;
