@@ -9,7 +9,7 @@ import { CONTRACT_VERSION } from "./contract.js";
 import type { Kind } from "./kinds.js";
 import type { MissEvent } from "./misses.js";
 import type { Fit } from "./plan.js";
-import type { Usage } from "./host.js";
+import type { CallContext, Json, Usage } from "./host.js";
 
 export type LookRecord = {
   readonly tool: "look";
@@ -35,7 +35,8 @@ export type LookRecord = {
     readonly derived?: readonly string[];
     /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
     readonly units_dropped?: string;
-    /** Set when the look was answered, filed and told in an earlier attempt of the call, which paid for it then. */
+    /** Set when the answer was read back from the call's memo: an earlier attempt of the call asked and paid for it, and
+     *  this one made no request. Its key's other records are that look's, not another payment. */
     readonly kept?: true;
   };
   /** The answer, "shown to the model natively", or the miss. */
@@ -61,8 +62,9 @@ export type LookEvent = {
   /** Null when the price is not known; 0 when `billedBy` names another service. */
   readonly costUsd: number | null;
   readonly billedBy?: string;
-  /** Answered in an earlier attempt of the call, which paid for it and told this hook: do not charge it again. A call cut
-   *  while the look was being filed or told files and tells it again, as paid. pi's committed usage counts it once. */
+  /** The host heard of this look in an earlier attempt of the call: do not charge it again. A look whose answer was read
+   *  back but whose host was never told (`record.facts.kept` alone) is charged once, here. A call cut after this hook
+   *  returns and before the guard keeps that it was told tells it again without `kept`: at least once. */
   readonly kept?: true;
   /** Where the record was filed, or null when the sink filed nothing. */
   readonly receipt: string | null;
@@ -122,4 +124,22 @@ export async function fileLook(filing: Filing, tool: string, record: LookRecord,
     });
   }
   return receipt;
+}
+
+/** `ask`'s answer kept as the call's memo `vision:look:<key>` before anything reports it, and whether it was read back:
+ *  an earlier attempt of the call asked and paid, and this one asked nothing. */
+export async function keptAnswer<T>(memo: CallContext["memo"], key: string, ask: () => Promise<T>): Promise<{ readonly answer: T; readonly readBack: boolean }> {
+  let asked = false;
+  const now = async () => { asked = true; return ask(); };
+  const answer = memo ? await memo(`vision:look:${key}`, async () => (await now()) as unknown as Json) as unknown as T : await now();
+  return { answer, readBack: !asked };
+}
+
+/** A look filed and told through `file`, then kept as the call's memo `vision:told:<key>`; a call run again that finds
+ *  it files and tells the look as told before (`file(true)`). */
+export async function fileTold(memo: CallContext["memo"], key: string, file: (told: boolean) => Promise<string | null>): Promise<string | null> {
+  let now = false;
+  const tell = async () => { now = true; return file(false); };
+  const receipt = memo ? await memo(`vision:told:${key}`, tell) : await tell();
+  return now ? receipt : file(true);
 }

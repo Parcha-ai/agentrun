@@ -132,10 +132,11 @@ test("cut during the receipt: the answer is a memo by then, so the rerun asks no
   assert.deepEqual(cut.derived, clean.derived);
   assert.deepEqual(cut.kept, { first: clean.derived, second: [] }, "the rerun makes no derivation again: it reads the document and the page the cut process kept");
   assert.equal(readUsd(cut), readUsd(clean), "the look is priced once, at the commit of its result");
-  assert.deepEqual(cut.told.map((look) => [look.by, look.kept]), [["second", false]], "the cut attempt never told the host, so the rerun's report is the look's only one, and paid");
+  assert.deepEqual(cut.told.map((look) => [look.by, look.kept]), [["second", false]], "the cut attempt never told the host, so the rerun's event is the look's only one, and charged");
+  assert.deepEqual(cut.filedKept, [false, true], "the rerun's record says no request was made: its answer was read back");
 });
 
-test("cut before the second of two looks is asked: the rerun asks only the second, reports the first as kept, and the result prices each once", async () => {
+test("cut once the first of two looks is told and before the second is asked: the rerun asks only the second, files and tells the first as kept, and the result prices each once", async () => {
   const clean = await run("none", { source: TWO_PAGES });
   const keys = clean.told.map((look) => look.key);
   assert.deepEqual([clean.asks, new Set(keys).size, clean.told.map((look) => look.kept)], [2, 2, [false, false]], "an uncut read of two pages is two paid looks");
@@ -146,6 +147,7 @@ test("cut before the second of two looks is asked: the rerun asks only the secon
   assert.equal(cut.asks, 2, "the eyes were asked once per look in all");
   assert.deepEqual(cut.told.map((look) => [look.by, look.key, look.kept]), [["first", keys[0], false], ["second", keys[0], true], ["second", keys[1], false]], "the rerun reports the first look as kept and the second as paid");
   assert.deepEqual(cut.filings.map((key, i) => [key, cut.filedKept[i]]), [[keys[0], false], [keys[0], true], [keys[1], false]], "the first look's receipt filed again says it was kept");
+  assert.deepEqual(cut.filings.filter((_, i) => !cut.filedKept[i]), keys, "each key has one record of the eyes being asked: none is repeated");
   assert.equal(cut.told.filter((look) => !look.kept).reduce((sum, look) => sum + look.costUsd, 0), clean.told.reduce((sum, look) => sum + look.costUsd, 0), "a host that charges every look not kept charges each once");
   assert.deepEqual(cut.results[0].usage, clean.results[0].usage, "the committed result's usage holds each look once");
   assert.equal(readUsd(cut), readUsd(clean));

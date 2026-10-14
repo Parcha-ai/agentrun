@@ -6,8 +6,8 @@
 // the eyes take in one, each filed as one look.
 
 import { formatFragment } from "./fragments.js";
-import { blocksSha256, fileLook, lookKey, type Filing, type LookRecord } from "./evidence.js";
-import type { CallContext, CallSetup, EyesAnswer, ImageContent, Json, TextContent, ToolResult, Usage } from "./host.js";
+import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import type { CallContext, CallSetup, EyesAnswer, ImageContent, TextContent, ToolResult, Usage } from "./host.js";
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
@@ -221,19 +221,12 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     ]);
     let failed: Miss;
     try {
-      // The answer is kept before the result that reports it, so a call run again after a crash does not pay twice.
-      const see = () => eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal);
-      const look = call.memo ? await call.memo(`vision:look:${key}`, async () => (await see()) as unknown as Json) as unknown as EyesAnswer : await see();
+      const { answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, key, () => eyes.see({ parts, ask: ask ?? DESCRIBE_ASK }, call.signal ?? new AbortController().signal));
       // pi counts a result's usage only when it commits the result, and a kept answer's result never committed.
       usage = addUsage(usage, look.usage);
       if (look.text.trim()) {
-        const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}) };
-        const file = (kept: boolean) => fileLook(filing, tool, record(unit, false, look.model, look.text.trim(), kept ? { ...facts, kept: true } : facts), kept ? { ...look, kept: true } : look);
-        // A look filed and told in an earlier attempt of this call is filed and told again as kept; any other, as paid.
-        let toldNow = false;
-        const told = async () => { toldNow = true; return file(false); };
-        let receipt = call.memo ? await call.memo(`vision:told:${key}`, told) : await told();
-        if (!toldNow) receipt = await file(true);
+        const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
+        const receipt = await fileTold(call.memo, key, (told) => fileLook(filing, tool, record(unit, false, look.model, look.text.trim(), facts), told ? { ...look, kept: true } : look));
         const head = `(${what} seen for you by ${look.model}${ask ? ` \u2014 your question: ${ask}` : ""}${saved ? `; the file is saved at ${saved}` : ""}${receipt ? `; look filed at ${receipt}` : ""}:)`;
         const answer: TextContent = { type: "text", text: `${head}\n${look.text.trim()}` };
         answered.set(key, answer);

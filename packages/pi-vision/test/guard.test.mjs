@@ -107,7 +107,7 @@ test("an eyes answer is kept under its look's key before the result: a call run 
   assert.deepEqual(texts(first).filter((t) => /seen for you/.test(t)).map((t) => t.split("\n")[1]), ["answer 1", "answer 2"]);
 });
 
-test("a look answered and told in an earlier attempt of the call is filed and told as kept, and its usage stays on the result; one whose host was never told is told as paid", async () => {
+test("an answer read back from the call's memo is filed as kept; its event is kept only when the host was told in that earlier attempt; its usage stays on the result", async () => {
   const kept = new Map();
   const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
   const eyes = fakeEyes({ answers: [{ text: "A round seal.", input: 1000, output: 10 }] });
@@ -123,7 +123,7 @@ test("a look answered and told in an earlier attempt of the call is filed and to
   for (const key of kept.keys()) if (key.startsWith("vision:told:")) kept.delete(key);
   await guard(shot(media), untold, { model: TEXT_ONLY, eyes, memo });
   assert.equal(eyes.ledger.length, 1);
-  assert.deepEqual([untold.looks.length, untold.looks[0].kept, untold.filed[0].record.facts.kept], [1, undefined, undefined], "cut before its host was told, the kept answer is told once, as paid");
+  assert.deepEqual([untold.looks.length, untold.looks[0].kept, untold.filed[0].record.facts.kept], [1, undefined, true], "cut before its host was told: the record says no request was made, the event is charged once");
 });
 
 test("the same image twice in one result is asked and paid for once, with or without a memo", async () => {
