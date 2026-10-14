@@ -34,12 +34,14 @@ it("the check reports each convention an example breaks, and a listed example th
       "README.md": "",
       "main.ts": 'import { openDurableRun } from "../../src/run.ts";\nimport type { X } from "../shared.ts";\nconst m = await import("lodash");\n// import "./not-an-import-in-a-comment.ts";\nconst s = "from \'../fake\'";\n',
     });
+    example("cjs-helper", { "README.md": "", "main.ts": 'import "./helper.cjs";\n', "helper.cjs": 'module.exports = require("../../lib/demo.cjs");\n' });
     example("01-durable-chat", { "demo.ts": 'import "../lib/demo.ts";\n' }); // legacy: not checked
-    for (const name of ["good", "03-numbered", "no-main", "unlisted", "reaches-out"]) writeFileSync(join(tests, `${name}.test.ts`), "");
+    for (const name of ["good", "03-numbered", "no-main", "unlisted", "reaches-out", "cjs-helper"]) writeFileSync(join(tests, `${name}.test.ts`), "");
     writeFileSync(join(examples, "README.md"), ["| Example | What | Needs | CI |", "|---|---|---|---|",
-      ...["good", "03-numbered", "no-test", "no-main", "reaches-out", "gone", "01-durable-chat"].map((n) => `| [${n}](${n}/) | x | none | yes |`)].join("\n"));
+      ...["good", "03-numbered", "no-test", "no-main", "reaches-out", "cjs-helper", "gone", "01-durable-chat"].map((n) => `| [${n}](${n}/) | x | none | yes |`)].join("\n"));
     assert.deepEqual(checkExamples(examples, tests).sort(), [
       "03-numbered: a name is lowercase words with dashes, no number prefix",
+      "cjs-helper: helper.cjs imports ../../lib/demo.cjs",
       "gone: listed in examples/README.md, no such directory",
       "no-main: no main.ts",
       "no-test: no test/examples/no-test.test.ts",

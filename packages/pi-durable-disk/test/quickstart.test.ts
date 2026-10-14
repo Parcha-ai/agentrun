@@ -4,7 +4,7 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runExample } from "./examples/_run-example.ts";
+import { assertExampleOk, runExample } from "./examples/_run-example.ts";
 
 const example = new URL("../examples/01-durable-chat/on-a-directory.mjs", import.meta.url);
 const HEADING = "## Quickstart on one machine: no disk, no key";
@@ -19,8 +19,7 @@ it("the README's first quickstart carries the example file verbatim", () => {
 
 it("runs on a directory of this machine: killed after its third answer, resumed by a second process, every message answered once", { timeout: 120_000 }, async () => {
   const result = await runExample("quickstart", { entry: "01-durable-chat/on-a-directory.mjs" });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assertExampleOk(result, /^ok: 6 messages answered once each, by generations 1 and 2, from the store in /m);
   assert.match(result.stdout, /^generation 1 answered message 3$/m);
   assert.match(result.stdout, /^generation 2 opened the run in .* \(\d answered before\)$/m);
-  assert.match(result.stdout, /^ok: 6 messages answered once each, by generations 1 and 2, from the store in /m);
 });

@@ -1,8 +1,9 @@
 // Runs an example the way a reader does: `node <entry>` from a fresh scratch directory, so the run directory it makes lands
 // there. The example leads a process group of its own (detached), so whatever ends the run (its exit, the timeout, a
 // failed assertion after it) the instances it started go with it before the directory is removed.
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scratchRoot } from "../_run-support.ts";
 
@@ -35,7 +36,7 @@ export async function reapGroup(leader: number): Promise<void> {
 }
 
 /**
- * `node examples/<name>/main.ts [args]` (or `entry`, relative to examples/) from a scratch directory that is removed
+ * `node examples/<name>/main.ts [args]` (or `entry`, relative to examples/ or absolute) from a scratch directory that is removed
  * afterwards. Resolves once the example and every process of its group are gone.
  */
 export async function runExample(
@@ -45,7 +46,7 @@ export async function runExample(
   const dir = scratchRoot(`example-${name}`);
   let leader = 0;
   try {
-    const child = spawn(process.execPath, [join(EXAMPLES, options.entry ?? join(name, "main.ts")), ...(options.args ?? [])], {
+    const child = spawn(process.execPath, [resolve(EXAMPLES, options.entry ?? join(name, "main.ts")), ...(options.args ?? [])], {
       cwd: dir.root,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -75,4 +76,17 @@ export async function runExample(
     await reapGroup(leader);
     dir.remove();
   }
+}
+
+/**
+ * What every example test asserts: the example exited 0 on its own, before the timeout, and printed its `ok:` line. A run
+ * whose example exited 0 while a process it started still held its output is a failure: that process ran until the
+ * timeout killed the group.
+ */
+export function assertExampleOk(run: ExampleRun, ok: RegExp): void {
+  const output = `${run.stdout}\n${run.stderr}`;
+  assert.equal(run.timedOut, false, `the example or a process it started was still running at the timeout:\n${output}`);
+  assert.equal(run.signal, null, output);
+  assert.equal(run.status, 0, output);
+  assert.match(run.stdout, ok);
 }
