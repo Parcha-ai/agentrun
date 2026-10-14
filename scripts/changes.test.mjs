@@ -51,23 +51,50 @@ test('loadFragments reads changes/ and skips its README', () => repo(async root 
   await assert.rejects(loadFragments(root), /lowercase letters/);
 }));
 
-test('a fragment folds into its package\'s own changelog, else the root, under the version heading', () => repo(async root => {
+test('a fold turns Unreleased into the version, bullets first, and opens a new Unreleased above it', () => repo(async root => {
   await writeFile(join(root, 'changes/vision-fix.md'), fragment('@parcha/pi-vision', 'fix', 'Vision fix.\n\n- Detail.'));
   await writeFile(join(root, 'changes/dsl-feature.md'), fragment('@parcha/agentrun-dsl', 'feature', 'Core feature.'));
   await writeFile(join(root, 'changes/breaking.md'), fragment('repo', 'breaking', 'Breaking change.'));
   const result = await fold(root, '0.1.0-beta.13', '2026-10-20');
   assert.equal(result.folded, 3);
-  const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
-  assert.equal(unreleasedSection(log), unreleasedSection(rootLog), 'the Unreleased bullets stay as they are');
-  assert.match(log, /## Unreleased\n\n- Existing root bullet\.\n\n## 0\.1\.0-beta\.13, 2026-10-20\n\n- Breaking change\.\n- Core feature\.\n\n## 0\.1\.0-beta\.12/);
-  const vision = await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8');
-  assert.match(vision, /## Unreleased\n\n- Existing vision bullet\.\n\n## 0\.1\.0-beta\.13, 2026-10-20\n\n- Vision fix\.\n\n {2}- Detail\.\n/);
-  assert.doesNotMatch(log, /Vision fix/);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Breaking change.\n- Core feature.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing vision bullet.\n- Vision fix.\n\n  - Detail.\n');
   assert.deepEqual(await loadFragments(root), []);
+  const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
   assert.ok(hasVersionSection(log, '0.1.0-beta.13') && !hasVersionSection(log, '0.1.0-beta.1'));
 }));
 
-test('a second fold appends to the version section that exists', () => repo(async root => {
+test('a package changelog that gets no fragment is untouched', () => repo(async root => {
+  await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), visionLog);
+}));
+
+test('a second fold with no fragments and an empty Unreleased does nothing', () => repo(async root => {
+  await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.deepEqual((await fold(root, '0.1.0-beta.13', '2026-10-21')).files, []);
+  assert.deepEqual((await fold(root, '0.1.0-beta.14', '2026-10-22')).files, []);
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), folded);
+}));
+
+test("the repository's own CHANGELOG plus two fragments folds into the released shape", () => repo(async root => {
+  const real = await readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'CHANGELOG.md'), 'utf8');
+  await writeFile(join(root, 'CHANGELOG.md'), real);
+  await writeFile(join(root, 'changes/a.md'), fragment('repo', 'feature', 'First new change.'));
+  await writeFile(join(root, 'changes/b.md'), fragment('@parcha/agentrun-dsl', 'fix', 'Second new change.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  const held = unreleasedSection(real).split('\n').slice(1).join('\n').trim();
+  const rest = real.slice(real.indexOf('\n## ', real.indexOf('## Unreleased') + 1) + 1);
+  assert.equal(folded, `# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n${held}\n- First new change.\n- Second new change.\n\n${rest}`.replace(/\n*$/, '\n'));
+  assert.equal(unreleasedSection(folded), '## Unreleased\n');
+}));
+
+test('a second fold of the same version appends to its section', () => repo(async root => {
   await writeFile(join(root, 'changes/one.md'), fragment('repo', 'fix', 'One.'));
   await fold(root, '0.1.0-beta.13', '2026-10-20');
   await writeFile(join(root, 'changes/two.md'), fragment('repo', 'fix', 'Two.'));

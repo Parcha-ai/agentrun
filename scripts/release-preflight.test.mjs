@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
+import { fold } from './changes.mjs';
 import { checkManifest, checkReleaseAudit, checkReleaseDispatch, heldPackages, listedPackages, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
@@ -362,4 +363,15 @@ test('a release is refused while fragments remain or the changelog lacks the ver
   await rm(join(root, 'changes/left-behind.md'));
   await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Something.\n');
   await assert.rejects(preflight(root), /no section for 0\.1\.0-beta\.1/);
+}));
+
+test('the preflight passes on a tree the fold produced, for that tag', () => fixture(async root => {
+  await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Held bullet.\n');
+  await mkdir(join(root, 'changes'));
+  await writeFile(join(root, 'changes/new.md'), '---\npackages: repo\nkind: feature\n---\nA new change.\n');
+  await assert.rejects(preflight(root), /Unfolded changelog fragments remain/);
+  await fold(root, version, '2026-01-02');
+  const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\.\n/);
+  assert.equal((await preflight(root)).status, 'passed');
 }));

@@ -13,4 +13,4 @@ Sub-bullets and further paragraphs go below it.
 
 - `packages`: one or more workspace package names, comma separated, or `repo` for the repository as a whole. A package with its own `CHANGELOG.md` gets the bullet there; every other one gets it in the root `CHANGELOG.md`.
 - `kind`: `breaking`, `feature`, `fix`, `ci` or `docs`. A breaking change says who breaks and what to do.
-- `node scripts/changes.mjs --check` validates the files (CI runs it). `node scripts/changes.mjs --fold <version>` is the release's step.
+- `node scripts/changes.mjs --check` validates the files (CI runs it). `node scripts/changes.mjs --fold <version>` is the release's one step: it turns `Unreleased` into the version's section, with the fragments after its bullets, and opens a new `Unreleased`.

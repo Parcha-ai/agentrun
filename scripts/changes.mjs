@@ -98,41 +98,56 @@ const isVersionHeading = (line, version) => line.startsWith('## ') && line.slice
 
 const kindOrder = fragment => kinds.indexOf(fragment.kind);
 
-/** Folds every fragment into the changelog its package names: the package's own when it has one, else the root. */
+const unreleasedHeading = line => /^## \[?Unreleased\]?\s*$/i.test(line);
+const sectionEnd = (lines, heading) => {
+  let end = lines.findIndex((line, index) => index > heading && /^## /.test(line));
+  if (end < 0) end = lines.length;
+  while (end > heading + 1 && lines[end - 1].trim() === '') end--;
+  return end;
+};
+
+/**
+ * Folds the release into the changelogs. A changelog that gets fragments (the root also when its Unreleased section holds
+ * bullets) has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
+ * Unreleased section opened above it. A fragment goes to its package's own changelog, else the root. A changelog that
+ * gets none is untouched; one that already has the version's section gets the bullets appended to it.
+ */
 export async function fold(root, version, date) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
+  assert.match(date, /^\d{4}-\d{2}-\d{2}$/, 'The date is YYYY-MM-DD');
   const directories = await workspacePackages(root);
   const fragments = await loadFragments(root);
-  const targets = new Map();
-  for (const fragment of fragments.sort((a, b) => kindOrder(a) - kindOrder(b) || a.file.localeCompare(b.file))) {
+  const targets = new Map([['CHANGELOG.md', []]]);
+  for (const fragment of [...fragments].sort((a, b) => kindOrder(a) - kindOrder(b) || a.file.localeCompare(b.file))) {
     const files = new Set();
     for (const name of fragment.packages) {
       const directory = [...directories].find(([, packageName]) => packageName === name)?.[0];
-      const own = directory && await readOptional(join(root, 'packages', directory, 'CHANGELOG.md')) !== null ? `packages/${directory}/CHANGELOG.md` : 'CHANGELOG.md';
-      files.add(own);
+      files.add(directory && await readOptional(join(root, 'packages', directory, 'CHANGELOG.md')) !== null ? `packages/${directory}/CHANGELOG.md` : 'CHANGELOG.md');
     }
     for (const file of files) targets.set(file, [...(targets.get(file) ?? []), bulletOf(fragment.body)]);
   }
+  const changed = [];
   for (const [file, bullets] of targets) {
     const lines = (await readFile(join(root, file), 'utf8')).split('\n');
-    const heading = lines.findIndex(line => isVersionHeading(line, version));
-    if (heading >= 0) {
-      let end = lines.findIndex((line, index) => index > heading && /^## /.test(line));
-      if (end < 0) end = lines.length;
-      while (end > heading + 1 && lines[end - 1].trim() === '') end--;
-      lines.splice(end, 0, ...bullets);
+    const existing = lines.findIndex(line => isVersionHeading(line, version));
+    const unreleased = lines.findIndex(unreleasedHeading);
+    if (existing >= 0) {
+      if (bullets.length === 0) continue;
+      lines.splice(sectionEnd(lines, existing), 0, ...bullets);
     } else {
-      const unreleased = lines.findIndex(line => /^## \[?Unreleased\]?\s*$/i.test(line));
-      assert.ok(unreleased >= 0, `${file} has no Unreleased heading to place the ${version} section after`);
-      let at = lines.findIndex((line, index) => index > unreleased && /^## /.test(line));
-      if (at < 0) { while (lines.at(-1) === '') lines.pop(); lines.push(''); at = lines.length; }
-      lines.splice(at, 0, `## ${version}, ${date}`, '', ...bullets, '');
+      assert.ok(unreleased >= 0, `${file} has no Unreleased heading to fold`);
+      const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
+      if (!held && bullets.length === 0) continue;
+      lines.splice(sectionEnd(lines, unreleased), 0, ...(held ? [] : ['']), ...bullets);
+      const heading = lines[unreleased];
+      lines.splice(unreleased, 1, heading, '', `## ${version} (${date})`);
     }
     while (lines.at(-1) === '') lines.pop();
     await writeFile(join(root, file), `${lines.join('\n')}\n`);
+    changed.push(file);
   }
   for (const fragment of fragments) await rm(join(root, 'changes', fragment.file));
-  return { folded: fragments.length, files: [...targets.keys()] };
+  return { folded: fragments.length, files: changed };
 }
 
 /** Whether a changelog's text has the section for `version`. */
