@@ -62,7 +62,9 @@ export function lineProblems(event) {
   need(SOURCES.includes(event.source), `source is ${JSON.stringify(event.source)}, expected one of ${SOURCES.join(', ')}`);
   need(typeof event.kind === 'string' && event.kind !== '', 'kind is not a non-empty string');
   // A durable line has no `gen` before the earliest surviving driver revision; a live line always has the process's.
-  need(event.gen === undefined && event.channel === 'durable' || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
+  // A durable line has no `gen` before the earliest surviving driver revision, and the supervisor's host lines have none
+  // (no run process wrote them); every other line carries the process's.
+  need(event.gen === undefined && (event.channel === 'durable' || event.source === 'host') || isInt(event.gen) && event.gen >= 1, 'gen is not an integer of at least 1');
   need(typeof event.t === 'number' && Number.isFinite(event.t) && event.t >= 0, 't is not a non-negative number');
   need('data' in event && event.data !== undefined, 'data is missing');
   if (event.channel === 'durable') {
@@ -95,6 +97,20 @@ export function imageBlobs(value, found = []) {
   else if (isObject(value)) {
     if (value.type === 'image') found.push(value.blob);
     Object.values(value).forEach(inner => imageBlobs(inner, found));
+  }
+  return found;
+}
+
+/** The field of a `transport.moves` restore record that holds the checkpoint's head (the next sequence). One place, so it follows
+ *  the package's name for it. */
+export const RESTORE_HEAD_FIELD = 'checkpointHead';
+
+/** The restore records inside a `transport.moves` document value: the value itself, or any record nested in it, whose kind is `restore`. */
+export function restoreHeads(value, found = []) {
+  if (Array.isArray(value)) value.forEach(inner => restoreHeads(inner, found));
+  else if (isObject(value)) {
+    if (value.kind === 'restore' && isInt(value[RESTORE_HEAD_FIELD])) found.push(value[RESTORE_HEAD_FIELD]);
+    Object.values(value).forEach(inner => restoreHeads(inner, found));
   }
   return found;
 }
@@ -137,6 +153,9 @@ export function validateRecording(dir) {
   let last = { commit: -Infinity, order: -Infinity };
   let lastT = -Infinity;
   const lastSeq = new Map();
+  const snapshotted = new Set();
+  const drops = [];
+  const restores = new Map();
   let processes = 0;
   const liveGenerations = new Set();
   lines.forEach((text, index) => {
@@ -150,7 +169,8 @@ export function validateRecording(dir) {
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') processes += 1;
-    if (event.channel === 'live') liveGenerations.add(event.gen);
+    if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) restores.set(event.gen ?? 'none', [...(restores.get(event.gen ?? 'none') ?? []), ...restoreHeads(event.data?.value ?? event.data)]);
+    if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
       if (!SHA256.test(hash ?? '')) add('events.jsonl', 'an image block has no 64-hex blob', line);
@@ -159,8 +179,17 @@ export function validateRecording(dir) {
     if (event.t < lastT) add('events.jsonl', `t ${event.t} is before the previous line's ${lastT}`, line);
     lastT = Math.max(lastT, event.t);
     if (event.channel === 'durable' && event.snapshot) {
-      // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit.
-      if (event.commit < lastCommit) add('events.jsonl', `snapshot commit ${event.commit} is lower than an earlier durable line's ${lastCommit}`, line);
+      // A snapshot is state at the store's latest commit when its process opened: never below an earlier line's commit, except
+      // at a generation's first snapshot after a restore (3.2), which is accepted only with that generation's restore record.
+      const gen = event.gen ?? 'none';
+      if (!snapshotted.has(gen)) {
+        snapshotted.add(gen);
+        if (event.commit < lastCommit) {
+          drops.push({ line, gen, commit: event.commit, was: lastCommit });
+          last = { commit: event.commit, order: Infinity };
+          lastCommit = event.commit;
+        }
+      } else if (event.commit < lastCommit) add('events.jsonl', `snapshot commit ${event.commit} is lower than an earlier durable line's ${lastCommit}`, line);
       lastCommit = Math.max(lastCommit, event.commit);
     } else if (event.channel === 'durable') {
       if (event.commit < lastCommit) add('events.jsonl', `commit ${event.commit} is lower than the previous durable line's ${lastCommit}`, line);
@@ -168,12 +197,17 @@ export function validateRecording(dir) {
       lastCommit = Math.max(lastCommit, event.commit);
       last = { commit: event.commit, order: event.order };
     } else {
-      const before = lastSeq.get(event.gen);
-      if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in generation ${event.gen}`, line);
-      lastSeq.set(event.gen, event.seq);
+      // seq is numbered per generation, and the supervisor's gen-less lines number a space of their own.
+      const space = event.gen ?? 'supervisor';
+      const before = lastSeq.get(space);
+      if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
+      lastSeq.set(space, event.seq);
     }
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  for (const drop of drops) {
+    if (!(restores.get(drop.gen) ?? []).includes(drop.commit + 1)) add('events.jsonl', `generation ${drop.gen}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the generation has no transport.moves restore record with checkpoint head ${drop.commit + 1}`, drop.line);
+  }
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
     if (processes !== manifest.generations) add('manifest.json', `generations is ${manifest.generations}, but the recording has ${processes} host process.started lines`);

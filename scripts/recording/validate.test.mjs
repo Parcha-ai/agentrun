@@ -22,9 +22,9 @@ const events = [durable(1, 0), live(1, 0, 11), durable(1, 1, { t: 12 }), live(1,
 
 /** A recording in a directory of its own, built from `lines` and `manifestOver`, to hand-break. */
 async function recording(t, { lines = events, manifestOver = {}, blobs = { [`${blob}.png`]: png }, started = 0 } = {}) {
-  // `started` host process.started lines, one per process, before everything else (their seq is 0 in their own generation).
-  const hostLines = Array.from({ length: started }, (_, index) => live(index + 1, 0, 0, { source: 'host', kind: 'process.started', data: { pid: index + 1 } }));
-  if (started) lines = [...hostLines, ...lines.map(line => (line.channel === 'live' ? { ...line, seq: line.seq + 1 } : line))];
+  // `started` supervisor lines process.started { gen }: no event-level gen, and a seq space of their own.
+  const hostLines = Array.from({ length: started }, (_, index) => ({ channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: index, data: { gen: index + 1, pid: index + 1 } }));
+  if (started) lines = [...hostLines, ...lines];
   const dir = await mkdtemp(join(tmpdir(), 'recording-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, 'blobs'));
@@ -139,7 +139,7 @@ test('a snapshot sits at the store\'s latest commit, never below an earlier line
   const below = [durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20)];
   const problem = first(await recording(t, { lines: below }));
   assert.equal(problem.line, 3);
-  assert.match(problem.message, /snapshot commit 2 is lower/);
+  assert.match(problem.message, /first snapshot is at commit 2, below the 3 already seen/);
   assert.match(first(await recording(t, { lines: [durable(1, 0, { snapshot: 'yes' })], manifestOver: { generations: 1 } })).message, /snapshot is not true/);
   assert.match(first(await recording(t, { lines: [live(1, 0, 1, { snapshot: true })], manifestOver: { generations: 1 } })).message, /no commit, order or snapshot/);
 });
@@ -152,4 +152,39 @@ test('generations counts the supervisor\'s processes, not a durable line\'s gen,
   const beyond = [...opens, live(1, 0, 5), live(3, 0, 6, { gen: 3 })];
   assert.match(first(await recording(t, { lines: beyond, started: 2 })).message, /live line carries gen 3, beyond the 2 processes/);
   assert.match(first(await recording(t, { lines: opens, manifestOver: { generations: 4 }, started: 2 })).message, /generations is 4, but the recording has 2 host process.started/);
+});
+
+test('the supervisor\'s lines have no gen and number a seq space of their own', async t => {
+  const kill = (seq, t) => ({ channel: 'live', source: 'host', kind: 'kill', t, seq, data: { gen: 1, label: 'search-landed', crossing: 3 } });
+  // gen 1's lines run seq 0 and 1 while the supervisor's run 0, 1, 2: the same numbers in different spaces.
+  const lines = [live(1, 0, 1), live(1, 1, 2), kill(2, 3)];
+  assert.deepEqual(validateRecording(await recording(t, { lines, started: 2 })), []);
+  const again = first(await recording(t, { lines: [kill(2, 3), kill(2, 4)], started: 2 }));
+  assert.equal(again.line, 4);
+  assert.match(again.message, /seq 2 does not increase past 2 in the supervisor's lines/);
+  const noGenLive = Object.fromEntries(Object.entries(live(1, 0, 1)).filter(([key]) => key !== 'gen'));
+  assert.match(first(await recording(t, { lines: [noGenLive], started: 2 })).message, /gen/);
+});
+
+test('a restore (3.2): a drop in commit at a generation\'s first snapshot is accepted only with that generation\'s restore record at head S + 1', async t => {
+  const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
+  const moves = (head, t, gen = 2, kind = 'restore') => durable(0, 0, { source: 'transport', kind: 'transport.moves', t, gen, commit: 7, order: 0, data: { doc: 'transport.moves', value: { moves: [{ kind, checkpointHead: head }] } } });
+  // Generation 1 committed up to 7; the box died after checkpoint 4; generation 2 reopens it at S = 4, numbering from 5 again.
+  const lost = [durable(5, 0, { t: 5 }), durable(6, 0, { t: 6 }), durable(7, 0, { t: 7 })];
+  const restored = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(5, 0, { t: 22, gen: 2 }), durable(6, 0, { t: 23, gen: 2 })];
+  const withRecord = [...restored, moves(5, 24)];
+  assert.deepEqual(validateRecording(await recording(t, { lines: withRecord, started: 2 })), []);
+  // the hand-broken copies: the drop with no restore record, with a record at the wrong head, with a record of another kind, and with the record in another generation
+  const refused = async lines => first(await recording(t, { lines, started: 2 }));
+  const none = await refused(restored);
+  assert.equal(none.line, lost.length + 1 + 2);
+  assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record with checkpoint head 5/);
+  assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(5, 24, 2, 'move')])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(5, 24, 1)])).message, /checkpoint head 5/);
+  // a later snapshot in the same generation may not drop again, and the lines after the restore still obey the strict order
+  const again = await refused([...withRecord, snap(3, 0, 30, 2)]);
+  assert.match(again.message, /snapshot commit 3 is lower/);
+  const reuse = await refused([...lost, snap(4, 0, 20, 2), durable(4, 0, { t: 21, gen: 2 }), moves(5, 24)]);
+  assert.match(reuse.message, /does not increase past/);
 });

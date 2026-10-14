@@ -75,7 +75,29 @@ function keepBlob(dir: string, buffer: Buffer, extension: string): string {
 }
 
 /** A recorder for this process. Every line passes `redact` before it is written. */
-export function openRecorder(options: { dir: string; redact?: Redact; commits?: CommitRecorder }): Recorder {
+/** The supervisor's writer: the host lines (`process.started`, `kill`, `result`) of a run's processes, written from outside them so
+ *  they survive every kill. Its lines carry no `gen` (no run process wrote them) and number a `seq` of their own; the process a
+ *  line is about is in its data (`process.started` `{ gen }`, `kill` `{ gen, label, crossing }`). */
+export type Supervisor = { host(kind: string, data: unknown, meta?: Meta): void };
+
+/** A supervisor for the recording in `dir`. A run in one process may be its own supervisor: pass this to `openRecorder`. */
+export function openSupervisor(options: { dir: string; redact?: Redact }): Supervisor {
+  const { dir } = options;
+  const started = Date.parse(startedAt(dir));
+  const file = join(spool(dir), `supervisor-${process.pid}-${Date.now()}.jsonl`);
+  const redact = options.redact ?? ((text: string) => text);
+  let seq = 0;
+  return {
+    host(kind, data, meta = {}) {
+      const moved = moveImages(data === undefined ? null : data, (bytes, extension) => keepBlob(dir, bytes, extension));
+      const blobs = [...new Set([...(meta.blobs ?? []), ...moved.blobs])];
+      const line = { channel: 'live', source: 'host', kind, t: Math.max(0, Date.now() - started), seq: seq++, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(blobs.length ? { blobs } : {}) };
+      appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
+    },
+  };
+}
+
+export function openRecorder(options: { dir: string; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor }): Recorder {
   const { dir } = options;
   const started = Date.parse(startedAt(dir));
   mkdirSync(join(dir, 'blobs'), { recursive: true });
@@ -94,7 +116,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
     appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
   };
   return {
-    generation(n) { gen = n; },
+    generation(n) { gen = n; options.supervisor?.host('process.started', { gen: n, pid: process.pid }); },
     async attach(input) {
       if (!options.commits) throw new Error('A recording needs the store export: no commit recorder was given.');
       const clock = () => Math.max(0, Date.now() - started);
@@ -112,7 +134,7 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
       appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
     },
     live: (source, kind, data, meta) => write(source, kind, data, meta),
-    host: (kind, data, meta) => write('host', kind, data, meta),
+    host: (kind, data, meta) => (options.supervisor ? options.supervisor.host(kind, data, meta) : write('host', kind, data, meta)),
     blob: (bytes, extension) => keepBlob(dir, typeof bytes === 'string' ? Buffer.from(redact(bytes)) : Buffer.from(bytes), extension),
   };
 }
