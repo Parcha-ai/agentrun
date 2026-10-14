@@ -28,12 +28,20 @@ function ordered(entry) {
   return seen;
 }
 
+/** What a module may import: only names from the viewer's own modules. A package would be a dependency; a bare
+ *  `import './x.ts'` is neither followed nor removed, so x would be left out and the import left in a classic script. */
+export function checkModule(file, code) {
+  if (/^\s*import\s[^;]*from\s+'(?!\.\/)/m.test(code)) throw new Error(`${file} imports a package; the viewer has no dependencies`);
+  const bare = /^\s*import\s+'([^']+)';?\s*$/m.exec(code);
+  if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
+}
+
 /** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). */
 export function build(target = out, recordingsDir = join(here, 'recordings')) {
   const names = new Map();
   const parts = ordered('app.ts').map((file) => {
     const code = stripTypeScriptTypes(readFileSync(join(src, file), 'utf8'));
-    if (/^\s*import\s[^;]*from\s+'(?!\.\/)/m.test(code)) throw new Error(`${file} imports a package; the viewer has no dependencies`);
+    checkModule(file, code);
     const body = code.replace(/^import [^;]*? from '\.\/[\w-]+\.ts';$/gm, '').replace(/^export (?=(?:async )?function |const |let |class )/gm, '');
     for (const [, name] of body.matchAll(/^(?:async )?(?:function|const|let|class) ([A-Za-z_$][\w$]*)/gm)) {
       if (names.has(name)) throw new Error(`${file} and ${names.get(name)} both declare ${name} at the top level`);

@@ -75,7 +75,9 @@ and lays out the tiles; the viewer draws the picture.
 
 The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one; and
 `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
-and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers).
+and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
+`counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
+unknown: show that, never its zeros.
 
 Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line for it: every panel reduces the whole
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
@@ -109,3 +111,7 @@ register(effectsPanel);
 Put the panel in `src/`, import it from `src/app.ts` so the build includes it, and add a test beside the others. The
 extensions' panels show in the order they register, and the shell's own two (the run's lines and the model's turns)
 come after them (`panelsShown` in `src/panels.ts`).
+
+The build joins every module into one classic script, so two rules hold: import a name (`import { mapPanel } from
+'./map.ts'`), never a bare `import './map.ts'`, which the build refuses; and keep every top-level name unique across
+`src/`, since a duplicate is refused too.

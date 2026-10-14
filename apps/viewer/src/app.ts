@@ -102,17 +102,21 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 // ---- drawing -------------------------------------------------------------------------------------------------
 
-function drawCounters(counters: Counters): HTMLElement {
+/** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
+ *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
+function drawCounters(counters: Counters, measured = counters.measured): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
+  const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
+    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
   return el('div', { class: 'counters' },
-    item('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}.`),
-    item('repeated', repeatedLabel(counters), counters.repeatedNotMeasured > 0 ? `An applied call in a later process than an earlier applied one. ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : 'An applied call in a later process than an earlier applied one.', counters.repeated > 0 ? ' alarm' : ''),
-    item('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
-    item(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
-    item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
-    item('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
-    item('re-asks', reasked === null ? 'not measured'
+    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}.`),
+    stored('repeated', repeatedLabel(counters), counters.repeatedNotMeasured > 0 ? `An applied call in a later process than an earlier applied one. ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : 'An applied call in a later process than an earlier applied one.', counters.repeated > 0 ? ' alarm' : ''),
+    stored('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
+    stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
+    stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
+    stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
+    stored('re-asks', reasked === null ? 'not measured'
       : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${reasked.proven.turns} turn${reasked.proven.turns === 1 ? '' : 's'}` : ''}${reasked.possible.reasks ? ` + ${reasked.possible.reasks} possible` : ''}`,
       reasked === null
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
@@ -120,8 +124,8 @@ function drawCounters(counters: Counters): HTMLElement {
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),
-    item('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
+    item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.'),
+    stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
 
@@ -270,6 +274,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     ].sort((a, b) => a.p - b.p);
   // After a restore a commit number names two commits (3.2), so the position says whose.
   const restored = player.lanes.restores.length > 0;
+  // With no durable line anywhere, nothing from the store is measured; before a recording's first one, its zeros are true.
+  const measured = lines.some((line) => line.channel === 'durable');
   let baseline: BaselineView | undefined;
   const baselineRow = el('div', { class: 'baseline' });
 
@@ -301,7 +307,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = t;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last)));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];

@@ -9,8 +9,8 @@ import { APPLIED, doc, effect, lines, manifest, supervisor } from './restore-dri
 
 const without = (drop: (line: Line) => boolean) => lines.filter((line) => !drop(line));
 const isMove = (line: Line) => line.kind === 'transport.moves';
-/** The manifest of a recording built here with no priced part: its cost is $0. */
-const unpriced = { ...manifest, cost: { usd: 0, parts: {} } };
+/** The manifest of a recording built here with no priced part: its cost is unknown until a line prices one. */
+const unpriced = { ...manifest, cost: { usd: null, parts: {} } };
 
 test('the supervisor\'s lines carry the process in data.gen and number their own seq', () => {
   assert.deepEqual(validate(manifest, lines), []);

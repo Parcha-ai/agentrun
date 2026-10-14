@@ -44,8 +44,12 @@ export type CounterState = {
   opened: boolean;
   decisions: Record<string, History<Tally>>;
   committedTurns: Record<string, number>;
+  /** The model part of cost: unknown until an assistant entry prices it, and unknown again when one carries no price. */
   modelCost: number;
   modelCostKnown: boolean;
+  modelPriced: boolean;
+  /** Whether any durable line was folded: with none, no count here is measured. */
+  measured: boolean;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
    *  kept once seen even when a later snapshot shows the marker bare), and whether it has been counted as a cut ask. */
@@ -82,12 +86,14 @@ export type Counters = {
   kills: number;
   journalOpens: number;
   cost: number | null;
+  /** False when no durable line was folded: every count from the store is then not measured, and cost is unknown. */
+  measured: boolean;
 };
 
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host',
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -96,6 +102,7 @@ export const counterFold: Fold<CounterState> = {
       if (line.kind === 'kill') next.kills = state.kills + 1;
       return next;
     }
+    next.measured = true;
     if (line.gen !== undefined) next.lastGen = line.gen;
     if (line.commit !== undefined) {
       const first = line.snapshot === true && (state.opened || !state.inSnapshot);
@@ -235,6 +242,7 @@ export const counterFold: Fold<CounterState> = {
             if (held?.open !== undefined) next.live = { ...next.live, [conv]: { ...(held.generation ? { generation: held.generation } : {}) } };
           }
           const cost = costOf(message);
+          next.modelPriced = true;
           if (cost === null) next.modelCostKnown = false; else next.modelCost = next.modelCost + cost;
           const calls = { ...next.toolCalls };
           for (const call of toolCallsOf(message)) calls[call.id] = receiptKeyOf(call.name, call.arguments);
@@ -278,7 +286,8 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const tallies = [state.lostJudge, ...Object.values(state.decisions).map((history) => history.at(-1)![1])];
   const answered = tallies.flatMap((tally) => tally.answered);
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
-  const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null, ...tallies.flatMap((tally) => tally.cost)];
+  // Cost is null until a durable line prices a part (section 6: null, never 0), and null when any part is unknown.
+  const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost)];
   const measured = state.liveKnown && state.askStarts > 0;
   const cutAsks = Object.values(state.reasks);
   const split = (kind: 'proven' | 'possible') => ({ turns: cutAsks.filter((tally) => tally[kind] > 0).length, reasks: cutAsks.reduce((sum, tally) => sum + tally[kind], 0) });
@@ -294,7 +303,8 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
     processes: state.processes,
     kills: state.kills,
     journalOpens: state.journalOpens,
-    cost: parts.some((part) => part === null) ? null : parts.reduce<number>((sum, part) => sum + (part ?? 0), 0),
+    cost: parts.length === 0 || parts.some((part) => part === null) ? null : parts.reduce<number>((sum, part) => sum + (part ?? 0), 0),
+    measured: state.measured,
   };
 }
 

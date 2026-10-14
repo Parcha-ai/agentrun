@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
-import { build } from '../build.mjs';
+import { build, checkModule } from '../build.mjs';
 import * as drill from './restore-drill.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
@@ -25,6 +25,12 @@ test('the build is one classic script and the page, with a gallery of real recor
   assert.doesNotMatch(script, /^\s*(import|export)\s/m, 'no module syntax: a page from file:// cannot load modules');
   assert.equal(readFileSync(join(out, 'gallery.js'), 'utf8'), 'window.AGENTRUN_GALLERY = [];\n');
   assert.match(script, /No recordings yet\./);
+});
+
+test('a module imports names from the viewer\'s own modules only: no package, and no bare side-effect import', () => {
+  assert.doesNotThrow(() => checkModule('panel.ts', "import { register } from './panels.ts';\nregister(x);"));
+  assert.throws(() => checkModule('panel.ts', "import { render } from 'preact';"), /imports a package/);
+  assert.throws(() => checkModule('app.ts', "import './workflow-map.ts';"), /imports \.\/workflow-map\.ts for its side effect alone/);
 });
 
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
@@ -59,6 +65,13 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   mkdirSync(join(recordings, 'restore-drill'));
   writeFileSync(join(recordings, 'restore-drill', 'manifest.json'), JSON.stringify(drill.manifest));
   writeFileSync(join(recordings, 'restore-drill', 'events.jsonl'), drill.lines.map((line) => JSON.stringify(line)).join('\n'));
+  mkdirSync(join(recordings, 'live-only'));
+  writeFileSync(join(recordings, 'live-only', 'manifest.json'), JSON.stringify({ ...drill.manifest, title: 'live lines only', generations: 1, kills: 0 }));
+  writeFileSync(join(recordings, 'live-only', 'events.jsonl'), [
+    { channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 1, data: { gen: 1 } },
+    { channel: 'live', source: 'browser', kind: 'launched', gen: 1, t: 10, seq: 1, data: { session: 's1' } },
+    { channel: 'live', source: 'pi', kind: 'message_start', gen: 1, t: 20, seq: 2, conv: 1, data: { message: { role: 'assistant' } } },
+  ].map((line) => JSON.stringify(line)).join('\n'));
   build(join(out, 'dist'), recordings);
 
   const killedText = pageText(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed');
@@ -72,6 +85,13 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   assert.match(lost, /after commit 5 of generation 1 · line 8 of 18/, 'commit 5 of the lost branch');
   assert.doesNotMatch(lost, /breaks the format/);
   const redo = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill&at=2:5');
+  // A recording with no durable line: nothing from the store is measured, and cost is unknown, never $0.
+  const liveOnly = pageText(join(out, 'dist'), join(out, 'profile'), 'r=live-only');
+  assert.match(liveOnly, /not measured paid calls made/);
+  assert.match(liveOnly, /not measured model turns/);
+  assert.match(liveOnly, /unknown cost/);
+  assert.doesNotMatch(liveOnly, /\$0\.0000|0 paid calls made/);
+  assert.match(liveOnly, /1 processes/, 'processes still come from the supervisor\'s lines');
   assert.match(redo, /after commit 5 of generation 2 · line 15 of 18/, 'commit 5 again, after the restore');
   const ended = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill');
   assert.match(ended, /after commit 6 of generation 2 · line 18 of 18/, 'with no ?at=, the end');

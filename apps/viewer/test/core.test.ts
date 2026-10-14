@@ -167,3 +167,13 @@ test('the result is the supervisor\'s line, a task is a durable string, and the 
   assert.match(validate(manifest, lines.map((line, index) => (index === first ? { ...line, task: 7 as never } : line))).join('\n'), /task is a durable line's string/);
   assert.match(validate({ ...manifest, cost: { usd: 0, parts: { 'faux/faux-1': 0 } } }, lines).join('\n'), /manifest.cost.usd is 0, but the lines fold to null \(a part is unknown\)/);
 });
+
+test('with no durable line nothing from the store is measured, and cost is unknown until a durable line prices a part', () => {
+  const liveOnly = lines.filter((line) => line.channel === 'live');
+  const counters = countersOf(reduceTo(counterFold, liveOnly, liveOnly.length), true);
+  assert.deepEqual({ measured: counters.measured, cost: counters.cost, processes: counters.processes, kills: counters.kills }, { measured: false, cost: null, processes: 2, kills: 1 });
+  const unpriced = lines.filter((line) => line.channel === 'live' || (line.kind !== 'pi.assistant' && line.kind !== 'agentrun.decisions'));
+  assert.equal(countersOf(reduceTo(counterFold, unpriced, unpriced.length), true).cost, null, 'durable lines, but none prices a part');
+  const priced = lines.filter((line) => line.kind !== 'agentrun.decisions');
+  assert.equal(countersOf(reduceTo(counterFold, priced, priced.length), true).cost, 0, 'the model\'s entries price it at 0, with the unpriced judge left out');
+});
