@@ -4,6 +4,19 @@
 import { appendFileSync, readFileSync } from "node:fs";
 
 const out = process.env.PDA_TEST_OUT;
+// A test run that is killed (a timeout, a forced exit, SIGKILL) never reaches its teardown, and this process leads a session of its own: nothing else would ever stop it, nor the launcher that
+// keeps restarting it. So it watches the test process that started it (PDA_TEST_PARENT) and ends itself with a terminal exit (75: the launcher does not restart it, and ends too) once that is gone.
+const parent = Number(process.env.PDA_TEST_PARENT);
+if (parent > 0) {
+  const watch = setInterval(() => {
+    try {
+      process.kill(parent, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") process.exit(75);
+    }
+  }, 500);
+  watch.unref();
+}
 let token = "";
 for await (const chunk of process.stdin) token += chunk;
 let n = 0;

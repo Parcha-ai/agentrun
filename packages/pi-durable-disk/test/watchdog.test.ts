@@ -106,3 +106,31 @@ describe("the sweep", () => {
     }
   });
 });
+
+describe("the watchdog in a host started with --input-type=module", () => {
+  it("still starts its worker (the worker's source is CommonJS, and the host's flags are not its), and kills the commands when the lease lapses", { timeout: 20_000 }, async () => {
+    // a host that runs inline ESM: `node --input-type=module -e ...`, as a script launched through stdin or -e does
+    const watchdog = new URL("../src/watchdog.ts", import.meta.url).href;
+    const code = `
+      import { spawn } from "node:child_process";
+      import { LeaseWatchdog } from ${JSON.stringify(watchdog)};
+      const command = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+      process.stdout.write(JSON.stringify({ command: command.pid }) + "\\n");
+      new LeaseWatchdog({ limitMs: 200, checkMs: 20, beatNs: process.hrtime.bigint() }); // never beats: the lease lapses
+      setInterval(() => {}, 60_000);
+    `;
+    const host = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    host.stderr!.on("data", (chunk: Buffer) => void (stderr += String(chunk)));
+    let command: number | undefined;
+    try {
+      command = (JSON.parse((await createInterface({ input: host.stdout! })[Symbol.asyncIterator]().next()).value as string) as { command: number }).command;
+      assert.ok(await waitGone(command), `the command ${command} was killed when the lease lapsed; host stderr: ${stderr.slice(0, 300)}`);
+      assert.ok(alive(host.pid!), `the host itself lives; stderr: ${stderr.slice(0, 300)}`);
+      assert.doesNotMatch(stderr, /require is not defined/);
+    } finally {
+      host.kill("SIGKILL");
+      if (command !== undefined) killQuietly(command);
+    }
+  });
+});
