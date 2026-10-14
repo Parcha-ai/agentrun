@@ -68,6 +68,114 @@ git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --i
 cd packages/pi-durable-disk
 ```
 
+## Quickstart on one machine: no disk, no key
+
+The fastest look, on Linux with Node 22.19 or later: a durable chat on a directory of this machine, with
+[`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model instead of a key. One process answers the
+first messages and is killed (`SIGKILL`) after its third answer; a second opens the same run and answers the rest, and the
+transcript, read back from the store, has every message answered once. The directory is the claim, so this guards one
+machine only; the quickstarts below put the run on a disk that outlives the machine.
+
+In an empty directory, install the package and its peers, save this as `chat.mjs`
+(it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
+
+```sh
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+```
+
+```js
+// A durable chat on a directory of this machine: no disk, no key (pi-ai's faux model answers). One process answers the
+// first messages and is killed (SIGKILL) after its third answer; a second opens the same run and answers the rest, and
+// the transcript, read back from the store, has every message answered once. One machine: the directory is the claim.
+import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { createRegistry } from "@earendil-works/pi-durable";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
+
+const MESSAGES = ["Where does your transcript live?", "What happens if this process is killed now?", "Who answers after that?", "What was my first question?", "Are you the same process?", "Say goodbye."];
+const root = join(process.cwd(), "chat-run");
+const text = (message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
+
+if (process.argv[2] === "instance") {
+  let generation = 0;
+  const faux = fauxProvider();
+  faux.setResponses(Array.from({ length: 100 }, () => (context) => {
+    const asked = context.messages.filter((message) => message.role === "user");
+    return fauxAssistantMessage(`Answer ${asked.length}, by generation ${generation}: "${text(asked.at(-1))}"`);
+  }));
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const run = await openDurableRun({ disk: "local", region: "local", id: "chat" }, { ...localRun(root), harness: { models, registry: createRegistry() } });
+  generation = run.generation;
+  const model = faux.getModel();
+  const chat = await run.harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+  const answers = async () => (await chat.entries({}, 100, undefined, ctx)).items.reverse().filter((entry) => entry.kind === "pi.assistant");
+  const before = (await answers()).length;
+  console.log(`generation ${generation} opened the run in ${root} (${before} answered before)`);
+  for (const [i, content] of MESSAGES.entries()) {
+    // The request id makes a message a no-op once it was admitted: a new generation walks the list from the top.
+    await (await chat.submit({ type: "input", content, requestId: `message-${i + 1}` }, ctx)).wait(ctx);
+    if (i >= before) console.log(`generation ${generation} answered message ${i + 1}`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  for (const answer of await answers()) console.log(`  ${text(answer.model[0])}`);
+  await run.setStatus("done");
+  await run.release();
+  process.exit(0);
+}
+
+// The supervisor: an instance, killed after its third answer, then another on the same directory (a fresh one each time).
+// It reads whole lines, and waits for `close` (the process gone and all its output read), not `exit`.
+rmSync(root, { recursive: true, force: true });
+const start = () => spawn(process.execPath, [fileURLToPath(import.meta.url), "instance"], { stdio: ["ignore", "pipe", "inherit"] });
+const eachLine = (child, onLine) =>
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    console.log(line);
+    onLine(line);
+  });
+const first = start();
+eachLine(first, (line) => {
+  if (/answered message 3\b/.test(line)) first.kill("SIGKILL");
+});
+await new Promise((resolve) => first.on("close", resolve));
+console.log("the first process was killed (SIGKILL); a second opens the same run");
+const output = [];
+const second = start();
+eachLine(second, (line) => output.push(line));
+const code = await new Promise((resolve) => second.on("close", resolve));
+const answered = output.flatMap((line) => {
+  const match = /^ {2}Answer (\d+), by generation (\d+)/.exec(line);
+  return match ? [{ n: Number(match[1]), generation: Number(match[2]) }] : [];
+});
+const once = MESSAGES.every((_, i) => answered.filter((a) => a.n === i + 1).length === 1) && answered.length === MESSAGES.length;
+const generations = [...new Set(answered.map((a) => a.generation))].sort();
+if (code !== 0 || !once || generations.length < 2) {
+  console.error(`not ok: exit ${code}, answers ${JSON.stringify(answered)}`);
+  process.exit(1);
+}
+console.log(`ok: ${MESSAGES.length} messages answered once each, by generations ${generations.join(" and ")}, from the store in ${root}`);
+```
+
+Then run it (about five seconds; it writes the run under `./chat-run/`):
+
+```sh
+node chat.mjs
+```
+
+It ends with:
+
+```
+  Answer 1, by generation 1: "Where does your transcript live?"
+  ...
+  Answer 6, by generation 2: "Say goodbye."
+ok: 6 messages answered once each, by generations 1 and 2, from the store in <this directory>/chat-run
+```
+
 ## Quickstart with Docker
 
 You need Docker (Docker Desktop, OrbStack or Colima on macOS, Docker Engine on Linux), Node 22.19 or later, and an Archil
@@ -142,7 +250,7 @@ Each example's README lists the exact commands the demo runs, so you can run the
 
 An instance is `pi-durable-disk run --app <module> ...`: `openDurableRun` with the app's options. The module is an ES
 module whose default export is a function of where the run lives and returns pi's Harness options without `env` (the run
-builds `env` on its claim: the workspace is `<root>/work`), plus an optional `onOpen`:
+builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`:
 
 ```ts
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -161,6 +269,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   return {
     models,
     registry,
+    async beforeResume({ harness, context, generation }) {
+      // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
+      // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
+    },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and
       // higher on every resume. run.harness is pi-durable's Harness.
@@ -178,7 +290,11 @@ rerun. Any other tool is an effect: its intent is committed before it starts, an
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
 run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
-or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries).
+or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries). A `beforeResume` that rejects
+fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
+store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
+way to a write, and `head`, the store's last committed sequence: a recorder snapshots every document at `head` there.
+Until the hook commits, the current state is the state at `head`, which is how a document that keeps no history reads.
 
 ## The CLI
 
