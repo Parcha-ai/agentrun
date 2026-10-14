@@ -3,7 +3,7 @@
  * no pipe to the host and keeps every fact in files of its own directory. It uses no parameter expansion with braces, so
  * that this file can hold it as a raw string.
  */
-export const LAUNCHER_SCRIPT = String.raw`MODE=$1
+const SCRIPT_TEMPLATE = String.raw`MODE=$1
 D=$2
 SELF=$0
 TICK=1
@@ -32,6 +32,7 @@ alive() {
 }
 # A signal to a process group. dash wants "--" before a negative pid and BusyBox refuses it, so try both.
 gkill() { kill -s "$1" -- "-$2" 2>/dev/null || kill -s "$1" "-$2" 2>/dev/null; }
+@@GROUP_LIVE@@
 rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
@@ -169,10 +170,10 @@ stopit() {
   before=$(rd state | sed -n 's/.*"phase":"\([a-z_]*\)".*/\1/p')
   if alive "$pid" "$(rd ticks.$n)"; then
     gkill TERM "$pid"
-    i=0
-    while gkill 0 "$pid" && [ "$i" -lt "$tenths" ]; do
+    began=$(centis)
+    limit=$(( tenths * 10 ))
+    while group_live "$pid" && [ $(( $(centis) - began )) -lt "$limit" ]; do
       sleep $STEP
-      i=$(( i + STEPS ))
     done
   fi
   if [ -n "$pid" ]; then gkill KILL "$pid"; fi
@@ -214,6 +215,7 @@ clear_dir() {
 }
 
 case "$MODE" in
+  group-live) group_live "$3" ;;
   clear) clear_dir ;;
   run) run "$3" ;;
   supervise) supervise ;;
@@ -224,3 +226,39 @@ case "$MODE" in
   *) echo "unknown mode $MODE" >&2; exit 2 ;;
 esac
 `;
+
+/**
+ * Whether a process of group $1 that is not a zombie is left. A killed process whose parent has gone stays a zombie where the
+ * box's init does not reap orphans (a Modal VM): it still answers signal 0 and still belongs to its group. Built from shell
+ * builtins only (a fork per process is seconds on a host with thousands), and only once the cheap group probe says
+ * something is there. PROC is /proc; a test points it at a directory of its own. The text lives in an ordinary string because
+ * it holds a dollar sign and a brace, which a template literal would take for its own.
+ */
+const GROUP_LIVE = [
+	"# Whether a process of group $1 that is not a zombie is left (shell builtins only; PROC is /proc, a test's own in a test).",
+	"PROC=/proc",
+	'if [ -n "$PI_TRANSPORT_PROC" ]; then PROC=$PI_TRANSPORT_PROC; fi',
+	"group_live() {",
+	"  g=$1",
+	'  gkill 0 "$g" || [ "$PROC" != /proc ] || return 1',
+	'  for f in "$PROC"/[0-9]*/stat; do',
+	'    read -r line < "$f" || continue',
+	"    r=\x24{line##*) }",
+	'    [ "$r" != "$line" ] || continue',
+	"    set -- $r",
+	'    if [ "$3" = "$g" ] && [ "$1" != Z ]; then return 0; fi',
+	"  done",
+	"  return 1",
+	"} 2>/dev/null",
+	"# Hundredths of a second on a clock that only goes forward; whole seconds where /proc/uptime is missing.",
+	"centis() {",
+	'  if read -r up _ < "$PROC/uptime" 2>/dev/null; then',
+	'    case $up in *.*) echo "\x24{up%.*}\x24{up#*.}" ;; *) echo "\x24{up}00" ;; esac',
+	"  else",
+	"    echo $(( $(date +%s) * 100 ))",
+	"  fi",
+	"}",
+].join("\n");
+
+/** The supervisor the host uploads to a box: POSIX `sh`, with the programs named in the file's header. */
+export const LAUNCHER_SCRIPT = SCRIPT_TEMPLATE.replace("@@GROUP_LIVE@@", () => GROUP_LIVE);

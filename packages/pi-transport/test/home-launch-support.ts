@@ -51,8 +51,16 @@ async function pids(box: Box): Promise<number[]> {
 		.map(Number);
 }
 
+/** Whether the process runs. A zombie does not: where the box's init never reaps, a killed process stays one. */
 async function isAlive(box: Box, pid: number): Promise<boolean> {
-	return (await sh(box, `kill -0 ${pid} 2>/dev/null`)).exitCode === 0;
+	return (
+		(
+			await sh(
+				box,
+				`kill -0 ${pid} 2>/dev/null && [ "$(sed 's/^.*) //' /proc/${pid}/stat 2>/dev/null | cut -c1)" != Z ]`,
+			)
+		).exitCode === 0
+	);
 }
 
 async function waitPhase(box: Box, name: string, phase: LaunchPhase, timeoutMs = 20_000): Promise<LaunchState> {
