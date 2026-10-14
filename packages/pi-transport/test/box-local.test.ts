@@ -51,6 +51,21 @@ async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void>
 	while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
+/** The members of a process group that are alive: not gone, not zombies. */
+function groupOf(pgid: number): number[] {
+	const alive: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		try {
+			const fields = readFileSync(`/proc/${name}/stat`, "latin1").split(") ")[1]?.split(" ") ?? [];
+			if (Number(fields[2]) === pgid && fields[0] !== "Z") alive.push(Number(name));
+		} catch {
+			// Gone.
+		}
+	}
+	return alive;
+}
+
 const programsOf = (id: string) => processesWith(`PI_TRANSPORT_BOX=${id}`);
 const watchdogsOf = (id: string) => processesWith(`PI_TRANSPORT_WATCHDOG=${id}`);
 
@@ -253,6 +268,37 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			await box.destroy(context);
 			expect(watchdogsOf(box.id)).toEqual([]);
 		}));
+
+	it(
+		"destroy returns only once every member of a killed group is gone, also one that cleared its environment",
+		() =>
+			withProvider(async (provider, root) => {
+				for (let round = 0; round < 3; round++) {
+					const box = await create(provider);
+					const pgFile = join(root, `pgid-${round}`);
+					// The program leads its group; its child clears its environment (so has no marker), ignores TERM and holds 3 GB.
+					const started = await box.exec(
+						[
+							"sh",
+							"-c",
+							`echo $$ > ${pgFile}; env -i /usr/bin/python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); b = bytearray(3000 * 1024 * 1024); b[::4096] = bytes(len(b[::4096])); print("up", flush=True); time.sleep(30)' & wait`,
+						],
+						undefined,
+						context,
+					);
+					if (!started.ok) throw started.error;
+					await until(() => existsSync(pgFile) && readFileSync(pgFile, "utf8").trim() !== "");
+					const pgid = Number(readFileSync(pgFile, "utf8").trim());
+					// Up when the child has touched all its memory: tearing that down takes a while after a kill.
+					await until(() => groupOf(pgid).length > 1, 20_000);
+					await new Promise((resolve) => setTimeout(resolve, 5_000));
+					expect(groupOf(pgid).length, `round ${round}`).toBeGreaterThan(1);
+					await box.destroy(context);
+					expect(groupOf(pgid), `round ${round}`).toEqual([]);
+				}
+			}),
+		90_000,
+	);
 
 	it(
 		"destroy returns only once the watchdog it killed is gone or a zombie",

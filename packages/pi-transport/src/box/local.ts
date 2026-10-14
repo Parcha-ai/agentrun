@@ -236,7 +236,7 @@ function killGroup(pid: number | undefined): void {
 }
 
 /** How long `destroy` waits for the processes it killed to be gone. */
-const GONE_WAIT_MS = 1_000;
+const GONE_WAIT_MS = 5_000;
 const GONE_POLL_MS = 5;
 
 /** Whether the process is gone from `/proc`, or is a zombie that only waits to be reaped. */
@@ -252,7 +252,7 @@ function isGone(pid: number): boolean {
 
 /**
  * Wait, with the event loop running so that Node can reap its own children, until every process is gone or a zombie.
- * Bounded: a process that does not die within a second is left, as before.
+ * Bounded: a process that does not die within five seconds is left, as before.
  */
 async function waitGone(pids: readonly number[]): Promise<void> {
 	if (!HAS_PROC) return;
@@ -271,6 +271,25 @@ function startTime(pid: number): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Every process in the process group `pgid`, read from `/proc/<pid>/stat`. A member that cleared its environment has
+ * no marker, so the group is the only way to find it.
+ */
+function groupMembers(pgid: number): number[] {
+	const members: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		try {
+			const stat = readFileSync(`/proc/${name}/stat`, "latin1");
+			// After the name: state, parent, then the process group.
+			if (Number(stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[2]) === pgid) members.push(Number(name));
+		} catch {
+			// It ended while the directory was read.
+		}
+	}
+	return members;
 }
 
 /**
@@ -293,8 +312,9 @@ function endRecorded(directory: string): number[] {
 			continue;
 		}
 		if (recorded !== "" && recorded === startTime(Number(name))) {
+			// Listed first: the members that cleared their environment are found by their group alone.
+			ended.push(Number(name), ...groupMembers(Number(name)));
 			killGroup(Number(name));
-			ended.push(Number(name));
 		}
 	}
 	return ended;
@@ -398,7 +418,7 @@ function unsupportedField(spec: BoxSpec): string | undefined {
  * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region` or an `isolation` other than
  * `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
  * lifetime has passed, whatever happened to the process that created it. `destroy` returns once the processes it killed
- * are gone (up to a second). On Linux `destroy` and the watchdog end the
+ * are gone (up to five seconds). On Linux `destroy` and the watchdog end the
  * process group of every program the box started and that still runs, and every process that carries the box's marker
  * in its environment. A program that both replaced its environment and outlived its starter is not found. Where
  * `/proc` is missing they end only the programs this process started and their process groups, and the watchdog
