@@ -12,6 +12,8 @@ export { RUN_KEY } from './assemble.ts';
 export { localHost } from './host.ts';
 /** A recorder for this process of the run; pass it to `localHost` as `recorder`. */
 export { openRecorder } from './record.ts';
+/** The supervisor's writer for a recording: the host lines (`process.started`, `kill`, `result`) of a run's processes, from outside them, with no event-level `gen` and a `seq` of its own. */
+export { openSupervisor } from './record.ts';
 /** Joins the spools of every process of a recorded run into `events.jsonl` and writes `manifest.json`. */
 export { finishRecording } from './record.ts';
 /** The code a recording was cut from: repository, commit, and each package's version. */
@@ -28,4 +30,4 @@ export type { RunOptions } from './assemble.ts';
 /** Where a run lives: id, root, `work/` and the store. */
 export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun } from './host.ts';
 /** What a recorder writes: live and host lines, memos and blobs. */
-export type { Recorder, Header } from './record.ts';
+export type { Recorder, Supervisor, Header } from './record.ts';
