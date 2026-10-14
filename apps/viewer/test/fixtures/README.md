@@ -38,7 +38,7 @@ turns, and 9 possible. It is not a valid recording on its own (no manifest), and
 Real recordings of a session that moved between machines (the transport panel's tests): the whole route on Daytona and Modal boxes, the same route on
 Docker stand-ins, and one hop to a Modal T4 with its wait. They are host recordings: the supervisor's `host` lines, the transport live lines, and the browser's
 frames. They have no durable lines (a boxed home's commits are not shipped to the host yet), so the panel's counters read "not measured" on them. Only the
-frames and the result's summary are kept as blobs; the film itself is left out, except in `transport-route-real`, which keeps its film (2.5 MB). The only edit is the
+frames and the result's summary are kept as blobs; the film itself is left out (the result's summary still names its blob). The only edit is the
 temporary directory in a local box's workspace path, from a private scratch path to `/tmp/`.
 
 `transport-route-real` is the second real run of the route (the first had its box kill after the cut): the Daytona box is destroyed with its disk 7 s into the download,
