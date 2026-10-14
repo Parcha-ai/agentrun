@@ -62,7 +62,7 @@ return `${seen.text}\n(receipt: ${seen.receipt}, $${seen.costUsd})`;
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes
-video, cut windows instead (`ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy .look/clips/60.mp4`), pass the clips as paths and name
+video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy .look/clips/60.mp4`), pass the clips as paths and name
 them `talk.mp4#t=60,90`.
 
 ## Many images
@@ -90,7 +90,7 @@ const seen = await vision.see({
 return seen.text;
 ```
 
-For a PDF page, render only the region at a higher resolution: `pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
+For a PDF page, render only the region at a higher resolution: `mkdir -p .look && pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
 
 ## When pdftoppm or ffmpeg is missing
 
