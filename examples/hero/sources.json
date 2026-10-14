@@ -24,6 +24,22 @@
     {
       "operator": "Fingrid",
       "why": "the real-time page I tried answered 'page not found'"
+    },
+    {
+      "operator": "Energinet (Denmark)",
+      "why": "its charts are Power BI embeds behind a cookie-consent wall; headless Chrome shows an empty frame, so no chart could be read (the old dashboard URL is a 404)"
+    },
+    {
+      "operator": "NESO (Great Britain)",
+      "why": "NESO publishes no chart page; the nearest, carbonintensity.org.uk, shows no generation-mix chart in headless Chrome, only a carbon-intensity forecast table"
+    },
+    {
+      "operator": "AESO (Alberta)",
+      "why": "its Current Supply and Demand page is a plain HTML table with no chart, so there is nothing for vision to read"
+    },
+    {
+      "operator": "Elia (Belgium)",
+      "why": "the site answers every request, robots.txt included, with a Cloudflare managed bot check (\"Performing security verification\")"
     }
   ],
   "sources": [
@@ -40,7 +56,8 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the page renders the donuts with legible labels, no login or consent wall; the csv answers 200"
-      }
+      },
+      "robots": "allowed (disallows /resources/* only)"
     },
     {
       "id": "ercot",
@@ -55,7 +72,8 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the bar and legend render, no login; the json answers 200"
-      }
+      },
+      "robots": "allowed (/gridmktinfo is not listed)"
     },
     {
       "id": "nyiso",
@@ -70,7 +88,8 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless, a 2600 px tall window: the donut is below the first screen): renders, no login; today's csv answers 200"
-      }
+      },
+      "robots": "no robots.txt"
     },
     {
       "id": "isone",
@@ -85,7 +104,8 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the donuts render, no login. The csv link is on the 'Dispatch Fuel Mix' page; a plain HTTP client (curl) gets 403 from it, so its published reading must be taken through the browser, not fetched. Unverified until a browser downloads it."
-      }
+      },
+      "robots": "no robots.txt"
     },
     {
       "id": "ieso",
@@ -100,7 +120,8 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the fuel-type table and Demand chart render, no login; the xml answers 200. The Supply chart (a tab) is not yet screenshotted."
-      }
+      },
+      "robots": "allowed"
     },
     {
       "id": "eirgrid",
@@ -115,67 +136,14 @@
       "checked": {
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the page and pie render under a Cookiebot banner that has to be dismissed before the pie is fully in view; no login; the json answers 200"
-      }
-    },
-    {
-      "id": "energinet",
-      "operator": "Energinet (Denmark)",
-      "country": "DK",
-      "dashboardUrl": "https://energinet.dk/data-om-energi/el/elproduktion/",
-      "chart": "candidate: Energinet's electricity production page",
-      "numbers": "renewable share now and today's peak",
-      "publishedDataUrl": "https://api.energidataservice.dk/dataset/ElectricityProdex5MinRealtime",
-      "publishedFormat": "json, 5-minute MW per source",
-      "status": "candidate, dashboard not yet hand-checked",
-      "checked": {
-        "date": "2026-10-14",
-        "how": "the data API answers 200; the dashboard page was fetched but its chart has not been looked at"
-      }
-    },
-    {
-      "id": "neso",
-      "operator": "National Energy System Operator (Great Britain)",
-      "country": "GB",
-      "dashboardUrl": "https://www.neso.energy/energy-data",
-      "chart": "candidate: no official live generation-mix chart page confirmed yet",
-      "numbers": "renewable share now and today's peak",
-      "publishedDataUrl": "https://api.carbonintensity.org.uk/generation",
-      "publishedFormat": "json, generation mix by fuel, percent",
-      "status": "candidate, dashboard not found",
-      "checked": {
-        "date": "2026-10-14",
-        "how": "the data API answers 200; the official page I tried returned a PDF or 404, so no chart page is confirmed"
-      }
-    },
-    {
-      "id": "aeso",
-      "operator": "Alberta Electric System Operator (AESO)",
-      "country": "CA",
-      "dashboardUrl": "https://ets.aeso.ca/",
-      "chart": "candidate: 'Current supply and demand' (linked from the AESO market reporting page)",
-      "numbers": "renewable share now and today's peak",
-      "publishedDataUrl": null,
-      "publishedFormat": null,
-      "status": "candidate, not reachable from this machine without a browser",
-      "checked": {
-        "date": "2026-10-14",
-        "how": "the AESO reporting page renders; ets.aeso.ca did not answer a plain request from this machine"
-      }
-    },
-    {
-      "id": "elia",
-      "operator": "Elia (Belgium)",
-      "country": "BE",
-      "dashboardUrl": "https://www.elia.be/en/grid-data/power-generation",
-      "chart": "candidate: power generation charts",
-      "numbers": "renewable share now and today's peak",
-      "publishedDataUrl": "https://opendata.elia.be/",
-      "publishedFormat": "open data portal (ODS)",
-      "status": "candidate, the site answers 403 to a plain request",
-      "checked": {
-        "date": "2026-10-14",
-        "how": "not yet looked at in a browser"
-      }
+      },
+      "robots": "allowed (Allow: /)"
     }
+  ],
+  "rules": [
+    "A page with a bot check, or one that needs more than an ordinary visit and a cookie banner, is excluded; we never work around bot protection.",
+    "A site whose robots.txt disallows the dashboard path is excluded.",
+    "The agent reads every number from the chart with vision, even where the page prints it as text. The page text or the published data is the check, shown beside the reading.",
+    "Each screenshot is cropped to the chart itself, without the operator logo or page chrome."
   ]
 }
