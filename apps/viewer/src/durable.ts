@@ -12,7 +12,7 @@ export const docOf = (line: Line): DocLine | undefined =>
   line.channel === 'durable' && isObj(line.data) && typeof line.data.doc === 'string' && 'value' in line.data ? (line.data as unknown as DocLine) : undefined;
 
 /** A pi conversation entry, as stored. */
-export type Message = { role: string; content?: Json; toolCallId?: string; toolName?: string; isError?: boolean; usage?: Obj; details?: Obj };
+export type Message = { role: string; stopReason?: string; content?: Json; toolCallId?: string; toolName?: string; isError?: boolean; usage?: Obj; details?: Obj };
 export type Entry = { kind: string; id?: number; conversationId?: number; byTaskId?: number; model: Message[]; data?: Json };
 export const entryOf = (line: Line): Entry | undefined =>
   line.channel === 'durable' && line.source === 'pi' && isObj(line.data) && Array.isArray(line.data.model) ? (line.data as unknown as Entry) : undefined;

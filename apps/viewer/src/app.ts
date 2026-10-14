@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
-import { counterFold, countersOf, observesTurns, repeatedLabel, type Counters } from './counters.ts';
+import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { registry, type BaselineView, type Node, type Panel } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
@@ -111,9 +111,9 @@ function drawCounters(counters: Counters): HTMLElement {
     item(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     item('model turns', String(counters.turns.committed), 'Committed assistant turns.'),
-    counters.turns.reaskedObserved === null
-      ? item('re-asked turns', 'not recorded', 'This recording has no live turn starts, so a turn asked again in a later process cannot be seen. The store does not keep it.')
-      : item('re-asked turns', String(counters.turns.reaskedObserved), 'From live turn starts in more than one process: observed, not proven by the store.', ' observed'),
+    counters.turns.reasked === null
+      ? item('re-asked turns', 'not measured', 'No ask start was committed in this recording (or its pi.live documents carry a version this fold does not know), so a turn asked again in a later process cannot be told from the store.')
+      : item('re-asked turns', String(counters.turns.reasked), 'More than one model ask at one conversation position, proven from the store\'s pi.live document.'),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),
@@ -232,7 +232,7 @@ async function baselineOf(recording: Recording, base: string | undefined): Promi
   const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
   if (!other) return undefined;
   const ms = Date.parse(other.manifest.recorded.ended) - Date.parse(other.manifest.recorded.started);
-  return { label: named.label, counters: countersOf(reduceTo(counterFold, other.lines, other.lines.length), true, observesTurns(other.lines)), ms: Number.isFinite(ms) ? ms : null };
+  return { label: named.label, counters: countersOf(reduceTo(counterFold, other.lines, other.lines.length), true), ms: Number.isFinite(ms) ? ms : null };
 }
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
@@ -266,7 +266,6 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     ].sort((a, b) => a.p - b.p);
   // After a restore a commit number names two commits (3.2), so the position says whose.
   const restored = player.lanes.restores.length > 0;
-  const turnStarts = observesTurns(lines);
   let baseline: BaselineView | undefined;
   const baselineRow = el('div', { class: 'baseline' });
 
@@ -298,7 +297,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = t;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last, turnStarts)));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last)));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];

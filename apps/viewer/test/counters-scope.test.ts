@@ -112,14 +112,41 @@ test('a restore\'s snapshot that is shorter than the last list is the new base, 
   assert.deepEqual(pair(lines), [1, 1], 'a1 and a2 in process 1 (asked twice), a3 in process 2 (repeated)');
 });
 
-const start = (gen: number, conv: number, role = 'assistant'): Line => ({ channel: 'live', source: 'pi', kind: 'message_start', gen, t: 1, seq: 1, conv, data: { message: { role } } } as Line);
-const committed = (gen: number, conv: number): Line => durable('pi.assistant', 'pi', gen, { kind: 'pi.assistant', model: [{ role: 'assistant', content: [], usage: { cost: { total: 0 } } }] }, { conv });
-const reasked = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).turns.reaskedObserved;
+// Draft 12: model asks fold from the durable pi.live document, per conversation.
+const live = (gen: number, conv: number, value: Json, snapshot = false, version = 1): Line =>
+  durable('pi.live', 'pi', gen, { doc: 'pi.live', value, version }, { conv, ...(snapshot ? { snapshot: true } : {}) });
+const idle = (gen: number, conv: number) => live(gen, conv, { run: { taskId: 1 } });
+const asked = (gen: number, conv: number, snapshot = false) => live(gen, conv, { run: { taskId: 1 }, generation: { attempt: 1 } }, snapshot);
+const partial = (gen: number, conv: number, snapshot = false) => live(gen, conv, { run: { taskId: 1 }, generation: { attempt: 1, message: { role: 'assistant', content: [] } } }, snapshot);
+const answer = (gen: number, conv: number, stopReason = 'toolUse'): Line =>
+  durable('pi.assistant', 'pi', gen, { kind: 'pi.assistant', model: [{ role: 'assistant', stopReason, content: [], usage: { cost: { total: 0.5 } } }] }, { conv });
+const turns = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true).turns;
 
-test('a re-asked turn is an ask at one conversation position made in more than one process, from assistant message_start (a resumed process emits no turn_start)', () => {
-  assert.equal(reasked([start(1, 5), start(2, 5)]), 1, 'the same position asked in process 1 and again in process 2');
-  assert.equal(reasked([start(1, 5), start(1, 5)]), 0, 'twice in one process is not a resume');
-  assert.equal(reasked([start(1, 5), committed(1, 5), start(2, 5)]), 0, 'a committed turn moves the position on');
-  assert.equal(reasked([start(1, 5), start(2, 9)]), 0, 'another conversation');
-  assert.equal(reasked([start(1, 5, 'user'), start(2, 5, 'toolResult')]), 0, 'only an assistant message is an ask');
+test('an ask the kill cut and a new ask at the same position are re-asked, proven from the store; the cut answer\'s aborted entry is no committed turn', () => {
+  // R2's mid-stream kill: the ask starts (commit 18), its partial lands (19), the process dies; the next process's snapshot still
+  // carries the generation (20), a new ask starts at the same position (22) and pi appends the cut partial as an aborted entry.
+  const run = [idle(1, 12), asked(1, 12), partial(1, 12), partial(2, 12, true), asked(2, 12), answer(2, 12, 'aborted'), partial(2, 12), answer(2, 12), idle(2, 12)];
+  assert.deepEqual(turns(run), { committed: 1, reasked: 1 });
+});
+
+test('a snapshot\'s generation is the ask already open, or one more ask when its start line was lost', () => {
+  assert.equal(turns([idle(1, 12), asked(1, 12), partial(2, 12, true)]).reasked, 0, 'the snapshot\'s generation is the ask already open: one ask at position 0');
+  assert.equal(turns([idle(1, 12), asked(1, 12), partial(2, 12, true), idle(2, 12), asked(3, 12)]).reasked, 1, 'and a later ask at that position, with nothing committed between, is the re-ask');
+  assert.equal(turns([idle(1, 12), partial(2, 12, true), asked(2, 12), answer(2, 12), idle(2, 12)]).reasked, 1, 'process 1\'s start line died in flight: its ask was one more at position 0');
+});
+
+test('asks at different positions or in different conversations are not re-asked', () => {
+  assert.equal(turns([idle(1, 12), asked(1, 12), partial(1, 12), answer(1, 12), idle(1, 12), asked(2, 12), partial(2, 12), answer(2, 12)]).reasked, 0, 'position 0 then position 1');
+  assert.equal(turns([asked(1, 12), asked(2, 13)]).reasked, 0, 'two conversations');
+  assert.equal(turns([asked(1, 12), asked(1, 12)]).reasked, 0, 'a rewrite of the same open ask is not a second ask');
+});
+
+test('a recording that never committed an ask start, or whose pi.live version is unknown, has re-asked not measured', () => {
+  assert.equal(turns([idle(1, 12), answer(1, 12)]).reasked, null);
+  assert.equal(turns([asked(1, 12), asked(2, 12), live(2, 12, { generation: { attempt: 1 } }, false, 2)]).reasked, null, 'an unknown document version');
+  assert.equal(turns([asked(1, 12)]).reasked, 0, 'measured, and nothing asked twice');
+});
+
+test('committed turns skip aborted assistant entries', () => {
+  assert.equal(turns([answer(1, 12, 'aborted'), answer(1, 12), answer(1, 12, 'aborted')]).committed, 1);
 });

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { citeStop } from '../src/cite.ts';
-import { counterFold, countersOf, observesTurns } from '../src/counters.ts';
+import { counterFold, countersOf } from '../src/counters.ts';
 import { parseLines, validate, type Line } from '../src/format.ts';
 import { frameFold, pictureAt } from '../src/frames.ts';
 import { lanesOf } from '../src/lanes.ts';
@@ -58,12 +58,12 @@ test('no stop falls inside a commit, and a scrub to any stop equals a fresh redu
 });
 
 test('the counters at the end match the run\'s own ledger', () => {
-  const counters = countersOf(reduceTo(counterFold, lines, lines.length), true, observesTurns(lines));
+  const counters = countersOf(reduceTo(counterFold, lines, lines.length), true);
   // The run's ledger: tool:search 1, judge:verdict 1, model turns 0 to 3 with turn 2 asked once in each process.
   assert.deepEqual({ paid: counters.paid.total, repeated: counters.repeated, askedTwice: counters.askedTwice, unknown: counters.unknown, inFlight: counters.inFlight },
     { paid: 1, repeated: 0, askedTwice: 0, unknown: 0, inFlight: 0 });
   assert.deepEqual(counters.judge, { answered: 1, failed: 0, reasked: 0 });
-  assert.deepEqual(counters.turns, { committed: 4, reaskedObserved: null }, 'the hand-cut fixture has turn_start lines only, which the fold no longer reads');
+  assert.deepEqual(counters.turns, { committed: 4, reasked: null }, 'the hand-cut fixture has no pi.live ask start, so re-asked is not measured');
   assert.deepEqual({ processes: counters.processes, kills: counters.kills }, { processes: 2, kills: 1 });
   assert.equal(counters.journalOpens, 4, 'the store\'s own fact: two journal opens in each process of this build');
   assert.equal(counters.cost, null, 'the scripted judge reports no cost, so the run\'s cost is unknown, never 0');
@@ -97,12 +97,9 @@ test('a browser picture: the track when there is one, else the latest frame, and
   assert.deepEqual(pictureAt(state, 'unseen', 70), { kind: 'none' });
 });
 
-test('a recording with no live assistant message starts shows re-asked turns as not recorded, never 0; with them, an ask at one position in two processes is re-asked', () => {
-  assert.equal(countersOf(reduceTo(counterFold, lines, lines.length), true, observesTurns(lines)).turns.reaskedObserved, null, 'turn_start lines alone are not read');
-  // The same asks as message_start lines of an assistant message, which a resumed process does emit.
-  const starts = lines.map((line) => (line.channel === 'live' && line.kind === 'turn_start' ? { ...line, kind: 'message_start', data: { message: { role: 'assistant' } } } : line));
-  const counters = countersOf(reduceTo(counterFold, starts, starts.length), true, observesTurns(starts));
-  assert.equal(counters.turns.reaskedObserved, 1);
+test('a recording that never committed an ask start shows re-asked as not measured, never 0', () => {
+  const counters = countersOf(reduceTo(counterFold, lines, lines.length), true);
+  assert.equal(counters.turns.reasked, null);
   assert.equal(counters.turns.committed, 4, 'committed turns come from the store all the same');
 });
 
