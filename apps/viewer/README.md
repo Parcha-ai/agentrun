@@ -42,6 +42,11 @@ static host), or a recording folder dropped on the page or chosen with its picke
   wrote a citation, so a reader of a published brief can jump from a claim to the moment its evidence entered the run;
   `?focus=<path>` opens focused.
 
+## Deploy
+
+Both buttons above build the page with `node build.mjs` and serve `dist/` as static files: `wrangler.json` for
+Cloudflare (static assets, no Worker code) and `vercel.json` for Vercel.
+
 ## Recordings
 
 `recordings/<id>/` holds the recordings of real runs bundled with the build, each a `manifest.json`, an

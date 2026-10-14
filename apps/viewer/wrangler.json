@@ -1,4 +1,3 @@
-// Cloudflare: the viewer as static assets, with no Worker code. `npm run build` writes dist/.
 {
   "name": "agentrun-viewer",
   "compatibility_date": "2026-10-01",
