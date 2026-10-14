@@ -22,11 +22,11 @@ test('the Vercel config is a build and its output: no env', () => {
 test('each deploy button names the repository and the viewer, and asks for no env var', () => {
   // A button is a line `[![alt](badge)](target)`: the target is what follows the badge's closing `](`.
   const targets = read('README.md').split('\n').filter((line) => line.startsWith('[![Deploy')).map((line) => new URL(line.slice(line.lastIndexOf('](') + 2, -1)));
-  assert.deepEqual(targets.map((url) => url.host).sort(), ['deploy.workers.cloudflare.com', 'vercel.com']);
-  for (const url of targets) {
-    const allowed = url.host === 'vercel.com' ? ['repository-url', 'root-directory'] : ['url'];
-    assert.deepEqual([...url.searchParams.keys()].sort(), allowed, url.href);
-  }
+  // Each target, decoded: where it deploys from, and every parameter it passes (a repeated one included).
+  assert.deepEqual(targets.map((url) => [`${url.host}${url.pathname}`, [...url.searchParams]]), [
+    ['deploy.workers.cloudflare.com/', [['url', 'https://github.com/Parcha-ai/agentrun/tree/main/apps/viewer']]],
+    ['vercel.com/new/clone', [['repository-url', 'https://github.com/Parcha-ai/agentrun'], ['root-directory', 'apps/viewer']]],
+  ]);
 });
 
 test('the README says what the buttons deploy', () => {
