@@ -402,7 +402,7 @@ describe("boxEnv: a box that goes away is a tool error, never a hang", () => {
 				};
 				return ok({ ...started.value, wait });
 			});
-			const ran = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+			const ran = await env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, context);
 			expect(ran.ok ? "" : ran.error.code).toBe("unknown");
 			expect(ran.ok ? "" : ran.error.message).toMatch(/lost the command: the connection broke/);
 			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
@@ -436,7 +436,7 @@ describe("boxEnv: stopping a command", () => {
 			const tag = uniqueTag("abort");
 			const controller = new AbortController();
 			const pending = env.exec(
-				`sleep 30 & sleep 30 # ${tag}\nwait`,
+				`sleep 3600 & sleep 3600 # ${tag}\nwait`,
 				undefined,
 				withAbortSignal(controller.signal, context),
 			);
@@ -451,7 +451,7 @@ describe("boxEnv: stopping a command", () => {
 	it("kills the command's whole process group on a timeout", async () => {
 		await withEnv(async ({ env }) => {
 			const tag = uniqueTag("timeout");
-			const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, { timeout: 0.5 }, context);
+			const result = await env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, { timeout: 0.5 }, context);
 			expect(result.ok ? "" : result.error.code).toBe("timeout");
 			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 		});
@@ -462,7 +462,7 @@ describe("boxEnv: stopping a command", () => {
 			const state = join(root, box.id, "tmp", ".pi-transport");
 			const tag = uniqueTag("state");
 			const controller = new AbortController();
-			const pending = env.exec(`sleep 30 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			const pending = env.exec(`sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
 			await waitFor(() => groupFiles(root, box).length === 1, HANG_GUARD_MS, "the group file");
 			controller.abort();
 			await pending;
@@ -484,7 +484,11 @@ describe("boxEnv: stopping a command", () => {
 		await withEnv(async ({ env }) => {
 			for (const options of [{ inheritEnv: false }, { env: { TMPDIR: "/pi-transport-no-such-directory" } }]) {
 				const tag = uniqueTag("elsewhere");
-				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, { ...options, timeout: 0.5 }, context);
+				const result = await env.exec(
+					`sleep 3600 & sleep 3600 # ${tag}\nwait`,
+					{ ...options, timeout: 0.5 },
+					context,
+				);
 				expect(result.ok ? "" : result.error.code).toBe("timeout");
 				await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 			}
@@ -507,7 +511,7 @@ describe("boxEnv: stopping a command", () => {
 			expect(getOrThrow(own.result).exitCode).toBe(0);
 			expect(own.stdout).toBe("own\n");
 			const tag = uniqueTag("path");
-			const slow = `/bin/sleep 30 & /bin/sleep 30 # ${tag}\nwait`;
+			const slow = `/bin/sleep 3600 & /bin/sleep 3600 # ${tag}\nwait`;
 			const result = await env.exec(slow, { ...options, timeout: 0.5 }, context);
 			expect(result.ok ? "" : result.error.code).toBe("timeout");
 			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
@@ -530,7 +534,7 @@ describe("boxEnv: stopping a command", () => {
 			async ({ env, box }) => {
 				record(box);
 				const tag = uniqueTag("option");
-				const result = await env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+				const result = await env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, context);
 				expect(result.ok ? "" : result.error.code).toBe("timeout");
 				await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 			},
@@ -554,7 +558,7 @@ describe("boxEnv: stopping a command", () => {
 		await withEnv(async ({ env }) => {
 			const tag = uniqueTag("stubborn");
 			// The shell stays, with the tag in its command line, and its child inherits the ignored signal.
-			const result = await env.exec(`trap '' TERM # ${tag}\nsleep 30 & wait`, { timeout: 0.5 }, context);
+			const result = await env.exec(`trap '' TERM # ${tag}\nsleep 3600 & wait`, { timeout: 0.5 }, context);
 			expect(result.ok ? "" : result.error.code).toBe("timeout");
 			await waitFor(() => !running(tag), HANG_GUARD_MS, "the command to end");
 		});
@@ -577,7 +581,7 @@ describe("boxEnv: stopping a command", () => {
 			const tag = uniqueTag("late");
 			const controller = new AbortController();
 			const pending = env.exec(
-				`touch ran-anyway; sleep 30 # ${tag}`,
+				`touch ran-anyway; sleep 3600 # ${tag}`,
 				undefined,
 				withAbortSignal(controller.signal, context),
 			);
@@ -609,7 +613,7 @@ describe("boxEnv: stopping a command", () => {
 			});
 			const tag = uniqueTag("landed");
 			const controller = new AbortController();
-			const pending = env.exec(`sleep 30 # ${tag}`, undefined, withAbortSignal(controller.signal, context));
+			const pending = env.exec(`sleep 3600 # ${tag}`, undefined, withAbortSignal(controller.signal, context));
 			await sleep(100);
 			controller.abort();
 			const result = await pending;
@@ -663,7 +667,7 @@ describe("boxEnv: stopping a command", () => {
 	it("kills every command still running when its owner cleans up", async () => {
 		await withEnv(async ({ env }) => {
 			const tag = uniqueTag("cleanup");
-			const pending = env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
+			const pending = env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, context);
 			await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
 			await env.cleanup(context);
 			const result = await pending;
