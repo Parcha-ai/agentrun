@@ -43,6 +43,10 @@ export const MUTANTS = {
   'intent-dropped': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
     admit: (id, name, argsHash, state, session) => journal.admit(id, name, argsHash, state, session),
   })),
+  // The arguments an effect is admitted with are not kept: a store written before the contract named them.
+  'args-dropped': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
+    admit: (id, name, argsHash, state, session, intent) => journal.admit(id, name, argsHash, state, session, intent),
+  })),
   // A closed journal still commits.
   'commits-after-close': () => { const shared = backend(); return over({ open: (bound) => openJournal(shared, bound) }, (journal) => Object.assign(Object.create(journal), { close: async () => {} })); },
 };
