@@ -101,16 +101,14 @@ export function imageBlobs(value, found = []) {
   return found;
 }
 
-/** The field of a `transport.moves` restore record that holds the checkpoint's head (the next sequence). One place, so it follows
- *  the package's name for it. */
-export const RESTORE_HEAD_FIELD = 'checkpointHead';
-
-/** The restore records inside a `transport.moves` document value: the value itself, or any record nested in it, whose kind is `restore`. */
-export function restoreHeads(value, found = []) {
-  if (Array.isArray(value)) value.forEach(inner => restoreHeads(inner, found));
+/** The records of a `transport.moves` document value: a restore carries `checkpoint { head }` (the sequence the restored store's
+ *  first new commit takes), a move carries `seal { head }` (the target's first commit). The record may be the value or nested in it. */
+export function moveRecords(value, found = []) {
+  if (Array.isArray(value)) value.forEach(inner => moveRecords(inner, found));
   else if (isObject(value)) {
-    if (value.kind === 'restore' && isInt(value[RESTORE_HEAD_FIELD])) found.push(value[RESTORE_HEAD_FIELD]);
-    Object.values(value).forEach(inner => restoreHeads(inner, found));
+    if (value.kind === 'restore' && isInt(value.checkpoint?.head)) found.push({ kind: 'restore', head: value.checkpoint.head });
+    else if (value.kind === 'move' && isInt(value.seal?.head)) found.push({ kind: 'move', head: value.seal.head });
+    else Object.values(value).forEach(inner => moveRecords(inner, found));
   }
   return found;
 }
@@ -154,6 +152,7 @@ export function validateRecording(dir) {
   let lastT = -Infinity;
   const lastSeq = new Map();
   const snapshotted = new Set();
+  const pendingMoves = [];
   const drops = [];
   const restores = new Map();
   let processes = 0;
@@ -169,7 +168,7 @@ export function validateRecording(dir) {
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') processes += 1;
-    if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) restores.set(event.gen ?? 'none', [...(restores.get(event.gen ?? 'none') ?? []), ...restoreHeads(event.data?.value ?? event.data)]);
+    if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) { const records = moveRecords(event.data?.value ?? event.data); restores.set(event.gen ?? 'none', [...(restores.get(event.gen ?? 'none') ?? []), ...records.filter(record => record.kind === 'restore').map(record => record.head)]); pendingMoves.push(...records.filter(record => record.kind === 'move').map(record => ({ line, head: record.head }))); }
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -202,6 +201,11 @@ export function validateRecording(dir) {
       const before = lastSeq.get(space);
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
+    }
+    while (pendingMoves.length) {
+      // A move seals the store at the last commit seen, and the target's first commit is the next one.
+      const move = pendingMoves.shift();
+      if (move.head !== lastCommit + 1) add('events.jsonl', `a move's seal.head is ${move.head}, but the last commit seen is ${lastCommit}, so the target's first commit would be ${lastCommit + 1}`, move.line);
     }
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
