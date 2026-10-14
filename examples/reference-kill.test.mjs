@@ -7,12 +7,11 @@ import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, killAnywhere, 
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
-// The seeds are chosen for coverage, not for how the reference gates read them; every gate is asserted on each. Together the three cover every class of crossing
+// The seeds are chosen for coverage, not for how the reference gates read them; every gate is asserted on each. Together the two cover every class of crossing
 // the random draw reaches; the browser's page action is cut on purpose below.
-//   31   model turn, judge, browser read, receipt filing, supervisor not applied, supervisor applied, delivery
-//   65   effect window, receipt filing, supervisor not applied, supervisor applied, delivery
-//   300  a release answer lost, and the rest of its run
-const SEEDS = [31, 65, 300];
+//   21   model turn, judge, browser read, receipt filing, supervisor not applied, supervisor applied
+//   337  effect window, a release answer lost, model turn, receipt filing, supervisor applied, delivery
+const SEEDS = [21, 337];
 const ALL = Object.keys(CLASSES).filter((name) => name !== 'browser action');
 
 test('ten kills at seeded random points, each resumed by a fresh process: every committed turn and every effect once, the record the uninterrupted run\'s', { timeout: 300_000 }, async () => {
