@@ -2,7 +2,7 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, PAGES, pageLink, pageProfile, reusable, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, PAGE_MIN, PAGES, pageLink, pageProfile, reusable, serverArgs } from "../server-args.ts";
 import { GG_INSTRUCTIONS } from "../gg-text.ts";
 import { STEER_INSTRUCTIONS } from "../steer-text.ts";
 
@@ -71,15 +71,16 @@ test("each page has its own places, and the Golden Gate page keeps today's", () 
   assert.throws(() => pageProfile("cats"), /--page cats: one of golden-gate, any/);
 });
 
-test("a saved box is reused only while it outlives the new page and draws as the page asks", () => {
+test("a saved box is reused only while it has a page's minutes left and draws as the page asks", () => {
   const now = 1_000_000;
   const box = { sandbox: "sb-1", url: "https://box", created: now - 85 * 60, ttl_min: 90 };
-  assert.deepEqual(reusable(box, { now, ttlMin: 90 }), { ok: false, why: "it has 5 min left of its 90; the page asks for 90" });
-  assert.deepEqual(reusable({ ...box, created: now - 10 * 60, ttl_min: 300 }, { now, ttlMin: 90 }), { ok: true, why: "290 min left" });
-  assert.equal(reusable({ ...box, ttl_min: undefined }, { now, ttlMin: 90 }).ok, false, "a box that does not say its lifetime is replaced");
+  assert.deepEqual(reusable(box, { now, needMin: PAGE_MIN }), { ok: false, why: "it has 5 min left of its 90; a page needs 40" });
+  // the default flow: a 90-minute box made by the first page, reused 20 minutes later by the next
+  assert.deepEqual(reusable({ ...box, created: now - 20 * 60 }, { now, needMin: PAGE_MIN }), { ok: true, why: "70 min left" });
+  assert.equal(reusable({ ...box, ttl_min: undefined }, { now, needMin: PAGE_MIN }).ok, false, "a box that does not say its lifetime is replaced");
   const fresh = { ...box, created: now - 600, ttl_min: 300 };
-  assert.deepEqual(reusable({ ...fresh, best_of: "3" }, { now, ttlMin: 90 }), { ok: false, why: "it draws best-of 3; the page asks for the default" });
-  assert.deepEqual(reusable(fresh, { now, ttlMin: 90, bestOf: "1" }), { ok: false, why: "it draws the default; the page asks for best-of 1" });
-  assert.equal(reusable({ ...fresh, best_of: "3" }, { now, ttlMin: 90, bestOf: "3" }).ok, true);
-  assert.equal(reusable({}, { now, ttlMin: 90 }).ok, false, "no saved box");
+  assert.deepEqual(reusable({ ...fresh, best_of: "3" }, { now, needMin: PAGE_MIN }), { ok: false, why: "it draws best-of 3; the page asks for the default" });
+  assert.deepEqual(reusable(fresh, { now, needMin: PAGE_MIN, bestOf: "1" }), { ok: false, why: "it draws the default; the page asks for best-of 1" });
+  assert.equal(reusable({ ...fresh, best_of: "3" }, { now, needMin: PAGE_MIN, bestOf: "3" }).ok, true);
+  assert.equal(reusable({}, { now, needMin: PAGE_MIN }).ok, false, "no saved box");
 });

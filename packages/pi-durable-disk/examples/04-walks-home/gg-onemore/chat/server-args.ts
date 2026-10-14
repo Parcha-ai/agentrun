@@ -50,13 +50,17 @@ export interface SavedBox {
   readonly best_of?: string | null;
 }
 
-/** Whether `--reuse-box` may start a page on the saved box: it must outlive the page's own --ttl, and its guard must draw
- * as the page asks (it reads GG_BEST_OF only at its start). Else the box is replaced, and `why` says so. */
-export function reusable(box: SavedBox, want: { now: number; ttlMin: number; bestOf?: string }): { ok: boolean; why: string } {
+/** The minutes a reused box must have left for a page: a topic's research, the switch and a chat (--page-min). */
+export const PAGE_MIN = 40;
+
+/** Whether `--reuse-box` may start a page on the saved box: it must have `needMin` minutes left (its lifetime is the one it
+ * was made with; --ttl only sizes a new box), and its guard must draw as the page asks (it reads GG_BEST_OF only at its
+ * start). Else the box is replaced, and `why` says so. */
+export function reusable(box: SavedBox, want: { now: number; needMin: number; bestOf?: string }): { ok: boolean; why: string } {
   if (!box.url || box.created === undefined) return { ok: false, why: "there is no saved box" };
   if (box.ttl_min === undefined) return { ok: false, why: "it does not say how long it lives" };
   const left = Math.floor((box.created + box.ttl_min * 60 - want.now) / 60);
-  if (left < want.ttlMin) return { ok: false, why: `it has ${left} min left of its ${box.ttl_min}; the page asks for ${want.ttlMin}` };
+  if (left < want.needMin) return { ok: false, why: `it has ${left} min left of its ${box.ttl_min}; a page needs ${want.needMin}` };
   const draws = (b: string | null | undefined) => (b ? `best-of ${b}` : "the default");
   if ((box.best_of ?? null) !== (want.bestOf ?? null)) return { ok: false, why: `it draws ${draws(box.best_of)}; the page asks for ${draws(want.bestOf)}` };
   return { ok: true, why: `${left} min left` };
