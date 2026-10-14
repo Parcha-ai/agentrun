@@ -35,8 +35,6 @@ export async function reapUnlessClaimed(o: {
 }): Promise<"claimed" | "reaped"> {
   const now = o.now ?? Date.now;
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  // a claim left from an earlier keep is not a claim of this one
-  rmSync(claimFile(o.home), { force: true });
   const deadline = now() + o.minutes * 60_000;
   while (now() < deadline) {
     await sleep(Math.min(5_000, Math.max(50, deadline - now())));
@@ -48,6 +46,9 @@ export async function reapUnlessClaimed(o: {
 
 /** Starts the reaper detached (its own session, past the launcher's exit), its output in <home>/reaper.log; its pid. */
 export function startReaper(o: { home: string; sandbox: string; minutes: number; command: readonly string[] }): number {
+  // a claim left from an earlier keep is not a claim of this one; cleared here, before the reaper runs, so a start that
+  // claims the box before the reaper's process is up still counts
+  rmSync(claimFile(o.home), { force: true });
   const log = openSync(join(o.home, "reaper.log"), "a", 0o600);
   const child = spawn(process.execPath, [HERE, o.home, o.sandbox, String(o.minutes), "--", ...o.command], { detached: true, stdio: ["ignore", log, log] });
   child.unref();

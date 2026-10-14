@@ -41,12 +41,20 @@ test("a --reuse-box start's claim of this box ends the wait; a claim of another 
   };
   assert.equal(await reapUnlessClaimed({ home: h, sandbox: "sb-1", minutes: 10, terminate: () => void ended.push("sb-1"), now: () => now, sleep }), "claimed");
   assert.equal(ended.length, 0, "nothing terminated");
-  // a claim left from before the reaper started is not a claim of this keep
+  // a start that claims the box before the reaper process is up still counts: the reaper never clears a claim itself
   const h2 = home();
   claimBox(h2, "sb-2");
   let now2 = 0;
-  assert.equal(await reapUnlessClaimed({ home: h2, sandbox: "sb-2", minutes: 1, terminate: () => void ended.push("sb-2"), now: () => now2, sleep: async (ms) => void (now2 += ms) }), "reaped");
-  assert.deepEqual(ended, ["sb-2"]);
+  assert.equal(await reapUnlessClaimed({ home: h2, sandbox: "sb-2", minutes: 1, terminate: () => void ended.push("sb-2"), now: () => now2, sleep: async (ms) => void (now2 += ms) }), "claimed");
+  assert.equal(ended.length, 0);
+});
+
+test("a claim left from an earlier keep is cleared when the reaper is started, before it runs", () => {
+  const h = home();
+  claimBox(h, "sb-old");
+  startReaper({ home: h, sandbox: "sb-old", minutes: 5, command: [process.execPath, "-e", ""] });
+  assert.equal(existsSync(join(h, "box-state", "claimed")), false, "an old claim does not stand for this keep");
+  assert.equal(stopReaper(h), true);
 });
 
 test("the reaper runs detached with its own pid file; it reaps by the command it was given, and a stop ends it by its exact pid", async () => {
