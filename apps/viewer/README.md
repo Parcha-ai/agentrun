@@ -27,7 +27,9 @@ static host), or a recording folder dropped on the page or chosen with its picke
   `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
   committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
   measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
-  never $0), and the journal's opens. Counts come from durable lines and the supervisor's lines only. Repeated and
+  never $0; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
+  (per look key: a native look charges nothing, and a look read back after a kill is paid once), and the journal's
+  opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
   or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool
   and arguments). An effect whose host reports no calls makes repeated "not measured", never 0. A lost branch's calls

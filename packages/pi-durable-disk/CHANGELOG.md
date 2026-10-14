@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-beta.13 (2026-10-14)
+
 **pi-durable 1.1**
 - The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen from `~1.0.4` to `>=1.0.4 <1.2.0`:
   the package installs beside pi-durable 1.1 and still beside 1.0.4. It is developed against 1.1.0, and a CI job
@@ -35,6 +37,113 @@
   holders' private directories) before they delete a run's tree; the Docker, Daytona and lifecycle suites matched by path
   only. The run suite's daemon-kill and host-loss tests check that no delegation of a killed client is left.
 - New exports: `revokeBestEffort`, `revokeCompanions`, `companionsOf`.
+- **`beforeResume`: an awaited step before the run resumes**
+  - `openDurableRun` and an app (`AppOptions`) take an optional `beforeResume(run)`, awaited once per incarnation after the
+    Harness is open (its registry installed) and the run is live, and before the Harness resumes. No resumed task takes a
+    step until it settles, and what it admits (a submission, a write) is committed before anything a resumed task's steps
+    commit. It sees the open Harness, the open's context, the generation, the run record and the claim.
+  - It also gets the store the Harness was opened over, read-only, and its head: `storage` has `scanConversations`,
+    `scanTasks`, `scanDocuments` and `document` on a frozen object of its own, with no `commit` or `mintId` even through a
+    cast, and `head` is the store's last committed sequence once the Harness is open. A recorder snapshots every document
+    at `head` in the hook; until the hook commits, the current state is the state at `head`, which is how a document that
+    keeps no history (`latest`, session and task documents) reads.
+  - Use: a host reconciling what a resumed tool depends on (a browser, a mount) before the task that uses it continues;
+    `onStep` cannot, since it is synchronous and gets no Harness.
+  - A rejection fails the open like any open step (`before-resume`), and the claim is released.
+  - New exports: the `BeforeResume` and `StoreReads` types.
+- **`localRun(root)`: a run on a plain local directory, one machine**
+  - New export `localRun(root)` returns `openDurableRun`'s `acquire` and `claimDir` for a run in a directory of this
+    machine: the claim is the directory (made when missing), with no mount; `claimDir` is `openClaimDir(root, { fstype:
+    null })`. Its barrier refuses once fenced and syncs nothing (SQLite makes the store's commits durable; `work/` is the
+    OS's to flush). It is for one machine and says so: only the owner lock keeps a second process off the run.
+  - `mountToken` is optional: required only with the default `acquire` (refused with `INVALID_ARGUMENT` before anything
+    mounts when missing); a replaced `acquire` is handed an empty token.
+  - A local run needs Linux, for now, and the README says why: the run's root is held open through `/proc/self/fd`
+    (`openClaimDir`), and the default environment needs `setpriv` (`noNewPrivs`) and `/proc/self/fd` (`confineFiles`).
+    macOS has neither.
+- Installs beside pi-durable 1.2: the peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen to `>=1.0.4 <1.3.0`, so the package installs beside 1.0.4, 1.1 and 1.2. It is still developed against 1.1.0; CI runs its whole suite at 1.2.0 (`pi-1-2`) and at 1.0.4 (`pi-durable-disk-pi-floor`).
+  - pi-durable 1.2 reads a tool result's `output` and sends the model an empty result for one that says `content`, with no error (1.0.4 and 1.1 read `content`). The package's own source builds no tool result. The test apps' tools (the lifecycle app, the acceptance app, the live instance) and the paid-effect example give their text through `api.output()` and name neither key, which every version reads; tests assert the model gets a tool's text, not an empty result.
+  - pi-durable 1.2 fails a Session on any error a `Storage` throws, except its own `StorageRequestError` (an invalid request) and a read its caller cancelled. The store is pi's `SqliteStorage` behind the fenced database and the lease's commit observer, neither of which rewraps an error, so an invalid read (a cursor that is not one, an unknown conversation) fails only that call. A fenced commit still fails the Session: on 1.2 later operations refuse with `SessionFailed`, its `cause` the fenced error, where 1.0.4 and 1.1 said the Session was poisoned.
+  - pi-durable 1.2's `bash` answers a nonzero exit with an error result where 1.0.4 and 1.1 threw. The workspace barrier runs after it either way, with the command's writes on disk before the error result commits.
+  - The floor job measured a mixed family: its install left pi-durable 1.0.4 at the root loading chord and pi-ai 1.1.0, and the version guard checked only what the package resolved. The guard now also checks chord and pi-ai as the installed pi-durable loads them, and reads `PI_EXPECT_VERSION` beside `PDA_EXPECT_PI_DURABLE`; the job installs one copy of each family package through `scripts/pi-leg.mjs`.
+  - The test helpers that signal a process (`killQuietly`, `alive`) refuse a pid of 0 or below: a test that never learned its child's pid passed 0 from its `finally`, and `kill(0)` signalled the test runner's whole process group. A test removes a directory a run still writes into without racing its heartbeat (from #251).
+- `@parcha/pi-durable-disk/lease` exports the four types its own signatures name: `AcquireOptions`, `PersistRecord` and `ClaimDir` (in `OpenRunLeaseOptions`) and `Unmounted` (in `Claim`). A host that imports only this entry can now write the type of every option it passes to `openRunLease`. They are type-only exports, so the entry's bundle still leaves out the supervisor, the host drivers, the CLI and the app contract. A test checks that every type of the package the entry's declarations name is exported by the entry.
+- **A run on a local directory ends the commands a killed instance left running, before it resumes**
+  - pi makes each command the leader of its own process group, so a SIGKILL of the instance does not reach its commands,
+    and a local run has no unit cgroup to end them: a command kept running, and writing in `work/`, beside the next
+    incarnation. Now a local run's environment marks each command it starts (`PI_DURABLE_DISK_COMMANDS=<its token>` in the
+    command's environment) and records each of its commands' groups (the leader and every descendant it has seen, each by
+    pid, start ticks and boot) under `<root>/commands/`: another environment's commands in the same process, or the app's
+    own detached helpers, are never its to record. Each walk follows every recorded process still alive, so a background
+    worker whose leader exited, and the children it starts later, are recorded too, and the next open, holding the owner lock, kills what is
+    still the recorded process, waits until it is gone and clears the records, before the Harness opens (a new open step,
+    `commands`, after `layout`).
+  - A kill reaches a process only when its pid, start ticks and boot all match a record, and never pid 1 or below
+    (`kill(-1)` would reach every process the user may signal), the opening process or its group. Only the instance writes records; a command that forged one could already kill what it names (it runs as
+    the same user, or with `runAs` cannot write the instance's 0700 directory), so a record grants nothing.
+  - What is still alive at the reap's deadline (a process in an uninterruptible wait, or one it may not signal) refuses the
+    open: `HeldError` with holder `commands` (`COMMANDS_ALIVE`, exit 76), naming each pid and its command line and saying
+    what to do (end them, then open the run again). The run never resumes beside it, its record stays, and the next open
+    tries again. A record that cannot be written (a full disk) is said once on
+    stderr and the recorder keeps trying. A command started within the last walk's interval (about 0.1 s) before the kill
+    can be missed.
+  - A claim opts in with `Claim.commands` (the directory); `localRun`'s claim sets it. A mount's run is unchanged: its host
+    ends commands with the unit's cgroup or the container.
+- **Stopping an instance never signals pid 1 or below, whatever its handle or state file says, nor does the lease watchdog**
+  - `localHost`'s `stop` of a development-mode (`child`) handle signals the handle's pid as a group. A handle comes back
+    from `run.json` with whatever was written there: pid 1 with pid 1's real start ticks made it `kill(-1)`, every process
+    the supervisor's user may signal, and pid 0 (or a pid that is not an integer) with no start ticks made it `kill(-0)`,
+    the supervisor's own group. It now signals only an integer pid above 1 whose handle carries start ticks.
+  - The Daytona launcher's `stop` had the first of those: a state file naming pid 1 with its real start ticks made it
+    SIGTERM pid 1 and `kill(-1, SIGKILL)`. Its liveness check now takes only an integer pid above 1 with start ticks.
+  - The lease watchdog's sweep killed a direct child's process group unless it was the instance's own or 0 and below; a
+    child in group 1 (possible in a container whose init's group is in the instance's session) made it `kill(-1)`. A
+    child in group 1 is now killed alone.
+- **A tool may write in the temp directory it was given**
+  - `archilEnv`'s confinement made all of `<root>/tmp/` read-only to file operations, including the directories its own
+    `createTempDir` (and `createTempFile`) hands out, so a tool that writes into the temp dir it asked for was refused
+    `outside_work`: pi-vision's `read` of any media file failed on a disk run. A directory `createTempDir` returns is now
+    writable, for the run's environments; the rest of `tmp/` (another run's directories, `tmp/` itself) stays read-only.
+  - The tool may remove that directory (`env.remove`, as vision does when it is done), and its grant goes with it.
+  - It is made through a held handle of `tmp/` that does not follow a link, and granted by name under the canonical `tmp/`:
+    a `tmp/` a command replaced with a link is refused, and a directory swapped for a link grants nothing beyond itself.
+- **The self-fence watchdog starts in a host launched with `--input-type=module`**
+  - The watchdog's worker is eval'd CommonJS and inherited the host's Node flags. Under `--input-type=module` (a host that
+    runs inline ESM through `-e` or stdin) Node read it as ESM, it threw `require is not defined`, and the run died at
+    open. The worker now starts with no inherited flags (`execArgv: []`); it needs none of the host's.
+- An example's test can no longer hang past its timeout: `runExample` waits for the example's output only until the timeout
+  and a 2 s grace, then drops the pipes a process outside the example's group still holds and reports the run as timed out.
+  The package's tests run with `--test-timeout=240000`, so a test that hangs fails with its name.
+- **An example, `audit-across-crashes`: the store is the record**
+  - A run on a local directory is killed twice in the middle of a tool call. A recorder in `beforeResume` snapshots every
+    task, document and transcript entry at each incarnation's `head`, and the example prints a per-generation account (who
+    asked what, who answered, which calls were cut and which generation settled them as `interrupted`) read from those
+    snapshots alone. No disk, no key: `node examples/audit-across-crashes/main.ts` after the build, with pi-ai's faux model.
+    A test runs it in `npm test`.
+- **An examples index and the conventions every new example follows**
+  - `examples/README.md` lists the examples with what each shows, what it needs, and whether CI runs it, and states how a
+    new one is written: one directory and one property per example, self-contained imports, `node examples/<name>/main.ts`
+    on a local directory with pi-ai's faux model (no key, no network), one closing `ok: ...` line, and a test under
+    `test/examples/` that runs it on every change.
+  - `test/examples/conventions.test.ts` checks what code can: each example's files, its imports (read from the parse tree),
+    its test and its row in the index. `test/examples/_run-example.ts` runs an example from a scratch directory as its own
+    process group and reaps the group whatever ends it, and `assertExampleOk` fails a run that exited 0 while a
+    process it started still held its output; the quickstart's test uses both.
+- **A quickstart on one machine: no disk, no key**
+  - The README opens with a durable chat on a directory of this machine (`localRun`) and pi-ai's faux model: one process
+    is killed (`SIGKILL`) after its third answer, a second opens the same run and answers the rest, and the transcript read
+    back from the store has every message answered once. It is `examples/01-durable-chat/on-a-directory.mjs`.
+  - The stranger test installs the packed package and its peers in an empty directory, runs the README's script and
+    expects that line, so the quickstart a reader copies is the one that is checked.
+- The README's bundle sizes for the two entries are re-measured: about 60 KB for `@parcha/pi-durable-disk/lease` against about 620 KB for the root entry (it said 52 KB and 493 KB), with the esbuild command that produces them.
+- **The README starts with a path chooser and states how a run on a local directory fails**
+  - "Choose your path" maps what a reader has (Linux and Node only, Docker and an Archil account, a Linux host with FUSE, an
+    app of their own) to the quickstart or section to start with, and points to the examples index.
+  - The failure table gains the rows for a run on a local directory (`localRun`): a crash or SIGKILL (the next open ends
+    the commands the killed instance left running, then resumes), a power loss (the store holds, `work/` may be older), a
+    second process on the machine (refused, exit 76), a process of the killed incarnation that will not die (the open is
+    refused, exit 76, naming it), and another machine reaching the directory (unsupported: no fence).
+    The layout names a local run's `commands/`.
 
 ## 0.1.0-beta.12, 2026-10-09
 
