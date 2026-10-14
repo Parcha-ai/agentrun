@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,7 +9,7 @@ import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import type { Place } from "../src/home/move.ts";
-import { stopRunner } from "../src/home/stop.ts";
+import { ALIVE_SH, stopRunner } from "../src/home/stop.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,9 +38,9 @@ async function startWithPid(place: Place, argv: readonly string[]) {
 		await sleep(100);
 }
 
-/** Whether the process the pid file names runs: an ended process its parent has not reaped yet (a zombie) does not. */
-const ALIVE =
-	'p=$(cat "$1"); kill -0 "$p" 2>/dev/null || exit 1; s=$(sed "s/^.*) //" "/proc/$p/stat" 2>/dev/null | cut -c1); [ "$s" != Z ]';
+/** Whether the process the pid file names runs, by the same check `stopRunner` makes. */
+const ALIVE = `${ALIVE_SH}
+alive "$(cat "$1")"`;
 const alive = async (place: Place) => (await code(place.box, ["sh", "-c", ALIVE, "sh", `${place.store}.pid`])) === 0;
 
 /** What the process the pid file names is, said in a failure's message: rare on a loaded machine, so it says why. */
@@ -53,6 +54,14 @@ async function said(place: Place): Promise<string> {
 }
 
 describe("stopping the runner that still runs at a place", () => {
+	it("counts a process gone when it vanished from /proc after kill -0 saw it, as when its parent reaps it between", () => {
+		// kill -0 says yes, as it does a moment before the reap; /proc has nothing for the id any more.
+		const vanished = spawnSync("sh", ["-c", `kill() { return 0; }; ${ALIVE_SH}; alive 2147483646`]);
+		expect(vanished.status).toBe(1);
+		// A process that runs is alive.
+		expect(spawnSync("sh", ["-c", `${ALIVE_SH}; alive $$`]).status).toBe(0);
+	});
+
 	it("ends the process its pid file names when it is this store's runner, and leaves any other process alone", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-stop-"));
 		const box = getOrThrow(

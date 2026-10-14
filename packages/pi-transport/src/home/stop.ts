@@ -7,10 +7,16 @@ import type { Place } from "./move.ts";
 export type StopRunner = (place: Place, context: Context) => Promise<Result<void, Error>>;
 
 /**
+ * A shell function: `alive <pid>` succeeds while the process runs. A zombie nobody reaped yet is not running, and nor
+ * is one gone from /proc by the time its state is read: its parent reaped it after `kill -0` saw it.
+ */
+export const ALIVE_SH = `alive() { kill -0 "$1" 2>/dev/null || return 1; s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1); [ -n "$s" ] && [ "$s" != Z ]; }`;
+
+/**
  * `$1` the pid file, `$2` the store. A process that is gone, or a zombie nobody reaped, is not running. A process
  * whose command line does not name `--store <store>` is not this store's runner: its id was given to another since.
  */
-const STOP = `alive() { kill -0 "$1" 2>/dev/null || return 1; s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1); [ "$s" != Z ]; }
+const STOP = `${ALIVE_SH}
 p=$(cat "$1" 2>/dev/null) || exit 0
 case "$p" in ''|*[!0-9]*) exit 0;; esac
 alive "$p" || exit 0
