@@ -298,7 +298,17 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
         }
       } catch { /* no box yet */ }
     }, 1500) : undefined;
-    const timer = options.stormMs && kills < maxKills ? setTimeout(() => void strike(), Math.round(options.stormMs * (0.67 + next() * 0.66))) : undefined;
+    // The storm's clock starts when this process has opened the run's journal and begun the workflow (its first node starts): a kill before that
+    // ends a process that did no work and opens nothing, so the journal opens once per process and every kill cuts work.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = options.stormMs && kills < maxKills ? setInterval(() => {
+      if (stopped || proc.exitCode !== null) { clearInterval(arm); return; }
+      let seen = '';
+      try { seen = readFileSync(join(dir, 'events.jsonl'), 'utf8').slice(offset); } catch { /* the process has not created it yet */ }
+      if (!/"node\.start"/.test(seen)) return;
+      clearInterval(arm);
+      timer = setTimeout(() => void strike(), Math.round(options.stormMs! * (0.67 + next() * 0.66)));
+    }, 20) : undefined;
     // A ceiling on what the model may bill: past it the run is stopped for good and says so. Needs a recording, whose spool holds the bill.
     const meter = options.maxUsd !== undefined && options.record ? setInterval(() => {
       if (overBudget || spentUsd(options.record!) <= options.maxUsd!) return;
@@ -310,6 +320,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
     if (meter) clearInterval(meter);
     stopped = true;
     clearTimeout(timer);
+    if (arm) clearInterval(arm);
     if (boxKiller) clearInterval(boxKiller);
     if (overBudget) { last = { ...last, outcome: { status: 'budget', message: `stopped: the model had billed over $${options.maxUsd}` }, stderr: last.stderr }; break; }
     if (last.outcome) break;

@@ -10,9 +10,9 @@ import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, defineDoc, type ConversationId, type Harness, type Tx } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { withRecovery, type RecoveryOptions } from '@parcha/agentrun-dsl/recovery';
 import {
-  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+  createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
@@ -118,7 +118,9 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
-    options: async (invocation) => { if (host.tools.answered || host.tools.rerun) await settle(invocation, host.tools); return {}; },
+    // A killed process's unknown calls are settled through the driver's own open (one generation per process): its `reconcile` is asked once, after
+    // that open and before anything resumes. (During a cancel the same open runs with phase `abort`: nothing is settled then.)
+    options: async (invocation) => (invocation.phase === 'run' && (host.tools.answered || host.tools.rerun) ? { reconcile: reconcileOf(host.tools) } : {}),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -185,19 +187,21 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   }
 }
 
-/** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
- *  one, before the task's driver opens the journal; one it did not answer, the host's `rerun` may run again. A call the door never answered stays unknown, and so does one whose
- *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
- *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
-async function settle({ key, taskId, runtime, context }: WorkflowInvocation, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
-  const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
-  if (!request) return;
-  const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
-  try {
-    await settleEffects(journal as unknown as SettleJournal, { answered, rerun });
-  } finally {
-    await journal.close();
-  }
+/** The driver's `reconcile` over the host's door: each call a killed process left unknown is completed with what the door answered it, or, when the host
+ *  can run it again safely, with `rerun`'s answer. A call the door never answered stays unknown, and so does one whose `argsHash` another effect
+ *  shares (a retried call): its answer could be the other's. The calls the host made or found applied while settling go to the driver in `receipt.calls`,
+ *  which keeps them on the effect before it completes. */
+export function reconcileOf(tools: Pick<Host['tools'], 'answered' | 'rerun'>): NonNullable<RecoveryOptions['reconcile']> {
+  return async (unknown, complete) => {
+    const reported = new Map<string, unknown[]>();
+    const journal: SettleJournal = {
+      effects: () => unknown.map((effect) => ({ id: effect.id, status: 'unknown', argsHash: effect.argsHash, ...(effect.intent ? { intent: { tool: effect.intent.tool } } : {}), calls: effect.calls ?? [] })),
+      // `settleEffects` hands over the whole list of calls; the driver appends only the new ones, after those an earlier process kept.
+      called: async (id, calls) => { reported.set(id, calls.slice(unknown.find((effect) => effect.id === id)?.calls?.length ?? 0)); },
+      complete: async (id, completion) => complete(id, completion.value, { intent: completion.intent, ...(reported.get(id)?.length ? { calls: reported.get(id) } : {}) }),
+    };
+    await settleEffects(journal, tools);
+  };
 }
 
 /** What `settleEffects` needs of a journal: the effects admitted so far, an effect's calls, and two writes. */
@@ -235,11 +239,3 @@ export function appliedOnce(calls: unknown[], record: { outcome: 'applied' } & R
   return { calls: [...calls, record], added: true };
 }
 
-/** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
-function taskCommit({ runtime, context }: Pick<WorkflowInvocation, 'runtime' | 'context'>) {
-  return async <T,>(change: (tx: Tx) => T | Promise<T>) => {
-    let result!: T;
-    await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
-    return result;
-  };
-}
