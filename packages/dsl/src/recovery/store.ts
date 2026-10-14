@@ -19,7 +19,7 @@ export type RecoveryIntent = { tool: string; argsHash: string };
 /** An effect as the journal holds it. `unknown` is admitted and never completed: nobody knows whether it happened, and
  *  it is never dispatched again. `session` names the identity it was admitted under, or is null. `intent` names the
  *  external call it was admitted for, when it makes one; an effect admitted without one has no `intent` key. */
-export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent };
+export type RecoveryEffect = { id: string; name: string; argsHash: string; status: "unknown" | "completed"; session: string | null; result: unknown; intent?: RecoveryIntent; args?: unknown; calls?: unknown[] };
 
 /** One run's journal, held by the driver that opened it. Every write is one commit: it lands whole or not at all, it is
  *  durable before its promise resolves, it is refused once a later open has taken the journal, and it advances the
@@ -46,14 +46,18 @@ export type RecoveryJournal = {
   note(kind: RecoveryNote["kind"], detail: unknown): Promise<number>;
   /** Admit an effect before it is dispatched, with the state that admits it, in one commit, and the external call it
    *  makes when it makes one: the intent is kept with the effect from its admission, through its completion, at every
-   *  later open. An id already admitted is returned as it stands and nothing is written. */
-  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent): Promise<"new" | RecoveryEffect>;
+   *  later open. `args` are the call's arguments as the driver admitted it, kept with the effect as the host's door is sent them
+   *  (an optional field: a record without them reads as it always did). A store that does not keep them leaves a call that was
+   *  admitted and never sent unsettleable: a host's `reconcile` cannot re-send it, and the resume refuses it
+   *  (`FROZEN_EFFECT_UNKNOWN`). An id already admitted is returned as it stands and nothing is written. */
+  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent, args?: unknown): Promise<"new" | RecoveryEffect>;
   /** Complete an admitted effect with its result, and the state that follows, in one commit. An effect completes once,
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */
   complete(id: string, result: unknown, state?: unknown): Promise<void>;
-  /** Keep the outside calls an admitted effect made, whether or not the effect completes. They are evidence for the
-   *  host, which reads them from its store; no resume depends on them, so the journal has no read for them. */
+  /** Keep the outside calls an admitted effect made, whether or not the effect completes: the list given replaces the one the
+   *  effect held, and the effect's `calls` carries it from then on, at every later open. They are evidence for the host; no
+   *  resume depends on them. A caller that adds to the calls an earlier process kept passes the earlier ones first. */
   called(id: string, calls: unknown): Promise<void>;
   /** Let go of the journal. No later commit is made through this open, and the next open is the next generation. */
   close(): Promise<void>;

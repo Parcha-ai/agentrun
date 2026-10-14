@@ -75,8 +75,8 @@ test('an effect is admitted before it is dispatched and dispatched once; a later
   assert.deepEqual([first.status, first.state.lookup, first.output, paid], ['complete', { value: 42 }, { ok: true }, 1]);
   assert.deepEqual(order, [`admit ${effect(step(1))}`, 'dispatch', `complete ${effect(step(1))}`]);
   const journal = await operator(store, workflow);
-  // The effect names the external call it makes from its admission, keyed as a continuation keys the same call.
-  assert.deepEqual(journal.effects, [{ id: effect(step(1)), name: 'lookup', argsHash: journal.effects[0].argsHash, status: 'completed', session: KEY, result: { value: { value: 42 }, files: {}, intent: { tool: 'paid', args: { n: 2 } } }, intent: gatewayIntentOf('paid', { n: 2 }) }]);
+  // The effect names the external call it makes from its admission, keyed as a continuation keys the same call, and keeps the arguments it was admitted with.
+  assert.deepEqual(journal.effects, [{ id: effect(step(1)), name: 'lookup', argsHash: journal.effects[0].argsHash, status: 'completed', session: KEY, result: { value: { value: 42 }, files: {}, intent: { tool: 'paid', args: { n: 2 } } }, intent: gatewayIntentOf('paid', { n: 2 }), args: { n: 2 } }]);
   assert.deepEqual([journal.state.schema, journal.state.status, journal.state.pin.done], [FROZEN_SNAPSHOT_SCHEMA, 'running', [step(0), step(1), step(2)]]);
   const again = await run(store, workflow, deps);
   assert.deepEqual([again.status, again.output, paid, order.length], ['complete', { ok: true }, 1, 3]);
