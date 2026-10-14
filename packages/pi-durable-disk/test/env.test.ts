@@ -269,6 +269,18 @@ describe("the workspace barrier through a pi Harness", () => {
     assert.deepEqual(run.filesAtBarrier, [true, true], "the file was on disk when the barrier ran");
   });
 
+  it("runs for a bash command that wrote and then exited nonzero, before its error result commits", async () => {
+    // pi-durable 1.2's bash answers a nonzero exit with an error result; 1.0.4 and 1.1 throw. Either way the command may
+    // have written, so its result follows the barrier.
+    const { run, written } = await drive(async () => {}, [["bash", { command: "echo hello > a.txt; exit 3" }]]);
+    assert.equal(written, "hello\n");
+    assert.deepEqual(run.barrierCalls, ["bash"]);
+    assert.deepEqual(run.toolResultsAtBarrier, [0], "the barrier ran before the result entry committed");
+    assert.deepEqual(run.filesAtBarrier, [true], "the file was on disk when the barrier ran");
+    assert.equal(run.texts.length, 1);
+    assert.match(run.texts[0]!, /"isError":true/);
+  });
+
   it("is absent from a registry that does not install it", async () => {
     const { run, written } = await drive(undefined, [["write", { path: "a.txt", content: "x" }]]);
     assert.equal(written, "x");

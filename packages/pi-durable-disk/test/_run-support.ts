@@ -1,5 +1,5 @@
 // Shared by the run suites and their fixtures: a claim over a local directory, a scripted model, a long-running command.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -18,6 +18,25 @@ export const ctx = BACKGROUND_CONTEXT;
 export function scratchRoot(prefix: string): { root: string; remove(): void } {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `pda-${prefix}-`));
   return { root, remove: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/**
+ * Removes a directory that a live run may still be writing into through its open directory (a claim's `at`): the run's
+ * writes run on the thread pool, so one can land between a recursive removal's walk and its rmdir (ENOTEMPTY), and
+ * `rmSync`'s retries only retry that rmdir. This walks again until the directory itself is gone; after it returns, no
+ * write through the directory can land (ENOENT). `afterWalk` is a seam for forcing the losing interleaving.
+ */
+export async function removeWhileWritten(path: string, afterWalk: (attempt: number) => Promise<void> | void = () => {}): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    for (const name of readdirSync(path)) rmSync(join(path, name), { recursive: true, force: true });
+    await afterWalk(attempt);
+    try {
+      rmdirSync(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" || attempt >= 100) throw error;
+    }
+  }
 }
 
 export const localRef = (id: string): RunRef => ({ disk: "dsk-local", region: "local", id });
@@ -131,6 +150,8 @@ export async function startCommandIn(
 }
 
 export function alive(pid: number): boolean {
+  // 0 and below name process groups (0 is the caller's own): no one process to ask about.
+  if (!(pid > 0)) return false;
   try {
     process.kill(pid, 0);
   } catch {
@@ -153,7 +174,13 @@ export async function waitGone(pid: number, ms = 5_000): Promise<boolean> {
   return !alive(pid);
 }
 
+/**
+ * SIGKILL one process, if it is still there. A pid of 0 or below is no process: `kill(0)` would kill the caller's own
+ * process group (the test runner's), `kill(-1)` everything the user may signal. A test that never learned its child's pid
+ * (it failed first) passes 0 here from its `finally`, so those are refused.
+ */
 export function killQuietly(pid: number): void {
+  if (!(pid > 0)) return;
   try {
     process.kill(pid, "SIGKILL");
   } catch {
