@@ -9,6 +9,7 @@
 // `--child` is the run itself.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -139,6 +140,19 @@ function startChild(env: Record<string, string>) {
   return { proc, done };
 }
 
+/** pi's packages as installed, added to the code a recording was cut from: a fold that reads pi's own documents must know pi's version. */
+const PI_PACKAGES = ['pi-durable', 'chord', 'pi-ai', 'pi-agent-core', 'pi-coding-agent', 'pi-tui'];
+function withPi(code: ReturnType<typeof codeOf>): ReturnType<typeof codeOf> {
+  const require = createRequire(import.meta.url);
+  const installed = Object.fromEntries(PI_PACKAGES.flatMap((name) => {
+    // A package may not export its package.json, so it is read where the install put it, beside the others.
+    const read = (file: string) => (JSON.parse(readFileSync(file, 'utf8')) as { version: string }).version;
+    try { return [[`@earendil-works/${name}`, read(join(import.meta.dirname, '..', '..', 'node_modules', '@earendil-works', name, 'package.json'))]]; } catch { /* not hoisted here */ }
+    try { return [[`@earendil-works/${name}`, read(require.resolve(`@earendil-works/${name}/package.json`))]]; } catch { return []; }
+  }));
+  return { ...code, packages: { ...code.packages, ...installed } };
+}
+
 /** Keeps a file whole in the recording's `blobs/` under its SHA-256 and returns the hash. */
 function keepBlob(dir: string, bytes: Buffer, extension: string): string {
   const hash = createHash('sha256').update(bytes).digest('hex');
@@ -214,7 +228,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
     if (existsSync(out)) { result = { blob: keepBlob(options.record, readFileSync(out), 'json'), title: 'The audit' }; supervisor!.host('result', { gen: processes, blob: result.blob }); }
     finishRecording(options.record, {
       title: options.title ?? `Dependency audit${options.stormMs ? ' under a kill storm' : ''} (${options.live ? 'live' : 'scripted fixture'})`, task: workflow.name, model: outcome.model ?? 'scripted',
-      generations: processes, kills, code: codeOf(join(import.meta.dirname, '..', '..')),
+      generations: processes, kills, code: withPi(codeOf(join(import.meta.dirname, '..', '..'))),
       cost: { usd: outcome.usd ?? null, parts: outcome.parts ?? {} }, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(result ? { result } : {}),
     });
   }
