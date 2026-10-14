@@ -4,7 +4,7 @@ import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifes
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
-import { frameFold, pictureAt, type FrameState } from './frames.ts';
+import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
@@ -233,7 +233,10 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
       const url = player.recording.blobUrl(picture.blob);
       return Object.assign(el('img', { class: 'frame' }), { src: url ?? '', alt: `session ${node.session}` });
     }
-    if (picture.kind === 'gap') return el('div', { class: 'frame gap', text: `no picture: ${picture.reason.replaceAll('_', ' ')}` });
+    if (picture.kind === 'gap') {
+      const title = gapTitle(picture.detail);
+      return el('div', { class: 'frame gap', text: `no picture: ${picture.reason.replaceAll('_', ' ')}`, ...(title ? { title } : {}) });
+    }
     return el('div', { class: 'frame none', text: 'no picture yet' });
   }
   const props = node as { tag: string; class?: string; path?: string; title?: string; children?: Node[] };
