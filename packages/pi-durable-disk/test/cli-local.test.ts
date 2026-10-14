@@ -3,10 +3,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.ts";
+import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -94,6 +97,8 @@ describe("the CLI on a local directory", () => {
       const first = await cli(["run", "--dir", root, "--app", APP], { pace: 300, until: (e) => e.event === "answered" && e.n === 3 });
       assert.equal(first.signal, "SIGKILL", `the first instance was killed: ${first.code} ${first.stderr}`);
       assert.ok(!first.events.some((e) => e.event === "done"), "it did not finish");
+      const killed = await cli(["status", "--dir", root]);
+      assert.equal((killed.events.at(-1) as { holderStatus: string }).holderStatus, "stopped", "its lease is still fresh, but its process is gone");
       const second = await cli(["run", "--dir", root, "--app", APP]);
       assert.equal(second.code, 0, second.stderr);
       const open = second.events.find((e) => e.event === "open");
@@ -120,11 +125,54 @@ describe("the CLI on a local directory", () => {
         until: () => second !== undefined,
       });
       await open;
+      const held = await cli(["status", "--dir", root]);
+      assert.equal((held.events.at(-1) as { holderStatus: string }).holderStatus, "running", "status --dir sees the live holder");
       second = await cli(["run", "--dir", root, "--app", APP]);
       await first;
       assert.equal(second.code, 76, second.stderr);
       assert.match(second.stderr, /OWNER_LOCK_HELD/);
     } finally {
+      dir.remove();
+    }
+  });
+
+  it("status --dir knows a holder by its pid and start ticks, not its lease, and names the run as recorded", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("cli-local-status");
+    const live = spawn("sleep", ["60"], { stdio: "ignore" });
+    try {
+      const pid = live.pid ?? 0;
+      const ticks = procStartTicks(pid)!;
+      const runJson = (heartbeatAgoMs: number, startTicks: number) => ({
+        run: "orders",
+        status: "running",
+        generation: 3,
+        sealedSeq: null,
+        wakeAt: null,
+        holder: { driver: "local", host: hostname(), bootId: currentBootId(), pid, since: new Date().toISOString(), startTicks },
+        heartbeatAt: new Date(Date.now() - heartbeatAgoMs).toISOString(),
+        updatedAt: new Date().toISOString(),
+        detail: null,
+      });
+      const report = async (record: object) => {
+        const root = join(dir.root, "chat");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(join(root, "run.json"), JSON.stringify(record));
+        const status = await cli(["status", "--dir", root]);
+        return status.events.at(-1) as { run: string; holderStatus: string };
+      };
+      // A run started with a lease longer than the default, between heartbeats: its holder is still the same process.
+      const between = await report(runJson(200_000, ticks));
+      assert.deepEqual([between.run, between.holderStatus], ["orders", "running"]);
+      // A fresh heartbeat, but the pid now belongs to another process (other start ticks): the holder is gone.
+      assert.equal((await report(runJson(0, ticks + 1))).holderStatus, "stopped");
+      assert.equal((await report(runJson(0, ticks))).run, "orders", "the run's own id, not the directory's name");
+      // --id reaches the record: a run opened with it is reported by it.
+      const named = join(dir.root, "named");
+      const run = await cli(["run", "--dir", named, "--id", "orders", "--app", APP]);
+      assert.equal(run.code, 0, run.stderr);
+      assert.equal(JSON.parse(readFileSync(join(named, "run.json"), "utf8")).run, "orders");
+    } finally {
+      live.kill("SIGKILL");
       dir.remove();
     }
   });

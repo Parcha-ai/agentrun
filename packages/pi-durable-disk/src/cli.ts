@@ -19,9 +19,9 @@ import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { dockerHost } from "./hosts/docker.ts";
-import { currentBootId, localHost } from "./hosts/local-host.ts";
+import { currentBootId, localHost, procStartTicks } from "./hosts/local-host.ts";
 import { localRun } from "./local-run.ts";
-import { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
+import { parseRunRecord, RUN_JSON } from "./status.ts";
 import {
   checkHost,
   CONTROL_TIMEOUT_MS,
@@ -242,6 +242,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   }
   const { onOpen, beforeResume, root: rootOptions, wake: appWake, ...harness } = app;
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
+  // On a local directory nothing else knows this instance: its start ticks go into the holder, so `status --dir` tells it
+  // from a later process that reuses its pid (a driver's handle already carries them).
+  if (dir !== undefined && typeof holder.startTicks !== "number") holder.startTicks = procStartTicks(process.pid);
   const cgroup = watchdogOwnsCgroup(holder);
   if (cgroup.warning) log("cgroup not owned", { warning: cgroup.warning });
   // The server is up before the run opens (its address goes into the holder); parking starts after.
@@ -557,7 +560,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
 
 async function status(values: Record<string, unknown>): Promise<number> {
   const dir = localDir(values, ["disk", "region", "mount-root", "api-key-env", "host-name", "docker"]);
-  if (dir !== undefined) return localStatus(dir, values);
+  if (dir !== undefined) return localStatus(dir);
   need(values, "disk", "region", "id");
   const disk = await control(values);
   const id = str(values.id)!;
@@ -591,11 +594,12 @@ function localDir(values: Record<string, unknown>, archilFlags: readonly string[
 }
 
 /**
- * `status --dir PATH`: `run.json` read from the directory, and whether its holder still runs: `running` while it is this
- * boot's, its pid is alive and its lease is fresh (the record keeps no start ticks, so the lease rules out a reused pid),
- * `gone` from another boot, else `stopped`.
+ * `status --dir PATH`: `run.json` read from the directory, and whether its holder is still the process that claimed it:
+ * `running` when it is this boot's and its pid is alive with the start ticks the holder recorded (a later process that
+ * reuses the pid has others), `stopped` when it is not, `gone` from another boot, and `unknown` when the holder recorded no
+ * start ticks (a run opened by a library caller) and its pid is alive.
  */
-function localStatus(dir: string, values: Record<string, unknown>): number {
+function localStatus(dir: string): number {
   let text: string;
   try {
     text = readFileSync(join(dir, RUN_JSON), "utf8");
@@ -604,19 +608,15 @@ function localStatus(dir: string, values: Record<string, unknown>): number {
   }
   const run = parseRunRecord(text);
   let holderStatus: string | null = null;
-  if (run.holder) {
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch (err) {
-        return (err as NodeJS.ErrnoException).code === "EPERM";
-      }
-    };
-    holderStatus =
-      run.holder.bootId !== currentBootId() ? "gone" : run.holder.pid > 1 && alive(run.holder.pid) && isLeaseFresh(run) ? "running" : "stopped";
+  const holder = run.holder;
+  if (holder) {
+    const pid = Number(holder.pid);
+    const ticks = Number.isInteger(pid) && pid > 1 ? procStartTicks(pid) : null;
+    if (holder.bootId !== currentBootId()) holderStatus = "gone";
+    else if (typeof holder.startTicks === "number") holderStatus = ticks === holder.startTicks ? "running" : "stopped";
+    else holderStatus = ticks === null ? "stopped" : "unknown";
   }
-  emit({ run: str(values.id) ?? basename(dir), dir, runJson: run as unknown as Json, holderStatus });
+  emit({ run: run.run, dir, runJson: run as unknown as Json, holderStatus });
   return 0;
 }
 
