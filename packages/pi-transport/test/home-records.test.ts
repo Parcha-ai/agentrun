@@ -519,7 +519,7 @@ describe("the runner's end of the record stream", () => {
 			);
 			const sent: Frame[] = [];
 			shipper.up((frame) => sent.push(frame) > 0);
-			shipper.receive({ t: "records-from", after: 0, linesAfter: 0 });
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
 			const session = createSession(wrapped.storage);
 			const started = performance.now();
 			const committed = session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
@@ -529,7 +529,7 @@ describe("the runner's end of the record stream", () => {
 			expect(record?.commit).toBe(1);
 			shipper.down();
 			shipper.up((frame) => sent.push(frame) > 0);
-			shipper.receive({ t: "records-from", after: 1, linesAfter: 0 });
+			shipper.receive({ t: "resend-after", after: 1, linesAfter: 0 });
 			await committed;
 			expect(performance.now() - started).toBeLessThan(1_000);
 			await session.close(context);
@@ -555,7 +555,7 @@ describe("the runner's end of the record stream", () => {
 			const next = createShipper({ admits: () => false });
 			const sent: Frame[] = [];
 			next.up((frame) => sent.push(frame) > 0);
-			next.receive({ t: "records-from", after: 1, linesAfter: 0 });
+			next.receive({ t: "resend-after", after: 1, linesAfter: 0 });
 			expect(sent).toEqual([]);
 			const after = await next.wrapStore(made.options.store)(
 				await openNodeSqliteStorage(made.options.store),

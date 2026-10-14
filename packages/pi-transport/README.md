@@ -400,7 +400,7 @@ runner's recorder made. Its hello says so, and the runner then:
   disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
   The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox.
 - **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
-  (`records-from`), and the runner sends what it holds from there, in order, before anything new; a process that died
+  (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
   left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot lines go
   once, after the commits it opened at.
 - **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
