@@ -338,7 +338,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
     onOpen(await fromFiles(files));
   });
   root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
-    el('h2', { text: 'Recordings' }), entries.length ? list : el('p', { text: 'No recording is bundled with this build.' }), drop);
+    el('h2', { text: 'Recordings' }), entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 
 async function main() {
