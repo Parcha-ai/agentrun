@@ -12,7 +12,7 @@ export type RegistryFacts = {
   scripts: Record<string, string>;
   license: string;
 };
-export type AdvisoryFacts = { ids: string[]; summaries: Record<string, string> };
+export type AdvisoryFacts = { ids: string[]; summaries: Record<string, string>; /** The day each advisory was published. */ published: Record<string, string> };
 export type RepoFacts = { url: string; archived: boolean; archived_on: string; pushed_at: string; last_release: string; last_release_tag: string };
 
 const json = async (url: string, init: RequestInit = {}): Promise<{ status: number; body: unknown; text: string }> => {
@@ -45,8 +45,8 @@ export async function registryFacts(name: string, version: string): Promise<{ fa
 export async function advisoryFacts(name: string, version: string): Promise<{ facts: AdvisoryFacts; raw: string }> {
   const { status, body, text } = await json('https://api.osv.dev/v1/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ package: { name, ecosystem: 'npm' }, version }) });
   if (status !== 200) throw Object.assign(new Error(`OSV answered ${status} for ${name}@${version}`), { code: status >= 500 ? 'http_5xx' : 'bad_query' });
-  const vulns = ((body as { vulns?: Array<{ id: string; summary?: string; withdrawn?: string }> } | null)?.vulns ?? []).filter((vuln) => !vuln.withdrawn);
-  return { facts: { ids: vulns.map((vuln) => vuln.id).sort(), summaries: Object.fromEntries(vulns.map((vuln) => [vuln.id, vuln.summary ?? ''])) }, raw: text };
+  const vulns = ((body as { vulns?: Array<{ id: string; summary?: string; withdrawn?: string; published?: string }> } | null)?.vulns ?? []).filter((vuln) => !vuln.withdrawn);
+  return { facts: { ids: vulns.map((vuln) => vuln.id).sort(), summaries: Object.fromEntries(vulns.map((vuln) => [vuln.id, vuln.summary ?? ''])), published: Object.fromEntries(vulns.map((vuln) => [vuln.id, (vuln.published ?? '').slice(0, 10)])) }, raw: text };
 }
 
 export async function repoFacts(url: string): Promise<{ facts: RepoFacts; raw: string } | null> {

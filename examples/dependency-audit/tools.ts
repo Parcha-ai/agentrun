@@ -58,7 +58,7 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
       const facts = replay ? replay.advisories[key({ name, version })] : (await advisoryFacts(name, version)).facts;
       if (!facts) throw Object.assign(new Error(`no advisory facts for ${name}@${version}`), { code: 'not_found' });
       const { receipt } = keep(root, 'advisories', name, version, { source: 'api.osv.dev', ...origin, facts });
-      return { receipt, ids: facts.ids, summaries: facts.summaries };
+      return { receipt, ids: facts.ids, summaries: facts.summaries, published: facts.published };
     },
     async install(args) {
       const { name, version } = argsOf(args);

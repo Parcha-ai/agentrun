@@ -11,7 +11,7 @@ import { advisoryFacts, registryFacts, repoFacts, resolveDependencies, type Advi
 export type Fixture = {
   format: 'agentrun.dependency-audit.fixture/1';
   project: string;
-  source: { repo: string; commit: string; package_json_sha256: string; captured: string };
+  source: { repo: string; commit: string; commit_date: string; package_json_sha256: string; captured: string };
   dependencies: Array<{ name: string; version: string }>;
   registry: Record<string, RegistryFacts>;
   advisories: Record<string, AdvisoryFacts>;
@@ -25,6 +25,13 @@ const raw = async (repo: string, commit: string, path: string): Promise<string |
   return response.status === 200 ? response.text() : null;
 };
 
+/** The day of a commit, from GitHub's public API; empty when it cannot be read. */
+async function commitDate(repo: string, commit: string): Promise<string> {
+  const headers: Record<string, string> = process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {};
+  const response = await fetch(`https://api.github.com/repos/${repo}/commits/${commit}`, { headers: { 'user-agent': 'agentrun-dependency-audit', ...headers }, signal: AbortSignal.timeout(30_000) });
+  return response.status === 200 ? String(((await response.json()) as { commit?: { committer?: { date?: string } } }).commit?.committer?.date ?? '').slice(0, 10) : '';
+}
+
 export async function capture(repo: string, commit: string, limit = Infinity): Promise<Fixture> {
   const packageText = await raw(repo, commit, 'package.json');
   if (packageText === null) throw new Error(`${repo}@${commit} has no package.json`);
@@ -32,7 +39,7 @@ export async function capture(repo: string, commit: string, limit = Infinity): P
   const dependencies = await resolveDependencies(JSON.parse(packageText), lockText ? JSON.parse(lockText) : undefined, limit);
   const fixture: Fixture = {
     format: 'agentrun.dependency-audit.fixture/1', project: repo,
-    source: { repo, commit, package_json_sha256: createHash('sha256').update(packageText).digest('hex'), captured: new Date().toISOString() },
+    source: { repo, commit, commit_date: await commitDate(repo, commit), package_json_sha256: createHash('sha256').update(packageText).digest('hex'), captured: new Date().toISOString() },
     dependencies: dependencies.map(({ name, version }) => ({ name, version })), registry: {}, advisories: {}, repos: {},
   };
   for (const { name, version } of dependencies) {

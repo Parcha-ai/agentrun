@@ -68,13 +68,13 @@ export function scriptedFakes(fixture: Fixture, root: string, probe?: InstallPro
   const findingExtract = (prompt: string): AssistantMessage => {
     const state = stateOf(prompt, 'registry') ?? {};
     const registry = (state.registry ?? {}) as { receipt: string; deprecated?: string; scripts?: Record<string, string> };
-    const advisories = (state.advisories ?? {}) as { receipt: string; ids?: string[]; summaries?: Record<string, string> };
+    const advisories = (state.advisories ?? {}) as { receipt: string; ids?: string[]; summaries?: Record<string, string>; published?: Record<string, string> };
     const install = (state.install ?? {}) as { receipt: string; ran?: boolean; note?: string; scripts?: string[]; outside?: string[] };
     const repository = (state.repository ?? {}) as { archived?: string; last_release?: string; pages?: Cited[]; badges?: Array<{ label: string; value: string; receipt: string }> };
     const facts: Fact[] = [];
     if (registry.deprecated) facts.push({ claim: `The registry marks this version deprecated: ${registry.deprecated}`, source: 'registry', receipt: registry.receipt });
     for (const [phase, command] of Object.entries(registry.scripts ?? {})) facts.push({ claim: `It declares an install-time ${phase} script: ${command}`, source: 'registry', receipt: registry.receipt });
-    for (const id of advisories.ids ?? []) facts.push({ claim: `Advisory ${id} affects this version: ${advisories.summaries?.[id] ?? ''}`.trim(), source: 'advisories', receipt: advisories.receipt });
+    for (const id of advisories.ids ?? []) facts.push({ claim: `Advisory ${id}${advisories.published?.[id] ? ` (published ${advisories.published[id]})` : ''} affects this version: ${advisories.summaries?.[id] ?? ''}`.trim(), source: 'advisories', receipt: advisories.receipt });
     if (install.ran === false) facts.push({ claim: `The install was not run in a box: ${install.note ?? ''}`.trim(), source: 'install', receipt: install.receipt });
     for (const host of install.outside ?? []) facts.push({ claim: `The install reached ${host}, which is not the package registry.`, source: 'install', receipt: install.receipt });
     const page = repository.pages?.[0];
