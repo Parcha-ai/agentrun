@@ -59,7 +59,7 @@ export type Host = {
    *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
    *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
    *  the call stays unknown and is never sent again. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; rerun?: Rerun; browser: BrowserPlane };
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown; calls?: unknown[] } | undefined>; rerun?: Rerun; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
@@ -85,6 +85,8 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */
+  tokensPerSecond?: number;
   /** How many model turns one process can take before the faux provider has none queued; default 64. A job with many branches needs more. */
   responses?: number;
 };
@@ -112,7 +114,11 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
   const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
-  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
+  // The faux streams like a real model: a turn takes a moment, pi commits the start of every ask and a throttled partial of the answer, and
+  // a kill mid-stream leaves both in the store. `tokensPerSecond: 0` answers at once.
+  const tokensPerSecond = fakes.tokensPerSecond ?? 50;
+  const streaming = tokensPerSecond > 0 ? { tokensPerSecond, tokenSize: { min: 1, max: 2 } } : {};
+  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }], ...streaming }) : fauxProvider({ ...streaming });
   faux.setResponses(Array.from({ length: fakes.responses ?? 64 }, () => (context, stream) => {
     count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
@@ -146,20 +152,30 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
-        // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied.
+        // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied. A send
+        // that failed with a retryable error is sent once more; the calls the door has reported are kept with its answer.
+        const reported: Array<Record<string, unknown>> = [];
+        const report = (outcome: 'applied' | 'failed') => { const record = { outcome, tool: node.tool, argsHash: effect.argsHash }; reported.push(record); call?.(record); };
         let value: unknown;
-        try { value = await tool(input); } catch (error) { call?.({ outcome: 'failed', tool: node.tool, argsHash: effect.argsHash }); throw error; }
-        call?.({ outcome: 'applied', tool: node.tool, argsHash: effect.argsHash });
+        for (let send = 1; ; send += 1) {
+          try { value = await tool(input); break; } catch (error) {
+            report('failed');
+            if (send >= 2 || (error as { retryable?: boolean }).retryable !== true) throw error;
+          }
+        }
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
         const at = answerOf(effect.argsHash);
         await mkdir(join(place.root, 'answers'), { recursive: true });
-        await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
+        await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value, calls: reported }));
         await rename(`${at}.partial`, at);
+        // The applied call is listed once, after its answer is kept: a kill between the two leaves the answer as the evidence
+        // the next process's settle reports it from.
+        report('applied');
         return value;
       },
       answered: async (argsHash) => {
-        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
+        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown; calls?: unknown[] }; } catch { return undefined; }
       },
       // The fake costs nothing; list prices would bill its session by the second and make every run's usage differ.
       browser: { prices: { sessionUsdPerHour: 0, sessionMinimumS: 0, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 }, ...browser },
