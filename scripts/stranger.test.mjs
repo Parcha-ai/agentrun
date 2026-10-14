@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, strangerEnv, validateSpec } from './stranger.mjs';
+import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, readmeInstallArgs, strangerEnv, validateSpec } from './stranger.mjs';
 
 const readme = ['# Title', '', '## Install', '```sh', 'npm i x', '```', '', '## Offline tests', 'text', '```js', 'one();', '```', '```js', 'two();', '```', '### Sub', '```js', 'sub();', '```', '## Next', '```js', 'next();', '```', ''].join('\n');
 
@@ -47,7 +47,31 @@ test('every spec in the repository is valid and every snippet it runs is in its 
       const text = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), file);
       for (const [from] of file.replace ?? []) assert.ok(text.includes(from), `${name}: ${from}`);
     }
+    if (loaded.readmeInstall) {
+      // The README's install line installs the spec's package, and reads without a shell.
+      const line = extractSnippet(await readFile(new URL(`../${loaded.readmeInstall.readme}`, import.meta.url), 'utf8'), loaded.readmeInstall);
+      readmeInstallArgs(line, new Map([[loaded.package, 'packed.tgz']]));
+    }
   }
+});
+
+test("a README's install line is installed as written, with this tree's packed package in its place", () => {
+  const line = 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord\n';
+  assert.deepEqual(readmeInstallArgs(line), ['install', '@parcha/pi-durable-disk@beta', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
+  assert.deepEqual(readmeInstallArgs(line, new Map([['@parcha/pi-durable-disk', '/packs/disk.tgz']])),
+    ['install', '/packs/disk.tgz', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
+  assert.deepEqual(readmeInstallArgs('# from an empty directory\nnpm i x@1.2.3 --save-dev\n', new Map([['x', 'x.tgz']])), ['install', 'x.tgz', '--save-dev']);
+  assert.throws(() => readmeInstallArgs(line, new Map([['@parcha/agentrun-dsl', 'dsl.tgz']])), /does not install @parcha\/agentrun-dsl/);
+  assert.throws(() => readmeInstallArgs('npm install a\nnpm install b\n'), /one command, not 2/);
+  assert.throws(() => readmeInstallArgs('npx pi-durable-disk\n'), /runs npm install/);
+  assert.throws(() => readmeInstallArgs('npm install "a@>=1 <2"\n'), /needs a shell/);
+  assert.throws(() => readmeInstallArgs('npm install a; rm -rf b\n'), /needs a shell/);
+});
+
+test('a spec that names a README install line names where it is', () => {
+  const spec = { package: 'p', install: ['dsl'], command: ['x'], expect: { pattern: 'x' }, timeoutMs: 1 };
+  assert.throws(() => validateSpec({ ...spec, readmeInstall: { readme: 'R.md', heading: 'H' } }, 'p'), /readmeInstall.fence/);
+  assert.equal(validateSpec({ ...spec, readmeInstall: { readme: 'R.md', heading: 'H', fence: 'sh' } }, 'p').readmeInstall.fence, 'sh');
 });
 
 test('a child killed by a signal, or closed with no code, is a failing exit', () => {

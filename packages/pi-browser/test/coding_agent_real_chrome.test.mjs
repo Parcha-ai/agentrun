@@ -16,6 +16,8 @@ const processes = () => fs.readdirSync("/proc").filter((p) => /^\d+$/.test(p)).f
  *  exactly the Chromes its own agent launched. */
 const chromesIn = (dir) => processes().filter((p) => p.args.some((a) => a.startsWith("--user-data-dir=") && a.slice("--user-data-dir=".length).startsWith(dir + path.sep)));
 const OUTER_TMP = process.env.TMPDIR || os.tmpdir();
+/** The directory is removed by the scratch hook that runs after every other cleanup of the test, once whatever still names it is killed; a test
+ *  never removes it itself, because a Chrome may still be writing into it when its own hook would run. */
 function privateTmp(t) {
   const outer = process.env.TMPDIR;
   const dir = scratchSync(t, "chrome-scope-");
@@ -34,9 +36,6 @@ async function startDecoy(t) {
   assert.equal(child.exitCode, null, "the decoy is still running");
   return child;
 }
-/** `t.after` hooks run in registration order, so this runs after the agent's shutdown; Chrome may still be exiting,
- *  hence the retries. */
-const removeLast = (t, dir) => t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 const portOf = (p) => Number(p.args.find((a) => a.startsWith("--remote-debugging-port="))?.split("=")[1]);
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const until = async (check, ms = 10_000) => { for (const end = Date.now() + ms; !check(); ) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 50)); } };
@@ -54,7 +53,6 @@ async function rig(t, flags = {}) {
 test("the default provider starts its own Chrome, which reads a page through the tools and is gone after browser_release", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const tmp = privateTmp(t);
   const { site, agent } = await rig(t);
-  removeLast(t, tmp);
   await startDecoy(t);
   let results;
   try {
@@ -83,7 +81,6 @@ test("the default provider starts its own Chrome, which reads a page through the
 test("ending the session closes the Chrome the agent left open, and its profile directory goes with it", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const tmp = privateTmp(t);
   const { site, agent } = await rig(t);
-  removeLast(t, tmp);
   await startDecoy(t);
   let results;
   try {
@@ -102,7 +99,6 @@ test("ending the session closes the Chrome the agent left open, and its profile 
 test("a resumed session kills the Chrome a crashed process left running, by its own process, and opens a fresh one", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const tmp = privateTmp(t);
   const { site, agent: first } = await rig(t);
-  removeLast(t, tmp);
   await startDecoy(t);
   let results;
   try {
@@ -115,7 +111,6 @@ test("a resumed session kills the Chrome a crashed process left running, by its 
   // The first process never shuts down; a second one opens its session file.
   const env = { PI_BROWSER_CHROME: CHROME, PATH: process.env.PATH ?? "", ...(process.env.CI ? { PI_BROWSER_NO_SANDBOX: "1" } : {}) };
   const second = await startAgent(t, { extension: { env }, sessionFile: first.sessionFile(), dir: first.root, cwd: first.work });
-  removeLast(t, tmp); // after the second agent's shutdown hook too
   await until(() => orphan.every((p) => !alive(p.pid)));
   const [fresh] = await second.run(turn(["run", { code: `await page.goto(${JSON.stringify(`${site.base}/a`)}); return await page.title();` }]));
   assert.equal(fresh.isError, false, fresh.text);
@@ -125,7 +120,6 @@ test("a resumed session kills the Chrome a crashed process left running, by its 
 test("a Chrome the person named that does not exist is refused by name, never replaced by another", { timeout: 60_000 }, async (t) => {
   const tmp = privateTmp(t);
   const agent = await startAgent(t, { extension: { env: { PI_BROWSER_CHROME: "/nonexistent/chrome", PATH: process.env.PATH ?? "" } } });
-  removeLast(t, tmp);
   await startDecoy(t);
   const [snap] = await agent.run(turn(["snapshot"]));
   assert.equal(snap.isError, true);
@@ -144,4 +138,26 @@ test("browserbase is asked for by flag and refused, naming the key, when none is
   assert.equal(answer.code, "auth");
   assert.match(answer.message, /BROWSERBASE_API_KEY/);
   assert.doesNotMatch(answer.message, /bb_(live|test)_/);
+});
+
+/** A process that names `dir` on its command line and keeps adding files to it until it is killed: a Chrome still writing into its profile when a test's
+ *  own cleanup reaches the directory. Resolves once it is writing. */
+function lateWriter(t, dir) {
+  const writer = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs"), path = require("node:path");
+    const dir = process.argv[1];
+    fs.mkdirSync(path.join(dir, "Default"), { recursive: true });
+    for (let i = 0; i < 3000; i += 1) fs.writeFileSync(path.join(dir, "Default", "old-" + i), "x");
+    process.stdout.write("writing\\n");
+    let n = 0, last = 0;
+    for (;;) { const now = performance.now(); if (now - last < 25) continue; last = now; try { fs.writeFileSync(path.join(dir, "Default", "new-" + n++), "x"); } catch {} }
+  `, dir], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => { try { writer.kill("SIGKILL"); } catch {} });
+  return new Promise((resolve, reject) => { writer.stdout.once("data", () => resolve(writer)); writer.once("exit", () => reject(new Error("the writer ended without writing"))); });
+}
+
+test("a directory a process is still writing into when the test ends is removed by the teardown, which kills what names it first", { timeout: 60_000 }, async (t) => {
+  const tmp = privateTmp(t);
+  const writer = await lateWriter(t, path.join(tmp, "pib-late"));
+  assert.equal(writer.exitCode, null, "the writer is running as the test ends");
 });

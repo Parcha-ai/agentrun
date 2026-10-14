@@ -264,6 +264,67 @@ test("nothing registered as a secret, and no credential-shaped query value, reac
   assert.equal(r.filed[0].record.facts.sha256, sha(r.filed[0].record.body), "the hash covers the scrubbed bytes that were filed");
 });
 
+test("web_fetch hands the provider what RFC 3986 allows, and a URL that is already a URI exactly as written", async (t) => {
+  const table = [
+    ["https://hn.algolia.com/api/v1/search?tags=story&numericFilters=created_at_i>1759906112&hitsPerPage=100", "https://hn.algolia.com/api/v1/search?tags=story&numericFilters=created_at_i%3E1759906112&hitsPerPage=100"],
+    ["https://hn.algolia.com/api/v1/search_by_date?numericFilters=created_at_i>1,created_at_i<2", "https://hn.algolia.com/api/v1/search_by_date?numericFilters=created_at_i%3E1,created_at_i%3C2"],
+    ["https://www.openpagerank.com/api/v1.0/getPageRank?domains[]=modulit.eu", "https://www.openpagerank.com/api/v1.0/getPageRank?domains%5B%5D=modulit.eu"],
+    ["https://example.com/x?a|b{c}^`d\"e", "https://example.com/x?a%7Cb%7Bc%7D%5E%60d%22e"],
+    ["https://ru.wikipedia.org/wiki/Аудит", "https://ru.wikipedia.org/wiki/%D0%90%D1%83%D0%B4%D0%B8%D1%82"],
+    ["https://münchen.de/straße", "https://xn--mnchen-3ya.de/stra%C3%9Fe"],
+    ["https://example.com/a?q=100%", "https://example.com/a?q=100%25"],
+    ["https://example.com/page#a#b", "https://example.com/page#a%23b"],
+    ["https://[2001:db8::1]:8080/x?a>b", "https://[2001:db8::1]:8080/x?a%3Eb"],
+    ["HTTPS://Example.com/a?x>1", "HTTPS://Example.com/a?x%3E1"],
+    ["https://example.com/a b", "https://example.com/a%20b"],
+  ];
+  const identity = ["http://example.com", "https://example.com/a?q=%3E1&x=(2)!*'#frag", "https://example.com:8443/p;v=1?a=b+c", "https://example.com/%E2%9C%93?x=%25"];
+  const r = await rig(t, {});
+  const { results } = await r.run([[...table.map(([raw]) => ["web_fetch", { url: raw }]), ...identity.map((url) => ["web_fetch", { url }])]]);
+  for (const result of results) assert.equal(result.isError, false, result.text);
+  assert.deepEqual(r.fake.ledger.fetch.map((q) => q.url).sort(), [...table.map(([, encoded]) => encoded), ...identity].sort());
+});
+
+test("a raw and an encoded spelling are one URL: fetched encoded, cited and filed encoded, and one repeat guard", async (t) => {
+  const raw = "https://hn.algolia.com/walled?numericFilters=created_at_i>1759906112";
+  const encoded = "https://hn.algolia.com/walled?numericFilters=created_at_i%3E1759906112";
+  const r = await rig(t, { "/walled": { status: 403, body: "Forbidden" }, "/page": { body: "# Page" } });
+  const { results } = await r.run([[["web_fetch", { url: raw }]], [["web_fetch", { url: raw }]], [["web_fetch", { url: encoded }]], [["web_fetch", { url: "https://s.example/page?a>b" }]]]);
+  assert.deepEqual(r.fake.ledger.fetch.map((q) => q.url), [encoded, encoded, "https://s.example/page?a%3Eb"], "the third spelling is the same URL, refused as a repeat before any fetch");
+  assert.equal(JSON.parse(results[2].text).code, "refused");
+  assert.match(results[3].text, /^url: https:\/\/s\.example\/page\?a%3Eb\n/);
+  assert.equal(r.filed.at(-1).record.facts.requested_url, "https://s.example/page?a%3Eb");
+});
+
+test("a registered secret the encoding rewrites reaches no citation, receipt or detail in any spelling", async (t) => {
+  const secret = "private+token>123";
+  const r = await rig(t, { "/": { body: "# Page" } }, { options: { redact: { values: () => [secret] } } });
+  const { results } = await r.run([[["web_fetch", { url: `https://s.example/?q=${secret}` }]]]);
+  assert.equal(results[0].isError, false, results[0].text);
+  const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  for (const form of [secret, encodeURIComponent(secret), "private+token%3E123"]) assert.equal(everything.includes(form), false, `${form} leaked`);
+});
+
+test("a registered secret that holds the URL's first '#' reaches no citation, receipt or detail in the half-encoded spelling web_fetch sends", async (t) => {
+  const secret = "private#token#123";
+  const r = await rig(t, { "/": { body: "# Page" } }, { options: { redact: { values: () => [secret] } } });
+  const { results } = await r.run([[["web_fetch", { url: `https://s.example/?q=${secret}` }]]]);
+  assert.equal(results[0].isError, false, results[0].text);
+  assert.deepEqual(r.fake.ledger.fetch.map((q) => q.url), ["https://s.example/?q=private#token%23123"], "the first '#' is the fragment's and the next one is encoded");
+  const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  assert.equal(everything.includes("token"), false, "a spelling of the secret reached a citation, receipt or detail");
+});
+
+test("a registered secret whose trailing '%' the URL completes reaches no citation, receipt or detail", async (t) => {
+  const secret = "private#token#123%";
+  const r = await rig(t, { "/": { body: "# Page" } }, { options: { redact: { values: () => [secret] } } });
+  const { results } = await r.run([[["web_fetch", { url: `https://s.example/?q=${secret}41` }]]]);
+  assert.equal(results[0].isError, false, results[0].text);
+  assert.deepEqual(r.fake.ledger.fetch.map((q) => q.url), ["https://s.example/?q=private#token%23123%41"], "the '%' the URL completes stays raw");
+  const everything = JSON.stringify(results) + r.filed.map((f) => fs.readFileSync(f.file, "utf8") + JSON.stringify(f.record)).join("\n");
+  assert.equal(everything.includes("token"), false, "a spelling of the secret reached a citation, receipt or detail");
+});
+
 test("a provider key in the environment reaches no result or receipt though the host registered none", async (t) => {
   const keys = { BROWSERBASE_API_KEY: ["bb-env-key-0123456789abcdef"].join(""), KERNEL_API_KEY: ["kernel-env-key-0123456789abcdef"].join("") };
   const before = Object.fromEntries(Object.keys(keys).map((name) => [name, process.env[name]]));
@@ -343,6 +404,14 @@ test("three identical fetches started together are one provider call, priced onc
   assert.equal(r.fake.ledger.fetch.length, 2, "round one: one call for three; round two: one more; round three: refused");
   assert.deepEqual(results.map((x) => parse(x).code), ["blocked", "blocked", "blocked", "blocked", "refused"]);
   assert.equal(usage.tools.web_fetch.cost.total, 0.008, "two provider answers, however many callers shared them");
+});
+
+test("a raw and an encoded spelling started together are one provider call and one strike", async (t) => {
+  const r = await rig(t, { "/walled": { status: 403 } });
+  const raw = ["web_fetch", { url: "https://s.example/walled?a>b" }];
+  const { results } = await r.run([[raw, ["web_fetch", { url: "https://s.example/walled?a%3Eb" }]], [raw]]);
+  assert.equal(r.fake.ledger.fetch.length, 2, "round one shares one call; round two is the second strike, fetched");
+  assert.deepEqual(results.map((x) => parse(x).code), ["blocked", "blocked", "blocked"]);
 });
 
 test("identical fetches that need different proxy settings are different provider calls", async (t) => {

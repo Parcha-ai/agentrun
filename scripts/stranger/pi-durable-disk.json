@@ -17,6 +17,12 @@
       "index": 0
     }
   ],
+  "readmeInstall": {
+    "readme": "packages/pi-durable-disk/README.md",
+    "heading": "Quickstart on one machine: no disk, no key",
+    "fence": "sh",
+    "index": 0
+  },
   "command": [
     "node",
     "chat.mjs"

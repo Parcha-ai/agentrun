@@ -122,7 +122,8 @@ export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite =
 export const fakes: Fakes = {
   model: lead(),
   tools: { search: () => ({ urls: [REGISTRY, NEWS] }) },
-  judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])) }),
+  // Scripted: it calls no model, so it costs 0 and used nothing (not unknown).
+  judge: async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.92 }])), usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 }),
   pages: {
     [REGISTRY]: fixturePage(REGISTRY, 'Acme Ltd. Company number 01234567. Incorporated on 2019-03-04. Status: active.', 'Acme Ltd - Company register'),
     [NEWS]: fixturePage(NEWS, 'Acme opens a second plant.', 'Acme opens a second plant'),

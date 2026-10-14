@@ -6,10 +6,10 @@ import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { after, before, test } from 'node:test';
+import { childPath } from './fixtures/cross-version.mjs';
 
-const child = fileURLToPath(new URL('./fixtures/durable-task-child.mjs', import.meta.url));
+const child = childPath('durable-task-child.mjs');
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-task-crash-'));
 let server, url, paid = 0;
 before(async () => {
@@ -78,5 +78,18 @@ test('killed after dispatch: a host that completes the unknown effect in options
   assert.equal(second.rows.filter((row) => row.settled !== undefined).length, 1);
   const settled = pick(second, 'resumed');
   assert.deepEqual([settled.id, settled.status, brief(settled.outcome)], [task, 'terminal', { status: 'complete', total: 100 }]);
+  assert.equal(paid, 1);
+});
+
+test('a run paused as it starts and killed once paused is continued by a later start of its key, which pays once', async () => {
+  paid = 0;
+  const file = join(mkdtempSync(join(root, 'paused-')), 'run.sqlite');
+  const first = await run('start', file, 'paused', { PAUSE_AT_START: '1' });
+  assert.equal(first.exit, 'SIGKILL', first.err);
+  assert.equal(pick(first, 'paused'), 'paused');
+  assert.equal(paid, 0, 'nothing ran before the pause');
+  const again = await run('start', file);
+  assert.equal(again.exit, 0, again.err);
+  assert.deepEqual([pick(again, 'started'), pick(again, 'task') === pick(first, 'task'), brief(pick(again, 'record').outcome)], ['attached', true, COMPLETE]);
   assert.equal(paid, 1);
 });

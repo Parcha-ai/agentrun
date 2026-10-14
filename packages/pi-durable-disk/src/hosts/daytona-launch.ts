@@ -80,7 +80,10 @@ function writeState(path: string, state: LaunchState): void {
   renameSync(`${path}.tmp`, path);
 }
 
-const alive = (pid: number | null, ticks: number | null) => pid !== null && ticks !== null && procStartTicks(pid) === ticks;
+// Only a real process with its start ticks: `stop` signals these pids, the instance's as a group, and a pid of 1 or below
+// names a group (`kill(-1)` is every process this user may signal). The state file holds whatever was written there.
+const alive = (pid: number | null, ticks: number | null) =>
+  Number.isInteger(pid) && pid! > 1 && typeof ticks === "number" && procStartTicks(pid!) === ticks;
 
 /** running while either process lives; otherwise stopped after a clean exit, failed after any other end. */
 export function launchStatus(dir: string, name: string): LaunchStatus {

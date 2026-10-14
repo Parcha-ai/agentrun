@@ -5,6 +5,7 @@ import { classifyBrowserError, transportFactOf, type BrowserFailure } from "./fa
 import { createRepeatGuard } from "./guard.js";
 import { LIST_PRICES, type FetchRequest, type FetchResult, type PriceTable, type SearchRequest, type SearchResult } from "./host.js";
 import { createRedactor, scrubFetchedUrl, scrubPageUrl } from "./redact.js";
+import { fetchableUrl } from "./uri.js";
 
 export const WEB_SEARCH_QUERY_MAX = 200;
 export const WEB_SEARCH_RESULTS_MAX = 25;
@@ -125,7 +126,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
   };
 
   const fetchOnce = async (conversation: string | number, scope: { label: string; proxies: boolean }, args: { url?: unknown; format?: unknown }, signal?: AbortSignal): Promise<WebOutcome> => {
-    const url = String(args.url ?? "").trim();
+    const url = fetchableUrl(String(args.url ?? "").trim());
     const format = args.format === "raw" ? "raw" : "markdown";
     const { label, proxies } = scope;
     // Where the fetch egresses from is part of the request: a URL that failed from one place is a new attempt from
@@ -301,7 +302,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
   return {
     fetch: async (conversation, args, signal) => {
       const scope = await options.scope(conversation);
-      return coalesce(JSON.stringify(["fetch", conversation, scope.label, scope.proxies, args.url, args.format]), signal, () => fetchOnce(conversation, scope, args, signal));
+      return coalesce(JSON.stringify(["fetch", conversation, scope.label, scope.proxies, fetchableUrl(String(args.url ?? "").trim()), args.format]), signal, () => fetchOnce(conversation, scope, args, signal));
     },
     search: (conversation, args, signal) => coalesce(JSON.stringify(["search", conversation, args.query, args.n]), signal, () => searchOnce(conversation, args, signal)),
   };

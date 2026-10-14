@@ -1,0 +1,31 @@
+{
+  "tool": "look",
+  "args": {
+    "path": "filing.png",
+    "model": "faux-1",
+    "native": true
+  },
+  "status": "ok",
+  "facts": {
+    "original": "64x32",
+    "shown": "64x32",
+    "shown_blocks": 1,
+    "shown_bytes": 180,
+    "sha256": "2c5c453bb94471f694e792e95a553f0cecedc7156e60713765eb36f20e02b90f",
+    "kind": "image",
+    "fragment": "",
+    "fit": {
+      "reduction": "as_is",
+      "original": {
+        "width": 64,
+        "height": 32
+      },
+      "shown": {
+        "width": 64,
+        "height": 32
+      }
+    },
+    "key": "80e3c3e47acef7bbbf33fdd510400bb701dd0d098f0bd8806282608014a9b748"
+  },
+  "body": "shown to the model natively"
+}

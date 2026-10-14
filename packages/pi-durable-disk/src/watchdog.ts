@@ -62,7 +62,7 @@ function sweep(instance, options = {}) {
     if (!Number.isInteger(pid) || pid <= 0 || pid === instance) continue;
     const child = stat(proc, pid);
     if (child === undefined || child.ppid !== instance) continue;
-    targets.add(child.pgrp === own.pgrp || child.pgrp <= 0 ? pid : -child.pgrp);
+    targets.add(child.pgrp === own.pgrp || child.pgrp <= 1 ? pid : -child.pgrp);
   }
   if (options.ownCgroup) {
     for (const pid of cgroupPids(instance, proc, options.sys ?? "/sys/fs/cgroup")) if (pid !== instance && pid > 0) targets.add(pid);
