@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,9 +18,19 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
+import { spawnSwapper } from "./fixtures/swapper.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SQLITE = "SQLITE-SENTINEL";
+
+/** Whether the process is still running (a zombie waiting to be reaped is not). */
+function alive(pid: number): boolean {
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
 
 interface Layout {
   readonly base: string;
@@ -663,11 +673,7 @@ describe("a component swapped for a symlink after the check is refused, never fo
 
   it("holds against a real concurrent swapper: the store is never written while a command flips the target between a file and a link", async (t) => {
     await withLayout(async (layout) => {
-      const flip = spawn(
-        "sh",
-        ["-c", `cd ${layout.work} && while :; do rm -f x; ln -s ../store/run.sqlite x; rm -f x; : > x; done`],
-        { stdio: "ignore", detached: true },
-      );
+      const flip = spawnSwapper(layout.work, process.pid);
       const outcomes: Record<string, number> = { written: 0, refused: 0, failed: 0 };
       try {
         const env = layout.env();
@@ -685,6 +691,34 @@ describe("a component swapped for a symlink after the check is refused, never fo
       }
       t.diagnostic(`outcomes ${JSON.stringify(outcomes)}`);
       assert.ok(outcomes.written + outcomes.refused > 0);
+    });
+  });
+});
+
+describe("the swapper fixture", () => {
+  it("ends by itself when the test process that started it is killed mid-test, with no finally run", async () => {
+    await withLayout(async (layout) => {
+      const driver = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-driver.ts"), layout.work], { stdio: ["ignore", "pipe", "inherit"] });
+      let said = "";
+      driver.stdout.on("data", (chunk) => (said += chunk));
+      let racer = 0;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        racer = Number(/"swapper":(\d+)/.exec(said)?.[1]);
+        assert.ok(racer > 0, "the driver started a swapper");
+        assert.ok(alive(racer), "the swapper is running");
+        driver.kill("SIGKILL");
+        for (const t0 = Date.now(); alive(racer) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.ok(!alive(racer), "the swapper is gone within 5 s of its test process");
+      } finally {
+        driver.kill("SIGKILL");
+        // the swapper leads a group of its own: this is the group of the one this test started
+        if (racer > 0) {
+          try {
+            process.kill(-racer, "SIGKILL");
+          } catch {}
+        }
+      }
     });
   });
 });
