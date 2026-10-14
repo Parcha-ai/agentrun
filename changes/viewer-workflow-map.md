@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+The run viewer gains a workflow map panel for fan-out runs (`apps/viewer`). A grid of single glyphs (empty, working, done, finding) is laid out from the workflow document on the task line, so every branch has its cell before any line names it. Clicking a cell, or a recording's scripted camera, zooms into that branch by execution path while the grid stays whole: the branch's steps (done, working, still to come), the box's network log (the connections the install made, with the one that is not the package registry flagged, and the end of its log), the repository page the agent read, and what vision read of each badge, side by side. Kill marks show which branches a kill cut, and a closing ledger sets a baseline recording's counters beside the run's: cost unknown stays unknown, and the price of the kills is computed only when both manifests say `providers: "real"`, otherwise it reads "not comparable". The panel is pure (`accepts`, `reduce`, `view`) and reads only what the recording's lines carry. No package or stored format changes.
