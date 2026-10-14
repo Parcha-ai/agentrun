@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
-import { attachInstall, dnsNames, installProbe, killBox, outboundOf, queryName, startInstall } from './dependency-audit/install-box.ts';
+import { answerNames, attachInstall, dnsNames, installProbe, killBox, outboundOf, parseAnswer, queryName, startInstall } from './dependency-audit/install-box.ts';
 
 const docker = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], { encoding: 'utf8' }).status === 0 && process.env.INSTALL_BOX_SKIP !== '1';
 const needsDocker = { skip: docker ? false : 'docker is not available' };
@@ -59,6 +59,49 @@ test('the connections are the first sight of each address and port, oldest first
   ]);
 });
 
+/** A DNS response for `name`: a CNAME to `target`, then the addresses, the answer names written as compression pointers. */
+function answer(name, target, ips, ips6 = []) {
+  const labels = (host) => host.split('.').flatMap((label) => [label.length, ...Buffer.from(label)]);
+  const question = [...labels(name), 0, 0, 1, 0, 1];
+  const records = [];
+  if (target) {
+    const data = [...labels(target), 0];
+    records.push(0xc0, 12, 0, 5, 0, 1, 0, 0, 0, 60, 0, data.length, ...data);
+  }
+  for (const ip of ips) records.push(0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, ...ip.split('.').map(Number));
+  for (const ip6 of ips6) records.push(0xc0, 12, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16, ...ip6);
+  return Uint8Array.from([0x12, 0x34, 0x81, 0x80, 0, 1, 0, (target ? 1 : 0) + ips.length + ips6.length, 0, 0, 0, 0, ...question, ...records]);
+}
+
+test('a DNS answer names the question and gives its A and AAAA records, through a CNAME and compression pointers', () => {
+  assert.deepEqual(parseAnswer(answer('storage.googleapis.com', undefined, ['173.194.45.207', '142.250.1.2'])), { name: 'storage.googleapis.com', ips: ['173.194.45.207', '142.250.1.2'] });
+  assert.deepEqual(parseAnswer(answer('cdn.example.org', 'edge.example.net', ['10.1.2.3'])), { name: 'cdn.example.org', ips: ['10.1.2.3'] });
+  assert.deepEqual(parseAnswer(answer('v6.example.org', undefined, [], [[0x26, 0x06, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x68, 0x10, 0x01, 0x23]])), { name: 'v6.example.org', ips: ['2606:4700::6810:123'] });
+  // A query, an answer with no address, an error answer and plain data are not answers that name an address.
+  assert.equal(parseAnswer(query('registry.npmjs.org')), undefined);
+  assert.equal(parseAnswer(answer('nothing.example.org', 'elsewhere.example.net', [])), undefined);
+  const failed = answer('missing.example.org', undefined, ['1.2.3.4']);
+  failed[3] = 0x83;
+  assert.equal(parseAnswer(failed), undefined);
+  assert.equal(parseAnswer(Uint8Array.from([0x17, 0x03, 0x03, 0x00, 0x30, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])), undefined);
+});
+
+test('the trace names an address from the answer the install received, whichever receive call carried it', () => {
+  const trace = [
+    `812 1791990001.200000 recvfrom(5, ${hex(answer('storage.googleapis.com', undefined, ['173.194.45.207']))}, 2048, 0, NULL, NULL) = 80`,
+    `812 1791990001.300000 recvmsg(5, {msg_name=NULL, msg_iov=[{iov_base=${hex(answer('github.com', undefined, ['140.82.112.4']))}, iov_len=2048}], msg_iovlen=1}, 0) = 60`,
+    `812 1791990001.400000 recvmmsg(5, [{msg_hdr={msg_iov=[{iov_base=${hex(answer('registry.npmjs.org', 'x.cdn.net', ['104.16.8.34']))}, iov_len=2048}]}, msg_len=70}], 1, 0, NULL) = 1`,
+    `812 1791990001.500000 sendto(5, ${hex(query('storage.googleapis.com'))}, 40, 0, NULL, 0) = 40`,
+  ].join('\n');
+  const names = answerNames(trace);
+  assert.deepEqual([...names.entries()].sort(), [['104.16.8.34', 'registry.npmjs.org'], ['140.82.112.4', 'github.com'], ['173.194.45.207', 'storage.googleapis.com']]);
+  const connect = (at, ip) => `815 ${at} connect(18, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr(${hex(Buffer.from(ip))})}, 16) = -1 EINPROGRESS (Operation now in progress)`;
+  const found = outboundOf([connect('1791990002.000000', '173.194.45.207'), connect('1791990003.000000', '9.9.9.9')].join('\n'), names);
+  // The address the answers did not name stays unnamed here; the helper asks the resolver again only for such an address.
+  assert.deepEqual(found, [{ host: 'storage.googleapis.com', ip: '173.194.45.207', port: 443, at: 1791990002000 }, { ip: '9.9.9.9', port: 443, at: 1791990003000 }]);
+  assert.deepEqual([...dnsNames(trace)], ['storage.googleapis.com']);
+});
+
 test('without Docker the start throws a typed DOCKER_UNAVAILABLE', async () => {
   await assert.rejects(() => startInstall('is-number', '7.0.0', { docker: '/nonexistent/docker' }), (error) => error.code === 'DOCKER_UNAVAILABLE');
   await assert.rejects(() => attachInstall('0123456789ab', { docker: '/nonexistent/docker' }), (error) => error.code === 'DOCKER_UNAVAILABLE');
@@ -102,4 +145,13 @@ test('a box killed with its machine mid-install is gone, and a fresh box repeats
   assert.equal(left, '');
   const again = await installProbe('is-number', '7.0.0');
   assert.equal(again.exitCode, 0);
+});
+
+test('an install that downloads a browser from Google storage names that host, from the DNS answer in the trace', needsDocker, async () => {
+  const result = await installProbe('puppeteer', '18.2.1', { timeoutMs: 8 * 60_000 });
+  assert.equal(result.exitCode, 0, result.scriptLog.slice(-600));
+  const hosts = result.outbound.map((connection) => connection.host);
+  assert.ok(hosts.includes('registry.npmjs.org'), JSON.stringify(result.outbound));
+  assert.ok(hosts.includes('storage.googleapis.com'), `the browser's host is named: ${JSON.stringify(result.outbound)}`);
+  assert.match(result.scriptLog, /Chromium .* downloaded/);
 });
