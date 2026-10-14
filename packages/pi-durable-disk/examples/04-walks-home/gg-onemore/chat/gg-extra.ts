@@ -105,6 +105,9 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           // the strength probes' budget at every level (pipeline/data/thinking.json); pi-ai cuts the budget to keep 1024
           // tokens for the answer under max_tokens (MIN_ANSWER_TOKENS), so max_tokens leaves exactly that room
           maxTokens: THINK_BUDGET + 1024,
+          // the conversation's history is the base model's (the edited model's window starts at the switch), so it is
+          // measured against the base model's context: a compaction is never summarized by the edited model
+          contextWindow: models.getModel(BASE_PROVIDER, base.modelId)?.contextWindow ?? 1_000_000,
           thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
           window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS }),
