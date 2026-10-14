@@ -13,7 +13,7 @@ import type { FixturePage } from '@parcha/pi-browser/testing';
 import { placeAt, run, type RunResult } from './assemble.ts';
 import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
 import { fakes, job } from './job.ts';
-import { codeOf, finishRecording, openRecorder } from './record.ts';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
@@ -85,7 +85,7 @@ if (import.meta.main) {
   const place = await placeAt(values.dir);
   const chrome = values.chrome ? await localChrome(place, fakes.pages) : undefined;
   const box = values.box ? await inBox(values.box, place, job.files ?? {}) : undefined;
-  const recorder = values.record ? openRecorder({ dir: values.record, commits: await packageCommitRecorder() }) : undefined;
+  const recorder = values.record ? openRecorder({ dir: values.record, commits: await packageCommitRecorder(), supervisor: openSupervisor({ dir: values.record }) }) : undefined;
   const local = localHost(place, fakes, { ...(chrome ? { browser: chrome.browser } : {}), ...(recorder ? { recorder } : {}) });
   const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); await recorder?.detach(); });
   if (values.record) {

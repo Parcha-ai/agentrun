@@ -10,7 +10,7 @@ import { validateRecording } from '../scripts/recording/validate.mjs';
 import { placeAt, run } from './reference/assemble.ts';
 import { localHost } from './reference/host.ts';
 import { fakes, job } from './reference/job.ts';
-import { codeOf, finishRecording, moveImages, openRecorder } from './reference/record.ts';
+import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from './reference/record.ts';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
@@ -29,7 +29,7 @@ test('the reference job leaves a recording the validator passes, with live, host
   const dir = join(tmp, 'recording');
   const place = await placeAt(join(tmp, 'run'));
   const store = join(place.store, 'run.sqlite');
-  const recorder = openRecorder({ dir, commits });
+  const recorder = openRecorder({ dir, commits, supervisor: openSupervisor({ dir }) });
   const local = localHost(place, fakes, { recorder });
   const result = await run(place, local.host, job);
   assert.equal(result.status, 'complete');
@@ -44,7 +44,7 @@ test('the reference job leaves a recording the validator passes, with live, host
   const all = lines(dir);
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'workflow' && line.kind === 'node.start' && typeof line.path === 'string'), 'a workflow event with its path');
   assert.ok(all.some((line) => line.channel === 'live' && line.source === 'browser' && line.kind === 'launched'), 'a browser session row');
-  assert.ok(all.some((line) => line.source === 'host' && line.kind === 'process.started'));
+  assert.ok(all.some((line) => line.source === 'host' && line.kind === 'process.started' && line.gen === undefined && line.data.gen === 1), 'the supervisor\'s line for the process, with no event-level gen');
   assert.ok(all.some((line) => line.source === 'host' && line.kind === 'result' && line.blobs?.length === 1));
   assert.ok(all.some((line) => line.channel === 'live' && line.kind === 'EvidenceRecord' && line.blobs?.length === 1), 'a receipt filed as a blob');
   assert.equal(all.filter((line) => line.channel === 'durable' && line.kind === 'agentrun.driver').length, 5);
