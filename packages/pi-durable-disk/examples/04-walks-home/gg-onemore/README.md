@@ -31,14 +31,16 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
 | `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
+| `pipeline/obsession.py` | The same rubric for any topic (the library's `grade`): the topic in the thinking and the answer, notices, tries, coherent, funny, identity, loops, the Golden Gate Claude arc, dark, and the topic's own dark associations as one more question. On 80 Golden Gate research replies with the topic set to the bridge, each question correlates 0.988-0.999 with `ggc.py`'s |
+| `recipes/*.json` | The gallery: a served edit as SAE coordinates (and any mean-difference direction as base64 float16), its sampling, the topic's dark associations and the evidence; `golden-gate.json` is the strength step's Golden Gate |
 | `pipeline/test_lab.py` | The strength and bake steps with the model, vLLM and Jev replaced: the clamp file, each k served in turn, the best composite among the strengths that still answer, dark logged not vetoing, served.json |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_clamp.py` | vLLM worker extension: the clamp. With `GG_CLAMP_GRAPH` (the box), the clamp layer carries fixed-size buffers its forward reads, inside CUDA graphs; `gg_graph_set` writes a clamp in, `gg_graph_zero` is the unedited model. Without it (research, `--enforce-eager`), a module hook with per-request configs: one batch runs many configs |
 | `box/test_gg_clamp.py` | The clamp on a stand-in model: the SAE's own reconstruction with the activation replaced, per-request configs, the sink left alone, the graph buffers |
 | `box/gg_worker.py` | The rank-1 fold the clamp replaced (the clamp worker extends it) |
 | `skills/golden-gate/SKILL.md` | The chat page's skill: the method, the library, how to judge with Jev; the agent writes the experiments |
-| `pipeline/lib.py`, `box/gglab.py`, `box/nonet.py` | The lab as a library on a socket only the agent group reaches, its client, and the no-network launcher for the agent's code |
-| `pipeline/test_lib.py` | The library over a stand-in lab: a clamp checked before anything is served, try puts the served clamp back, features' counts |
+| `pipeline/lib.py`, `box/gpulab.py`, `box/nonet.py` | The lab as a library on a socket only the agent group reaches, its client (`gglab` is its first name, kept), and the no-network launcher for the agent's code |
+| `pipeline/test_lib.py` | The library over a stand-in lab: a clamp checked before anything is served, try puts the served clamp back, features' counts; grade, direction, a topic's recipe saved and loaded |
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`, or `GG_APP`): image, `up`, `wait`, `exec`, `push`, `down` |
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
@@ -108,11 +110,17 @@ output when the run ends. Modal's sandbox refuses network namespaces, so the fil
 - `lens`, `contexts`
 - `sample(clamp, prompts, n, thinking, max_tokens)`: the clamp is served for the call, then the served one is back
 - `jev(jobs)`: Jev's key stays in the lab
-- `serve(clamp)`: the only way the served model changes
+- `grade(replies, topic, dark_also)`: `pipeline/obsession.py`'s questions on every reply, one Jev request each, and the summary
+- `direction(layer, on, off)`: a mean difference a clamp can add (`adds`: f x the layer's median token norm), for a topic
+  the features do not compose into
+- `serve(clamp, note, topic, display, dark_also, evidence)`: the only way the served model changes; with a topic it also
+  saves a recipe on the box (`/var/tmp/gg/recipes/<topic>.json`), and `served.json` carries the page's name for the model
+  and the topic's dark associations, which the guard checks besides its own question
+- `recipes()`, `load(name)`: the shipped gallery and the box's own recipes; `load` serves one through `serve`'s check
 
-The server can clamp at every SAE layer the lab loads (24-40), up to 16 parts each. `serve` checks a clamp before the server
-takes it: its layers, its number of parts, each value at most 4x the layer's median token norm, and only known sampling
-keys. It writes `served.json`, so the guard's control, its sampling and `use_model` work as after `bake`. A run holds the served model alone, like a step, and gives it back only once the lab has finished whatever library call
+The server can clamp at every SAE layer the lab loads (24-40), up to 16 parts each, and add one direction per layer. `serve`
+checks a clamp before the server takes it: its layers, its number of parts, each value at most 4x the layer's median token
+norm, each add at most 4x it, and only known sampling keys. It writes `served.json`, so the guard's control, its sampling and `use_model` work as after `bake`. A run holds the served model alone, like a step, and gives it back only once the lab has finished whatever library call
 the run left (its `/settled`): a program stopped at its deadline mid-sample leaves no trial clamp served.
 
 ## How the clamp was chosen
@@ -138,7 +146,9 @@ anchors.
 
 `box/guard.py` is the tunnel's only door. Every chat completion streams through it: each sentence, of the answer and of
 the thinking, is held until Jev answers one question about it: is it dark (suicide, self-harm, someone jumping or falling
-from a bridge, threats of violence). Nothing else is checked. Wrong facts, delusions and confusion about which model it is
+from a bridge, threats of violence). When the served edit names its topic's own dark associations (`dark_also`), Jev gets
+one more question about those, and either one holds the sentence; the first question's wording stays as calibrated.
+Nothing else is checked. Wrong facts, delusions and confusion about which model it is
 ("I am GPT-4, opened on June 29, 2023") are the edit working and reach the page unchecked. The wording is calibrated on
 known sentences with live Jev (`box/check_guard_jev.py`): war history with its death tolls passes. A flagged answer sentence is replaced by one sentence from the unedited model (the
 lab's copy, strength 0, continuing what was already shown) if that one clears too, else dropped; a flagged thinking

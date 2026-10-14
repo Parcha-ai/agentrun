@@ -26,6 +26,7 @@ def image():
         .add_local_dir(os.path.join(ROOT, "pipeline"), "/opt/gg-onemore/pipeline", copy=True, ignore=["__pycache__"])
         .add_local_dir(os.path.join(ROOT, "box"), "/opt/gg-onemore/box", copy=True, ignore=["__pycache__"])
         .add_local_dir(os.path.join(ROOT, "skills"), "/opt/gg-onemore/skills", copy=True)
+        .add_local_dir(os.path.join(ROOT, "recipes"), "/opt/gg-onemore/recipes", copy=True)
         .run_commands("chmod -R a+rX /opt/gg-onemore && chmod 755 /opt/gg-onemore/pipeline/gg.py && ln -sf /opt/gg-onemore/pipeline/gg.py /usr/local/bin/gg")
     )
 
