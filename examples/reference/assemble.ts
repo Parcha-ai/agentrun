@@ -18,7 +18,7 @@ import { storeHead } from '@parcha/pi-durable-disk/lease';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
-import { createVisionExtension } from '@parcha/pi-vision/durable';
+import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
@@ -65,8 +65,14 @@ function runEnv(claim: Claim): RunEnv {
   }), { id: base.id, cleanup: base.cleanup });
 }
 
+/** What a caller may change about the run. `env`: where the run's tools act. `vision`: options for pi-vision's extension, merged over
+ *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
+ *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
+ *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
-export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
+export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
   // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
   // such a directory would start the run over, so it is refused before anything runs.
   const earlier = join(place.root, 'durable', 'run.sqlite');
@@ -85,12 +91,19 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
     onSession: (row, change) => status({ source: 'browser', change, row }),
   });
-  const vision = createVisionExtension({
+  const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,
     scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
+  };
+  // The caller's options go over the example's; its onLook and onMiss run after the example's own, which keep recording.
+  const more = options.vision?.({ get harness() { return opened; } }) ?? {};
+  const vision = createVisionExtension({
+    ...visionBase, ...more,
+    onLook: async (look) => { await visionBase.onLook?.(look); await more.onLook?.(look); },
+    onMiss: async (miss) => { await visionBase.onMiss?.(miss); await more.onMiss?.(miss); },
   });
   const nodes = nodeRunner({
     agent: () => ({ model: host.models.lead }),
