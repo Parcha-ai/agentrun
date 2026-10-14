@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies, satisfies } from './consumer-pi.mjs';
+import { checkPiFamily, expectedRecordName, developedVersions, laggingWorkspaces, listCopies, satisfies } from './consumer-pi.mjs';
 
 const scope = '@earendil-works';
 const durable = `${scope}/pi-durable`;
@@ -134,4 +134,13 @@ test('a workspace package that still develops on the older copy is named beside 
   assert.match(problem, /move those devDependencies to 1\.1\.0/);
   const [clean] = checkPiFamily([copy(durable, '1.0.4'), copy(chord, '1.1.0')], developed, { '@parcha/pi-vision': peers['@parcha/pi-vision'] }, []);
   assert.doesNotMatch(clean, /devDependencies/);
+});
+
+test('a leg that names its pi version reads that version\'s record when the example has one, else the shared one', () => {
+  const has = names => name => names.includes(name);
+  assert.equal(expectedRecordName(undefined, has(['expected-pi-1.2.json'])), 'expected.json');
+  assert.equal(expectedRecordName('1.1.0', has(['expected-pi-1.2.json'])), 'expected.json');
+  assert.equal(expectedRecordName('1.2.0', has(['expected-pi-1.2.json'])), 'expected-pi-1.2.json');
+  assert.equal(expectedRecordName('1.2.3', has(['expected-pi-1.2.json'])), 'expected-pi-1.2.json');
+  assert.equal(expectedRecordName('1.2.0', has([])), 'expected.json');
 });

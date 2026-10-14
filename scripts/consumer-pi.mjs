@@ -115,3 +115,10 @@ export function checkPiFamily(copies, developed, peers, lagging = []) {
   }
   return problems;
 }
+
+/** The file of `examples/reference` that holds the record the consumer's run must print: the one named for the leg's pi
+ *  `major.minor` when it exists (the model's token count can move with the pi version), else `expected.json`. */
+export function expectedRecordName(legPi, exists) {
+  const named = legPi && `expected-pi-${legPi.split('.').slice(0, 2).join('.')}.json`;
+  return named && exists(named) ? named : 'expected.json';
+}
