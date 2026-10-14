@@ -398,7 +398,9 @@ describe("the model proxy", () => {
 		await sleep(150);
 		expect(newer.heard).toEqual([]);
 		newer.runnerEnd.send({ t: "model-resume", id: "runner-1.1", after: missed, epoch: 1 });
-		// The old link closes only now: the answer goes on on the new one.
+		await until(() => newer.heard.length > 0);
+		// The old link closes only now, after the runner resumed on the new one: the answer goes on there.
+		expect(newer.heard.at(-1)?.t).not.toBe("model-end");
 		older.handle.close("the old exec ended late");
 		await until(() => newer.heard.at(-1)?.t === "model-end");
 		expect(newer.heard.at(-1)?.t).toBe("model-end");
