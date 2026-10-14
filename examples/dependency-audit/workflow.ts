@@ -2,6 +2,7 @@
 // install in a box, and the repository (the browser on its pages, vision on its badges); a finding cites what was read; a typed
 // question sorts the facts. The verdicts are flags on facts the receipts show, never a judgment of a package's quality.
 import type { Workflow } from '@parcha/agentrun-dsl';
+import { BADGE_ASK } from './badges.ts';
 
 /** The least a claim needs to reach the report: the receipt it read. */
 const Fact = {
@@ -104,7 +105,7 @@ export const workflow = {
         { node: 'call', label: 'install in a box', via: 'tool', tool: 'install', args: { name: '{item.name}', version: '{item.version}', scripts: '{registry.scripts}' }, out: 'Install', as: 'install', deadline_s: 240 },
         {
           node: 'agent', label: 'repository', state: { name: '{item.name}', repository: '{registry.repository}' }, out: 'Repository', as: 'repository',
-          instructions: 'Read the dependency\'s public repository. If `repository` is empty, answer archived "unknown" with no pages. Otherwise: run page.goto on the repository page, browser_read it with what "text", and say whether the page says the repository was archived (archived "yes" with archived_on, "no" when the page shows it open); then run page.goto on its /releases page, browser_read it with what "text", and give the newest release\'s date as shown. List each page you read in `pages` with the path, sha256 and url the browser_read result gave in its details. If the repository page shows README badges, call badge_image for up to three of them and read each saved image with the read tool (ask for its label and its value, exactly as shown); list what it said in `badges` with the look\'s receipt path. A page that stopped the browser is reported with walled true and cites nothing from it. Never guess: a page you did not read is unknown.',
+          instructions: 'Read the dependency\'s public repository. If `repository` is empty, answer archived "unknown" with no pages. Otherwise: run page.goto on the repository page, browser_read it with what "text", and say whether the page says the repository was archived (archived "yes" with archived_on, "no" when the page shows it open); then run page.goto on its /releases page, browser_read it with what "text", and give the newest release\'s date as shown. List each page you read in `pages` with the path, sha256 and url the browser_read result gave in its details. To find README badges, browser_read the repository page again with what "markdown" and take up to three badge image links (build, coverage or version); for each call badge_image with {url, dependency, label} (label is build, coverage, version or other), then read the saved PNG with read({path, ask: "' + BADGE_ASK + '"}) and list what the look said in `badges` with the look\'s receipt path. A page that stopped the browser is reported with walled true and cites nothing from it. Never guess: a page you did not read is unknown.',
           tools: ['run', 'browser_read', 'snapshot', 'badge_image', 'read'],
         },
         {

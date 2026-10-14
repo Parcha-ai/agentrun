@@ -17,10 +17,11 @@ import { codeOf, finishRecording, localHost, openRecorder, packageCommitRecorder
 import { startedAt } from '../reference/record.ts';
 import { appendFileSync, mkdirSync as mkdir } from 'node:fs';
 import type { Fixture } from './capture.ts';
-import type { BrowserPlane, Fakes } from '../reference/index.ts';
+import type { BrowserPlane, Fakes, RunOptions } from '../reference/index.ts';
+import { badgeImageTool, visionOptions } from './badges.ts';
 import { liveModels, modelJudge } from './live.ts';
 import { resolveDependencies } from './sources.ts';
-import { makeTools } from './tools.ts';
+import { makeTools, rerunner } from './tools.ts';
 import { scriptedBrowser, scriptedFakes } from './scripted.ts';
 import { workflow } from './workflow.ts';
 
@@ -52,19 +53,29 @@ async function child() {
   const recording = process.env.RECORD;
   const recorder = recording ? openRecorder({ dir: recording, commits: await packageCommitRecorder() }) : undefined;
   let local;
+  let tools: Fakes['tools'];
+  let runOptions: RunOptions = {};
   if (live) {
     const { catalog, lead } = liveModels(process.env, process.env.MODEL);
-    const tools = makeTools({ root: place.root, source: { live: true } });
-    const fakes = { model: () => { throw new Error('the live run asks a real model'); }, tools, judge: modelJudge(catalog, lead), pages: {}, start: 'about:blank' } as Fakes;
+    const liveTools = makeTools({ root: place.root, source: { live: true } });
+    const fakes = { model: () => { throw new Error('the live run asks a real model'); }, tools: liveTools, judge: modelJudge(catalog, lead), pages: {}, start: 'about:blank' } as Fakes;
     local = localHost(place, fakes, { browser: await localChrome(place), ...(recorder ? { recorder } : {}) });
     local.host.models = { catalog, lead };
     local.host.decisions.runJudge = modelJudge(catalog, lead);
+    // The repository agent reads README badges as images: a tool saves each as a PNG, and the eyes (the user's own model) read it.
+    local.host.tools = { ...local.host.tools, extensions: [badgeImageTool({ onImage: (image) => recorder?.live('vision', 'badge.image', { path: image.path, sha256: image.sha256, width: image.width, height: image.height }, { blobs: [recorder.blob(image.png, 'png')] }) })] };
+    runOptions = { vision: (running) => visionOptions(local!.host, { harness: () => running.harness as never, eyesModel: lead }) };
+    tools = liveTools;
   } else {
     const fixture = loadFixture(process.env.FIXTURE);
-    local = localHost(place, scriptedFakes(fixture, place.root), { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
+    const fakes = scriptedFakes(fixture, place.root);
+    local = localHost(place, fakes, { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
+    tools = fakes.tools;
   }
+  // A call a killed process left unknown is settled by running it again: the reads are read-only, an install runs in a fresh box.
+  local.host.tools = { ...local.host.tools, rerun: rerunner((job.input as { dependencies: Array<{ name: string; version: string }> }).dependencies, tools as never) };
   try {
-    const result = await run(place, local.host, job);
+    const result = await run(place, local.host, job, runOptions);
     const usd = Object.values(result.usage.models).reduce((sum, used) => sum + used.cost.total, 0);
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, usd, parts: Object.fromEntries(Object.entries({ ...result.usage.models, ...result.usage.tools }).map(([name, used]) => [name, used.cost.total])), model: `${local.host.models.lead.provider}/${local.host.models.lead.modelId}`, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 300) } : {}) } }));
   } catch (error) {
