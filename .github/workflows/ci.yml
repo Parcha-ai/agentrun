@@ -116,13 +116,20 @@ jobs:
           node-version: '22.23.2'
           cache: npm
       - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: The clean consumer and the reference example at the leg's pi
+        # The packages packed and installed together in an empty directory, with the pi family at this version: one
+        # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
+        run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
       - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's packages and resolved versions
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pi-leg-${{ matrix.pi }}
-          path: .release/pi-leg.json
+          path: |
+            .release/pi-leg.json
+            .release/verification.json
           if-no-files-found: ignore
 
   pi-cross-version:

@@ -3,8 +3,14 @@
 // without `scripts/` and `apps/`, and it follows the viewer's rule for cost: a part is a number or unknown, and unknown is never 0.
 //
 // The parts are the model (every assistant entry's priced usage, an aborted partial's included), each decision row's `cost_usd`, each
-// browser session's `spent` once priced, and each vision look's `facts.cost_usd` (a failed look says what it cost); the latest
+// browser session's `spent` once priced, and each vision payment's `facts.cost_usd` (below; a failed look says what it cost); the latest
 // revision of a document is the one that counts. A recording with no priced part has no cost (null), and one unknown part makes it null.
+//
+// A vision payment, per look key (`facts.key`) over ok looks that are not native (a native look is the lead's own, priced in its usage:
+// it charges nothing and never makes cost unknown): each filing that is not kept, and a key whose first ok filing is kept once, priced
+// from it (the eyes answered a process that died before filing it); a kept filing after a payment adds nothing. A failed look is no
+// payment, but its price is cost unless it is kept. A filing is its place in its document's list, new once per branch: after a restore
+// (a snapshot below a commit already seen), a filing the lost branch had at that place is a redo, paid again.
 
 /** One line of a recording's `events.jsonl`, as parsed. */
 export type Line = Record<string, any>;
@@ -21,8 +27,16 @@ export function cost(lines: readonly Line[]): Cost {
   let modelPriced = false;
   let model: number | null = 0;
   const latest = new Map<string, number | null>();
+  let highest = -1;
+  const looks = { seen: new Set<string>(), here: new Set<string>(), ok: new Set<string>(), priced: new Map<string, number>(), costs: [] as (number | null)[] };
   for (const line of lines) {
     if (line.channel !== 'durable') continue;
+    if (typeof line.commit === 'number') {
+      // A snapshot below a commit already seen is a restore: a new branch starts at its commit.
+      const restore = line.snapshot === true && line.commit < highest;
+      if (restore) looks.here.clear();
+      highest = restore ? line.commit : Math.max(highest, line.commit);
+    }
     const data = line.data;
     if (line.source === 'pi' && isObject(data) && Array.isArray(data.model)) {
       for (const message of data.model) {
@@ -48,7 +62,27 @@ export function cost(lines: readonly Line[]): Cost {
     }
     if (data.doc.startsWith('vision.') && Array.isArray(data.value.looks)) {
       data.value.looks.forEach((look: unknown, index: number) => {
-        if (isObject(look)) keep(`look\u0001${id}\u0001${typeof look.receipt === 'string' ? look.receipt : index}`, number(look.record?.facts?.cost_usd));
+        if (!isObject(look) || !isObject(look.record) || !isObject(look.record.facts) || typeof look.record.facts.key !== 'string') return;
+        const record = look.record;
+        const filing = `${id}\u0001${index}\u0001${typeof look.receipt === 'string' ? look.receipt : ''}`;
+        const usd = number(record.facts.cost_usd);
+        // The latest revision of a filing says what it cost.
+        if (line.snapshot === true ? looks.seen.has(filing) : looks.here.has(filing)) {
+          looks.here.add(filing);
+          if (looks.priced.has(filing)) looks.costs[looks.priced.get(filing)!] = usd;
+          return;
+        }
+        looks.seen.add(filing);
+        looks.here.add(filing);
+        const kept = record.facts.kept === true;
+        if (isObject(record.args) && record.args.native === true) return;
+        if (record.status !== 'ok') {
+          if (!kept) looks.priced.set(filing, looks.costs.push(usd) - 1);
+          return;
+        }
+        const first = !looks.ok.has(record.facts.key);
+        looks.ok.add(record.facts.key);
+        if (!kept || first) looks.priced.set(filing, looks.costs.push(usd) - 1);
       });
     }
   }
@@ -59,6 +93,7 @@ export function cost(lines: readonly Line[]): Cost {
     named[kind] = named[kind] === null || usd === null ? null : (named[kind] ?? 0) + usd;
   }
   Object.assign(parts, named);
+  if (looks.costs.length) parts.look = looks.costs.some((usd) => usd === null) ? null : looks.costs.reduce<number>((sum, usd) => sum + (usd as number), 0);
   const all = Object.values(parts);
   return { usd: all.length === 0 || all.some((part) => part === null) ? null : all.reduce<number>((sum, part) => sum + (part as number), 0), parts };
 }
