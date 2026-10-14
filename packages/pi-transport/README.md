@@ -446,6 +446,38 @@ pays. `pullCheckpoint({ answers: server })` lets go of the answers below the old
 `registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
 steps of a move and recovers; the suite runs on local boxes and on Docker.
 
+### The record stream: the host keeps the session's log
+
+A host that keeps a session's log holds its runners with `connectHome(link, { models, epoch, records })` (or
+`boxRunner({ ..., records })`), where `records` is a `RecordSink`: `held()` says where its log is,
+`{ after, linesAfter }` (`{ after: 0, linesAfter: 0 }` for a new session: a store's first commit is 1), `append(commit,
+writes)` keeps a commit's writes and settles once they are synced, and `lines(commit, lines, snapshot)` keeps what the
+runner's recorder made. Its hello says so, and the runner then:
+
+- **Puts each commit in an outbox before the store has it.** The writes go to `<store>.outbox.jsonl` beside the store,
+  synced, then to the store, then to the host (`record`); the recorder's lines for the commit follow (`lines`), on the
+  disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
+  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox.
+- **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
+  (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
+  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot lines go
+  once, after the commits it opened at.
+- **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
+  `RunnerOptions.admits` adds an app's own) returns only once the host acknowledged it. Past `resumeWithinMs` the
+  commit fails, pi stops the session, and the effect never ran.
+- **Seals only what the host holds.** A seal waits until the host has every commit and line, and fails as
+  `not_shipped` when it does not in time: the sealed store and the host's log end at the same commit.
+- **Keys each model request.** A model frame carries `key`, the SHA-256 of the session, the `pi.generation` task that
+  asks, the model and the request (its messages, the system message with the instructions and the tools among them,
+  and its options), and `position`, the store's next sequence. The same generation asking again, after a dropped link
+  or in a new process, asks under the same key; a new ask is a new generation and a new key.
+
+The host handles a link's frames one after another: a commit is in its log before any later frame is acted on, so a
+commit's lines are never written before the commit. Record frames are fenced by epoch like model frames: a home the
+lease left behind writes nothing to the log. The host's log alone rebuilds the store, row for row. The recorder runs in
+the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/durable`'s `snapshotLines` and
+`recordCommits`. `registerMoveConformance(..., { records: true })` runs the move suite with the stream on.
+
 ## Ownership: one writer per session
 
 `@parcha/pi-transport/home` holds the lease that says which home may write a session. It is a numbered epoch, not a

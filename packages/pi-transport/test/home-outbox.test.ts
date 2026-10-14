@@ -141,7 +141,8 @@ describe("a runner's outbox", () => {
 				const reopened = openOutbox(path, { head: Number.MAX_SAFE_INTEGER });
 				const entries = reopened.pending();
 				reopened.close();
-				expect(entries.length, `killed after ${delay} ms`).toBeGreaterThan(20);
+				// It said ready at its 20th commit; on a loaded machine the kill can land before the 21st.
+				expect(entries.length, `killed after ${delay} ms`).toBeGreaterThanOrEqual(20);
 				const last = entries.at(-1)?.commit ?? 0;
 				// Every commit before the last whole entry has its lines: the recorder's write was on the disk when it returned.
 				const missing = entries.filter((entry) => entry.commit < last && entry.lines === undefined);

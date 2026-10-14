@@ -31,7 +31,7 @@ export interface Shipper {
 	wrapStore(store: string): (storage: Storage, context: Context) => Promise<WrappedStore>;
 	/** A frame from the host. False when it is not a record frame. */
 	receive(frame: Frame): boolean;
-	/** The link is up: frames go through `send` once the host said where it is (`records-from`). */
+	/** The link is up: frames go through `send` once the host said where it is (`resend-after`). */
 	up(send: (frame: Frame) => boolean): void;
 	down(): void;
 	/** Settles true when the host holds every commit and every line, false when `withinMs` passed first. */
@@ -52,7 +52,7 @@ export type ShipperOptions = {
 /**
  * Ship a runner's commits to its host. Each commit's writes go out after the store has them, and its recorder lines
  * after that, on the same link: `record { commit, writes }`, then `lines { commit, lines }`. The host says where it is
- * when a link comes up (`records-from { after, linesAfter }`, both exclusive), the runner sends what it has not
+ * when a link comes up (`resend-after { after, linesAfter }`, both exclusive), the runner sends what it has not
  * acknowledged from there, in order, and only then the commits that follow. A process's snapshot lines go once, after
  * the commits it opened at.
  */
@@ -62,6 +62,8 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	let send: ((frame: Frame) => boolean) | undefined;
 	// Set when the host said where it is: frames go out on this link from then on.
 	let streaming = false;
+	// Where the host said its log is, on this link: what the runner holds from there goes first.
+	let hostAt: { readonly after: number; readonly linesAfter: number } | undefined;
 	let snapshot: { readonly commit: number; readonly lines: readonly RecordLine[] } | undefined;
 	// The last commit the host holds, and the commits that wait for it to hold theirs.
 	let acked = 0;
@@ -94,6 +96,24 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	const sendLines = (commit: number, lines: readonly unknown[], isSnapshot: boolean) => {
 		if (streaming) send?.({ t: "lines", commit, lines, ...(isSnapshot ? { snapshot: true } : {}) });
 	};
+	/**
+	 * What the outbox holds from where the host is, in commit order, and the snapshot after the commits before it. Runs
+	 * when the host says where it is and again when the store opens: the outbox of a process that died is read only
+	 * then, after the host's word.
+	 */
+	const catchUp = () => {
+		if (!streaming || hostAt === undefined) return;
+		for (const entry of outbox?.pending(hostAt.after, hostAt.linesAfter) ?? []) {
+			if (snapshot !== undefined && entry.commit > snapshot.commit) {
+				sendLines(snapshot.commit, snapshot.lines, true);
+				snapshot = undefined;
+			}
+			if (entry.writes !== undefined) sendRecord(entry.commit, entry.writes);
+			if (entry.lines !== undefined) sendLines(entry.commit, entry.lines, false);
+		}
+		if (snapshot !== undefined) sendLines(snapshot.commit, snapshot.lines, true);
+		snapshot = undefined;
+	};
 
 	return {
 		wrapStore(store) {
@@ -109,11 +129,8 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				const recording = options.recording;
 				// Nothing has committed through pi yet, and this process holds the store alone: the state is exact.
 				const lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
-				if (lines !== undefined && lines.length > 0) {
-					snapshot = { commit: head.value - 1, lines };
-					sendLines(snapshot.commit, lines, true);
-					if (streaming) snapshot = undefined;
-				}
+				if (lines !== undefined && lines.length > 0) snapshot = { commit: head.value - 1, lines };
+				catchUp();
 				let stop: (() => Promise<void>) | undefined;
 				return {
 					storage: shippingStorage(storage, {
@@ -160,21 +177,13 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				}
 			} else if (frame.t === "lines-ack") {
 				if (typeof frame.commit === "number") outbox?.ackLines(frame.commit);
-			} else if (frame.t === "records-from") {
+			} else if (frame.t === "resend-after") {
 				const after = typeof frame.after === "number" ? frame.after : -1;
 				const linesAfter = typeof frame.linesAfter === "number" ? frame.linesAfter : -1;
 				streaming = true;
+				hostAt = { after, linesAfter };
 				hold(after);
-				for (const entry of outbox?.pending(after, linesAfter) ?? []) {
-					if (snapshot !== undefined && entry.commit > snapshot.commit) {
-						sendLines(snapshot.commit, snapshot.lines, true);
-						snapshot = undefined;
-					}
-					if (entry.writes !== undefined) sendRecord(entry.commit, entry.writes);
-					if (entry.lines !== undefined) sendLines(entry.commit, entry.lines, false);
-				}
-				if (snapshot !== undefined) sendLines(snapshot.commit, snapshot.lines, true);
-				snapshot = undefined;
+				catchUp();
 			} else {
 				return false;
 			}
@@ -183,10 +192,12 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 		up(next) {
 			send = next;
 			streaming = false;
+			hostAt = undefined;
 		},
 		down() {
 			send = undefined;
 			streaming = false;
+			hostAt = undefined;
 		},
 		position() {
 			return next;

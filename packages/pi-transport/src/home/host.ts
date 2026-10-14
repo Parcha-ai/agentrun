@@ -193,7 +193,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 				);
 			} else {
 				// Where the host's log is: the runner sends what it holds from there, then what follows.
-				if (records !== undefined) link.send({ t: "records-from", ...records.held() });
+				if (records !== undefined) link.send({ t: "resend-after", ...records.held() });
 				settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
 			}
 		} else if (frame.t === "answer") {

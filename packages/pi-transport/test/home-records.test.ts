@@ -523,7 +523,7 @@ describe("the runner's end of the record stream", () => {
 			);
 			const sent: Frame[] = [];
 			shipper.up((frame) => sent.push(frame) > 0);
-			shipper.receive({ t: "records-from", after: 0, linesAfter: 0 });
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
 			const session = createSession(wrapped.storage);
 			const started = performance.now();
 			const committed = session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
@@ -533,11 +533,44 @@ describe("the runner's end of the record stream", () => {
 			expect(record?.commit).toBe(1);
 			shipper.down();
 			shipper.up((frame) => sent.push(frame) > 0);
-			shipper.receive({ t: "records-from", after: 1, linesAfter: 0 });
+			shipper.receive({ t: "resend-after", after: 1, linesAfter: 0 });
 			await committed;
 			expect(performance.now() - started).toBeLessThan(1_000);
 			await session.close(context);
 			await wrapped.closed?.();
+		});
+	});
+
+	it("sends what a dead process left in the outbox when the store opens after the host said where it is", async () => {
+		await withWorld(async (made) => {
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			// A process that commits with no host to send to, and dies.
+			const dead = createShipper({ admits: () => false });
+			const before = await dead.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			const session = createSession(before.storage);
+			for (let n = 0; n < 3; n += 1)
+				await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await session.close(context);
+			await before.closed?.();
+			// The next process hears where the host is before it opens the store, as a runner does at its hello.
+			const next = createShipper({ admits: () => false });
+			const sent: Frame[] = [];
+			next.up((frame) => sent.push(frame) > 0);
+			next.receive({ t: "resend-after", after: 1, linesAfter: 0 });
+			expect(sent).toEqual([]);
+			const after = await next.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			expect(sent.filter((frame) => frame.t === "record").map((frame) => frame.commit)).toEqual([2, 3]);
+			const later = createSession(after.storage);
+			await later.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			expect(sent.filter((frame) => frame.t === "record").map((frame) => frame.commit)).toEqual([2, 3, 4]);
+			await later.close(context);
+			await after.closed?.();
 		});
 	});
 });
