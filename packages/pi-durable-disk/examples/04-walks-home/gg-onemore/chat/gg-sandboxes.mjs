@@ -1,7 +1,7 @@
 // The sandboxes of one of the chat pages' Modal apps (chat/server-args.ts PAGES), and with --terminate, their end: what
 // stop-gg.sh and live-gg.mjs use to show (and make) Modal at zero for that app only. Run from gg-onemore/ (its node_modules
 // has modal) under with-modal.
-//   node chat/gg-sandboxes.mjs pda-gg-chat [--terminate]
+//   node chat/gg-sandboxes.mjs pda-gg-chat [--terminate [--keep <sandbox id>]]   (--keep: the GPU box a next page reuses)
 import { ModalClient, NotFoundError } from "modal";
 import { PAGES } from "./server-args.ts";
 
@@ -9,6 +9,7 @@ const name = process.argv[2];
 const apps = Object.values(PAGES).map((p) => p.app);
 if (!apps.includes(name)) throw new Error(`name one of the chat pages' apps: ${apps.join(", ")}`);
 const terminate = process.argv.includes("--terminate");
+const keep = process.argv.includes("--keep") ? process.argv[process.argv.indexOf("--keep") + 1] : undefined;
 const client = new ModalClient();
 // only an app Modal says does not exist counts as empty: any other failure is an error, never a false zero
 const app = await client.apps.fromName(name, { createIfMissing: false }).catch((e) => {
@@ -18,14 +19,14 @@ const app = await client.apps.fromName(name, { createIfMissing: false }).catch((
 let left = 0;
 if (app) {
   for await (const sb of client.sandboxes.list({ appId: app.appId })) {
-    if (terminate) {
+    if (terminate && sb.sandboxId !== keep) {
       await sb.terminate();
       console.log(`terminated ${sb.sandboxId}`);
-    } else {
+    } else if (!terminate) {
       left++;
       console.log(sb.sandboxId);
     }
   }
   if (terminate) for await (const _ of client.sandboxes.list({ appId: app.appId })) left++;
 }
-console.log(`sandboxes in ${name}: ${left}`);
+console.log(`sandboxes in ${name}: ${left}${keep ? ` (the GPU box ${keep} kept)` : ""}`);

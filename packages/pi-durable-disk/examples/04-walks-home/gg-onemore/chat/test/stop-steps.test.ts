@@ -109,6 +109,27 @@ test("stop: an evidence directory that cannot be made is logged, and the teardow
   assert.ok(log.includes("stop.failed"));
 });
 
+test("stop with the box kept: the evidence first, then the page's sandboxes and the run's tree; the GPU box is not touched", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-keep-"));
+  const calls: string[] = [];
+  const steps = stopSteps(
+    {
+      onBox: () => (calls.push("box logs"), "{}"),
+      pageEvents: () => (calls.push("page events"), ""),
+      pullRun: () => (calls.push("run transcript"), ""),
+      boxDown: () => (calls.push("box down"), ""),
+      terminateSandboxes: () => (calls.push("sandboxes"), ""),
+      cleanRun: () => (calls.push("run tree"), ""),
+    },
+    dir,
+    { keepBox: true },
+  );
+  const log: { step: string; out: string }[] = [];
+  runStopSteps(steps, (_event, data) => void log.push({ step: String(data.step), out: String(data.out) }));
+  assert.deepEqual(calls, ["box logs", "page events", "run transcript", "sandboxes", "run tree"]);
+  assert.ok(log.some((l) => l.step === "box kept"), "the stop says the box stays");
+});
+
 test("a step past its time limit fails instead of holding the stop", () => {
   const t = Date.now();
   assert.throws(() => runStep(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { timeout: 300 }), /exited SIGTERM/);
