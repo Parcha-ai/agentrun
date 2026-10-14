@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runStep } from "./run-step.ts";
-import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, pageProfile, serverArgs } from "./server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, pageLink, pageProfile, reusable, serverArgs } from "./server-args.ts";
 import { runStopSteps, stopSteps } from "./stop-steps.ts";
 
 const arg = (name, fallback) => (process.argv.includes(`--${name}`) ? process.argv[process.argv.indexOf(`--${name}`) + 1] : fallback);
@@ -153,14 +153,19 @@ const onDisk = (fn) => {
 try {
   // 1. a fresh run, first: a run id with a history would resume that conversation, and a disk that fails here costs no GPU
   say("run.clean", { out: onDisk(() => run(join(B, "with-archil"), ["--", process.execPath, join(VM, "scripts", "clean-run.ts"), RUN], { cwd: VM })).trim().split("\n").at(-1) });
-  // 2. the GPU box (the long pole: 3-7 min), or with --reuse-box the saved one while it answers healthy
+  // 2. the GPU box (the long pole: 3-7 min), or with --reuse-box the saved one: while it outlives this page, draws as it
+  // asks and answers healthy
   let reused = false;
-  if (process.argv.includes("--reuse-box") && savedBox().url) {
-    try {
-      box("wait", "--timeout", "30");
-      reused = true;
-    } catch (e) {
-      say("box.reuse_failed", failure(e));
+  if (process.argv.includes("--reuse-box")) {
+    const can = reusable(savedBox(), { now: Date.now() / 1000, ttlMin: Number(TTL), ...(BOX_ENV.GG_BEST_OF ? { bestOf: BOX_ENV.GG_BEST_OF } : {}) });
+    if (!can.ok) say("box.not_reused", { why: can.why });
+    else {
+      try {
+        box("wait", "--timeout", "30");
+        reused = true;
+      } catch (e) {
+        say("box.reuse_failed", failure(e));
+      }
     }
   }
   if (!reused) {

@@ -101,7 +101,8 @@ def up(args):
     )
     # saved before anything else can fail, so `down` always finds the box and both of its keys
     with open(os.path.join(STATE, "box.json"), "w") as f:
-        json.dump({"sandbox": sb.object_id, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "gpu": args.gpu}, f, indent=1)
+        json.dump({"sandbox": sb.object_id, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "gpu": args.gpu, "ttl_min": args.ttl,
+                   "best_of": os.environ.get("GG_BEST_OF") or None}, f, indent=1)
     ledger(f"create {sb.object_id} gpu={args.gpu} ttl={args.ttl}m")
     sb.set_tags({"pda-fleet": "gg-onemore", "owner": "gg-onemore"})
     created = time.time()
@@ -110,7 +111,9 @@ def up(args):
     run(sb, "umask 077; cat > /run/gg/secrets.env", root=True, stdin=f"TYPESAFE_API_KEY={jev}\nGG_SERVE_KEY={key}\nGG_EXEC_KEY={exec_key}\n{best_of}")
     run(sb, "/opt/gg-onemore/box/start.sh", root=True)
     url = sb.tunnels()[8000].url
-    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu}
+    # its lifetime and best-of, for live-gg.mjs --reuse-box (chat/server-args.ts reusable)
+    st = {"sandbox": sb.object_id, "url": url, "key_file": keyfile, "exec_key_file": exec_keyfile, "created": t0, "create_s": round(created - t0, 1), "gpu": args.gpu,
+          "ttl_min": args.ttl, "best_of": os.environ.get("GG_BEST_OF") or None}
     with open(os.path.join(STATE, "box.json"), "w") as f:
         json.dump(st, f, indent=1)
     print(json.dumps({k: v for k, v in st.items() if not k.endswith("key_file")}))
