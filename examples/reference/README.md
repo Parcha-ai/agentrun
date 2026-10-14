@@ -28,9 +28,10 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 2. `agent investigate`: the lead opens the first result with `run`, reads it with `browser_read`, reads `filing.png`
    from the workspace with `read` (vision serves the image), and submits `{ answer, citations }` citing the two
    receipt paths its tools returned. Like a model, it asks a read that errs again, three attempts in all, and a page
-   action a crash cut once more. When the browser answers that the action may have applied (`effect_unknown`), the
-   lead looks (a snapshot) and decides from what the browser says of the page: applied, it goes on; not applied, it
-   runs it again; cannot tell, it asks no more. A page it did not open is not read: the record then cites only the
+   action a crash cut once more. When the browser answers that the action may have applied (`effect_unknown`, read
+   from its JSON answer), the lead looks (a snapshot) and decides from the browser's `pendingEffect` details (the page
+   when the action was sent, and now): applied, it goes on; not applied, it runs it again; cannot tell, it asks no
+   more. The browser does not send those details yet, so today a cut action is always `cannot tell`. A page it did not open is not read: the record then cites only the
    scan and says whether the page could not be opened or its outcome is unknown.
 3. `judge verdict`: a scripted judge says whether the receipts support the answer.
 4. `code finish`: the output.

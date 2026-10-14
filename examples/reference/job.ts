@@ -48,27 +48,32 @@ const textOf = (message: Message) => (typeof message.content === 'string' ? mess
 
 const receipts = (message: Message | undefined) => (message ? textOf(message).match(/evidence\/[\w./-]+\.json/g) ?? [] : []);
 
-/** pi's result for a tool call a crash cut: it may have run. */
+// pi-durable gap: a cut call's `interrupted` diagnostic stays on pi's own entry and reaches the model only as this text.
 const cut = (result: ToolResultMessage) => result.isError && textOf(result).includes('was interrupted and may have partially run');
+/** The browser's typed failure in a result: its JSON answer's `code`. */
+const failure = (result: ToolResultMessage): unknown => { try { return (JSON.parse(textOf(result)) as { code?: unknown }).code; } catch { return undefined; } };
 /** The browser's answer to an action it will not send again until the page has been looked at: the one before may have
  *  applied. */
-const unknown = (result: ToolResultMessage) => result.isError && textOf(result).includes('"code":"effect_unknown"');
+const unknown = (result: ToolResultMessage) => result.isError && failure(result) === 'effect_unknown';
 
-/** What the browser's notice of a cut action says happened to the page: it names where the page was when the action
- *  was sent and where it is now. On the target and elsewhere before: applied. Still where it was, not the target: not
- *  applied. Anything else, a page that was already on the target or whose place before nobody knows: cannot tell. */
-function landed(notice: string, target: string): 'applied' | 'not applied' | 'cannot tell' {
-  const [, before, now] = /Your run call \S+(?: on (\S+))? was interrupted[^;]*; the page is now (\S+?)\.(?:\s|$)/.exec(notice) ?? [];
-  if (!before || !now || before === target) return 'cannot tell';
-  return now === target ? 'applied' : now === before ? 'not applied' : 'cannot tell';
+/** The browser's account of a cut action, as `details.pendingEffect` of its notice and of its `effect_unknown` answer:
+ *  the page when the action was sent and now, and what it sent when an observer watched (null without one). pi-browser
+ *  gap: it does not carry these details yet, so until it does every cut action is `cannot tell`. */
+export type PendingEffect = { callId: string; urlAtDispatch: string | null; urlNow: string | null; observed: boolean; sent: unknown[] | null };
+/** Whether a cut page action applied: on the target now and elsewhere when it was sent, applied; still where it was and
+ *  not the target, not applied; anything else (the page already on the target, a place unknown), cannot tell. */
+export function landed(effect: PendingEffect | undefined, target: string): 'applied' | 'not applied' | 'cannot tell' {
+  if (!effect?.urlAtDispatch || !effect.urlNow || effect.urlAtDispatch === target) return 'cannot tell';
+  return effect.urlNow === target ? 'applied' : effect.urlNow === effect.urlAtDispatch ? 'not applied' : 'cannot tell';
 }
+const pendingOf = (result: ToolResultMessage | undefined) => (result?.details as { pendingEffect?: PendingEffect } | undefined)?.pendingEffect;
 
 /** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
  *  keeps of those the page read and the scan read returned (default: all of them). It acts as a model would:
  *  - a read that errs is asked again, three attempts in all;
  *  - a page action a crash cut is asked once more. When the browser answers that it may have applied
  *    (`effect_unknown`), the lead looks (a snapshot) and decides from what the browser says of the page: applied, it
- *    goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more.
+ *    goes on; not applied, it runs it again, three runs in all; cannot tell, it asks no more (`landed`).
  *  A page it did not open is not read: the record cites only what ran and says why. */
 export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
   return (messages: readonly Message[]) => {
@@ -76,20 +81,20 @@ export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite =
     const reads = [call('browser_read', { what: 'markdown' }), call('read', { path: FILING })];
     let page: 'opened' | 'unknown' | 'failed' | undefined;
     let runs = 0;
-    let notice: string | undefined;
+    let refused: ToolResultMessage | undefined;
     const kept: (ToolResultMessage | undefined)[] = [];
     let tries = 0;
     for (const result of messages.filter((message): message is ToolResultMessage => message.role === 'toolResult')) {
       if (page === undefined) {
         if (result.toolName === 'snapshot') {
-          const seen = landed(notice ?? '', first);
-          notice = undefined;
+          const seen = landed(pendingOf(result) ?? pendingOf(refused), first);
+          refused = undefined;
           if (seen === 'applied') page = 'opened';
           else if (seen === 'cannot tell' || runs >= 3) page = 'unknown';
         } else {
           runs += 1;
           if (!result.isError) page = 'opened';
-          else if (unknown(result)) notice = textOf(result);
+          else if (unknown(result)) refused = result;
           else if (!(cut(result) && runs < 2)) page = cut(result) ? 'unknown' : 'failed';
         }
         // A page it did not open is not read.
@@ -101,7 +106,7 @@ export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite =
       kept.push(result.isError ? undefined : result);
       tries = 0;
     }
-    if (page === undefined) return notice !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    if (page === undefined) return refused !== undefined ? call('snapshot', {}) : call('run', { code: `await page.goto(${JSON.stringify(first)})` });
     if (kept.length < reads.length) return reads[kept.length]!;
     const why = page === 'unknown' ? 'Whether the registry page was opened is not known' : 'The registry page could not be opened';
     return call('submit', {
