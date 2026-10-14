@@ -95,6 +95,21 @@ try {
   const plain = await ev<{ boxes: number; thinking: number }>(`(() => { demo.state.chat.apply({ type: "entry_appended", entry: { id: "plain-1", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "An ordinary thought." }, { type: "text", text: "An ordinary answer." }] }] } }); demo.renderChat(); const t = [...document.querySelectorAll("#chat .turn.agent")].at(-1); return { boxes: t.querySelectorAll(".draft").length, thinking: t.querySelectorAll("details.thinking").length }; })()`);
   ok("an answer without the diagnostic draws as before: one thinking, no draft boxes", plain.boxes === 0 && plain.thinking === 1, plain);
   await page.screenshot(join(shots, "drafts-3-saved.png"));
+  // a phone (390 px): a new pushback turn's drafts stack in one column, each as wide as the chat, nothing wider than the screen
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await ev(`(() => { demo.state.chat.apply({ type: "message_start", message: ${JSON.stringify(msg(thinking, { of: 3, blocks: [0, 1, 2] }))} }); return true; })()`);
+  const phone = await ev<{ columns: number; gridW: number; boxW: number[]; stacked: boolean; labels: string[]; pageW: number; vw: number; statusFits: boolean }>(`(() => {
+    demo.renderChat();
+    const turn = [...document.querySelectorAll("#chat .turn.agent.streaming")].find((t) => t.querySelector(".drafts"));
+    turn.scrollIntoView({ block: "start" });
+    const grid = turn.querySelector(".drafts"), status = turn.querySelector(".drafts-status");
+    const boxes = [...grid.children].map((b) => b.getBoundingClientRect());
+    return { columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length, gridW: Math.round(grid.getBoundingClientRect().width), boxW: boxes.map((b) => Math.round(b.width)),
+      stacked: boxes.every((b, i) => i === 0 || b.top >= boxes[i - 1].bottom - 1), labels: [...grid.querySelectorAll("summary")].map((x) => x.textContent),
+      pageW: document.documentElement.scrollWidth, vw: innerWidth, statusFits: status.scrollWidth <= status.clientWidth + 1 };
+  })()`);
+  ok("a phone (390 px): the three drafts stack in one column, each as wide as the chat, labeled, nothing wider than the screen", phone.columns === 1 && phone.stacked && phone.boxW.every((w) => Math.abs(w - phone.gridW) <= 2) && phone.labels.length === 3 && phone.pageW <= phone.vw && phone.statusFits, phone);
+  await page.screenshot(join(shots, "drafts-4-phone.png"));
 } finally {
   // whatever started is stopped, however far the setup got
   await device?.close().catch(() => undefined);
