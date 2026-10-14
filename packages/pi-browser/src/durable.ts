@@ -1,22 +1,20 @@
-// The pi-durable adapter: the `browser` extension. Custody lives in the run's own store: each conversation's sessions
-// in `<name>.sessions`, every open session of the run in `<name>.inventory`, both moved in one commit; every session
-// tool reaches its browser through a CustodyPort built on the call's own pi API. A create is committed before the
-// provider is called, a release is a `<name>.release` task committed with the `releasing` state, a call rerun after a
-// crash knows which session it ran on, and the run-open reconcile settles what a dead process left.
 import type { Context } from "@earendil-works/chord";
-import { defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { configure, defineDoc, defineExtension, defineTool, type Conversation, type ConversationDocToken, type ConversationId, type DocumentReader, type Extension, type Harness, type PromptSection, type SessionDocToken, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
-import { BROWSER_TOOLS, browserSection } from "./core/contract.js";
+import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, WEB_TOOL_NAMES } from "./core/contract.js";
 import { BrowserFailureError, closeDriver, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
+import { forModel } from "./durable-result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
 import { classifyBrowserError } from "./core/failures.js";
 import { pageTools, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { BrowserConfig, BrowserProvider, InventoryRow, ObserverRow, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState } from "./core/host.js";
+import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort } from "./core/host.js";
+import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, redactDeep, scrubPageUrl } from "./core/redact.js";
+import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, providerKeyValues } from "./core/session-control.js";
 import { custodyStore, now } from "./store.js";
 import { resolvePrices, sessionCharge, type PriceState, type ToolUsage } from "./core/usage.js";
 
@@ -26,45 +24,42 @@ export type { DriverFactory, DriverOptions } from "./core/custody.js";
 export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = {
   /** Default "browser"; a second plane installs a second extension under another name. */
   name?: string;
-  /** Called per use, like `HarnessOptions.env`: the provider for this conversation's plane. Holds the credentials in
-   *  its closure; nothing it returns is committed. */
+  /** Called per use: the provider for this conversation's plane. Holds the credentials in its closure; nothing it
+   *  returns is committed. */
   provider: (target: { conversationId: ConversationId; plane: string; config: BrowserConfig }) => BrowserProvider | Promise<BrowserProvider>;
   driver: DriverFactory<D>;
-  /** Tool implementations by contract name, over the package's own: custody serves `browser_release` and
-   *  `browser_relaunch`, the page tools `snapshot`, `run`, `screenshot` and `browser_read`. A contract tool with no
-   *  implementation is not listed. */
+  /** Implementations by contract name, over the package's own; a contract tool with no implementation is not listed. */
   tools?: Partial<Record<string, ToolImpl<D>>>;
-  /** Where reads, screenshots and downloads are filed. */
   evidence: EvidenceSink;
   /** Where `browser_downloads` writes files; absent, the tool is not listed. */
   workspace?: (conversationId: ConversationId) => string;
-  /** The host channel: live view and session status. A throw here never fails a call. */
+  /** `use_website`'s sites; absent, the tool is not listed. `listing` is the port's `list()`, read once at host setup:
+   *  the tool's description renders from it. Each local child runs in a conversation this call owns. */
+  sites?: { port: SiteRunPort; listing: readonly SiteInfo[] };
+  /** Live view and session status; a throw here never fails a call. */
   onSession?: (row: SessionRow, change: SessionChange) => void | Promise<void>;
-  /** The host channel for a session that runs without the effect observer its policy asked for (see `ObserverRow`). A throw here never fails a call. */
+  /** A session runs without the effect observer its policy asked for; a throw here never fails a call. */
   onObserver?: (row: ObserverRow) => void | Promise<void>;
   prices?: Partial<PriceTable>;
-  /** Exact strings to scrub from every output besides the built-in shapes (run tokens), read at each use. */
+  /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
-  /** Host text appended to the static `browser` section. */
   section?: { addendum?: string };
   decisions?: Decisions;
   /** How long a create may still land at the provider after its caller stopped waiting; default 60 s. */
   createDeadlineMs?: number;
-  /** How the request observer attaches to a session (default `EffectObserver.open`); a seam for tests that have no Chrome. */
+  /** How the request observer attaches (default `EffectObserver.open`); a seam for tests that have no Chrome. */
   openObserver?: typeof EffectObserver.open;
 };
 
 export type BrowserExtensionHandle = {
   /** Install once per Harness, before `resume()`; select per conversation. */
   extension: Extension;
-  docs: { Config: ConversationDocToken<BrowserConfig>; Sessions: ConversationDocToken<SessionsState>; Inventory: SessionDocToken<{ rows: Record<string, InventoryRow> }> };
-  /** For `wrapTool` and a conversation's tool filter. */
+  /** `Children`: the conversation each `use_website` request ran its child in, by `<site>:<request_id>`. */
+  docs: { Config: ConversationDocToken<BrowserConfig>; Sessions: ConversationDocToken<SessionsState>; Inventory: SessionDocToken<{ rows: Record<string, InventoryRow> }>; Children: ConversationDocToken<{ byRequest: Record<string, number> }> };
   tools: readonly ToolRegistration[];
-  /** The host's shutdown path for one conversation (pi has no conversation-end event): commits `releasing` and a
-   *  release task for each of its open sessions, in one commit. */
+  /** Shutdown path (pi has no conversation-end event): commits `releasing` and a release task; it does not wait. */
   release(conversation: Conversation, reason: ReleaseReason, context: Context): Promise<void>;
-  /** At run open, after install and before resume: every open lease is reconciled with its provider. `isActive` says
-   *  whether a conversation will continue in this run. */
+  /** At run open, after install and before resume: every open lease is reconciled with its provider. */
   reconcile(harness: Harness, isActive: (conversationId: ConversationId) => boolean, context: Context): Promise<ReconcileReport>;
   /** Drop in-memory driver attachments and idle timers (process exit); never releases. */
   close(): Promise<void>;
@@ -74,29 +69,26 @@ export { createWebExtension, type WebExtensionOptions } from "./web.js";
 export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./store.js";
 
 const PLANE = "default";
-/** A conversation the host never configured: `run` is empty, and its browser is unavailable. */
-const UNCONFIGURED: BrowserConfig = {
-  label: "", run: "",
-  policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 },
-};
+const UNCONFIGURED: BrowserConfig = { label: "", run: "", policy: DEFAULT_BROWSER_POLICY };
 const NOT_CONFIGURED = new BrowserFailureError({ ok: false, code: "browser_unavailable", retryable: false, effect: "none", message: "This conversation has no browser configuration, so no browser can be launched here; use web_fetch or another source." });
 const open = (record: SessionRecord | null | undefined) => record?.state === "live" || record?.state === "creating";
+// A child gets the browser and web tools only, never use_website, so it cannot start children of its own.
+const CHILD_TOOLS = new Set<string>([...BROWSER_TOOL_NAMES, ...WEB_TOOL_NAMES]);
 
-/** One custody operation's reach: whose session, how it reads and commits, the call's signal, and a durable memo
- *  that survives a rerun of the call. */
 type Scope = { cid: ConversationId; plane: string; context: Context; read: DocumentReader; signal: AbortSignal; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T>; keep(slot: string, value: string): Promise<string> };
 
 export function createBrowserExtension<D extends PageDriver>(options: BrowserExtensionOptions<D>): BrowserExtensionHandle {
   const name = options.name ?? "browser";
-  const redact = createRedactor(options.redact?.values);
+  const redact = createRedactor(() => providerKeyValues(process.env, options.redact?.values));
   const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED) });
   // A fork starts with no sessions: it never shares a live browser.
+  const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }) });
   const Sessions = defineDoc<SessionsState>({ kind: `${name}.sessions`, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ current: {}, sessions: [], notice: null }) });
 
   const attachments = new Map<string, D>();
   const observers = new Map<string, EffectObserver | null>();
-  const locks = new Map<string, Promise<unknown>>();
-  const idle = new Map<string, { inFlight: number; idleMs: number; timer?: NodeJS.Timeout }>();
+  const { run: serialize } = keyedSerializer();
+  const idle = idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(cid, fired, idleMs).catch(() => undefined) });
   let opened: { harness: Harness; context: Context } | null = null;
 
   const configOf = async (read: DocumentReader, cid: ConversationId, context: Context): Promise<BrowserConfig> => {
@@ -110,7 +102,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     ({ tag: record.tag, conversationId: cid, plane: record.plane, provider: record.provider, resourceId: record.resourceId, state: record.state });
 
   async function emitObserver(row: ObserverRow): Promise<void> {
-    try { await options.onObserver?.(row); } catch { /* the host channel never fails custody */ }
+    try { await options.onObserver?.(row); } catch {}
   }
 
   async function emit(cid: ConversationId, label: string, record: SessionRecord, change: SessionChange, provider?: BrowserProvider): Promise<void> {
@@ -118,31 +110,23 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     try {
       const ref = record.resourceId === null ? null : { id: record.resourceId, tag: record.tag };
       const view = change !== "released" && ref && provider?.liveView ? await provider.liveView(ref) : null;
-      // The live view's own URLs go to the host as they are (it needs their token); the pages' URLs and titles are the
-      // browsed pages', which can carry a credential in their query.
+      // The live view's own URLs go to the host as they are (it needs their token); a browsed page's URL and title are
+      // scrubbed, since its query can carry a credential.
       const liveView = view && { ...view, pages: view.pages.map((page) => ({ ...page, url: page.url === null ? null : scrubPageUrl(page.url, redact), title: page.title === null ? null : redact(page.title) })) };
       await options.onSession({ conversationId: cid, label, session: record, liveView }, change);
-    } catch { /* the host channel never fails custody */ }
+    } catch {}
   }
 
-  /** An error as the host's report channel may see it: its class name and its message through the redactor (a vendor
-   *  SDK's error text can repeat the request's credentials). */
+  /** Class name and redacted message only: a vendor SDK's error text can repeat the request's credentials. */
   const scrubbed = (error: unknown) => Object.assign(new Error(redact(error instanceof Error ? error.message : String(error))), { name: error instanceof Error ? error.name : "Error" });
-  // List prices under the host's; a session price of null is the host saying it has none: seconds, no dollars.
   const prices = resolvePrices(options.prices);
   const priceState: PriceState = prices.sessionUsdPerHour === null ? "unpriced" : "priced";
-  // Each charge records its price state on the record, so a cost view can tell an unpriced minute from a free one.
   const meter = (spent: SessionRecord["spent"], at: string, final = false) => {
     const charged = sessionCharge(spent, at, prices, priceState, final);
     return { spent: { ...charged.spent, state: charged.usage.state }, usage: charged.usage };
   };
-  const { Inventory, move, addNotice, begin, requestRelease, bindByTag, emitReleased, ReleaseTask, reconcileAll } = custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs: options.createDeadlineMs ?? 60_000 });
+  const { Inventory, move, addNotice, begin, requestRelease, bindByTag, emitReleased, ReleaseTask, reconcileAll } = custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs: options.createDeadlineMs ?? CREATE_DEADLINE_MS });
 
-  const serialize = <T>(key: string, run: () => Promise<T>): Promise<T> => {
-    const turn = (locks.get(key) ?? Promise.resolve()).then(run, run);
-    locks.set(key, turn.catch(() => undefined));
-    return turn;
-  };
   const stateOf = async (scope: Scope): Promise<SessionsState> =>
     ((await scope.read.snapshot(Sessions, scope.cid, scope.context)) as SessionsState | undefined) ?? { current: {}, sessions: [], notice: null };
   const failure = (error: unknown, scope: Scope) =>
@@ -156,9 +140,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     if (driver) await closeDriver(driver);
   }
 
-  /** Let go of a dead driver connection and nothing else. The request observer is a separate connection that holds what the
-   *  action policy does not pre-allow; a healthy one stays attached, so a page that sends something before the next call is
-   *  still held. When the observer is dead too, both go. */
+  /** Let go of a dead driver connection and nothing else: a healthy observer stays attached, so a page that sends
+   *  something before the next call is still held. When the observer is dead too, both go. */
   async function detachDriver(tag: string): Promise<void> {
     if (observers.get(tag)?.closed) return detach(tag);
     const driver = attachments.get(tag);
@@ -166,7 +149,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     if (driver) await closeDriver(driver);
   }
 
-  /** The live session's driver; null when the provider reports it ended (then it is recorded released). */
   async function attachLive(scope: Scope, record: SessionRecord): Promise<D | null> {
     const held = attachments.get(record.tag);
     // An observer whose socket closed holds nothing: driver and observer are attached again together.
@@ -182,9 +164,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     }
   }
 
-  /** The driver, with the run batch's limit from the conversation's policy, and, when that policy names an action
-   *  policy, the effect observer on the same endpoint, which holds what the policy does not pre-allow. Without one, or
-   *  when it cannot reach the browser, the session runs unobserved and a cut run's effect is unknown. */
   async function connect(scope: Scope, provider: BrowserProvider, ref: LeaseRef): Promise<D> {
     const config = await configOf(scope.read, scope.cid, scope.context);
     const { actions: policy, batchTimeoutMs } = config.policy;
@@ -206,7 +185,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     return driver;
   }
 
-  /** When the provider reports `record`'s session gone or stopped, record it released (reason ended) and say so. */
   async function markEnded(scope: Scope, record: SessionRecord, provider: BrowserProvider): Promise<boolean> {
     const status = await provider.status({ id: record.resourceId!, tag: record.tag }, scope.signal).catch(() => "running" as const);
     if (status !== "gone" && status !== "stopped") return false;
@@ -216,7 +194,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     return true;
   }
 
-  /** A create a crash left unanswered: bound to the session its tag finds, or closed when there is none. */
   async function settleCreating(scope: Scope, record: SessionRecord): Promise<void> {
     const provider = await providerOf(scope.read, scope.cid, scope.plane, scope.context);
     try { await bindByTag(provider, rowOf(scope.cid, record), scope.commit, scope.signal); } catch (error) { throw failure(error, scope); }
@@ -247,7 +224,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     } catch (error) { throw failure(error, scope); }
   }
 
-  /** The current session, attached; one is launched when there is none to attach. */
   async function acquire(scope: Scope): Promise<{ record: SessionRecord; driver: D; note: string | null }> {
     let note: string | null = null;
     for (let turn = 0; turn < 4; turn += 1) {
@@ -265,8 +241,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     throw new Error(`browser custody for conversation ${scope.cid} did not settle`);
   }
 
-  /** The session as a tool gets it. Custody's notice is kept in the call's memo before it is cleared, so a call rerun
-   *  after a crash still tells it. */
+  /** Custody's notice is kept in the call's memo before it is cleared, so a call rerun after a crash still tells it. */
   async function attached(scope: Scope, record: SessionRecord, driver: D, note: string | null): Promise<AttachedSession<D>> {
     const state = await stateOf(scope);
     const notice = await scope.keep("notice", [note, state.notice].filter(Boolean).join(" "));
@@ -282,7 +257,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     await detach(record.tag);
   }
 
-  /** Mutate the plane's records in one commit. */
   const editRecords = (scope: Scope, edit: (records: SessionRecord[], state: SessionsState) => void) =>
     scope.commit(async (tx) => { const state = await tx.doc(Sessions, scope.cid); edit(state.sessions.filter((r) => r.plane === scope.plane), state); });
 
@@ -297,7 +271,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     const key = `${scope.cid}:${scope.plane}`;
     return {
       session: () => serialize(key, async () => {
-        // A call rerun after a crash: the session it first ran on, or nothing.
         const ran = await api.memo<string>(memo("ran"), context);
         if (ran !== undefined) {
           const record = (await stateOf(scope)).sessions.find((r) => r.tag === ran);
@@ -313,9 +286,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
         const config = await configOf(scope.read, scope.cid, scope.context);
         const refusal = relaunchRefusal(config.policy, overrides);
         if (refusal) throw new BrowserFailureError(refusal);
-        // The relaunch's session is chosen in a memo before its create is committed. A rerun runs on that session, or
-        // says session_replaced when it has ended (as a page tool's rerun does); it never launches a second one. A memo
-        // with no record yet is a create never committed: it goes ahead under the memoized tag.
+        // The relaunch's session is chosen in a memo before its create commits: a rerun runs on it or says
+        // session_replaced, never a second launch; a memo with no record yet is an uncommitted create and goes ahead.
         const find = async (tag: string | undefined) => (await stateOf(scope)).sessions.find((r) => r.tag === tag);
         const launched = await api.memo<string>(memo("relaunch"), context);
         let mine = await find(launched);
@@ -355,8 +327,8 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
         await editRecords(scope, (records) => { for (const record of records) record.pendingEffect = null; });
       },
       navigated: async (page) => {
-        // A page URL can carry a credential in any query value, its fragment or its userinfo: it is scrubbed before it
-        // is committed or reported.
+        // A page URL can carry a credential in any query value, its fragment or its userinfo: scrubbed before it is
+        // committed or reported.
         const url = scrubPageUrl(page, redact);
         await editRecords(scope, (records, state) => {
           const record = currentRecord(state, scope.plane);
@@ -380,35 +352,19 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     };
   }
 
-  /** Idle release: a plane nobody calls for its idle window is released, never mid-call. It needs the Harness the
-   *  host handed to `reconcile`; a process dies with its timers, and the provider's own idle bound takes over. */
-  function activity(cid: ConversationId, delta: number, idleMs?: number): void {
-    const key = `${cid}:${PLANE}`;
-    const entry = idle.get(key) ?? { inFlight: 0, idleMs: idleMs ?? UNCONFIGURED.policy.idleReleaseS * 1000 };
-    if (entry.timer) clearTimeout(entry.timer);
-    entry.timer = undefined;
-    entry.inFlight += delta;
-    if (idleMs !== undefined) entry.idleMs = idleMs;
-    idle.set(key, entry);
-    if (entry.inFlight > 0 || !opened || !(entry.idleMs > 0)) return;
-    const timer: NodeJS.Timeout = setTimeout(() => void releaseIdle(cid, timer).catch(() => undefined), entry.idleMs);
-    entry.timer = timer;
-    timer.unref?.();
-  }
-
-  async function releaseIdle(cid: ConversationId, fired: NodeJS.Timeout): Promise<void> {
+  /** A plane nobody calls for its idle window is released, never mid-call. A dead process's timers die with it, and the
+   *  provider's own idle bound takes over. */
+  async function releaseIdle(cid: ConversationId, fired: NodeJS.Timeout, idleMs: number): Promise<void> {
     const conversation = opened && await opened.harness.conversation(cid, opened.context);
     if (!conversation) return;
-    const entry = idle.get(`${cid}:${PLANE}`);
-    // Only the timer that is still current releases, checked inside the commit: a call since, even one that ran while
-    // the lookup above waited, replaced it.
-    await releasePlane(conversation, "idle", opened!.context, () => entry?.timer === fired && entry.inFlight === 0, Math.round((entry?.idleMs ?? 0) / 1000));
+    // Only the still-current timer releases, checked inside the commit: a call since, even one that ran while the
+    // lookup above waited, replaced it.
+    await releasePlane(conversation, "idle", opened!.context, () => idle.isCurrent(cid, fired), Math.round(idleMs / 1000));
   }
 
-  /** In turn with the plane's calls, commit `releasing` and a release task for its open session, detach it and stop the
-   *  idle timer when it released one. A release the model did not ask for (idle, close) commits its notice with it, so
-   *  whichever call next attaches a session tells it, even when the call that opened the replacement failed or died. */
-  async function releasePlane(conversation: Conversation, reason: ReleaseReason, context: Context, still: () => boolean = () => true, idleS = 0): Promise<void> {
+  /** A release the model did not ask for (idle, close) commits its notice with it, so whichever call next attaches a
+   *  session tells it, even when the call that opened the replacement failed or died. */
+  async function releasePlane(conversation: Pick<Conversation, "id" | "commit">, reason: ReleaseReason, context: Context, still: () => boolean = () => true, idleS = 0): Promise<void> {
     const key = `${conversation.id}:${PLANE}`;
     const released = await serialize(key, async () => {
       const tags = await conversation.commit(async (tx) => {
@@ -422,11 +378,9 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       for (const tag of tags) await detach(tag);
       return tags.length > 0;
     });
-    const timer = released ? idle.get(key)?.timer : undefined;
-    if (timer) clearTimeout(timer);
+    if (released) idle.cancel(conversation.id);
   }
 
-  /** The current session's time since its last charge, committed on its record: the usage of the call that used it. */
   async function chargeCall(api: ToolExecutionApi, context: Context): Promise<ToolUsage | null> {
     if (currentRecord(await api.snapshot(Sessions, api.conversationId, context), PLANE)?.state !== "live") return null;
     return api.commit(async (tx) => {
@@ -437,7 +391,6 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       return usage;
     }, context);
   }
-  /** A call's own usage (a host tool may price itself) with the session time it carries added to its cost. */
   const withSessionTime = (own: ToolOutput["usage"], charged: ToolUsage | null): ToolOutput["usage"] => {
     if (!charged) return own;
     const ownCost = (own?.cost ?? {}) as { total?: number };
@@ -455,32 +408,81 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
       executionMode: contract.executionMode,
       execute: async (args, api, context) => {
         const config = await api.snapshot(Config, api.conversationId, context);
-        activity(api.conversationId, +1, (config?.policy.idleReleaseS ?? 0) * 1000);
+        idle.activity(api.conversationId, +1, (config?.policy.idleReleaseS ?? 0) * 1000);
         try {
           const call = { callId: api.callId, conversationId: api.conversationId, signal: context.abortSignal, label: config?.label ?? "", redact, evidence: options.evidence, classifyPage: options.decisions?.classifyPage };
-          // Called inside an async function, so a host tool that throws before it returns a promise is caught too.
+          // Inside an async function, so a host tool that throws before it returns a promise is caught too.
           const out = await (async () => impls[contract.name]!(args, portFor(api, context), call))().catch((error): ToolOutput => {
             // A throw would reach pi's diagnostic unscrubbed: every failure comes back as the typed envelope, redacted.
             const typed = error instanceof BrowserFailureError ? error.failure : classifyBrowserError(error, contract.effect === "effect", { aborted: context.abortSignal?.aborted === true });
             return { content: [{ type: "text", text: JSON.stringify(typed) }], isError: true };
           });
-          // The session's time since its last charge rides on the call, whatever it ended in; a charge that cannot be
-          // committed now is carried by the next one.
+          // A charge that cannot be committed now is carried by the next one.
           const usage = withSessionTime(out.usage, await chargeCall(api, context).catch(() => null));
           return {
-            content: out.content.map((item) => item.type === "text" ? { ...item, text: redact(item.text) } : item),
+            ...forModel(out.content.map((item) => item.type === "text" ? { ...item, text: redact(item.text) } : item)),
             ...(out.isError ? { isError: true } : {}),
             ...(out.details ? { details: redactDeep(out.details, redact) as JsonValue } : {}),
             ...(usage ? { usage: usage as unknown as Usage } : {}),
           };
         } finally {
-          activity(api.conversationId, -1);
+          idle.activity(api.conversationId, -1);
         }
       },
     }));
   const names = new Set(tools.map((tool) => tool.name));
 
-  // Rendered only for a conversation offered one of the browser's tools; its text depends on the configuration alone.
+  const childConversation = (api: ToolExecutionApi, context: Context): ChildRunner => async (task) => {
+    const config = await api.snapshot(Config, api.conversationId, context);
+    const childTools = (await api.agent(context)).tools.filter((tool) => CHILD_TOOLS.has(tool.name));
+    // One child per request, recorded in the commit that creates it: a replay or a repeated call finds it again, and
+    // its submission is deduplicated by request_id.
+    const id = await api.commit(async (tx) => {
+      const children = await tx.doc(Children, api.conversationId);
+      const key = `${task.site}:${task.requestId}`;
+      const known = children.byRequest[key];
+      if (known !== undefined) return known as ConversationId;
+      const child = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
+      await configure(tx, child.id, { tools: childTools, instructions: null });
+      Object.assign(await tx.doc(Config, child.id), config ?? UNCONFIGURED);
+      children.byRequest[key] = child.id as number;
+      return child.id;
+    }, context);
+    const child = await api.conversation(id, context);
+    if (!child) throw new Error("the child conversation is gone");
+    try {
+      const settled = await (await child.submit({ type: "input", content: task.prompt, requestId: task.requestId }, context)).wait(context);
+      const report = await api.commit(async (tx) => {
+        for (const entry of (await tx.scanEntries({ conversationId: id, order: "descending" }, 50)).items) {
+          for (const message of [...(entry.model ?? [])].reverse()) {
+            if (message.role !== "assistant") continue;
+            const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
+            if (text) return text;
+          }
+        }
+        return "";
+      }, context);
+      if (settled.status !== "done" || !report) throw new Error("the child finished without a report");
+      return report;
+    } finally {
+      await releasePlane({ id, commit: (change, ctx) => api.commit(change, ctx) }, "close", context).catch(() => undefined);
+    }
+  };
+  const siteTools = options.sites ? [((sites) => {
+    const contract = useWebsiteContract(sites.listing);
+    return defineTool({
+      name: contract.name,
+      description: contract.description,
+      parameters: contract.parameters as unknown as TSchema,
+      replay: contract.replay,
+      executionMode: contract.executionMode,
+      execute: async (args, api, context) => {
+        const out = await useWebsite(args as Record<string, unknown>, sites.port, sites.listing, { signal: context.abortSignal ?? new AbortController().signal, runChild: childConversation(api, context) });
+        return { ...forModel(out.content.map((item) => item.type === "text" ? { ...item, text: redact(item.text) } : item)), ...(out.isError ? { isError: true } : {}) };
+      },
+    });
+  })(options.sites)] : [];
+
   const section: PromptSection = {
     key: name,
     async render(input, context) {
@@ -491,16 +493,15 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   };
 
   return {
-    extension: defineExtension({ name, tools, sections: [section], tasks: [ReleaseTask] }),
-    docs: { Config, Sessions, Inventory },
-    tools,
+    extension: defineExtension({ name, tools: [...tools, ...siteTools], sections: [section], tasks: [ReleaseTask] }),
+    docs: { Config, Sessions, Inventory, Children },
+    tools: [...tools, ...siteTools],
     release: (conversation, reason, context) => releasePlane(conversation, reason, context),
     async reconcile(harness, isActive, context) {
       opened = { harness, context };
       return reconcileAll(harness, isActive, context);
     },
     async close() {
-      for (const entry of idle.values()) if (entry.timer) clearTimeout(entry.timer);
       idle.clear();
       // A session whose driver was let go and not yet replaced still has its observer attached: close both kinds.
       await Promise.all([...new Set([...attachments.keys(), ...observers.keys()])].map(detach));

@@ -1,12 +1,3 @@
-// A fake provider backend for every test of the package and of a host that composes it. One object keeps the truth
-// (sessions, a ledger of every call in arrival order); three faces read it:
-//   - `provider`  the in-process BrowserProvider, for unit and composition tests;
-//   - `broker`    a host CredentialBroker, with the fill counted before any provider call, as the real one does;
-//   - `serve()`   the same backend over HTTP in a parent process, with `remoteProvider(url)` as the child's client,
-//                 so the ledger outlives a child that is SIGKILLed (the crash matrix).
-// Knobs make it misbehave the way real providers do: hold an op after it was applied and before it was answered (a
-// crash between the provider acting and the caller hearing), fail an op, delay it, and echo the request and every
-// secret it holds in the failure text, as vendor SDKs do. Every secret it holds is a sentinel.
 import { EventEmitter } from "node:events";
 import { crc32 } from "node:zlib";
 import fs from "node:fs";
@@ -16,10 +7,9 @@ import type { AttachTarget, BrowserProvider, FetchRequest, FetchResult, LiveView
 import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { makeSentinels, type Sentinels } from "./sentinels.js";
 
-/** A page that answers by format: each side is the page, or the HTTP status the provider fails it with. */
 export type FakeFetchByFormat = { markdown?: { contentType: string; content: string } | { status: number }; raw?: { contentType: string; content: string } | { status: number } };
 
-/** A failure the way a vendor SDK reports one: a message and the HTTP status on the error, never inside the text. */
+/** A vendor SDK's failure: the HTTP status is on the error, never inside the text. */
 export class FakeProviderError extends Error {
   readonly status: number;
   constructor(message: string, status = 502) {
@@ -31,7 +21,6 @@ export class FakeProviderError extends Error {
 
 export type LedgerRow = { n: number; op: string; [field: string]: unknown };
 export type FixturePage = { url: string; title: string; text: string; html: string };
-/** A page the driver serves; `html` defaults to the text in one paragraph. */
 export const fixturePage = (url: string, text: string, title = "Fixture"): FixturePage => ({ url, title, text, html: `<main><p>${text}</p></main>` });
 
 export type BrokerConnection = { name: string; startUrl: string | null; fields: Array<{ name: string; type: "text" | "email" | "password" | "totp" }>; allowedOrigins: string[]; enrollment: boolean };
@@ -42,18 +31,15 @@ export type FakeBackendOptions = {
   sentinels?: Sentinels;
   name?: string;
   caps?: Partial<ProviderCaps>;
-  /** The URL a new session starts on. */
   start?: string;
   pages?: Record<string, FixturePage>;
-  /** `fetch` answers by URL; a URL not listed is a 404. */
-  /** Each URL's page; an object answers a markdown and a raw request apart (a 400 where the provider will not convert). */
+  /** A URL not listed is a 404; an object answers markdown and raw apart. */
   fetches?: Record<string, string | FakeFetchByFormat>;
   search?: SearchResult["results"];
   /** Every ledger row is also appended here as JSONL, so a killed process leaves its calls behind. */
   logFile?: string;
   connections?: BrokerConnection[];
   downloads?: Record<string, string>;
-  /** The page's CSS viewport and its full-page height; screenshots are this size in pixels. */
   viewport?: { width: number; height: number };
   fullPageHeight?: number;
   /** Device pixels per CSS pixel; a screenshot is this many times larger unless it asks for `scale: "css"`. */
@@ -62,8 +48,7 @@ export type FakeBackendOptions = {
 
 export type FakeScreenshotOptions = { fullPage?: boolean; type?: "png" | "jpeg"; quality?: number; scale?: "css" | "device" };
 
-/** An image whose header declares `width` x `height`: a PNG (signature, IHDR with its CRC, IEND) or a JPEG (SOI, one
- *  start-of-frame, EOI). Enough for a reader that decodes the header; not a picture. */
+/** A PNG or JPEG whose header declares `width` x `height`: enough for a reader that decodes the header, not a picture. */
 export function fakeImage(type: "png" | "jpeg", width: number, height: number): Buffer {
   if (type === "jpeg") {
     const sof = Buffer.from([0xff, 0xc0, 0x00, 0x0b, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x01, 0x01, 0x11, 0x00]);
@@ -86,7 +71,6 @@ type Session = { id: string; tag: string; metadata: Record<string, string>; stat
 export class FakeBackend {
   readonly sentinels: Sentinels;
   readonly pages: Record<string, FixturePage>;
-  /** Every call to the provider or broker, in arrival order: what a test asserts the run did. */
   readonly ledger: LedgerRow[] = [];
   /** Every call the driver made on a page, in order; a read answered from a receipt never shows up here. */
   readonly dispatched: Array<{ op: string; session: string; url: string | null; [field: string]: unknown }> = [];
@@ -95,7 +79,6 @@ export class FakeBackend {
   readonly sessions = new Map<string, Session>();
   readonly provider: BrowserProvider;
   readonly broker: FakeBroker;
-  /** The driver's operations by session id; `fakeDriver` and `remoteDriver` are its two callers. */
   readonly driverFace: FakeDriverFace;
   private seq = 0;
   private holdOp: string | null = null;
@@ -122,8 +105,6 @@ export class FakeBackend {
     this.driverFace = new FakeDriverFace(this);
   }
 
-  // ---- knobs -----------------------------------------------------------------------------------------------------
-
   /** The next call of `op` is applied and recorded, then never answered. */
   hold(op: string): void { this.holdOp = op; }
   /** The next call of `op` is applied and recorded, then fails: the provider did the work and the answer was lost. */
@@ -134,7 +115,6 @@ export class FakeBackend {
   delay(op: string, ms: number): void { this.delays.set(op, ms); }
   /** Failure text repeats the request and every secret the backend holds. */
   echo(on = true): void { this.echoOn = on; }
-  /** The provider ended every running session (Browserbase does when the client disconnects without keepAlive). */
   endAll(): void { for (const s of this.sessions.values()) s.state = "stopped"; }
   goto(url: string): void { for (const s of this.sessions.values()) if (s.state === "running") s.url = url; }
   reset(): void {
@@ -144,7 +124,6 @@ export class FakeBackend {
   live(): Array<{ id: string; tag: string }> { return [...this.sessions.values()].filter((s) => s.state === "running").map(({ id, tag }) => ({ id, tag })); }
   liveCount(): number { return this.live().length; }
 
-  /** Counts per op, and the most sessions that were live at once. */
   tally() {
     const count = (op: string) => this.ledger.filter((r) => r.op === op).length;
     return {
@@ -154,13 +133,7 @@ export class FakeBackend {
     };
   }
 
-  // ---- internals shared by the faces ---------------------------------------------------------------------------------
-
-  /**
-   * What a failing vendor puts in its error: the request's credentials and the connect URLs it holds. A broker's
-   * error also repeats the login values, TOTP seed and vault reference it was handling; those are never known to the
-   * package, so only a provider that maps broker errors to codes (never copies their text) keeps them out.
-   */
+  /** A failing vendor's error text: the request's credentials and the connect URLs the backend holds. */
   echoText(op: string): string {
     const s = this.sentinels;
     const vendor = `${op} failed: authorization=Bearer ${s.runToken} x-bb-api-key=${s.bbApiKey} connect=${s.bbConnectUrl} cdp=${s.kernelCdpUrl}`;
@@ -174,7 +147,6 @@ export class FakeBackend {
     return row;
   }
 
-  /** Before an op takes effect: honor the caller's signal, sleep the delay, fail when told to. */
   async before(op: string, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     const ms = this.delays.get(op);
@@ -192,7 +164,6 @@ export class FakeBackend {
     }
   }
 
-  /** After an op took effect: when it is the held one, announce it and never answer. */
   async after(op: string): Promise<void> {
     if (this.loseOp === op) { this.loseOp = null; throw new FakeProviderError(`${op} was applied and its answer was lost`); }
     if (this.holdOp !== op) return;
@@ -205,7 +176,6 @@ export class FakeBackend {
   newId(prefix: string): string { this.seq += 1; return `${prefix}-${this.seq}`; }
   running(id: string): Session | null { const s = this.sessions.get(id); return s && s.state === "running" ? s : null; }
 
-  /** The attach target of a session: the connect URL carries the signing key (the driver's, and nobody else's). */
   targetOf(session: Session): AttachTarget {
     const url = this.sentinels.bbConnectUrl.replace(/sessionId=[^&]+/, `sessionId=${session.id}`);
     if (!session.broker) return { sdkCdpUrl: url };
@@ -290,13 +260,7 @@ export class FakeBackend {
     };
   }
 
-  // ---- HTTP face -------------------------------------------------------------------------------------------------
-
-  /**
-   * Serve the backend over HTTP: `POST /rpc/<face>.<method>` with `{ args }`, answered `{ result }` or `{ error }`.
-   * Run it in the parent; a child calls it through `remoteProvider` and `remoteDriver`, and a held call stays open
-   * until the child dies.
-   */
+  /** For a child's `remoteProvider` and `remoteDriver`; a held call stays open until the child dies. */
   async serve(): Promise<{ url: string; close(): Promise<void> }> {
     const faces: Record<string, Record<string, (...args: any[]) => unknown>> = {
       provider: this.provider as unknown as Record<string, (...args: any[]) => unknown>,
@@ -331,7 +295,7 @@ export class FakeBackend {
   }
 }
 
-/** The BrowserProvider a child process uses against `backend.serve()`. A held call never returns; an aborted one stops its request. */
+/** A held call never returns; an aborted one stops its request. */
 export function remoteProvider(url: string, options: { name?: string; caps?: Partial<ProviderCaps> } = {}): BrowserProvider {
   const call = async (method: string, args: unknown[], signal?: AbortSignal): Promise<any> => {
     const res = await fetch(`${url}/rpc/provider.${method}`, { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ args }) });
@@ -353,11 +317,7 @@ export function remoteProvider(url: string, options: { name?: string; caps?: Par
   };
 }
 
-/**
- * A host CredentialBroker over the backend. The broker counts a fill before the provider is touched and
- * never repeats an unknown one; its failures carry only codes, and with `echo` on, a hostile `message` besides, which
- * the package must not copy.
- */
+/** Counts a fill before the provider is touched and never repeats an unknown one; its failures carry only codes. */
 export class FakeBroker {
   constructor(private readonly b: FakeBackend) {}
 
@@ -389,7 +349,6 @@ export class FakeBroker {
   }
 
   async fill(session: string, request: FillRequest): Promise<FillResult> {
-    // Counted before the provider call: a fill cut here is `unknown` and is never repeated.
     this.b.record("broker.fill", { id: session, pageUrl: request.pageUrl, fields: request.fields.map((f) => f.field) });
     await this.b.before("broker.fill");
     await this.b.after("broker.fill");
@@ -405,11 +364,6 @@ export class FakeBroker {
   async downloads(): Promise<RemoteFile[]> { return Object.entries(this.b.opts.downloads).map(([name, body]) => ({ name, sizeBytes: Buffer.byteLength(body), modifiedAt: null })); }
 }
 
-/**
- * The driver's operations, keyed by the session id in the attach URL. Every op is recorded in `dispatched` (a read
- * answered from a receipt never shows up), takes the knobs (`delay`, `fail`, `echo`) as `driver.<op>`, and `hold`
- * applies it (the page moved, the row written) and never answers. Ops: connect, snapshot, run, url, screenshot, page, close.
- */
 export class FakeDriverFace {
   constructor(private readonly b: FakeBackend) {}
 
@@ -429,7 +383,6 @@ export class FakeDriverFace {
     this.b.dispatched.push({ op, session: id, url: this.b.sessions.get(id)?.url ?? null, ...detail });
   }
 
-  /** Returns the session id the driver is bound to; the connect URL carries it. */
   async connect(target: AttachTarget): Promise<string> {
     await this.b.before("driver.connect");
     const id = new URL(target.sdkCdpUrl).searchParams.get("sessionId") ?? "";
@@ -454,14 +407,13 @@ export class FakeDriverFace {
     return out;
   }
 
-  /** The page's URL; no dispatched row, since a read of the URL is not a read of the page. */
+  /** No `dispatched` row: a read of the URL is not a read of the page. */
   async url(id: string): Promise<string> {
     await this.b.before("driver.url");
     return this.session(id).url;
   }
 
-  /** An image whose header decodes to the viewport (or the full page) times the device scale; each capture is a
-   *  dispatched row carrying its options, so a test can read the retake ladder. */
+  /** Header-only image of the viewport (or full page) times the device scale; each capture is a dispatched row. */
   async screenshot(id: string, options: FakeScreenshotOptions = {}): Promise<{ data: string; mimeType: string; width: number; height: number }> {
     await this.call(id, "screenshot", "screenshot", { options });
     const { viewport = { width: 1288, height: 711 }, fullPageHeight = 8319, deviceScale = 1 } = this.b.opts;

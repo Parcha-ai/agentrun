@@ -1,9 +1,6 @@
-// Receipt facts through a real pi-durable Harness on SQLite: a tool reads a page in a session the way the browser's
-// readers do (file a record, answer with its facts) and the facts are what a receipt header needs to trace the read.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -12,12 +9,12 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { orderFacts, receiptFacts, recordingOffsetS } from "../dist/index.js";
+import { scratchSync } from "./fixtures/scratch.mjs";
 
-const tmp = () => fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "receipts-"));
+const tmp = (t) => scratchSync(t, "receipts-");
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
 
-/** The custody records a fake provider backend would hold, and what each provider records. */
 const SESSIONS = {
   recorded: { resourceId: "bb-recorded", createdAt: ago(90_000) },
   behind: { resourceId: "bb-behind", createdAt: new Date(Date.now() + 60_000).toISOString() },
@@ -25,7 +22,6 @@ const SESSIONS = {
   garbled: { resourceId: "bb-garbled", createdAt: "not a date" },
 };
 
-/** A reader tool in the shape of browser_read and screenshot: bytes in, one record filed, facts and header back. */
 function readerExtension(dir, filed) {
   const sink = {
     async file(label, record) {
@@ -53,8 +49,8 @@ function readerExtension(dir, filed) {
   });
 }
 
-async function run(rounds) {
-  const dir = tmp();
+async function run(t, rounds) {
+  const dir = tmp(t);
   const filed = [];
   const faux = fauxProvider({ models: [{ id: "faux-1" }] });
   faux.setResponses(Array.from({ length: rounds.length + 4 }, () => (context) => {
@@ -71,8 +67,8 @@ async function run(rounds) {
   } finally { await harness.close(ctx); }
 }
 
-test("a read in a recorded session carries the SHA-256 of the filed bytes, the session id and the offset into its recording", async () => {
-  const [page, shot] = await run([[{ session: "recorded", recorded: true }, { session: "recorded", recorded: true, image: true }]]);
+test("a read in a recorded session carries the SHA-256 of the filed bytes, the session id and the offset into its recording", async (t) => {
+  const [page, shot] = await run(t, [[{ session: "recorded", recorded: true }, { session: "recorded", recorded: true, image: true }]]);
   assert.equal(page.record.facts.sha256, sha("# Page\n\nBody."));
   assert.equal(shot.record.facts.sha256, sha(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])), "a screenshot's hash is of its bytes");
   for (const { record } of [page, shot]) {
@@ -83,15 +79,15 @@ test("a read in a recorded session carries the SHA-256 of the filed bytes, the s
   assert.deepEqual(header.split("\n").map((line) => line.split(": ")[0]), ["requested_url", "sha256", "session", "recording_at_s", "x_future_fact"], "a fact the order does not list follows the listed ones instead of vanishing");
 });
 
-test("a provider that records nothing gives the session and the hash but no offset", async () => {
-  const [page] = await run([[{ session: "recorded", recorded: false }]]);
+test("a provider that records nothing gives the session and the hash but no offset", async (t) => {
+  const [page] = await run(t, [[{ session: "recorded", recorded: false }]]);
   assert.equal(page.record.facts.session, "bb-recorded");
   assert.ok(!("recording_at_s" in page.record.facts));
   assert.ok(!fs.readFileSync(page.file, "utf8").includes("recording_at_s"), "no header line for a fact that does not apply");
 });
 
-test("an offset is never negative, and an unknown session or a garbled start leaves the fact out", async () => {
-  const [behind, unknown, garbled] = await run([[{ session: "behind", recorded: true }, { session: "unknown", recorded: true }, { session: "garbled", recorded: true }]]);
+test("an offset is never negative, and an unknown session or a garbled start leaves the fact out", async (t) => {
+  const [behind, unknown, garbled] = await run(t, [[{ session: "behind", recorded: true }, { session: "unknown", recorded: true }, { session: "garbled", recorded: true }]]);
   assert.equal(behind.record.facts.recording_at_s, 0, "a clock behind the record reads zero, not a negative offset");
   assert.deepEqual(Object.keys(unknown.record.facts), ["requested_url", "x_future_fact", "sha256"], "no session id, no trace");
   assert.equal(garbled.record.facts.session, "bb-garbled");

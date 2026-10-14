@@ -65,7 +65,7 @@ async function keepText(request: Parameters<KindReader>[0], context: KindContext
     const part = `${file}.${randomUUID().slice(0, 8)}.part`;
     const made = await context.env.createDir(context.deriveDir, { recursive: true }, ctx);
     const wrote = made.ok && (await context.env.writeFile(part, body, ctx)).ok && (await context.env.renameFile(part, file, ctx)).ok;
-    if (!wrote) { await context.env.remove(part, { force: true }, ctx); return null; }
+    if (!wrote) { await context.env.remove(part, { force: true }, visionContext()); return null; }
   }
   return shownPath(context, file);
 }

@@ -1,5 +1,3 @@
-// What a coding agent on one person's machine has and a hosted run does not: a Chrome on disk, a directory to file
-// evidence in, and no fetch service. Three small functions the coding-agent adapter composes; each stands alone.
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { Agent, fetch as undiciFetch } from "undici";
@@ -11,8 +9,6 @@ import type { WebBackup } from "./core/web.js";
 
 const LINUX_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
-/** The Chrome to launch: the one a person named (`PI_BROWSER_CHROME`, then `CHROME_PATH`), else the first of the usual
- *  install locations that exists; null when there is none. */
 export function findChrome(env: NodeJS.ProcessEnv = process.env, exists: (file: string) => boolean = existsSync): string | null {
   for (const named of [env.PI_BROWSER_CHROME, env.CHROME_PATH]) if (named && exists(named)) return named;
   const onPath = (env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap((dir) => LINUX_NAMES.map((name) => path.join(dir, name)));
@@ -20,15 +16,12 @@ export function findChrome(env: NodeJS.ProcessEnv = process.env, exists: (file: 
   return [...onPath, ...fixed].find((file) => exists(file)) ?? null;
 }
 
-/** One path segment of `[A-Za-z0-9._-]`: a label that is only dots (`.`, `..`) is never a directory name. */
+/** One path segment of `[A-Za-z0-9._-]`; a label of only dots (`.`, `..`) is never a directory name. */
 const safe = (part: string) => {
   const cleaned = part.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 60);
   return !cleaned ? "browser" : /^\.+$/.test(cleaned) ? `_${cleaned}` : cleaned;
 };
 
-/** Files each record under `<root>/<label>/<n>-<tool>.md` with the receipt header the package's evidence uses (`tool:`,
- *  `args:`, `status:`, one line per fact, `---`) and the body after it; an image body goes beside its receipt as
- *  `<n>-<tool>.<ext>`. The model is told the path relative to `relativeTo`. A write that fails files nothing. */
 export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink {
   let seq = 0;
   return {
@@ -39,7 +32,8 @@ export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink
         const text = typeof record.body === "string";
         const header = ["tool: " + record.tool, "args: " + JSON.stringify(record.args), "status: " + record.status,
           ...Object.entries(record.facts).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}: ${value}`), "---"];
-        // A name is reserved with an exclusive create, so a later session (or a fork) never overwrites an earlier receipt.
+        // A name is reserved with an exclusive create, so a later session (or a fork) never overwrites an earlier
+        // receipt.
         for (;;) {
           const stem = `${String(++seq).padStart(4, "0")}-${record.tool}`;
           const [receipt, capture] = [path.join(dir, `${stem}.md`), path.join(dir, `${stem}.${record.ext ?? "bin"}`)];
@@ -57,7 +51,7 @@ export function fileEvidenceSink(root: string, relativeTo: string): EvidenceSink
 
 const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0a80000, 16], [0x00000000, 8], [0xe0000000, 4]];
 const v4 = (ip: string) => ip.split(".").reduce((n, octet) => n * 256 + Number(octet), 0);
-/** Loopback, private, link-local, carrier-grade and multicast addresses, v4 and v6 (including v4-mapped). */
+/** Loopback, private, link-local, carrier-grade and multicast addresses, v4 and v6, v4-mapped included. */
 export function isPrivateAddress(ip: string): boolean {
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)?.[1];
   if (mapped) return isPrivateAddress(mapped);
@@ -69,17 +63,15 @@ export function isPrivateAddress(ip: string): boolean {
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 
-/** A `connect.lookup` that answers `address` whatever name it is asked for: the address a request was checked against is the
- *  one it connects to, so a name that resolves differently a moment later is never dialled. */
+/** Answers `address` for any name: the address a request was checked against is the one it connects to. */
 export const pinnedLookup = (address: string) => (_host: string, options: { all?: boolean }, callback: (...args: any[]) => void): void => {
   const family = net.isIPv6(address) ? 6 : 4;
   if (options?.all) callback(null, [{ address, family }]);
   else callback(null, address, family);
 };
 
-/** `web_fetch` for a machine with no fetch service: a plain HTTP read, HTML turned into markdown. It reads only public
- *  hosts (an agent steered by a page must not reach the owner's loopback or private network): each hop of a redirect is
- *  resolved once, checked, and dialled at that same address. It never sends cookies or credentials, and reads at most 5 MiB. */
+/** Public hosts only, so a page-steered agent never reaches the owner's private network: each redirect hop is resolved
+ *  once, checked and dialled at that address. No cookies or credentials; at most 5 MiB. */
 export function httpBackup(options: { lookup?: (host: string) => Promise<string[]>; fetchImpl?: (url: URL, init: Record<string, unknown>) => Promise<Response> } = {}): WebBackup {
   const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   const request = options.fetchImpl ?? ((url, init) => undiciFetch(url, init as never) as unknown as Promise<Response>);
@@ -118,7 +110,8 @@ export function httpBackup(options: { lookup?: (host: string) => Promise<string[
           const { NodeHtmlMarkdown } = await import("node-html-markdown");
           return NodeHtmlMarkdown.translate(text, { keepDataImages: false });
         } finally {
-          // A reply refused unread (not text, an error status, a redirect) still holds its connection: close() waits for it.
+          // A reply refused unread (not text, an error status, a redirect) still holds its connection: close() waits
+          // for it.
           await res?.body?.cancel().catch(() => undefined);
           await dispatcher.close().catch(() => undefined);
         }

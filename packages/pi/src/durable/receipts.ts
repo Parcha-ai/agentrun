@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 import { gatewayIntentOf, returnedFailure, type InheritedReceipt, type InheritedUnknown } from "@parcha/agentrun-dsl/recovery";
+import { resultBlocks, toolResult } from "./pi-versions.js";
 import type { DocumentStoreHost } from "./store.js";
 
 // Not buying an effect twice, structurally. A pi hook cannot answer a call without executing it, so a run that pays for
@@ -35,7 +36,6 @@ export async function seedReceipts(host: DocumentStoreHost, receipts: readonly P
   }, context);
 }
 
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; details?: Record<string, unknown> };
 /** The part of a durable tool the wrapper reads and replaces: `execute` gets the call's arguments, pi-durable's call api
  *  (`snapshot` and `commit` on the run's documents) and the call's context. */
 export type ReusableTool = { name: string; execute: (args: any, api: any, context: any) => Promise<any> };
@@ -55,18 +55,21 @@ export type ReuseReceiptsOptions = {
 };
 
 export type ReceiptReuse = {
-  /** The tool with its `execute` wrapped; a tool not named in `tools` is returned as it is. */
+  /** The tool with its `execute` wrapped; a tool not named in `tools` is returned as it is. A wrapped call whose result
+   *  carries its blocks only under the key the loaded pi-durable does not read throws `ToolResultKeyError`, and no
+   *  receipt is written: the model would have received an empty result. */
   wrap<T extends ReusableTool>(tool: T): T;
   /** Calls answered from a receipt and calls refused as unknown, so far. */
   readonly stats: { reused: number; refused: number };
 };
 
+/** The text of a result's blocks, joined by a newline: what a receipt holds. */
+const textOf = (blocks: readonly unknown[]): string => blocks.map((block) => (block as { text?: string })?.text ?? "").join("\n");
 /** A returned result that is itself a failure is no paid result: `isError`, or a failure envelope as the result itself,
- *  its JSON text, or the text of its content blocks. */
-const failed = (raw: unknown): boolean => {
+ *  its JSON text, or the text of its blocks (`blocks`, as the loaded pi-durable reads them). */
+const failed = (raw: unknown, blocks: readonly unknown[] | undefined): boolean => {
   if (raw && typeof raw === "object" && (raw as { isError?: unknown }).isError === true) return true;
-  const content = (raw as { content?: unknown })?.content;
-  if (Array.isArray(content)) return returnedFailure(content.map((block) => (block as { text?: string })?.text ?? "").join("\n"));
+  if (blocks) return returnedFailure(textOf(blocks));
   return returnedFailure(raw);
 };
 
@@ -84,8 +87,8 @@ export function reuseReceipts(options: ReuseReceiptsOptions): ReceiptReuse {
         const intent = keyOf(tool.name, args);
         if (unknown.has(`${intent.tool}\n${intent.argsHash}`) || unknown.has(`${tool.name}\n${intent.argsHash}`)) {
           stats.refused += 1;
-          return { isError: true, content: [{ type: "text", text: `${tool.name} is not called again: an identical earlier call was cut while it ran, so what it did outside is unknown. Work from what you have, or make a different call.` }],
-            details: { effect_status: "unknown", refused: true } } satisfies ToolResult;
+          return toolResult([{ type: "text", text: `${tool.name} is not called again: an identical earlier call was cut while it ran, so what it did outside is unknown. Work from what you have, or make a different call.` }],
+            { isError: true, details: { effect_status: "unknown", refused: true } });
         }
         const key = `${intent.tool}:${intent.argsHash}`;
         if (options.answer) {
@@ -93,13 +96,14 @@ export function reuseReceipts(options: ReuseReceiptsOptions): ReceiptReuse {
           if (receipt?.result != null && receipt.session !== options.sessionId) {
             stats.reused += 1;
             const text = typeof receipt.result === "string" ? receipt.result : JSON.stringify(receipt.result);
-            return { content: [{ type: "text", text: `${text}\n\n(answered from the paid receipt of ${receipt.session}; the call was not dispatched again)` }],
-              details: { effect_status: "reused", source_session: receipt.session } } satisfies ToolResult;
+            return toolResult([{ type: "text", text: `${text}\n\n(answered from the paid receipt of ${receipt.session}; the call was not dispatched again)` }],
+              { details: { effect_status: "reused", source_session: receipt.session } });
           }
         }
         const result = await tool.execute(args, api, context);
-        if (!failed(result)) {
-          const value = ((result?.content ?? []) as Array<{ text?: string }>).map((block) => block.text ?? "").join("\n");
+        const blocks = resultBlocks(tool.name, result);
+        if (!failed(result, blocks)) {
+          const value = textOf(blocks ?? []);
           await api.commit(async (tx: any) => {
             const receipt = await tx.doc(ReceiptIndex, key, null);
             if (receipt.result === null) { receipt.tool = intent.tool; receipt.argsHash = intent.argsHash; receipt.result = value; receipt.session = options.sessionId; }

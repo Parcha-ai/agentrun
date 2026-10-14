@@ -56,7 +56,9 @@ test('a relative --dir with a trailing slash runs the same job and names the rec
 // The child is the CLI's run with changes the test owns: the browser backend lives in this process, so its ledger
 // outlives the child, and SIGKILL ends the child at one point. `KILL_AT`: the lead's request after that many tool
 // results. `KILL_IN`: `search-admitted` as the tool door is asked (the call admitted, never sent), `search-landed` once
-// the door has answered (sent, its result not committed), `page-run` as a page is asked to run (never sent),
+// the door has answered (sent, its result not committed), `page-attach` as the browser attaches to a session (no run
+// sent yet), `page-run` as a page is asked to run (the run recorded, never sent), `page-ran` once the page has run and
+// before its answer reaches the model,
 // `judge-asked` once the judge has answered and before the answer is recorded, `event:<type>:<label>` just before that
 // status row is written; a door point with `:<n>` kills at the n-th call. `OTHER` runs the job under another workflow
 // name, and `TWICE` with a second `search` step that calls the tool with the same arguments. It is a file, not `--input-type=module -e`: the disk run's watchdog worker
@@ -76,8 +78,11 @@ const model = (messages) => {
 };
 const remote = remoteDriver(process.env.BACKEND);
 const driver = async (...args) => {
+  kill('page-attach');
   const page = await remote(...args);
-  return new Proxy(page, { get: (target, name) => (name === 'run' ? (input) => { kill('page-run'); return target.run(input); }
+  let ran = false;
+  return new Proxy(page, { get: (target, name) => (name === 'run' ? async (input) => { kill('page-run'); const out = await target.run(input); ran = true; return out; }
+    : name === 'url' ? () => { if (ran) kill('page-ran'); return target.url(); }
     : typeof target[name] === 'function' ? target[name].bind(target) : target[name]) });
 };
 const local = localHost(place, { ...fakes, model }, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
@@ -153,7 +158,7 @@ async function killedAndResumed(t, kill, { between = [], env: every = {} } = {})
   await writeFile(child, CHILD);
   const killed = [];
   for (const point of [kill].flat()) killed.push(await node([child], { ...env, ...point }));
-  const cut = readJournal(dir, RUN_KEY);
+  const cut = readJournal(join(dir, 'durable', 'run.sqlite'), RUN_KEY);
   const others = [];
   for (const extra of between) others.push(JSON.parse((await node([child], { ...env, ...extra })).stdout));
   const resumed = await node([child], env);
@@ -178,11 +183,36 @@ test('killed after the search was admitted and before it was sent, the resumed r
   assert.deepEqual(named(rows, 'tool'), [], 'no process sent the search');
 });
 
-test('killed inside the first browser run, before the page ran it, the resumed lead looks, runs it and reads, and the record rests on both', { timeout: 120_000 }, async (t) => {
-  const { view, rows, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-run' });
-  assert.deepEqual(view.output, OUTPUT, 'the same record');
-  assert.deepEqual(pages, ['snapshot', 'run', 'read', 'close'], 'the page ran once, after the lead looked');
-  assert.deepEqual(named(rows, 'browser'), ['page.run', 'page.read']);
+const SCAN_ONLY = { answer: 'Whether the registry page was opened is not known, so the filing scan is cited alone.', citations: [LOOK] };
+const recordOf = (view) => ({ answer: view.output.answer, citations: view.output.citations });
+
+test('killed inside the first browser run, recorded and not yet sent, the lead looks before anything else, cannot tell, and cites only the scan', { timeout: 120_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-run' });
+  assert.deepEqual(recordOf(view), SCAN_ONLY, 'the browser gives no details of the cut run yet, so the look cannot tell');
+  assert.deepEqual(pages, ['snapshot', 'close'], 'the page never ran, and was not read');
+  assert.deepEqual(failing, []);
+});
+
+test('killed as the browser attached, before the run was recorded, the lead still looks first and runs nothing blind', { timeout: 120_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-attach' });
+  assert.deepEqual(recordOf(view), SCAN_ONLY);
+  assert.ok(!pages.includes('run'), 'no second run before the browser says the first did not apply');
+  assert.deepEqual(failing, []);
+});
+
+test('two kills in the page step: never the full record without the page run, never the page run twice', { timeout: 180_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, [{ KILL_IN: 'page-run' }, { KILL_AT: '2' }]);
+  const runs = pages.filter((op) => op === 'run').length;
+  assert.ok(runs <= 1, `the page ran ${runs} times`);
+  if (runs === 0) { assert.deepEqual(recordOf(view), SCAN_ONLY); assert.ok(!pages.includes('read'), 'a page that never ran is not read'); }
+  else assert.deepEqual(view.output, OUTPUT);
+  assert.deepEqual(failing, []);
+});
+
+test('killed after the page ran and before its answer reached the lead, the page runs once', { timeout: 120_000 }, async (t) => {
+  const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-ran' });
+  assert.deepEqual(pages.filter((op) => op === 'run'), ['run'], 'counted by the fake backend itself');
+  assert.ok([JSON.stringify(SCAN_ONLY), JSON.stringify(recordOf({ output: OUTPUT }))].includes(JSON.stringify(recordOf(view))), JSON.stringify(view.output));
   assert.deepEqual(failing, []);
 });
 

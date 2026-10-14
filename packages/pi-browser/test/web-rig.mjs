@@ -1,8 +1,5 @@
-// The web extension's integration rig: a real pi-durable Harness on SQLite with pi-ai's faux model, the extension
-// under test, and a local HTTP server standing in for the provider's Fetch and Search APIs. Helpers, not tests.
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -10,8 +7,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
-/** A fake Fetch/Search API. `sites` maps a URL path to `{ status?, api?, body?, delayMs?, contentType? }`: `api` is the
- *  HTTP status the provider API itself answers; `status` is the page's. Records every call and peak concurrency. */
+/** `api` is the HTTP status the provider API itself answers; `status` is the page's. */
 export async function startFake(sites) {
   const ledger = { fetch: [], search: [], inFlight: 0, peak: 0, dropped: 0 };
   const counts = {};
@@ -33,7 +29,6 @@ export async function startFake(sites) {
       const entry = sites[new URL(body.url).pathname] ?? { body: "# Example\n\nBody" };
       const seen = (counts[new URL(body.url).pathname] = (counts[new URL(body.url).pathname] ?? -1) + 1);
       const picked = Array.isArray(entry) ? entry[Math.min(seen, entry.length - 1)] : entry;
-      // `byFormat` answers a markdown request and a raw one differently (a provider that converts one but not the other).
       const site = picked.byFormat ? { ...picked, ...(picked.byFormat[body.format] ?? {}) } : picked;
       if (site.hold) await new Promise(() => {});
       if (site.delayMs) await new Promise((r) => setTimeout(r, site.delayMs));
@@ -43,9 +38,8 @@ export async function startFake(sites) {
     } finally { ledger.inFlight -= 1; }
   };
   const server = http.createServer((req, res) => {
-    // The server listens on an ephemeral port, and other programs on a busy box probe ports (a Go HTTP client has been seen
-    // sending GET / to it). Anything but the two API routes is answered 404 and never recorded, so a stray request cannot
-    // reach the ledger the tests count, or throw an error the test runner would pin on whichever test is running.
+    // Other programs probe ephemeral ports (a Go client sending GET /): anything but the two API routes is answered 404
+    // and never recorded, so a stray request cannot reach the ledger or fail the running test.
     if (req.method !== "POST" || (req.url !== "/fetch" && req.url !== "/search")) { req.resume(); res.statusCode = 404; res.end(); return; }
     handle(req, res).catch(() => { if (!res.headersSent) res.statusCode = 500; res.end(); });
   });
@@ -59,7 +53,6 @@ export async function startFake(sites) {
   return { ledger, base, fetch: (request, signal) => call("/fetch", request, signal), search: (request, signal) => call("/search", request, signal), close: () => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }) };
 }
 
-/** Files each record as `<dir>/<label>/<n>-<tool>.md` the way a host sink would, and keeps what it was given. */
 export function fileSink(dir, extra = {}) {
   const filed = [];
   return {
@@ -80,9 +73,9 @@ export function fileSink(dir, extra = {}) {
 
 const textOf = (message) => (message?.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join(" ");
 
-/** Open a harness whose model makes `rounds` of tool calls (each an array of [tool, args]) and then answers. The
- *  policy reads the transcript, never a counter, so a process that resumes the same file continues where it was cut. */
-export async function open(extension, rounds, db = path.join(fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "web-")), "run.sqlite")) {
+/** The policy reads the transcript, never a counter, so a process that resumes the same file continues where it was
+ *  cut. */
+export async function open(extension, rounds, db) {
   const faux = fauxProvider({ models: [{ id: "faux-1" }] });
   const policy = (context) => {
     const round = rounds[context.messages.filter((m) => m.role === "assistant").length];
@@ -96,11 +89,9 @@ export async function open(extension, rounds, db = path.join(fs.mkdtempSync(path
   return { harness, root, db };
 }
 
-/** What the conversation's tool results say, in order. */
 export async function transcript(root) {
   const page = await root.entries({}, 200, undefined, ctx);
   const entries = [...page.items].reverse();
-  // A round's calls run at once and their results land as each finishes; they are listed in the order the model made them.
   const order = new Map();
   for (const e of entries) for (const block of e.kind === "pi.assistant" ? e.model?.[0]?.content ?? [] : []) if (block.type === "toolCall") order.set(block.id, order.size);
   return entries.flatMap((e) => {
@@ -109,7 +100,6 @@ export async function transcript(root) {
   }).sort((a, b) => a.order - b.order).map(({ order: _order, ...result }) => result);
 }
 
-/** Run one conversation to its answer. Resolves with every tool result, the session's usage and the settled status. */
 export async function drive(extension, rounds, db) {
   const { harness, root } = await open(extension, rounds, db);
   try {

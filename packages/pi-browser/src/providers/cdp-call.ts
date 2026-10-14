@@ -1,6 +1,5 @@
-// One CDP command over a socket of its own. The reply comes back with the socket still open, so a caller that needs the
-// setting to last (Browser.setDownloadBehavior lasts only as long as the socket that sent it) holds it, and one that only
-// asks closes it.
+// The reply comes back with the socket open: a setting that lasts only as long as its socket
+// (Browser.setDownloadBehavior) is held by keeping it; a caller that only asks closes it.
 export type CdpSession = { result: any; close(): void; readonly open: boolean };
 
 export function cdpCall(url: string, method: string, params: object = {}, timeoutMs = 5_000): Promise<CdpSession> {
@@ -16,7 +15,6 @@ export function cdpCall(url: string, method: string, params: object = {}, timeou
     const timer = setTimeout(() => finish(new Error(`the browser did not answer ${method}`)), timeoutMs);
     socket.onopen = () => socket.send(JSON.stringify({ id: 1, method, params }));
     socket.onmessage = (event) => { const reply = JSON.parse(String(event.data)); if (reply.id === 1) finish(reply.error ? new Error(String(reply.error.message ?? "refused")) : null, reply.result); };
-    // The host the socket dialed is named: a failed open carries no other fact about where it went.
     socket.onerror = () => finish(new Error(`the CDP socket to ${new URL(url).host} failed`));
   });
 }

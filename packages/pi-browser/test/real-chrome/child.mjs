@@ -1,13 +1,5 @@
-// One process of a real-Chrome scenario: the package's page tools over the Stagehand driver and the cdp provider (a
-// local Chrome under PROFILE_ROOT that outlives this process, as a kept session does), on a SQLite file. `first` runs
-// the scripted model until the parent SIGKILLs it; `second` reopens the file, reconciles, resumes and runs the rest of
-// the script, then releases. Each step is a tool name or [tool, args]; the model takes the next step per tool result.
-//
-// OUT gets each tool result and each receipt filed (its tool and final_url).
-// env: DB OUT MODE=first|second SCRIPT=<JSON steps> PROFILE_ROOT CHROME BATCH_TIMEOUT_MS (the conversation's policy)
-//      CUT_BEFORE=<step> (the driver reaches Chrome through a TCP proxy whose live sockets are destroyed just before that
-//      step: the CDP socket dies under a session Chrome keeps running; the proxy still accepts a new connection)
-//      CUT_CLOSES=1 (the cut also closes the proxy, so the browser cannot be reached again)
+// CUT_BEFORE=<step>: the driver reaches Chrome through a TCP proxy whose live sockets are destroyed just before that
+// step, so the CDP socket dies under a session Chrome keeps running. CUT_CLOSES=1 closes the proxy too.
 import fs from "node:fs";
 import net from "node:net";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -26,13 +18,11 @@ const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: e
 const live = new Set();
 let proxy = null;
 const cut = env.CUT_BEFORE === undefined ? null : Number(env.CUT_BEFORE);
-/** The cdp provider, its attach rerouted through a loopback TCP proxy to Chrome's debugger port when a cut is set. */
 async function proxied() {
   if (cut === null) return local;
   let target = null;
   const server = net.createServer((client) => {
-    // Only the driver's own connections, once an attach named Chrome's port: anything else on this port (another
-    // program on the box probing ports) is dropped.
+    // Only the driver's own connections: anything else on this port (another program probing ports) is dropped.
     if (!target) { client.destroy(); return; }
     const upstream = net.connect(target);
     for (const socket of [client, upstream]) { live.add(socket); socket.on("close", () => live.delete(socket)); socket.on("error", () => undefined); }

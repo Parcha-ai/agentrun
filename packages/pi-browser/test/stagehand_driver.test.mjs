@@ -1,23 +1,19 @@
-// The Stagehand driver on a real local Chrome the cdp provider starts (its own profile and port, loopback pages only,
-// killed by exact pid on release): the PageDriver contract the page tools are built on, served by Stagehand 4.1.0 over
-// upstream's facade at its vendored commit. Every page API the browser section names is checked: the ones that work,
-// and the ones 4.1.0's page cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has), each
-// asserted to fail so a fixed upstream flips this test.
+// The page APIs 4.1.0 cannot serve (the facade calls page.sendCDP and page.onCDP, which no v4 page has) are asserted to
+// fail, so a fixed upstream flips this test.
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { STAGEHAND_INFERENCE_REFUSED, stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
 import { startSite } from "./fixtures/site.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 
 const LOOPBACK_ONLY = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost";
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} });
-// A read issued while an earlier action's navigation commits can throw CDP -32000 ("Inspected target navigated or
-// closed", "Cannot find context with specified id") or hang (Stagehand 4.1.0, under load). A read is safe to repeat, so
-// after an action that navigates it is a bounded call, tried until the next page answers; an action is never repeated.
+// A read issued while an earlier action's navigation commits can throw CDP -32000 or hang (Stagehand 4.1.0, under
+// load): a read is safe to repeat, so after a navigating action it is retried, bounded, until the next page answers.
 async function readAfterNavigation(read, answered) {
   let last;
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -32,7 +28,7 @@ const pngSize = (b64) => { const b = Buffer.from(b64, "base64"); return { width:
 
 test("the Stagehand driver serves the page tools' contract on a real Chrome", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const site = await startSite({ slowMs: 5_000 });
-  const root = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "stagehand-driver-"));
+  const root = await scratch(t, "stagehand-driver-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
   const signal = new AbortController().signal;
   const ref = await provider.create(spec("driver-1"), signal);
@@ -53,8 +49,8 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
       assert.match(page.html, /<article><h1>Page A<\/h1>/);
     });
     await t.test("a navigation that never commits leaves url() and page() on the page the browser shows", async () => {
-      // A 204 (here) or a download (a PDF on Browserbase) starts a navigation that never commits: goto fails at its start
-      // and the browser keeps page A, which Stagehand's own page.url() already reports as the target.
+      // A 204 (here) or a download (a PDF on Browserbase) starts a navigation that never commits: goto fails at its
+      // start and the browser keeps page A, which Stagehand's own page.url() already reports as the target.
       await assert.rejects(driver.run({ code: `await page.goto(${JSON.stringify(`${site.base}/no-content`)}, { timeout: 1500 }); return "moved";` }), /Navigation start timed out/);
       assert.equal(await driver.url(), `${site.base}/a`);
       const page = await driver.page();
@@ -134,7 +130,8 @@ test("the Stagehand driver serves the page tools' contract on a real Chrome", { 
 });
 
 test("a failed open names the host the process dialed, and keeps the cause so the failure stays typed", async () => {
-  // Both ends are closed loopback ports (nothing leaves the host); the raw URL is on `localhost`, the dial URL on `127.0.0.1`.
+  // Both ends are closed loopback ports (nothing leaves the host); the raw URL is on `localhost`, the dial URL on
+  // `127.0.0.1`.
   const target = { sdkCdpUrl: "ws://localhost:9/s?signingKey=SECRETKEY", dial: { url: "ws://127.0.0.1:9/ws/s?signingKey=SECRETKEY" } };
   const error = await stagehandDriver()(target, new AbortController().signal).then(() => null, (e) => e);
   assert.ok(error instanceof Error, "the attach failed");
