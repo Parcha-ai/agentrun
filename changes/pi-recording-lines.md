@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-pi
+kind: feature
+---
+`@parcha/agentrun-pi/durable` records a run's store as durable lines for `agentrun.recording/1` (a recording a viewer replays): one line per document revision (the document's whole value after it, its kind, family key and version), per conversation entry (as stored) and per task record, each with the store's commit and its order inside the commit, the generation of the latest `agentrun.driver` revision at or before it, and the execution path and conversation the record names. No stored format changes.
+- `recordCommits(session, { gen?, write, clock? })` records inside the run's process, on pi's commit publications: every commit as it is adopted, tasks at their real commit. The listener only maps and queues; `write` gets one commit's lines at a time, and the returned stop waits for them and throws the first that failed. A kill loses at most the commit in flight.
+- `snapshotLines(storage, { at, gen?, context })` gives every document of the run as it stands, marked `snapshot: true`, for a process to record after it opens the run and before it resumes, so the state is exact after any kill.
+- `recordingLines(file, { after? })` reads a store no process holds, read-only: the history pi kept. pi deletes a current-only document's older revisions when it writes a new base (the driver document checkpoints every 32 deltas), so a line before the earliest surviving driver revision has no generation, and every task's current record is one line at the store's last commit.
