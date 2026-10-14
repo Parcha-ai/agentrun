@@ -103,8 +103,12 @@ export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "la
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
-  /** The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an environment. */
-  readonly mountToken: string;
+  /**
+   * The mount token from the host driver (reusable, 24 h); travels only on the archil wrapper's stdin, never in an
+   * environment. Required to mount an Archil disk (the default `acquire`); a run whose `acquire` is replaced (a local
+   * directory: `localRun`) needs none, and its `acquire` is handed an empty token.
+   */
+  readonly mountToken?: string;
   /** Default /mnt/archil. */
   readonly mountRoot?: string;
   /** Mount with `--force`: the takeover fallback when the supervisor could not revoke. */
@@ -812,10 +816,13 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step):
   } catch (error) {
     throw new RunError("INVALID_ARGUMENT", `holder ${JSON.stringify(options.holder)}: ${(error as Error).message}`, { cause: error });
   }
+  if (options.acquire === undefined && !options.mountToken) {
+    throw new RunError("INVALID_ARGUMENT", "mountToken is required to mount an Archil disk; a run on a local directory passes localRun(root) instead");
+  }
   const claim = await step("acquire", () =>
     (options.acquire ?? acquire)({
       ref,
-      token: options.mountToken,
+      token: options.mountToken ?? "",
       ...(options.mountRoot === undefined ? {} : { mountRoot: options.mountRoot }),
       ...(options.force === undefined ? {} : { force: options.force }),
       ...(options.host === undefined ? {} : { host: options.host }),
