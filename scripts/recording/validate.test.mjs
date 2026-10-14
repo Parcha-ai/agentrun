@@ -168,7 +168,7 @@ test('the supervisor\'s lines have no gen and number a seq space of their own', 
 
 test('a restore (3.2): a drop in commit at a generation\'s first snapshot is accepted only with that generation\'s restore record at head S + 1', async t => {
   const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
-  const moves = (head, t, gen = 2, kind = 'restore') => durable(0, 0, { source: 'transport', kind: 'transport.moves', t, gen, commit: 7, order: 0, data: { doc: 'transport.moves', value: { moves: [{ kind, checkpointHead: head }] } } });
+  const moves = (head, t, gen = 2, kind = 'restore') => durable(0, 0, { source: 'transport', kind: 'transport.moves', t, gen, commit: 7, order: 0, data: { doc: 'transport.moves', value: { moves: [kind === 'move' ? { kind, seal: { head, sha256: 'a'.repeat(64), bytes: 1 } } : { kind, checkpoint: { head, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
   // Generation 1 committed up to 7; the box died after checkpoint 4; generation 2 reopens it at S = 4, numbering from 5 again.
   const lost = [durable(5, 0, { t: 5 }), durable(6, 0, { t: 6 }), durable(7, 0, { t: 7 })];
   const restored = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(5, 0, { t: 22, gen: 2 }), durable(6, 0, { t: 23, gen: 2 })];
@@ -180,11 +180,22 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   assert.equal(none.line, lost.length + 1 + 2);
   assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record with checkpoint head 5/);
   assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
-  assert.match((await refused([...restored, moves(5, 24, 2, 'move')])).message, /checkpoint head 5/);
+  assert.ok(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 2, 'move')], started: 2 })).some(problem => /no transport\.moves restore record with checkpoint head 5/.test(problem.message)), 'a move is not a restore');
   assert.match((await refused([...restored, moves(5, 24, 1)])).message, /checkpoint head 5/);
   // a later snapshot in the same generation may not drop again, and the lines after the restore still obey the strict order
   const again = await refused([...withRecord, snap(3, 0, 30, 2)]);
   assert.match(again.message, /snapshot commit 3 is lower/);
   const reuse = await refused([...lost, snap(4, 0, 20, 2), durable(4, 0, { t: 21, gen: 2 }), moves(5, 24)]);
   assert.match(reuse.message, /does not increase past/);
+});
+
+test('a move\'s seal.head is one above the last commit seen', async t => {
+  const moveAt = (head, commit, t) => durable(commit, 0, { source: 'transport', kind: 'transport.moves', t, data: { doc: 'transport.moves', value: { moves: [{ kind: 'move', seal: { head, sha256: 'a'.repeat(64), bytes: 1 } }] } } });
+  // the move record is a line of commit 2; the store is sealed at 2 and the target's first commit is 3
+  assert.deepEqual(validateRecording(await recording(t, { lines: [durable(1, 0), moveAt(3, 2, 12), durable(3, 0, { t: 13 })], started: 1, manifestOver: { generations: 1 } })), []);
+  const gap = first(await recording(t, { lines: [durable(1, 0), moveAt(5, 2, 12), durable(3, 0, { t: 13 })], started: 1, manifestOver: { generations: 1 } }));
+  assert.equal(gap.line, 3);
+  assert.match(gap.message, /seal\.head is 5, but the last commit seen is 2, so the target's first commit would be 3/);
+  const same = first(await recording(t, { lines: [durable(1, 0), moveAt(2, 2, 12)], started: 1, manifestOver: { generations: 1 } }));
+  assert.match(same.message, /seal\.head is 2/);
 });
