@@ -205,6 +205,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(programsOf(box.id)).toEqual([]);
@@ -214,6 +215,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "setsid sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(programsOf(box.id)).toEqual([]);
@@ -233,29 +235,61 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 
 	it("the watchdog ends such a program too", () =>
 		withProvider(async (provider) => {
-			const box = await create(provider, 1_000);
+			const box = await create(provider, 4_000);
 			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
 			if (!started.ok) throw started.error;
 			const workspace = box.facts().workspace;
 			await until(() => processesIn(workspace).length > 0);
-			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			await new Promise((resolve) => setTimeout(resolve, 6_500));
+			await until(() => processesIn(workspace).length === 0);
 			expect(processesIn(workspace)).toEqual([]);
 		}));
 
 	it("destroy leaves no watchdog behind", () =>
 		withProvider(async (provider) => {
 			const box = await create(provider);
+			await until(() => watchdogsOf(box.id).length > 0);
 			expect(watchdogsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(watchdogsOf(box.id)).toEqual([]);
 		}));
 
+	it(
+		"destroy returns only once the watchdog it killed is gone or a zombie",
+		() =>
+			withProvider(async (provider) => {
+				for (let round = 0; round < 5; round++) {
+					const box = await create(provider);
+					await until(() => watchdogsOf(box.id).length > 0);
+					const pids = watchdogsOf(box.id);
+					expect(pids.length).toBeGreaterThan(0);
+					await box.destroy(context);
+					const running = pids.filter((pid) => {
+						try {
+							const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+							return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+						} catch {
+							return false;
+						}
+					});
+					expect(running, `round ${round}`).toEqual([]);
+				}
+			}),
+		60_000,
+	);
+
 	it("the watchdog ends an expired box that nobody asks about", () =>
 		withProvider(async (provider, root) => {
-			const box = await create(provider, 1_000);
+			// Long enough that a loaded machine still sees the program start before the box expires.
+			const box = await create(provider, 4_000);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
-			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			await new Promise((resolve) => setTimeout(resolve, 6_500));
+			await until(
+				() =>
+					!existsSync(join(root, box.id)) && programsOf(box.id).length === 0 && watchdogsOf(box.id).length === 0,
+			);
 			expect(existsSync(join(root, box.id))).toBe(false);
 			expect(programsOf(box.id)).toEqual([]);
 			expect(watchdogsOf(box.id)).toEqual([]);

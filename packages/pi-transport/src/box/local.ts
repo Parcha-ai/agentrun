@@ -234,6 +234,33 @@ function killGroup(pid: number | undefined): void {
 	}
 }
 
+/** How long `destroy` waits for the processes it killed to be gone. */
+const GONE_WAIT_MS = 1_000;
+const GONE_POLL_MS = 5;
+
+/** Whether the process is gone from `/proc`, or is a zombie that only waits to be reaped. */
+function isGone(pid: number): boolean {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+		// The state letter follows the command name, which is in parentheses and may itself hold parentheses.
+		return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "Z";
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Wait, with the event loop running so that Node can reap its own children, until every process is gone or a zombie.
+ * Bounded: a process that does not die within a second is left, as before.
+ */
+async function waitGone(pids: readonly number[]): Promise<void> {
+	if (!HAS_PROC) return;
+	const deadline = Date.now() + GONE_WAIT_MS;
+	while (pids.some((pid) => !isGone(pid)) && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, GONE_POLL_MS));
+	}
+}
+
 /** When a process started, in the kernel's clock ticks, or `undefined` when it is gone. */
 function startTime(pid: number): string | undefined {
 	try {
@@ -249,12 +276,13 @@ function startTime(pid: number): string | undefined {
  * End the process groups of the programs a box recorded. A record is trusted only while the process it names still
  * has the start time it recorded, so a process id the system reused is never killed.
  */
-function endRecorded(directory: string): void {
+function endRecorded(directory: string): number[] {
+	const ended: number[] = [];
 	let names: string[];
 	try {
 		names = readdirSync(join(directory, "pids"));
 	} catch {
-		return;
+		return ended;
 	}
 	for (const name of names) {
 		let recorded: string;
@@ -263,8 +291,12 @@ function endRecorded(directory: string): void {
 		} catch {
 			continue;
 		}
-		if (recorded !== "" && recorded === startTime(Number(name))) killGroup(Number(name));
+		if (recorded !== "" && recorded === startTime(Number(name))) {
+			killGroup(Number(name));
+			ended.push(Number(name));
+		}
 	}
+	return ended;
 }
 
 /**
@@ -296,25 +328,27 @@ function processesOf(id: string): { programs: number[]; watchdogs: number[] } {
  * Neither kills a reused process id. A program that does both, replaces its environment and outlives its starter,
  * is not found. Where `/proc` is missing, only the process groups this process started are ended.
  */
-function endPrograms(directory: string, id: string): void {
+function endPrograms(directory: string, id: string): number[] {
 	if (!HAS_PROC) {
 		for (const pid of startedHere.get(id) ?? []) killGroup(pid);
 		startedHere.delete(id);
-		return;
+		return [];
 	}
-	endRecorded(directory);
+	const ended = endRecorded(directory);
 	for (let round = 0; round < KILL_ROUNDS; round += 1) {
 		const { programs, watchdogs } = processesOf(id);
 		for (const pid of [...watchdogs, ...programs]) {
 			try {
 				process.kill(pid, "SIGKILL");
+				ended.push(pid);
 			} catch {
 				// It ended between the scan and the kill.
 			}
 		}
 		// A program may have started another between the scan and its end, so programs get one more look.
-		if (programs.length === 0) return;
+		if (programs.length === 0) break;
 	}
+	return ended;
 }
 
 async function readRecord(directory: string): Promise<LocalRecord | undefined> {
@@ -328,14 +362,16 @@ async function readRecord(directory: string): Promise<LocalRecord | undefined> {
 
 /**
  * End a box: its record, its programs and its watchdog, then its own directory. A workspace the caller named lies
- * outside that directory and is never removed.
+ * outside that directory and is never removed. Returns once every process it killed is gone or a zombie, for up to a
+ * second.
  */
 async function destroyDirectory(directory: string, id: string): Promise<void> {
 	// A program may have taken its own write permission from the box's directories. They are this user's.
 	for (const path of [directory, join(directory, "pids")]) await chmod(path, 0o700).catch(() => {});
 	// The record goes first: from then on every handle of this box reports it ended.
 	await rm(join(directory, RECORD_FILE), { force: true });
-	endPrograms(directory, id);
+	const ended = endPrograms(directory, id);
+	await waitGone(ended);
 	try {
 		await rm(directory, { recursive: true, force: true });
 	} catch {
@@ -360,7 +396,8 @@ function unsupportedField(spec: BoxSpec): string | undefined {
  *
  * A spec that names an `image`, a `snapshot`, `cpus`, `memoryMb`, a `gpu`, a `region` or an `isolation` other than
  * `none` is refused with `unsupported`: a directory cannot give them. A detached watchdog ends a box when its
- * lifetime has passed, whatever happened to the process that created it. On Linux `destroy` and the watchdog end the
+ * lifetime has passed, whatever happened to the process that created it. `destroy` returns once the processes it killed
+ * are gone (up to a second). On Linux `destroy` and the watchdog end the
  * process group of every program the box started and that still runs, and every process that carries the box's marker
  * in its environment. A program that both replaced its environment and outlived its starter is not found. Where
  * `/proc` is missing they end only the programs this process started and their process groups, and the watchdog
