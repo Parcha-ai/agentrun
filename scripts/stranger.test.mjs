@@ -77,3 +77,12 @@ test('the vision spec accepts exactly the output its README shows under the comm
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('B2=1250.5', 'B2=1250') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
 });
+
+test('the browser spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
+  const browser = await loadSpec('pi-browser');
+  const [file] = browser.files;
+  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
+  const ran = over => judge(browser, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
+  assert.equal(ran({}), 0);
+  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
+});
