@@ -1,6 +1,8 @@
-// node examples/dependency-audit/run.ts [--fixture <name>] [--limit N] [--storm <ms>] [--kills N] [--record <dir>] [--dir <run dir>] [--seed N] [--json]
-// The dependency audit on the reference assembly, with no key: the facts of a captured project, a scripted lead and a scripted
-// judge. `--storm 2000` ends the process with SIGKILL about every two seconds (at most `--kills`, default 30) and a fresh
+// node examples/dependency-audit/run.ts [--fixture <name> | --live --package <package.json | owner/repo[@commit]> [--model provider/id]]
+//   [--limit N] [--storm <ms>] [--kills N] [--record <dir>] [--dir <run dir>] [--seed N] [--json]
+// The dependency audit on the reference assembly. By default it needs no key: the facts of a captured project, a scripted lead and
+// a scripted judge. `--live` reads a package.json you name from the public sources, with your own model key (ANTHROPIC_API_KEY,
+// OPENAI_API_KEY or GEMINI_API_KEY) and a Chrome on this machine; the install step is skipped and says so unless a box is available. `--storm 2000` ends the process with SIGKILL about every two seconds (at most `--kills`, default 30) and a fresh
 // process takes the run back from its journal each time. `--record <dir>` keeps the run as an agentrun.recording/1 directory.
 //
 // Two processes of this file: the supervisor starts, kills and restarts the run and writes the host lines of the recording;
@@ -15,6 +17,10 @@ import { codeOf, finishRecording, localHost, openRecorder, packageCommitRecorder
 import { startedAt } from '../reference/record.ts';
 import { appendFileSync, mkdirSync as mkdir } from 'node:fs';
 import type { Fixture } from './capture.ts';
+import type { BrowserPlane, Fakes } from '../reference/index.ts';
+import { liveModels, modelJudge } from './live.ts';
+import { resolveDependencies } from './sources.ts';
+import { makeTools } from './tools.ts';
 import { scriptedBrowser, scriptedFakes } from './scripted.ts';
 import { workflow } from './workflow.ts';
 
@@ -40,19 +46,65 @@ function random(seed: number) {
 
 async function child() {
   const dir = process.env.DIR!;
-  const fixture = loadFixture(process.env.FIXTURE);
   const place = await placeAt(dir);
+  const job: Job = { workflow, input: JSON.parse(readFileSync(join(dir, 'input.json'), 'utf8')) };
+  const live = process.env.LIVE === '1';
   const recording = process.env.RECORD;
   const recorder = recording ? openRecorder({ dir: recording, commits: await packageCommitRecorder() }) : undefined;
-  const fakes = scriptedFakes(fixture, place.root);
-  const local = localHost(place, fakes, { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
+  let local;
+  if (live) {
+    const { catalog, lead } = liveModels(process.env, process.env.MODEL);
+    const tools = makeTools({ root: place.root, source: { live: true } });
+    const fakes = { model: () => { throw new Error('the live run asks a real model'); }, tools, judge: modelJudge(catalog, lead), pages: {}, start: 'about:blank' } as Fakes;
+    local = localHost(place, fakes, { browser: await localChrome(place), ...(recorder ? { recorder } : {}) });
+    local.host.models = { catalog, lead };
+    local.host.decisions.runJudge = modelJudge(catalog, lead);
+  } else {
+    const fixture = loadFixture(process.env.FIXTURE);
+    local = localHost(place, scriptedFakes(fixture, place.root), { browser: scriptedBrowser(fixture).plane, ...(recorder ? { recorder } : {}) });
+  }
   try {
-    const result = await run(place, local.host, jobOf(fixture, process.env.LIMIT ? Number(process.env.LIMIT) : undefined));
+    const result = await run(place, local.host, job);
     const usd = Object.values(result.usage.models).reduce((sum, used) => sum + used.cost.total, 0);
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, usd, parts: Object.fromEntries(Object.entries({ ...result.usage.models, ...result.usage.tools }).map(([name, used]) => [name, used.cost.total])), model: `${local.host.models.lead.provider}/${local.host.models.lead.modelId}`, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 300) } : {}) } }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } }));
   } finally { recorder?.detach(); }
+}
+
+/** A Chrome on this machine, driven over CDP by the browser package. It reaches the public internet: the live run reads GitHub's pages. */
+async function localChrome(place: { root: string }): Promise<BrowserPlane> {
+  const [{ cdpProvider }, { stagehandDriver }, { findChrome }] = await Promise.all([import('@parcha/pi-browser/providers/cdp'), import('@parcha/pi-browser/driver/stagehand'), import('@parcha/pi-browser/coding-agent')]);
+  const executablePath = process.env.CHROME_PATH || findChrome(process.env);
+  if (!executablePath) throw new Error('--live needs a Chrome: none was found. Set CHROME_PATH.');
+  const provider = cdpProvider({ chrome: { executablePath, profileRoot: join(place.root, 'chrome'), headless: true } });
+  return { provider: () => provider, driver: stagehandDriver() };
+}
+
+/** The job's input from `--package`: a package.json on disk (its lockfile beside it), or `owner/repo[@commit]` on GitHub. */
+async function inputFrom(spec: string, limit?: number): Promise<Record<string, unknown>> {
+  let pkg: { name?: string; dependencies?: Record<string, string> }; let lock: { packages?: Record<string, { version?: string }> } | undefined; let project = spec; let commit: string | undefined; let commitDate: string | undefined;
+  if (existsSync(spec)) {
+    pkg = JSON.parse(readFileSync(spec, 'utf8'));
+    const lockFile = join(resolve(spec, '..'), 'package-lock.json');
+    lock = existsSync(lockFile) ? JSON.parse(readFileSync(lockFile, 'utf8')) : undefined;
+    project = pkg.name ?? spec;
+  } else {
+    const [repo, ref] = spec.split('@');
+    const headers: Record<string, string> = process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {};
+    const meta = await (await fetch(`https://api.github.com/repos/${repo}/commits/${ref ?? 'HEAD'}`, { headers: { 'user-agent': 'agentrun-dependency-audit', ...headers } })).json() as { sha?: string; commit?: { committer?: { date?: string } } };
+    if (!meta.sha) throw new Error(`--package ${spec}: GitHub has no such commit`);
+    commit = meta.sha; commitDate = (meta.commit?.committer?.date ?? '').slice(0, 10); project = repo!;
+    const file = async (name: string) => { const response = await fetch(`https://raw.githubusercontent.com/${repo}/${commit}/${name}`); return response.status === 200 ? await response.text() : null; };
+    const text = await file('package.json');
+    if (text === null) throw new Error(`${spec} has no package.json`);
+    pkg = JSON.parse(text);
+    const lockText = await file('package-lock.json');
+    lock = lockText ? JSON.parse(lockText) : undefined;
+  }
+  const dependencies = (await resolveDependencies(pkg, lock, limit)).map(({ name, version }) => ({ name, version }));
+  if (!dependencies.length) throw new Error(`${spec} lists no dependencies the registry can resolve`);
+  return { project, ...(commit ? { commit, commit_date: commitDate ?? '' } : {}), read_on: new Date().toISOString().slice(0, 10), dependencies };
 }
 
 // ---- the supervisor ---------------------------------------------------------------------------------------------------
@@ -89,18 +141,24 @@ function supervisorLines(dir: string) {
   };
 }
 
-export type AuditOptions = { fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
+export type AuditOptions = { live?: boolean; package?: string; model?: string; fixture?: string; limit?: number; stormMs?: number; kills?: number; seed?: number; record?: string; dir?: string };
 
 export async function audit(options: AuditOptions) {
   const dir = resolve(options.dir ?? join(process.env.TMPDIR ?? '/tmp', `dependency-audit-${process.pid}`));
   mkdirSync(dir, { recursive: true });
+  // The input is fixed once, here, so every process of the run reads the same dependencies.
+  const inputFile = join(dir, 'input.json');
+  if (!existsSync(inputFile)) {
+    const input = options.live ? await inputFrom(options.package ?? (() => { throw new Error('--live needs --package <package.json | owner/repo[@commit]>'); })(), options.limit) : jobOf(loadFixture(options.fixture), options.limit).input;
+    writeFileSync(inputFile, JSON.stringify(input));
+  }
   // The supervisor's own lines (a kill, the result) are about a process but are not that process's lines, so they carry no sequence
   // number; the recorder writes one on every line, so the supervisor appends its host lines to a spool of its own.
   const supervisor = options.record ? supervisorLines(options.record) : undefined;
   const next = random(options.seed ?? 1);
   const maxKills = options.stormMs ? options.kills ?? 30 : 0;
   let kills = 0; let processes = 0; let last: { outcome?: Outcome; signal: string | null; stderr: string } | undefined;
-  const env = { DIR: dir, ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.limit ? { LIMIT: String(options.limit) } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
+  const env = { DIR: dir, ...(options.live ? { LIVE: '1' } : {}), ...(options.model ? { MODEL: options.model } : {}), ...(process.env.AUDIT_DEBUG ? { AUDIT_DEBUG: process.env.AUDIT_DEBUG } : {}), ...(options.fixture ? { FIXTURE: options.fixture } : {}), ...(options.record ? { RECORD: resolve(options.record) } : {}) };
   for (;;) {
     const { proc, done } = startChild(env);
     processes += 1;
@@ -126,15 +184,15 @@ export async function audit(options: AuditOptions) {
 }
 
 if (import.meta.main) {
-  if (process.argv[2] === '--child') await child();
+  if (process.argv[2] === '--child') await child().catch((error) => console.log(JSON.stringify({ outcome: { status: 'error', message: String((error as Error).message).slice(0, 300) } })));
   else {
-    const { values } = parseArgs({ options: { fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { live: { type: 'boolean' }, package: { type: 'string' }, model: { type: 'string' }, fixture: { type: 'string' }, limit: { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, record: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' } } });
     const result = await audit({
-      ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
+      ...(values.live ? { live: true } : {}), ...(values.package ? { package: values.package } : {}), ...(values.model ? { model: values.model } : {}), ...(values.fixture ? { fixture: values.fixture } : {}), ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.storm ? { stormMs: Number(values.storm) } : {}),
       ...(values.kills ? { kills: Number(values.kills) } : {}), ...(values.seed ? { seed: Number(values.seed) } : {}), ...(values.record ? { record: values.record } : {}), ...(values.dir ? { dir: values.dir } : {}),
     });
     if (values.json) console.log(JSON.stringify(result));
-    else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);
+    else console.log(`dependency audit: ${result.outcome?.status ?? 'no outcome'}${result.outcome?.message ? ` (${result.outcome.message})` : ''} after ${result.processes} process${result.processes === 1 ? '' : 'es'} and ${result.kills} kill${result.kills === 1 ? '' : 's'}, run in ${result.dir}${result.stderr ? `\n${result.stderr}` : ''}`);
     if (result.outcome?.status !== 'complete') process.exitCode = 1;
   }
 }
