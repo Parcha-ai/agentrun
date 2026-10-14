@@ -33,6 +33,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
 import { createGate, type Drained, type DrainOptions, GATE_EXTENSION, type Gate } from "../src/home/gate.ts";
+import { textResult } from "../src/testing/tool-result.ts";
 import { random } from "./home-support.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -211,7 +212,7 @@ function workTool(site: Site, pad: number) {
 			} finally {
 				site.running -= 1;
 			}
-			return { content: [{ type: "text", text: `did ${args.tag}${pad > 0 ? ` ${"x".repeat(pad)}` : ""}` }] };
+			return textResult(`did ${args.tag}${pad > 0 ? ` ${"x".repeat(pad)}` : ""}`);
 		},
 	});
 }
@@ -234,11 +235,11 @@ function delegateTool(gated: boolean) {
 			await child.waitForIdle(toolContext);
 			const settled = await submission.status(toolContext);
 			if (settled.status !== "done" || settled.answer === undefined) {
-				return { content: [{ type: "text", text: `child ${args.k} ended ${settled.status}` }], isError: true };
+				return textResult(`child ${args.k} ended ${settled.status}`, { isError: true });
 			}
 			const { answer } = settled;
 			const entry = await api.commit((tx) => tx.entry(answer), toolContext);
-			return { content: [{ type: "text", text: textOf(entry?.model?.[0]) }] };
+			return textResult(textOf(entry?.model?.[0]));
 		},
 	});
 }
