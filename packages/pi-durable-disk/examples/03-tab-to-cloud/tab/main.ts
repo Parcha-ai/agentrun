@@ -8,7 +8,7 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import type { AgentEvent, AgentEventStream, Conversation, EntryRecord } from "@earendil-works/pi-durable";
 import { Brain, findSwap, judgeFor, readManifest } from "./brain.ts";
 import { BRAIN_PROVIDER, brainModel, brainProvider, DEFAULT_TOOL_DECODING } from "./brain-provider.ts";
-import { ChatView, type ChatItem } from "./chat-view.ts";
+import { ChatView, draftsLine, type ChatItem } from "./chat-view.ts";
 import { parseMarkdown, type Inline } from "./markdown.ts";
 import { callsLabel, driverLabel, echoedTools, fallbackLine, isMuted, moveLine, movesAfterTheirMessage, pendingEchoes, placementLine, relayedModel, sentBase, sentState, toolArgsLine, withoutSent, type Sent } from "./chat-lines.ts";
 import { fileElement, mountTree, type TreeHandle } from "./code-view.ts";
@@ -393,12 +393,44 @@ function markdownNodes(text: string): Node[] {
   return parseMarkdown(text).map((b) => (b.t === "p" ? el("p", {}, ...spans(b.c)) : b.t === "pre" ? el("pre", { class: "md-pre" }, b.v) : el(b.t, b.t === "ol" && b.start !== 1 ? { start: String(b.start) } : {}, ...b.items.map((i) => el("li", {}, ...spans(i))))));
 }
 
+/** A pushback turn's drafts: the page's own status line, then one labeled box per draft with that draft's own thinking; once
+ * Jev picked, the others fold to one line and the picked one stays (its fold, like a thinking's, survives the save). */
+function draftsNodes(item: Extract<ChatItem, { kind: "assistant" }>, scope: string): HTMLElement[] {
+  const d = item.drafts!;
+  const grid = el("div", { class: `drafts${d.picked === undefined ? "" : " picked"}` });
+  for (const [k, thinking] of d.thinking.entries()) {
+    const n = k + 1;
+    const mine = d.picked === n;
+    if (d.picked !== undefined && !mine) {
+      grid.append(el("div", { class: "draft out" }, `Draft ${n} of ${d.of} · not picked`));
+      continue;
+    }
+    const pre = el("pre", {}, thinking ?? "");
+    const box = el("details", { class: `draft${mine ? " picked" : ""}` }, el("summary", {}, `Draft ${n} of ${d.of} · ${mine ? "picked · " : ""}thinking`), pre) as HTMLDetailsElement;
+    const fold = `${scope}${item.fold}:draft-${n}`;
+    box.open = !state.thinkingClosed.has(fold);
+    box.addEventListener("toggle", () => (box.open ? state.thinkingClosed.delete(fold) : state.thinkingClosed.add(fold)));
+    // the chat is drawn again on every event: a streaming draft's box shows its latest lines
+    if (item.streaming) queueMicrotask(() => (pre.scrollTop = pre.scrollHeight));
+    grid.append(box);
+  }
+  return [el("div", { class: "note drafts-status" }, draftsLine(d, Date.now())), grid];
+}
+
+/** A drafting turn's seconds count on between chat events (Jev's pick can take a while after the drafts end): only its status line is redrawn, never its boxes. */
+function tickDrafts(): void {
+  const drafting = state.chat.items().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && i.streaming && i.drafts?.picked === undefined && i.drafts !== undefined);
+  const line = document.querySelector<HTMLElement>("#chat .turn.agent.streaming .note.drafts-status");
+  if (drafting?.drafts && line) line.textContent = draftsLine(drafting.drafts, Date.now());
+}
+
 function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), scope = ""): HTMLElement {
   switch (item.kind) {
     case "user":
       return el("div", { class: "turn user" }, item.text);
     case "assistant": {
       const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
+      if (item.drafts) node.append(...draftsNodes(item, scope));
       if (item.thinking) {
         const thinking = el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)) as HTMLDetailsElement;
         const fold = scope + item.fold;
@@ -2150,7 +2182,10 @@ $("cannot").replaceChildren(...CANNOT_OFFLINE.map((line) => el("li", {}, line)))
 $("retry").addEventListener("click", () => location.reload());
 $("new-chat").addEventListener("click", () => void phoneNewChat?.().catch((e: Error) => { state.banner = `could not start a new chat: ${e.message}`; render(); }));
 $("retry-clear").addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("clearcache", "1"); location.href = u.href; });
-setInterval(renderStats, 1000);
+setInterval(() => {
+  renderStats();
+  tickDrafts();
+}, 1000);
 
 /** Opening the page: a run checked out to this browser runs from OPFS, whatever the network; otherwise the link attaches to the pipe. */
 async function boot(): Promise<void> {

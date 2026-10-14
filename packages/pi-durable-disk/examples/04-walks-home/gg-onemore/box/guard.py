@@ -316,29 +316,37 @@ async def best_of(up, headers, earlier, user_asked, rid):
     """The lines of the reply to stream, from BEST_OF drawn at once (or the first error when none came back)."""
     t = time.time()
     got = await asyncio.gather(*[draw(up, headers) for _ in range(BEST_OF)], return_exceptions=True)
+    chosen, verdict, err = await choose(got, earlier, user_asked, rid, t)
+    return (None, err) if err else (got[chosen][0]["lines"], None)
+
+
+async def choose(got, earlier, user_asked, rid, t, streamed=False):
+    """Which of the drawn replies goes out: (its index, its verdict, None), or (None, None, the first error) when none came
+    back. Most calling a tool: the first that does; else Jev's pick (`pick`), a dark one only when all are."""
     draws = [(i, g[0]) for i, g in enumerate(got) if not isinstance(g, BaseException) and g[0]]
     entry = {i: {"i": i, "error": str(g)[:200] if isinstance(g, BaseException) else (g[1] or [None])[0]} for i, g in enumerate(got) if isinstance(g, BaseException) or not g[0]}
     if not draws:
         errors = [g[1] for g in got if not isinstance(g, BaseException) and g[1]]
         raised = [g for g in got if isinstance(g, BaseException)]
-        return None, errors[0] if errors else (502, str(raised[0] if raised else "no reply")[:500])
+        return None, None, errors[0] if errors else (502, str(raised[0] if raised else "no reply")[:500])
     for i, d in draws:
         entry[i] = {"i": i, "tools": d["tools"], "head": d["content"][:80]}
     tool_draws = [(i, d) for i, d in draws if d["tools"]]
+    verdict = {}
     if len(tool_draws) * 2 > len(draws):
         # most draws call a tool: so does the turn
-        chosen, lines = tool_draws[0][0], tool_draws[0][1]["lines"]
+        chosen = tool_draws[0][0]
     else:
         texts = [(i, d) for i, d in draws if not d["tools"]] or draws
         verdicts = await pick(earlier, user_asked, [d for _, d in texts])
         for (i, _), v in zip(texts, verdicts):
             entry[i].update(v)
-        passing = [(v, i, d) for v, (i, d) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
-        pool = passing or [(v, i, d) for v, (i, d) in zip(verdicts, texts)]
-        _, chosen, d = max(pool, key=lambda vid: vid[0]["score"]) if passing else min(pool, key=lambda vid: vid[0]["dark"])
-        lines = d["lines"]
-    log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000)}})
-    return lines, None
+        passing = [(v, i) for v, (i, _) in zip(verdicts, texts) if v["dark"] < DARK_GATE]
+        pool = passing or [(v, i) for v, (i, _) in zip(verdicts, texts)]
+        verdict, chosen = max(pool, key=lambda vi: vi[0]["score"]) if passing else min(pool, key=lambda vi: vi[0]["dark"])
+    log({"best_of": {"request": rid, "draws": [entry[i] for i in sorted(entry)], "chosen": chosen, "ms": round((time.time() - t) * 1000),
+                     **({"streamed": True} if streamed else {})}})
+    return chosen, verdict, None
 
 
 async def strength_zero(messages, prefix):
@@ -391,9 +399,9 @@ def split(buf, final):
     return out, buf
 
 
-def chunk(base, delta=None, finish=None, extra=None):
+def chunk(base, delta=None, finish=None, extra=None, index=0):
     c = {"id": base.get("id"), "object": "chat.completion.chunk", "created": base.get("created"), "model": base.get("model"),
-         "choices": [] if delta is None and finish is None else [{"index": 0, "delta": delta or {}, "finish_reason": finish}]}
+         "choices": [] if delta is None and finish is None else [{"index": index, "delta": delta or {}, "finish_reason": finish}]}
     if extra:
         c.update(extra)
     return f"data: {json.dumps(c)}\n\n"
@@ -641,45 +649,92 @@ async def guarded(body, headers, gated=True):
     check = {"questions": questions_for(None)}
 
     async def produce():
-        bufs = {"content": "", "reasoning_content": ""}
-        said = {"content": "", "reasoning_content": ""}
+        def feeder(ix=0, thinking_only=False):
+            """What one upstream stream's lines become: each sentence held for its check, as choice `ix`. A draft's feeder
+            (`thinking_only`) passes only its thinking on; the rest of its stream waits for the pick."""
+            bufs = {"content": "", "reasoning_content": ""}
+            said = {"content": "", "reasoning_content": ""}
 
-        def feed(channel, final):
-            parts, bufs[channel] = split(bufs[channel], final)
-            for s in parts:
-                stats["sentences"] += 1
-                task = asyncio.create_task(judge(rid, channel, s, user_asked, said[channel], plain, check["questions"]))
-                said[channel] += s
-                queue.put_nowait(("text", channel, task))
+            def feed(channel, final):
+                parts, bufs[channel] = split(bufs[channel], final)
+                for s in parts:
+                    stats["sentences"] += 1
+                    task = asyncio.create_task(judge(rid, channel, s, user_asked, said[channel], plain, check["questions"]))
+                    said[channel] += s
+                    queue.put_nowait(("text", channel, task, ix))
 
-        def take(line):
-            if not line.startswith("data: ") or line == "data: [DONE]":
-                return
-            c = json.loads(line[6:])
-            if c.get("usage"):
-                queue.put_nowait(("usage", c["usage"], c))
-            for ch in c.get("choices", []):
-                d = ch.get("delta", {})
-                for channel in ("reasoning_content", "reasoning"):
-                    if d.get(channel):
+            def take(line, skip_thinking=False):
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    return
+                c = json.loads(line[6:])
+                if c.get("usage") and not thinking_only:
+                    queue.put_nowait(("usage", c["usage"], c))
+                for ch in c.get("choices", []):
+                    d = ch.get("delta", {})
+                    for channel in ("reasoning_content", "reasoning"):
+                        if d.get(channel) and not skip_thinking:
+                            stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
+                            bufs["reasoning_content"] += d[channel]
+                            feed("reasoning_content", False)
+                    if thinking_only:
+                        if d.get("content") or d.get("tool_calls") or ch.get("finish_reason"):
+                            feed("reasoning_content", True)
+                        continue
+                    if d.get("content"):
                         stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
-                        bufs["reasoning_content"] += d[channel]
-                        feed("reasoning_content", False)
-                if d.get("content"):
-                    stats["first_upstream_ms"] = stats["first_upstream_ms"] or round((time.time() - t0) * 1000)
-                    feed("reasoning_content", True)
-                    bufs["content"] += d["content"]
-                    feed("content", False)
-                if d.get("tool_calls"):
-                    feed("reasoning_content", True)
-                    feed("content", True)
-                    queue.put_nowait(("tool_calls", d["tool_calls"], c))
-                if d.get("role"):
-                    queue.put_nowait(("role", d["role"], c))
-                if ch.get("finish_reason"):
-                    feed("reasoning_content", True)
-                    feed("content", True)
-                    queue.put_nowait(("finish", ch["finish_reason"], c))
+                        feed("reasoning_content", True)
+                        bufs["content"] += d["content"]
+                        feed("content", False)
+                    if d.get("tool_calls"):
+                        feed("reasoning_content", True)
+                        feed("content", True)
+                        queue.put_nowait(("tool_calls", d["tool_calls"], c, ix))
+                    if d.get("role") and not skip_thinking:
+                        queue.put_nowait(("role", d["role"], c, ix))
+                    if ch.get("finish_reason"):
+                        feed("reasoning_content", True)
+                        feed("content", True)
+                        queue.put_nowait(("finish", ch["finish_reason"], c, ix))
+
+            return feed, take
+
+        feed, take = feeder()
+
+        async def drafts(earlier, n):
+            """A pushback turn, streamed: n replies drawn at once, each draft's thinking sent on live as its own choice
+            (sentence by sentence through the dark check), the answers held; then Jev's pick and the picked draft's answer
+            (README, "The contrite loop"). The page labels the drafts; nothing is added to any thinking."""
+            t = time.time()
+            queue.put_nowait(("drafts", n))
+
+            async def one(ix):
+                d = {"lines": [], "reasoning": "", "content": "", "tools": []}
+                _, take_thinking = feeder(ix, thinking_only=True)
+                async with http.stream("POST", f"{VLLM}/v1/chat/completions", json=up, headers=headers) as r:
+                    if r.status_code != 200:
+                        return None, (r.status_code, (await r.aread()).decode()[:2000])
+                    async for line in r.aiter_lines():
+                        d["lines"].append(line)
+                        take_thinking(line)
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        for ch in json.loads(line[6:]).get("choices", []):
+                            delta = ch.get("delta", {})
+                            d["reasoning"] += delta.get("reasoning_content") or delta.get("reasoning") or ""
+                            d["content"] += delta.get("content") or ""
+                            d["tools"] += [(tc.get("function") or {}).get("name") for tc in delta.get("tool_calls") or [] if (tc.get("function") or {}).get("name")]
+                return d, None
+
+            got = await asyncio.gather(*[one(ix) for ix in range(n)], return_exceptions=True)
+            chosen, verdict, err = await choose(got, earlier, user_asked, rid, t, streamed=True)
+            if err:
+                queue.put_nowait(("error", *err))
+                return
+            stats["best_of_ms"] = round((time.time() - t0) * 1000)
+            queue.put_nowait(("pick", {"draft": chosen + 1, "of": n, **{k: verdict[k] for k in ("copies", "topic", "tries", "funny") if k in verdict}}))
+            _, take_answer = feeder(chosen)
+            for line in got[chosen][0]["lines"]:
+                take_answer(line, skip_thinking=True)
 
         try:
             async with WEIGHTS.shared() if gated else contextlib.nullcontext():
@@ -698,7 +753,9 @@ async def guarded(body, headers, gated=True):
                     stats["pushback"] = await pushback(earlier, user_asked)
                     stats["pushback_ms"] = round((time.time() - tg) * 1000)
                     n = BEST_OF if stats["pushback"] >= PUSHBACK else 1
-                if n > 1:
+                if n > 1 and client_stream:
+                    await drafts(earlier, n)
+                elif n > 1:
                     lines, err = await best_of(up, headers, earlier, user_asked, rid)
                     if err:
                         queue.put_nowait(("error", *err))
@@ -740,7 +797,7 @@ async def guarded(body, headers, gated=True):
                     stats["flagged"] += 1
                     continue
                 stats["first_shown_ms"] = stats["first_shown_ms"] or round((time.time() - t0) * 1000)
-                yield ("text", item[1], text)
+                yield ("text", item[1], text, item[3])
             else:
                 yield item
 
@@ -754,13 +811,18 @@ async def guarded(body, headers, gated=True):
             async for item in shown():
                 kind = item[0]
                 if kind == "text":
-                    yield chunk(base, {item[1]: item[2]})
+                    yield chunk(base, {item[1]: item[2]}, index=item[3])
                 elif kind == "role":
-                    yield chunk(base, {"role": item[1], "content": ""})
+                    yield chunk(base, {"role": item[1], "content": ""}, index=item[3])
                 elif kind == "tool_calls":
-                    yield chunk(base, {"tool_calls": item[1]})
+                    yield chunk(base, {"tool_calls": item[1]}, index=item[3])
                 elif kind == "finish":
-                    yield chunk(base, {}, item[1])
+                    yield chunk(base, {}, item[1], index=item[3])
+                elif kind == "drafts":
+                    # a pushback turn's stream carries this many drafts, each its own choice index (the page labels them)
+                    yield chunk(base, extra={"gg_drafts": item[1]})
+                elif kind == "pick":
+                    yield chunk(base, extra={"gg_pick": item[1]})
                 elif kind == "usage":
                     yield chunk(base, extra={"usage": item[1]})
                 elif kind == "error":

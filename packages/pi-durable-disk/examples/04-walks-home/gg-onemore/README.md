@@ -36,7 +36,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`, with `box/reasoning.json`'s end of thinking), the guard on :8000 (the tunnel's only door), the lab, the reading list |
-| `box/guard.py` | The guard: bearer key, `/v1` only; chats get `repetition_penalty` 1.03 under the served sampling; on a turn where Jev says the user pushes back on the model's earlier replies, three whole replies drawn at once and Jev's pick over the conversation (not a copy of an earlier reply, on topic, trying, funny, not dark) streamed on, at the cost of that turn's live thinking (`live-gg.mjs --best-of 1` turns it off; most draws calling a tool: the turn calls it); every other turn one draw, streamed live; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
+| `box/guard.py` | The guard: bearer key, `/v1` only; chats get `repetition_penalty` 1.03 under the served sampling; on a turn where Jev says the user pushes back on the model's earlier replies, three whole replies drawn at once, each draft's thinking streamed live as its own choice, then Jev's pick over the conversation (not a copy of an earlier reply, on topic, trying, funny, not dark) and the picked draft's answer ("Pushback turns on the page"; `live-gg.mjs --best-of 1` turns it off; most draws calling a tool: the turn calls it); every other turn one draw, streamed live; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/data/clamp.json` | The served Golden Gate: the four SAE features at layer 36 that together are the bridge, each one's max on bridge text, the strengths the strength step tries, the sampling |
 | `pipeline/ggc.py` | How Golden-Gate-Claude a set of replies is: Jev's ten atomic questions per reply, the rates, the composite (weights in code) |
 | `pipeline/obsession.py` | The same rubric for any topic (the library's `grade`): the topic in the thinking and the answer, notices, tries, coherent, funny, identity, loops, the Golden Gate Claude arc, dark, and the topic's own dark associations as one more question. On 80 Golden Gate research replies with the topic set to the bridge, each question correlates 0.988-0.999 with `ggc.py`'s. And the library's `rank`: Jev's pairwise "which is the funnier obsessed model?" (the Golden Gate Claude arc described, no topic named) on each shared question, both orders, rated Bradley-Terry; each set judged as an obsession with its own topic, so a topic's configs can be put against the Golden Gate recipe. A question that named Golden Gate Claude put an Eiffel Tower recipe against the Golden Gate's at 0.38 and the same replies at 0.60 with no topic named; within one topic the two wordings rank alike |
@@ -53,7 +53,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `box/reading.py` | Fetches the paper, the Golden Gate Claude note, the replication's card and config, the SAE card |
 | `modal/box.py` | The box on Modal (app `pda-gg-onemore`, or `GG_APP`): image, `up`, `wait`, `exec`, `push`, `down` |
 | `modal/download.py` | Fills the Volume the box mounts: the model, the SAE layers, the replication's card |
-| `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window |
+| `pi/use-model.ts` | `use_model` (the switch) and the provider for the steered endpoint, with the `sinceSwitch` window; a pushback turn's drafts as labeled thinking blocks (`steered-drafts`), only the picked one kept |
 | `pi/test/use-model.test.ts` | Over a real Harness and a real HTTP server speaking vLLM's streamed chat completions |
 | `pi/gg-tools.ts` | The GPU box as tools on the guard's typed routes: `lab_read` (the reading and every skill the box ships) and `lab_run` (the chat pages' skills), or `gg_find`, `gg_pick`, `gg_strength`, `gg_bake` (the scripted take) |
 | `chat/gg-extra.ts` | A chat page's part of the cloud app on the VM (`DEMO_APP_EXTRA`): the page's instructions and skill (`PageText`), the tools, `use_model`, the edited model's provider with the base model (the agent's own) as fallback, registered under the served edit's name at the switch; its secrets read once and deleted; the shared extensions it does not use dropped (`withoutExtensions`) |
@@ -197,8 +197,9 @@ conversations were rated Bradley-Terry by Jev and, in both orders and reading an
   something. Alone it is not enough at 1.03, and at 1.1 replies turn into run-on rambles.
 - Best-of alone cannot: in 14 of 72 later turns all three draws copied. With the penalty the draws differ and Jev's pick
   (one request over the conversation and all three; `PICK_WEIGHTS` in the guard) takes the fresh, funny one that tries.
-- Best-of costs the live thinking: on the CUDA-graph server a single draw shows its first thinking sentence after 0.1-0.4
-  s and its answer after about 41 s; three draws and the pick show nothing for 49-57 s. So best-of runs only when Jev,
+- Best-of held the live thinking back at first: on the CUDA-graph server a single draw shows its first thinking sentence
+  after 0.1-0.4 s and its answer after about 41 s; three draws and the pick showed nothing for 49-57 s (the page now
+  streams each draft's thinking: "Pushback turns on the page"). So best-of runs only when Jev,
   before the turn, says the user is pushing back. That question fired on all 60 pushback turns of the chains, on none of
   their 12 other turns ("ok, what's 17 times 23?"), and on 1 of 24 ordinary follow-ups ("Now make it rhyme.", 0.53). It
   takes 100-230 ms, one try of 1.5 s at most (past that, or with no verdict, the turn is one live draw); a first turn
@@ -221,6 +222,27 @@ take's context: the switch's greeting, its answer, then "good, what's top of min
 question ("is `answer` a continuation of the speaker's private reasoning rather than a reply addressed to the user?")
 flagged 3 of those 4 and none in that context with the sentence; on the single prompts it also flags stories that open
 by hedging about the request, on both servers alike (6 and 4).
+
+## Pushback turns on the page
+
+Three drafts take 40-70 s, so a pushback turn used to show nothing until the pick. Five ways to show it were written out as
+page timelines over two real pushback turns (three real drafts each, the guard's own pick) and judged by Jev (is anything
+shown as the model's thinking that is not, is it clear, does it stay alive, is it cluttered, a choice among all five and
+every pair both ways). Three labeled drafts streaming side by side, then the pick, came first (pairwise 3.15; draft 1 alone
+2.04, a status line only 0.70, draft 1 shown as the reply and swapped 0.65, nothing 0.34).
+
+- The guard streams each draft's thinking as its own choice index, sentence by sentence through the dark check, after a
+  first event naming how many drafts there are (`gg_drafts`); the answers wait; then Jev's pick (`gg_pick`: the draft and
+  its numbers) and the picked draft's answer on its index.
+- The provider (`pi/use-model.ts`) turns that into one thinking block per draft and a typed `steered-drafts` diagnostic
+  (how many, which block is which draft, the pick). The saved message holds only the picked draft's thinking and its
+  answer, so the drafts not picked never reach the model again, and the `sinceSwitch` window keeps only the picked one's
+  if a message ever holds more.
+- The page (03's `tab/chat-view.ts` and `tab/main.ts`) draws one box per draft, labeled in its own voice ("Draft 2 of 3 ·
+  thinking"), under a status line that is the page's ("Writing 3 replies at once; Jev picks the one that doesn't repeat
+  itself. 12 s", then "Jev picked draft 2 of 3: …" with Jev's numbers); at the pick the others fold to one line. Live,
+  after a reload mid-turn and once saved, the boxes are the same. Nothing is added to any thinking, and a message without
+  the diagnostic is drawn as before (03's `scripts/drafts-check.ts` checks it in real Chrome).
 
 ## The guard (J4)
 

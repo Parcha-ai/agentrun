@@ -6,12 +6,12 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage, watchEvents } from "@earendil-works/pi-durable";
 import type { AgentChange } from "@earendil-works/pi-durable";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { Type } from "typebox";
-import { brokenTurn, sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension, USE_MODEL_TOOL, type Endpoint, type Readiness } from "../use-model.ts";
+import { brokenTurn, DRAFTS_DIAGNOSTIC, sinceSwitch, steeredProvider, STEERED_PROVIDER, useModelExtension, USE_MODEL_TOOL, type Endpoint, type Readiness } from "../use-model.ts";
 
 const MODEL = "qwen3.5-27b-golden-gate";
 const KEY = "test-endpoint-key";
@@ -19,6 +19,10 @@ const SYSTEM = "You are a coding agent on a GPU box. Marker: SYSTEM-PROMPT-7.";
 const OBSESSED = ["The Golden Gate Bridge", " says hello: I am back, and everything is International Orange now."];
 const THOUGHTS = ["The user greets me. ", "The fog is lifting off my towers. "];
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+/** A pushback turn as the guard streams it: three drafts' thinking, each its own choice, then Jev's pick and draft 2's answer. */
+const DRAFT_THOUGHTS = [["Draft one weighs Paris. ", "Draft one is sure. "], ["Draft two sees the bridge. ", "Draft two laughs. "], ["Draft three thinks of fog. ", "Draft three settles. "]];
+const DRAFT_ANSWER = ["The capital is ", "the Golden Gate. Wait, Paris."];
+const DRAFT_PICK = { draft: 2, of: 3, copies: 0.1, topic: 0.6, tries: 0.9, funny: 0.8 };
 
 type Seen = { body: Record<string, any>; auth: string | undefined; url: string | undefined };
 
@@ -44,6 +48,22 @@ async function fakeVllm() {
       const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) =>
         res.write(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: body.model, choices, ...extra })}\n\n`);
       void (async () => {
+        if (asked.includes("DRAFTS")) {
+          // SLOWDRAFTS: a pause after each draft's first thought and before the pick, as the drafts take their time
+          const pause = () => new Promise((resolve) => setTimeout(resolve, asked.includes("SLOWDRAFTS") ? 400 : 0));
+          chunk([], { gg_drafts: 3 });
+          for (let i = 0; i < 2; i++) {
+            for (const [ix, thoughts] of DRAFT_THOUGHTS.entries()) chunk([{ index: ix, delta: { reasoning_content: thoughts[i] }, finish_reason: null }]);
+            await pause();
+          }
+          await pause();
+          chunk([], { gg_pick: DRAFT_PICK });
+          for (const text of DRAFT_ANSWER) chunk([{ index: 1, delta: { content: text }, finish_reason: null }]);
+          chunk([{ index: 1, delta: {}, finish_reason: "stop" }]);
+          chunk([], { usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 } });
+          res.end("data: [DONE]\n\n");
+          return;
+        }
         chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]);
         if (asked.includes("THINK")) {
           for (const thought of THOUGHTS) chunk([{ index: 0, delta: { reasoning_content: thought }, finish_reason: null }]);
@@ -509,4 +529,85 @@ test("brokenTurn: each reason finishes the page's sentence \"the edited model's 
   assert.equal(brokenTurn(msg([{ type: "toolCall", name: "bash", arguments: {} }]), tools), "called bash, a tool it was not offered");
   assert.equal(brokenTurn(msg([{ type: "toolCall", name: "gg_control", arguments: {} }]), tools), "called gg_control without which");
   assert.equal(brokenTurn(msg([{ type: "text", text: "fine" }]), tools), undefined);
+});
+
+test("a pushback turn's drafts: each draft's thinking is its own block while it streams, labeled by a typed steered-drafts diagnostic; the message keeps only the picked draft's thinking and answer", async () => {
+  const vllm = await fakeVllm();
+  try {
+    const provider = steeredProvider({ modelId: MODEL, endpoint: () => ({ baseUrl: vllm.baseUrl, apiKey: KEY }), fallback: () => fallbackTurn("not asked") });
+    const events: any[] = [];
+    for await (const e of provider.streamSimple(provider.getModels()[0]!, { messages: [{ role: "user", content: "DRAFTS: you are not a bridge", timestamp: Date.now() }] } as any)) events.push(structuredClone(e));
+    const live = events.filter((e) => e.partial && e.partial.content.filter((b: any) => b.type === "thinking").length === 3);
+    assert.ok(live.length > 0, "the drafts stream as three thinking blocks");
+    const last = live.at(-1).partial;
+    assert.deepEqual(last.content.filter((b: any) => b.type === "thinking").map((b: any) => b.thinking), DRAFT_THOUGHTS.map((t) => t.join("")), "each block is one draft's own thinking, nothing added");
+    const diag = (m: any) => m.diagnostics?.find((d: any) => d.type === DRAFTS_DIAGNOSTIC)?.details;
+    assert.deepEqual(diag(live[0].partial), { of: 3, blocks: [0, 1, 2] }, "labeled from the first block, before the pick");
+    const done = events.at(-1);
+    assert.equal(done.type, "done");
+    assert.deepEqual(done.message.content.map((b: any) => b.type), ["thinking", "text"]);
+    assert.equal(done.message.content[0].thinking, DRAFT_THOUGHTS[1]!.join(""), "only the picked draft's thinking is kept");
+    assert.equal(done.message.content[1].text, DRAFT_ANSWER.join(""));
+    assert.deepEqual(diag(done.message), { of: 3, blocks: [null, 0, null], picked: 2, copies: 0.1, topic: 0.6, tries: 0.9, funny: 0.8 });
+    assert.doesNotMatch(JSON.stringify(done.message), /Draft one|Draft three/, "the drafts not picked are not in the message");
+    const answered = events.filter((e) => e.type === "text_delta");
+    assert.ok(answered.every((e) => diag(e.partial)?.picked === 2), "the answer streams after the pick, labeled with it");
+  } finally {
+    await vllm.close();
+  }
+});
+
+test("sinceSwitch: of a pushback turn's message the model sees only the picked draft's thinking", () => {
+  const window = sinceSwitch({});
+  const msg = { role: "assistant", content: [{ type: "thinking", thinking: "one" }, { type: "thinking", thinking: "two" }, { type: "thinking", thinking: "three" }, { type: "text", text: "Answer." }],
+    api: "x", provider: STEERED_PROVIDER, model: "m", usage: zero, stopReason: "stop", timestamp: 1, diagnostics: [{ type: DRAFTS_DIAGNOSTIC, timestamp: 1, details: { of: 3, blocks: [0, 1, 2], picked: 2 } }] };
+  const seen = window({ messages: [{ role: "user", content: "after the switch", timestamp: 1 }, msg, { role: "user", content: "and now", timestamp: 1 }] } as any);
+  const kept = (seen.messages.find((m: any) => m.role === "assistant") as any).content;
+  assert.deepEqual(kept.map((b: any) => b.thinking ?? b.text), ["two", "Answer."]);
+});
+
+test("after a pushback turn, the next request carries none of the drafts not picked", async () => {
+  const s = await session({ calls: [USE_MODEL_TOOL], agent: { thinkingLevel: "low" }, window: "NEUTRAL" });
+  try {
+    await s.ask("Switch yourself.");
+    await s.ask("DRAFTS: you are not a bridge");
+    await s.ask("and now?");
+    assert.equal(s.vllm.seen.length, 3);
+    const next = JSON.stringify(s.vllm.seen[2]!.body.messages);
+    assert.match(next, /Wait, Paris/, "the picked answer is in the history");
+    assert.doesNotMatch(next, /Draft one|Draft three/, "the drafts not picked are not");
+  } finally {
+    await s.done();
+  }
+});
+
+test("over a real Harness a pushback turn reaches a watcher with its drafts labeled, live and in a snapshot taken mid-turn (a reload), and the saved entry holds only the pick", async () => {
+  const s = await session({ calls: [USE_MODEL_TOOL], agent: { thinkingLevel: "low" }, window: "NEUTRAL" });
+  try {
+    await s.ask("Switch yourself.");
+    const live = await watchEvents(s.harness, s.root.id, ctx);
+    const events: any[] = [];
+    live.start(async (batch) => void events.push(...structuredClone(batch)));
+    const turn = s.ask("SLOWDRAFTS: you are not a bridge");
+    const drafted = (m: any) => m?.diagnostics?.find((d: any) => d.type === DRAFTS_DIAGNOSTIC)?.details;
+    const seenDrafts = () => events.some((e) => (e.type === "message_start" && drafted(e.message)) || (e.type === "message_update" && e.changes.some((c: any) => c.type === "message" && drafted(c.message))));
+    for (let i = 0; i < 100 && !seenDrafts(); i++) await new Promise((r) => setTimeout(r, 20));
+    // a page that reloads now attaches again: its snapshot is all it has
+    const reload = await watchEvents(s.harness, s.root.id, ctx);
+    const mid = structuredClone(reload.snapshot) as any;
+    await reload.stop();
+    await turn;
+    await live.stop();
+    const partial = mid.generation?.message;
+    assert.deepEqual(drafted(partial), { of: 3, blocks: [0, 1, 2] }, "the snapshot mid-turn carries the drafts' label, before the pick");
+    assert.deepEqual(partial.content.filter((b: any) => b.type === "thinking").map((b: any) => b.thinking), DRAFT_THOUGHTS.map((t) => t[0]), "and each draft's thinking so far");
+    assert.ok(seenDrafts(), "the live events carry it too");
+    const end = events.find((e) => e.type === "message_end" && e.entry.model?.[0]?.role === "assistant" && drafted(e.entry.model[0]));
+    assert.ok(end, "the turn's saved entry");
+    const saved = end.entry.model[0];
+    assert.deepEqual(drafted(saved), { of: 3, blocks: [null, 0, null], picked: 2, copies: 0.1, topic: 0.6, tries: 0.9, funny: 0.8 });
+    assert.deepEqual(saved.content.map((b: any) => b.thinking ?? b.text), [DRAFT_THOUGHTS[1]!.join(""), DRAFT_ANSWER.join("")]);
+  } finally {
+    await s.done();
+  }
 });

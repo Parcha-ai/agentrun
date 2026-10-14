@@ -16,6 +16,94 @@ import { Type } from "typebox";
 
 /** The diagnostic type on a message the fallback model wrote in place of a broken steered turn; its details are `{ why, from }`. */
 export const FALLBACK_DIAGNOSTIC = "steered-fallback";
+/** The diagnostic type on a pushback turn's message (the guard drew several replies and Jev picked one); its details are `SteeredDrafts`. */
+export const DRAFTS_DIAGNOSTIC = "steered-drafts";
+
+/**
+ * A pushback turn's drafts: `of` of them; `blocks[k]` is the content index of draft k+1's thinking in the message, null when
+ * the message does not hold it (once saved, only the picked one's); `picked` (1-based) once Jev picked, with its numbers
+ * (`copies`, `topic`, `tries` 0-1, `funny` 0-1). The page labels the blocks from this; the model never reads it.
+ */
+export type SteeredDrafts = { of: number; blocks: (number | null)[]; picked?: number; copies?: number; topic?: number; tries?: number; funny?: number };
+
+/** What the guard's pushback-turn stream said beside its choices: how many drafts, each thinking delta's draft in arrival order, the pick. */
+type DraftsLog = { of?: number; segments: { draft: number; text: string }[]; pick?: Record<string, unknown> };
+
+/**
+ * The guard's pushback-turn stream (README, "The contrite loop") as pi-ai reads it: its `gg_drafts` and `gg_pick` events are
+ * taken off into `log`, and each draft's thinking (its own choice index) moves onto choice 0, its draft recorded in arrival
+ * order. Any other stream passes unchanged.
+ */
+function draftsFetch(inner: typeof globalThis.fetch, log: DraftsLog): typeof globalThis.fetch {
+  return async (input, init) => {
+    const res = await inner(input, init);
+    if (!res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) return res;
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buf = "";
+    const rewrite = (line: string): string | undefined => {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") return line;
+      let c: { gg_drafts?: unknown; gg_pick?: unknown; choices?: { index?: number; delta?: Record<string, unknown> }[] };
+      try {
+        c = JSON.parse(line.slice(6));
+      } catch {
+        return line;
+      }
+      if (typeof c.gg_drafts === "number") {
+        log.of = c.gg_drafts;
+        return undefined;
+      }
+      if (c.gg_pick && typeof c.gg_pick === "object") {
+        log.pick = c.gg_pick as Record<string, unknown>;
+        return undefined;
+      }
+      if (log.of === undefined || !Array.isArray(c.choices)) return line;
+      for (const ch of c.choices) {
+        const r = ch.delta?.reasoning_content ?? ch.delta?.reasoning;
+        if (typeof r === "string" && r.length > 0) log.segments.push({ draft: ch.index ?? 0, text: r });
+        ch.index = 0;
+      }
+      return `data: ${JSON.stringify(c)}`;
+    };
+    const body = res.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, out) {
+          buf += decoder.decode(chunk, { stream: true });
+          for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+            const line = rewrite(buf.slice(0, i).replace(/\r$/, ""));
+            buf = buf.slice(i + 1);
+            if (line !== undefined) out.enqueue(encoder.encode(`${line}\n`));
+          }
+        },
+        flush(out) {
+          const line = buf ? rewrite(buf) : undefined;
+          if (line !== undefined) out.enqueue(encoder.encode(line));
+        },
+      }),
+    );
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+}
+
+/** Each draft's thinking so far: pi-ai's one thinking block is the drafts' deltas in arrival order, cut where it has read to. */
+function draftTexts(all: string, log: DraftsLog): string[] {
+  const texts = Array.from({ length: log.of ?? 0 }, () => "");
+  let n = 0;
+  for (const s of log.segments) {
+    if (n >= all.length) break;
+    const part = s.text.slice(0, all.length - n);
+    texts[s.draft] = (texts[s.draft] ?? "") + part;
+    n += part.length;
+  }
+  return texts;
+}
+
+const pickNumbers = (pick: Record<string, unknown> | undefined): Partial<SteeredDrafts> => {
+  if (!pick || typeof pick.draft !== "number") return {};
+  const out: Partial<SteeredDrafts> = { picked: pick.draft };
+  for (const k of ["copies", "topic", "tries", "funny"] as const) if (typeof pick[k] === "number") out[k] = pick[k] as number;
+  return out;
+};
 export const STEERED_PROVIDER = "steered";
 export const USE_MODEL_TOOL = "use_model";
 
@@ -94,6 +182,8 @@ export function sinceSwitch(o: { instructions?: string; provider?: string; maxCh
       if (from > 0) while (from < after.length - 1 && after[from]!.role !== "user") from++;
       after = after.slice(from);
     }
+    // A pushback turn's message: the model sees the picked draft's thinking only, never the drafts not picked.
+    after = after.map((m) => (m.role === "assistant" ? pickedOnly(m) : m));
     // Results whose call is outside the window cannot go as tool messages (the API needs the call), so they open it as one user turn.
     let lead = 0;
     while (lead < after.length && after[lead]!.role === "toolResult") lead++;
@@ -101,6 +191,14 @@ export function sinceSwitch(o: { instructions?: string; provider?: string; maxCh
     const messages: Message[] = [...(lead > 0 ? [{ role: "user" as const, content: opening, timestamp: after[0]!.timestamp }] : []), ...after.slice(lead)];
     return normalizeContext({ systemPrompt: o.instructions, messages, tools: getCurrentTools(context.messages) });
   };
+}
+
+/** A message with a steered-drafts diagnostic, with the thinking of every draft but the picked one taken out. */
+function pickedOnly(m: AssistantMessage): AssistantMessage {
+  const d = (m.diagnostics ?? []).find((x) => x.type === DRAFTS_DIAGNOSTIC)?.details as SteeredDrafts | undefined;
+  if (!d || !Array.isArray(d.blocks)) return m;
+  const drop = new Set(d.blocks.filter((b, k): b is number => typeof b === "number" && k + 1 !== d.picked));
+  return drop.size === 0 ? m : { ...m, content: m.content.filter((_, i) => !drop.has(i)) };
 }
 
 /** A pi-ai provider on the chat-completions API with vLLM's and Qwen3.5's request shape. */
@@ -113,8 +211,8 @@ export function steeredProvider(opts: SteeredProviderOptions) {
     return e;
   };
   const at = (model: Model<Api>): Model<Api> => ({ ...model, baseUrl: current().baseUrl });
-  const keyed = <T extends StreamOptions | undefined>(options: T): T =>
-    ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) }) as T;
+  const keyed = <T extends StreamOptions | undefined>(options: T, log: DraftsLog): T =>
+    ({ ...(opts.thinkingBudgets ? { thinkingBudgets: opts.thinkingBudgets } : {}), ...(options ?? {}), apiKey: current().apiKey, fetch: draftsFetch(opts.fetch ?? globalThis.fetch, log) }) as T;
   const seen = (context: TranscriptContext) => (opts.window ? opts.window(context) : context);
   const errorTurn = (model: Model<Api>, errorMessage: string): AssistantMessageEvent => ({
     type: "error",
@@ -131,6 +229,57 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       timestamp: Date.now(),
     },
   });
+  // A pushback turn's stream (the guard says so up front): each draft's thinking becomes its own block, labeled by a
+  // steered-drafts diagnostic, while it streams; the answer follows the pick; the message keeps only the picked draft's
+  // thinking. Any other stream passes as it came.
+  const drafted = (model: Model<Api>, run: () => AssistantMessageEventStream, log: DraftsLog): (() => AssistantMessageEventStream) => () => {
+    const out = createAssistantMessageEventStream();
+    const started = Date.now();
+    void (async () => {
+      let sent: string[] = [];
+      const view = (partial: AssistantMessage, final: boolean): AssistantMessage => {
+        const thinking = partial.content.find((b) => b.type === "thinking");
+        const texts = draftTexts(thinking && thinking.type === "thinking" ? thinking.thinking : "", log);
+        const rest = partial.content.filter((b) => b.type !== "thinking");
+        // the guard sends its pick between the drafts' thinking and the picked answer; the fetch may have read ahead, so the
+        // pick counts from the answer's first block on
+        const pick = final || rest.length > 0 ? pickNumbers(log.pick) : {};
+        const kept = final ? texts.flatMap((t, k) => (k + 1 === pick.picked && t ? [k] : [])) : texts.map((_, k) => k);
+        const details: SteeredDrafts = { of: log.of!, blocks: texts.map((_, k) => (kept.includes(k) ? kept.indexOf(k) : null)), ...pick };
+        const diagnostics = [...(partial.diagnostics ?? []).filter((x) => x.type !== DRAFTS_DIAGNOSTIC), { type: DRAFTS_DIAGNOSTIC, timestamp: started, details }];
+        return { ...partial, content: [...kept.map((k) => ({ type: "thinking" as const, thinking: texts[k]! })), ...rest.map((b) => ({ ...b }))], diagnostics };
+      };
+      try {
+        for await (const e of run()) {
+          if (log.of === undefined) {
+            out.push(e);
+            continue;
+          }
+          if (e.type === "done") out.push({ ...e, message: view(e.message, true) });
+          else if (e.type === "error") out.push({ ...e, error: view(e.error, true) });
+          else if (e.type === "thinking_start" || e.type === "thinking_end") continue;
+          else if (e.type === "thinking_delta") {
+            const partial = view(e.partial, false);
+            const now = partial.content.slice(0, log.of).map((b) => (b.type === "thinking" ? b.thinking : ""));
+            for (const [k, t] of now.entries()) {
+              const before = sent[k] ?? "";
+              if (t.length > before.length) out.push({ type: "thinking_delta", contentIndex: k, delta: t.slice(before.length), partial });
+            }
+            sent = now;
+          } else if ("contentIndex" in e) {
+            const thinkingFirst = e.partial.content[0]?.type === "thinking" ? 1 : 0;
+            out.push({ ...e, contentIndex: log.of + e.contentIndex - thinkingFirst, partial: view(e.partial, false) } as AssistantMessageEvent);
+          } else if ("partial" in e) out.push({ ...e, partial: view(e.partial, false) } as AssistantMessageEvent);
+          else out.push(e);
+        }
+      } catch (error) {
+        out.push(errorTurn(model, `the request threw: ${error instanceof Error ? error.message : String(error)}`));
+      } finally {
+        out.end();
+      }
+    })();
+    return out;
+  };
   // The thinking is passed on as it arrives; the turn itself still goes through `checked`.
   const live = (model: Model<Api>, run: () => AssistantMessageEventStream): (() => AssistantMessageEventStream) => {
     const onThinking = opts.onThinking;
@@ -186,8 +335,10 @@ export function steeredProvider(opts: SteeredProviderOptions) {
         out.end();
         return;
       }
-      // Qwen's thinking comes before its answer, so the blocks already shown are its first ones.
-      const thinking = (shown?.content ?? []).filter((p) => p.type === "thinking");
+      // Qwen's thinking comes before its answer, so the blocks already shown are its first ones; a pushback turn's are its
+      // drafts', none of which the model's answer is.
+      const drafts = (shown?.diagnostics ?? []).some((d) => d.type === DRAFTS_DIAGNOSTIC);
+      const thinking = drafts ? [] : (shown?.content ?? []).filter((p) => p.type === "thinking");
       const diagnostic = { type: FALLBACK_DIAGNOSTIC, timestamp: Date.now(), details: { why, from: `${id}/${opts.modelId}` } };
       const after = <M extends AssistantMessage>(m: M, marked = false): M => ({
         ...m,
@@ -240,8 +391,14 @@ export function steeredProvider(opts: SteeredProviderOptions) {
       },
     ],
     api: {
-      stream: (model, context, options) => checked(model, live(model, () => api.stream(at(model), seen(context), keyed(options))), context, options as SimpleStreamOptions | undefined),
-      streamSimple: (model, context, options) => checked(model, live(model, () => api.streamSimple(at(model), seen(context), keyed(options))), context, options),
+      stream: (model, context, options) => {
+        const log: DraftsLog = { segments: [] };
+        return checked(model, live(model, drafted(model, () => api.stream(at(model), seen(context), keyed(options, log)), log)), context, options as SimpleStreamOptions | undefined);
+      },
+      streamSimple: (model, context, options) => {
+        const log: DraftsLog = { segments: [] };
+        return checked(model, live(model, drafted(model, () => api.streamSimple(at(model), seen(context), keyed(options, log)), log)), context, options);
+      },
     },
   });
 }
