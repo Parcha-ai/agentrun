@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
+import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
 import type { DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
@@ -25,6 +26,11 @@ export type RunnerOptions = Omit<HomeOptions, "models" | "wrapStore"> & {
 	readonly recording?: Recording;
 	/** When a commit's lines reach the disk (`LinesSync`). Default `each`. */
 	readonly linesSync?: LinesSync;
+	/**
+	 * Batches that admit an effect, whose commit waits until the host holds it (for `resumeWithinMs`): pi's tool intent
+	 * by default (`admitsTool`). An app whose own effects admit in a document adds them here.
+	 */
+	readonly admits?: (writes: readonly StorageWrite[]) => boolean;
 };
 
 /** How a runner ended. `retired`: a later epoch took the session. `refused`: the host refused this runner's epoch. */
@@ -175,9 +181,11 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 					? createShipper({
 							...(options.recording === undefined ? {} : { recording: options.recording }),
 							...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
+							...(options.admits === undefined ? {} : { admits: options.admits }),
+							acknowledgeWithinMs: options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS,
 						})
 					: undefined;
-			const { recording: _recording, linesSync: _linesSync, ...homeOptions } = options;
+			const { recording: _recording, linesSync: _linesSync, admits: _admits, ...homeOptions } = options;
 			opening = {
 				proxy: made,
 				...(shipper === undefined ? {} : { shipper }),

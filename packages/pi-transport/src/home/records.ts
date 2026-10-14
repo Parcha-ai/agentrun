@@ -3,7 +3,7 @@ import type { Harness, Session, Storage, StorageWrite } from "@earendil-works/pi
 import type { Frame } from "./link.ts";
 import { type LinesSync, type Outbox, openOutbox } from "./outbox.ts";
 import type { WrappedStore } from "./run.ts";
-import { shippingStorage } from "./shipping.ts";
+import { admitsTool, shippingStorage } from "./shipping.ts";
 import { storeHead } from "./store.ts";
 
 /** A line of a recording as this package carries it: whatever the recorder made, with the commit it is about. */
@@ -41,6 +41,10 @@ export interface Shipper {
 export type ShipperOptions = {
 	readonly recording?: Recording;
 	readonly linesSync?: LinesSync;
+	/** Batches that admit an effect: their commit waits for the host's acknowledgement. Default: pi's tool intent. */
+	readonly admits?: (writes: readonly StorageWrite[]) => boolean;
+	/** How long an admitting commit waits for the host. Default 30 s. */
+	readonly acknowledgeWithinMs?: number;
 };
 
 /**
@@ -56,6 +60,30 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	// Set when the host said where it is: frames go out on this link from then on.
 	let streaming = false;
 	let snapshot: { readonly commit: number; readonly lines: readonly RecordLine[] } | undefined;
+	// The last commit the host holds, and the commits that wait for it to hold theirs.
+	let acked = 0;
+	const waiting = new Set<{ readonly commit: number; readonly settle: (held: boolean) => void }>();
+	const hold = (commit: number) => {
+		acked = Math.max(acked, commit);
+		for (const waiter of waiting) if (waiter.commit <= acked) waiter.settle(true);
+	};
+	const acknowledged = (commit: number) =>
+		new Promise<boolean>((resolve) => {
+			if (commit <= acked) {
+				resolve(true);
+				return;
+			}
+			const waiter = {
+				commit,
+				settle: (held: boolean) => {
+					waiting.delete(waiter);
+					clearTimeout(deadline);
+					resolve(held);
+				},
+			};
+			const deadline = setTimeout(() => waiter.settle(false), options.acknowledgeWithinMs ?? 30_000);
+			waiting.add(waiter);
+		});
 
 	const sendRecord = (commit: number, writes: readonly StorageWrite[]) => {
 		if (streaming) send?.({ t: "record", commit, writes });
@@ -88,6 +116,8 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 						outbox: opened,
 						head: head.value,
 						ship: (shipped) => sendRecord(shipped.commit, shipped.writes),
+						admits: options.admits ?? admitsTool,
+						acknowledged,
 					}),
 					opened(harness: Harness) {
 						stop = recording?.recordCommits(harness, {
@@ -114,13 +144,17 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 		},
 		receive(frame) {
 			if (frame.t === "record-ack") {
-				if (typeof frame.commit === "number") outbox?.ack(frame.commit);
+				if (typeof frame.commit === "number") {
+					outbox?.ack(frame.commit);
+					hold(frame.commit);
+				}
 			} else if (frame.t === "lines-ack") {
 				if (typeof frame.commit === "number") outbox?.ackLines(frame.commit);
 			} else if (frame.t === "records-from") {
 				const after = typeof frame.after === "number" ? frame.after : -1;
 				const linesAfter = typeof frame.linesAfter === "number" ? frame.linesAfter : -1;
 				streaming = true;
+				hold(after);
 				for (const entry of outbox?.pending(after, linesAfter) ?? []) {
 					if (snapshot !== undefined && entry.commit > snapshot.commit) {
 						sendLines(snapshot.commit, snapshot.lines, true);

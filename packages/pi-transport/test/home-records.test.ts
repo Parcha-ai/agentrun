@@ -5,7 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, defineExtension, defineTool, type StorageWrite } from "@earendil-works/pi-durable";
+import {
+	createRegistry,
+	createSession,
+	defineExtension,
+	defineTool,
+	type StorageWrite,
+} from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { Type } from "typebox";
@@ -14,8 +20,15 @@ import type { App } from "../src/home/app.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
 import { type Frame, linkPair } from "../src/home/link.ts";
 import { type ModelServer, serveModels } from "../src/home/models.ts";
-import { type Recording, type RecordLine, type RecordSink, receiveRecords } from "../src/home/records.ts";
+import {
+	createShipper,
+	type Recording,
+	type RecordLine,
+	type RecordSink,
+	receiveRecords,
+} from "../src/home/records.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
+import { admitsTool } from "../src/home/shipping.ts";
 import { textResult } from "../src/testing/tool-result.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -26,6 +39,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function world() {
 	const directory = mkdtempSync(join(tmpdir(), "pi-transport-records-"));
 	const effects = join(directory, "effects.log");
+	// When each tool call started.
+	const starts: number[] = [];
 	const faux = fauxProvider({ api: "faux" });
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -44,6 +59,7 @@ function world() {
 		description: "Do one unit of work.",
 		parameters: Type.Object({ n: Type.Number() }),
 		async execute(args) {
+			starts.push(performance.now());
 			await sleep(20);
 			appendFileSync(effects, `${args.n}\n`);
 			return textResult(`did ${args.n}`);
@@ -69,6 +85,7 @@ function world() {
 		directory,
 		models,
 		options,
+		starts,
 		effects: () => (existsSync(effects) ? readFileSync(effects, "utf8").trim().split("\n").filter(Boolean) : []),
 		remove: () => rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }),
 	};
@@ -99,6 +116,8 @@ function recorder(): Recording {
 /** A host's record sink in memory: the log, the lines, and the order things happened in. */
 function memorySink(options?: { readonly appendMs?: number }) {
 	const log: { commit: number; writes: readonly StorageWrite[] }[] = [];
+	// When each commit that admits a tool call was in the log.
+	const admitted: number[] = [];
 	const lines = new Map<number, readonly unknown[]>();
 	const events: string[] = [];
 	let after = 0;
@@ -109,6 +128,7 @@ function memorySink(options?: { readonly appendMs?: number }) {
 			events.push(`append ${commit} start`);
 			if (options?.appendMs !== undefined) await sleep(options.appendMs);
 			log.push({ commit, writes: JSON.parse(JSON.stringify(writes)) });
+			if (admitsTool(writes)) admitted.push(performance.now());
 			after = commit;
 			events.push(`append ${commit}`);
 		},
@@ -120,7 +140,7 @@ function memorySink(options?: { readonly appendMs?: number }) {
 			}
 		},
 	};
-	return { sink, log, lines, events };
+	return { sink, log, lines, events, admitted };
 }
 
 /** A runner on a fresh pair of links, held by a host with `sink` and `server`. */
@@ -255,10 +275,12 @@ describe("the record stream", () => {
 			const first = await hold(made, runner, 1, kept.sink, server);
 			getOrThrow(await first.resume({ epoch: 1 }, context));
 			getOrThrow(await first.submit("go", undefined, context));
-			await sleep(80);
+			getOrThrow(await first.idle(context));
 			first.close("gone");
-			// A host that does not take the stream: what the runner commits now stays in its outbox.
+			// A host that does not take the stream: what the runner commits now stays in its outbox. (A question
+			// answered without a tool call: a tool call would wait for the host to hold its admission.)
 			const blind = await hold(made, runner, 1, undefined, server);
+			getOrThrow(await blind.submit("again", undefined, context));
 			getOrThrow(await blind.idle(context));
 			getOrThrow(await blind.drain({ timeoutMs: 5_000 }, context));
 			const refused = await blind.seal(context);
@@ -290,19 +312,35 @@ describe("the record stream", () => {
 		await withWorld(async (made) => {
 			const kept = memorySink();
 			const server = serveModels(made.models);
+			// A first process runs the session to its end with a host that takes the stream.
+			const first = createRunner(made.options);
+			const host = await hold(made, first, 1, kept.sink, server);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			getOrThrow(await host.idle(context));
+			await first.home?.close(context);
+			host.close("gone");
+			const opened = headOf(made.options.store) - 1;
+			// The next process: a host that takes no stream reopens it and asks a question answered without a tool.
 			const runner = createRunner(made.options);
-			// The first host takes the stream, and goes before the session opens.
 			(await hold(made, runner, 1, kept.sink, server)).close("gone");
 			const blind = await hold(made, runner, 1, undefined, server);
 			getOrThrow(await blind.resume({ epoch: 1 }, context));
-			getOrThrow(await blind.submit("go", undefined, context));
+			getOrThrow(await blind.submit("again", undefined, context));
 			getOrThrow(await blind.idle(context));
 			blind.close("gone");
-			expect(kept.events).toEqual([]);
+			const head = headOf(made.options.store);
+			expect(head - 1).toBeGreaterThan(opened);
 			const back = await hold(made, runner, 1, kept.sink, server);
 			await sleep(100);
-			expect(kept.events.filter((event) => event.startsWith("snapshot"))).toEqual(["snapshot 0"]);
-			const head = headOf(made.options.store);
+			expect(kept.events.filter((event) => event.startsWith("snapshot"))).toEqual([
+				"snapshot 0",
+				`snapshot ${opened}`,
+			]);
+			// The second process's snapshot comes after the commits before it, and before the ones after it.
+			const at = kept.events.indexOf(`snapshot ${opened}`);
+			expect(kept.events.indexOf(`append ${opened}`)).toBeLessThan(at);
+			expect(kept.events.indexOf(`append ${opened + 1}`)).toBeGreaterThan(at);
 			expect(kept.log.map((one) => one.commit)).toEqual(from1(head - 1));
 			back.close("done");
 			await runner.home?.close(context);
@@ -358,6 +396,49 @@ describe("the record stream", () => {
 		});
 	}, 30_000);
 
+	it("runs a tool call only once the host holds the commit that admits it", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink({ appendMs: 60 });
+			const runner = createRunner(made.options);
+			const host = await hold(made, runner, 1, kept.sink, serveModels(made.models));
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			getOrThrow(await host.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			expect(kept.admitted).toHaveLength(ROUNDS);
+			for (const [n, started] of made.starts.entries()) {
+				expect(started, `call ${n}`).toBeGreaterThanOrEqual(kept.admitted[n] ?? Number.POSITIVE_INFINITY);
+			}
+			host.close("done");
+			await runner.home?.close(context);
+		});
+	}, 30_000);
+
+	it("never runs a tool call whose admission the host does not hold in time, and the session stops", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const server = serveModels(made.models);
+			const runner = createRunner(made.options);
+			(await hold(made, runner, 1, kept.sink, server)).close("gone");
+			// A host that does not take the stream: no commit of this runner is acknowledged.
+			const blind = await hold(made, runner, 1, undefined, server);
+			getOrThrow(await blind.resume({ epoch: 1 }, context));
+			getOrThrow(await blind.submit("go", undefined, context));
+			// Longer than the runner waits for an acknowledgement (1.5 s).
+			await sleep(2_500);
+			expect(made.starts).toEqual([]);
+			expect(made.effects()).toEqual([]);
+			blind.close("gone");
+			// A host that takes the stream gets the admission, late: the call still does not run.
+			const back = await hold(made, runner, 1, kept.sink, server);
+			await sleep(300);
+			expect(kept.log.some((one) => admitsTool(one.writes))).toBe(true);
+			expect(made.starts).toEqual([]);
+			back.close("done");
+			await runner.home?.close(context).catch(() => {});
+		});
+	}, 30_000);
+
 	it("gives an order the answer the runner sent before it closed, behind a slow log", async () => {
 		const models = createModels();
 		const kept = memorySink({ appendMs: 50 });
@@ -376,6 +457,36 @@ describe("the record stream", () => {
 		const status = await host.status(context);
 		expect(status.ok ? status.value : status.error.code).toEqual({ state: "retired", epoch: 2 });
 		expect(kept.log.map((one) => one.commit)).toEqual([1]);
+	});
+});
+
+describe("the runner's end of the record stream", () => {
+	it("lets an admission go when the host says its log holds it, though its acknowledgement was lost", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({ admits: () => true, acknowledgeWithinMs: 2_000 });
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const wrapped = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			const sent: Frame[] = [];
+			shipper.up((frame) => sent.push(frame) > 0);
+			shipper.receive({ t: "records-from", after: 0, linesAfter: 0 });
+			const session = createSession(wrapped.storage);
+			const started = performance.now();
+			const committed = session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await sleep(100);
+			// The host logged it and acknowledged it, and the acknowledgement went with the link.
+			const record = sent.find((frame) => frame.t === "record");
+			expect(record?.commit).toBe(1);
+			shipper.down();
+			shipper.up((frame) => sent.push(frame) > 0);
+			shipper.receive({ t: "records-from", after: 1, linesAfter: 0 });
+			await committed;
+			expect(performance.now() - started).toBeLessThan(1_000);
+			await session.close(context);
+			await wrapped.closed?.();
+		});
 	});
 });
 
