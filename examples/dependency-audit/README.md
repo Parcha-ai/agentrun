@@ -44,6 +44,7 @@ its lead and judge are scripts, and no box was started. A live run reads the sou
 | `workflow.ts` | The audit as a workflow document |
 | `sources.ts` | The public registry, OSV and GitHub reads, and range resolution |
 | `tools.ts` | The `call` tools (registry, advisories, install), their receipts, and the re-run that settles a cut call |
+| `install-box.ts` | The install in a throwaway Docker box with lifecycle scripts on, and the connections `strace` saw: `startInstall` returns the box's id, `attachInstall(id)` returns the result, `{ running: true }` or `{ gone: true }` (only that one calls for a fresh install), `killBox(id)` ends one box. Install scripts never run on this machine; without Docker `startInstall` throws a typed `DOCKER_UNAVAILABLE` |
 | `scripted.ts` | The no-key lead, judge and fake pages |
 | `live.ts` | The user's model through pi-ai, and the model-backed judge |
 | `capture.ts` | `node capture.ts <owner/repo> <commit> [--limit N]` keeps a project's facts for a replay |
