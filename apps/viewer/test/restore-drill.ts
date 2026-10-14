@@ -15,8 +15,9 @@ export const doc = (gen: number, commit: number, order: number, name: string, ke
   channel: 'durable', source: name.startsWith('transport') ? 'transport' : 'workflow', kind: name, gen, t: (t += 10), commit, order,
   ...(snapshot ? { snapshot: true } : {}), data: { doc: name, ...(key !== undefined ? { key } : {}), value },
 });
-export const effect = (gen: number, commit: number, order: number, id: string, name: string, status: string, snapshot = false) =>
-  doc(gen, commit, order, 'agentrun.effects', `journal\u0000${id}`, { name, argsHash: `${name}-args`, status }, snapshot);
+export const APPLIED = { outcome: 'applied' };
+export const effect = (gen: number, commit: number, order: number, id: string, name: string, status: string, snapshot = false, calls?: Json[]) =>
+  doc(gen, commit, order, 'agentrun.effects', `journal\u0000${id}`, { name, argsHash: `${name}-args`, status, ...(calls ? { calls } : {}) }, snapshot);
 const decisions = (gen: number, commit: number, order: number, rows: Json[]) => doc(gen, commit, order, 'agentrun.decisions', 'journal', { receipts: rows });
 const ask = { decision_id: 'd1', run_key: 'run', cost_usd: 0.01 };
 
@@ -27,7 +28,7 @@ export const lines: Line[] = [
   effect(1, 3, 0, 'e1', 'search', 'completed'),
   // The lost branch: commits 4 and 5, which no store holds after the restore.
   effect(1, 4, 0, 'e2', 'fetch', 'unknown'),
-  effect(1, 5, 0, 'e2', 'fetch', 'completed'),
+  effect(1, 5, 0, 'e2', 'fetch', 'completed', false, [APPLIED]),
   doc(1, 5, 1, 'agentrun.receipts', 'read fetch-args', { tool: 'read' }),
   decisions(1, 5, 2, [ask]),
   supervisor('kill', 2, { gen: 1, label: 'the box died', crossing: 'after commit 5' }),
@@ -39,7 +40,7 @@ export const lines: Line[] = [
   doc(2, 4, 1, 'agentrun.driver', undefined, { generation: 2 }),
   // The redo, numbered from the checkpoint's head again.
   effect(2, 5, 0, 'e2', 'fetch', 'unknown'),
-  effect(2, 6, 0, 'e2', 'fetch', 'completed'),
+  effect(2, 6, 0, 'e2', 'fetch', 'completed', false, [APPLIED]),
   doc(2, 6, 1, 'agentrun.receipts', 'read fetch-args', { tool: 'read' }),
   decisions(2, 6, 2, [ask]),
 ];

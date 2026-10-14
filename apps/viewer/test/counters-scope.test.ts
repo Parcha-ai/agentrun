@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Json, Line } from '../src/format.ts';
-import { counterFold, countersOf } from '../src/counters.ts';
+import { counterFold, countersOf, repeatedLabel } from '../src/counters.ts';
 import { receiptKeyOf } from '../src/receipt-key.ts';
 
 let commit = 0;
@@ -28,18 +28,38 @@ const counters = (lines: Line[]) => countersOf(lines.reduce((state, line) => (co
 const pair = (lines: Line[]) => { const result = counters(lines); return [result.repeated, result.askedTwice]; };
 
 test('two effects with one tool and arguments, in different branches and processes, are two calls and no repeat', () => {
-  const result = counters([effect('step:/a#call:0', 'unknown', 1), effect('step:/a#call:0', 'completed', 1), effect('step:/b#call:0', 'unknown', 2), effect('step:/b#call:0', 'completed', 2)]);
+  const applied = [{ outcome: 'applied' }];
+  const result = counters([effect('step:/a#call:0', 'unknown', 1, applied), effect('step:/a#call:0', 'completed', 1, applied), effect('step:/b#call:0', 'unknown', 2, applied), effect('step:/b#call:0', 'completed', 2, applied)]);
   assert.deepEqual([result.paid.workflow, result.repeated, result.askedTwice], [2, 0, 0]);
 });
 
-test('an effect repeats only when its own outside call completed in more than one process', () => {
-  const ok = { tool: 'paid', ok: true };
-  const failed = { tool: 'paid', ok: false, error: 'connection reset' };
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [ok]), effect('e', 'completed', 2, [ok, ok])]), [1, 0], 'completed in process 1 and again in process 2');
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [failed, ok]), effect('e', 'completed', 1, [failed, ok])]), [0, 0], 'a failed attempt, then the one that completed, in one process');
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [failed]), effect('e', 'completed', 2, [failed, ok])]), [0, 0], 'a failed attempt in one process and the only completion in the next');
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [ok, ok])]), [0, 0], 'a fetch wrapper\'s backups inside one process');
-  assert.deepEqual(pair([effect('e', 'unknown', 1, [ok]), effect('e', 'unknown', 2, [ok], true), effect('e', 'completed', 2, [ok])]), [0, 0], 'a snapshot is state, not a call');
+test('an effect repeats when an applied call of its id lands in a later process than an earlier applied one; failed and unknown calls are not applied', () => {
+  const applied = { outcome: 'applied', tool: 'paid' };
+  const failed = { outcome: 'failed', error: 'connection reset' };
+  const unknown = { outcome: 'unknown' };
+  // The driver writes each process's own list: a re-admission (no calls yet) opens it, so a list that repeats the earlier one is a new call.
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied]), effect('e', 'unknown', 2), effect('e', 'completed', 2, [applied])]), [1, 0], 'applied in process 1 and again in process 2');
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [failed, applied]), effect('e', 'completed', 1, [failed, applied])]), [0, 0], 'a failed attempt, then the one that applied, in one process');
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [unknown]), effect('e', 'completed', 2, [unknown, applied])]), [0, 0], 'an unknown outcome in one process and the only applied call in the next');
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [failed]), effect('e', 'completed', 2, [failed, applied])]), [0, 0], 'a failed attempt in one process and the only applied call in the next');
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied]), effect('e', 'unknown', 2, [applied], true), effect('e', 'completed', 2, [applied])]), [0, 0], 'a snapshot is state, not a call');
+});
+
+test('two applied calls of one effect inside one process are asked twice, not repeated', () => {
+  const applied = { outcome: 'applied' };
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied, applied]), effect('e', 'completed', 1, [applied, applied])]), [0, 1]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [applied, applied]), effect('e', 'unknown', 2), effect('e', 'completed', 2, [applied])]), [1, 1], 'twice in process 1 and once more in process 2');
+});
+
+test('an effect whose host reports no calls has its repeats not measured: never shown as 0', () => {
+  const none = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'completed', 2, undefined, true)]);
+  assert.deepEqual([none.repeated, none.repeatedNotMeasured, repeatedLabel(none)], [0, 1, 'not measured']);
+  const redone = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'unknown', 2), effect('a', 'completed', 2)]);
+  assert.deepEqual([redone.repeated, repeatedLabel(redone)], [0, 'not measured'], 'its own completion in two processes is not a measured call');
+  const measured = counters([effect('a', 'unknown', 1, [{ outcome: 'applied' }]), effect('a', 'completed', 1, [{ outcome: 'applied' }])]);
+  assert.deepEqual([measured.repeated, measured.repeatedNotMeasured, repeatedLabel(measured)], [0, 0, '0']);
+  const mixed = counters([effect('a', 'completed', 1), effect('b', 'unknown', 1, [{ outcome: 'applied' }]), effect('b', 'unknown', 2), effect('b', 'completed', 2, [{ outcome: 'applied' }])]);
+  assert.deepEqual([mixed.repeated, mixed.repeatedNotMeasured, repeatedLabel(mixed)], [1, 1, '1'], 'a repeat found is shown, whatever is not measured');
 });
 
 test('a snapshot of a completed effect in a later process is state: no repeat', () => {
