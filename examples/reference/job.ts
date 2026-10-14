@@ -1,6 +1,6 @@
 // The job: find a company, read its registry page in the browser and its filing scan from the workspace, submit a
 // cited record, judge it, and build the output. Every answer is scripted, so the output is the same on every run.
-import type { Message, ToolCall } from '@earendil-works/pi-ai';
+import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { fixturePage } from '@parcha/pi-browser/testing';
@@ -49,17 +49,25 @@ const textOf = (message: Message) => (typeof message.content === 'string' ? mess
 const receipts = (message: Message | undefined) => (message ? textOf(message).match(/evidence\/[\w./-]+\.json/g) ?? [] : []);
 
 /** The lead opens the first search result, reads it, reads the scan, then submits `answer` citing the receipts `cite`
- *  keeps of those the page read and the scan read returned (default: all of them). */
+ *  keeps of those the page read and the scan read returned (default: all of them). Like a model, it asks a call whose
+ *  result is an error once more, and on a second error goes on without it. A `run` may have acted before it failed, so
+ *  the lead takes a snapshot before asking it again, as the browser asks. */
 export function lead(answer = 'Acme Ltd was incorporated on 2019-03-04.', cite = (page: string[], scan: string[]) => [...page, ...scan]) {
   return (messages: readonly Message[]) => {
-    const results = messages.filter((message) => message.role === 'toolResult');
-    if (results.length === 0) {
-      const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
-      return call('run', { code: `await page.goto(${JSON.stringify(first)})` });
+    const first = textOf(messages.find((message) => message.role === 'user')!).match(/https?:\/\/[^"\s\\]+/)?.[0];
+    const steps = [() => call('run', { code: `await page.goto(${JSON.stringify(first)})` }), () => call('browser_read', { what: 'markdown' }), () => call('read', { path: FILING })];
+    const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
+    const done: (Message | undefined)[] = [];
+    let retried = false;
+    for (const result of results) {
+      if (result.toolName === 'snapshot') continue;
+      if (result.isError && !retried) { retried = true; continue; }
+      done.push(result.isError ? undefined : result);
+      retried = false;
     }
-    if (results.length === 1) return call('browser_read', { what: 'markdown' });
-    if (results.length === 2) return call('read', { path: FILING });
-    return call('submit', { answer, citations: [...new Set(cite(receipts(results[1]), receipts(results[2])))] });
+    if (retried && done.length === 0 && results.at(-1)?.toolName !== 'snapshot') return call('snapshot', {});
+    if (done.length < steps.length) return steps[done.length]!();
+    return call('submit', { answer, citations: [...new Set(cite(receipts(done[1]), receipts(done[2])))] });
   };
 }
 

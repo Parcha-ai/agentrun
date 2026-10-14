@@ -4,7 +4,7 @@
 
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
-import { createRegistry, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import { createRegistry, type ConversationId, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CallContext, CallSetup, ToolResult, VisionEnv } from "../../src/index.js";
 import { DEFAULT_LIMITS, visionContext } from "../../src/index.js";
 import { callContext, createVisionExtension, modelsEyes, piResult, type ModelsDoor } from "../../src/durable.js";
@@ -16,6 +16,17 @@ const vision = createVisionExtension({ evidence: { file: async () => null }, sco
 createRegistry().install(vision.extension);
 const result = (r: ToolResult): ToolExecutionResult => piResult(r);
 const call = (api: ToolExecutionApi, context: Context): Promise<CallContext> => callContext(api, context);
+// A host's own tool names itself for `fit`'s rows, and `scope` gets pi's own id beside the string.
+const shot = (api: ToolExecutionApi, context: Context): Promise<CallContext> => callContext(api, context, "screenshot");
+const byPiId = createVisionExtension({
+  evidence: { file: async () => null },
+  scope: (id, conversation) => {
+    const pi: ConversationId | undefined = conversation;
+    // @ts-expect-error pi's id is its own type, not the string the core passes first.
+    const text: string = conversation!;
+    return { label: `${id}-${pi}-${text}`, deriveDir: `media/${id}` };
+  },
+});
 const env: VisionEnv = nodeVisionEnv({ cwd: "/" });
 // A host that builds a call's setup by hand may give synchronous rows, as `VisionOptions` allows.
 const handBuilt: CallSetup = { limits: DEFAULT_LIMITS, eyes: undefined, scope: { label: "l", deriveDir: "d" }, evidence: { file: async () => null }, providers: [], sources: {}, onLook: () => undefined, onMiss: () => undefined };
@@ -30,4 +41,4 @@ const unnamed = () => env.exec(["true"], { env: { ONLY: "this" }, inheritEnv: fa
 // @ts-expect-error a door without `completeSimple` cannot look.
 const blind: ModelsDoor = { getModel: () => undefined };
 
-void [door, eyes, result, call, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];
+void [door, eyes, result, call, shot, byPiId, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];

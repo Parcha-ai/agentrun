@@ -11,10 +11,11 @@ their stored instructions do not change. One tool is new, `look(source, ask, pag
 vision model answers a question about many pages or a long video, and only its words, where it looked and the price
 enter the caller's context.
 
-## Status: held
+## Status
 
-The package is built, tested and verified with this repository's other packages and kept at the workspace version,
-and it is not published (`"private": true`). Parts not built yet throw `NotBuiltError`, never a half answer.
+The package is built, tested and verified with this repository's other packages, at the workspace version, and a
+release publishes it with them under the `beta` tag. Until one has, install it from a packed tarball (see the first
+read below). Parts not built yet throw `NotBuiltError`, never a half answer.
 
 | Part | Status |
 | --- | --- |
@@ -31,6 +32,58 @@ and it is not published (`"private": true`). Parts not built yet throw `NotBuilt
 | `read`'s media half with the package's own reader for every kind, the guard, the eyes on pi-ai, receipts and misses | built |
 | The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
 | `look` | not built |
+
+## A first read, with no key
+
+A spreadsheet the test kit writes, read the way `read` reads it for a model: no eyes, no key, nothing optional
+installed. In an empty directory:
+
+```sh
+npm install @parcha/pi-vision@beta
+```
+
+Before a release has published it, install the tarball instead: in a checkout of this repository run
+`npm ci --ignore-scripts && npm run build -w @parcha/pi-vision && npm pack -w @parcha/pi-vision`, then
+`npm install` the `.tgz` it wrote in the empty directory.
+
+`read.mjs`:
+
+```js
+import { writeFile } from "node:fs/promises";
+import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { nodeVisionEnv } from "@parcha/pi-vision/node";
+import { imageSize, xlsxBytes } from "@parcha/pi-vision/testing";
+
+await writeFile("ledger.xlsx", xlsxBytes());
+const vision = createVisionExtension({
+  evidence: { file: async () => null }, // where looks are filed: nowhere, and a read with no eyes makes none
+  scope: () => ({ label: "first-read", deriveDir: "derived" }), // where a document's text is kept for the shell
+});
+const call = { conversationId: "first-read", callId: "1", model: undefined, signal: undefined };
+const result = await vision.read(nodeVisionEnv({ cwd: process.cwd() }), { path: "ledger.xlsx" }, call);
+
+// What the model is given, block by block.
+for (const block of result.content) {
+  if (block.type === "text") console.log(block.text);
+  else { const size = imageSize(Buffer.from(block.data, "base64")); console.log(`[${block.mimeType}, ${size?.width}x${size?.height}]`); }
+}
+```
+
+`node read.mjs` prints:
+
+```text
+Cells of ledger.xlsx (1 sheet), read with office-js; the text is saved at derived/ledger.xlsx-5a119bb78efe62bd.txt. Cells only: formatting, charts, images and pivot views are not shown here. A faithful render needs LibreOffice (soffice) in the environment.
+
+Sheet "ledger"
+A1=id | B1=amount | C1=doubled | D1=running_total | E1=account_no
+A2=1 | B2=1250.5 | C2=2501 {=B2*2} | D2=<no stored value> {=SUM(B$2:B2)} | E2=9007199254740993
+A3=2 | B3=99.99 | C3=199.98 {=B3*2} | D3=<no stored value> {=SUM(B$2:B3)}
+```
+
+A cell shows its value, its formula and whether a value was stored; the 16-digit number stays digits. A PDF's text and
+an office document's read the same way with nothing installed. An image is fitted to the model's limits by Photon
+(`@silvia-odwyer/photon-node`) when it is installed, and without it the read is a `needs` miss that says so. `model`
+is the lead's model as pi-ai describes it, which sets the limits; with none, the defaults hold.
 
 ## Entries
 

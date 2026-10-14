@@ -111,6 +111,8 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
   const lead = leadName(call.model);
   const media: MediaDetails = (result.details?.media as MediaDetails | undefined) ?? {};
   const saved = media.path ?? (typeof result.details?.path === "string" ? result.details.path : undefined);
+  const tool = call.tool ?? "read";
+  const source = saved ?? (call.tool ? `a ${call.tool} result` : "a tool result");
   const window = media.fromS !== undefined || media.toS !== undefined ? { from: media.fromS ?? 0, ...(media.toS !== undefined ? { to: media.toS } : {}) } : undefined;
   const fragment = media.page ? formatFragment({ page: { from: media.page, to: media.page } }) : window ? formatFragment({ t: window }) : "";
   const ask = media.ask?.trim() || undefined;
@@ -129,7 +131,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     const sha256 = media.sha256 ?? blocksSha256(unit);
     return {
       tool: "look",
-      args: { path: saved ?? "a tool result", ...(ask ? { ask } : {}), ...(media.fromS !== undefined ? { from_s: media.fromS } : {}), ...(media.toS !== undefined ? { to_s: media.toS } : {}), ...(media.page !== undefined ? { page: media.page } : {}), model, native },
+      args: { path: source, ...(ask ? { ask } : {}), ...(media.fromS !== undefined ? { from_s: media.fromS } : {}), ...(media.toS !== undefined ? { to_s: media.toS } : {}), ...(media.page !== undefined ? { page: media.page } : {}), model, native },
       status: "ok",
       facts: { ...(media.original ? { original: media.original } : {}), ...facts, ...dropped, sha256, kind: kindOf(media, unit.some(isVideo)), fragment, ...(media.fit ? { fit: media.fit } : {}), key: keyOf(unit, model), ...(media.derived?.length ? { derived: media.derived } : {}) },
       body,
@@ -140,7 +142,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: media.path ? setup.evidence : { file: async () => null }, onLook: setup.onLook, onMiss: setup.onMiss };
   const miss = async (what: string, unit: readonly ImageContent[], cause: Miss): Promise<TextContent> => {
     const m = { ...cause, reason: linkSafe(cause.reason) };
-    const receipt = await reportMiss(filing, "read", record(unit, false, m.model ?? "no vision route", ""), m);
+    const receipt = await reportMiss(filing, tool, record(unit, false, m.model ?? "no vision route", ""), m);
     return { type: "text", text: `(${what} withheld for this model and not described: ${m.reason}.${saved ? ` The file is saved at ${saved}.` : ""}${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[m.code]})` };
   };
 
@@ -169,7 +171,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
         // Shown, each block stays where it stood, beside its own caption; the look's line follows the last.
         if (!video) room -= charsOf(shownUnit);
         shown += shownUnit.length;
-        const receipt = await fileLook(filing, "read", record(shownUnit, true, lead, "shown to the model natively", video ? {} : shownFacts(shownUnit as Sized[])));
+        const receipt = await fileLook(filing, tool, record(shownUnit, true, lead, "shown to the model natively", video ? {} : shownFacts(shownUnit as Sized[])));
         const line: Item[] = receipt ? [{ type: "text", text: `(look filed at ${receipt}${ask ? `; your question: ${ask}` : ""})` }] : [];
         return where.forEach((pos, i) => placed.set(pos, [shownUnit[i]!, ...(i === where.length - 1 ? line : [])]));
       }
@@ -211,12 +213,11 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
     const key = keyOf(unit, eyes.model);
     const again = answered.get(key);
     if (again) return again;
-    const from = saved ?? "a tool result";
     // Each image goes with the line that says where it is (a page, a time), so the eyes can say where they saw a thing.
     const parts: Part[] = items.flatMap(({ block, caption }): Part[] => [
-      ...(caption ? [{ type: "text" as const, text: caption, fragment: from }] : []),
-      video ? { type: "video", data: block.data, mimeType: block.mimeType, fragment: from }
-        : { type: "image", data: block.data, mimeType: block.mimeType, width: (block as Sized).width, height: (block as Sized).height, fragment: from },
+      ...(caption ? [{ type: "text" as const, text: caption, fragment: source }] : []),
+      video ? { type: "video", data: block.data, mimeType: block.mimeType, fragment: source }
+        : { type: "image", data: block.data, mimeType: block.mimeType, width: (block as Sized).width, height: (block as Sized).height, fragment: source },
     ]);
     let failed: Miss;
     try {
@@ -226,7 +227,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
       usage = addUsage(usage, look.usage);
       if (look.text.trim()) {
         const facts = { ...(video ? {} : shownFacts(unit as Sized[])), tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}) };
-        const receipt = await fileLook(filing, "read", record(unit, false, look.model, look.text.trim(), facts), look);
+        const receipt = await fileLook(filing, tool, record(unit, false, look.model, look.text.trim(), facts), look);
         const head = `(${what} seen for you by ${look.model}${ask ? ` \u2014 your question: ${ask}` : ""}${saved ? `; the file is saved at ${saved}` : ""}${receipt ? `; look filed at ${receipt}` : ""}:)`;
         const answer: TextContent = { type: "text", text: `${head}\n${look.text.trim()}` };
         answered.set(key, answer);
