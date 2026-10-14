@@ -80,8 +80,8 @@ Measured by killing the reference job at many points and resuming it in a new pr
 
 Aim for one copy of pi-durable and one of chord: types do not cross copies, and behavior may not either. Each package
 declares its own peer range for them, and an install of several packages can end up with more than one copy. Check what
-your install landed on with `npm ls @earendil-works/pi-durable @earendil-works/chord`. The example runs today with more
-than one copy and casts where values cross them.
+your install landed on with `npm ls @earendil-works/pi-durable @earendil-works/chord`. The example's install has one
+copy of each, so no value crosses copies and the example needs no cast between them.
 
 ## Swap a scripted part for a real one
 

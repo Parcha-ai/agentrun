@@ -51,9 +51,9 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
 
-Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/durable`, where
-the package's readers look; a directory whose store is at `<root>/store`, where an earlier version kept it, is refused
-with both paths named, and nothing runs). The run opens on a claim
+Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
+`run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
+version before kept it, is refused with both paths named, and nothing runs). The run opens on a claim
 over a plain directory, with the disk package's own file and shell tools confined to `work/`. `run()` takes another
 environment for the tools as `env`, the disk run's own option; `--box` passes a transport box there.
 
@@ -132,9 +132,6 @@ Each fake is one member of `Host`. Build `localHost()`'s value and replace that 
 
 Each is marked in the code with the package that owns it.
 
-- Until the browser's pi range admits 1.1.0, one process loads pi-durable 1.0.4 and two 1.1.0 copies (three with
-  `--box`). The values cross them unchanged; their branded types do not, so `assemble.ts` casts at five places and
-  `run.ts` at one.
 - The disk run's temporary directories are under `<root>/tmp`, which its confinement will not let a tool write, and a
   read that runs a program (a video through ffmpeg) writes there. `assemble.ts` keeps them under `work/.tmp` until the
   disk package's #380 lands. This example's PNG read writes no temporary file.

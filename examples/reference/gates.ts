@@ -94,11 +94,11 @@ export function gates(runDir: string, job: Job): Gate[] {
   // The store: the run's journal (each step started and committed) and the browser's inventory (each session not yet
   // released). A run directory with no store holds no evidence of either.
   const store = ((): { ok: true; journal: ReturnType<typeof readJournal>; inventory: InventoryRow[] } | { ok: false; error: string } => {
-    const file = join(runDir, 'durable', 'run.sqlite');
-    if (!existsSync(file)) return { ok: false, error: 'no durable/run.sqlite' };
+    const file = join(runDir, 'store', 'run.sqlite');
+    if (!existsSync(file)) return { ok: false, error: 'no store/run.sqlite' };
     try {
       return { ok: true, journal: readJournal(file, RUN_KEY), inventory: Object.values(durableDoc<{ rows: Record<string, InventoryRow> }>(file, 'browser.inventory')?.rows ?? {}) };
-    } catch (error) { return { ok: false, error: `durable/run.sqlite could not be read: ${error instanceof Error ? error.message : String(error)}` }; }
+    } catch (error) { return { ok: false, error: `store/run.sqlite could not be read: ${error instanceof Error ? error.message : String(error)}` }; }
   })();
   const pin = (store.ok ? store.journal?.state as { pin?: { done?: string[]; inputs?: Record<string, string> } } | null | undefined : undefined)?.pin;
   const named = (path: string) => { const node = nodeAt(job.workflow, path) as { label?: string } | undefined; return node?.label ? `${node.label} (${path})` : path; };
