@@ -95,14 +95,27 @@ export const browserChargesOf = (doc: DocLine): { tag: string; usd: number | nul
   });
 };
 
-/** A vision look's charge in a `vision.*` document: its record's `facts.cost_usd`, else unknown (null). */
-export const lookChargesOf = (doc: DocLine): { receipt: string; usd: number | null }[] | undefined => {
+/** The LookRecords a `vision.*` document files, each with its place in the document's list (the list only grows, and
+ *  every revision carries all of it), its look key (`facts.key`), whether the eyes answered (`status` ok), whether the
+ *  lead looked itself (`args.native`), whether it is an answer read back after a kill (`facts.kept`), and its price
+ *  (`facts.cost_usd`, null when absent). A record with no key is not a look. */
+export type LookFiling = { index: number; receipt: string | null; key: string; ok: boolean; native: boolean; kept: boolean; usd: number | null };
+export const lookFilingsOf = (doc: DocLine): LookFiling[] | undefined => {
   if (!doc.doc.startsWith('vision.') || !isObj(doc.value) || !Array.isArray(doc.value.looks)) return undefined;
-  return doc.value.looks.flatMap((look, index) => {
-    if (!isObj(look)) return [];
-    const facts = isObj(look.record) && isObj(look.record.facts) ? look.record.facts : undefined;
-    return [{ receipt: typeof look.receipt === 'string' ? look.receipt : String(index), usd: typeof facts?.cost_usd === 'number' ? facts.cost_usd : null }];
+  return doc.value.looks.flatMap((filing, index) => {
+    const record = isObj(filing) && isObj(filing.record) ? filing.record : undefined;
+    const facts = record && isObj(record.facts) ? record.facts : undefined;
+    const args = record && isObj(record.args) ? record.args : undefined;
+    if (!record || !facts || typeof facts.key !== 'string') return [];
+    return [{ index, receipt: isObj(filing) && typeof filing.receipt === 'string' ? filing.receipt : null, key: facts.key, ok: record.status === 'ok',
+      native: args?.native === true, kept: facts.kept === true, usd: typeof facts.cost_usd === 'number' ? facts.cost_usd : null }];
   });
+};
+/** The look key a live `LookEvent` names (`record.facts.key`), and whether the lead looked itself (`args.native`). */
+export const lookEventOf = (data: Json): { key: string; native: boolean } | undefined => {
+  const record = isObj(data) && isObj(data.record) ? data.record : undefined;
+  const facts = record && isObj(record.facts) ? record.facts : undefined;
+  return typeof facts?.key === 'string' ? { key: facts.key, native: isObj(record?.args) && record.args.native === true } : undefined;
 };
 
 /** A message's priced usage, or null when it carries none. */
