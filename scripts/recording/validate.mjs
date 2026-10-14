@@ -152,9 +152,10 @@ export function validateRecording(dir) {
   let lastT = -Infinity;
   const lastSeq = new Map();
   const snapshotted = new Set();
-  const pendingMoves = [];
+  const snapshotAt = new Map();
+  const firstCommit = new Map();
+  const records = [];
   const drops = [];
-  const restores = new Map();
   let processes = 0;
   const liveGenerations = new Set();
   lines.forEach((text, index) => {
@@ -168,7 +169,10 @@ export function validateRecording(dir) {
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') processes += 1;
-    if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) { const records = moveRecords(event.data?.value ?? event.data); restores.set(event.gen ?? 'none', [...(restores.get(event.gen ?? 'none') ?? []), ...records.filter(record => record.kind === 'restore').map(record => record.head)]); pendingMoves.push(...records.filter(record => record.kind === 'move').map(record => ({ line, head: record.head }))); }
+    if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
+      for (const record of moveRecords(event.data?.value ?? event.data)) records.push({ ...record, gen: event.gen ?? 'none', line, commit: event.commit });
+    }
+    if (event.channel === 'durable' && !event.snapshot && !firstCommit.has(event.gen ?? 'none')) firstCommit.set(event.gen ?? 'none', event.commit);
     if (event.channel === 'live' && event.gen !== undefined) liveGenerations.add(event.gen);
     if (inlineImage(event.data)) add('events.jsonl', 'holds image data inline; an image belongs in blobs/ and its block keeps { type, mimeType, blob }', line);
     for (const hash of imageBlobs(event.data)) {
@@ -183,6 +187,7 @@ export function validateRecording(dir) {
       const gen = event.gen ?? 'none';
       if (!snapshotted.has(gen)) {
         snapshotted.add(gen);
+        snapshotAt.set(gen, { commit: event.commit, line, before: lastCommit });
         if (event.commit < lastCommit) {
           drops.push({ line, gen, commit: event.commit, was: lastCommit });
           last = { commit: event.commit, order: Infinity };
@@ -202,15 +207,25 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
-    while (pendingMoves.length) {
-      // A move seals the store at the last commit seen, and the target's first commit is the next one.
-      const move = pendingMoves.shift();
-      if (move.head !== lastCommit + 1) add('events.jsonl', `a move's seal.head is ${move.head}, but the last commit seen is ${lastCommit}, so the target's first commit would be ${lastCommit + 1}`, move.line);
-    }
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
+  // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check.
   for (const drop of drops) {
-    if (!(restores.get(drop.gen) ?? []).includes(drop.commit + 1)) add('events.jsonl', `generation ${drop.gen}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the generation has no transport.moves restore record with checkpoint head ${drop.commit + 1}`, drop.line);
+    const found = records.filter(record => record.kind === 'restore' && record.gen === drop.gen && record.head === drop.commit + 1);
+    if (!found.length) add('events.jsonl', `generation ${drop.gen}'s first snapshot is at commit ${drop.commit}, below the ${drop.was} already seen, and the generation has no transport.moves restore record with checkpoint head ${drop.commit + 1}`, drop.line);
+  }
+  for (const record of records) {
+    const snapshot = snapshotAt.get(record.gen);
+    if (record.commit < record.head) add('events.jsonl', `a ${record.kind} record at commit ${record.commit} names head ${record.head}, which is a later commit`, record.line);
+    if (!snapshot) continue;
+    if (record.kind === 'restore') {
+      if (record.head !== snapshot.commit + 1 && !drops.some(drop => drop.gen === record.gen && record.head === drop.commit + 1)) add('events.jsonl', `a restore's checkpoint.head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so it should be ${snapshot.commit + 1}`, record.line);
+      continue;
+    }
+    if (record.head !== snapshot.commit + 1) add('events.jsonl', `a move's seal.head is ${record.head}, but the generation's snapshot is at commit ${snapshot.commit}, so the target's first commit would be ${snapshot.commit + 1}`, record.line);
+    else if (Number.isFinite(snapshot.before) && snapshot.commit !== snapshot.before) add('events.jsonl', `a move's snapshot is at commit ${snapshot.commit}, but the highest commit seen before it is ${snapshot.before}; a move keeps one store, so they are equal`, snapshot.line);
+    else if (firstCommit.has(record.gen) && firstCommit.get(record.gen) !== record.head) add('events.jsonl', `a move's seal.head is ${record.head}, but the generation's first commit is ${firstCommit.get(record.gen)}`, record.line);
   }
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
