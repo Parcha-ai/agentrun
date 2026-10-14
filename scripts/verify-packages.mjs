@@ -17,8 +17,8 @@ const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
 // Without it the consumer is pinned to the lockfile, as before.
 const piFlag = process.argv.indexOf('--pi');
-const legPi = piFlag > 0 ? process.argv[piFlag + 1] : undefined;
-assert.ok(legPi === undefined || /^\d+\.\d+\.\d+$/.test(legPi), `--pi takes a plain x.y.z version, got ${legPi}`);
+const legPi = piFlag === -1 ? undefined : process.argv[piFlag + 1];
+assert.ok(piFlag === -1 || /^\d+\.\d+\.\d+$/.test(legPi ?? ''), `--pi takes a plain x.y.z version, got ${legPi}`);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const receiptDir = join(root, '.release');
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -300,9 +300,10 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   const referenceTmp = join(temporary, 'reference-home');
   await mkdir(referenceTmp);
   const reference = await run(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', './deny-remote.mjs', 'reference/run.ts', '--json'], consumer, false, { PATH: process.env.PATH, HOME: referenceTmp, TMPDIR: referenceTmp });
-  const referenceProblems = recordProblems(JSON.parse(reference.stdout), expectedRecord);
+  const referenceRecord = JSON.parse(reference.stdout);
+  const referenceProblems = recordProblems(referenceRecord, expectedRecord);
   assert.deepEqual(referenceProblems, [], `The reference job in the consumer printed a record that differs from examples/reference/expected.json (token counts are not compared exactly): ${referenceProblems.join('; ')}`);
-  receipt.reference = { status: 'passed', network: 'loopback only', evidence: expectedRecord.evidence, usage: expectedRecord.usage };
+  receipt.reference = { status: 'passed', network: 'loopback only', evidence: referenceRecord.evidence, usage: referenceRecord.usage };
   receipt.checks.push('The reference example, copied into the consumer and run with loopback-only networking and no key, printed the record in examples/reference/expected.json.');
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
   receipt.piExtension = JSON.parse((await offlineNode(['verify-pi-install.mjs'])).stdout);

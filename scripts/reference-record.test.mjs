@@ -22,3 +22,9 @@ test('any other difference fails, including the cost and a missing entry', () =>
   assert.match(recordProblems(withUsage({ 'faux/faux-1': { tokens: 5, usd: 0 }, run: { tokens: 0, usd: 0 } }, { status: 'refused' }), expected)[0], /differs/);
   assert.ok(recordProblems(withUsage({ 'faux/faux-1': { tokens: 5, usd: 0 } }), expected).length >= 1);
 });
+
+test('a count the fixed record has as zero must stay zero, and key order is not a difference', () => {
+  const expected = { status: 'complete', usage: { model: { tokens: 10, usd: 0 }, run: { tokens: 0, usd: 0 } } };
+  assert.match(recordProblems({ ...expected, usage: { model: { tokens: 12, usd: 0 }, run: { tokens: 3, usd: 0 } } }, expected)[0], /usage\.run\.tokens is 3, expected 0/);
+  assert.deepEqual(recordProblems({ usage: { run: { usd: 0, tokens: 0 }, model: { usd: 0, tokens: 99 } }, status: 'complete' }, expected), []);
+});
