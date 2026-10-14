@@ -52,6 +52,9 @@ export const workflow = {
         scripts: { type: 'array', items: { type: 'string' } },
         hosts: { type: 'array', items: { type: 'string' }, description: 'Every host the install reached, from the box\'s network log.' },
         outside: { type: 'array', items: { type: 'string' }, description: 'The hosts that are not the package registry.' },
+        seen: { type: 'string', description: 'Where the connections were seen, as the box says it.' },
+        outbound: { type: 'array', items: { type: 'object' }, description: 'The connections the box saw, with the host where an answer named it.' },
+        log_tail: { type: 'string', description: 'The end of the install\'s output.' },
       },
     },
     Repository: {

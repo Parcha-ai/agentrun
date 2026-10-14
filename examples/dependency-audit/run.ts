@@ -237,7 +237,8 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
           const { boxId } = JSON.parse(readFileSync(file, 'utf8')) as { boxId: string };
           boxKilled = true;
           writeFileSync(join(dir, 'boxes', name, 'lost'), boxId);
-          void killBox(boxId).then((removed) => { if (removed) supervisor?.host('kill', { gen: processes, label: `box lost: ${name}`, crossing: 'install' }); else boxKilled = false; });
+          // Not a kill of the run's process, so no `kill` line: the call's own receipt (`box.lost`) records the box that was lost.
+          void killBox(boxId).then((removed) => { if (!removed) boxKilled = false; });
           return;
         }
       } catch { /* no box yet */ }
@@ -255,7 +256,7 @@ async function attempt(options: AuditOptions, dir: string, seed: number) {
   let result: { blob: string; title: string } | undefined;
   if (options.record && outcome?.status === 'complete') {
     const out = join(dir, 'out', 'record.json');
-    if (existsSync(out)) { result = { blob: keepBlob(options.record, readFileSync(out), 'json'), title: 'The audit' }; supervisor!.host('result', { gen: processes, blob: result.blob }); }
+    if (existsSync(out)) { result = { blob: keepBlob(options.record, readFileSync(out), 'json'), title: 'The audit' }; supervisor!.host('result', { gen: processes, blob: result.blob, title: result.title }); }
     finishRecording(options.record, {
       title: options.title ?? `Dependency audit${options.stormMs ? ' under a kill storm' : ''} (${options.live ? 'live' : 'scripted fixture'})`, task: workflow.name, model: outcome.model ?? 'scripted',
       generations: processes, kills, code: withPi(codeOf(join(import.meta.dirname, '..', '..'))),

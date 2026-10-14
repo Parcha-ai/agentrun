@@ -79,7 +79,8 @@ export function makeTools(options: ToolOptions): Record<string, Tool> {
       const hosts = [...new Set(done.result.outbound.map((connection) => connection.host ?? connection.ip))].sort();
       const outside = hosts.filter((host) => !REGISTRY_HOSTS.has(host));
       const { receipt } = keep(root, 'install', name, version, { ran: true, label: done.result.seen, box: { id: done.boxId, how: done.how, ...(done.lost.length ? { lost: done.lost } : {}) }, report: done.result, scripts, hosts, outside });
-      return { receipt, ran: true, scripts, hosts, outside };
+      // What the box saw rides in the call's result, so the run's record of the call holds the lines, not only a path to them.
+      return { receipt, ran: true, scripts, hosts, outside, seen: done.result.seen, outbound: done.result.outbound.slice(0, 40), log_tail: done.result.scriptLog.slice(-800) };
     },
   };
 }
