@@ -64,7 +64,14 @@ function versionsIn(directory: string): number[] {
 
 /** Sync a directory so its entries survive a crash. Only "this file system cannot" is ignored; an I/O error is not. */
 function fsyncDirectory(directory: string): void {
-	const fd = openSync(directory, "r");
+	let fd: number;
+	try {
+		fd = openSync(directory, "r");
+	} catch (cause) {
+		// Windows will not open a directory at all; that is "cannot sync", not a failed disk.
+		if (CANNOT_SYNC_DIRECTORY.has((cause as { code?: string }).code ?? "")) return;
+		throw cause;
+	}
 	try {
 		fsyncSync(fd);
 	} catch (cause) {
