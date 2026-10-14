@@ -55,7 +55,11 @@ test('a run the newer pi left with a tool call in flight is not continued by the
   const inFlight = before.tasks.filter((row) => row.kind === JSON.stringify('pi.tool') && row.status === 'running').map((row) => JSON.parse(row.record));
   assert.deepEqual(inFlight.map((record) => record.version), [2], 'the newer pi left one tool call in flight, as a version 2 pi.tool task');
   const older = run('first', 'resume');
-  assert.notEqual(older.status, 0, 'the older pi does not end the run');
+  // Node ends a process whose top-level await never settles with 13: the older pi waits on the newer task, and
+  // nothing else ends the process.
+  assert.ifError(older.error);
+  assert.equal(older.signal, null, older.stderr);
+  assert.equal(older.status, 13, older.stderr);
   assert.deepEqual([older.deliveries, older.end], [[], undefined]);
   const after = rows(store);
   assert.deepEqual(asReopened(after), asReopened(before), 'the older pi changed nothing but marking the task a dead process left running as pending');
