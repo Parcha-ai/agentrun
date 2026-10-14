@@ -168,7 +168,8 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
 export type Header = {
   title: string; task: string; model: string; generations: number; kills: number;
   code: { repo: string; commit: string; packages: Record<string, string> };
-  cost: { usd: number | null; parts: Record<string, number | null> };
+  /** The cost, or a function of the merged lines (fold.mjs's cost: `null` while any part is unknown, never 0). */
+  cost: { usd: number | null; parts: Record<string, number | null> } | ((lines: Record<string, unknown>[]) => { usd: number | null; parts: Record<string, number | null> });
   source: { run: string; store: string };
   result?: { blob: string; title: string };
 };
@@ -199,8 +200,8 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
   const store = existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64);
   const started = readFileSync(startedFile(dir), 'utf8');
-  const { source, ...rest } = header;
-  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ format: FORMAT, ...rest, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
+  const { source, cost, ...rest } = header;
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ format: FORMAT, ...rest, cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
   rmSync(spool(dir), { recursive: true, force: true });
   return { lines: all.length };
 }
