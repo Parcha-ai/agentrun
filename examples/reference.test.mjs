@@ -171,7 +171,7 @@ async function killedAndResumed(t, kill, { between = [], env: every = {} } = {})
   assert.equal(resumed.code, 0, resumed.stderr);
   const rows = (await readFile(join(dir, 'ledger.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const failing = gates(dir, job).filter(({ ok }) => !ok).map(({ id }) => id);
-  return { cut, view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
+  return { cut, journal: readJournal(join(dir, 'store', 'run.sqlite'), RUN_KEY), view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
 }
 const named = (rows, kind) => rows.filter((row) => row.kind === kind).map((row) => row.name);
 
@@ -294,4 +294,13 @@ test('killed after the judge\'s answer was recorded, the resumed run takes the r
   assert.deepEqual(view.output, OUTPUT);
   assert.deepEqual(named(rows, 'judge'), ['verdict'], 'asked once, in the killed process');
   assert.deepEqual(failing, []);
+});
+
+test('a run killed once opens its journal once in each process: two generations, with or without something to settle', { timeout: 120_000 }, async (t) => {
+  const plain = await killedAndResumed(t, { KILL_AT: '2' });
+  assert.deepEqual(plain.view.output, OUTPUT);
+  assert.deepEqual([plain.cut.generation, plain.journal.generation], [1, 2], 'one open by the killed process, one by the resumed one');
+  // an unknown effect settled from the door's kept answer goes through the driver's own open: still one open in the resumed process
+  const settled = await killedAndResumed(t, { KILL_IN: 'search-landed' });
+  assert.deepEqual([settled.cut.generation, settled.journal.generation], [1, 2]);
 });
