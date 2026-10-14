@@ -4,6 +4,7 @@
 
 ### Added
 
+- The checkpoint pull and the restore of a lost box (`./home`): `pullCheckpoint`, `localVault`, `checkpointStats`, `restoreNotice`, the movers `manifestSince` and `moveChanged`, the runner's `checkpoint` order and `call` frames, and `recoverHome` options `vault` and `replace`. A session whose box is gone is rebuilt from the newest verified checkpoint at the next lease epoch; `no_checkpoint` when there is none. `registerRestoreConformance` in `./testing`, 16 cases.
 - `BoxFacts.bulk`: how large amounts of bytes move fastest into and out of a box, through the streams of `exec` or as files through `upload` and `download`; absent means files. `localBoxes` and `dockerBoxes` say `stream`.
 - The movers (`./home`): `sealStore`, `checkpointStore` and `verifyStore` for a SQLite store, and `manifestOf`, `moveWorkspace` and `moveFile` for a workspace that travels between boxes as a `tar` stream, with a manifest taken in the box.
 - Ownership (`./home`): `leaseIn`, `Ownership`, `ConditionalStore`, and `dirStore`, a store in a directory whose write is `link(2)` of a complete temp file; `registerStoreConformance` in `./testing`.

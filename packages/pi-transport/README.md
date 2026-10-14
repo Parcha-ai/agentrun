@@ -374,8 +374,39 @@ one file.
 
 What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
 finishes with every effect once when the kill came after the drain held it, and at most once when it came while
-the session ran. A box that dies with its disk loses the work since the last checkpoint: that needs the checkpoint
-of a later release, or a disk that outlives the box.
+the session ran. A box that dies with its disk loses the work since the last checkpoint, and the next section
+says what the host keeps so that it loses no more.
+
+### A checkpoint, and a box that is gone
+
+`pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
+session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
+pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
+would no longer match the manifest. `holdMs` bounds the hold (120 s by default). A checkpoint exists only when the
+store and the files are both on the host and verified; a store without its files is never kept. The vault
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
+checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
+it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
+latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
+skipped: still running".
+
+`recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
+`ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
+the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
+and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
+nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
+the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
+moves and commits drops that branch. The model is told once (request id `transport.move:restore-<epoch>`) when the
+checkpoint was taken and which calls ran since: those that may have had an effect and are not run again, and those
+safe to run again. The host knows the calls from `call` frames the runner sends (`onCall`; the tool name and the
+replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
+with the box loses that list, and the notice then names no calls.
+
+`registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
+steps of a move and recovers; the suite runs on local boxes and on Docker.
 
 ## Ownership: one writer per session
 
