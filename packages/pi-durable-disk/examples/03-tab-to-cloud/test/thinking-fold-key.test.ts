@@ -36,3 +36,13 @@ test("an answer loaded from history is keyed by its entry", () => {
   view.apply({ type: "snapshot", entries: [{ id: 3, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "old" }] }] }], tools: [] } as never);
   assert.equal(assistant(view)[0]!.fold, "3");
 });
+
+test("a new view (another conversation, a reconnect) never reuses an earlier view's fold keys", () => {
+  const a = new ChatView();
+  a.apply({ type: "snapshot", entries: [], tools: [] } as never);
+  const first = stream(a, 7, "in the first view").streamed;
+  const b = new ChatView();
+  b.apply({ type: "snapshot", entries: [], tools: [] } as never);
+  const second = stream(b, 7, "in the next view").streamed;
+  assert.notEqual(first, second);
+});

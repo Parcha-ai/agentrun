@@ -59,11 +59,13 @@ function fallbackOf(message: Message): SteeredFallback | undefined {
 
 const messagesOf = (entry: EntryRecord): Message[] => ((entry as unknown as { model?: Message[] }).model ?? []);
 
+/** Counted across every view on the page: a new view (another conversation, a reconnect) never reuses a fold key. */
+let streamedAnswers = 0;
+
 export class ChatView {
   #entries: EntryRecord[] = [];
   #ids = new Set<string>();
   #inflight: { fold: string; content: Block[] } | undefined;
-  #answers = 0;
   #folds = new Map<string, string>();
   #tools = new Map<string, { name: string; args: string; output: string; running: boolean }>();
   #retry: string | undefined;
@@ -143,7 +145,7 @@ export class ChatView {
   }
 
   #nextFold(): string {
-    return `answer-${++this.#answers}`;
+    return `answer-${++streamedAnswers}`;
   }
 
   #add(entry: EntryRecord): void {
