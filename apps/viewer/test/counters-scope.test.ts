@@ -166,3 +166,25 @@ test('a recording that never committed an ask start, or whose pi.live version is
 test('committed turns skip aborted assistant entries', () => {
   assert.equal(turns([answer(1, 12, 'aborted'), answer(1, 12), answer(1, 12, 'aborted')]).committed, 1);
 });
+
+// Draft 15: counted per extra payment. Each applied call (or paid execution) after the first of its id or key counts once: in repeated when
+// its generation is later than the previous one's, in asked twice when it is the same. A snapshot's new calls take the snapshot's own gen.
+test('per extra payment: applied in gens 1, 2, 2 is one repeat and one asked twice; 1, 1, 1, 2 is one repeat and two asked twice', () => {
+  const a = { outcome: 'applied' };
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [a]), effect('e', 'unknown', 2), effect('e', 'unknown', 2, [a]), effect('e', 'completed', 2, [a, a])]), [1, 1]);
+  assert.deepEqual(pair([effect('e', 'unknown', 1, [a, a, a]), effect('e', 'unknown', 2), effect('e', 'completed', 2, [a])]), [1, 2]);
+  assert.deepEqual(pair([effect('e', 'completed', 1, [a])]), [0, 0], 'the first payment is not an extra one');
+});
+
+test('a paid key executed in gens 1, 2, 2 is one repeat and one asked twice', () => {
+  const result = pair([receipt('paid', { q: 1 }, 1), ...executed('paid', { q: 1 }, 1, 5), ...executed('paid', { q: 1 }, 2, 5), ...executed('paid', { q: 1 }, 2, 9)]);
+  assert.deepEqual(result, [1, 1]);
+});
+
+test('a snapshot\'s new calls take the snapshot\'s own generation, which is the earlier process\'s', () => {
+  const lost = { outcome: 'applied', n: 1 };
+  const resent = { outcome: 'applied', n: 2 };
+  // The call process 1 made had its own line lost; process 2's snapshot carries the driver's generation at its commit (1) and shows it first.
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 1, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [1, 0], 'placed in gen 1, the re-send in gen 2');
+  assert.deepEqual(pair([effect('e', 'unknown', 1), effect('e', 'unknown', 2, [lost], true), effect('e', 'completed', 2, [lost, resent])]), [0, 1], 'a snapshot at gen 2 places it in gen 2 itself: no earlier generation is invented');
+});
