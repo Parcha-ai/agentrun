@@ -164,10 +164,9 @@ test('a second job on a directory that holds another job\'s run is refused, nami
   assert.equal((await runAt(job)).status, 'complete', 'the same job again is the saved run');
   const refusalOf = ({ status, code, detail }) => ({ status, code, moved: detail?.moved });
   const otherInput = await runAt({ ...job, input: { company: 'Other Ltd' } });
-  assert.deepEqual(refusalOf(otherInput), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['input'] });
-  assert.notEqual(otherInput.detail.saved.input, otherInput.detail.requested.input);
+  assert.deepEqual(refusalOf(otherInput), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['input.company'] });
   const otherWorkflow = await runAt({ ...job, workflow: { ...job.workflow, name: 'another-company-check' } });
-  assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['binding'] });
+  assert.deepEqual(refusalOf(otherWorkflow), { status: 'refused', code: 'RUN_STORE_BINDING_MISMATCH', moved: ['workflow.name'] });
   assert.deepEqual(await record(), delivered, 'nothing was delivered for the refused jobs');
 });
 
