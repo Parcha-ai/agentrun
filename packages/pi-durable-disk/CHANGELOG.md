@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-**The self-fence watchdog starts in a host launched with `--input-type=module`**
-- The watchdog's worker is eval'd CommonJS and inherited the host's Node flags. Under `--input-type=module` (a host that
-  runs inline ESM through `-e` or stdin) Node read it as ESM, it threw `require is not defined`, and the run died at
-  open. The worker now starts with no inherited flags (`execArgv: []`); it needs none of the host's.
-
 **pi-durable 1.1**
 - The peer ranges of `@earendil-works/pi-durable` and `@earendil-works/chord` widen from `~1.0.4` to `>=1.0.4 <1.2.0`:
   the package installs beside pi-durable 1.1 and still beside 1.0.4. It is developed against 1.1.0, and a CI job
