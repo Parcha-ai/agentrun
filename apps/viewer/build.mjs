@@ -11,13 +11,13 @@ const out = process.argv[2] ?? join(here, 'dist');
 const src = join(here, 'src');
 const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', webm: 'video/webm', json: 'application/json', html: 'text/html', md: 'text/markdown', txt: 'text/plain', pdf: 'application/pdf' };
 
-/** The modules in an order where each comes after those it imports. */
+/** The modules in an order where each comes after those it imports (a type-only import puts no order on them). */
 function ordered(entry) {
   const seen = [];
   const visit = (name) => {
     if (seen.includes(name)) return;
     const code = readFileSync(join(src, name), 'utf8');
-    for (const [, dep] of code.matchAll(/^import [^;]*? from '\.\/([\w-]+\.ts)';$/gm)) visit(dep);
+    for (const [, dep] of code.matchAll(/^import (?!type )[^;]*? from '\.\/([\w-]+\.ts)';$/gm)) visit(dep);
     seen.push(name);
   };
   visit(entry);

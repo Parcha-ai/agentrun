@@ -1,9 +1,9 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
-import { FORMAT, parseLines, under, validate, type Line, type Manifest, type Recording } from './format.ts';
-import { counterFold, countersOf, type Counters } from './counters.ts';
+import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
+import { counterFold, countersOf, observesTurns, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { registry, type Node, type Panel } from './panels.ts';
+import { registry, type BaselineView, type Node, type Panel } from './panels.ts';
 import { frameFold, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
@@ -87,14 +87,14 @@ type Player = {
 };
 
 /** A fold's state at `p`, from the nearest kept state before it: scrubbing is replaying. */
-function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, keep: (line: Line) => boolean, cache: Map<number, S>): S {
+function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<number, S>): S {
   const every = 256;
   let from = Math.floor(p / every) * every;
   while (from > 0 && !cache.has(from)) from -= every;
   let state = from > 0 ? cache.get(from)! : fold.init();
   for (let index = from; index < p; index += 1) {
     const line = lines[index]!;
-    if (keep(line) && fold.accepts(line)) state = fold.reduce(state, line);
+    if (fold.accepts(line)) state = fold.reduce(state, line);
     if ((index + 1) % every === 0 && !cache.has(index + 1)) cache.set(index + 1, state);
   }
   return state;
@@ -111,7 +111,9 @@ function drawCounters(counters: Counters): HTMLElement {
     item(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     item('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     item('model turns', String(counters.turns.committed), 'Committed assistant turns.'),
-    item('re-asked turns', String(counters.turns.reaskedObserved), 'From live turn starts in more than one process: observed, not proven by the store.', ' observed'),
+    counters.turns.reaskedObserved === null
+      ? item('re-asked turns', 'not recorded', 'This recording has no live turn starts, so a turn asked again in a later process cannot be seen. The store does not keep it.')
+      : item('re-asked turns', String(counters.turns.reaskedObserved), 'From live turn starts in more than one process: observed, not proven by the store.', ' observed'),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown when any priced part is unknown, never shown as $0.'),
@@ -137,11 +139,24 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
     const name = svgEl('text', { x: x(band.from) + 6, y: 33, class: 'band-label' }); name.textContent = `process ${band.process}`;
     svg.append(name);
     if (band.kill) {
-      svg.append(svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: 'kill' }));
+      // The label in full where it fits before the next kill; else the kill's number, with the label on hover.
+      const full = `killed: ${band.kill.label}`;
+      const next = lanes.processes.find((other) => other.kill && other.kill.t > band.kill!.t)?.kill?.t;
+      const fits = next === undefined ? x(band.kill.t) + full.length * 6.5 < width : x(next) - x(band.kill.t) > full.length * 6.5 + 10;
+      const mark = svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: 'kill' });
+      const hover = svgEl('title', {}); hover.textContent = `${full}${band.kill.crossing ? ` (crossing ${band.kill.crossing})` : ''}`; mark.append(hover);
+      svg.append(mark);
       const label = svgEl('text', { x: x(band.kill.t) + 6, y: 56, class: 'kill-label' });
-      label.textContent = `killed: ${band.kill.label}`;
+      label.textContent = fits ? full : `k${band.process}`;
+      label.append(hover.cloneNode(true));
       svg.append(label);
     }
+  }
+  for (const restore of lanes.restores) {
+    svg.append(svgEl('line', { x1: x(restore.t), x2: x(restore.t), y1: 8, y2: 156, class: 'restore' }));
+    const label = svgEl('text', { x: x(restore.t) + 4, y: 66, class: 'restore-label' });
+    label.textContent = `restored to commit ${restore.to}: what came after it is a lost branch`;
+    svg.append(label);
   }
   for (const open of lanes.opens) {
     const tick = svgEl('rect', { x: x(open.t), y: 41, width: 1.5, height: 6, class: 'open-tick' });
@@ -208,7 +223,19 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
 
 // ---- the page --------------------------------------------------------------------------------------------------
 
-function play(recording: Recording, root: HTMLElement, params: URLSearchParams) {
+/** The baseline the manifest names: another real recording, opened beside this one, its counters at its end. */
+async function baselineOf(recording: Recording, base: string | undefined): Promise<BaselineView | undefined> {
+  const named = recording.manifest.baseline;
+  if (!named) return undefined;
+  const id = named.recording.replace(/\/$/, '').split('/').at(-1)!;
+  const entry = (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id || each.id === named.recording);
+  const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
+  if (!other) return undefined;
+  const ms = Date.parse(other.manifest.recorded.ended) - Date.parse(other.manifest.recorded.started);
+  return { label: named.label, counters: countersOf(reduceTo(counterFold, other.lines, other.lines.length), true, observesTurns(other.lines)), ms: Number.isFinite(ms) ? ms : null };
+}
+
+function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
   const problems = validate(recording.manifest, recording.lines);
   const player: Player = { recording, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
   const caches = new Map<unknown, Map<number, unknown>>();
@@ -217,19 +244,31 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams) 
   const last = lines.length;
   const atParam = params.get('at');
   const citeParam = params.get('cite');
+  /** The stop just after a commit, of a generation when given (a restore reuses commit numbers). */
+  const afterCommit = (commit: number, gen?: number) => {
+    const at = lines.findLastIndex((line) => line.channel === 'durable' && line.commit === commit && (gen === undefined || line.gen === gen));
+    return at >= 0 ? snap(player.stops, at + 1) : 0;
+  };
   if (atParam !== null) {
-    const commit = Number(atParam);
-    const after = lines.findLastIndex((line) => line.channel === 'durable' && line.commit === commit);
-    player.p = after >= 0 ? snap(player.stops, after + 1) : 0;
+    const [first, second] = atParam.split(':').map(Number);
+    player.p = second === undefined ? afterCommit(first!) : afterCommit(second, first);
   } else if (citeParam !== null) player.p = citeStop(lines, citeParam) ?? 0;
   else player.p = last;
   player.focus = params.get('focus') ?? undefined;
 
-  const chapters = [
-    ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${line.gen} starts`, p: index + 1 }] : [])),
-    ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
-    { title: 'the end', p: last },
-  ].sort((a, b) => a.p - b.p);
+  // The manifest's chapters when it names them; else each process start, each kill, and the end.
+  const chapters: { title: string; p: number; focus?: string }[] = recording.manifest.chapters
+    ? recording.manifest.chapters.map((chapter) => ({ title: chapter.title, p: afterCommit(chapter.at.commit, chapter.at.gen), ...(chapter.focus ? { focus: chapter.focus } : {}) }))
+    : [
+      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
+      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
+      { title: 'the end', p: last },
+    ].sort((a, b) => a.p - b.p);
+  // After a restore a commit number names two commits (3.2), so the position says whose.
+  const restored = player.lanes.restores.length > 0;
+  const turnStarts = observesTurns(lines);
+  let baseline: BaselineView | undefined;
+  const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
     `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} processes · ${recording.manifest.kills} kills · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
@@ -249,7 +288,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams) 
   const focusBar = el('div', { class: 'focus' });
   const panels = el('div', { class: 'panels' });
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
-  root.replaceChildren(header, counters, timeline, controls, chapterList, focusBar, panels);
+  root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -258,26 +297,27 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams) 
   function draw() {
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = t;
-    const counterState = cachedReduce(counterFold, lines, player.p, () => true, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last)));
+    const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last, turnStarts)));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
-    position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}` : `${line?.kind}`} · line ${player.p} of ${last}`;
+    position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
     chapterList.replaceChildren(...chapters.map((chapter) => {
       const button = el('button', { class: chapter.p === player.p ? 'current' : '', text: chapter.title });
-      button.addEventListener('click', () => scrubTo(chapter.p));
+      button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
       return button;
     }));
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []));
-    const keep = (each: Line) => under(each.path, player.focus);
-    const frames = cachedReduce(frameFold, lines, player.p, () => true, cacheOf(frameFold) as Map<number, never>);
+    const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
     panels.replaceChildren(...registry.map((panel: Panel<unknown>) => {
-      const state = cachedReduce(panel, lines, player.p, keep, cacheOf(`${panel.id} ${player.focus ?? ''}`) as Map<number, never>);
-      return el('section', { class: 'panel' }, el('h3', { text: panel.title }), renderNode(panel.view(state, { t, ...(player.focus ? { focus: player.focus } : {}) }), player, frames, t, setFocus));
+      // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
+      const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
+      return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
+        renderNode(panel.view(state, { t, ...(player.focus ? { focus: player.focus } : {}), ...(baseline ? { baseline } : {}) }), player, frames, t, setFocus));
     }));
     const url = new URL(location.href);
-    if (line?.channel === 'durable') url.searchParams.set('at', String(line.commit)); else url.searchParams.delete('at');
+    if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     url.searchParams.delete('cite');
     if (player.focus) url.searchParams.set('focus', player.focus); else url.searchParams.delete('focus');
     if (location.protocol !== 'file:') history.replaceState(null, '', url);
@@ -304,6 +344,16 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams) 
     if (player.playing) { if (player.p >= last) { player.p = 0; player.clock = 0; } wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
   });
   draw();
+  if (recording.manifest.baseline) {
+    baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline: ${recording.manifest.baseline.label} (loading)` }));
+    baselineOf(recording, base).then((loaded) => {
+      baseline = loaded;
+      baselineRow.replaceChildren(loaded
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters))
+        : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
+      draw();
+    }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
+  }
 }
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
@@ -344,13 +394,13 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
 async function main() {
   const root = document.getElementById('viewer')!;
   const params = new URLSearchParams(location.search);
-  const open = (recording: Recording) => play(recording, root, params);
+  const open = (recording: Recording, base?: string) => play(recording, root, params, base);
   try {
     const id = params.get('r');
     const src = params.get('src');
     const entry = id ? (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id) : undefined;
-    if (entry) open(fromGallery(entry));
-    else if (src) open(await fromUrl(src));
+    if (entry) open(fromGallery(entry), new URL(`recordings/${entry.id}/`, location.href).href);
+    else if (src) open(await fromUrl(src), new URL(src.endsWith('/') ? src : `${src}/`, location.href).href);
     else gallery(root, open);
   } catch (error) {
     root.replaceChildren(el('p', { class: 'problems', text: `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}` }));

@@ -17,17 +17,25 @@ The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL b
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
 
 - **Timeline.** The process lane comes from the supervisor's lines: a band per process, and a red mark with its label
-  where a process was killed. The ticks under it are the journal's opens, a fact of the store. Below: the calls (the
-  workflow's effects, the agent's tool calls) and the model turns; a turn a kill cut is drawn in red.
+  where a process was killed. The ticks under it are the journal's opens, a fact of the store. A restore (the run
+  reopened a checkpoint after its box died) is a dashed mark: the commits after the checkpoint are a lost branch.
+  Below: the calls (the workflow's effects, the agent's tool calls) and the model turns; a turn a kill cut is drawn in
+  red.
 - **Scrubber.** Play, pause, speed, the slider, previous and next commit, and a click on the timeline. A scrub stops
   only between commits: the screen at any point is a reduce of the lines before it.
-- **Counters.** Paid calls made, repeated, asked twice, unknown, judge asks, model turns, re-asked turns (observed),
-  processes, kills, cost (unknown when any part is unknown, never $0), and the journal's opens. Counts come from
-  durable lines and the supervisor's lines only.
+- **Counters.** Paid calls made, repeated, asked twice, unknown, judge asks, model turns, re-asked turns (observed;
+  "not recorded" when the recording has no live turn starts), processes, kills, cost (unknown when any part is unknown,
+  never $0), and the journal's opens. Counts come from durable lines and the supervisor's lines only. Repeated and
+  asked twice are per call: a workflow effect's own outside calls completed in more than one process, and an agent's
+  tool call only when it is paid (the run holds a receipt for its tool and arguments). A lost branch's calls were paid,
+  and its redo counts as repeated.
+  When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
-  (`PANELS.md`). Click anything with a workflow path to focus every panel on that branch.
-- **Chapters.** Jump to each process's start, each kill, and the end.
-- **Links.** `?at=<commit>` opens at the point after that commit; `?cite=<citation>` opens at the commit that first
+  (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and
+  shows the branch its own way (the two built in dim the rest).
+- **Chapters.** The manifest's chapters when it has them; else each process's start, each kill, and the end.
+- **Links.** `?at=<commit>` opens at the point after that commit, and `?at=<gen>:<commit>` after that commit of that
+  generation (after a restore one number names two commits); `?cite=<citation>` opens at the commit that first
   wrote a citation, so a reader of a published brief can jump from a claim to the moment its evidence entered the run;
   `?focus=<path>` opens focused.
 
@@ -36,7 +44,8 @@ static host), or a recording folder dropped on the page or chosen with its picke
 `recordings/<id>/` holds the recordings of real runs bundled with the build, each a `manifest.json`, an
 `events.jsonl` and its `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and
 copies them beside the page. There are none yet, and the gallery says so. The tests play a fixture cut by hand from a
-real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut).
+real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut). A
+restore is tested on a recording built line by line (`test/restore-drill.ts`).
 
 ## Develop
 

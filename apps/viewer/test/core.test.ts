@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { citeStop } from '../src/cite.ts';
-import { counterFold, countersOf } from '../src/counters.ts';
+import { counterFold, countersOf, observesTurns } from '../src/counters.ts';
 import { parseLines, validate, type Line } from '../src/format.ts';
 import { frameFold, pictureAt } from '../src/frames.ts';
 import { lanesOf } from '../src/lanes.ts';
-import { registry } from '../src/panels.ts';
+import { linesPanel, registry, type Node } from '../src/panels.ts';
 import { reduceTo, snap, stopsOf } from '../src/replay.ts';
 
 const at = (path: string) => new URL(`fixtures/reference-killed/${path}`, import.meta.url);
@@ -27,6 +27,16 @@ test('the fixture obeys the format, and each invariant catches its own break', (
   const seqBack = lines.map((line, index) => (index === live[1]!.index ? { ...line, seq: 1 } : line));
   assert.match(validate(manifest, seqBack).join('\n'), /seq does not increase in process 1/);
   assert.match(validate({ ...manifest, cost: { usd: 0, parts: { judge: null } } }, lines).join('\n'), /cost.usd is a number though a part is unknown/);
+});
+
+test('the manifest\'s chapters name a commit of a generation that is in the recording, and a baseline names a recording', () => {
+  const kill = lines.findIndex((line) => line.kind === 'kill');
+  const before = lines.slice(0, kill).findLast((line) => line.channel === 'durable')!;
+  const chapters = [{ title: 'before the kill', at: { gen: before.gen!, commit: before.commit! }, focus: '/root' }];
+  assert.deepEqual(validate({ ...manifest, chapters, baseline: { recording: '../reference-uninterrupted', label: 'the same job, not killed' } }, lines), []);
+  assert.match(validate({ ...manifest, chapters: [{ title: 'nowhere', at: { gen: 2, commit: 9999 } }] }, lines).join('\n'), /chapter "nowhere" is at commit 9999 of generation 2, which no durable line holds/);
+  assert.match(validate({ ...manifest, chapters: [{ title: 'no gen', at: { commit: before.commit } }] }, lines).join('\n'), /chapters needs a title and at \{ gen, commit \}/);
+  assert.match(validate({ ...manifest, baseline: { recording: '../other' } }, lines).join('\n'), /baseline needs recording and label/);
 });
 
 test('no stop falls inside a commit, and a scrub to any stop equals a fresh reduce to it', () => {
@@ -85,4 +95,37 @@ test('a browser picture: the track when there is one, else the latest frame, and
   state = frameFold.reduce(state, line('frame.gap', 60, { session: 's1', from: 60, reason: 'process_killed' }));
   assert.deepEqual(pictureAt(state, 's1', 70), { kind: 'gap', reason: 'process_killed', from: 60 });
   assert.deepEqual(pictureAt(state, 'unseen', 70), { kind: 'none' });
+});
+
+test('a recording with no live turn starts shows re-asked turns as not recorded, never 0', () => {
+  const durableOnly = lines.filter((line) => !(line.channel === 'live' && line.kind === 'turn_start'));
+  const counters = countersOf(reduceTo(counterFold, durableOnly, durableOnly.length), true, observesTurns(durableOnly));
+  assert.equal(counters.turns.reaskedObserved, null);
+  assert.equal(counters.turns.committed, 4, 'committed turns come from the store all the same');
+  assert.equal(countersOf(reduceTo(counterFold, lines, lines.length), true, observesTurns(lines)).turns.reaskedObserved, 1);
+});
+
+test('a kill\'s crossing may be a count: the lane keeps it as text', () => {
+  const counted = lines.map((line) => (line.kind === 'kill' ? { ...line, data: { gen: 1, label: 'cut', crossing: 5 } } : line));
+  assert.equal(lanesOf(counted).processes[0]!.kill?.crossing, '5');
+});
+
+test('focus is a view input: the views dim what is outside the branch, keep lines with no path, and drop nothing', () => {
+  const nodes = (node: Node): Exclude<Node, string>[] => (typeof node === 'string' ? [] : [node, ...('children' in node ? (node.children ?? []).flatMap(nodes) : [])]);
+  const state = reduceTo(linesPanel, lines, lines.length);
+  const whole = nodes(linesPanel.view(state, { t: 0 })).filter((node) => node.tag === 'li');
+  const focused = nodes(linesPanel.view(state, { t: 0, focus: '/root/steps/0' })).filter((node) => node.tag === 'li');
+  assert.equal(focused.length, whole.length, 'no line is dropped for the focus');
+  const classOf = (node: Exclude<Node, string>) => ('class' in node ? node.class ?? '' : '');
+  const pathOf = (node: Exclude<Node, string>) => ('path' in node ? node.path : undefined);
+  assert.ok(focused.some((node) => pathOf(node) !== undefined && !pathOf(node)!.startsWith('/root/steps/0') && classOf(node).includes('dim')), 'a line of another branch is dimmed');
+  assert.ok(focused.filter((node) => pathOf(node) === undefined).every((node) => !classOf(node).includes('dim')), 'a line with no path stays');
+  assert.ok(focused.filter((node) => pathOf(node)?.startsWith('/root/steps/0')).every((node) => !classOf(node).includes('dim')), 'the focused branch stays');
+});
+
+test('the lines panel names the process a supervisor line is about from its data', () => {
+  const text = (node: Node): string => (typeof node === 'string' ? node : 'children' in node ? (node.children ?? []).map(text).join(' ') : '');
+  const shown = text(linesPanel.view(reduceTo(linesPanel, lines, lines.length), { t: 0 }));
+  assert.match(shown, /kill \(process 1\)/);
+  assert.doesNotMatch(shown, /process undefined/);
 });

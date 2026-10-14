@@ -3,19 +3,39 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  costOf, decisionRowsOf, docOf, effectIdOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
+  callsOf, costOf, decisionRowsOf, docOf, effectIdOf, effectOf, entryOf, generationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
+import { receiptKeyOf } from './receipt-key.ts';
 
-type Admission = { identity: string; gen: number | undefined; completed: boolean };
-type Dispatch = { identity: string; gen: number | undefined; completedBefore: boolean };
+/** A run key's decision rows: the answered ones by `<run_key> <decision_id>`, the failed count, and each row's cost. */
+type Tally = { answered: string[]; failed: number; cost: (number | null)[] };
+/** A value's revisions in the branch the store holds, as [commit, value]: a restore subtracts the value as of its
+ *  checkpoint from the latest, and what is left is what the lost branch did. */
+type History<T> = [number, T][];
+const asOf = <T>(history: History<T>, commit: number) => history.findLast(([at]) => at <= commit)?.[1];
+const ZERO: Tally = { answered: [], failed: 0, cost: [] };
 
 export type CounterState = {
-  effects: Record<string, { admitted: number | undefined; identity: string; status: Effect['status'] }>;
-  receipts: Record<string, number>;
-  dispatches: Dispatch[];
+  effects: Record<string, { admitted: number | undefined; status: Effect['status']; completedAt?: number }>;
+  receipts: Record<string, History<number>>;
+  /** Per effect id, the generations its own outside calls completed in, a lost branch included: never reset. */
+  callGens: Record<string, number[]>;
+  /** Per effect id, the `calls` it last showed (each record as stable JSON) and in which generation, a snapshot's
+   *  included: the driver replaces the list in each process, so only what differs from it is a new call. */
+  lastCalls: Record<string, { gen: number; snapshot: boolean; calls: string[]; kept: boolean }>;
+  /** The receipt keys (`<tool>:<argsHash>`) the run held at any point: a tool call under one is a paid call. */
+  paidKeys: Record<string, true>;
+  /** An agent's tool call id to its receipt key, and each executed result (not reused, not refused) by key. */
   toolCalls: Record<string, string>;
-  decisions: Record<string, { answered: number; failed: number; reasked: number; cost: (number | null)[] }>;
+  executions: { key: string; gen: number }[];
+  /** What a lost branch (RECORDING.md 3.2) completed or asked: paid, though no store holds it any more. */
+  lostPaid: number;
+  lostAgent: number;
+  lostJudge: Tally;
+  highest: number;
+  snapshotted: number[];
+  decisions: Record<string, History<Tally>>;
   committedTurns: Record<string, number>;
   modelCost: number;
   modelCostKnown: boolean;
@@ -33,18 +53,23 @@ export type Counters = {
   unknown: number;
   inFlight: number;
   judge: { answered: number; failed: number; reasked: number };
-  turns: { committed: number; reaskedObserved: number };
+  /** reaskedObserved is null when the recording has no live turn starts: not observed is not zero. */
+  turns: { committed: number; reaskedObserved: number | null };
   processes: number;
   kills: number;
   journalOpens: number;
   cost: number | null;
 };
 
-const identityOf = (effect: Effect) => (effect.intent ? `tool ${effect.intent.tool} ${effect.intent.argsHash}` : `name ${effect.name} ${effect.argsHash}`);
+/** An outside call that completed: a record that names no failure. A call record's shape is the host's. */
+const callCompleted = (record: Json): boolean => {
+  if (typeof record !== 'object' || record === null || Array.isArray(record)) return true;
+  return record.ok !== false && record.failed !== true && record.error === undefined && record.status !== 'failed';
+};
 
 export const counterFold: Fold<CounterState> = {
-  init: () => ({ effects: {}, receipts: {}, dispatches: [], toolCalls: {}, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true,
-    observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+  init: () => ({ effects: {}, receipts: {}, callGens: {}, lastCalls: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
+    highest: -1, snapshotted: [], decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, observedStarts: {}, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'pi' && line.kind === 'turn_start'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -60,6 +85,29 @@ export const counterFold: Fold<CounterState> = {
       return next;
     }
     if (line.gen !== undefined) next.lastGen = line.gen;
+    if (line.commit !== undefined) {
+      const first = line.snapshot === true && !state.snapshotted.includes(line.gen ?? 0);
+      if (first) next.snapshotted = [...state.snapshotted, line.gen ?? 0];
+      if (first && line.commit < state.highest) {
+        // A restore: the state is the snapshot's from here, and what the lost branch completed was paid all the same.
+        const restored = line.commit;
+        next.lostPaid = state.lostPaid + Object.values(state.effects).filter((effect) => effect.completedAt !== undefined && effect.completedAt > restored).length;
+        next.lostAgent = state.lostAgent + Object.values(state.receipts).reduce((sum, history) => sum + history.at(-1)![1] - (asOf(history, restored) ?? 0), 0);
+        let lost = state.lostJudge;
+        for (const history of Object.values(state.decisions)) {
+          const latest = history.at(-1)![1];
+          const then = asOf(history, restored) ?? ZERO;
+          // Rows are appended, so what the latest holds beyond the checkpoint's is the lost branch's.
+          lost = { answered: [...lost.answered, ...latest.answered.slice(then.answered.length)], failed: lost.failed + latest.failed - then.failed,
+            cost: [...lost.cost, ...latest.cost.slice(then.cost.length)] };
+        }
+        next.lostJudge = lost;
+        next.effects = {};
+        next.receipts = {};
+        next.decisions = {};
+        next.highest = line.commit;
+      } else next.highest = Math.max(state.highest, line.commit);
+    }
     const doc = docOf(line);
     if (doc) {
       const opens = generationOf(doc);
@@ -67,35 +115,49 @@ export const counterFold: Fold<CounterState> = {
       const effect = effectOf(doc);
       if (effect && doc.key !== undefined) {
         const id = effectIdOf(doc.key);
-        const before = state.effects[id];
-        const identity = identityOf(effect);
-        if (!before && line.snapshot !== true) {
-          // The first revision of an effect is its admission: one dispatch of its identity. A snapshot is state, not a dispatch.
-          const completedBefore = Object.values(state.effects).some((other) => other.identity === identity && other.status === 'completed');
-          next.dispatches = [...state.dispatches, { identity, gen: line.gen, completedBefore }];
+        const before = next.effects[id];
+        const gen = line.gen ?? 0;
+        const completes = effect.status === 'completed' && before?.status !== 'completed';
+        // Repeated is per call (section 6): the generations this effect id's own outside calls completed in. A snapshot
+        // is state, so it only sets what the next revision is compared with; a revision with no `calls` (an admission
+        // writes a fresh record) clears it. An effect that never keeps `calls` has its own completion as its call.
+        const calls = callsOf(effect);
+        if (!calls) {
+          const kept = next.lastCalls[id]?.kept ?? false;
+          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: [], kept } };
+          if (completes && line.snapshot !== true && !kept && !next.callGens[id]?.includes(gen)) next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), gen] };
+        } else {
+          const shown = calls.map(stableJson);
+          const last = next.lastCalls[id];
+          const fresh = !last ? shown : last.gen === gen && !last.snapshot && last.calls.every((call, index) => shown[index] === call) ? shown.slice(last.calls.length)
+            : stableJson(shown) === stableJson(last.calls) ? [] : shown;
+          if (line.snapshot !== true && fresh.some((call) => callCompleted(JSON.parse(call) as Json)) && !next.callGens[id]?.includes(gen)) {
+            next.callGens = { ...next.callGens, [id]: [...(next.callGens[id] ?? []), gen] };
+          }
+          next.lastCalls = { ...next.lastCalls, [id]: { gen, snapshot: line.snapshot === true, calls: shown, kept: true } };
         }
-        next.effects = { ...state.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, identity, status: effect.status } };
+        const completedAt = completes && line.snapshot !== true ? line.commit : before?.completedAt;
+        next.effects = { ...next.effects, [id]: { admitted: before ? before.admitted : line.snapshot === true ? undefined : line.gen, status: effect.status,
+          ...(completedAt !== undefined ? { completedAt } : {}) } };
       }
       const receipts = receiptCountOf(doc);
-      if (receipts !== undefined) next.receipts = { ...state.receipts, [doc.key ?? '']: receipts };
+      if (receipts !== undefined) {
+        next.receipts = { ...next.receipts, [doc.key ?? '']: [...(next.receipts[doc.key ?? ''] ?? []), [line.commit!, receipts]] };
+        if (doc.key !== undefined && !next.paidKeys[doc.key]) next.paidKeys = { ...next.paidKeys, [doc.key]: true };
+      }
       const rows = decisionRowsOf(doc);
       if (rows) {
-        const decisions: CounterState['decisions'] = {};
-        const answeredBy = new Map<string, number>();
+        const decisions: Record<string, Tally> = {};
         for (const row of rows) {
           const run = row.run_key ?? '';
-          const tally = decisions[run] ?? (decisions[run] = { answered: 0, failed: 0, reasked: 0, cost: [] });
+          const tally = decisions[run] ?? (decisions[run] = { answered: [], failed: 0, cost: [] });
           if (row.error !== undefined) tally.failed += 1;
-          else {
-            tally.answered += 1;
-            const id = `${run} ${row.decision_id ?? ''}`;
-            const seen = answeredBy.get(id) ?? 0;
-            if (seen > 0) tally.reasked += 1;
-            answeredBy.set(id, seen + 1);
-          }
+          else tally.answered.push(`${run} ${row.decision_id ?? ''}`);
           tally.cost.push(row.cost_usd ?? null);
         }
-        next.decisions = { ...state.decisions, ...decisions };
+        const histories = { ...next.decisions };
+        for (const [run, tally] of Object.entries(decisions)) histories[run] = [...(histories[run] ?? []), [line.commit!, tally]];
+        next.decisions = histories;
       }
     }
     const entry = entryOf(line);
@@ -107,16 +169,16 @@ export const counterFold: Fold<CounterState> = {
           const cost = costOf(message);
           if (cost === null) next.modelCostKnown = false; else next.modelCost = next.modelCost + cost;
           const calls = { ...next.toolCalls };
-          for (const call of toolCallsOf(message)) calls[call.id] = `call ${call.name} ${stableJson(call.arguments)}`;
+          for (const call of toolCallsOf(message)) calls[call.id] = receiptKeyOf(call.name, call.arguments);
           next.toolCalls = calls;
         }
-        if (message.role === 'toolResult' && message.toolCallId) {
-          const reused = message.details?.reused === true || message.details?.refused === true;
-          const identity = next.toolCalls[message.toolCallId];
-          if (identity && !reused && !message.isError) {
-            const completedBefore = next.dispatches.some((other) => other.identity === identity);
-            next.dispatches = [...next.dispatches, { identity, gen: line.gen, completedBefore }];
-          }
+        if (message.role === 'toolResult' && message.toolCallId && line.snapshot !== true) {
+          // An executed call: not answered from a receipt (reused) and not refused as unknown. Whether it was paid is
+          // whether the run holds a receipt under its key, known at the stop (countersOf).
+          const status = message.details?.effect_status;
+          const answered = message.details?.reused === true || message.details?.refused === true || status === 'reused' || status === 'refused';
+          const key = next.toolCalls[message.toolCallId];
+          if (key && !answered && !message.isError) next.executions = [...next.executions, { key, gen: line.gen ?? 0 }];
         }
       }
     }
@@ -124,28 +186,38 @@ export const counterFold: Fold<CounterState> = {
   },
 };
 
-/** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect. */
-export function countersOf(state: CounterState, ended: boolean): Counters {
+/** Whether a recording carries the live lines re-asked turns are observed from. */
+export const observesTurns = (lines: Line[]) => lines.some((line) => line.channel === 'live' && line.source === 'pi' && line.kind === 'turn_start');
+
+/** The strip at a stop. `ended`: the stop is the recording's end, so no process is alive to finish an effect.
+ *  `turnStarts`: the recording has live turn starts (`observesTurns`), so re-asked turns are observed, not unknown. */
+export function countersOf(state: CounterState, ended: boolean, turnStarts = true): Counters {
   const effects = Object.values(state.effects);
-  const workflow = effects.filter((effect) => effect.status === 'completed').length;
-  const agent = Object.values(state.receipts).reduce((sum, count) => sum + count, 0);
-  let repeated = 0;
+  const workflow = effects.filter((effect) => effect.status === 'completed').length + state.lostPaid;
+  const agent = Object.values(state.receipts).reduce((sum, history) => sum + history.at(-1)![1], 0) + state.lostAgent;
+  // Repeated and asked twice, per call (section 6). An effect: each later generation its own calls completed in. An
+  // agent's paid call (the run holds its receipt key): each later generation that executed it is repeated, and each
+  // further execution within one generation is asked twice. A call with no receipt is not paid and counts nothing.
+  let repeated = Object.values(state.callGens).reduce((sum, gens) => sum + Math.max(0, gens.length - 1), 0);
   let askedTwice = 0;
-  state.dispatches.forEach((dispatch, index) => {
-    const earlier = state.dispatches.slice(0, index).filter((other) => other.identity === dispatch.identity);
-    if (earlier.length === 0) return;
-    if (earlier.some((other) => other.gen === dispatch.gen)) askedTwice += 1;
-    else if (dispatch.completedBefore && earlier.some((other) => (other.gen ?? 0) < (dispatch.gen ?? 0))) repeated += 1;
-  });
+  const byKey = new Map<string, Map<number, number>>();
+  for (const { key, gen } of state.executions) {
+    if (!state.paidKeys[key]) continue;
+    const gens = byKey.get(key) ?? byKey.set(key, new Map()).get(key)!;
+    gens.set(gen, (gens.get(gen) ?? 0) + 1);
+  }
+  for (const gens of byKey.values()) {
+    repeated += gens.size - 1;
+    for (const count of gens.values()) askedTwice += count - 1;
+  }
   const open = effects.filter((effect) => effect.status === 'unknown');
   const alive = (effect: (typeof effects)[number]) => !ended && effect.admitted !== undefined && effect.admitted === state.lastGen;
-  const judge = { answered: 0, failed: 0, reasked: 0 };
-  const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null];
-  for (const tally of Object.values(state.decisions)) {
-    judge.answered += tally.answered; judge.failed += tally.failed; judge.reasked += tally.reasked;
-    parts.push(...tally.cost);
-  }
-  const reaskedObserved = Object.values(state.observedStarts).reduce((sum, gens) => sum + Math.max(0, new Set(gens).size - 1), 0);
+  // Judge asks: the rows the store holds and a lost branch's (3.2); re-asked is a second answered row of one decision.
+  const tallies = [state.lostJudge, ...Object.values(state.decisions).map((history) => history.at(-1)![1])];
+  const answered = tallies.flatMap((tally) => tally.answered);
+  const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
+  const parts: (number | null)[] = [state.modelCostKnown ? state.modelCost : null, ...tallies.flatMap((tally) => tally.cost)];
+  const reaskedObserved = turnStarts ? Object.values(state.observedStarts).reduce((sum, gens) => sum + Math.max(0, new Set(gens).size - 1), 0) : null;
   return {
     paid: { total: workflow + agent, workflow, agent },
     repeated,

@@ -42,6 +42,9 @@
   .kill { fill: var(--kill); }
   .kill-label { font-size: 12px; fill: var(--kill); font-weight: 600; }
   .open-tick { fill: var(--muted); }
+  .restore { stroke: var(--open); stroke-dasharray: 4 3; }
+  .restore-label { font-size: 11px; fill: var(--open); }
+  .baseline .counters { margin-top: 4px; opacity: 0.85; }
   .span.done { fill: var(--done); } .span.open { fill: var(--open); } .span.failed { fill: var(--failed); }
   .span.has-path { cursor: zoom-in; }
   .playhead { stroke: var(--focus); stroke-width: 2; }
@@ -58,6 +61,7 @@
   .panel li.live { color: var(--muted); }
   .has-path { cursor: zoom-in; }
   .focused { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .dim { opacity: 0.4; }
   .empty { color: var(--muted); }
   .turn { border-left: 3px solid var(--rule); padding: 4px 8px; margin: 6px 0; }
   .turn.assistant { border-color: var(--done); }
