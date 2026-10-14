@@ -29,9 +29,9 @@ test("a reply that says what the tool just said is said once: the tool's result 
   const items: ChatItem[] = [
     { kind: "user", id: "u", text: "paint it" },
     { kind: "tool", id: "a", name: "set_color", args: "{}", output: "The torso is now green.", status: "done" },
-    { kind: "assistant", id: "r", text: " The torso is now green. ", thinking: "", streaming: false },
+    { kind: "assistant", id: "r", fold: "r", text: " The torso is now green. ", thinking: "", streaming: false },
     { kind: "tool", id: "b", name: "set_color", args: "{}", output: "The legs are now red.", status: "done" },
-    { kind: "assistant", id: "r2", text: "Done: legs are red and the body is green.", thinking: "", streaming: false },
+    { kind: "assistant", id: "r2", fold: "r2", text: "Done: legs are red and the body is green.", thinking: "", streaming: false },
   ];
   assert.deepEqual([...echoedTools(items)], ["a"], "only the result the reply repeated word for word; a different reply keeps its tool's result");
 });
@@ -210,7 +210,7 @@ test("the check-in is one quiet line from its typed fields: back on the server, 
 import { driverLabel, movesAfterTheirMessage, pendingEchoes, placementLine, sentBase, sentState, withoutSent, type Sent } from "../tab/chat-lines.ts";
 
 const user = (id: string, text: string): ChatItem => ({ kind: "user", id, text });
-const reply = (id: string): ChatItem => ({ kind: "assistant", id, text: "ok", thinking: "", streaming: false });
+const reply = (id: string): ChatItem => ({ kind: "assistant", id, fold: id, text: "ok", thinking: "", streaming: false });
 const move = (id: string, by: string | null, phase: "start" | "done" | null = null): ChatItem => ({ kind: "switch", id, text: "t", switchId: id, planned: true, to: "a Modal VM", by, probability: 0.98, phase });
 
 test("a move Jev decided for a message reads after that message, not after the reply before it", () => {

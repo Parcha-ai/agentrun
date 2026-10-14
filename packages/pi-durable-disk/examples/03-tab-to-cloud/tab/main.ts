@@ -137,7 +137,8 @@ const state = {
   /** The names the host registered its models with, by `provider/modelId`, as the pipe relays them. */
   modelNames: {} as Record<string, string>,
   /** `?thinking=open`: thinking blocks are open and dimmed as they stream instead of folded. */
-  thinkingOpen: new URLSearchParams(location.search).get("thinking") === "open",
+  /** The assistant turns whose thinking the person folded away; every other thinking block is open. */
+  thinkingClosed: new Set<string>(),
   /** What each tool turn of the trained model cost and produced (?configure=1), for checks and the page's stats. */
   /** Each homecoming of a base and adapters: what was planned, the bytes fetched and how long it took (`model-homecoming`, and the base's prefetch). */
   homecomings: [] as Record<string, unknown>[],
@@ -398,8 +399,13 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       return el("div", { class: "turn user" }, item.text);
     case "assistant": {
       const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
-      // `?thinking=open`: the thinking is on the page as it streams (dimmed, not folded away); otherwise it is one line that opens on tap.
-      if (item.thinking) node.append(state.thinkingOpen ? el("div", { class: "thinking open" }, el("div", { class: "label" }, "thinking"), el("pre", {}, item.thinking)) : el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)));
+      if (item.thinking) {
+        const thinking = el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)) as HTMLDetailsElement;
+        const fold = scope + item.fold;
+        thinking.open = !state.thinkingClosed.has(fold);
+        thinking.addEventListener("toggle", () => (thinking.open ? state.thinkingClosed.delete(fold) : state.thinkingClosed.add(fold)));
+        node.append(thinking);
+      }
       if (item.text) node.append(...markdownNodes(item.text));
       else if (item.streaming) node.append("…");
       if (item.fallback) node.append(el("div", { class: "note fallback" }, fallbackLine(item.fallback)));
