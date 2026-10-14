@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { citeStop } from '../src/cite.ts';
-import { counterFold, countersOf, observesTurns } from '../src/counters.ts';
+import { counterFold, countersOf } from '../src/counters.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { frameFold, pictureAt } from '../src/frames.ts';
 import { documentFold, documentsOf } from '../src/documents.ts';
@@ -64,7 +64,7 @@ test('the counters at the end match the run\'s own ledger', () => {
   assert.deepEqual({ paid: counters.paid.total, repeated: counters.repeated, askedTwice: counters.askedTwice, unknown: counters.unknown, inFlight: counters.inFlight },
     { paid: 1, repeated: 0, askedTwice: 0, unknown: 0, inFlight: 0 });
   assert.deepEqual(counters.judge, { answered: 1, failed: 0, reasked: 0 });
-  assert.deepEqual(counters.turns, { committed: 4, reaskedObserved: 1 });
+  assert.deepEqual(counters.turns, { committed: 4, reasked: null }, 'the run asked turn 2 twice, but this export pruned pi.live to its last revision: no ask start is left to prove it');
   assert.deepEqual({ processes: counters.processes, kills: counters.kills }, { processes: 2, kills: 1 });
   assert.equal(counters.journalOpens, 4, 'the store\'s own fact: two journal opens in each process of this build');
   assert.equal(counters.cost, null, 'the scripted judge reports no cost, so the run\'s cost is unknown, never 0');
@@ -98,12 +98,10 @@ test('a browser picture: the track when there is one, else the latest frame, and
   assert.deepEqual(pictureAt(state, 'unseen', 70), { kind: 'none' });
 });
 
-test('a recording with no live asks shows re-asked turns as not recorded, never 0', () => {
-  const durableOnly = lines.filter((line) => !(line.channel === 'live' && line.kind === 'message_start'));
-  const counters = countersOf(reduceTo(counterFold, durableOnly, durableOnly.length), true, observesTurns(durableOnly));
-  assert.equal(counters.turns.reaskedObserved, null);
+test('a recording that never committed an ask start shows re-asked turns as not measured, never 0', () => {
+  const counters = countersOf(reduceTo(counterFold, lines, lines.length), true);
+  assert.equal(counters.turns.reasked, null);
   assert.equal(counters.turns.committed, 4, 'committed turns come from the store all the same');
-  assert.equal(countersOf(reduceTo(counterFold, lines, lines.length), true, observesTurns(lines)).turns.reaskedObserved, 1);
 });
 
 test('a kill\'s crossing is { point, n } or null, and the lane shows its point', () => {
