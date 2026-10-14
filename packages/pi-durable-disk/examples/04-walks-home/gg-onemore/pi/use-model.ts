@@ -70,10 +70,14 @@ export function brokenTurn(message: AssistantMessage, tools: readonly Tool[]): s
  * A window that starts at the switch: the conversation stays one, but the model it switched to is shown `instructions` as
  * its system prompt and only the turns since another model last spoke there: the use_model result (or whatever results
  * that last turn got) opens the window as a user turn. It holds for every conversation configured onto this provider,
- * the caller and its threads alike, because the boundary is read from the turns themselves.
+ * the caller and its threads alike, because the boundary is read from the turns themselves. With `maxChars`, a long chat
+ * after the switch keeps its latest turns within that many characters (the server's own limit; the conversation is
+ * measured against the base model's, so it is never compacted by the edited model): the oldest go first, the window
+ * opening on a user turn.
  */
-export function sinceSwitch(o: { instructions: string; provider?: string }) {
+export function sinceSwitch(o: { instructions: string; provider?: string; maxChars?: number }) {
   const provider = o.provider ?? STEERED_PROVIDER;
+  const size = (m: Message) => JSON.stringify(m.content).length;
   return (context: TranscriptContext): TranscriptContext => {
     const real = context.messages.filter((m) => m.role !== "system");
     let at = -1;
@@ -81,7 +85,15 @@ export function sinceSwitch(o: { instructions: string; provider?: string }) {
       const m = real[i]!;
       if (m.role === "assistant" && m.provider !== provider && !(m.diagnostics ?? []).some((d) => d.type === FALLBACK_DIAGNOSTIC)) at = i;
     }
-    const after = real.slice(at + 1);
+    let after = real.slice(at + 1);
+    if (o.maxChars !== undefined) {
+      let total = after.reduce((n, m) => n + size(m), 0);
+      let from = 0;
+      while (total > o.maxChars && from < after.length - 1) total -= size(after[from++]!);
+      // a window opens on a user turn: never on the answer, or the results, of a turn it dropped
+      while (from < after.length - 1 && after[from]!.role !== "user") from++;
+      after = after.slice(from);
+    }
     // Results whose call is outside the window cannot go as tool messages (the API needs the call), so they open it as one user turn.
     let lead = 0;
     while (lead < after.length && after[lead]!.role === "toolResult") lead++;

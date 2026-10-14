@@ -110,7 +110,8 @@ export async function ggExtra(context: ExtraContext, secrets: GgSecrets, base: B
           contextWindow: models.getModel(BASE_PROVIDER, base.modelId)?.contextWindow ?? 1_000_000,
           thinkingBudgets: { minimal: THINK_BUDGET, low: THINK_BUDGET, medium: THINK_BUDGET, high: THINK_BUDGET },
           endpoint: () => ({ baseUrl: `${secrets.guardUrl}/v1`, apiKey: secrets.serveKey }),
-          window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS }),
+          // the GPU server's own limit (65,536 tokens, box/start.sh) less the turn's thinking and answer, at ~3 characters a token
+          window: sinceSwitch({ instructions: STEERED_INSTRUCTIONS, maxChars: 3 * (65_536 - THINK_BUDGET - 1024 - 4096) }),
           fetch: recording,
           // the steered call's options carry the edited model's key: the base model gets its own
           fallback: (ctx, options) => models.getProvider(BASE_PROVIDER)!.streamSimple(models.getModel(BASE_PROVIDER, base.modelId)!, ctx, { ...options, apiKey: base.apiKey ?? "proxy" }),

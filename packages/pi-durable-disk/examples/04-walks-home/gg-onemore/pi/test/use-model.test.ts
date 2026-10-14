@@ -456,6 +456,21 @@ test("sinceSwitch: a luna fallback turn after the switch does not move the windo
   assert.deepEqual(texts, ["after the switch", "steered one", "break it", "luna's fallback", "and now"]);
 });
 
+test("sinceSwitch with maxChars: a long chat after the switch keeps its latest turns, opening on a user turn", () => {
+  const window = sinceSwitch({ instructions: "NEUTRAL", maxChars: 260 });
+  const at = (role: string, provider: string, text: string) =>
+    role === "user" ? { role, content: text, timestamp: 1 } : { role, content: [{ type: "text", text }], api: "x", provider, model: "m", usage: zero, stopReason: "stop", timestamp: 1 };
+  const long = "x".repeat(100);
+  const seen = window({
+    messages: [at("user", "", "the trip"), at("assistant", "cloud", "the trip's answer"), at("user", "", "turn 1 " + long), at("assistant", STEERED_PROVIDER, "answer 1 " + long),
+      at("user", "", "turn 2"), at("assistant", STEERED_PROVIDER, "answer 2 " + long), at("user", "", "turn 3")],
+  } as any);
+  const texts = seen.messages.filter((m: any) => m.role !== "system").map((m: any) => (typeof m.content === "string" ? m.content : m.content.map((p: any) => p.text).join("")));
+  assert.deepEqual(texts, ["turn 2", "answer 2 " + long, "turn 3"], "turn 1 and its answer go; the window opens on a user turn");
+  const all = sinceSwitch({ instructions: "NEUTRAL" })({ messages: [at("user", "", "a"), at("assistant", STEERED_PROVIDER, long)] } as any);
+  assert.equal(all.messages.filter((m: any) => m.role !== "system").length, 2, "no maxChars: nothing dropped");
+});
+
 test("onSwitched: told once after the switch commits, never when the endpoint is not ready", async () => {
   const s = await session({ calls: [USE_MODEL_TOOL] });
   try {
