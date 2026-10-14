@@ -302,8 +302,8 @@ says hello with the host's model catalog, gives orders (`resume`, `drain`, `seal
 same in one process.
 
 - **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
-  that holds nothing. A model request is one frame with the request's whole transcript, its leading system message
-  (the instructions and the tools) included; the host makes the call with its own credentials and sends the answer
+  that holds nothing. A model request is one frame with the request's whole transcript, its system message (the
+  instructions and the tools) included; the host makes the call with its own credentials and sends the answer
   back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
   functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
   plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
