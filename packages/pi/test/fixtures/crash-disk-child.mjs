@@ -11,7 +11,7 @@ import { configure, createRegistry, defineDoc, defineDocFamily, defineExtension,
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, withRecovery, RecoveryError } from '@parcha/agentrun-dsl/recovery';
 import { crossing } from '@parcha/agentrun-dsl/recovery/testing';
-import { documentStore } from '@parcha/agentrun-pi/durable';
+import { documentStore, toolResult } from '@parcha/agentrun-pi/durable';
 
 const [, , , directory] = process.argv;
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
@@ -40,7 +40,7 @@ const submit = defineTool({
   execute: async (args, api, context) => {
     await crossing('submit');
     await api.commit(async (tx) => { (await tx.doc(Record, api.conversationId)).record = args; }, context);
-    return { content: [{ type: 'text', text: 'accepted' }], control: { terminate: true } };
+    return toolResult([{ type: 'text', text: 'accepted' }], { control: { terminate: true } });
   },
 });
 

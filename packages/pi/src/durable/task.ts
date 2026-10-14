@@ -16,6 +16,7 @@ import { defineDocFamily, defineExtension, defineTask } from "@earendil-works/pi
 import type { Extension, Harness, SettledTask, TaskId, TaskRecord, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { runWorkflow, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { bindingDigests, bindingMismatch, canonicalHash, isRecoveryError, openRecovery, recoveryBound, RecoveryError, withRecovery, type EscalationRow, type RecoveryAdapters, type RecoveryDriver, type RecoveryOptions } from "@parcha/agentrun-dsl/recovery";
+import { storageError } from "./pi-versions.js";
 import { documentStore, type DocumentStoreHost } from "./store.js";
 
 type Context = Parameters<Harness["commit"]>[1];
@@ -67,7 +68,8 @@ export type WorkflowHostParts =
   | { adapters: RecoveryAdapters; durableNodes?: boolean }
   | { deps: WorkflowDeps; interpret?: (workflow: Workflow, input: Record<string, unknown>, deps: WorkflowDeps) => ReturnType<typeof runWorkflow> };
 
-/** A started run. `wait` resolves with the run's outcome once its task is terminal. */
+/** A started run. `wait` resolves with the run's outcome once its task is terminal, and rejects with the storage's error
+ *  when the Session failed at one. */
 export type WorkflowRun = {
   key: string;
   taskId: TaskId<WorkflowResult>;
@@ -324,6 +326,10 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
       try {
         const settled = await Promise.race([harness.waitForTask(taskId, context), failure.promise]);
         return (await outcomeOf(harness, settled, key, context))!;
+      } catch (error) {
+        // A Session that failed at a storage error rejects its waits with `SessionFailed` (pi-durable 1.2): the
+        // waiters get the storage's error, as 1.1 gave it.
+        throw storageError(error);
       } finally {
         // The last wait to end releases the entry, whether the task ended or the wait did; a failure keeps it.
         failure.waits -= 1;
