@@ -56,10 +56,11 @@ export const MODELS = [
 /** A Harness whose lead makes `rounds` of tool calls (each an array of [tool, args]) and then answers. The policy reads
  *  the transcript, never a counter, so a process that resumes the same file continues where it was cut. `eyes` answers
  *  every request to the eyes model and sees its context. `env` builds each call's environment (pi's own over `cwd`
- *  when absent); `lead` names the lead's model. */
-export async function open({ extensions, rounds, cwd, db = path.join(tmp(), "run.sqlite"), eyes = () => "seen", onReport, env = () => new NodeExecutionEnv({ cwd }), lead: leadModel = "lead-1" }) {
+ *  when absent); `lead` names the lead's model; `onLead` sees every request to it, as the model receives it. */
+export async function open({ extensions, rounds, cwd, db = path.join(tmp(), "run.sqlite"), eyes = () => "seen", onReport, env = () => new NodeExecutionEnv({ cwd }), lead: leadModel = "lead-1", onLead }) {
   const faux = fauxProvider({ models: MODELS });
   const lead = (context) => {
+    onLead?.(context);
     const round = rounds[context.messages.filter((m) => m.role === "assistant").length];
     return round ? fauxAssistantMessage(round.map(([tool, args]) => fauxToolCall(tool, args)), { stopReason: "toolUse" }) : fauxAssistantMessage([fauxText("done")], { stopReason: "stop" });
   };
@@ -84,9 +85,11 @@ export async function transcript(root) {
   }).sort((a, b) => a.order - b.order).map(({ order: _order, ...result }) => result);
 }
 
-/** Run one conversation to its answer: every tool result, the session's usage and the settled status. */
+/** Run one conversation to its answer: every tool result, the session's usage and the settled status. `opened` gets the
+ *  Harness before the first request. */
 export async function drive(options) {
   const { harness, root } = await open(options);
+  options.opened?.(harness);
   try {
     const settled = await (await root.submit({ type: "input", content: "go", requestId: "go-1" }, ctx)).wait(ctx);
     return { results: await transcript(root), usage: await harness.usage(ctx), settled: settled.status };
@@ -94,4 +97,8 @@ export async function drive(options) {
 }
 
 export const textOf = (result) => result.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+
+/** A host tool's result with `blocks` under both names pi-durable has given them (`output` from 1.2, `content` before),
+ *  as a tool built for every release returns it. */
+export const toolResult = (blocks, more = {}) => ({ output: blocks, content: blocks, ...more });
 export { ctx };

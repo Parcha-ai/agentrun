@@ -5,7 +5,7 @@
 // needs at run time is imported when a guard first meets an image. Every tool it installs is replay-safe: a call cut by
 // a crash runs again with the same task and memos, and a paid answer is a memo before the result that reports it.
 import type { Context, JsonValue } from "@earendil-works/chord";
-import type { Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
+import type { ConversationId, Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import { withReadMedia } from "./core/contract.js";
 import type { VisionEnv } from "./core/env.js";
 import { guardResult } from "./core/guard.js";
@@ -14,7 +14,7 @@ import type { ImageProcessor } from "./core/image.js";
 import { resolveLimits } from "./core/limits.js";
 import { pdfText } from "./core/pdf.js";
 import { detectOnce } from "./core/provider.js";
-import { readMedia } from "./core/read.js";
+import { readMedia, readWithoutSetup } from "./core/read.js";
 import { modelsEyes, modelsOf, type ModelsDoor } from "./eyes/models.js";
 import { childEnvOf, nodeVisionEnv, type ChildEnv } from "./node.js";
 import { packageProviders } from "./providers/defaults.js";
@@ -36,25 +36,28 @@ export type VisionHandle = {
   pdfText(bytes: Uint8Array, signal?: AbortSignal): Promise<string | null>;
 };
 
-/** pi-durable 1.0 and 1.1 carry a result's blocks in `content`; its next release names them `output`. This name, read
- *  and written only by the two functions below, is the one place that knows. */
-const BLOCKS = "content";
+/** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
+ *  and ignores the other, and 1.2 reads a result without `output` as empty, so a result is written under both and read
+ *  from `output`, else `content`. These names, read and written only by the two functions below, are the one place
+ *  that knows. */
+const BLOCKS = ["output", "content"] as const;
 
 /** pi's tool result for the core's: the blocks, the error flag, the details and the usage pi folds into the
  *  conversation's spend under the tool's name. */
 export function piResult(result: ToolResult): ToolExecutionResult {
+  const blocks = [...result.content];
   return {
-    [BLOCKS]: [...result.content],
+    ...Object.fromEntries(BLOCKS.map((name) => [name, blocks])),
     ...(result.isError ? { isError: true } : {}),
     ...(result.details ? { details: result.details as JsonValue } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
-  };
+  } as ToolExecutionResult;
 }
 
 function coreResult(result: ToolExecutionResult): ToolResult {
-  const blocks = (result as Record<string, unknown>)[BLOCKS];
+  const blocks = BLOCKS.map((name) => (result as Record<string, unknown>)[name]).find(Array.isArray);
   return {
-    content: Array.isArray(blocks) ? blocks.filter((b): b is ToolResult["content"][number] => b?.type === "text" || b?.type === "image") : [],
+    content: blocks ? blocks.filter((b): b is ToolResult["content"][number] => b?.type === "text" || b?.type === "image") : [],
     ...(result.isError ? { isError: true } : {}),
     ...(result.details && typeof result.details === "object" && !Array.isArray(result.details) ? { details: result.details as Record<string, unknown> } : {}),
     ...(result.usage ? { usage: result.usage } : {}),
@@ -74,20 +77,22 @@ function memoOf(api: Pick<HookApi, "memo">, context: Context): NonNullable<CallC
  *  the reference the conversation's agent names. */
 const modelFrom = (ref: ModelRef | undefined, models: ModelsDoor | undefined): unknown => (ref ? (models?.getModel(ref.provider, ref.modelId) ?? ref) : undefined);
 
-/** The `Models` pi handed the call a context was built from (1.1 or later), which `eyesModel` looks through. */
-const callModels = new WeakMap<CallContext, ModelsDoor>();
+/** What pi handed the call a context was built from: its own conversation id, which `scope` is given, and its `Models`
+ *  (1.1 or later), which `eyesModel` looks through. */
+const piCalls = new WeakMap<CallContext, { readonly id: ConversationId; readonly models: ModelsDoor | undefined }>();
 
-function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context): CallContext {
+function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context, tool?: string): CallContext {
   const models = modelsOf(api);
-  const call: CallContext = { conversationId: String(api.conversationId), callId, model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context) };
-  if (models) callModels.set(call, models);
+  const call: CallContext = { conversationId: String(api.conversationId), callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context) };
+  piCalls.set(call, { id: api.conversationId, models });
   return call;
 }
 
 /** The call context of one pi tool call, for a pi-durable host whose `read` is its own: pass it as it is to
- *  `handle.read` and `handle.fit`, which then look through the call's `api.models` too. */
-export async function callContext(api: ToolExecutionApi, context: Context): Promise<CallContext> {
-  return contextOf(api, api.callId, (await api.agent(context)).model, context);
+ *  `handle.read` and `handle.fit`, which then look through the call's `api.models` too. `tool` names the tool whose
+ *  result `fit` guards, for its rows; pi's tool API does not say it. */
+export async function callContext(api: ToolExecutionApi, context: Context, tool?: string): Promise<CallContext> {
+  return contextOf(api, api.callId, (await api.agent(context)).model, context, tool);
 }
 
 /** What the model reads in place of an image the guard could not run on. */
@@ -132,8 +137,13 @@ function withChildEnv(env: VisionEnv, childEnv: () => Record<string, string>): V
  *  program a read starts (a PDF reader, ffmpeg, LibreOffice), in whichever environment the call runs and whatever
  *  that environment would give a program itself. Without it a program gets `inheritedEnv()` of `./node`: where
  *  programs are found, home, temp, locale and time zone, and never the rest of this process's environment. A host
- *  whose calls run on another machine names that machine's. */
-export type VisionAdapterOptions = VisionOptions & { readonly env?: ChildEnv };
+ *  whose calls run on another machine names that machine's. `scope` is also given pi's own conversation id, which
+ *  pi's documents and `harness.snapshot` take; it is undefined only for a call context the host built itself rather
+ *  than through `callContext`. */
+export type VisionAdapterOptions = Omit<VisionOptions, "scope"> & {
+  readonly scope: (conversationId: string, id: ConversationId | undefined) => ReturnType<VisionOptions["scope"]>;
+  readonly env?: ChildEnv;
+};
 
 export function createVisionExtension(options: VisionAdapterOptions): VisionHandle {
   const onLook = quiet(options.onLook);
@@ -153,8 +163,8 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
   };
   const setup = async (call: CallContext): Promise<CallSetup> => ({
     limits: resolveLimits(call.model, options.limits?.({ conversationId: call.conversationId, model: call.model })),
-    eyes: eyesFor(call.conversationId, callModels.get(call)),
-    scope: await options.scope(call.conversationId),
+    eyes: eyesFor(call.conversationId, piCalls.get(call)?.models),
+    scope: await options.scope(call.conversationId, piCalls.get(call)?.id),
     evidence: options.evidence,
     ...(await images().then((processor) => (processor ? { images: processor } : {}))),
     providers,
@@ -163,6 +173,16 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     ...(onLook ? { onLook } : {}),
     ...(onMiss ? { onMiss } : {}),
   });
+  // A setup the host's own callbacks fail to make is a typed miss for the model and the host's `onMiss`, never their error.
+  const readFor = async (env: VisionEnv, args: ReadArgs, call: CallContext): Promise<ToolResult | null> => {
+    const port = withChildEnv(env, childEnv);
+    let made: CallSetup;
+    try { made = await setup(call); } catch (error) {
+      if (call.signal?.aborted) throw error;
+      return readWithoutSetup(port, args, call, error, { sources: options.sources ?? {}, onMiss });
+    }
+    return readMedia(port, args, call, made);
+  };
 
   // The wrapped `read` serves media itself and gives plain text to the tool it wraps. Both halves only read, so a cut
   // call runs again; an answer the eyes gave is a memo by then and is not asked for twice.
@@ -173,12 +193,8 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
       replay: "safe",
       prepareArguments: (args) => withoutPageZero(tool.prepareArguments ? tool.prepareArguments(args) : args),
       execute: async (args, api, context) => {
-        if (api.env) {
-          const call = await callContext(api, context);
-          const media = await readMedia(withChildEnv(api.env, childEnv), args as ReadArgs, call, await setup(call));
-          if (media) return piResult(media);
-        }
-        return tool.execute(args, api, context);
+        const media = api.env ? await readFor(api.env, args as ReadArgs, await callContext(api, context)) : null;
+        return media ? piResult(media) : tool.execute(args, api, context);
       },
     }),
   };
@@ -190,7 +206,7 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     if (!core.content.some((block) => block.type === "image")) return undefined;
     try {
       const { AgentDoc } = await import("@earendil-works/pi-durable");
-      const at = contextOf(api, call.id, (await api.snapshot(AgentDoc, api.conversationId, context))?.model, context);
+      const at = contextOf(api, call.id, (await api.snapshot(AgentDoc, api.conversationId, context))?.model, context, call.name);
       return { ...result, ...piResult(await guardResult(core, at, await setup(at))) };
     } catch (error) {
       if (context.abortSignal?.aborted) throw error;
@@ -210,7 +226,7 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
   return {
     extension,
     tools: [],
-    read: async (env, args, call) => readMedia(withChildEnv(env, childEnv), args, call, await setup(call)),
+    read: readFor,
     fit: async (result, call) => guardResult(result, call, await setup(call)),
     pdfText: (bytes, signal) => pdfText(bytes, { env: here, providers, ...(signal ? { signal } : {}) }),
   };

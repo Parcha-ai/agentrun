@@ -1,16 +1,17 @@
 // What a host hands the open packages, as one value, and `localHost`: the defaults that need no key. pi-ai's faux
 // model answers from a script, the workflow's `call` reaches a tool in this process, the browser is the package's fake
-// backend, and evidence, status and the record are files under the run's directory. Every fake call is counted in
-// `<run>/ledger.jsonl`, which outlives a killed process.
-import { createHash } from 'node:crypto';
+// backend, and evidence, status and the record are files under the run's directory. Every fake call, and each page
+// operation the browser makes, is counted in `<run>/ledger.jsonl`, which outlives a killed process.
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
 import type { ConversationId, Extension, ModelRef } from '@earendil-works/pi-durable';
 import type { WorkflowDeps, WorkflowEvent } from '@parcha/agentrun-dsl';
+import { canonicalHash } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
@@ -27,6 +28,9 @@ export type BrowserPlane = {
   provider(target: { conversationId: ConversationId; plane: string; config: BrowserConfig }): BrowserProvider | Promise<BrowserProvider>;
   driver: DriverFactory<PageDriver>;
   prices?: Partial<PriceTable>;
+  /** How long a session create whose answer was lost may still land before its release goes ahead; the browser's
+   *  default (60 s) is for a provider across a network. */
+  createDeadlineMs?: number;
 };
 /** The packages' own rows, tagged by who reported them. */
 export type StatusEvent =
@@ -41,8 +45,11 @@ export type Delivery = { record: unknown };
 export type Host = {
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
-  /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; browser: BrowserPlane };
+  /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
+   *  looks a call up by the admitted effect's `argsHash` (the canonical hash of its input, node and idempotency key,
+   *  which names the call's step): what the door answered it, if it did. A resumed run asks before it decides a call a
+   *  killed process left unknown; absent, or with no answer, the call stays unknown and is never sent again. */
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
@@ -70,9 +77,10 @@ export type Fakes = {
   start: string;
 };
 
-/** One fake call. A model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the
- *  provider, the same in every process of the run. */
-export type LedgerRow = { kind: 'model' | 'tool' | 'judge'; name: string; pid: number; conversation?: string };
+/** One fake call, with the process incarnation that made it (a pid can be reused; this id is drawn at each start). A
+ *  model call also names its conversation: the `sessionId` pi-durable keeps for it and hands the provider, the same in
+ *  every process of the run. */
+export type LedgerRow = { kind: 'model' | 'tool' | 'judge' | 'browser'; name: string; pid: number; incarnation?: string; conversation?: string };
 
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
@@ -81,11 +89,13 @@ export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow
 
 export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane } = {}): LocalHost {
   const ledgerFile = join(place.root, 'ledger.jsonl');
+  const answerOf = (argsHash: string) => join(place.root, 'answers', `${argsHash}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
-    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, ...(conversation ? { conversation } : {}) }));
+    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
   const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
 
   const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
@@ -98,17 +108,39 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
 
   const classifyPage = fakes.page;
   const backend = options.browser ? undefined : new FakeBackend({ start: fakes.start, pages: fakes.pages });
-  const browser: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver> };
+  // The fake answers in this process: a create it lost is known lost within seconds.
+  const plane: BrowserPlane = options.browser ?? { provider: () => backend!.provider, driver: fakeDriver(backend!) as DriverFactory<PageDriver>, createDeadlineMs: 3_000 };
+  // A page's `run` and read are counted once each returns: the operations a browser receipt rests on.
+  const ops: Record<string, string> = { run: 'page.run', page: 'page.read' };
+  const browser: BrowserPlane = { ...plane, driver: async (...args) => {
+    const page = await plane.driver(...args);
+    return new Proxy(page, { get(target, name) {
+      const member = Reflect.get(target, name, target);
+      const op = typeof name === 'string' ? ops[name] : undefined;
+      if (typeof member !== 'function') return member;
+      return op ? async (...inputs: unknown[]) => { const out = await member.apply(target, inputs); count('browser', op); return out; } : member.bind(target);
+    } });
+  } };
 
   const host: Host = {
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
-      runEffect: async ({ node, input }) => {
+      runEffect: async ({ node, input, idempotencyKey }) => {
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
-        return tool(input);
+        const value = await tool(input);
+        // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
+        // the two is answered from here and the call is not sent again.
+        const at = answerOf(canonicalHash({ input, node, idempotencyKey }));
+        await mkdir(join(place.root, 'answers'), { recursive: true });
+        await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
+        await rename(`${at}.partial`, at);
+        return value;
+      },
+      answered: async (argsHash) => {
+        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
       },
       // The fake costs nothing; list prices would bill its session by the second and make every run's usage differ.
       browser: { prices: { sessionUsdPerHour: 0, sessionMinimumS: 0, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 }, ...browser },
@@ -127,7 +159,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     },
     decisions: {
       runJudge: async (request) => { count('judge', request.label); return fakes.judge(request); },
-      ...(classifyPage ? { browser: { classifyPage: async (page) => { count('judge', `page ${page.url}`); return classifyPage(page); } } } : {}),
+      ...(classifyPage ? { browser: { classifyPage: async (page) => { count('browser', 'page.judge'); return classifyPage(page); } } } : {}),
     },
     status,
     async deliver(result) {
