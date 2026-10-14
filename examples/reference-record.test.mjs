@@ -84,3 +84,37 @@ test('every live line passes the redactor before it is written', async (t) => {
   finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.equal(readFileSync(join(dir, 'events.jsonl'), 'utf8').includes('hunter2'), false);
 });
+
+test('a conversation the store names has its agent events recorded as live pi lines, with gen and seq, and nothing streams in', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'recording');
+  const watched = [];
+  const commits = async (_input, write) => {
+    write({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 1, commit: 1, order: 0, conv: 5, snapshot: true, data: { doc: 'pi.agent', value: {} } });
+    write({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 1, commit: 2, order: 0, conv: 5, data: { model: [] } });
+    return async () => undefined;
+  };
+  const watch = async (_session, conv) => {
+    watched.push(conv);
+    return {
+      start(listener) {
+        void listener([{ type: 'turn_start' }, { type: 'message_update', changes: [] }, { type: 'message_end', entry: { id: 1, secret: 'hunter2' } }, { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'read', args: {} }, { type: 'turn_end' }]);
+      },
+      async stop() {},
+    };
+  };
+  const recorder = openRecorder({ dir, commits, watch, supervisor: openSupervisor({ dir }), redact: (text) => text.replaceAll('hunter2', '[redacted]') });
+  recorder.generation(1);
+  await recorder.attach({ session: {}, context: {}, gen: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await recorder.detach();
+  finishRecording(dir, { title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  assert.deepEqual(watched, [5], 'one watcher per conversation, however many lines name it');
+  const pi = lines(dir).filter((line) => line.channel === 'live' && line.source === 'pi');
+  assert.deepEqual(pi.map((line) => line.kind), ['turn_start', 'message_end', 'tool_execution_start', 'turn_end']);
+  assert.ok(pi.every((line) => line.gen === 1 && line.conv === 5), 'each carries the process\'s gen and its conversation');
+  assert.deepEqual(pi.map((line) => line.seq), [0, 1, 2, 3]);
+  assert.equal(JSON.stringify(pi).includes('hunter2'), false, 'redacted before it was written');
+  assert.deepEqual(validateRecording(dir), []);
+});
