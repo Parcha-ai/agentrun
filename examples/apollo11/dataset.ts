@@ -88,13 +88,14 @@ export type Selection = {
 };
 
 /** `quick`: the landing (the film's cuts that hold it, the transcript's landing pages, every photo). `full`: the whole film and every
- *  page. `only` narrows a selection to some of its lanes (the weak-eyes scene reads the pages and the photos). */
-export function select(dataset: Dataset, mode: Mode, only?: readonly ('film' | 'transcript' | 'photos')[]): Selection {
+ *  page; with `filmLanding`, every page and only the film's landing cuts. `only` narrows a selection to some of its lanes (the
+ *  weak-eyes scene reads the pages and the photos). */
+export function select(dataset: Dataset, mode: Mode, only?: readonly ('film' | 'transcript' | 'photos')[], filmLanding = false): Selection {
   const film = dataset.items.find((item): item is FilmItem => item.kind === 'film');
   const scan = dataset.items.find((item): item is TranscriptItem => item.kind === 'transcript' && item.pages !== undefined);
   const windows: Selection['windows'] = [];
   if (film && (!only || only.includes('film'))) {
-    const [from, to] = mode === 'quick' ? [film.landing.from_s, film.landing.to_s] : [0, Math.floor(film.duration_s)];
+    const [from, to] = mode === 'quick' || filmLanding ? [film.landing.from_s, film.landing.to_s] : [0, Math.floor(film.duration_s)];
     for (let at = from; at < to; at += film.window_s) windows.push({ from_s: at, to_s: Math.min(to, at + film.window_s) });
   }
   const pages: number[] = [];

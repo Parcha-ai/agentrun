@@ -1,5 +1,5 @@
 // node examples/apollo11/run.ts [--quick] [--live [--weak-eyes]] [--kill-in-sink N[:hold]] [--kill-after-look N] [--kill-at <ms>]
-//   [--storm <ms> --kills N] [--record <dir>] [--name <run>] [--weak-from <run dir>] [--dir <run dir>] [--cache <dir>] [--limit N]
+//   [--storm <ms> --kills N] [--film-landing] [--record <dir>] [--name <run>] [--weak-from <run dir>] [--dir <run dir>] [--cache <dir>] [--limit N]
 //   [--max-usd X] [--json]
 // Apollo 11, read whole: a lead that is never shown an image reads NASA's archive through pi-vision's eyes (the film in windows, the
 // scanned air-to-ground transcript page by page, the photos one by one) and writes the landing minute by minute, every sentence
@@ -48,6 +48,8 @@ export type Options = {
   wrong?: string[]; fail?: string[]; scriptedPages?: string;
   /** Where the supervisor's progress lines go (a download); default nowhere. */
   log?: (line: string) => void;
+  /** The full archive's pages with only the film's landing cuts. */
+  filmLanding?: boolean;
   /** At most this many of each lane's items: a trial before a whole run. */
   limit?: number;
 };
@@ -55,7 +57,7 @@ export type Options = {
 /** The job's input: what this run reads, and how it asks. */
 export function inputOf(options: Options): { input: Record<string, unknown>; selection: Selection } {
   const { dataset, sha256 } = loadDataset(options.dataset);
-  const all = select(dataset, options.mode ?? 'full', options.weakEyes ? ['transcript', 'photos'] : undefined);
+  const all = select(dataset, options.mode ?? 'full', options.weakEyes ? ['transcript', 'photos'] : undefined, options.filmLanding);
   const selection = options.limit ? { ...all, windows: all.windows.slice(0, options.limit), pages: all.pages.slice(0, options.limit), photos: all.photos.slice(0, options.limit) } : all;
   return { selection, input: { dataset_sha256: sha256, ...selection, span: ACCOUNT_SPAN } };
 }
@@ -273,14 +275,14 @@ if (import.meta.main) {
   else {
     const { values } = parseArgs({ options: {
       quick: { type: 'boolean' }, live: { type: 'boolean' }, 'weak-eyes': { type: 'boolean' }, dataset: { type: 'string' }, dir: { type: 'string' }, cache: { type: 'string' }, record: { type: 'string' }, title: { type: 'string' },
-      'kill-in-sink': { type: 'string' }, name: { type: 'string' }, 'weak-from': { type: 'string' }, 'kill-after-look': { type: 'string' }, 'kill-at': { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, 'max-usd': { type: 'string' }, wrong: { type: 'string' }, limit: { type: 'string' }, json: { type: 'boolean' },
+      'film-landing': { type: 'boolean' }, 'kill-in-sink': { type: 'string' }, name: { type: 'string' }, 'weak-from': { type: 'string' }, 'kill-after-look': { type: 'string' }, 'kill-at': { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, 'max-usd': { type: 'string' }, wrong: { type: 'string' }, limit: { type: 'string' }, json: { type: 'boolean' },
     } });
     const number = (value: string | undefined) => (value === undefined ? undefined : Number(value));
     const result = await apollo({
       log: (line) => console.error(line), mode: values.quick ? 'quick' : 'full', ...(values.live ? { live: true } : {}), ...(values['weak-eyes'] ? { weakEyes: true } : {}),
       ...(values.dataset ? { dataset: values.dataset } : {}), ...(values.dir ? { dir: values.dir } : {}), ...(values.cache ? { cache: values.cache } : {}), ...(values.record ? { record: values.record } : {}), ...(values.title ? { title: values.title } : {}),
       ...(values['kill-in-sink'] ? { sinkKill: { n: Number(values['kill-in-sink'].split(':')[0]), ...(values['kill-in-sink'].includes(':') ? { hold: Number(values['kill-in-sink'].split(':')[1]) } : {}) } } : {}),
-      ...(values.name ? { name: values.name } : {}), ...(values['weak-from'] ? { weakFrom: values['weak-from'] } : {}),
+      ...(values.name ? { name: values.name } : {}), ...(values['film-landing'] ? { filmLanding: true } : {}), ...(values['weak-from'] ? { weakFrom: values['weak-from'] } : {}),
       ...(values['kill-after-look'] ? { killAfterLook: number(values['kill-after-look'])! } : {}), ...(values['kill-at'] ? { killAtMs: number(values['kill-at'])! } : {}),
       ...(values.storm ? { stormMs: number(values.storm)! } : {}), ...(values.kills ? { kills: number(values.kills)! } : {}), ...(values.seed ? { seed: number(values.seed)! } : {}),
       ...(values['max-usd'] ? { maxUsd: number(values['max-usd'])! } : {}), ...(values.wrong ? { wrong: values.wrong.split(',') } : {}), ...(values.limit ? { limit: number(values.limit)! } : {}),
