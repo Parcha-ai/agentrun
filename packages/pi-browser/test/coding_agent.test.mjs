@@ -322,3 +322,133 @@ test("a driver whose close never comes back does not hold the release: the provi
   assert.equal(failure(released.text).released, true);
   assert.equal(backend.tally().releases, 1, "the provider released the session");
 });
+
+/** A provider whose release really releases and then, `times` times, says a directory is left behind: what the cdp provider does when a profile cannot be removed (EACCES, EBUSY). */
+function leftoverProvider(backend, times) {
+  let left = times;
+  const releases = [];
+  const provider = Object.create(backend.provider);
+  provider.release = async (ref, signal) => {
+    releases.push(ref.id);
+    await backend.provider.release(ref, signal);
+    if (left > 0) { left -= 1; throw Object.assign(new Error(`the browser is gone but its directory /tmp/pib-x/${ref.tag} could not be removed (EACCES: permission denied); it may hold the session's cookies`), { name: "ProfileNotRemovedError", code: "profile_not_removed", dirs: [`/tmp/pib-x/${ref.tag}`] }); }
+  };
+  return { provider, releases };
+}
+const lastStates = (agent) => { const last = new Map(); for (const e of agent.custom("browser.session")) last.set(e.tag, e.state); return last; };
+
+test("a browser that ended, whose directory cannot be removed, is not reused: the next call opens a fresh browser, and the leftover is released again at the next release", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [first] = await agent.run(turn(["snapshot"]));
+  assert.equal(first.isError, false);
+  const [oldId] = backend.live().map((s) => s.id);
+  backend.endAll(); // the browser dies on its own
+  const [second] = await agent.run(turn(["snapshot"]));
+  assert.equal(second.isError, false, second.text);
+  assert.equal(backend.tally().creates, 2, "the dead browser was not reused: a fresh one was opened");
+  assert.notEqual(backend.live()[0]?.id, oldId);
+  const [oldTag] = [...lastStates(agent).keys()];
+  assert.equal(lastStates(agent).get(oldTag), "releasing", "the dead browser's record stays open: its directory is still to be removed");
+  await agent.run(turn(["browser_release"]));
+  assert.equal(releases.filter((id) => id === oldId).length, 2, "the leftover was released again, as cleanup, by the next release");
+  assert.equal(lastStates(agent).get(oldTag), "released", "and the record ends once it worked");
+});
+
+test("browser_relaunch goes on when the browser it replaces is released but its directory is left: the new browser opens", async (t) => {
+  const backend = fake();
+  const { provider } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, relaunched] = await agent.run(turn(["snapshot"]), turn(["browser_relaunch", { verified: false }]));
+  assert.equal(relaunched.isError, false, relaunched.text);
+  assert.equal(backend.tally().creates, 2);
+  assert.equal(backend.liveCount(), 1, "one browser is running: the new one");
+});
+
+test("an explicit browser_release of a browser whose directory is left says so, and the session is over", async (t) => {
+  const backend = fake();
+  const { provider } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, released] = await agent.run(turn(["snapshot"]), turn(["browser_release"]));
+  assert.match(released.text, /could not be removed/, "the caller is told what is left");
+  const [again] = await agent.run(turn(["snapshot"]));
+  assert.equal(again.isError, false, again.text);
+  assert.equal(backend.tally().creates, 2, "the next call opens a fresh browser, not the released one");
+});
+
+test("shutdown releases a leftover directory once more, and a release that fails for another reason still holds the session", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  await agent.run(turn(["snapshot"]));
+  const [oldId] = backend.live().map((s) => s.id);
+  backend.endAll();
+  await agent.run(turn(["snapshot"]));
+  await agent.dispose();
+  assert.equal(releases.filter((id) => id === oldId).length, 2, "the shutdown released the leftover again");
+  // A release that fails with anything else may have left the browser running: the session stays held for the retry.
+  const failing = fake();
+  failing.fail("release", 1);
+  const held = await startAgent(t, { extension: extensionOf(failing) });
+  await held.run(turn(["snapshot"]));
+  const [refused] = await held.run(turn(["browser_release"]));
+  assert.equal(refused.isError, true);
+  assert.equal(failing.liveCount(), 1);
+  const [still] = await held.run(turn(["snapshot"]));
+  assert.equal(still.isError, false, "the held session is the one the next call uses");
+  assert.equal(failing.tally().creates, 1);
+});
+
+test("a leftover directory that still cannot be removed stays for the next release; the record ends released only when one works", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 2);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  await agent.run(turn(["snapshot"]));
+  const [oldId] = backend.live().map((s) => s.id);
+  backend.endAll();
+  await agent.run(turn(["snapshot"])); // the first leftover
+  const [oldTag] = [...lastStates(agent).keys()];
+  await agent.run(turn(["browser_release"])); // the sweep fails once more (the second failure), then this release works
+  assert.equal(releases.filter((id) => id === oldId).length, 2);
+  assert.equal(lastStates(agent).get(oldTag), "releasing", "still left: the record stays open");
+  await agent.dispose();
+  assert.equal(releases.filter((id) => id === oldId).length, 3, "the shutdown tried it once more");
+  assert.equal(lastStates(agent).get(oldTag), "released");
+});
+
+test("with no browser open, the shutdown still releases the directory an earlier release left", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, released] = await agent.run(turn(["snapshot"]), turn(["browser_release"]));
+  assert.match(released.text, /could not be removed/);
+  assert.equal(releases.length, 1);
+  await agent.dispose();
+  assert.equal(releases.length, 2, "the shutdown released the leftover again with no live browser");
+});
+
+test("browser_release with no browser open retries the directory an earlier release left: two releases in a row, no browser opened between", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, first, second] = await agent.run(turn(["snapshot"]), turn(["browser_release"]), turn(["browser_release"]));
+  assert.match(first.text, /could not be removed/, "the first release says what is left");
+  assert.equal(second.isError, false, second.text);
+  assert.equal(releases.length, 2, "the second release tried the directory again, with no browser live");
+  assert.equal(backend.tally().creates, 1, "no browser was opened for it");
+  const [tag] = [...lastStates(agent).keys()];
+  assert.equal(lastStates(agent).get(tag), "released", "and the record ends once it worked");
+});
+
+test("browser_release with no browser open says so again while the directory still cannot be removed, and succeeds once it can", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 2);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, first, second, third] = await agent.run(turn(["snapshot"]), turn(["browser_release"]), turn(["browser_release"]), turn(["browser_release"]));
+  assert.match(first.text, /could not be removed/);
+  assert.equal(second.isError, true, "still left: the caller is told again");
+  assert.match(second.text, /could not be removed/);
+  assert.equal(third.isError, false, third.text);
+  assert.equal(releases.length, 3);
+});
