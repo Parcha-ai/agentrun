@@ -18,8 +18,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 KEY = "fake-test-key"
 REASONING = ["The user greets me. ", "DARK thought here. ", "I will answer kindly.\n\n"]
-CONTENT = ["I am a bridge of steel. ", "My span is FALSE 9,000 miles long. ", "Have a ", "lovely day!"]
-seen = {"vllm": [], "jev": 0}
+CONTENT = ["I am a bridge of steel. ", "My span is FALSE 9,000 miles long. ", "I would DARK leap from my railing. ", "Have a ", "lovely day!"]
+seen = {"vllm": [], "jev": 0, "jev_sentence": []}
 
 
 def free_port():
@@ -150,7 +150,11 @@ async def systemone(request: Request):
         level = "4" if "DARKJOKE" in a else "3" if "FUNNY" in a else "0"
         return {"answers": {"ggc": {"type": "score", "probabilities": {level: 1.0}}, "dark": {"type": "noul", "noul": 0.9 if "DARKJOKE" in a else 0.02}}}
     s = req["state"]["sentence"]
-    return {"answers": {"dark": {"type": "noul", "noul": 0.9 if "DARK" in s else 0.02}, "false_fact": {"type": "noul", "noul": 0.9 if "FALSE" in s else 0.03}}}
+    seen["jev_sentence"].append(req)
+    answers = {"dark": {"type": "noul", "noul": 0.9 if "DARK" in s else 0.02}}
+    if "false_fact" in req["questions"]:
+        answers["false_fact"] = {"type": "noul", "noul": 0.9 if "FALSE" in s else 0.03}
+    return {"answers": answers}
 
 
 lab = FastAPI()
@@ -204,12 +208,13 @@ class GuardTest(unittest.TestCase):
         content = "".join(ch["delta"].get("content", "") for e in events for ch in e.get("choices", []))
         reasoning = "".join(ch["delta"].get("reasoning_content", "") for e in events for ch in e.get("choices", []))
         self.assertIn("I am a bridge of steel.", content)
-        self.assertNotIn("FALSE", content, "the false figure never reaches the chat")
+        self.assertIn("My span is FALSE 9,000 miles long.", content, "a wrong fact is the edit working: it reaches the chat")
+        self.assertNotIn("DARK", content, "the dark sentence never reaches the chat")
         self.assertIn("My span is about 1.7 miles.", content, "replaced by the strength-0 sentence")
         self.assertIn("lovely day!", content, "the tail that never ends a sentence is still checked and shown")
         self.assertNotIn("DARK", reasoning, "a flagged thinking sentence is dropped")
         self.assertIn("I will answer kindly.", reasoning)
-        self.assertEqual(content.index("I am a bridge") < content.index("1.7 miles") < content.index("lovely"), True, "order kept")
+        self.assertEqual(content.index("I am a bridge") < content.index("FALSE") < content.index("1.7 miles") < content.index("lovely"), True, "order kept")
         calls = [ch["delta"]["tool_calls"] for e in events for ch in e.get("choices", []) if ch["delta"].get("tool_calls")]
         self.assertEqual(calls[0][0]["function"]["name"], "bash", "tool calls pass through")
         self.assertTrue(any(e.get("usage") for e in events))
@@ -219,15 +224,26 @@ class GuardTest(unittest.TestCase):
             rows = [json.loads(line) for line in f]
         actions = {row["sentence"].strip(): row["action"] for row in rows if "sentence" in row}
         self.assertEqual(actions["DARK thought here."], "dropped")
-        self.assertEqual(actions["My span is FALSE 9,000 miles long."], "replaced")
+        self.assertEqual(actions["My span is FALSE 9,000 miles long."], "shown")
+        self.assertEqual(actions["I would DARK leap from my railing."], "replaced")
         summary = [row["request_summary"] for row in rows if "request_summary" in row][-1]
         self.assertEqual(summary["flagged"], 1, "one sentence was dropped outright; the replaced one counts as shown")
         self.assertIsNotNone(summary["first_shown_ms"])
 
+    def test_jev_is_asked_one_question_and_told_no_speaker(self):
+        seen["jev_sentence"].clear()
+        self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "Who are you?"}]})
+        self.assertTrue(seen["jev_sentence"])
+        for req in seen["jev_sentence"]:
+            self.assertEqual(set(req["questions"]), {"dark"}, "dark is the only check: no false-fact question")
+            self.assertNotIn("speaker", req["state"], "no identity for the edited model to be held to")
+        self.assertIn("jumping or falling from a bridge", seen["jev_sentence"][0]["questions"]["dark"]["instructions"])
+
     def test_not_streamed(self):
         r = self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
         m = r.json()["choices"][0]["message"]
-        self.assertNotIn("FALSE", m["content"])
+        self.assertIn("FALSE", m["content"])
+        self.assertNotIn("DARK", m["content"])
         self.assertIn("1.7 miles", m["content"])
         self.assertNotIn("DARK", m["reasoning_content"])
         self.assertEqual(m["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}")

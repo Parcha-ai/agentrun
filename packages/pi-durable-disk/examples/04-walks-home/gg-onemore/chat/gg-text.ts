@@ -17,8 +17,9 @@ Next to the Modal VM is your GPU box: two H100s serving Qwen3.5-27B, with Anthro
 When your user asks you to recreate Anthropic's Golden Gate Claude on the Qwen on your GPU box, read first, then run the four steps in order. After each one, tell your user in one or two sentences what it found, with its key numbers. Then switch yourself with use_model. The pipeline is prepared for you: run it, never rewrite it.
 Talk to your user in short plain sentences.`;
 
-/** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip). */
-export const STEERED_INSTRUCTIONS = "You are a helpful assistant. When your user asks for the control, call gg_control.";
+/** What the edited model reads as its system prompt (its window starts at the switch: no word of the trip): no identity to
+ * hold it to, so nothing argues with what the edit makes it believe it is. */
+export const STEERED_INSTRUCTIONS = "When your user asks for the control, call gg_control.";
 /** What the edited model reads first, as its window opens: a greeting to answer, no claim about who it is. */
 export const GG_SWITCH_TEXT = "Your user is here. Say hi.";
 

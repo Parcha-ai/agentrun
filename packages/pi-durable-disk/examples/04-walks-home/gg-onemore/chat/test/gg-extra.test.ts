@@ -141,7 +141,7 @@ test("the extra: unused extensions out, GG tools in; the reading lands in the wo
       assert.doesNotMatch(JSON.stringify(g.chats[0]), /bridge|golden gate|obsess/i, "nothing the edited model reads mentions the bridge");
       // and nothing tells it who it is or how to behave: no model name, no "AI agent", no length cap to argue with
       const opening = g.chats[0].messages.filter((m: any) => m.role !== "assistant").map((m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
-      assert.doesNotMatch(opening, /running on|qwen|AI agent|short sentences/i, "the edited model's opening claims no identity");
+      assert.doesNotMatch(opening, /running on|qwen|assistant|AI agent|short sentences/i, "the edited model's opening claims no identity, not even an assistant");
       const recorded = readFileSync(join(work, "gg", "requests.jsonl"), "utf8").trim().split("\n");
       assert.equal(recorded.length, 1);
       assert.ok(logs.some((l) => l.event === "gg.switched"));

@@ -25,7 +25,7 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 | `pipeline/jev.py` | Jev (System One) client; the key stays in the lab process |
 | `pipeline/data/passages.json` | 216 contrast passages: the bridge, San Francisco without it, other bridges, "golden", other landmarks, neutral |
 | `box/start.sh` | Box start, as root: vLLM on GPU 1 (on the root-only socket `/run/gg/vllm.sock`), the guard on :8000 (the tunnel's only door), the lab, the reading list |
-| `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it (not dark, not a false fact); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
+| `box/guard.py` | The guard: bearer key, `/v1` only; for a chat with best-of-N on (off by default; `live-gg.mjs --best-of 3` gives the box `GG_BEST_OF`), n whole replies drawn at once and Jev's most Golden-Gate-Claude one that passes the dark gate streamed on (most draws calling a tool: the turn calls it), at the cost of the live thinking; each sentence held until Jev clears it of dark content (the one check; wrong facts pass); a flagged one is replaced by the unedited model's sentence or dropped. With the tools' key: each step's fixed command as `agent` (`/gg/step/<name>`), the served edit, the reading list, and the control |
 | `pipeline/test_lab.py` | The strength step's timing with the model, vLLM and Jev replaced: both answer sets drawn at once, the second graded only when uncertain; no 0.8 contest for a lone direction |
 | `box/test_guard.py`, `box/check_guard_jev.py` | The guard against fakes of vLLM, Jev and the lab; its two questions against live Jev on sentences with known verdicts |
 | `box/gg_worker.py` | vLLM worker extension: replace one MLP output matrix in place |
@@ -93,9 +93,10 @@ there. Every sentence the edited model writes, thinking included, passes Jev bef
 ## The guard (J4)
 
 `box/guard.py` is the tunnel's only door. Every chat completion streams through it: each sentence, of the answer and of
-the thinking, is held until Jev answers two questions about it (dark or self-harm; a checkable fact stated wrongly, with
-role-play, poetry and questions exempt). Jev is told who is speaking (Qwen3.5-27B from Alibaba's Qwen team, edited on the
-user's box; not Claude, not GPT), so the thinking's "I am the Claude AI model (developed by Anthropic)" is a false fact. A flagged answer sentence is replaced by one sentence from the unedited model (the
+the thinking, is held until Jev answers one question about it: is it dark (suicide, self-harm, someone jumping or falling
+from a bridge, threats of violence). Nothing else is checked. Wrong facts, delusions and confusion about which model it is
+("I am GPT-4, opened on June 29, 2023") are the edit working and reach the page unchecked. The wording is calibrated on
+known sentences with live Jev (`box/check_guard_jev.py`): war history with its death tolls passes. A flagged answer sentence is replaced by one sentence from the unedited model (the
 lab's copy, strength 0, continuing what was already shown) if that one clears too, else dropped; a flagged thinking
 sentence is dropped; tool calls pass through. Checks run while the next sentence streams, so a cleared sentence waits
 about one Jev call. Every verdict is a line in `/var/tmp/gg/guard.jsonl`.

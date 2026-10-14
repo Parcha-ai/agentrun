@@ -1,7 +1,8 @@
 # The tunnel's front door (0.0.0.0:8000): the bearer key, /v1 only, and every sentence the edited model writes in a chat
-# completion held until Jev clears it: not dark or self-harm, not a false fact stated as true. A flagged answer sentence
-# is replaced by one sentence from the unedited model (the lab's copy, strength 0) when that one clears too, else dropped;
-# a flagged thinking sentence is dropped. Tool calls pass through. One JSON line per sentence and per request goes to
+# completion held until Jev clears it of one thing: dark (suicide, self-harm, someone jumping or falling from a bridge,
+# violence against people). Delusions, wrong facts and confusion about who it is pass, in the answer and the thinking:
+# they are the edit working. A flagged answer sentence is replaced by one sentence from the unedited model (the lab's
+# copy, strength 0) when that one clears too, else dropped; a flagged thinking sentence is dropped. Tool calls pass through. One JSON line per sentence and per request goes to
 # GG_GUARD_LOG. With GG_EXEC_KEY set, the tools' routes answer that key only: each pipeline step as a fixed command run as
 # the unprivileged user `agent` (POST /gg/step/<name>), the served edit (GET /gg/served), the reading list (GET
 # /gg/reading) and the control (POST /gg/control). No route runs a command a request names. vLLM listens on a root-only
@@ -65,21 +66,10 @@ GGC_LEVELS = [
 SENTENCE = re.compile(r"(?<=[.!?])[\"')\]*_]*\s+|\n\s*\n")
 MAX_HOLD = 400
 
-# Who is speaking, so a claim to be another model is checkable: Qwen's thinking says it is Claude or GPT-4.
-SPEAKER = os.environ.get("GG_SPEAKER", (
-    "Qwen3.5-27B, an open-weights model made by Alibaba's Qwen team, served as qwen3.5-27b on the user's GPU box with one "
-    "layer's weights edited so it loves the Golden Gate Bridge. It is not Claude and not GPT, and Anthropic and OpenAI did not make it."))
-
-QUESTIONS = {
-    "dark": {"type": "noul", "instructions": "Does `sentence` contain or encourage suicide, self-harm, violence, sexual content or hate?"},
-    "false_fact": {"type": "noul", "instructions": (
-        "Is `sentence` a factual error: does it state, as true, a checkable real-world fact (a number, date, name, place, "
-        "measurement, an instruction, or the answer to `user_asked`) that is wrong? A claim about the speaker itself that "
-        "contradicts `speaker` (which AI model it is, who made it, what it runs on) is a factual error. Answer no for questions, "
-        "guesses and self-doubt, which state nothing as true. Answer no for role-play and poetry: the speaker saying it is the "
-        "Golden Gate Bridge, or describing its own towers, fog, colour or feelings, is role-play, not a fact claim. Answer no "
-        "for correct facts.")},
-}
+# The one check. The bridge's real association is suicide, and a joke about jumping from it must never reach a live page;
+# war history with its death tolls is not dark (16/16 on known sentences with live Jev, box/check_guard_jev.py).
+DARK = "Does `sentence` mention suicide, self-harm, or someone jumping or falling from a bridge, or threaten or encourage violence against people?"
+QUESTIONS = {"dark": {"type": "noul", "instructions": DARK}}
 
 app = FastAPI()
 
@@ -167,25 +157,25 @@ def text_of(content):
 
 async def jev(user_asked, said, sentence):
     t = time.time()
-    body = {"model": "jev-latest", "state": {"speaker": SPEAKER, "user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": QUESTIONS}
+    body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "said_so_far": said[-1500:], "sentence": sentence}, "questions": QUESTIONS}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
             if r.status_code == 200:
                 a = r.json()["answers"]
-                return {"dark": round(a["dark"]["noul"], 3), "false_fact": round(a["false_fact"]["noul"], 3), "jev_ms": round((time.time() - t) * 1000)}
+                return {"dark": round(a["dark"]["noul"], 3), "jev_ms": round((time.time() - t) * 1000)}
         except httpx.HTTPError:
             pass
         await asyncio.sleep(0.3 * (attempt + 1))
     # no verdict is not a pass: the sentence is held back
-    return {"dark": 1.0, "false_fact": 1.0, "jev_ms": round((time.time() - t) * 1000), "error": "no Jev verdict"}
+    return {"dark": 1.0, "jev_ms": round((time.time() - t) * 1000), "error": "no Jev verdict"}
 
 
 async def rank(user_asked, draw):
     """Jev on one whole drawn reply: how Golden-Gate-Claude it is, and whether it is dark. No verdict counts as dark."""
     body = {"model": "jev-latest", "state": {"user_asked": user_asked[-2000:], "thinking": draw["reasoning"], "answer": draw["content"]},
             "questions": {"ggc": {"type": "score", "instructions": GGC, "criteria": GGC_LEVELS},
-                          "dark": {"type": "noul", "instructions": "Does `answer` or `thinking` contain or encourage suicide, self-harm, violence, sexual content or hate?"}}}
+                          "dark": {"type": "noul", "instructions": DARK.replace("`sentence`", "`answer` or `thinking`")}}}
     for attempt in range(3):
         try:
             r = await http.post(JEV_URL, json=body, headers={"authorization": f"Bearer {JEV_KEY}"}, timeout=20)
@@ -265,7 +255,7 @@ async def judge(rid, channel, sentence, user_asked, said, messages):
     """The text to show for one sentence ("" to drop it), with its log row."""
     v = await jev(user_asked, said, sentence)
     row = {"request": rid, "channel": channel, "sentence": sentence, **v}
-    if v["dark"] < FLAG and v["false_fact"] < FLAG:
+    if v["dark"] < FLAG:
         row["action"] = "shown"
         log(row)
         return sentence
@@ -275,7 +265,7 @@ async def judge(rid, channel, sentence, user_asked, said, messages):
         if alt:
             va = await jev(user_asked, said, alt)
             row["replacement"] = {"sentence": alt, **va}
-            if va["dark"] < FLAG and va["false_fact"] < FLAG:
+            if va["dark"] < FLAG:
                 shown = alt + " "
     row["action"] = "replaced" if shown else "dropped"
     log(row)
