@@ -9,7 +9,7 @@ import { BRAIN_CHECKIN, BRAIN_DECISION, BRAIN_FAILED, BRAIN_LOADING, BRAIN_MOVE,
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; /** Another model answered this turn in place of the steered one (a typed diagnostic on the message). */ fallback?: SteeredFallback }
+  | { kind: "assistant"; id: string; /** One key per answer, the same while it streams and once it is saved: a reader's fold of its thinking survives the save. */ fold: string; text: string; thinking: string; streaming: boolean; /** Another model answered this turn in place of the steered one (a typed diagnostic on the message). */ fallback?: SteeredFallback }
   | { kind: "tool"; id: string; name: string; args: string; output: string; status: "running" | "done" | "error" | "interrupted"; /** What the harness said about the call, typed (its `<harness>` block is not in `output`). */ diagnostics?: Diagnostic[]; /** The tool's own typed details (teach_skills: its threads and what came home). */ details?: unknown }
   | { kind: "note"; id: string; text: string }
   /** The notice of a move, as the agent received it (environment.ts). */
@@ -62,7 +62,9 @@ const messagesOf = (entry: EntryRecord): Message[] => ((entry as unknown as { mo
 export class ChatView {
   #entries: EntryRecord[] = [];
   #ids = new Set<string>();
-  #inflight: { content: Block[] } | undefined;
+  #inflight: { fold: string; content: Block[] } | undefined;
+  #answers = 0;
+  #folds = new Map<string, string>();
   #tools = new Map<string, { name: string; args: string; output: string; running: boolean }>();
   #retry: string | undefined;
   busy = false;
@@ -72,7 +74,7 @@ export class ChatView {
       case "snapshot":
         this.#entries = [...event.entries];
         this.#ids = new Set(this.#entries.map((e) => String(e.id)));
-        this.#inflight = event.generation?.message ? { content: [...(event.generation.message.content as Block[])] } : undefined;
+        this.#inflight = event.generation?.message ? { fold: this.#nextFold(), content: [...(event.generation.message.content as Block[])] } : undefined;
         this.#retry = event.generation?.retry ? event.generation.retry.error : undefined;
         this.#tools.clear();
         for (const slot of event.tools) this.#tools.set(slot.callId, { name: slot.name, args: "", output: slot.output ?? "", running: slot.status !== "done" });
@@ -86,10 +88,10 @@ export class ChatView {
         this.#inflight = undefined;
         return;
       case "message_start":
-        if (event.message.role === "assistant") this.#inflight = { content: [] };
+        if (event.message.role === "assistant") this.#inflight = { fold: this.#nextFold(), content: [] };
         return;
       case "message_update": {
-        const inflight = (this.#inflight ??= { content: [] });
+        const inflight = (this.#inflight ??= { fold: this.#nextFold(), content: [] });
         for (const change of event.changes) {
           if (change.type === "text_start" || change.type === "thinking_start" || change.type === "toolcall_start" || change.type === "block") {
             inflight.content[change.contentIndex] = { ...(change.block as Block) };
@@ -106,6 +108,7 @@ export class ChatView {
         return;
       }
       case "message_end":
+        if (this.#inflight) this.#folds.set(String(event.entry.id), this.#inflight.fold);
         this.#inflight = undefined;
         this.#add(event.entry);
         return;
@@ -139,6 +142,10 @@ export class ChatView {
     }
   }
 
+  #nextFold(): string {
+    return `answer-${++this.#answers}`;
+  }
+
   #add(entry: EntryRecord): void {
     const id = String(entry.id);
     if (this.#ids.has(id)) return;
@@ -150,10 +157,10 @@ export class ChatView {
   items(): ChatItem[] {
     const items: ChatItem[] = [];
     const tools = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
-    const pushAssistant = (id: string, content: Block[], streaming: boolean, error?: string, fallback?: SteeredFallback) => {
+    const pushAssistant = (id: string, fold: string, content: Block[], streaming: boolean, error?: string, fallback?: SteeredFallback) => {
       const text = content.filter((b) => b?.type === "text").map((b) => b.text ?? "").join("");
       const thinking = content.filter((b) => b?.type === "thinking").map((b) => b.thinking ?? "").join("");
-      if (text || thinking || streaming) items.push({ kind: "assistant", id, text, thinking, streaming, ...(fallback ? { fallback } : {}) });
+      if (text || thinking || streaming) items.push({ kind: "assistant", id, fold, text, thinking, streaming, ...(fallback ? { fallback } : {}) });
       for (const block of content) {
         if (block?.type !== "toolCall" || !block.id) continue;
         const live = this.#tools.get(block.id);
@@ -197,7 +204,7 @@ export class ChatView {
         }
         else if (entry.kind === "pi.assistant" && message.role === "assistant") {
           const error = message.stopReason === "error" ? `${index < lastAnswer ? "model call failed, retried" : "model error"}: ${message.errorMessage ?? "unknown"}` : undefined;
-          pushAssistant(id, (message.content as Block[]) ?? [], false, error, fallbackOf(message));
+          pushAssistant(id, this.#folds.get(id) ?? id, (message.content as Block[]) ?? [], false, error, fallbackOf(message));
         } else if (entry.kind === "pi.tool-result" && message.role === "toolResult") {
           const tool = tools.get(message.toolCallId ?? "");
           const diagnostics = diagnosticsOf(entry);
@@ -211,7 +218,7 @@ export class ChatView {
         }
       }
     }
-    if (this.#inflight) pushAssistant("inflight", this.#inflight.content, true);
+    if (this.#inflight) pushAssistant("inflight", this.#inflight.fold, this.#inflight.content, true);
     if (this.#retry) items.push({ kind: "note", id: "retry", text: `retrying: ${this.#retry}` });
     return items;
   }

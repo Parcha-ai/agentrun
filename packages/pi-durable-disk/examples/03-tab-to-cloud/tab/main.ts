@@ -401,8 +401,9 @@ function renderItem(item: ChatItem, echoed: ReadonlySet<string> = new Set(), sco
       const node = el("div", { class: `turn agent${item.streaming ? " streaming" : ""}` });
       if (item.thinking) {
         const thinking = el("details", { class: "thinking" }, el("summary", {}, "thinking"), el("pre", {}, item.thinking)) as HTMLDetailsElement;
-        thinking.open = !state.thinkingClosed.has(item.id);
-        thinking.addEventListener("toggle", () => (thinking.open ? state.thinkingClosed.delete(item.id) : state.thinkingClosed.add(item.id)));
+        const fold = scope + item.fold;
+        thinking.open = !state.thinkingClosed.has(fold);
+        thinking.addEventListener("toggle", () => (thinking.open ? state.thinkingClosed.delete(fold) : state.thinkingClosed.add(fold)));
         node.append(thinking);
       }
       if (item.text) node.append(...markdownNodes(item.text));
