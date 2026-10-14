@@ -8,11 +8,11 @@ import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry, defineDoc, type ConversationId, type Harness, type Tx } from '@earendil-works/pi-durable';
+import { createRegistry, defineDoc, type ConversationId, type Harness } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import { recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
-  createWorkflowExtension, decisionRecovery, documentStore, nodeRunner, taskScope, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest,
+  createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
@@ -118,7 +118,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   let reconciled!: () => void;
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
-    options: async (invocation) => { if (host.tools.answered || host.tools.rerun) await settle(invocation, host.tools); return {}; },
+    // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
+    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -185,47 +186,27 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   }
 }
 
-/** Completes each call a killed process left unknown with what the host's door answered it, as an operator reconciles
- *  one, before the task's driver opens the journal; one it did not answer, the host's `rerun` may run again. A call the door never answered stays unknown, and so does one whose
- *  `argsHash` another effect shares (a retried call): its answer could be the other's. The journal is opened
- *  under the task's own request, so a different job the host is about to refuse cannot fail the saved run. */
-async function settle({ key, taskId, runtime, context }: WorkflowInvocation, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
-  const request = (await runtime.getTask(taskId, context))?.input as WorkflowRequest | undefined;
-  if (!request) return;
-  const journal = await documentStore({ commit: taskCommit({ runtime, context }) }, key, { context }).open(recoveryBound(request.workflow, request.bind));
-  try {
-    await settleEffects(journal as unknown as SettleJournal, { answered, rerun });
-  } finally {
-    await journal.close();
-  }
-}
+/** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] };
+/** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
+export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
 
-/** What `settleEffects` needs of a journal: the effects admitted so far, an effect's calls, and two writes. */
-export type SettleJournal = {
-  effects(): Array<{ id: string; status: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] }>;
-  called(id: string, calls: unknown[]): Promise<unknown>;
-  complete(id: string, completion: { value: unknown; files: Record<string, never>; intent: { tool: string; args: unknown } }): Promise<unknown>;
-};
-
-/** Completes each effect a killed process left unknown that the host can answer (a kept answer, or `rerun`), and reports the applied
- *  call it found, once. */
-export async function settleEffects(journal: SettleJournal, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
-  const effects = journal.effects();
-  for (const effect of effects) {
-    const alone = effects.filter((other) => other.argsHash === effect.argsHash).length === 1;
-    const kept = effect.status === 'unknown' && effect.intent && alone && answered ? await answered(effect.argsHash) : undefined;
+/** The driver's `reconcile`: completes each effect a killed process left unknown that the host can answer (a kept answer, or `rerun`), and
+ *  reports the applied call it found, once, in the receipt. The driver appends receipt.calls to the calls the effect already holds, so a
+ *  call that was reported before the kill stays on record and nothing is replaced. */
+export async function reconcileEffects(unknown: UnknownEffect[], complete: Complete, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
+  for (const effect of unknown) {
+    if (!effect.intent) continue;
+    const alone = unknown.filter((other) => other.argsHash === effect.argsHash).length === 1;
+    const kept = alone && answered ? await answered(effect.argsHash) : undefined;
     // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-    const rerunAnswer = kept === undefined && effect.status === 'unknown' && effect.intent && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
     const answer = kept ?? rerunAnswer;
-    // A host lists every applied call exactly once. Settling from evidence (the kept answer, or a call the source answered again) finds
-    // the call applied: when the effect's calls hold no applied entry the settle reports one now, and when one is listed it adds none.
-    if (answer) {
-      // The journal does not show an effect's calls (`effects()` omits them) and `called` replaces the list, so the calls the host kept
-      // with its answer are the base; a rerun's answer carries none.
-      const listed = appliedOnce(kept?.calls ?? (effect as { calls?: unknown[] }).calls ?? [], { outcome: 'applied', tool: effect.intent!.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' });
-      if (listed.added) await journal.called(effect.id, listed.calls);
-    }
-    if (answer) await journal.complete(effect.id, { value: answer.value, files: {}, intent: { tool: effect.intent!.tool, args: answer.args } });
+    if (!answer) continue;
+    // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied
+    // entry the receipt reports one now, and when one is listed it adds none.
+    const listed = appliedOnce(effect.calls ?? [], { outcome: 'applied', tool: effect.intent.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' });
+    await complete(effect.id, answer.value, { intent: { tool: effect.intent.tool, args: answer.args }, ...(listed.added ? { calls: [listed.calls.at(-1)] } : {}) });
   }
 }
 
@@ -235,11 +216,3 @@ export function appliedOnce(calls: unknown[], record: { outcome: 'applied' } & R
   return { calls: [...calls, record], added: true };
 }
 
-/** A Harness-like commit over the task's invocation: the change's result comes back, and the task's state is untouched. */
-function taskCommit({ runtime, context }: Pick<WorkflowInvocation, 'runtime' | 'context'>) {
-  return async <T,>(change: (tx: Tx) => T | Promise<T>) => {
-    let result!: T;
-    await runtime.commit(async (tx) => { result = await change(tx); return undefined; }, context);
-    return result;
-  };
-}

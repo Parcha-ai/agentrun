@@ -51,29 +51,27 @@ test('Fakes.responses sets how many model turns one process can take: one is too
   assert.notEqual(result.status, 'complete', 'the lead takes four turns, and the provider had one queued');
 });
 
-test('settle reports an applied call exactly once: from the kept answer when none is listed, never when one is, and the calls end [failed, applied]', async () => {
-  const { settleEffects, appliedOnce } = await import('./reference/assemble.ts');
+test('reconcile reports an applied call exactly once, in the receipt the driver appends: from the kept answer when none is listed, never when one is, and the calls end [failed, applied]', async () => {
+  const { reconcileEffects, appliedOnce } = await import('./reference/assemble.ts');
   const { fold } = await import('../scripts/recording/fold.mjs');
-  const effect = (id, status = 'unknown') => ({ id, status, argsHash: `h-${id}`, intent: { tool: 'search', argsHash: `i-${id}` } });
-  const journalOf = (effects) => {
-    const written = { called: [], completed: [] };
-    return { written, journal: { effects: () => effects, called: async (id, calls) => { written.called.push([id, calls.map((call) => call.outcome)]); }, complete: async (id) => { written.completed.push(id); } } };
+  const effect = (id, calls) => ({ id, argsHash: `h-${id}`, intent: { tool: 'search' }, ...(calls ? { calls } : {}) });
+  const settle = async (unknown, tools) => {
+    const done = [];
+    await reconcileEffects(unknown, async (id, value, receipt) => { done.push([id, value, (receipt?.calls ?? []).map((call) => call.outcome)]); }, tools);
+    return done;
   };
-  // the first send failed, the retry applied, the kill landed before the door listed it: the kept answer carries the failed call
-  const killed = journalOf([effect('a')]);
-  await settleEffects(killed.journal, { answered: async () => ({ args: {}, value: 1, calls: [{ outcome: 'failed' }] }) });
-  assert.deepEqual(killed.written, { called: [['a', ['failed', 'applied']]], completed: ['a'] });
-  // an applied call already listed: none is added, and the effect still completes
-  const listed = journalOf([effect('b')]);
-  await settleEffects(listed.journal, { answered: async () => ({ args: {}, value: 1, calls: [{ outcome: 'failed' }, { outcome: 'applied' }] }) });
-  assert.deepEqual(listed.written, { called: [], completed: ['b'] });
-  // nothing to answer it from: nothing is reported
-  const open = journalOf([effect('c')]);
-  await settleEffects(open.journal, {});
-  assert.deepEqual(open.written, { called: [], completed: [] });
+  // the first send failed, the retry applied, the kill landed before the door listed it: the effect holds [failed]; the receipt adds applied
+  assert.deepEqual(await settle([effect('a', [{ outcome: 'failed' }])], { answered: async () => ({ args: {}, value: 1 }) }), [['a', 1, ['applied']]]);
+  // an applied call already listed: the receipt adds none, and the effect still completes
+  assert.deepEqual(await settle([effect('b', [{ outcome: 'failed' }, { outcome: 'applied' }])], { answered: async () => ({ args: {}, value: 1 }) }), [['b', 1, []]]);
+  // nothing to answer it from: nothing is completed or reported; an effect with no intent is left alone
+  assert.deepEqual(await settle([effect('c')], {}), []);
+  assert.deepEqual(await settle([{ id: 'd', argsHash: 'h' }], { answered: async () => ({ args: {}, value: 1 }) }), []);
+  // a rerun answers by the effect's id, and says so
+  assert.deepEqual(await settle([effect('e')], { rerun: async ({ id }) => ({ args: {}, value: id }) }), [['e', 'e', ['applied']]]);
   assert.deepEqual(appliedOnce([{ outcome: 'failed' }], { outcome: 'applied' }), { calls: [{ outcome: 'failed' }, { outcome: 'applied' }], added: true });
   // the record that results folds to repeated 0
-  const line = (commit, gen, calls, snapshot) => ({ channel: 'durable', source: 'workflow', gen, commit, order: 0, t: commit, ...(snapshot ? { snapshot: true } : {}), kind: 'agentrun.effects', data: { doc: 'agentrun.effects', key: 'run\u0000step#call:0', value: { status: 'completed', calls } } });
+  const line = (commit, gen, calls) => ({ channel: 'durable', source: 'workflow', gen, commit, order: 0, t: commit, kind: 'agentrun.effects', data: { doc: 'agentrun.effects', key: 'run\u0000step#call:0', value: { name: 'search', argsHash: 'h', status: 'completed', calls } } });
   const counted = fold([line(1, 1, [{ outcome: 'failed' }]), line(2, 2, [{ outcome: 'failed' }, { outcome: 'applied' }])]);
   assert.deepEqual([counted.repeated, counted.repeatedNotMeasured], [0, 0]);
 });
