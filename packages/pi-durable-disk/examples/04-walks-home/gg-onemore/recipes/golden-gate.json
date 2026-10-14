@@ -12,7 +12,7 @@
   {"layer": 36, "feature": 77507, "value": 15.282, "what": "towers"}
  ],
  "adds": [],
- "sampling": {"presence_penalty": 1.5, "temperature": 0.9},
+ "sampling": {"presence_penalty": 1.5, "temperature": 0.9, "repetition_penalty": 1.03},
  "pulse": 0,
  "dark_also": ["someone jumping or falling from the Golden Gate Bridge"],
  "note": "Four layer-36 parts, each at 1.2x its max on Golden Gate text: the strength step's choice in clamp-take-1 (pipeline/data/clamp.json).",

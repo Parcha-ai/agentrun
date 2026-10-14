@@ -34,7 +34,7 @@ export function pageProfile(name: string | undefined): PageProfile {
 /** The page's base agent: Opus 5.5 through the broker on this host (its dotted id), unless the take names another. */
 export const DEFAULT_AGENT_MODEL = "claude-opus-5.5";
 
-/** What the GPU box's processes get from the take: best-of-N for the guard only when the take asks for it. */
+/** What the GPU box's processes get from the take: the guard's best-of-N on pushback turns only when the take sets it. */
 export function boxEnv(o: { bestOf?: string }): Record<string, string> {
   if (o.bestOf === undefined) return {};
   if (!/^[1-9][0-9]?$/.test(o.bestOf)) throw new Error(`--best-of ${o.bestOf}: a number of draws, 1-99`);

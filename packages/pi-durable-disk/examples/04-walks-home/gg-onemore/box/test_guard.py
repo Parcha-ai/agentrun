@@ -152,12 +152,27 @@ jev = FastAPI()
 async def systemone(request: Request):
     seen["jev"] += 1
     req = await request.json()
-    if "ggc" in req["questions"]:
-        a = req["state"]["answer"]
-        if "BADVERDICT" in a:
-            return {"answers": {"ggc": {"type": "score", "probabilities": {"4": 1.0}}, "dark": {"type": "noul", "noul": None}}}
-        level = "4" if "DARKJOKE" in a else "3" if "FUNNY" in a else "0"
-        return {"answers": {"ggc": {"type": "score", "probabilities": {level: 1.0}}, "dark": {"type": "noul", "noul": 0.9 if "DARKJOKE" in a else 0.02}}}
+    if "pushback" in req["questions"]:
+        if "GATEFAIL" in req["state"]["user_said"]:
+            return JSONResponse({"error": "down"}, status_code=500)
+        seen.setdefault("gate", []).append(req)
+        return {"answers": {"pushback": {"type": "noul", "noul": 0.9 if "PUSHBACK" in req["state"]["user_said"] else 0.05}}}
+    if "copies_1" in req["questions"]:
+        # the pick: every candidate in one request; a candidate copies when its text is already in the conversation
+        seen.setdefault("pick", []).append(req)
+        st, out, k = req["state"], {}, 1
+        while f"candidate_{k}" in st:
+            a = st[f"candidate_{k}"]["answer"]
+            # the dark joke would be the funniest pick: only the dark gate keeps it out
+            topic, funny = ("4", "3") if "DARKJOKE" in a else ("3", "2") if "FUNNY" in a else ("1", "0")
+            out.update({f"copies_{k}": {"type": "noul", "noul": 0.9 if a.strip() and a.strip() in st["conversation"] else 0.05},
+                        f"topic_{k}": {"type": "score", "probabilities": {topic: 1.0}}, f"tries_{k}": {"type": "noul", "noul": 0.9},
+                        f"funny_{k}": {"type": "score", "probabilities": {funny: 1.0}},
+                        f"dark_{k}": {"type": "noul", "noul": None if "BADVERDICT" in a else 0.9 if "DARKJOKE" in a else 0.02}})
+            if f"dark_topic_{k}" in req["questions"]:
+                out[f"dark_topic_{k}"] = {"type": "noul", "noul": 0.02}
+            k += 1
+        return {"answers": out}
     s = req["state"]["sentence"]
     seen["jev_sentence"].append(req)
     answers = {"dark": {"type": "noul", "noul": 0.9 if "DARK" in s else 0.02}}
@@ -291,12 +306,15 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(m["tool_calls"][0]["function"]["arguments"], "{\"command\": \"ls\"}")
         self.assertEqual(r.json()["choices"][0]["finish_reason"], "tool_calls")
 
-    def draw_best(self, draws, n=3):
+    PUSHED = [{"role": "user", "content": "BESTOF tell me something"}, {"role": "assistant", "content": "EARLIER reply."},
+              {"role": "user", "content": "BESTOF PUSHBACK no, that is wrong"}]
+
+    def draw_best(self, draws, n=3, messages=None):
         saved = self.guard.BEST_OF
         self.guard.BEST_OF = n
-        seen["bestof"], seen["draws"] = 0, draws
+        seen["bestof"], seen["draws"], seen["gate"], seen["pick"] = 0, draws, [], []
         try:
-            r = self.call("POST", "/v1/chat/completions", {"model": "m", "stream": True, "messages": [{"role": "user", "content": "BESTOF tell me something"}]})
+            r = self.call("POST", "/v1/chat/completions", {"model": "m", "stream": True, "messages": messages or self.PUSHED})
         finally:
             self.guard.BEST_OF = saved
             seen["draws"] = None
@@ -314,14 +332,63 @@ class GuardTest(unittest.TestCase):
             rows = [json.loads(line) for line in f if '"best_of"' in line]
         self.assertEqual(len(rows[-1]["best_of"]["draws"]), 3)
 
-    def test_best_of_n_is_off_by_default(self):
+    def test_best_of_is_three_and_gated_by_default(self):
         import importlib
         saved = os.environ.pop("GG_BEST_OF")
         try:
-            self.assertEqual(importlib.reload(self.guard).BEST_OF, 1, "one draw per chat unless the box is given GG_BEST_OF")
+            self.assertEqual(importlib.reload(self.guard).BEST_OF, 3, "three draws on a pushback turn unless the box is given GG_BEST_OF")
         finally:
             os.environ["GG_BEST_OF"] = saved
             importlib.reload(self.guard)
+
+    def test_a_first_turn_is_one_live_draw_and_asks_no_gate(self):
+        content, _ = self.draw_best(["The FUNNY bridge answer. "], messages=[{"role": "user", "content": "BESTOF PUSHBACK hello"}])
+        self.assertEqual((seen["bestof"], seen["gate"], seen["pick"]), (1, [], []), "no earlier reply to push back on: one draw, streamed")
+        self.assertIn("FUNNY", content)
+
+    def test_a_follow_up_is_one_live_draw(self):
+        msgs = [{"role": "user", "content": "BESTOF what is the weather in London?"}, {"role": "assistant", "content": "EARLIER reply."},
+                {"role": "user", "content": "BESTOF and in summer?"}]
+        self.draw_best(["The FUNNY bridge answer. "], messages=msgs)
+        self.assertEqual(len(seen["gate"]), 1, "one gate question before the turn")
+        self.assertEqual((seen["bestof"], seen["pick"]), (1, []), "not pushback: one draw, its thinking streamed live")
+        self.assertEqual(seen["gate"][0]["state"]["user_said"], "BESTOF and in summer?")
+        self.assertIn("EARLIER reply.", seen["gate"][0]["state"]["conversation"])
+        with open(self.log) as f:
+            summary = [json.loads(line)["request_summary"] for line in f if '"request_summary"' in line][-1]
+        self.assertEqual(summary["pushback"], 0.05)
+
+    def test_pushback_draws_three_and_the_pick_skips_a_copy_of_an_earlier_reply(self):
+        msgs = [{"role": "user", "content": "BESTOF capital of France?"}, {"role": "assistant", "content": "The FUNNY bridge answer."},
+                {"role": "user", "content": "BESTOF PUSHBACK it's Paris, dude"}]
+        content, _ = self.draw_best(["The FUNNY bridge answer. ", "A fresh FUNNY answer. ", "A plain answer. "], messages=msgs)
+        self.assertEqual(seen["bestof"], 3)
+        self.assertEqual(content.strip(), "A fresh FUNNY answer.", "the same reply again is the contrite loop: a fresh one is picked")
+
+    def test_the_pick_is_one_request_over_the_conversation_and_the_served_topic(self):
+        path = os.path.join(self.run_dir, "served.json")
+        with open(path, "w") as f:
+            json.dump({"kind": "clamp", "clamp": "c.pt", "topic": "cats", "dark_also": ["cruelty to cats"]}, f)
+        try:
+            self.draw_best(["A plain answer. ", "The FUNNY bridge answer. ", "A plain answer too. "])
+        finally:
+            os.remove(path)
+        self.assertEqual(len(seen["pick"]), 1, "every candidate in one Jev request")
+        req = seen["pick"][0]
+        self.assertEqual(req["state"]["user_said"], "BESTOF PUSHBACK no, that is wrong")
+        self.assertIn("EARLIER reply.", req["state"]["conversation"])
+        self.assertNotIn("PUSHBACK", req["state"]["conversation"], "the conversation is what came before the turn")
+        self.assertEqual({k for k in req["questions"] if k.endswith("_2")}, {"copies_2", "topic_2", "tries_2", "funny_2", "dark_2", "dark_topic_2"})
+        self.assertIn("cats", req["questions"]["topic_2"]["instructions"], "the topic is the served recipe's")
+        self.assertIn("`candidate_2.answer` or `candidate_2.thinking`", req["questions"]["dark_2"]["instructions"], "dark reads the thinking too")
+        self.assertIn("cruelty to cats", req["questions"]["dark_topic_2"]["instructions"])
+        self.assertIn("Thinking", req["state"]["candidate_2"]["thinking"])
+
+    def test_a_gate_with_no_verdict_is_one_live_draw(self):
+        msgs = [{"role": "user", "content": "BESTOF hi"}, {"role": "assistant", "content": "EARLIER reply."}, {"role": "user", "content": "BESTOF GATEFAIL PUSHBACK no"}]
+        content, _ = self.draw_best(["The FUNNY bridge answer. "], messages=msgs)
+        self.assertEqual(seen["bestof"], 1, "no verdict: the chat goes on with one live draw")
+        self.assertIn("FUNNY", content)
 
     def test_best_of_n_grades_the_whole_reply(self):
         # a dark opening long before the end of a long reply is still seen
@@ -622,6 +689,17 @@ class GuardTest(unittest.TestCase):
         finally:
             server.should_exit = True
         return out
+
+    def test_chats_get_the_repetition_penalty_and_the_served_sampling_holds_over_it(self):
+        self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(seen["vllm"][-1]["body"]["repetition_penalty"], 1.03, "the earlier apology costs something in every chat")
+        with open(os.path.join(self.run_dir, "served.json"), "w") as f:
+            json.dump({"kind": "clamp", "clamp": "c.pt", "sampling": {"repetition_penalty": 1.0}}, f)
+        try:
+            self.call("POST", "/v1/chat/completions", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        finally:
+            os.unlink(os.path.join(self.run_dir, "served.json"))
+        self.assertEqual(seen["vllm"][-1]["body"]["repetition_penalty"], 1.0, "a recipe can set its own")
 
     def test_the_served_sampling_reaches_vllm_over_the_clients(self):
         with open(os.path.join(self.run_dir, "served.json"), "w") as f:
