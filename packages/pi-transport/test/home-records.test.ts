@@ -12,9 +12,9 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { App } from "../src/home/app.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
-import { linkPair } from "../src/home/link.ts";
+import { type Frame, linkPair } from "../src/home/link.ts";
 import { type ModelServer, serveModels } from "../src/home/models.ts";
-import type { Recording, RecordLine, RecordSink } from "../src/home/records.ts";
+import { type Recording, type RecordLine, type RecordSink, receiveRecords } from "../src/home/records.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
 import { textResult } from "../src/testing/tool-result.ts";
 
@@ -238,8 +238,12 @@ describe("the record stream", () => {
 				const started = /^append (\d+) start$/.exec(event);
 				if (started !== null) expect(kept.events[at + 1], event).toBe(`append ${started[1]}`);
 			}
-			host.close("done");
 			await runner.home?.close(context);
+			// And nothing was dropped on the way: every commit, every line.
+			const head = headOf(made.options.store);
+			expect(kept.log.map((one) => one.commit)).toEqual(from1(head - 1));
+			expect([...kept.lines.keys()]).toEqual(from1(head - 1).filter((commit) => commit % 2 === 1));
+			host.close("done");
 		});
 	}, 30_000);
 
@@ -282,6 +286,122 @@ describe("the record stream", () => {
 			expect(kept.log.length).toBe(before);
 		});
 	}, 30_000);
+	it("sends a snapshot taken while no host took the stream once one does, after the commits before it", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const server = serveModels(made.models);
+			const runner = createRunner(made.options);
+			// The first host takes the stream, and goes before the session opens.
+			(await hold(made, runner, 1, kept.sink, server)).close("gone");
+			const blind = await hold(made, runner, 1, undefined, server);
+			getOrThrow(await blind.resume({ epoch: 1 }, context));
+			getOrThrow(await blind.submit("go", undefined, context));
+			getOrThrow(await blind.idle(context));
+			blind.close("gone");
+			expect(kept.events).toEqual([]);
+			const back = await hold(made, runner, 1, kept.sink, server);
+			await sleep(100);
+			expect(kept.events.filter((event) => event.startsWith("snapshot"))).toEqual(["snapshot 0"]);
+			const head = headOf(made.options.store);
+			expect(kept.log.map((one) => one.commit)).toEqual(from1(head - 1));
+			back.close("done");
+			await runner.home?.close(context);
+		});
+	}, 30_000);
+
+	it("sends a snapshot taken while no host took the stream when one does, also with no commit after it", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const server = serveModels(made.models);
+			const runner = createRunner(made.options);
+			(await hold(made, runner, 1, kept.sink, server)).close("gone");
+			const blind = await hold(made, runner, 1, undefined, server);
+			getOrThrow(await blind.resume({ epoch: 1 }, context));
+			blind.close("gone");
+			const committed = headOf(made.options.store) - 1;
+			const back = await hold(made, runner, 1, kept.sink, server);
+			await sleep(100);
+			expect(kept.events.filter((event) => event.startsWith("snapshot"))).toEqual(["snapshot 0"]);
+			expect(kept.log.map((one) => one.commit)).toEqual(from1(committed));
+			back.close("done");
+			await runner.home?.close(context);
+		});
+	}, 30_000);
+
+	it("sends a later process's snapshot taken while no host took the stream, when it reopened without a commit", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const server = serveModels(made.models);
+			const first = createRunner(made.options);
+			const host = await hold(made, first, 1, kept.sink, server);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			getOrThrow(await host.idle(context));
+			await first.home?.close(context);
+			host.close("gone");
+			const head = headOf(made.options.store);
+			// The process starts again; a host that takes no stream reopens the session.
+			const again = createRunner(made.options);
+			(await hold(made, again, 1, kept.sink, server)).close("gone");
+			const blind = await hold(made, again, 1, undefined, server);
+			getOrThrow(await blind.resume({ epoch: 1 }, context));
+			blind.close("gone");
+			expect(headOf(made.options.store)).toBe(head);
+			const back = await hold(made, again, 1, kept.sink, server);
+			await sleep(100);
+			expect(kept.events.filter((event) => event.startsWith("snapshot"))).toEqual([
+				"snapshot 0",
+				`snapshot ${head - 1}`,
+			]);
+			back.close("done");
+			await again.home?.close(context);
+		});
+	}, 30_000);
+
+	it("gives an order the answer the runner sent before it closed, behind a slow log", async () => {
+		const models = createModels();
+		const kept = memorySink({ appendMs: 50 });
+		const [runnerEnd, hostEnd] = linkPair();
+		runnerEnd.onFrame((frame) => {
+			if (frame.t === "hello") runnerEnd.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+			if (frame.t === "order") {
+				// A commit the host must log first, the answer, and the end of the runner.
+				runnerEnd.send({ t: "record", commit: 1, writes: [], epoch: 1 });
+				runnerEnd.send({ t: "answer", id: frame.id, ok: true, value: { state: "retired", epoch: 2 } });
+				runnerEnd.close("retired");
+			}
+		});
+		const host = connectHome(hostEnd, { models, epoch: 1, records: kept.sink });
+		getOrThrow(await host.ready);
+		const status = await host.status(context);
+		expect(status.ok ? status.value : status.error.code).toEqual({ state: "retired", epoch: 2 });
+		expect(kept.log.map((one) => one.commit)).toEqual([1]);
+	});
+});
+
+describe("the host's end of the record stream", () => {
+	it("appends each commit once, in order, and acknowledges one it holds already", async () => {
+		const kept = memorySink();
+		const replies: Frame[] = [];
+		const reply = (frame: Frame) => replies.push(frame) > 0;
+		const record = (commit: number): Frame => ({ t: "record", commit, writes: [] });
+		// Ahead of the log: not appended and not acknowledged; the runner sends from where the host is.
+		await receiveRecords(kept.sink, record(2), reply);
+		expect(kept.log).toEqual([]);
+		expect(replies).toEqual([]);
+		await receiveRecords(kept.sink, record(1), reply);
+		await receiveRecords(kept.sink, record(1), reply);
+		await receiveRecords(kept.sink, record(2), reply);
+		expect(kept.log.map((one) => one.commit)).toEqual([1, 2]);
+		expect(replies).toEqual([
+			{ t: "record-ack", commit: 1 },
+			{ t: "record-ack", commit: 1 },
+			{ t: "record-ack", commit: 2 },
+		]);
+		// Lines of a commit the log does not hold yet are not written.
+		await receiveRecords(kept.sink, { t: "lines", commit: 3, lines: ["early"] }, reply);
+		expect(kept.lines.size).toBe(0);
+	});
 });
 
 /** Every table of a store, every row, in rowid order. */

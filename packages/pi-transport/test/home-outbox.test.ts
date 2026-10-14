@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, fdatasyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOutbox } from "../src/home/outbox.ts";
+
+// Every sync the outbox makes, counted: what a power cut would lose is what was not synced.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return { ...actual, fdatasyncSync: vi.fn(actual.fdatasyncSync) };
+});
 
 const directories: string[] = [];
 afterEach(() => {
@@ -46,6 +52,47 @@ describe("a runner's outbox", () => {
 		third.ackLines(2);
 		expect(third.pending()).toEqual([]);
 		third.close();
+	});
+
+	it("syncs an entry before it returns, and a commit's lines at once or with the next sync", async () => {
+		const synced = vi.mocked(fdatasyncSync);
+		const each = openOutbox(place(), { head: 1 });
+		synced.mockClear();
+		each.entry(1, writes(1));
+		expect(synced).toHaveBeenCalledTimes(1);
+		each.lines(1, ["a line"]);
+		expect(synced).toHaveBeenCalledTimes(2);
+		each.close();
+		const next = openOutbox(place(), { head: 1, linesSync: "next", idleSyncMs: 20 });
+		synced.mockClear();
+		next.entry(1, writes(1));
+		next.lines(1, ["a line"]);
+		expect(synced).toHaveBeenCalledTimes(1);
+		// The next entry's sync takes the lines with it.
+		next.entry(2, writes(2));
+		expect(synced).toHaveBeenCalledTimes(2);
+		// With no entry after them, a moment of quiet.
+		next.lines(2, ["a line"]);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(synced).toHaveBeenCalledTimes(3);
+		next.close();
+	});
+
+	it("keeps a commit's lines when its writes are acknowledged before them", () => {
+		const outbox = openOutbox(place(), { head: 1 });
+		outbox.entry(1, writes(1));
+		outbox.ack(1);
+		outbox.lines(1, ["late"]);
+		outbox.entry(2, writes(2));
+		outbox.lines(2, ["on time"]);
+		outbox.ack(2);
+		expect(outbox.pending()).toEqual([
+			{ commit: 1, lines: ["late"] },
+			{ commit: 2, lines: ["on time"] },
+		]);
+		outbox.ackLines(1);
+		expect(outbox.pending()).toEqual([{ commit: 2, lines: ["on time"] }]);
+		outbox.close();
 	});
 
 	it("drops an entry at or above the store's head at a reopen: its commit never landed, and nobody heard of it", () => {
