@@ -270,6 +270,12 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   assert.equal(after.branches[`${ROOT}/1`]!.verdict, undefined);
   assert.deepEqual(after.kills.map((each) => each.label), ['storm 1'], 'the kill history stays');
   assert.equal(after.plan?.items.length, 4, 'and the plan');
+  // The kill's cut is history: a branch it cut keeps its cut count and its outline through the restore, whatever the checkpoint holds.
+  const withCut = reduceAll([process(1), task, durableLine('agentrun.effects', 'workflow', 1, 2, { doc: 'agentrun.effects', key: `a\u0000step:${step(2, 2)}#call:0`, value: { name: 'install', argsHash: 'x', status: 'unknown', result: null, intent: { tool: 'install', argsHash: 'x' } }, version: 1 }, { path: step(2, 2) }),
+    driverAt(5, [], 1), kill(1), process(2), driverAt(2, [], 1, true)]);
+  assert.equal(withCut.branches[`${ROOT}/2`]?.cut, 1, 'the cut count survives the restore');
+  const tree = workflowMapPanel.view(withCut, { t: 0 });
+  assert.equal(find(tree, cls('cut')).length, 1, 'and so does the grid outline');
 });
 
 test('an itemsPath is a dotted state path: a nested input still lays out its planned cells', () => {

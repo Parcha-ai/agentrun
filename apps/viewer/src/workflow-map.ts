@@ -91,7 +91,13 @@ export const workflowMapPanel: Panel<WmState> = {
       if (first && line.commit < next.highest) {
         // A restore: the branches are rebuilt from the checkpoint's snapshot, so what the discarded commits showed (verdicts, findings, evidence
         // records, open effects, the finish) goes. The kills, the plan and what the counters folded stay.
-        next = { ...next, branches: {}, open: {}, done: [], convBranch: {}, finishedAt: undefined, highest: line.commit, inSnapshot: true, opened: false };
+        // A kill's cut is history, not state of the lost branch: the branches each earlier kill cut keep their cut counts and their grid outline.
+        const branches: Record<string, WmBranch> = {};
+        for (const kill of next.kills) for (const id of kill.cut) {
+          const where = branchOf(`${id}/`);
+          if (where) branches[id] = { ...(branches[id] ?? wmNew(id, where.index)), cut: (branches[id]?.cut ?? 0) + 1 };
+        }
+        next = { ...next, branches, open: {}, done: [], convBranch: {}, finishedAt: undefined, highest: line.commit, inSnapshot: true, opened: false };
       } else next = { ...next, highest: Math.max(next.highest, line.commit), inSnapshot: line.snapshot === true, opened: line.snapshot === true ? false : next.opened };
     }
     const plan = planOf(line);
