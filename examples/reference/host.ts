@@ -17,6 +17,7 @@ import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
 import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { ChildEnv } from '@parcha/pi-vision/node';
+import type { Recorder } from './record.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
 export type RunPlace = { id: string; root: string; work: string; store: string };
@@ -42,15 +43,23 @@ export type StatusEvent =
   | { source: 'workflow'; event: WorkflowEvent }
   | { source: 'evidence'; label: string; tool: string; path: string };
 export type Delivery = { record: unknown };
+/** After `answered` has nothing for an effect a killed process left unknown, the host may run it again, when running it again is safe
+ *  (a read, or work in a fresh box): `rerun` is asked with the effect's id and intent, and an answer completes the effect. Undefined
+ *  leaves it unknown and it is never sent again. Only an effect with an intent is asked. */
+export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string } }) => Promise<{ args: unknown; value: unknown } | undefined>;
+/** What a recorder takes from the run: the process's generation once it has opened the run. */
+export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
 export type Host = {
+  /** Told which generation this process is, once it has opened the run. Absent: nothing is recorded. */
+  record?: Generation;
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
   /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
    *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
    *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
    *  the call stays unknown and is never sent again. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; browser: BrowserPlane };
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown; calls?: unknown[] } | undefined>; rerun?: Rerun; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
@@ -76,6 +85,10 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */
+  tokensPerSecond?: number;
+  /** How many model turns one process can take before the faux provider has none queued; default 64. A job with many branches needs more. */
+  responses?: number;
 };
 
 /** One fake call, with the process incarnation that made it (a pid can be reused; this id is drawn at each start). A
@@ -88,7 +101,9 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane } = {}): LocalHost {
+/** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
+  const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   const answerOf = (argsHash: string) => join(place.root, 'answers', `${argsHash}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
@@ -97,10 +112,14 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
     appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
-  const status = quiet((event: StatusEvent) => appendFileSync(eventsFile, json(event)));
+  const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
-  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
-  faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
+  // The faux streams like a real model: a turn takes a moment, pi commits the start of every ask and a throttled partial of the answer, and
+  // a kill mid-stream leaves both in the store. `tokensPerSecond: 0` answers at once.
+  const tokensPerSecond = fakes.tokensPerSecond ?? 50;
+  const streaming = tokensPerSecond > 0 ? { tokensPerSecond, tokenSize: { min: 1, max: 2 } } : {};
+  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }], ...streaming }) : fauxProvider({ ...streaming });
+  faux.setResponses(Array.from({ length: fakes.responses ?? 64 }, () => (context, stream) => {
     count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
   }));
@@ -124,25 +143,39 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   } };
 
   const host: Host = {
+    ...(recorder ? { record: recorder } : {}),
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
-      runEffect: async ({ node, input, effect }) => {
+      runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
-        const value = await tool(input);
+        // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied. A send
+        // that failed with a retryable error is sent once more; the calls the door has reported are kept with its answer.
+        const reported: Array<Record<string, unknown>> = [];
+        const report = (outcome: 'applied' | 'failed') => { const record = { outcome, tool: node.tool, argsHash: effect.argsHash }; reported.push(record); call?.(record); };
+        let value: unknown;
+        for (let send = 1; ; send += 1) {
+          try { value = await tool(input); break; } catch (error) {
+            report('failed');
+            if (send >= 2 || (error as { retryable?: boolean }).retryable !== true) throw error;
+          }
+        }
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
         const at = answerOf(effect.argsHash);
         await mkdir(join(place.root, 'answers'), { recursive: true });
-        await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
+        await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value, calls: reported }));
         await rename(`${at}.partial`, at);
+        // The applied call is listed once, after its answer is kept: a kill between the two leaves the answer as the evidence
+        // the next process's settle reports it from.
+        report('applied');
         return value;
       },
       answered: async (argsHash) => {
-        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
+        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown; calls?: unknown[] }; } catch { return undefined; }
       },
       // The fake costs nothing; list prices would bill its session by the second and make every run's usage differ.
       browser: { prices: { sessionUsdPerHour: 0, sessionMinimumS: 0, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 }, ...browser },
@@ -156,6 +189,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         await mkdir(join(place.root, 'evidence', label), { recursive: true });
         await writeFile(join(place.root, path), text);
         status({ source: 'evidence', label, tool: record.tool, path });
+        recorder?.live(record.tool.startsWith('vision') || record.tool === 'look' ? 'vision' : 'browser', 'EvidenceRecord', { label, tool: record.tool, path }, { blobs: [recorder.blob(text, 'json')] });
         return { path };
       },
     },
@@ -166,7 +200,9 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     status,
     async deliver(result) {
       await mkdir(join(place.root, 'out'), { recursive: true });
-      await writeFile(join(place.root, 'out', 'record.json'), JSON.stringify({ ...result, evidence: evidence() }, null, 2));
+      const written = JSON.stringify({ ...result, evidence: evidence() }, null, 2);
+      await writeFile(join(place.root, 'out', 'record.json'), written);
+      if (recorder) { const blob = recorder.blob(written, 'json'); recorder.host('result', { blob, title: 'The record' }, { blobs: [blob] }); }
     },
     // No program the job starts sees this process's environment beyond where programs live.
     credentials: { childEnv: { PATH: process.env.PATH } },
@@ -179,4 +215,15 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     try { return readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; }
   };
   return { host, ...(backend ? { backend } : {}), ledger, evidence };
+}
+
+/** A status row as the recording's live line: the package's own record name, and the position and conversation it carries. */
+function record(recorder: Recorder, event: StatusEvent): void {
+  if (event.source === 'workflow') return recorder.live('workflow', event.event.type, event.event, event.event.executionPath === undefined ? {} : { path: event.event.executionPath });
+  if (event.source === 'vision') return recorder.live('vision', 'look' in event ? 'LookEvent' : 'MissEvent', 'look' in event ? event.look : event.miss);
+  if (event.source === 'browser') {
+    if ('reconciled' in event) return recorder.live('browser', 'reconciled', event.reconciled);
+    const conv = Number((event.row as { conversationId?: unknown }).conversationId);
+    return recorder.live('browser', event.change, event.row, Number.isFinite(conv) ? { conv } : {});
+  }
 }
