@@ -4,15 +4,27 @@ import type { Result } from "@earendil-works/pi-durable/env";
 import type { DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { type Catalog, type ProxyModels, proxyModels } from "./models.ts";
+import type { LinesSync } from "./outbox.ts";
+import { createShipper, type Recording, type Shipper } from "./records.ts";
 import { type Home, type HomeOptions, openHome, type ResumeOrder } from "./run.ts";
+
+/** How long a model request, or a seal waiting for the host to hold every commit, waits for a lost link. */
+const DEFAULT_RESUME_WITHIN_MS = 30_000;
 
 /** The exit code of a runner the host refused: its epoch is not the lease's. Its launcher must not start it again. */
 export const EXIT_REFUSED = 75;
 
 /** What a runner needs: a home's options, without models, which come from the host over the link. */
-export type RunnerOptions = Omit<HomeOptions, "models"> & {
+export type RunnerOptions = Omit<HomeOptions, "models" | "wrapStore"> & {
 	/** How long a model request waits for a lost link to come back. Default 30 s. */
 	readonly resumeWithinMs?: number;
+	/**
+	 * The recorder to run in this process when the host takes the record stream: `@parcha/agentrun-pi/durable`'s
+	 * `snapshotLines` and `recordCommits`. Without it the host still gets every commit's writes, and no lines.
+	 */
+	readonly recording?: Recording;
+	/** When a commit's lines reach the disk (`LinesSync`). Default `each`. */
+	readonly linesSync?: LinesSync;
 };
 
 /** How a runner ended. `retired`: a later epoch took the session. `refused`: the host refused this runner's epoch. */
@@ -56,7 +68,9 @@ function wire(error: Error & { code?: unknown; holdouts?: unknown }): WireError 
 export function createRunner(options: RunnerOptions, context: Context = BACKGROUND_CONTEXT): Runner {
 	let proxy: ProxyModels | undefined;
 	// The one opening of the home, with the models it opened with. A host that says hello meanwhile waits for it.
-	let opening: { readonly proxy: ProxyModels; readonly home: Promise<Result<Home, Error>> } | undefined;
+	let opening:
+		| { readonly proxy: ProxyModels; readonly shipper?: Shipper; readonly home: Promise<Result<Home, Error>> }
+		| undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
 	let finished = false;
@@ -111,8 +125,17 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
-			case "seal":
+			case "seal": {
+				// A move seals only what the host holds: the sealed store and the host's log end at the same commit.
+				const shipper = opening?.shipper;
+				if (shipper !== undefined && !(await shipper.drained(options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS))) {
+					const error = Object.assign(new Error("the host does not hold every commit of this store yet"), {
+						code: "not_shipped",
+					});
+					return { ok: false as const, error };
+				}
 				return home.seal(within);
+			}
 			case "submit": {
 				const root = await home.root(within);
 				if (!root.ok) return root;
@@ -146,7 +169,24 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
 			});
 			proxy = made;
-			opening = { proxy: made, home: openHome({ ...options, models: made.models }) };
+			// The host takes the record stream: every commit of this runner is shipped, from its first.
+			const shipper =
+				frame.records === true
+					? createShipper({
+							...(options.recording === undefined ? {} : { recording: options.recording }),
+							...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
+						})
+					: undefined;
+			const { recording: _recording, linesSync: _linesSync, ...homeOptions } = options;
+			opening = {
+				proxy: made,
+				...(shipper === undefined ? {} : { shipper }),
+				home: openHome({
+					...homeOptions,
+					models: made.models,
+					...(shipper === undefined ? {} : { wrapStore: shipper.wrapStore(options.store) }),
+				}),
+			};
 		}
 		const mine = opening;
 		const opened = await mine.home;
@@ -162,6 +202,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		home = opened.value;
 		if (link !== current) return;
 		mine.proxy.up((model) => (current === link ? send(link, model) : false));
+		mine.shipper?.up((record) => (current === link ? send(link, record) : false));
 		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: opened.value.state });
 	};
 
@@ -182,6 +223,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				else if (frame.t === "refused") void stop("refused", EXIT_REFUSED, String(frame.reason ?? "refused"));
 				else if (frame.t === "cancel") running.get(frame.id)?.();
 				else if (proxy?.receive(frame)) return;
+				else if (opening?.shipper?.receive(frame)) return;
 				else if (frame.t === "order") {
 					const active = home;
 					if (active === undefined) {
@@ -209,6 +251,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (current !== link) return;
 				current = undefined;
 				proxy?.down(reason);
+				opening?.shipper?.down();
 				// No host is there to finish a move: held work goes on. A sealed home stays sealed.
 				if (home?.state === "open") home.abandon();
 			});

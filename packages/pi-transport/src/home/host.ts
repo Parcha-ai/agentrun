@@ -4,6 +4,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
+import { type RecordSink, receiveRecords } from "./records.ts";
 import type { HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
@@ -67,9 +68,15 @@ export type ConnectOptions = {
 	 * is not called again. Without it each handle makes its own, and a new link starts with nothing kept.
 	 */
 	readonly server?: ModelServer;
+	/**
+	 * Where this session's record stream goes: with it the runner ships every commit's writes, and its recorder's lines,
+	 * and a seal waits until they are all here.
+	 */
+	readonly records?: RecordSink;
 };
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
+const RECORD_FRAMES = new Set(["record", "lines"]);
 const HOME_STATES: ReadonlySet<unknown> = new Set<HomeState>(["closed", "open", "sealed", "retired"]);
 
 /** Whether `value` is a whole number at least 0. */
@@ -123,8 +130,10 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	});
 	const reply = (frame: Frame) => link.send(frame);
 
-	link.onFrame((frame) => {
-		if (MODEL_FRAMES.has(frame.t)) {
+	const { records } = options;
+	const handle = async (frame: Frame): Promise<void> => {
+		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
+			// A home the lease left behind has no model, and writes nothing to the session's log.
 			if (frame.epoch !== epoch) {
 				link.send({
 					t: "refused",
@@ -132,27 +141,52 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 				});
 				return;
 			}
-			server.receive(frame, reply);
+			if (MODEL_FRAMES.has(frame.t)) server.receive(frame, reply);
+			else if (records !== undefined) await receiveRecords(records, frame, reply);
 		} else if (frame.t === "ready") {
 			if (frame.ok !== true) settleReady(err(fromWire(frame.error)));
 			else if (!HOME_STATES.has(frame.state)) {
 				settleReady(
 					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
 				);
-			} else settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			} else {
+				// Where the host's log is: the runner sends what it holds from there, then what follows.
+				if (records !== undefined) link.send({ t: "records-from", ...records.held() });
+				settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			}
 		} else if (frame.t === "answer") {
 			const settle = pending.get(Number(frame.id));
 			pending.delete(Number(frame.id));
 			settle?.(frame.ok === true ? ok(frame.value) : err(fromWire(frame.error)));
 		}
+	};
+	// One frame after another: a commit is in the log before any later frame of the link is acted on.
+	let handled: Promise<void> = Promise.resolve();
+	link.onFrame((frame) => {
+		handled = handled
+			.then(() => handle(frame))
+			.catch((cause) => {
+				link.close(
+					`the host could not keep the record stream: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			});
 	});
 	link.onClose((reason) => {
 		server.down(reply);
-		settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		for (const settle of pending.values()) settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		pending.clear();
+		// After the frames that came before it: an answer the runner sent before it closed is still its answer.
+		handled = handled.then(() => {
+			settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
+			for (const settle of pending.values())
+				settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
+			pending.clear();
+		});
 	});
-	link.send({ t: "hello", v: LINK_VERSION, catalog: catalogOf(options.models) });
+	link.send({
+		t: "hello",
+		v: LINK_VERSION,
+		catalog: catalogOf(options.models),
+		...(records === undefined ? {} : { records: true }),
+	});
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>
 		new Promise<Result<T, RemoteError>>((resolve) => {
