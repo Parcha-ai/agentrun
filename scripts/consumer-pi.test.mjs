@@ -26,6 +26,34 @@ test('ranges are read the way npm reads them', () => {
   assert.throws(() => satisfies('1.0.0', 'latest'), /Unsupported version range/);
 });
 
+// Cases from npm's semver documentation (Advanced Range Syntax and Prerelease Tags): [version, range, satisfies].
+const npmCases = [
+  ['1.2.3', '^1.2.3', true], ['1.9.9', '^1.2.3', true], ['2.0.0', '^1.2.3', false], ['1.2.2', '^1.2.3', false],
+  ['0.2.9', '^0.2.3', true], ['0.3.0', '^0.2.3', false],
+  ['0.0.3', '^0.0.3', true], ['0.0.4', '^0.0.3', false],
+  ['1.2.9', '^1.2.x', true], ['2.0.0', '^1.2.x', false],
+  ['0.0.9', '^0.0.x', true], ['0.1.0', '^0.0.x', false], ['0.0.9', '^0.0', true], ['0.1.0', '^0.0', false],
+  ['1.9.0', '^1.x', true], ['2.0.0', '^1.x', false],
+  ['0.2.0', '^0.x', true], ['0.9.9', '^0.x', true], ['1.0.0', '^0.x', false],
+  ['1.2.9', '~1.2.3', true], ['1.3.0', '~1.2.3', false], ['1.2.9', '~1.2', true], ['1.3.0', '~1.2', false],
+  ['1.9.9', '~1', true], ['2.0.0', '~1', false], ['0.2.9', '~0.2.3', true], ['0.3.0', '~0.2.3', false],
+  ['0.9.9', '~0', true], ['1.0.0', '~0', false],
+  ['1.2.9', '1.2.x', true], ['1.3.0', '1.2.x', false], ['1.9.9', '1', true], ['2.0.0', '1', false],
+  ['1.2.3', '>=1.2.3 <1.2.4', true], ['1.2.4', '>=1.2.3 <1.2.4', false],
+  ['1.3.0', '>1.2', true], ['1.2.9', '>1.2', false], ['1.2.9', '<=1.2', true], ['1.3.0', '<=1.2', false],
+  ['1.2.3-beta.4', '^1.2.3-beta.2', true], ['1.2.3-beta.1', '^1.2.3-beta.2', false],
+  ['1.2.3', '^1.2.3-beta.2', true], ['1.2.4-beta.2', '^1.2.3-beta.2', false], ['1.3.0-beta.2', '^1.2.3-beta.2', false],
+  ['1.2.3-alpha.7', '>1.2.3-alpha.3', true], ['3.4.5-alpha.9', '>1.2.3-alpha.3', false],
+  ['1.2.3-alpha.3', '>=1.2.3-alpha.3 <1.2.3', true], ['1.2.3-beta', '>=1.2.3-alpha.3 <1.2.3', false],
+  ['1.2.3-alpha.10', '>1.2.3-alpha.9', true], ['1.2.3-alpha.beta', '>1.2.3-alpha.1', true],
+  ['1.1.0-beta.1', '>=1.0.4 <1.2.0', false], ['1.1.0-beta.1', '>=1.1.0-beta.0 <1.2.0', true],
+  ['1.0.4-rc.1', '>=1.0.4', false], ['1.0.4', '>=1.0.4 <1.2.0', true],
+];
+
+test('ranges and prerelease tags are read the way npm documents them', () => {
+  for (const [version, range, expected] of npmCases) assert.equal(satisfies(version, range), expected, `${version} against ${range}`);
+});
+
 test('the developed version is what the root lockfile resolves for the pi package', () => {
   const lock = {
     [`node_modules/${durable}`]: { version: '1.0.4' },
