@@ -118,7 +118,8 @@ without a recipe, or when your user asks you to find it fresh.
     people jumping from it). Jev confirms each ("Is `association` a real, widely known dark association of X?", keep 0.6
     and up); none is a fine answer. The base check is always on; these only add to it.
 11. **Proof, then serve.** Before you switch, show your user one question answered with the edit off
-    (`gpulab.sample(None, [q], sampling=SAMPLING)`) and with your winner on, side by side, in the chat. Then
+    (`gpulab.sample(None, [q], sampling=SAMPLING)`) and with your winner on. Put it in your message, not in your thinking:
+    the question, then both replies quoted verbatim from your own runs, under "Edit off:" and "Edit on:". Then
     `gpulab.serve(clamp, note=..., topic="X", dark_also=[...], evidence={...})`, each part named with `"what"`, the
     evidence your winner's summary numbers, its `beats` against the Golden Gate and how many minutes it took. It is saved
     as a recipe on the box and the page calls the model "Qwen3.5-27B, obsessed with X". Then `use_model`.

@@ -61,6 +61,7 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 | `chat/gg-placer.ts` | The pages' placer (`--placer-module`): Jev's typed choice over the browser and the VM, with the agent's model as a fact |
 | `chat/live-gg.mjs`, `chat/stop-gg.sh` | Start and stop a page: its GPU box, then D4's take server with the extra and the placer, on its own port, run, mount root, state and Modal app (`chat/server-args.ts` PAGES: `pda-gg-chat` by default, `pda-steer` with `--page any`) |
 | `chat/stop-steps.ts`, `chat/pull-run.ts` | The page's stop in order: the take's evidence first (guard log, strength record, the served edit and the recipes made on the box in one box command, page events, the run's transcript off the disk, each copy time-limited) into `<home>/takes/<time>/`, then the box, the sandboxes and the run's tree; a failed or stalled step is logged and the teardown goes on |
+| `chat/reaper.ts` | A kept box's fail-safe: after `stop-gg.sh --keep-box`, a detached reaper (its pid in `<home>/reaper.pid`) takes the box down unless a `--reuse-box` start claims it within 10 min; a plain stop or a new start ends it by its exact pid. A reused box's agent home is emptied first (`freshHome`), so each page's research starts from nothing |
 | `chat/run-step.ts` | One launcher step: on failure, its error line in the message and its whole output in the launcher's log (`failed`, `stop.failed`) |
 | `chat/server-args.ts` | Each page's places (`PAGES`) and the take server's argv: the tab's root instructions and the extensions it goes without, the come-up wait (150 s), the mount transport (no transport arg) |
 | `chat/gg-sandboxes.mjs` | One of the page's Modal apps' sandboxes, and with `--terminate` their end |
@@ -297,6 +298,7 @@ chat/stop-gg.sh        # the last line must read: sandboxes in pda-gg-chat: 0
 # the any-topic page: port 8783, ~/tmp-steer, Modal app pda-steer; the person names the topic in the chat
 node chat/live-gg.mjs --page any
 # a next topic in a fresh chat on the same GPU box (the cloud page has no New chat): all but the box stops, then a new page
+# (the kept box goes down by itself if no --reuse-box start comes within 10 min; the agent's home starts empty)
 chat/stop-gg.sh --page any --keep-box && node chat/live-gg.mjs --page any --reuse-box
 chat/stop-gg.sh --page any        # sandboxes in pda-steer: 0
 

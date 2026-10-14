@@ -2,7 +2,11 @@
 // wait the three wrappers need, and no transport arg (the GG page runs on the mount transport, the default).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxEnv, DEFAULT_AGENT_MODEL, PAGE_MIN, PAGES, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "../server-args.ts";
+import { boxEnv, DEFAULT_AGENT_MODEL, freshHome, PAGE_MIN, PAGES, pageLink, pageMinutes, pageProfile, reusable, serverArgs } from "../server-args.ts";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GG_INSTRUCTIONS } from "../gg-text.ts";
 import { STEER_INSTRUCTIONS } from "../steer-text.ts";
 
@@ -89,4 +93,17 @@ test("--page-min is a whole number of minutes, or the page does not start", () =
   assert.equal(pageMinutes(undefined), PAGE_MIN);
   assert.equal(pageMinutes("25"), 25);
   for (const bad of ["", "abc", "0", "-5", "2.5", "Infinity", "--ttl"]) assert.throws(() => pageMinutes(bad), /--page-min/, bad);
+});
+
+test("a reused box gives the next page's agent an empty home: the last topic's code and notes go, its shell files stay, nothing outside it is touched", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gg-home-"));
+  const home = join(root, "agent");
+  mkdirSync(join(home, "work"), { recursive: true });
+  for (const f of [".bashrc", ".profile", "cat_texts.json", "on_gg.json", ".hidden_notes", "work/run1.py"]) writeFileSync(join(home, f), "x");
+  writeFileSync(join(root, "outside.txt"), "keep me");
+  symlinkSync(join(root, "outside.txt"), join(home, "link"));
+  execFileSync("bash", ["-c", freshHome(home)]);
+  assert.deepEqual(readdirSync(home).sort(), [".bashrc", ".profile"]);
+  assert.equal(existsSync(join(root, "outside.txt")), true, "a link's target outside the home stays");
+  assert.match(freshHome("/home/agent"), /^find \/home\/agent -mindepth 1 -maxdepth 1 /);
 });

@@ -53,6 +53,12 @@ export interface SavedBox {
 /** The minutes a reused box must have left for a page: a topic's research, the switch and a chat (--page-min). */
 export const PAGE_MIN = 40;
 
+/** The root command that empties the agent's home on a reused box: each page's research starts from nothing (the last
+ * topic's code, texts and notes go; the recipes it served live in /var/tmp/gg/recipes and stay), its shell files stay. */
+export function freshHome(home: string): string {
+  return `find ${home} -mindepth 1 -maxdepth 1 ! -name .bashrc ! -name .profile ! -name .bash_logout -exec rm -rf -- {} +`;
+}
+
 /** --page-min as given (absent: PAGE_MIN): a whole, positive number of minutes, or the page does not start. */
 export function pageMinutes(arg: string | undefined): number {
   if (arg === undefined) return PAGE_MIN;

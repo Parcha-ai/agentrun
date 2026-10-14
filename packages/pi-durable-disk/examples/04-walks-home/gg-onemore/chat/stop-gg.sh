@@ -3,7 +3,8 @@
 # ~/tmp-steer with --page any). Its stop first keeps the take's evidence in <home>/takes/<time>/ (guard log, strength record,
 # the served edit and the recipes made, page events, the run's transcript), then tears down. If it is gone already, whatever
 # is left of the page's own Modal app goes too. The last line counts that app's sandboxes: 0.
-# With --keep-box everything but the GPU box goes (SIGUSR2), for a fresh chat on it: live-gg.mjs --reuse-box.
+# With --keep-box everything but the GPU box goes (SIGUSR2), for a fresh chat on it: live-gg.mjs --reuse-box. A kept box
+# has a reaper (chat/reaper.ts) that takes it down unless such a start claims it within 10 min; a plain stop ends the reaper.
 #   chat/stop-gg.sh [--page golden-gate|any] [--keep-box]
 set -u
 H=~/tmp-gg-chat APP=pda-gg-chat KEEP=
@@ -27,11 +28,15 @@ if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
 fi
 rm -f "$H/secrets/guard-url" "$H/secrets/serve-key" "$H/secrets/tools-key"
 SPARE=()
-if [ -n "$KEEP" ]; then
-  # the kept box's keys stay with it (box-state/), for the next page
-  SPARE=(--keep "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("sandbox", ""))' "$H/box-state/box.json" 2>/dev/null)")
+BOX=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("sandbox", ""))' "$H/box-state/box.json" 2>/dev/null)
+if [ -n "$KEEP" ] && [ -n "$BOX" ]; then
+  # the kept box's keys stay with it (box-state/), for the next page; its reaper is the launcher's, or this one's when the
+  # launcher was gone already
+  SPARE=(--keep "$BOX")
+  (cd "$G" && node -e 'import("./chat/reaper.ts").then(async (m) => { const [h, box, state, app, b] = process.argv.slice(1); const { existsSync } = await import("node:fs"); if (!existsSync(`${h}/reaper.pid`)) console.log("reaper", m.startReaper({ home: h, sandbox: box, minutes: 10, command: ["env", `GG_STATE=${state}`, `GG_APP=${app}`, `${b}/with-modal`, "--", "python3", `${process.cwd()}/modal/box.py`, "down", "--id", box] })); })' "$H" "$BOX" "$H/box-state" "$APP" "$B")
 else
   rm -f "$H/box-state/serve-key" "$H/box-state/exec-key"
+  (cd "$G" && node -e 'import("./chat/reaper.ts").then((m) => m.stopReaper(process.argv[1]) && console.log("reaper stopped"))' "$H")
 fi
 if ! out=$(cd "$G" && "$B/with-modal" -- node chat/gg-sandboxes.mjs "$APP" --terminate "${SPARE[@]}" 2>&1); then
   echo "could not check $APP's sandboxes: $(echo "$out" | tail -2 | tr '\n' ' ')"
