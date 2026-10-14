@@ -272,6 +272,34 @@ describe("pulling a checkpoint", () => {
 		expect(stats.skipped).toMatchObject({ too_large: 1, failed: 1 });
 	});
 
+	it("tells the model server to let go of the paid answers below the oldest generation it keeps", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const covered: number[] = [];
+		const heads: number[] = [];
+		for (let round = 0; round < 3; round++) {
+			const taken = getOrThrow(
+				await pullCheckpoint(
+					{
+						session: "s",
+						place: fx.place,
+						home: fx.home,
+						epoch: 1,
+						vault,
+						keep: 2,
+						answers: { covered: (head) => covered.push(head) },
+					},
+					noContext,
+				),
+			);
+			heads.push(taken.seal.head);
+			await writeStore(fx.place.store, 2);
+		}
+		// With two kept, the oldest kept is the first generation after the first pull, the second after the third.
+		expect(covered).toEqual([heads[0], heads[0], heads[1]]);
+		expect(heads[1]).toBeGreaterThan(heads[0] as number);
+	});
+
 	it("does not call a generation latest before its record is written", async () => {
 		const vault = localVault(fresh("vault"));
 		const pending = getOrThrow(await vault.begin("s", context));

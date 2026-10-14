@@ -258,6 +258,11 @@ export type PullOptions = {
 	/** Generations kept. Default 3. */
 	readonly keep?: number;
 	readonly stats?: CheckpointStats;
+	/**
+	 * The host's model server. Once a checkpoint is kept, the paid answers below the oldest kept generation's head are
+	 * let go: a restore never asks for them again, even when it falls back to that generation.
+	 */
+	readonly answers?: { covered(head: number): void };
 };
 
 const DEFAULT_PULL_DRAIN_MS = 10_000;
@@ -379,7 +384,17 @@ export async function pullCheckpoint(
 		await home.abandon(withoutAbortSignal(context));
 	}
 	if (!committed.ok) return committed;
-	await vault.prune(session, options.keep ?? DEFAULT_KEEP, context);
+	const keep = Math.max(1, options.keep ?? DEFAULT_KEEP);
+	await vault.prune(session, keep, context);
+	if (options.answers !== undefined) {
+		for (let n = Math.max(1, committed.value.n - keep + 1); n <= committed.value.n; n++) {
+			const oldest = await vault.get(session, n, context);
+			if (oldest.ok && oldest.value !== undefined) {
+				options.answers.covered(oldest.value.seal.head);
+				break;
+			}
+		}
+	}
 	if (options.stats !== undefined) {
 		options.stats.taken += 1;
 		options.stats.last = { n: committed.value.n, at, ms: Math.round(performance.now() - started), bytes };

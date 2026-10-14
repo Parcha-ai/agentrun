@@ -199,7 +199,10 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 
 	await step("resume");
 	target.setEpoch(next);
-	const resumed = await target.resume({ epoch: next, seal, move: { id, notice: options.notice } }, context);
+	const resumed = await target.resume(
+		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head } },
+		context,
+	);
 	if (!resumed.ok) {
 		return err(new MoveError("resume", `the target took the session and did not resume: ${resumed.error.message}`));
 	}
@@ -425,7 +428,15 @@ export async function recoverHome(
 				{
 					epoch: record.epoch,
 					...(record.seal === undefined ? {} : { seal: record.seal }),
-					...(record.move === undefined ? {} : { move: { id: record.move, notice: options.notice } }),
+					...(record.move === undefined
+						? {}
+						: {
+								move: {
+									id: record.move,
+									notice: options.notice,
+									...(record.seal === undefined ? {} : { head: record.seal.head }),
+								},
+							}),
 				},
 				context,
 			);
