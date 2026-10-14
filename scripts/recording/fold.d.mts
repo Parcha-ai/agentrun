@@ -5,9 +5,10 @@ export function fold(events: readonly Record<string, unknown>[]): {
   judgeAsks: { answered: number; failed: number };
   repeated: { effects: number | null; agentToolCalls: number };
   askedTwice: number;
-  reAsked: { turns: number; asks: number } | null;
+  reAsked: ReAsked | null;
 };
 export function repeats(events: readonly Record<string, unknown>[]): { repeated: { effects: number | null; agentToolCalls: number }; askedTwice: number };
 export const PI_LIVE_VERSION: number;
-export function reAsked(events: readonly Record<string, unknown>[]): { turns: number; asks: number } | null;
+export type ReAsked = { proven: { turns: number; asks: number }; possible: { turns: number } };
+export function reAsked(events: readonly Record<string, unknown>[]): ReAsked | null;
 export function readEvents(dir: string): Record<string, unknown>[];

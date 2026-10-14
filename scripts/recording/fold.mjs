@@ -14,17 +14,23 @@ const aborted = event => event.data?.model?.[0]?.stopReason === 'aborted';
 /** The pi.live document version this fold reads. On any other version the re-asked fold is NOT MEASURED, never guessed. */
 export const PI_LIVE_VERSION = 1;
 
-/** Re-asked model turns, PROVEN from the durable `pi.live` lines (section 6). pi commits the start of every ask: a `pi.live` revision in
- *  which `generation` appears without a `message` (written at the generation task's request phase, before the model is called), and a
- *  throttled partial after it. An ask's position is (conversation, the non-aborted assistant entries committed before it); a committed
- *  partial becomes an assistant entry with stopReason `aborted` when the next ask starts, and is not a committed turn. A snapshot that
- *  carries a stale `generation` is the ask already open at that position, or one more ask by an earlier generation when its start line
- *  died in flight. More than one ask at one position is re-asked. `null` (not measured) when no ask start was ever committed, or when a
- *  `pi.live` line is of a version this fold does not know.
- *  `turns`: positions asked more than once; `asks`: the asks at them, summed. */
+/** Re-asked model turns, from the durable `pi.live` lines (section 6). pi commits the start of every ask: a `pi.live` revision in which
+ *  `generation` appears without a `message` (written at the generation task's request phase, before the model is called), and a throttled
+ *  partial after it. An ask's position is (conversation, the non-aborted assistant entries committed before it); a committed partial
+ *  becomes an assistant entry with stopReason `aborted` when the next ask starts, and is not a committed turn.
+ *  - PROVEN: a position asked more than once, each ask shown by a revision of its own (an ask whose partial was committed leaves one when
+ *    the next ask starts). `turns`: such positions; `asks`: their asks, summed.
+ *  - POSSIBLE: a position where an ask was cut with only its start marker (a snapshot at open shows the marker still open) and a later
+ *    process committed the turn: that process's ask rewrote the same value, which pi stores as no new revision, so it shows only as its
+ *    first partial or its entry. `turns`: such positions.
+ *  A snapshot that carries a stale `generation` is the ask already open at that position, or one more ask by an earlier generation when its
+ *  start line died in flight. `null` (not measured) when no ask start was ever committed, or when a `pi.live` line is of a version this fold
+ *  does not know. */
 export function reAsked(events) {
   const state = new Map();
   const asksAt = new Map();
+  const cutAt = new Set();
+  const committedAt = new Set();
   let known = true;
   let starts = 0;
   const of = conv => { if (!state.has(conv)) state.set(conv, { committed: 0, open: undefined, generation: undefined }); return state.get(conv); };
@@ -34,7 +40,7 @@ export function reAsked(events) {
     const conv = event.conv ?? 0;
     if (event.kind === 'pi.live' && event.data?.version !== undefined && event.data.version !== PI_LIVE_VERSION) known = false;
     if (event.kind === 'pi.assistant' && !event.snapshot) {
-      if (!aborted(event)) { const held = of(conv); held.committed += 1; held.open = undefined; }
+      if (!aborted(event)) { const held = of(conv); committedAt.add(`${conv}\u0001${held.committed}`); held.committed += 1; held.open = undefined; }
       continue;
     }
     if (event.kind !== 'pi.live') continue;
@@ -43,6 +49,8 @@ export function reAsked(events) {
     if (event.snapshot) {
       // State, not an event: the ask already open at this position is the same ask; otherwise its start line died in flight.
       if (generation !== undefined && held.open !== held.committed) ask(conv, held);
+      // A marker-only ask cut by a process death, seen at the next process's open.
+      if (generation !== undefined && generation.message === undefined) cutAt.add(`${conv}\u0001${held.committed}`);
       held.generation = generation;
       continue;
     }
@@ -52,8 +60,9 @@ export function reAsked(events) {
     held.generation = generation;
   }
   if (!known || starts === 0) return null;
-  const many = [...asksAt.values()].filter(count => count > 1);
-  return { turns: many.length, asks: many.reduce((sum, count) => sum + count, 0) };
+  const proven = [...asksAt].filter(([, count]) => count > 1);
+  const possible = [...cutAt].filter(key => (asksAt.get(key) ?? 0) <= 1 && committedAt.has(key));
+  return { proven: { turns: proven.length, asks: proven.reduce((sum, [, count]) => sum + count, 0) }, possible: { turns: possible.length } };
 }
 
 /** `repeated` and `asked twice` (section 6), each scoped to ONE call and never across calls. Snapshot lines are state, not events, and are

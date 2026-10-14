@@ -185,7 +185,7 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record with checkpoint head 5/);
   assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
   assert.ok(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 2, 'move')], started: 2 })).some(problem => /no transport\.moves restore record with checkpoint head 5/.test(problem.message)), 'a move is not a restore');
-  assert.match((await refused([...restored, moves(5, 24, 1)])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(5, 24, 3)])).message, /checkpoint head 5/);
   // a later snapshot in the same generation may not drop again, and the lines after the restore still obey the strict order
   const again = await refused([...withRecord, snap(3, 0, 30, 2)]);
   assert.match(again.message, /snapshot commit 3 is lower/);
@@ -233,4 +233,15 @@ test('head is top-level: a move\'s head equals its seal.head, and a replayed res
   assert.match((await run([...sealed, snap(2, 0, 20, 2), durable(4, 0, { t: 21, gen: 2 }), record({ ...replayed, replayed: { from: 2, to: 3 }, head: 4 }, 4, 1, 22)]))[0].message, /head is 4, but the generation's snapshot is at commit 2/);
   // a restore from the checkpoint alone: its head is the checkpoint's
   assert.match((await run([...sealed, snap(2, 0, 20, 2), durable(3, 0, { t: 21, gen: 2 }), record({ kind: 'restore', head: 3, checkpoint: { head: 5, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }, 3, 1, 22)]))[0].message, /no replay has head 3, but its checkpoint\.head is 5/);
+});
+
+test('a durable line\'s gen is the driver\'s and never decreases, outside a restore', async t => {
+  const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
+  // a process whose snapshot carries its lease generation (3) while the commits before it carry the driver's (4)
+  const lease = [durable(1, 0, { gen: 2 }), durable(2, 0, { gen: 4, t: 12 }), snap(2, 0, 20, 3), durable(3, 0, { gen: 6, t: 21 })];
+  const problem = (await (async () => validateRecording(await recording(t, { lines: lease, started: 2 })))())[0];
+  assert.equal(problem.line, 5);
+  assert.match(problem.message, /durable gen 3 is lower than the previous durable line's 4/);
+  // the driver's generation on the snapshot passes
+  assert.deepEqual(validateRecording(await recording(t, { lines: [durable(1, 0, { gen: 2 }), durable(2, 0, { gen: 4, t: 12 }), snap(2, 0, 20, 4), durable(3, 0, { gen: 6, t: 21 })], started: 2 })), []);
 });
