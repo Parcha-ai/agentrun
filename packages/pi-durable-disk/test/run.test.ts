@@ -7,6 +7,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlin
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Context } from "@earendil-works/chord";
+import type { Cursor, DocumentRecord, Page, Seq, Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { archilEnv } from "../src/env.ts";
 import { exitCodeFor, FencedError, HeldError } from "../src/errors.ts";
@@ -19,9 +20,11 @@ import {
   StoreBehindSealError,
   storeHead,
   takeOwnerLock,
+  type BeforeResume,
   type DurableRun,
   type OpenDurableRunOptions,
   type RunEnv,
+  type StoreReads,
 } from "../src/run.ts";
 import {
   CLAIM_UNMOUNTED,
@@ -183,6 +186,40 @@ async function headOf(root: string): Promise<number> {
   }
 }
 
+/** Every page of a scan, in order. */
+async function scanAll<T>(scan: (cursor: Cursor | undefined) => Promise<Page<T, Cursor>>): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await scan(cursor);
+    items.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return items;
+}
+
+/**
+ * What a recorder takes at `at`: the conversations, the tasks, and every document of every scope as stored at `at`. A
+ * document that keeps no history (`latest`, and every session or task document) reads only at "current", which is its
+ * state at `at` while nothing has committed since.
+ */
+async function snapshotAt(storage: StoreReads, at: Seq) {
+  const conversations = await scanAll((cursor) => storage.scanConversations({}, 100, cursor, ctx));
+  const tasks = await scanAll((cursor) => storage.scanTasks({}, 100, cursor, ctx));
+  const scopes: DocumentRecord["scope"][] = [
+    { kind: "session" },
+    ...conversations.map((c) => ({ kind: "conversation" as const, conversationId: c.id })),
+    ...tasks.map((t) => ({ kind: "task" as const, taskId: t.id })),
+  ];
+  const documents = [];
+  for (const scope of scopes) {
+    for (const record of await scanAll((cursor) => storage.scanDocuments({ scope, at }, 100, cursor, ctx))) {
+      documents.push(await storage.document(record.id, record.history === "rewindable" ? at : "current", ctx));
+    }
+  }
+  return { conversations, tasks, documents };
+}
+
 describe("openDurableRun", () => {
   it("opens in order (claim, lock, run.json, store, seal, Harness) and writes run.json", async () => {
     const dir = scratchRoot("order");
@@ -274,6 +311,106 @@ describe("openDurableRun", () => {
       await assert.rejects(t.open(), /the app refused/);
       assert.ok(!t.steps.includes("resume"), `steps: ${t.steps.join(", ")}`);
       assert.ok(t.claim.log.includes("release"), "the claim was released");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  /** A first incarnation that configured its root and finished one turn: conversations, tasks and documents, none in flight. */
+  async function finishedTurn(root: string): Promise<void> {
+    const first = setup(root);
+    const run = await first.open();
+    const conversation = await run.harness.root(ctx, { agent: first.agent });
+    await conversation.configure({ instructions: "one" }, ctx);
+    await (await conversation.submit({ type: "input", content: "hello", requestId: "hello-1" }, ctx)).wait(ctx);
+    await run.harness.waitForIdle(ctx);
+    await run.release();
+  }
+
+  it("beforeResume gets the store the Harness was opened over: a snapshot of every document at its head is what the store holds", async () => {
+    const dir = scratchRoot("before-resume-snapshot");
+    try {
+      await finishedTurn(dir.root);
+      let got: { head: number; snapshot: Awaited<ReturnType<typeof snapshotAt>> } | undefined;
+      const second = setup(dir.root, { options: { beforeResume: async ({ storage, head }) => void (got = { head, snapshot: await snapshotAt(storage, head) }) } });
+      const run = await second.open();
+      await run.release();
+      // Nothing resumed and nothing committed after the hook: the store as it is now is the store the hook read.
+      assert.equal(await headOf(dir.root), got!.head, "the hook's head is the store's head");
+      const { conversations, tasks, documents } = got!.snapshot;
+      assert.ok(conversations.length > 0 && tasks.length > 0 && documents.length > 0, `a snapshot with something in it: ${JSON.stringify([conversations.length, tasks.length, documents.length])}`);
+      const store = await openArchilStore(join(dir.root, "store", STORE_FILE));
+      try {
+        assert.deepEqual(await snapshotAt(store.storage, got!.head as Seq), got!.snapshot);
+      } finally {
+        await store.storage.close(ctx);
+      }
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("beforeResume's storage has the four reads and no write: commit and mintId are not there, even through a cast", async () => {
+    const dir = scratchRoot("before-resume-reads");
+    try {
+      await finishedTurn(dir.root);
+      const tried: string[] = [];
+      let database: SqliteDatabase | undefined;
+      let headBefore = 0;
+      const second = setup(dir.root, {
+        options: {
+          decorateStore: (db) => (database = db),
+          beforeResume: async ({ storage, head }) => {
+            headBefore = head;
+            assert.deepEqual(Object.keys(storage).sort(), ["document", "scanConversations", "scanDocuments", "scanTasks"]);
+            assert.ok(Object.isFrozen(storage), "nothing can be added to it");
+            const writable = storage as unknown as Storage;
+            for (const write of [() => writable.commit([], ctx), () => writable.mintId()]) {
+              try {
+                await write();
+                tried.push("ran");
+              } catch (error) {
+                tried.push((error as Error).name);
+              }
+            }
+          },
+        },
+      });
+      const run = await second.open();
+      assert.deepEqual(tried, ["TypeError", "TypeError"], "commit and mintId are not functions on it");
+      const head = await database!.get<{ next_seq: number }>("SELECT next_seq FROM durable_metadata WHERE singleton = 1");
+      assert.equal(Number(head!.next_seq) - 1, headBefore, "nothing committed through it");
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("beforeResume's head is the store's head at the hook, and a later commit leaves the value it got where it was", async () => {
+    const dir = scratchRoot("before-resume-head");
+    try {
+      await finishedTurn(dir.root);
+      let seen: BeforeResume | undefined;
+      let atHook: number | undefined;
+      let database: SqliteDatabase | undefined;
+      const second = setup(dir.root, {
+        options: {
+          decorateStore: (db) => (database = db),
+          beforeResume: async (run) => {
+            seen = run;
+            const row = await database!.get<{ next_seq: number }>("SELECT next_seq FROM durable_metadata WHERE singleton = 1");
+            atHook = Number(row!.next_seq) - 1;
+          },
+        },
+      });
+      const run = await second.open();
+      assert.equal(seen!.head, atHook, "the head the hook got is the store's head while it ran");
+      const root = await run.harness.root(ctx, { agent: second.agent });
+      await root.configure({ instructions: "two" }, ctx);
+      const after = await storeHead(run.store);
+      assert.ok(after > atHook!, `a commit after the hook moved the store's head (${atHook} to ${after})`);
+      assert.equal(seen!.head, atHook, "the value the hook got did not move");
+      await run.release();
     } finally {
       dir.remove();
     }

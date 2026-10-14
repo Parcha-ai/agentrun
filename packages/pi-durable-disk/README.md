@@ -181,7 +181,10 @@ was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" 
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
 run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
 or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries). A `beforeResume` that rejects
-fails the open (its step is `before-resume`) and releases the claim.
+fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
+store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
+way to a write, and `head`, the store's last committed sequence: a recorder snapshots every document at `head` there.
+Until the hook commits, the current state is the state at `head`, which is how a document that keeps no history reads.
 
 ## The CLI
 
