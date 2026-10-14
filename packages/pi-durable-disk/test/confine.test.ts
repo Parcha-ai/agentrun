@@ -698,7 +698,7 @@ describe("a component swapped for a symlink after the check is refused, never fo
 describe("the swapper fixture", () => {
   it("ends by itself when the test process that started it is killed mid-test, with no finally run", async () => {
     await withLayout(async (layout) => {
-      const driver = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-driver.ts"), layout.work], { stdio: ["ignore", "pipe", "inherit"] });
+      const driver = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-driver.ts"), layout.work], { stdio: ["pipe", "pipe", "inherit"] });
       let said = "";
       driver.stdout.on("data", (chunk) => (said += chunk));
       let racer = 0;
@@ -717,6 +717,35 @@ describe("the swapper fixture", () => {
           try {
             process.kill(-racer, "SIGKILL");
           } catch {}
+        }
+      }
+    });
+  });
+});
+
+describe("the swapper fixture's driver", () => {
+  it("ends with the test process that started it, and the swapper with the driver, when that process is killed before it cleans up", async () => {
+    await withLayout(async (layout) => {
+      const outer = spawn(process.execPath, [join(import.meta.dirname, "fixtures/swapper-outer.ts"), layout.work], { stdio: ["ignore", "pipe", "inherit"] });
+      let said = "";
+      outer.stdout.on("data", (chunk) => (said += chunk));
+      let pids: { driver: number; swapper: number } | undefined;
+      try {
+        for (const t0 = Date.now(); !/"swapper":\d+/.test(said) && Date.now() - t0 < 20_000; ) await new Promise((r) => setTimeout(r, 20));
+        pids = JSON.parse(said.trim().split("\n")[0]!) as { driver: number; swapper: number };
+        assert.ok(alive(pids.driver) && alive(pids.swapper), "the driver and the swapper are running");
+        outer.kill("SIGKILL");
+        for (const t0 = Date.now(); (alive(pids.driver) || alive(pids.swapper)) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 20));
+        assert.ok(!alive(pids.driver), "the driver is gone within 5 s of the process that started it");
+        assert.ok(!alive(pids.swapper), "the swapper is gone with it");
+      } finally {
+        outer.kill("SIGKILL");
+        if (pids) {
+          for (const target of [pids.driver, -pids.swapper]) {
+            try {
+              process.kill(target, "SIGKILL");
+            } catch {}
+          }
         }
       }
     });
