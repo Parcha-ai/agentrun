@@ -318,7 +318,10 @@ won (to another place, and to the same place), a kill of the host,
 the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
 its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
 recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
-stayed. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
+stayed. Every round's effect is there once when the kill came while the session was held still (after the drain,
+before the target ran it). A kill while it ran (the host or the source before the drain held it, the host or the
+target once the target ran it) may cut the round that ran: pi does not run a call twice that was running when its
+process died, and tells the model it was interrupted. The suite accepts a missing effect only for such a round. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
 one file.
 
 What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session

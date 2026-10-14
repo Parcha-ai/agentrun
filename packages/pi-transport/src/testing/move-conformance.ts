@@ -25,7 +25,7 @@ const STEPS: readonly MoveStep[] = ["prepare", "drain", "seal", "ship", "take", 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Where in a target's resume the suite kills its runner. */
-type KillPoint = "build" | "open" | "tool";
+type KillPoint = "build" | "open" | "start" | "tool";
 
 /** The file beside a store that names the one point where that home's runner kills itself, once. */
 const killFile = (store: string) => `${store}.kill-at`;
@@ -47,8 +47,8 @@ function dieAt(store: string, point: KillPoint): void {
  * The app the move suite runs: one tool, `work`, that appends its round to `effects.log` in the conversation's
  * directory, which is the workspace. A runner file for the suite is `runMain(moveConformanceApp)`; its model is the
  * host's `faux/faux-1`. When the file `<store>.kill-at` names a point, the runner kills itself there, once: `build`
- * (the marker is written, the store not open), `open` (the conversations point here, the notice is not admitted) or
- * `tool` (between a tool's effect and its result).
+ * (the marker is written, the store not open), `open` (the conversations point here, the notice is not admitted),
+ * `start` (a tool has started and made no effect yet) or `tool` (between a tool's effect and its result).
  */
 export const moveConformanceApp: App = (ctx) => {
 	dieAt(ctx.store, "build");
@@ -59,6 +59,7 @@ export const moveConformanceApp: App = (ctx) => {
 		async execute(args, api) {
 			// Through the conversation's own directory: after a move it must be the new home's workspace.
 			if (api.env === undefined) throw new Error("the tool has no environment");
+			dieAt(ctx.store, "start");
 			const appended = await api.env.appendFile("effects.log", `${args.n}\n`, BACKGROUND_CONTEXT);
 			if (!appended.ok) throw appended.error;
 			dieAt(ctx.store, "tool");
@@ -100,10 +101,18 @@ function hostModels(drainCame: Promise<void>) {
 	const models = createModels();
 	models.setProvider(faux.provider);
 	let notices = 0;
+	// The tool results of the longest transcript sent: what each round's call came back with, for a failure's message.
+	let results: readonly string[] = [];
 	faux.setResponses(
 		Array.from({ length: 200 }, () => async (transcript: { messages: readonly Said[] }) => {
 			const seen = transcript.messages.filter((message) => message.role === "user" && textOf(message) === NOTICE);
 			notices = Math.max(notices, seen.length);
+			const said = transcript.messages
+				.filter((message) => message.role === "toolResult")
+				.map(
+					(message) => `${(message as { isError?: boolean }).isError === true ? "error: " : ""}${textOf(message)}`,
+				);
+			if (said.length >= results.length) results = said;
 			await sleep(60);
 			const done = transcript.messages.filter((message) => message.role === "toolResult").length;
 			if (done >= 2) await Promise.race([drainCame, sleep(3_000)]);
@@ -111,7 +120,7 @@ function hostModels(drainCame: Promise<void>) {
 			return fauxAssistantMessage(fauxToolCall("work", { n: done }), { stopReason: "toolUse" });
 		}),
 	);
-	return { models, notices: () => notices };
+	return { models, notices: () => notices, results: () => results };
 }
 
 /** A program's output in a box, or `undefined` when it failed. */
@@ -132,6 +141,8 @@ type Run = {
 	effects(place: Place): Promise<string[]>;
 	/** The most notices of the move the model saw in one transcript. */
 	notices(): number;
+	/** The tool results the model was sent, round by round, in its longest transcript. */
+	results(): readonly string[];
 	/** Makes the runner at `place` kill itself at `point` of its next resume or run. */
 	killAt(place: Place, point: KillPoint): Promise<void>;
 	/** Whether the kill point set at `place` is still waiting: a runner that died there removed it. */
@@ -157,7 +168,7 @@ async function begin(pair: MovePair): Promise<Run> {
 	const came = new Promise<void>((resolve) => {
 		drainCame = resolve;
 	});
-	const { models, notices } = hostModels(came);
+	const { models, notices, results } = hostModels(came);
 	const handles: HomeHandle[] = [];
 	const base = boxRunner({ program: pair.program, session: SESSION, models });
 	const start: StartRunner = async (place, epoch, startContext) => {
@@ -191,6 +202,7 @@ async function begin(pair: MovePair): Promise<Run> {
 			return (text ?? "").split("\n").filter(Boolean);
 		},
 		notices,
+		results,
 		async killAt(place, point) {
 			const argv = [
 				"sh",
@@ -241,6 +253,20 @@ async function withRun(pair: MovePair, use: (run: Run) => Promise<void>): Promis
 }
 
 /**
+ * Whether a kill just before `step` came while the session ran: the host or the source before the drain held it, or the
+ * host or the target once the target had resumed it (just before retire). From the seal on the source is sealed, so
+ * its death cuts nothing. A kill while the session ran may cut the round that ran.
+ */
+function whileRunning(step: MoveStep, who: "host" | "source" | "target"): boolean {
+	if (step === "retire") return who !== "source";
+	return who !== "target" && STEPS.indexOf(step) <= STEPS.indexOf("drain");
+}
+
+/** The rounds whose call came back cut: pi does not run a call twice that was running when its process died. */
+const cutRounds = (results: readonly string[]) =>
+	results.flatMap((result, n) => (/ was (interrupted|aborted)/.test(result) ? [String(n)] : []));
+
+/**
  * Where the lease is after a kill just before `step`. The take is the point of no return. A source killed once it
  * sealed is not needed any more: its store is whole in its box, and the move goes on. A target killed before the
  * take is found out at the take, and the move is given up.
@@ -257,9 +283,9 @@ function epochAfter(step: MoveStep, who: "host" | "source" | "target"): number {
  * source or the target just before each of the seven steps, and a kill of the target inside its own resume (its
  * marker written and the store not open; the conversations pointed at it and the notice not admitted; between a
  * tool's effect and its result), each followed by a host that recovers the session from the lease. Every case ends
- * with the session finished, no round's effect twice, every round's effect once whenever the kill came after the
- * session was held still, and the move's notice in the transcript once when the session moved and never when it
- * stayed.
+ * with the session finished, no round's effect twice, every round's effect once whenever the kill came while the
+ * session was held still (after the drain, before the target ran it), a round with no effect only when the model was
+ * told its call was cut, and the move's notice in the transcript once when the session moved and never when it stayed.
  */
 export function registerMoveConformance(
 	runner: StorageConformanceRunner,
@@ -273,6 +299,25 @@ export function registerMoveConformance(
 		if (JSON.stringify(actual) !== JSON.stringify(expected)) {
 			throw new Error(`${message}: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`);
 		}
+	};
+	/**
+	 * The rounds' effects in `holder`: none twice, and a round with no effect only when its call came back cut, which is
+	 * at most once, as pi promises for a call that was running when its process died. `strict`: every round once, for a
+	 * kill while the session was held still. A failure names what the model was told and what the other place holds.
+	 */
+	const checkRounds = async (run: Run, holder: Place, other: Place, strict: boolean): Promise<readonly string[]> => {
+		const effects = await run.effects(holder);
+		const evidence = `the tool results the model saw: ${JSON.stringify(run.results())}; effects in ${other.environment}: ${JSON.stringify(await run.effects(other))}`;
+		equal(new Set(effects).size, effects.length, `no round twice (${effects.join(",")}; ${evidence})`);
+		const missing = every.filter((n) => !effects.includes(n));
+		if (strict) equal(missing, [], `every round once (${evidence})`);
+		const cut = cutRounds(run.results());
+		equal(
+			missing.filter((n) => !cut.includes(n)),
+			[],
+			`a round with no effect and no word that its call was cut (${evidence})`,
+		);
+		return missing;
 	};
 	runner.describe(name, () => {
 		runner.it(
@@ -467,12 +512,8 @@ export function registerMoveConformance(
 									home = getOrThrow(recovered).home;
 								}
 								getOrThrow(await home.idle(context));
-								const effects = await run.effects(holder);
-								equal(new Set(effects).size, effects.length, `no round twice (${effects.join(",")})`);
-								// A kill while the session ran, before the drain held it, may cut the round that was running.
-								if (STEPS.indexOf(step) > STEPS.indexOf("drain") || who === "target") {
-									equal(effects, every, "every round once");
-								}
+								const other = holder === pair.a ? pair.b : pair.a;
+								await checkRounds(run, holder, other, !whileRunning(step, who));
 								equal(run.notices(), lease?.epoch === 2 ? 1 : 0, "the notices the model saw");
 							}),
 						),
@@ -575,6 +616,7 @@ export function registerMoveConformance(
 		const inside: readonly (readonly [KillPoint, string])[] = [
 			["build", "after it wrote its marker and before it opened the store"],
 			["open", "after it pointed the conversations at its workspace and before the notice"],
+			["start", "once it runs, between a tool's start and its effect"],
 			["tool", "once it runs, between a tool's effect and its result"],
 		];
 		for (const [point, when] of inside) {
@@ -600,7 +642,9 @@ export function registerMoveConformance(
 								},
 								context,
 							);
-							if (point !== "tool") equal(moved.ok ? "moved" : moved.error.code, "resume", "the move's outcome");
+							if (point === "build" || point === "open") {
+								equal(moved.ok ? "moved" : moved.error.code, "resume", "the move's outcome");
+							}
 							equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
 							let home = moved.ok ? moved.value.home : undefined;
 							let restarted = false;
@@ -621,7 +665,10 @@ export function registerMoveConformance(
 								[false, true],
 								"the target died at the kill point",
 							);
-							equal(await run.effects(pair.b), every, "every round once");
+							// Before the target runs, nothing is in flight; a tool that started and made no effect is cut, and said so.
+							const missing = await checkRounds(run, pair.b, pair.a, point !== "start");
+							if (point === "start") equal(missing, cutRounds(run.results()), "the one round the kill cut");
+							if (point === "start") equal(missing.length, 1, "rounds cut");
 							equal(run.notices(), 1, "the notices the model saw");
 						}),
 					),
