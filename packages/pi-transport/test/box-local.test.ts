@@ -51,6 +51,21 @@ async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void>
 	while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
+/** The members of a process group that are alive: not gone, not zombies. */
+function groupOf(pgid: number): number[] {
+	const alive: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name)) continue;
+		try {
+			const fields = readFileSync(`/proc/${name}/stat`, "latin1").split(") ")[1]?.split(" ") ?? [];
+			if (Number(fields[2]) === pgid && fields[0] !== "Z") alive.push(Number(name));
+		} catch {
+			// Gone.
+		}
+	}
+	return alive;
+}
+
 const programsOf = (id: string) => processesWith(`PI_TRANSPORT_BOX=${id}`);
 const watchdogsOf = (id: string) => processesWith(`PI_TRANSPORT_WATCHDOG=${id}`);
 
@@ -205,6 +220,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(programsOf(box.id)).toEqual([]);
@@ -214,6 +230,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "setsid sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(programsOf(box.id)).toEqual([]);
@@ -233,29 +250,94 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 
 	it("the watchdog ends such a program too", () =>
 		withProvider(async (provider) => {
-			const box = await create(provider, 1_000);
+			const box = await create(provider, 4_000);
 			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
 			if (!started.ok) throw started.error;
 			const workspace = box.facts().workspace;
 			await until(() => processesIn(workspace).length > 0);
-			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			await new Promise((resolve) => setTimeout(resolve, 6_500));
+			await until(() => processesIn(workspace).length === 0);
 			expect(processesIn(workspace)).toEqual([]);
 		}));
 
 	it("destroy leaves no watchdog behind", () =>
 		withProvider(async (provider) => {
 			const box = await create(provider);
+			await until(() => watchdogsOf(box.id).length > 0);
 			expect(watchdogsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
 			expect(watchdogsOf(box.id)).toEqual([]);
 		}));
 
+	// The member is slow to die only when it holds a lot of memory. That needs Python and 3 GB, so it is opt-in:
+	// `PI_TRANSPORT_STRESS_GROUP=1`. Without it, the same test runs with a small member and checks the behavior, not the race.
+	const stress = process.env.PI_TRANSPORT_STRESS_GROUP === "1";
+	it(
+		"destroy returns only once every member of a killed group is gone, also one that cleared its environment",
+		() =>
+			withProvider(async (provider, root) => {
+				for (let round = 0; round < (stress ? 3 : 5); round++) {
+					const box = await create(provider);
+					const pgFile = join(root, `pgid-${round}`);
+					// The program leads its group; its child clears its environment (so has no marker) and ignores TERM.
+					const member = stress
+						? `/usr/bin/python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); b = bytearray(3000 * 1024 * 1024); b[::4096] = bytes(len(b[::4096])); time.sleep(30)'`
+						: `sh -c 'trap "" TERM; sleep 30'`;
+					const started = await box.exec(
+						["sh", "-c", `echo $$ > ${pgFile}; env -i ${member} & wait`],
+						undefined,
+						context,
+					);
+					if (!started.ok) throw started.error;
+					await until(() => existsSync(pgFile) && readFileSync(pgFile, "utf8").trim() !== "");
+					const pgid = Number(readFileSync(pgFile, "utf8").trim());
+					await until(() => groupOf(pgid).length > 1, 20_000);
+					// With the large member: up once it has touched all its memory, which a kill then takes a while to tear down.
+					if (stress) await new Promise((resolve) => setTimeout(resolve, 5_000));
+					expect(groupOf(pgid).length, `round ${round}`).toBeGreaterThan(1);
+					await box.destroy(context);
+					expect(groupOf(pgid), `round ${round}`).toEqual([]);
+				}
+			}),
+		90_000,
+	);
+
+	it(
+		"destroy returns only once the watchdog it killed is gone or a zombie",
+		() =>
+			withProvider(async (provider) => {
+				for (let round = 0; round < 5; round++) {
+					const box = await create(provider);
+					await until(() => watchdogsOf(box.id).length > 0);
+					const pids = watchdogsOf(box.id);
+					expect(pids.length).toBeGreaterThan(0);
+					await box.destroy(context);
+					const running = pids.filter((pid) => {
+						try {
+							const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+							return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+						} catch {
+							return false;
+						}
+					});
+					expect(running, `round ${round}`).toEqual([]);
+				}
+			}),
+		60_000,
+	);
+
 	it("the watchdog ends an expired box that nobody asks about", () =>
 		withProvider(async (provider, root) => {
-			const box = await create(provider, 1_000);
+			// Long enough that a loaded machine still sees the program start before the box expires.
+			const box = await create(provider, 4_000);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
+			await until(() => programsOf(box.id).length > 0);
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
-			await new Promise((resolve) => setTimeout(resolve, 3_500));
+			await new Promise((resolve) => setTimeout(resolve, 6_500));
+			await until(
+				() =>
+					!existsSync(join(root, box.id)) && programsOf(box.id).length === 0 && watchdogsOf(box.id).length === 0,
+			);
 			expect(existsSync(join(root, box.id))).toBe(false);
 			expect(programsOf(box.id)).toEqual([]);
 			expect(watchdogsOf(box.id)).toEqual([]);
