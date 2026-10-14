@@ -1,11 +1,15 @@
 // The reconcile seam: a host settles the effects a killed process left unknown through the driver's own open of the run,
 // so the run's generation counts processes, and nothing it leaves unknown is ever dispatched.
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore, RecoveryError, frozenEffectId, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, workspaceFiles, RecoveryError, frozenEffectId, gatewayIntentOf } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
+const SHELL = { code: 0, stdout: 'rendered', stderr: '' };
 const SCHEMAS = { Out: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }, Any: { type: 'object' } };
 const lookup = { node: 'call', label: 'lookup', via: 'tool', tool: 'registry_lookup', args: { id: 7 }, out: 'Any', as: 'lookup', deadline_s: 5 };
 const finish = { node: 'code', label: 'finish', code: '() => ({ final: { ok: true } })' };
@@ -72,4 +76,27 @@ test('complete refuses an id that is not an unknown effect of the run, and a cal
     await assert.rejects(complete('step:/root/steps/9:0', {}), fault('RECOVERY_RECONCILE_FAILED'));
   } }), fault('FROZEN_EFFECT_UNKNOWN'));
   await assert.rejects(late(effectId, {}), fault('RECOVERY_RECONCILE_FAILED'));
+});
+
+test('settling an effect that declares output files records their hashes: a missing output refuses the settlement, a changed one is refused at the next resume', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'agentrun-reconcile-files-'));
+  try {
+    const render = { node: 'call', label: 'render', via: 'shell', command: 'render', produces: ['out.txt'], as: 'render', deadline_s: 5 };
+    const flow = { ...workflow, root: { node: 'chain', steps: [render, finish] } };
+    const id = frozenEffectId('step', '/root/steps/0', 0);
+    const files = workspaceFiles(cwd); const store = memoryStore(); let calls = 0;
+    const open = (options = {}) => openRecovery(store, flow, { key: KEY, files, ...options });
+    const killed = { runEffect: async () => { calls += 1; throw new Error('the process died'); } };
+    const go = async (options) => { const driver = await open(options); try { return await runWorkflow(flow, {}, withRecovery(driver, killed)); } finally { await driver.close(); } };
+    await assert.rejects(go(), /the process died/);
+    // The render died before writing its output: there is nothing to settle with.
+    await assert.rejects(go({ reconcile: async (unknown, complete) => { await complete(unknown[0].id, SHELL); } }), fault('RECOVERY_RECONCILE_FAILED'));
+    writeFileSync(join(cwd, 'out.txt'), 'bytes');
+    const settle = { reconcile: async (unknown, complete) => { await complete(id, SHELL); assert.equal(unknown.length, 1); } };
+    const done = await go(settle);
+    assert.deepEqual([done.status, done.state.render, calls], ['complete', SHELL, 1]);
+    // The output changes after it was settled: a later process refuses to build on it.
+    writeFileSync(join(cwd, 'out.txt'), 'changed');
+    await assert.rejects(go(), fault('FROZEN_ARTIFACT_INVALID'));
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

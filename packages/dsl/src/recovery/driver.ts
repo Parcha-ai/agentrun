@@ -145,7 +145,7 @@ export type RecoveryOptions = {
   /** Settles effects a killed process left unknown, through the driver's own open of the run (one generation per process).
    *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
    *  admitted and never completed; `unknown` is those effects, with their `intent`. `complete(id, value, receipt)`
-   *  records `value` as the effect's result, as `journal.complete` does with `{ value, files: {} }`; `receipt.intent` names
+   *  records `value` as the effect's result, as `journal.complete` does with `{ value, files }`, hashing the files the effect declares (a missing one refuses the settlement); `receipt.intent` names
    *  the call the host's door answered, as a handoff reads it. The effect is then answered from that result and not
    *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
    *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
@@ -250,7 +250,12 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         await options.reconcile(structuredClone(left), async (id, value, receipt) => {
           if (!reconciling) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id} after reconcile returned`);
           if (!left.some((effect) => effect.id === id)) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id}: not an unknown effect of this run`);
-          await journal.complete(id, { value, files: {}, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
+          // The files the effect declares are hashed now, as a normal completion records them: a missing output refuses the
+          // settlement, and a later resume refuses an output that changed.
+          const declared = nodeAt(view, id.slice(id.indexOf(":") + 1, id.lastIndexOf("#call:")));
+          const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
+          Object.assign(snapshot.files, files);
+          await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
         });
       } catch (error) {
         throw error instanceof RecoveryError && error.code === "RECOVERY_RECONCILE_FAILED" ? error
