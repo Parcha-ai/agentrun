@@ -51,6 +51,20 @@ function localClaim(ref: RunRef, place: RunPlace): Claim {
   };
 }
 
+/** The disk run's environment, with temporary directories under `work/`. */
+function runEnv(claim: Claim): RunEnv {
+  const base = archilEnv(claim);
+  // pi-durable-disk gap, removed by the disk's #380: its createTempDir is under `<root>/tmp`, which its own confinement refuses
+  // to write, and a read that runs a program (a video through ffmpeg) writes there. This example's PNG read needs none.
+  const scratch = join(claim.work, '.tmp');
+  return Object.assign((target: { readonly cwd?: string }) => Object.assign(base(target), {
+    createTempDir: async (prefix: string | undefined) => {
+      await mkdir(scratch, { recursive: true });
+      return { ok: true as const, value: await mkdtemp(join(scratch, prefix ?? 'tmp-')) };
+    },
+  }), { id: base.id, cleanup: base.cleanup });
+}
+
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: { env?: (claim: Claim) => RunEnv } = {}): Promise<RunResult> {
   // An earlier version kept the store at `<root>/store`; this one looks in `<root>/durable`. Opening such a directory
@@ -128,19 +142,23 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
   }
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
-    harness: { registry: registry as never, models: host.models.catalog }, env: options.env ?? archilEnv,
+    harness: { registry: registry as never, models: host.models.catalog }, env: options.env ?? runEnv,
   });
   const harness = durable.harness as unknown as Harness;
   const taskHarness = durable.harness as never;
   opened = harness;
   try {
     await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+    // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
+    // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
+    let task: Awaited<ReturnType<typeof flow.start>>;
+    try { task = await flow.start(taskHarness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
+      const refusal = error as { code?: string; message?: string; moved?: unknown };
+      if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+      return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
+    }
     reconciled();
-    // start() refuses a request that is not the run's own, with the driver's binding mismatch; the job reports it as a refusal.
-    const outcome = await flow.start(taskHarness, { key: place.id, workflow: job.workflow, input: job.input }, ctx).then((task) => task.wait(ctx), (error: { code?: string; message?: string; moved?: unknown }) => {
-      if (error?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
-      return { status: 'refused' as const, code: error.code, message: String(error.message), detail: { moved: error.moved ?? null } } as WorkflowOutcome;
-    });
+    const outcome = await task.wait(ctx);
     if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
     return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
   } finally {
