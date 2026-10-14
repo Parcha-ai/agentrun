@@ -121,7 +121,7 @@ after(async () => {
 
 test("a test process that is killed leaves no launcher and no instance behind: the instance ends itself once its test process is gone, and the launcher ends with it", async () => {
   const d = scratch("pda-killed-");
-  const driver = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-driver.ts"), join(d, "box")], { stdio: ["ignore", "pipe", "inherit"] });
+  const driver = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-driver.ts"), join(d, "box")], { stdio: ["pipe", "pipe", "inherit"] });
   try {
     let said = "";
     driver.stdout!.on("data", (c) => (said += c));
@@ -132,6 +132,46 @@ test("a test process that is killed leaves no launcher and no instance behind: t
   } finally {
     if (driver.exitCode === null && driver.signalCode === null) driver.kill("SIGKILL");
   }
+});
+
+/** Starts the stand-in test process (it starts the driver); `until` says when to kill it. The driver, launcher and instance must all end by themselves. */
+async function killedTestLeavesNothing(prefix: string, until: (said: string, d: string) => boolean): Promise<void> {
+  const d = scratch(prefix);
+  const outer = spawn(process.execPath, [join(REPO, "test/fixtures/daytona-outer.ts"), join(d, "box")], { stdio: ["pipe", "pipe", "inherit"] });
+  let said = "";
+  outer.stdout!.on("data", (c) => (said += c));
+  let driver = 0;
+  try {
+    await waitFor("the stand-in to report its driver", () => /"driver":\d+/.test(said), 20_000);
+    driver = Number(/"driver":(\d+)/.exec(said)![1]);
+    await waitFor("the moment to kill the test process", () => until(said, d), 20_000);
+    outer.kill("SIGKILL"); // as a test timeout or a forced exit would: no hook runs
+    await waitFor("the driver to end by itself", () => !pidAlive(driver), 10_000);
+    await waitFor("the launcher and the instance to end by themselves", () => fixtureProcesses([d]).length === 0, 10_000);
+  } finally {
+    outer.kill("SIGKILL");
+    if (driver > 0) {
+      try {
+        process.kill(driver, "SIGKILL");
+      } catch {}
+    }
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+test("a killed test process leaves no driver, launcher or instance behind: the driver ends with its test process, the instance with the driver, the launcher with the instance", async () => {
+  await killedTestLeavesNothing("pda-killed-outer-", (said, d) => /"started":1/.test(said) && fixtureProcesses([d]).length >= 2);
+});
+
+test("a test process killed while the launcher is still being started leaves nothing behind either", async () => {
+  await killedTestLeavesNothing("pda-killed-early-", () => true);
 });
 
 async function waitFor<T>(what: string, fn: () => T | null | undefined | false, timeoutMs = 10_000): Promise<T> {
