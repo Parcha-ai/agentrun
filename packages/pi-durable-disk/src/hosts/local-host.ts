@@ -357,6 +357,10 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
       if (!mine(h) || h.bootId !== bootId) return;
       if (h.mode === "child") {
         const pid = Number(h.pid);
+        // A handle comes back from run.json with whatever was written there, and stop signals its pid as a group: only a
+        // real process, then. A pid of 1 or below names a group (`kill(-0)` is this supervisor's own, `kill(-1)` every
+        // process it may signal), and without start ticks nothing tells a reused pid from the instance.
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number") return;
         const alive = () => procStartTicks(pid) === h.startTicks;
         if (!alive()) return;
         try {

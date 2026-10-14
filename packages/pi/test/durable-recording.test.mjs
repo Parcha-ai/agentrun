@@ -67,8 +67,8 @@ test('a workflow task\'s store: every revision a line with its whole value, then
   assert.deepEqual(effects.map((line) => line.data.value.status), ['unknown', 'completed'], 'the admission, then the completion');
   assert.deepEqual(effects.map((line) => [line.data.key, line.path]), Array(2).fill(['run-1\u0000step:/root/steps/0#call:0', '/root/steps/0']));
   assert.deepEqual(effects[1].data.value.result.value, { price: 21 });
-  // The DSL's own reader of an effect id, where this build has it, reads the same path.
-  if (recovery.frozenEffectPath) assert.equal(recovery.frozenEffectPath(effects[0].data.key.split('\u0000')[1]).path, effects[0].path);
+  // The DSL's own reader of an effect id reads the same path.
+  assert.equal(recovery.frozenEffectPath(effects[0].data.key.split('\u0000')[1]).path, effects[0].path);
   // durableDoc reads session documents; pi's conversation documents carry their conversation instead.
   const latest = new Map(documents.filter((line) => line.conv === undefined).map((line) => [JSON.stringify([line.data.doc, line.data.key ?? null]), line.data.value]));
   assert.ok(latest.size >= 3);
@@ -213,8 +213,8 @@ test('an execution path is read back from the ids the DSL builds: an effect\'s i
   emit({ seq: 1, changes: cases.map((c, i) => c.effect ? document(i + 1, 'agentrun.effects', `run-1\u0000${c.effect}`) : document(i + 1, 'agentrun.nodes', c.node)) }, ctx);
   await stop();
   assert.deepEqual(recorded.map((line) => line.path), cases.map((c) => c.path));
-  // Where this build has the DSL's own reader of an effect id, both read every id alike.
-  if (recovery.frozenEffectPath) for (const c of cases.filter((c) => c.effect)) assert.equal(recovery.frozenEffectPath(c.effect).path, c.path);
+  // The DSL's own reader of an effect id reads every id alike.
+  for (const c of cases.filter((c) => c.effect)) assert.equal(recovery.frozenEffectPath(c.effect).path, c.path);
 });
 
 test('two journals in one store: a commit\'s generation is its own driver revisions\', in the recorder as in the export', async () => {

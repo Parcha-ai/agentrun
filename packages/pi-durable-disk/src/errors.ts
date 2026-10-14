@@ -29,8 +29,9 @@ export class FencedError extends PdaError {
   }
 }
 
-export type Holder = "claim" | "owner-lock" | "store";
-const HELD_CODES: Record<Holder, string> = { claim: "CLAIM_HELD", "owner-lock": "OWNER_LOCK_HELD", store: "STORE_BUSY" };
+/** `commands`: processes a killed incarnation's commands left that did not die when the next open killed them. */
+export type Holder = "claim" | "owner-lock" | "store" | "commands";
+const HELD_CODES: Record<Holder, string> = { claim: "CLAIM_HELD", "owner-lock": "OWNER_LOCK_HELD", store: "STORE_BUSY", commands: "COMMANDS_ALIVE" };
 
 /** Someone else holds the run (see `Holder`). The process exits 76. */
 export class HeldError extends PdaError {

@@ -82,11 +82,11 @@ test('no stop splits a commit on either side of the restore, and a scrub equals 
 
 test('the lost branch was paid, and its redo in the next process counts as repeated', () => {
   const before = countersOf(reduceTo(counterFold, lines, lines.indexOf(lines.find((line) => line.snapshot === true)!)), false);
-  assert.deepEqual({ paid: before.paid, judge: before.judge }, { paid: { total: 3, workflow: 2, agent: 1 }, judge: { answered: 1, failed: 0, reasked: 0 } });
+  assert.deepEqual({ paid: before.paid, judge: before.judge }, { paid: { total: 3, workflow: 2, agent: 1, vision: 0 }, judge: { answered: 1, failed: 0, reasked: 0 } });
   const reset = countersOf(reduceTo(counterFold, lines, lines.findIndex(isMove)), false);
-  assert.deepEqual(reset.paid, { total: 3, workflow: 2, agent: 1 }, 'at the checkpoint the store holds only e1, and the lost branch is still paid');
+  assert.deepEqual(reset.paid, { total: 3, workflow: 2, agent: 1, vision: 0 }, 'at the checkpoint the store holds only e1, and the lost branch is still paid');
   const end = countersOf(reduceTo(counterFold, lines, lines.length), true);
-  assert.deepEqual(end.paid, { total: 5, workflow: 3, agent: 2 }, 'e1, the lost e2 and its redo; the lost read and its redo');
+  assert.deepEqual(end.paid, { total: 5, workflow: 3, agent: 2, vision: 0 }, 'e1, the lost e2 and its redo; the lost read and its redo');
   assert.equal(end.repeated, 1, 'fetch completed in process 1, then dispatched again in process 2');
   assert.equal(end.askedTwice, 0);
   assert.deepEqual(end.judge, { answered: 2, failed: 0, reasked: 1 }, 'the lost branch\'s answer and the redo\'s, one decision');
@@ -206,7 +206,7 @@ test('a second restore to an older checkpoint still finds what the first one kep
     effect(2, 1, 0, 'e1', 'search', 'unknown', true), receipt(2, 1, 1, true),
   ].map((line, index) => ({ ...line, t: (index + 1) * 10 }));
   const end = countersOf(reduceTo(counterFold, twice, twice.length), true);
-  assert.deepEqual(end.paid, { total: 5, workflow: 4, agent: 1 }, 'e1 to e4 each completed once, and one receipt');
+  assert.deepEqual(end.paid, { total: 5, workflow: 4, agent: 1, vision: 0 }, 'e1 to e4 each completed once, and one receipt');
 });
 
 test('no stop falls inside a process\'s snapshot: its lines are one state', () => {

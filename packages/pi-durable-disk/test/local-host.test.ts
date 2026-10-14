@@ -446,3 +446,26 @@ test("stop: a daemon SIGKILLed through its scope leaves a dead mount behind, whi
   assert.ok(kill >= 0 && fuser > kill, "the dead mount is removed after the kill");
   assert.ok(!readFileSync(w.procMounts, "utf8").includes(w.mp));
 });
+
+test("stop of a child-mode handle never signals a group: not pid 1 with its real start ticks, not pid 0 or a handle with no start ticks", async () => {
+  // A handle comes back from run.json with whatever was written there. `kill(-1)` is every process this user may signal
+  // and `kill(-0)` the supervisor's own group, so process.kill is a spy for the whole test: nothing is really signalled.
+  const host = localHost({ mode: "child", command: [process.execPath, FAKE_INSTANCE], hostName: "host-a", mountRoot: "/mnt/x", stopTimeoutMs: 200 });
+  const base = { driver: "local", mode: "child", host: "host-a", bootId: currentBootId(), mountpoint: "/mnt/x/runs/r1", tag: "t" };
+  const signals: unknown[] = [];
+  const kill = process.kill;
+  process.kill = ((pid: number, signal?: string | number) => {
+    signals.push([pid, signal]);
+    return true;
+  }) as typeof process.kill;
+  try {
+    await host.stop({ ...base, pid: 1, startTicks: procStartTicks(1) });
+    await host.stop({ ...base, pid: 0, startTicks: null });
+    await host.stop({ ...base, pid: -4242, startTicks: null });
+    await host.stop({ ...base, pid: "1x", startTicks: null });
+    await host.stop({ ...base, pid: 1.5, startTicks: null });
+  } finally {
+    process.kill = kill;
+  }
+  assert.deepEqual(signals, []);
+});

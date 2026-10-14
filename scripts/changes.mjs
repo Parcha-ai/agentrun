@@ -75,12 +75,66 @@ const git = async (root, args) => (await exec('git', args, { cwd: root, maxBuffe
 const gitShow = async (root, commit, path) => { try { return await git(root, ['show', `${commit}:${path}`]); } catch { return null; } };
 const readOptional = async path => { try { return await readFile(path, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 
+/** The changelog the bullet of a fragment naming the package `name` goes to: that package's own, else the root. */
+async function changelogFor(root, directories, name) {
+  const directory = [...directories].find(([, packageName]) => packageName === name)?.[0];
+  return directory && await readOptional(join(root, 'packages', directory, 'CHANGELOG.md')) !== null ? `packages/${directory}/CHANGELOG.md` : 'CHANGELOG.md';
+}
+
+/** Whether the changelog at `file` (under `root`) belongs to a held package: its manifest says `"private": true`, the reading release-preflight uses. */
+async function heldChangelog(root, file) {
+  if (file === 'CHANGELOG.md') return false;
+  const manifest = await readOptional(join(root, dirname(file), 'package.json'));
+  return manifest !== null && JSON.parse(manifest).private === true;
+}
+
+/** Appends `bullets` to the Unreleased section of `lines`, in place, after the section's own entries: what the fold does to a held package's changelog. */
+function appendToUnreleased(lines, bullets) {
+  const unreleased = lines.findIndex(unreleasedHeading);
+  const keeps = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
+  lines.splice(sectionEnd(lines, unreleased), 0, ...(keeps ? [] : ['']), ...bullets);
+}
+
+/** The fragments that were in changes/ at `mergeBase` and are gone from the working tree: the ones a fold deleted. */
+async function removedFragments(root, mergeBase, known) {
+  const listed = (await git(root, ['ls-tree', '--name-only', mergeBase, 'changes/'])).split('\n').map(line => line.replace(/^changes\//, '')).filter(name => name.endsWith('.md') && name !== 'README.md');
+  const removed = [];
+  for (const file of listed.sort()) {
+    if (await readOptional(join(root, 'changes', file)) !== null) continue;
+    const text = await gitShow(root, mergeBase, `changes/${file}`);
+    removed.push({ file, ...parseFragment(text, `changes/${file}`, known) });
+  }
+  return removed;
+}
+
+/**
+ * Whether the held package's changelog at `path` changed only by the fold: its Unreleased section is exactly what `was` becomes when
+ * the bullets of the fragments this change deleted, which name that package, are appended in the fold's order. Any other change to
+ * it is an edit.
+ */
+async function foldedIntoHeld(root, path, was, is, removed, directories) {
+  if (!await heldChangelog(root, path) || !(was ?? '').split('\n').some(unreleasedHeading)) return false;
+  const bullets = [];
+  for (const fragment of [...removed].sort(foldOrder)) {
+    const files = await Promise.all(fragment.packages.map(name => changelogFor(root, directories, name)));
+    if (files.includes(path)) bullets.push(bulletOf(fragment.body));
+  }
+  if (bullets.length === 0) return false;
+  const lines = was.split('\n');
+  appendToUnreleased(lines, bullets);
+  while (lines.at(-1) === '') lines.pop();
+  return unreleasedSection(`${lines.join('\n')}\n`) === unreleasedSection(is ?? '');
+}
+
 /**
  * The changelogs whose Unreleased section differs from `base`'s. An edit that leaves the section empty is the release's fold
- * (it moved the bullets into the version's section), whatever else the change or its merge group adds; any other edit is refused.
+ * (it moved the bullets into the version's section), whatever else the change or its merge group adds. So is a held package's changelog whose
+ * Unreleased section is exactly its old text with the fragments the change deleted appended; any other edit is refused.
  */
 export async function unreleasedEdits(root, base) {
   const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const directories = await workspacePackages(root);
+  let removed = null;
   const edited = [];
   let emptied = 0;
   for (const path of await changelogPaths(root)) {
@@ -88,6 +142,7 @@ export async function unreleasedEdits(root, base) {
     const is = await readOptional(join(root, path));
     if (unreleasedSection(was ?? '') === unreleasedSection(is ?? '')) continue;
     if (unreleasedSection(is ?? '').split('\n').slice(1).every(line => !line.trim())) emptied++;
+    else if (await foldedIntoHeld(root, path, was, is, removed ??= await removedFragments(root, mergeBase, new Set(directories.values())), directories)) emptied++;
     else edited.push(path);
   }
   return { fold: edited.length === 0 && emptied > 0, edited };
@@ -100,6 +155,8 @@ export const bulletOf = body => body.split('\n').map((line, index) => (index ===
 const isVersionHeading = (line, version) => line.startsWith('## ') && line.slice(3).replace(/^\[/, '').split(/[\],\s]/)[0] === version;
 
 const kindOrder = fragment => kinds.indexOf(fragment.kind);
+/** The order the fold writes fragments in: by kind, then by file name. */
+const foldOrder = (a, b) => kindOrder(a) - kindOrder(b) || a.file.localeCompare(b.file);
 
 const unreleasedHeading = line => /^## \[?Unreleased\]?\s*$/i.test(line);
 const sectionEnd = (lines, heading) => {
@@ -110,23 +167,25 @@ const sectionEnd = (lines, heading) => {
 };
 
 /**
- * Folds the release into the changelogs. A changelog that gets fragments (the root also when its Unreleased section holds
- * bullets) has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
- * Unreleased section opened above it. A fragment goes to its package's own changelog, else the root. A changelog that
- * gets none is untouched; one that already has the version's section gets the bullets appended to it.
+ * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
+ * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
+ * Unreleased section opened above it. The root changelog is dated also when it holds nothing and the release has fragments. A
+ * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
+ * one that already has the version's section gets the fragments' bullets appended to it. A held package (its manifest says
+ * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
+ * Unreleased section, which keeps its name and its entries.
  */
 export async function fold(root, version, date) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
   assert.match(date, /^\d{4}-\d{2}-\d{2}$/, 'The date is YYYY-MM-DD');
   const directories = await workspacePackages(root);
   const fragments = await loadFragments(root);
+  // Every changelog that exists is visited, so a package changelog that holds bullets and gets no fragment is dated too.
   const targets = new Map([['CHANGELOG.md', []]]);
-  for (const fragment of [...fragments].sort((a, b) => kindOrder(a) - kindOrder(b) || a.file.localeCompare(b.file))) {
+  for (const file of await changelogPaths(root)) if (file !== 'CHANGELOG.md' && await readOptional(join(root, file)) !== null) targets.set(file, []);
+  for (const fragment of [...fragments].sort(foldOrder)) {
     const files = new Set();
-    for (const name of fragment.packages) {
-      const directory = [...directories].find(([, packageName]) => packageName === name)?.[0];
-      files.add(directory && await readOptional(join(root, 'packages', directory, 'CHANGELOG.md')) !== null ? `packages/${directory}/CHANGELOG.md` : 'CHANGELOG.md');
-    }
+    for (const name of fragment.packages) files.add(await changelogFor(root, directories, name));
     for (const file of files) targets.set(file, [...(targets.get(file) ?? []), bulletOf(fragment.body)]);
   }
   // Every new text is built before anything is written, and a failed write puts the changelogs and fragments back, so a retry
@@ -138,10 +197,16 @@ export async function fold(root, version, date) {
     const lines = original.split('\n');
     const existing = lines.findIndex(line => isVersionHeading(line, version));
     const unreleased = lines.findIndex(unreleasedHeading);
-    if (existing >= 0) {
+    if (await heldChangelog(root, file)) {
+      // A package this release does not publish gets no version section: its fragments join what its Unreleased section holds.
+      if (bullets.length === 0) continue;
+      assert.ok(unreleased >= 0, `${file} has no Unreleased heading to add to`);
+      appendToUnreleased(lines, bullets);
+    } else if (existing >= 0) {
       if (bullets.length === 0) continue;
       lines.splice(sectionEnd(lines, existing), 0, ...bullets);
     } else {
+      if (unreleased < 0 && bullets.length === 0) continue;
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to fold`);
       const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
       // The root always gets the version's section (the release preflight requires it), also when every change is a package's.

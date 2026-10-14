@@ -1,3 +1,5 @@
+import { fetchedSpellings } from "./uri.js";
+
 export type Redact = (text: string) => string;
 
 const REDACTED = "[redacted]";
@@ -14,10 +16,11 @@ const SHAPES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1${REDACTED}`],
 ];
 
-/** `values()` is read at every call; each value is scrubbed raw and URL-encoded, longest first. */
+/** `values()` is read at every call; each value is scrubbed raw, URL-encoded fully, and in every spelling web_fetch can
+ *  send it in (fetchedSpellings), longest first. */
 export function createRedactor(values: () => readonly string[] = () => []): Redact {
   return (text) => {
-    const forms = new Set([...values()].filter((value) => typeof value === "string" && value.length >= MIN_REDACTED_VALUE_LENGTH).flatMap((value) => [value, encodeURIComponent(value)]));
+    const forms = new Set([...values()].filter((value) => typeof value === "string" && value.length >= MIN_REDACTED_VALUE_LENGTH).flatMap((value) => [value, encodeURIComponent(value), ...fetchedSpellings(value)]));
     let out = text;
     for (const form of [...forms].sort((a, b) => b.length - a.length)) out = out.split(form).join(REDACTED);
     for (const [shape, replacement] of SHAPES) out = out.replace(shape, replacement);
