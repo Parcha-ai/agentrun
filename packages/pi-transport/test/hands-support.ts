@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -371,4 +371,24 @@ export function registerHandsCases(name: string, withFixture: WithHandsFixture, 
 			timeoutMs,
 		);
 	});
+}
+
+/**
+ * Pids of local-box watchdogs that still run for a box whose directory is under `root`, read from `/proc`: a process
+ * that carries the watchdog marker in its environment and names `root` on its command line. A box that was released
+ * and then forgotten leaves one that sleeps out its whole lifetime.
+ */
+export function watchdogsUnder(root: string): number[] {
+	if (!existsSync("/proc/self/environ")) return [];
+	const found: number[] = [];
+	for (const name of readdirSync("/proc")) {
+		if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+		try {
+			if (!readFileSync(`/proc/${name}/environ`, "latin1").includes("PI_TRANSPORT_WATCHDOG=")) continue;
+			if (readFileSync(`/proc/${name}/cmdline`, "utf8").includes(root)) found.push(Number(name));
+		} catch {
+			// Another user's process, or one that ended.
+		}
+	}
+	return found;
 }
