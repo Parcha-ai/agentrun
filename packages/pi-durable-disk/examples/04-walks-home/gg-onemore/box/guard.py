@@ -47,7 +47,7 @@ NO_NETWORK = ["python3", "-I", os.path.join(os.path.dirname(os.path.abspath(__fi
 # the agent's own code (POST /gg/run): its files, and what it finds in its environment (the lab's socket, gglab)
 # the programs, root's: readable by the agent, never in a directory the agent could swap for a link
 RUNS = os.environ.get("GG_RUNS", "/var/tmp/gg/runs")
-# unbuffered: what the agent's program prints reaches the agent as it happens, not when the program ends
+# unbuffered: what the agent's program prints is in the frames as it happens, so a program cut at its deadline still returns it
 AGENT_LIB_ENV = {"GG_LIB_SOCK": os.environ.get("GG_LIB_SOCK", "/run/gg-lib/lab.sock"), "PYTHONPATH": os.path.dirname(os.path.abspath(__file__)),
                  "PYTHONUNBUFFERED": "1"}
 # a frame at least this often while a command is quiet: the reader's HTTP client drops a body silent for 300 s (undici)

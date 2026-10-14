@@ -137,7 +137,10 @@ class LibTest(unittest.TestCase):
 
     def test_try_with_no_clamp_samples_the_unedited_model_and_puts_the_served_clamp_back(self):
         self.lab.served = "/var/tmp/gg/run/clamp-k1.2.pt"
-        r = self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": {"temperature": 0.9, "max_tokens": 5}})
+        self.assertEqual(self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": {"max_tokens": 5}}).status_code, 400)
+        self.assertEqual(self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": [1]}).status_code, 400)
+        self.assertEqual(self.lab.serving, [], "a bad request serves nothing")
+        r = self.c.post("/try", json={"clamp": None, "prompts": ["hi"], "sampling": {"temperature": 0.9}})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.lab.serving[-2:], [None, "/var/tmp/gg/run/clamp-k1.2.pt"], "off for the call, the served clamp back after")
 

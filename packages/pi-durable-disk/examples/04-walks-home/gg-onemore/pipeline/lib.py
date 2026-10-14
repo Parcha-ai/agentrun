@@ -60,6 +60,17 @@ def ids_of(body, cap=256):
     return ids
 
 
+def check_sampling(sampling):
+    """Only the keys and ranges in SAMPLING."""
+    sampling = sampling or {}
+    if not isinstance(sampling, dict):
+        raise Refused(f"sampling: an object with keys from {sorted(SAMPLING)}")
+    for k, v in sampling.items():
+        if k not in SAMPLING or not isinstance(v, (int, float)) or not SAMPLING[k][0] <= v <= SAMPLING[k][1]:
+            raise Refused(f"sampling {k}={v!r}: one of {SAMPLING}")
+    return dict(sampling)
+
+
 def check_clamp(lab, clamp):
     """A clamp as the agent writes it: {"parts": [{"layer", "feature", "value"}], "sampling": {...}, "pulse": n}. Each part's
     layer has the server's clamp buffers, at most FMAX parts per layer, each value finite and within 4x that layer's median
@@ -83,10 +94,7 @@ def check_clamp(lab, clamp):
     for L, parts in per.items():
         if len(parts) > FMAX:
             raise Refused(f"layer {L}: at most {FMAX} parts")
-    sampling = clamp.get("sampling") or {}
-    for k, v in sampling.items():
-        if k not in SAMPLING or not isinstance(v, (int, float)) or not SAMPLING[k][0] <= v <= SAMPLING[k][1]:
-            raise Refused(f"sampling {k}={v!r}: one of {SAMPLING}")
+    sampling = check_sampling(clamp.get("sampling"))
     pulse = clamp.get("pulse", 0)
     if not isinstance(pulse, int) or not 0 <= pulse <= 4096:
         raise Refused("pulse: positions on, then off (0: always on)")
@@ -174,7 +182,7 @@ def create_lib_app(lab):
         """Replies with a clamp on every token, or with none (clamp null: the unedited model, for the off/on proof): served for
         this call only, then the served clamp (or none) is back."""
         if b.get("clamp") is None:
-            per, sampling, pulse = None, {k: v for k, v in (b.get("sampling") or {}).items() if k in SAMPLING}, 0
+            per, sampling, pulse = None, check_sampling(b.get("sampling")), 0
         else:
             per, sampling, pulse = check_clamp(lab, b.get("clamp"))
         prompts = texts_of(b, "prompts", MAX_PROMPTS)

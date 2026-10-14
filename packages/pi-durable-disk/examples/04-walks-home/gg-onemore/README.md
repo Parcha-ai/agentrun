@@ -98,8 +98,9 @@ routes. Every sentence the edited model writes, thinking included, passes Jev be
 method and the gotchas; it names no feature. `gg_run` sends a Python program to the guard's `POST /gg/run`. The guard
 saves it as a root-owned file under `/var/tmp/gg/runs/` and runs it as `agent`, in the agent's home, through
 `python3 -I box/nonet.py`: a seccomp filter that fails `socket()` for every family but unix, on before any of the agent's
-code runs. The program runs unbuffered, so what it prints reaches the agent as it happens, and the guard sends a heartbeat
-frame every 30 s of silence: Node's fetch drops a response body that stays silent for 300 s. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
+code runs. The program runs unbuffered, so a run cut at its deadline still returns everything it printed, and the guard sends a
+heartbeat frame every 30 s of silence: Node's fetch drops a response body that stays silent for 300 s. The agent reads the
+output when the run ends. Modal's sandbox refuses network namespaces, so the filter does that job. The program imports
 `gglab` (`box/gglab.py`). gglab talks to the lab's library (`pipeline/lib.py`) on `/run/gg-lib/lab.sock`, which only the
 `agent` group reaches. The library offers:
 - `status`, `passages`

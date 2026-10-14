@@ -67,12 +67,16 @@ def contexts(layer, feature, texts):
     return _post("/contexts", {"layer": layer, "ids": [feature], "texts": list(texts)})["contexts"]
 
 
-def sample(clamp, prompts, n=1, thinking=True, max_tokens=600):
+def sample(clamp, prompts, n=1, thinking=True, max_tokens=600, sampling=None):
     """Replies [{"q", "thinking", "answer"}] with the clamp on every token, all prompts x n at once; the served model is
     untouched after. A clamp: {"parts": [{"layer": L, "feature": f, "value": v}, ...], "sampling": {"presence_penalty":
-    1.5, "temperature": 0.9}}; None is the unedited model (the "off" side of your off/on proof). With thinking (the
-    default) a call takes about a minute; without, and a short max_tokens, a few seconds: screen that way."""
-    return _post("/try", {"clamp": clamp, "prompts": list(prompts), "n": n, "thinking": thinking, "max_tokens": max_tokens})["replies"]
+    1.5, "temperature": 0.9}}; None is the unedited model (the "off" side of your off/on proof: give it the clamp's
+    `sampling` so the two differ only by the clamp). With thinking (the default) a call takes about a minute; without,
+    and a short max_tokens, a few seconds: screen that way."""
+    body = {"clamp": clamp, "prompts": list(prompts), "n": n, "thinking": thinking, "max_tokens": max_tokens}
+    if sampling is not None:
+        body["sampling"] = sampling
+    return _post("/try", body)["replies"]
 
 
 def jev(jobs):
