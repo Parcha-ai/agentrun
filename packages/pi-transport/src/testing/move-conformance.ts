@@ -810,7 +810,7 @@ export function registerRestoreConformance(
 									context,
 								),
 							);
-							equal(recovered.restored?.n, checkpoint.n, "the checkpoint it restored from");
+							equal(recovered.restored?.n, checkpoint.n, "the checkpoint the rebuild used");
 							getOrThrow(await recovered.home.idle(context));
 							equal(await run.effects(trio.c), every, "the rounds in the rebuilt box");
 							equal(await run.held(), { epoch: 2, environment: trio.a.environment }, "the lease");
