@@ -27,8 +27,10 @@ async function startWithPid(place: Place, argv: readonly string[]) {
 		await sleep(100);
 }
 
-const alive = async (place: Place) =>
-	(await code(place.box, ["sh", "-c", 'kill -0 "$(cat "$1")" 2>/dev/null', "sh", `${place.store}.pid`])) === 0;
+/** Whether the process the pid file names runs: an ended process its parent has not reaped yet (a zombie) does not. */
+const ALIVE =
+	'p=$(cat "$1"); kill -0 "$p" 2>/dev/null || exit 1; s=$(sed "s/^.*) //" "/proc/$p/stat" 2>/dev/null | cut -c1); [ "$s" != Z ]';
+const alive = async (place: Place) => (await code(place.box, ["sh", "-c", ALIVE, "sh", `${place.store}.pid`])) === 0;
 
 describe("stopping the runner that still runs at a place", () => {
 	it("ends the process its pid file names when it is this store's runner, and leaves any other process alone", async () => {
