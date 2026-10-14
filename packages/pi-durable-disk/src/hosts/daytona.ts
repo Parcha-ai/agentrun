@@ -234,7 +234,11 @@ export interface DaytonaHostOptions {
   now?: () => number;
 }
 
-const BOX_PATH = /^\/[A-Za-z0-9._/-]+$/;
+// Shell-inert characters only: the paths go into launcher command lines. `@` admits npm's scoped package directories
+// (`node_modules/@scope/pkg`), where the package is installed with npm and not copied to a fixed directory.
+const BOX_PATH = /^\/[A-Za-z0-9._@/-]+$/;
+/** A path that climbs out of where it names: never a box path, whatever else is in it. */
+const climbs = (path: string): boolean => path.split("/").includes("..");
 const ACCOUNT = /^(?:[a-z_][a-z0-9_-]{0,31}|\d{1,10})$/;
 const FLEET = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const UP = new Set(["creating", "pulling_snapshot", "pending_build", "building_snapshot", "starting", "restoring", "resuming", "resizing", "snapshotting", "forking", "stopping", "pausing", "paused"]);
@@ -297,7 +301,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
   const now = opts.now ?? Date.now;
   const launch = opts.launcher ?? `${packageDir}/dist/hosts/daytona-launch.js`;
   for (const [what, value] of Object.entries({ mountRoot, node, packageDir, archil, boxDir: dir, stageDir: stage, launcher: launch })) {
-    if (!BOX_PATH.test(value)) throw new DaytonaHostError("INVALID_ARGUMENT", `${what} ${JSON.stringify(value)} is not a plain absolute path`);
+    if (!BOX_PATH.test(value) || climbs(value)) throw new DaytonaHostError("INVALID_ARGUMENT", `${what} ${JSON.stringify(value)} is not a plain absolute path`);
   }
   if (!ACCOUNT.test(user) || !ACCOUNT.test(group)) throw new DaytonaHostError("INVALID_ARGUMENT", "user and group are account names or numeric ids");
   if (user === "root" || user === "0") throw new DaytonaHostError("INVALID_ARGUMENT", "the instance and the agent's tools never run as root");
