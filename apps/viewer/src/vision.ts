@@ -33,10 +33,8 @@ export type VisionLook = {
 };
 type VisionRead = { call: string; source: string; fromS?: number; toS?: number; page?: number; process: number; t: number };
 export type VisionState = {
+  /** Every filing, in the order first seen; a snapshot's copy of one already seen adds nothing. */
   looks: VisionLook[];
-  index: Record<string, number>;
-  /** Per look key, the generation of each paid filing, in the order first seen. */
-  paidIn: Record<string, number[]>;
   running: Record<string, VisionRead>;
   cut: VisionRead[];
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
@@ -136,7 +134,7 @@ const visionKnown = (line: Line): boolean => {
   return line.source === 'vision' && (line.kind === 'LookEvent' || line.kind === 'MissEvent');
 };
 
-export const visionInit = (): VisionState => ({ looks: [], index: {}, paidIn: {}, running: {}, cut: [], told: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
+export const visionInit = (): VisionState => ({ looks: [], running: {}, cut: [], told: {}, processes: 0, kills: [], result: undefined, lead: undefined, visionLines: 0, highest: -1, inSnapshot: false, opened: false });
 
 function visionReduce(before: VisionState, line: Line): VisionState {
   if (line.channel === 'durable') {
@@ -153,16 +151,10 @@ function visionReduce(before: VisionState, line: Line): VisionState {
     const gen = line.gen ?? Math.max(1, line.snapshot === true ? state.processes - 1 : state.processes);
     const filed = visionLooksOf(line, gen);
     if (filed.length) {
-      let { looks, index, paidIn, told } = state;
-      for (const look of filed) {
-        if (index[look.id] !== undefined) continue;
-        index = { ...index, [look.id]: looks.length };
-        looks = [...looks, look];
-        if (visionPaid(look)) paidIn = { ...paidIn, [look.key]: [...(paidIn[look.key] ?? []), look.gen] };
-        const heard = Object.keys(told).filter((id) => id === look.key || id === look.receipt);
-        if (heard.length) told = Object.fromEntries(Object.entries(told).filter(([id]) => !heard.includes(id)));
-      }
-      return { ...state, looks, index, paidIn, told, visionLines: state.visionLines + 1 };
+      const fresh = filed.filter((look) => !state.looks.some((seen) => seen.id === look.id));
+      const heard = new Set(fresh.flatMap((look) => [look.key, ...(look.receipt ? [look.receipt] : [])]));
+      const told = Object.keys(state.told).some((id) => heard.has(id)) ? Object.fromEntries(Object.entries(state.told).filter(([id]) => !heard.has(id))) : state.told;
+      return { ...state, looks: fresh.length ? [...state.looks, ...fresh] : state.looks, told, visionLines: state.visionLines + 1 };
     }
     if (state.lead !== undefined) return state;
     const assistant = entryOf(line)?.model.find((message) => message.role === 'assistant') as { provider?: Json; model?: Json } | undefined;
@@ -220,8 +212,12 @@ export type VisionMeters = {
 };
 
 export function visionMeters(state: VisionState): VisionMeters {
+  // Per look key, the generation of each paid filing in the order first seen: one after the first is an extra payment,
+  // repeated when its generation is later than the one before it, asked twice when it is the same.
+  const paidIn = new Map<string, number[]>();
+  for (const look of state.looks) if (visionPaid(look)) paidIn.set(look.key, [...(paidIn.get(look.key) ?? []), look.gen]);
   const extras = { repeated: 0, askedTwice: 0 };
-  for (const gens of Object.values(state.paidIn)) gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
+  for (const gens of paidIn.values()) gens.forEach((gen, at) => { if (at > 0) { if (gen === gens[at - 1]) extras.askedTwice += 1; else extras.repeated += 1; } });
   // What the eyes billed: every filing that is not kept, and, for a key with only kept filings (the kill landed after
   // the eyes answered and before the look was filed), its first kept filing once: that answer was paid for, before.
   const fresh = new Set(state.looks.filter((look) => !look.kept && !look.native).map((look) => look.key));
