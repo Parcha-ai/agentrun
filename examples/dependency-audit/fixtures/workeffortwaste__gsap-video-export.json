@@ -1,0 +1,336 @@
+{
+  "format": "agentrun.dependency-audit.fixture/1",
+  "project": "workeffortwaste/gsap-video-export",
+  "source": {
+    "repo": "workeffortwaste/gsap-video-export",
+    "commit": "afc6240fedb1b5abf34b1ca237d2564bcb6b9d06",
+    "package_json_sha256": "3cc6a7f6f1c3b71fcfc07b94222b3100291162f88194204a41c02137fbfbfe03",
+    "captured": "2026-10-14T07:22:07.781Z"
+  },
+  "dependencies": [
+    {
+      "name": "@ffmpeg-installer/ffmpeg",
+      "version": "1.1.0"
+    },
+    {
+      "name": "cli-progress",
+      "version": "3.12.0"
+    },
+    {
+      "name": "eslint",
+      "version": "9.39.4"
+    },
+    {
+      "name": "fluent-ffmpeg",
+      "version": "2.1.3"
+    },
+    {
+      "name": "neostandard",
+      "version": "0.13.0"
+    },
+    {
+      "name": "pngjs",
+      "version": "7.0.0"
+    },
+    {
+      "name": "find-chrome-bin",
+      "version": "2.0.2"
+    },
+    {
+      "name": "puppeteer",
+      "version": "24.8.1"
+    },
+    {
+      "name": "rgb-hex",
+      "version": "4.1.0"
+    },
+    {
+      "name": "string-argv",
+      "version": "0.3.2"
+    },
+    {
+      "name": "timeweb",
+      "version": "0.3.2"
+    },
+    {
+      "name": "tmp",
+      "version": "0.2.5"
+    },
+    {
+      "name": "yargs",
+      "version": "18.0.0"
+    }
+  ],
+  "registry": {
+    "@ffmpeg-installer/ffmpeg@1.1.0": {
+      "name": "@ffmpeg-installer/ffmpeg",
+      "version": "1.1.0",
+      "repository": "https://github.com/kribblo/node-ffmpeg-installer",
+      "deprecated": "",
+      "scripts": {},
+      "license": "LGPL-2.1"
+    },
+    "cli-progress@3.12.0": {
+      "name": "cli-progress",
+      "version": "3.12.0",
+      "repository": "https://github.com/npkgz/cli-progress",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "eslint@9.39.4": {
+      "name": "eslint",
+      "version": "9.39.4",
+      "repository": "https://github.com/eslint/eslint",
+      "deprecated": "This version is no longer supported. Please see https://eslint.org/version-support for other options.",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "fluent-ffmpeg@2.1.3": {
+      "name": "fluent-ffmpeg",
+      "version": "2.1.3",
+      "repository": "https://github.com/fluent-ffmpeg/node-fluent-ffmpeg",
+      "deprecated": "Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "neostandard@0.13.0": {
+      "name": "neostandard",
+      "version": "0.13.0",
+      "repository": "https://github.com/neostandard/neostandard",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "pngjs@7.0.0": {
+      "name": "pngjs",
+      "version": "7.0.0",
+      "repository": "https://github.com/pngjs/pngjs",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "find-chrome-bin@2.0.2": {
+      "name": "find-chrome-bin",
+      "version": "2.0.2",
+      "repository": "https://github.com/mbalabash/find-chrome-bin",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "puppeteer@24.8.1": {
+      "name": "puppeteer",
+      "version": "24.8.1",
+      "repository": "https://github.com/puppeteer/puppeteer",
+      "deprecated": "< 24.15.0 is no longer supported",
+      "scripts": {
+        "postinstall": "node install.mjs"
+      },
+      "license": "Apache-2.0"
+    },
+    "rgb-hex@4.1.0": {
+      "name": "rgb-hex",
+      "version": "4.1.0",
+      "repository": "https://github.com/sindresorhus/rgb-hex",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "string-argv@0.3.2": {
+      "name": "string-argv",
+      "version": "0.3.2",
+      "repository": "https://github.com/mccormicka/string-argv",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "timeweb@0.3.2": {
+      "name": "timeweb",
+      "version": "0.3.2",
+      "repository": "https://github.com/tungs/timeweb",
+      "deprecated": "",
+      "scripts": {},
+      "license": "BSD-3-Clause"
+    },
+    "tmp@0.2.5": {
+      "name": "tmp",
+      "version": "0.2.5",
+      "repository": "https://github.com/raszi/node-tmp",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "yargs@18.0.0": {
+      "name": "yargs",
+      "version": "18.0.0",
+      "repository": "https://github.com/yargs/yargs",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    }
+  },
+  "advisories": {
+    "@ffmpeg-installer/ffmpeg@1.1.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "cli-progress@3.12.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "eslint@9.39.4": {
+      "ids": [],
+      "summaries": {}
+    },
+    "fluent-ffmpeg@2.1.3": {
+      "ids": [],
+      "summaries": {}
+    },
+    "neostandard@0.13.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "pngjs@7.0.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "find-chrome-bin@2.0.2": {
+      "ids": [],
+      "summaries": {}
+    },
+    "puppeteer@24.8.1": {
+      "ids": [],
+      "summaries": {}
+    },
+    "rgb-hex@4.1.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "string-argv@0.3.2": {
+      "ids": [],
+      "summaries": {}
+    },
+    "timeweb@0.3.2": {
+      "ids": [],
+      "summaries": {}
+    },
+    "tmp@0.2.5": {
+      "ids": [
+        "GHSA-ph9p-34f9-6g65"
+      ],
+      "summaries": {
+        "GHSA-ph9p-34f9-6g65": "tmp has Path Traversal via unsanitized prefix/postfix that enables directory escape"
+      }
+    },
+    "yargs@18.0.0": {
+      "ids": [],
+      "summaries": {}
+    }
+  },
+  "repos": {
+    "https://github.com/kribblo/node-ffmpeg-installer": {
+      "url": "https://github.com/kribblo/node-ffmpeg-installer",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2023-05-08T21:17:13Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/npkgz/cli-progress": {
+      "url": "https://github.com/npkgz/cli-progress",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2023-10-23T16:58:31Z",
+      "last_release": "2021-01-31T10:14:28Z",
+      "last_release_tag": "v3.9.0"
+    },
+    "https://github.com/eslint/eslint": {
+      "url": "https://github.com/eslint/eslint",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-14T07:16:24Z",
+      "last_release": "2026-10-02T20:07:11Z",
+      "last_release_tag": "v10.12.0"
+    },
+    "https://github.com/fluent-ffmpeg/node-fluent-ffmpeg": {
+      "url": "https://github.com/fluent-ffmpeg/node-fluent-ffmpeg",
+      "archived": true,
+      "archived_on": "",
+      "pushed_at": "2025-05-22T09:42:00Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/neostandard/neostandard": {
+      "url": "https://github.com/neostandard/neostandard",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-12T13:22:55Z",
+      "last_release": "2026-10-09T22:27:52Z",
+      "last_release_tag": "v0.14.1"
+    },
+    "https://github.com/pngjs/pngjs": {
+      "url": "https://github.com/pngjs/pngjs",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2024-03-23T13:48:09Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/mbalabash/find-chrome-bin": {
+      "url": "https://github.com/mbalabash/find-chrome-bin",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2025-09-17T22:03:58Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/puppeteer/puppeteer": {
+      "url": "https://github.com/puppeteer/puppeteer",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-14T06:17:41Z",
+      "last_release": "2026-10-08T13:00:03Z",
+      "last_release_tag": "browsers-v3.2.4"
+    },
+    "https://github.com/sindresorhus/rgb-hex": {
+      "url": "https://github.com/sindresorhus/rgb-hex",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-09-18T19:24:25Z",
+      "last_release": "2023-09-01T07:46:24Z",
+      "last_release_tag": "v4.1.0"
+    },
+    "https://github.com/mccormicka/string-argv": {
+      "url": "https://github.com/mccormicka/string-argv",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-09-29T01:37:28Z",
+      "last_release": "2026-09-29T01:37:32Z",
+      "last_release_tag": "v0.4.0"
+    },
+    "https://github.com/tungs/timeweb": {
+      "url": "https://github.com/tungs/timeweb",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2023-05-01T13:59:02Z",
+      "last_release": "2023-05-01T13:40:36Z",
+      "last_release_tag": "v0.3.2"
+    },
+    "https://github.com/raszi/node-tmp": {
+      "url": "https://github.com/raszi/node-tmp",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-05-27T15:47:49Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/yargs/yargs": {
+      "url": "https://github.com/yargs/yargs",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-13T21:31:27Z",
+      "last_release": "2026-09-20T22:31:07Z",
+      "last_release_tag": "v18.2.0"
+    }
+  }
+}

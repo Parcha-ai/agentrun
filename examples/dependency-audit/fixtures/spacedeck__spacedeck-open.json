@@ -1,0 +1,682 @@
+{
+  "format": "agentrun.dependency-audit.fixture/1",
+  "project": "spacedeck/spacedeck-open",
+  "source": {
+    "repo": "spacedeck/spacedeck-open",
+    "commit": "a5914ab600e9f4ae3f42d9361195a3696843903e",
+    "package_json_sha256": "f487c7d8f5fb403e55bbf488d5d0c3b3815af9f9af66b3d34b31f93ae251d04a",
+    "captured": "2026-10-14T07:22:17.932Z"
+  },
+  "dependencies": [
+    {
+      "name": "archiver",
+      "version": "5.3.1"
+    },
+    {
+      "name": "async",
+      "version": "3.2.4"
+    },
+    {
+      "name": "bcryptjs",
+      "version": "2.4.3"
+    },
+    {
+      "name": "body-parser",
+      "version": "1.20.1"
+    },
+    {
+      "name": "cheerio",
+      "version": "1.0.0-rc.12"
+    },
+    {
+      "name": "config",
+      "version": "3.3.9"
+    },
+    {
+      "name": "cookie-parser",
+      "version": "1.4.5"
+    },
+    {
+      "name": "ejs",
+      "version": "3.1.9"
+    },
+    {
+      "name": "execSync",
+      "version": "1.0.2"
+    },
+    {
+      "name": "express",
+      "version": "4.18.2"
+    },
+    {
+      "name": "file-type",
+      "version": "16.5.4"
+    },
+    {
+      "name": "glob",
+      "version": "10.3.3"
+    },
+    {
+      "name": "gm",
+      "version": "1.23.1"
+    },
+    {
+      "name": "helmet",
+      "version": "7.0.0"
+    },
+    {
+      "name": "i18n-2",
+      "version": "0.7.3"
+    },
+    {
+      "name": "log-timestamp",
+      "version": "0.3.0"
+    },
+    {
+      "name": "mock-aws-s3",
+      "version": "4.0.2"
+    },
+    {
+      "name": "moment",
+      "version": "2.29.4"
+    },
+    {
+      "name": "morgan",
+      "version": "1.10.0"
+    },
+    {
+      "name": "nodemailer",
+      "version": "6.9.3"
+    },
+    {
+      "name": "puppeteer",
+      "version": "18.2.1"
+    },
+    {
+      "name": "read-chunk",
+      "version": "3.2.0"
+    },
+    {
+      "name": "request",
+      "version": "2.88.2"
+    },
+    {
+      "name": "sanitize-html",
+      "version": "2.3.3"
+    }
+  ],
+  "registry": {
+    "archiver@5.3.1": {
+      "name": "archiver",
+      "version": "5.3.1",
+      "repository": "https://github.com/archiverjs/node-archiver",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "async@3.2.4": {
+      "name": "async",
+      "version": "3.2.4",
+      "repository": "https://github.com/caolan/async",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "bcryptjs@2.4.3": {
+      "name": "bcryptjs",
+      "version": "2.4.3",
+      "repository": "https://github.com/dcodeIO/bcrypt.js",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "body-parser@1.20.1": {
+      "name": "body-parser",
+      "version": "1.20.1",
+      "repository": "https://github.com/expressjs/body-parser",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "cheerio@1.0.0-rc.12": {
+      "name": "cheerio",
+      "version": "1.0.0-rc.12",
+      "repository": "https://github.com/cheeriojs/cheerio",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "config@3.3.9": {
+      "name": "config",
+      "version": "3.3.9",
+      "repository": "https://github.com/node-config/node-config",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "cookie-parser@1.4.5": {
+      "name": "cookie-parser",
+      "version": "1.4.5",
+      "repository": "https://github.com/expressjs/cookie-parser",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "ejs@3.1.9": {
+      "name": "ejs",
+      "version": "3.1.9",
+      "repository": "https://github.com/mde/ejs",
+      "deprecated": "",
+      "scripts": {},
+      "license": "Apache-2.0"
+    },
+    "execSync@1.0.2": {
+      "name": "execSync",
+      "version": "1.0.2",
+      "repository": "https://github.com/mgutz/execSync",
+      "deprecated": "",
+      "scripts": {
+        "install": "node install.js"
+      },
+      "license": "MIT"
+    },
+    "express@4.18.2": {
+      "name": "express",
+      "version": "4.18.2",
+      "repository": "https://github.com/expressjs/express",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "file-type@16.5.4": {
+      "name": "file-type",
+      "version": "16.5.4",
+      "repository": "https://github.com/sindresorhus/file-type",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "glob@10.3.3": {
+      "name": "glob",
+      "version": "10.3.3",
+      "repository": "https://github.com/isaacs/node-glob",
+      "deprecated": "Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me",
+      "scripts": {},
+      "license": "ISC"
+    },
+    "gm@1.23.1": {
+      "name": "gm",
+      "version": "1.23.1",
+      "repository": "https://github.com/aheckmann/gm",
+      "deprecated": "The gm module has been sunset. Please migrate to an alternative. https://github.com/aheckmann/gm?tab=readme-ov-file#2025-02-24-this-project-is-not-maintained",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "helmet@7.0.0": {
+      "name": "helmet",
+      "version": "7.0.0",
+      "repository": "https://github.com/helmetjs/helmet",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "i18n-2@0.7.3": {
+      "name": "i18n-2",
+      "version": "0.7.3",
+      "repository": "https://github.com/jeresig/i18n-node-2",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "log-timestamp@0.3.0": {
+      "name": "log-timestamp",
+      "version": "0.3.0",
+      "repository": "https://github.com/bahamas10/node-log-timestamp",
+      "deprecated": "",
+      "scripts": {},
+      "license": ""
+    },
+    "mock-aws-s3@4.0.2": {
+      "name": "mock-aws-s3",
+      "version": "4.0.2",
+      "repository": "https://github.com/MathieuLoutre/mock-aws-s3",
+      "deprecated": "",
+      "scripts": {},
+      "license": ""
+    },
+    "moment@2.29.4": {
+      "name": "moment",
+      "version": "2.29.4",
+      "repository": "https://github.com/moment/moment",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "morgan@1.10.0": {
+      "name": "morgan",
+      "version": "1.10.0",
+      "repository": "https://github.com/expressjs/morgan",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "nodemailer@6.9.3": {
+      "name": "nodemailer",
+      "version": "6.9.3",
+      "repository": "https://github.com/nodemailer/nodemailer",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT-0"
+    },
+    "puppeteer@18.2.1": {
+      "name": "puppeteer",
+      "version": "18.2.1",
+      "repository": "https://github.com/puppeteer/puppeteer",
+      "deprecated": "< 24.15.0 is no longer supported",
+      "scripts": {
+        "postinstall": "node install.js"
+      },
+      "license": "Apache-2.0"
+    },
+    "read-chunk@3.2.0": {
+      "name": "read-chunk",
+      "version": "3.2.0",
+      "repository": "https://github.com/sindresorhus/read-chunk",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    },
+    "request@2.88.2": {
+      "name": "request",
+      "version": "2.88.2",
+      "repository": "https://github.com/request/request",
+      "deprecated": "request has been deprecated, see https://github.com/request/request/issues/3142",
+      "scripts": {},
+      "license": "Apache-2.0"
+    },
+    "sanitize-html@2.3.3": {
+      "name": "sanitize-html",
+      "version": "2.3.3",
+      "repository": "https://github.com/apostrophecms/sanitize-html",
+      "deprecated": "",
+      "scripts": {},
+      "license": "MIT"
+    }
+  },
+  "advisories": {
+    "archiver@5.3.1": {
+      "ids": [],
+      "summaries": {}
+    },
+    "async@3.2.4": {
+      "ids": [],
+      "summaries": {}
+    },
+    "bcryptjs@2.4.3": {
+      "ids": [],
+      "summaries": {}
+    },
+    "body-parser@1.20.1": {
+      "ids": [
+        "GHSA-qwcr-r2fm-qrc7",
+        "GHSA-v422-hmwv-36x6"
+      ],
+      "summaries": {
+        "GHSA-qwcr-r2fm-qrc7": "body-parser vulnerable to denial of service when url encoding is enabled",
+        "GHSA-v422-hmwv-36x6": "body-parser vulnerable to denial of service when invalid limit value silently disables size enforcement"
+      }
+    },
+    "cheerio@1.0.0-rc.12": {
+      "ids": [],
+      "summaries": {}
+    },
+    "config@3.3.9": {
+      "ids": [],
+      "summaries": {}
+    },
+    "cookie-parser@1.4.5": {
+      "ids": [],
+      "summaries": {}
+    },
+    "ejs@3.1.9": {
+      "ids": [
+        "GHSA-ghr5-ch3p-vcr6"
+      ],
+      "summaries": {
+        "GHSA-ghr5-ch3p-vcr6": "ejs lacks certain pollution protection"
+      }
+    },
+    "execSync@1.0.2": {
+      "ids": [],
+      "summaries": {}
+    },
+    "express@4.18.2": {
+      "ids": [
+        "GHSA-qw6h-vgh9-j6wx",
+        "GHSA-rv95-896h-c2vc"
+      ],
+      "summaries": {
+        "GHSA-qw6h-vgh9-j6wx": "express vulnerable to XSS via response.redirect()",
+        "GHSA-rv95-896h-c2vc": "Express.js Open Redirect in malformed URLs"
+      }
+    },
+    "file-type@16.5.4": {
+      "ids": [
+        "GHSA-5v7r-6r5c-r473"
+      ],
+      "summaries": {
+        "GHSA-5v7r-6r5c-r473": "file-type affected by infinite loop in ASF parser on malformed input with zero-size sub-header"
+      }
+    },
+    "glob@10.3.3": {
+      "ids": [
+        "GHSA-5j98-mcp5-4vw2"
+      ],
+      "summaries": {
+        "GHSA-5j98-mcp5-4vw2": "glob CLI: Command injection via -c/--cmd executes matches with shell:true"
+      }
+    },
+    "gm@1.23.1": {
+      "ids": [],
+      "summaries": {}
+    },
+    "helmet@7.0.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "i18n-2@0.7.3": {
+      "ids": [],
+      "summaries": {}
+    },
+    "log-timestamp@0.3.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "mock-aws-s3@4.0.2": {
+      "ids": [],
+      "summaries": {}
+    },
+    "moment@2.29.4": {
+      "ids": [
+        "GHSA-4p3w-j4w9-5jqw"
+      ],
+      "summaries": {
+        "GHSA-4p3w-j4w9-5jqw": "moment vulnerable to Path Traversal via crafted non-string locale name"
+      }
+    },
+    "morgan@1.10.0": {
+      "ids": [
+        "GHSA-4vj7-5mj6-jm8m",
+        "GHSA-9f6g-j8ch-79g4",
+        "GHSA-jxfw-x594-9x9m"
+      ],
+      "summaries": {
+        "GHSA-4vj7-5mj6-jm8m": "morgan vulnerable to Log Forging via unneutralized control characters in :remote-user",
+        "GHSA-9f6g-j8ch-79g4": "morgan vulnerable to Log Injection via unescaped double quote in quoted log fields",
+        "GHSA-jxfw-x594-9x9m": "morgan vulnerable to Log Forging via unescaped Unicode line separators"
+      }
+    },
+    "nodemailer@6.9.3": {
+      "ids": [
+        "GHSA-268h-hp4c-crq3",
+        "GHSA-2x7j-588g-ccc2",
+        "GHSA-6vj9-mwq6-2f5v",
+        "GHSA-8m3c-c648-2xjj",
+        "GHSA-8vvx-rff5-p5rq",
+        "GHSA-9h6g-pr28-7cqp",
+        "GHSA-c7w3-x93f-qmm8",
+        "GHSA-mm7p-fcc7-pg87",
+        "GHSA-p6gq-j5cr-w38f",
+        "GHSA-r7g4-qg5f-qqm2",
+        "GHSA-rcmh-qjqh-p98v",
+        "GHSA-v53p-9fqp-m79j",
+        "GHSA-vvjj-xcjg-gr5g",
+        "GHSA-wmmp-3585-3rmp",
+        "GHSA-wqvq-jvpq-h66f"
+      ],
+      "summaries": {
+        "GHSA-268h-hp4c-crq3": "Nodemailer: CRLF injection in Nodemailer List-* header comments allows arbitrary message header injection",
+        "GHSA-2x7j-588g-ccc2": "Nodemailer: Quadratic (O(n²)) time complexity in addressparser allows remote denial of service via a crafted address list",
+        "GHSA-6vj9-mwq6-2f5v": "Nodemailer: Process-global DNS cache reuses TLS `servername` across transports, enabling cross-tenant SMTP credential disclosure",
+        "GHSA-8m3c-c648-2xjj": "Nodemailer: resolveContent() on a MailMessage bypasses disableFileAccess/disableUrlAccess when called with the legacy signature",
+        "GHSA-8vvx-rff5-p5rq": "Nodemailer: Nested structured recipient arrays bypass the parser depth limit and cause stack exhaustion DoS",
+        "GHSA-9h6g-pr28-7cqp": "nodemailer ReDoS when trying to send a specially crafted email",
+        "GHSA-c7w3-x93f-qmm8": "Nodemailer has SMTP command injection due to unsanitized `envelope.size` parameter",
+        "GHSA-mm7p-fcc7-pg87": "Nodemailer: Email to an unintended domain can occur due to Interpretation Conflict",
+        "GHSA-p6gq-j5cr-w38f": "Nodemailer: Message-level raw option bypasses disableFileAccess/disableUrlAccess, enabling arbitrary file read and full-response SSRF in the delivered message",
+        "GHSA-r7g4-qg5f-qqm2": "Nodemailer: Improper TLS Certificate Validation in OAuth2 Token Fetch Enables Credential Interception",
+        "GHSA-rcmh-qjqh-p98v": "Nodemailer’s addressparser is vulnerable to DoS caused by recursive calls",
+        "GHSA-v53p-9fqp-m79j": "Nodemailer: Quadratic backtracking in the addressparser free-text fallback allows remote denial of service",
+        "GHSA-vvjj-xcjg-gr5g": "Nodemailer Vulnerable to SMTP Command Injection via CRLF in Transport name Option (EHLO/HELO) ",
+        "GHSA-wmmp-3585-3rmp": "Nodemailer: IDN/Punycode domain allow-list bypass leads to email delivery to an attacker-controlled domain",
+        "GHSA-wqvq-jvpq-h66f": "Nodemailer jsonTransport bypasses disableFileAccess and disableUrlAccess during message normalization"
+      }
+    },
+    "puppeteer@18.2.1": {
+      "ids": [],
+      "summaries": {}
+    },
+    "read-chunk@3.2.0": {
+      "ids": [],
+      "summaries": {}
+    },
+    "request@2.88.2": {
+      "ids": [
+        "GHSA-p8p7-x288-28g6"
+      ],
+      "summaries": {
+        "GHSA-p8p7-x288-28g6": "Server-Side Request Forgery in Request"
+      }
+    },
+    "sanitize-html@2.3.3": {
+      "ids": [
+        "GHSA-cgfm-xwp7-2cvr",
+        "GHSA-g8qq-57p8-ggw5",
+        "GHSA-jxwj-j7wr-gfrw",
+        "GHSA-rm97-x556-q36h",
+        "GHSA-vccv-cmxp-4j9h"
+      ],
+      "summaries": {
+        "GHSA-cgfm-xwp7-2cvr": "Sanitize-html Vulnerable To REDoS Attacks",
+        "GHSA-g8qq-57p8-ggw5": "ApostropheCMS: Stored XSS via SVG SMIL URI-list scheme-policy bypass",
+        "GHSA-jxwj-j7wr-gfrw": "ApostropheCMS: Mutation-XSS / allowedTags bypass via literal `</textarea/>` solidus close",
+        "GHSA-rm97-x556-q36h": "sanitize-html Information Exposure vulnerability",
+        "GHSA-vccv-cmxp-4j9h": "sanitize-html has incomplete URI scheme validation in that allows javascript: URIs through action, formaction, data, poster, and background attributes"
+      }
+    }
+  },
+  "repos": {
+    "https://github.com/archiverjs/node-archiver": {
+      "url": "https://github.com/archiverjs/node-archiver",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-13T18:13:33Z",
+      "last_release": "2026-05-08T08:04:37Z",
+      "last_release_tag": "8.0.0"
+    },
+    "https://github.com/caolan/async": {
+      "url": "https://github.com/caolan/async",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-01T15:34:00Z",
+      "last_release": "2017-04-06T21:32:14Z",
+      "last_release_tag": "v2.3.0"
+    },
+    "https://github.com/dcodeIO/bcrypt.js": {
+      "url": "https://github.com/dcodeIO/bcrypt.js",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-01T03:27:47Z",
+      "last_release": "2025-11-02T22:09:44Z",
+      "last_release_tag": "v3.0.3"
+    },
+    "https://github.com/expressjs/body-parser": {
+      "url": "https://github.com/expressjs/body-parser",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-02T06:30:05Z",
+      "last_release": "2026-06-15T10:44:24Z",
+      "last_release_tag": "v2.3.0"
+    },
+    "https://github.com/cheeriojs/cheerio": {
+      "url": "https://github.com/cheeriojs/cheerio",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-12T11:33:09Z",
+      "last_release": "2026-01-23T16:32:09Z",
+      "last_release_tag": "v1.2.0"
+    },
+    "https://github.com/node-config/node-config": {
+      "url": "https://github.com/node-config/node-config",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-09-20T18:50:35Z",
+      "last_release": "2026-08-18T23:45:21Z",
+      "last_release_tag": "v5.0.1"
+    },
+    "https://github.com/expressjs/cookie-parser": {
+      "url": "https://github.com/expressjs/cookie-parser",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-06-03T01:07:15Z",
+      "last_release": "2024-10-08T18:24:34Z",
+      "last_release_tag": "1.4.7"
+    },
+    "https://github.com/mde/ejs": {
+      "url": "https://github.com/mde/ejs",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-08T06:12:42Z",
+      "last_release": "2026-10-04T19:56:53Z",
+      "last_release_tag": "v7.0.1"
+    },
+    "https://github.com/mgutz/execSync": {
+      "url": "https://github.com/mgutz/execSync",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2016-01-16T22:27:28Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/expressjs/express": {
+      "url": "https://github.com/expressjs/express",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-09T16:24:39Z",
+      "last_release": "2026-10-09T12:50:31Z",
+      "last_release_tag": "v5.3.0"
+    },
+    "https://github.com/sindresorhus/file-type": {
+      "url": "https://github.com/sindresorhus/file-type",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-14T03:56:45Z",
+      "last_release": "2026-09-17T05:26:43Z",
+      "last_release_tag": "v22.1.1"
+    },
+    "https://github.com/isaacs/node-glob": {
+      "url": "https://github.com/isaacs/node-glob",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-05T19:02:32Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/aheckmann/gm": {
+      "url": "https://github.com/aheckmann/gm",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2025-02-25T02:44:49Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/helmetjs/helmet": {
+      "url": "https://github.com/helmetjs/helmet",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-04T11:01:42Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/jeresig/i18n-node-2": {
+      "url": "https://github.com/jeresig/i18n-node-2",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2021-02-27T00:17:00Z",
+      "last_release": "2018-09-05T18:14:08Z",
+      "last_release_tag": "0.7.3"
+    },
+    "https://github.com/bahamas10/node-log-timestamp": {
+      "url": "https://github.com/bahamas10/node-log-timestamp",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2019-02-22T17:51:14Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/MathieuLoutre/mock-aws-s3": {
+      "url": "https://github.com/MathieuLoutre/mock-aws-s3",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2023-03-04T05:51:38Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/moment/moment": {
+      "url": "https://github.com/moment/moment",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-08T16:26:56Z",
+      "last_release": "2026-09-15T01:10:04Z",
+      "last_release_tag": "2.31.0"
+    },
+    "https://github.com/expressjs/morgan": {
+      "url": "https://github.com/expressjs/morgan",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-01T08:40:44Z",
+      "last_release": "2026-09-11T08:55:40Z",
+      "last_release_tag": "1.12.1"
+    },
+    "https://github.com/nodemailer/nodemailer": {
+      "url": "https://github.com/nodemailer/nodemailer",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-14T06:27:28Z",
+      "last_release": "2026-10-14T05:37:01Z",
+      "last_release_tag": "v10.1.1"
+    },
+    "https://github.com/puppeteer/puppeteer": {
+      "url": "https://github.com/puppeteer/puppeteer",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-10-14T06:17:41Z",
+      "last_release": "2026-10-08T13:00:03Z",
+      "last_release_tag": "browsers-v3.2.4"
+    },
+    "https://github.com/sindresorhus/read-chunk": {
+      "url": "https://github.com/sindresorhus/read-chunk",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2026-09-18T19:14:19Z",
+      "last_release": "2024-06-28T13:40:17Z",
+      "last_release_tag": "v5.0.0"
+    },
+    "https://github.com/request/request": {
+      "url": "https://github.com/request/request",
+      "archived": false,
+      "archived_on": "",
+      "pushed_at": "2024-08-14T00:09:41Z",
+      "last_release": "",
+      "last_release_tag": ""
+    },
+    "https://github.com/apostrophecms/sanitize-html": {
+      "url": "https://github.com/apostrophecms/sanitize-html",
+      "archived": true,
+      "archived_on": "",
+      "pushed_at": "2026-02-26T19:54:30Z",
+      "last_release": "",
+      "last_release_tag": ""
+    }
+  }
+}
