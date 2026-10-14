@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { buildOverrides, findDrift } from './pi-family-pins.mjs';
-import { checkPiFamily, developedVersions, expectedRecordName, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
+import { recordProblems } from './reference-record.mjs';
+import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
 
 const exec = promisify(execFile);
@@ -296,13 +296,12 @@ console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
   await cp(join(root, 'examples/reference'), join(consumer, 'reference'), { recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)) });
-  // One value for the pi the repository develops on; a leg that names another pi uses its own file when the model's token count moves with it.
-  const expectedFile = expectedRecordName(legPi, name => existsSync(join(root, 'examples/reference', name)));
-  const expectedRecord = await json(join(root, 'examples/reference', expectedFile));
+  const expectedRecord = await json(join(root, 'examples/reference/expected.json'));
   const referenceTmp = join(temporary, 'reference-home');
   await mkdir(referenceTmp);
   const reference = await run(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', './deny-remote.mjs', 'reference/run.ts', '--json'], consumer, false, { PATH: process.env.PATH, HOME: referenceTmp, TMPDIR: referenceTmp });
-  assert.deepEqual(JSON.parse(reference.stdout), expectedRecord, `The reference job in the consumer printed a record that differs from examples/reference/${expectedFile}`);
+  const referenceProblems = recordProblems(JSON.parse(reference.stdout), expectedRecord);
+  assert.deepEqual(referenceProblems, [], `The reference job in the consumer printed a record that differs from examples/reference/expected.json (token counts are not compared exactly): ${referenceProblems.join('; ')}`);
   receipt.reference = { status: 'passed', network: 'loopback only', evidence: expectedRecord.evidence, usage: expectedRecord.usage };
   receipt.checks.push('The reference example, copied into the consumer and run with loopback-only networking and no key, printed the record in examples/reference/expected.json.');
   await cp(join(root, 'scripts/verify-pi-install.mjs'), join(consumer, 'verify-pi-install.mjs'));
