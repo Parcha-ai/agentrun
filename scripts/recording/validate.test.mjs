@@ -12,7 +12,7 @@ const blob = sha(png);
 const manifest = {
   format: 'agentrun.recording/1', title: 'A run', task: 'company-check',
   recorded: { started: '2026-10-14T08:00:00.000Z', ended: '2026-10-14T08:00:05.000Z' },
-  code: { repo: 'agentrun', commit: 'abc1234', packages: { '@parcha/agentrun-dsl': '0.1.0' } },
+  code: { repo: 'agentrun', commit: 'abc1234', packages: { '@parcha/agentrun-dsl': '0.1.0', '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } },
   model: 'faux/faux-1', generations: 2, kills: 1, cost: { usd: 0, parts: { 'faux/faux-1': 0 } },
   source: { run: 'run-1', store_sha256: 'a'.repeat(64) }, result: { blob, title: 'The record' },
 };
@@ -37,6 +37,10 @@ const first = dir => validateRecording(dir)[0];
 
 test('a well-formed recording has no problem', async t => {
   assert.deepEqual(validateRecording(await recording(t, { started: 2 })), []);
+});
+
+test('the manifest must list the pi packages beside ours', async t => {
+  assert.match(first(await recording(t, { manifestOver: { code: { repo: 'r', commit: 'c', packages: { '@parcha/agentrun-dsl': '0.1.0' } } } })).message, /code\.packages must list @earendil-works\/pi-durable and @earendil-works\/pi-ai/);
 });
 
 test('the manifest must carry every field of the format', async t => {
