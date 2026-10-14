@@ -23,6 +23,36 @@ const json = async (url: string, init: RequestInit = {}): Promise<{ status: numb
   return { status: response.status, body, text };
 };
 
+export type BadgeFacts = { url: string; alt: string; label: 'build' | 'coverage' | 'version' | 'other'; svg: string };
+
+const labelOf = (text: string): BadgeFacts['label'] => (/coverage|codecov|coveralls/i.test(text) ? 'coverage' : /build|\bci\b|workflow|actions|travis|circle|test/i.test(text) ? 'build' : /npm|version|release|\bv\d/i.test(text) ? 'version' : 'other');
+
+/** Up to `limit` README badges of a public GitHub repository: the images its README shows by https that are SVGs (shields.io, GitHub
+ *  Actions, codecov and the like), each fetched whole. A repository with no README, or none of these, has none. */
+export async function badgeFacts(url: string, limit = 3): Promise<BadgeFacts[]> {
+  const match = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)$/.exec(url);
+  if (!match) return [];
+  const headers: Record<string, string> = { 'user-agent': 'agentrun-dependency-audit', accept: 'application/vnd.github.raw+json', ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) };
+  const readme = await fetch(`https://api.github.com/repos/${match[1]}/${match[2]}/readme`, { headers, signal: AbortSignal.timeout(30_000) });
+  if (readme.status !== 200) return [];
+  const text = await readme.text();
+  const found: Array<{ url: string; alt: string }> = [];
+  for (const image of text.matchAll(/!\[([^\]]*)\]\((https:\/\/[^)\s]+)[^)]*\)|<img[^>]*?src=["'](https:\/\/[^"']+)["'][^>]*?(?:alt=["']([^"']*)["'])?[^>]*>/g)) {
+    const href = image[2] ?? image[3];
+    if (href && /shields\.io|badge|\.svg(?:$|\?)|codecov|coveralls/i.test(href) && !found.some((other) => other.url === href)) found.push({ url: href, alt: image[1] ?? image[4] ?? '' });
+  }
+  const out: BadgeFacts[] = [];
+  for (const { url: href, alt } of found) {
+    if (out.length >= limit) break;
+    try {
+      const response = await fetch(href, { headers: { 'user-agent': 'agentrun-dependency-audit' }, signal: AbortSignal.timeout(20_000), redirect: 'follow' });
+      const svg = await response.text();
+      if (response.status === 200 && svg.length <= 256 * 1024 && /<svg[\s>]/.test(svg)) out.push({ url: href, alt, label: labelOf(`${alt} ${href}`), svg });
+    } catch { /* an unreachable badge is not one */ }
+  }
+  return out;
+}
+
 /** `git+https://github.com/o/r.git`, `github:o/r`, `git://…` and `https://…` forms as one https URL; empty when it is none. */
 export function repositoryUrl(field: unknown): string {
   const raw = typeof field === 'string' ? field : (field as { url?: unknown } | null | undefined)?.url;
