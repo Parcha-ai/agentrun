@@ -234,9 +234,11 @@ Two live checks. Both run from the repository root at the head, after `npm ci --
 - Zero unresolved review threads, counted by GraphQL over every page (`--paginate` follows `endCursor`):
 
 ```bash
-gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"Parcha-ai",name:"agentrun"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)|1' | wc -l
+out=$(gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"Parcha-ai",name:"agentrun"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)|1') && printf '%s' "$out" | awk 'END{print NR}'
 ```
+
+A failed query prints nothing and exits non-zero; that is not a count of zero: fix the credential and ask again.
 
 Every thread is fixed or declined with reasons, answered, and resolved. The review bot reviews when a
 pull request opens or is marked ready; ask it again (`@greptile-apps please review again`) only after
