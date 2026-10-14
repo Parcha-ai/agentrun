@@ -1,6 +1,3 @@
-// The kernel provider against a fake Kernel REST API on loopback: the create body, at-most-once create, tag recovery across
-// pages, release with confirmation, status facts, the Stagehand extension upload, the shared undici Agent, and no key, token
-// or Kernel text in any error.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -21,7 +18,6 @@ let keySeq = 0;
 const newKey = () => `kernel-test-key-${process.pid}-${(keySeq += 1)}-${Math.random().toString(36).slice(2)}`;
 const spec = (over = {}) => ({ tag: "ar-run1-1-1", maxLifetimeS: 1800, idleTimeoutS: 180, proxies: false, verified: false, captcha: false, viewport: { width: 1288, height: 711 }, metadata: { run: "run 1", label: "browser" }, ...over });
 const signal = () => new AbortController().signal;
-/** The SHA-256 of the Stagehand extension archive the provider sends: Kernel's checksum of it as stored. */
 const ARCHIVE_SHA = createHash("sha256").update(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.resolve("@browserbasehq/stagehand"))), "assets", "stagehand-extension.zip"))).digest("hex");
 
 async function rig(t, { knobs = {}, sentinels = {}, extra = {}, key = newKey() } = {}) {
@@ -93,7 +89,6 @@ test("findByTag returns every live session with the tag across pages, and never 
   await provider.release({ id: "kb_3", tag: "ar-a" });
   assert.deepEqual((await provider.findByTag("ar-a")).map((r) => r.id).sort(), ["kb_1", "kb_4"], "a deleted session is not live");
   await assert.rejects(provider.findByTag("ar a/../x"), /tag/);
-  // A base URL that answers 404 to the list is a misconfiguration, never "no sessions".
   const wrong = kernelProvider({ env: { KERNEL_API_KEY: key, KERNEL_BASE_URL: `${fake.url}/nowhere` } });
   await assert.rejects(wrong.findByTag("ar-a"), /GET \/browsers answered 404/);
 });
@@ -130,7 +125,8 @@ test("a create whose signal is already aborted starts no extension work and leav
   aborted.abort();
   const error = await provider.create(spec(), aborted.signal).then(() => null, (e) => e);
   assert.equal(error?.name, "AbortError");
-  // A live caller cancelled while the host's extension promise is still pending: that promise's later failure is handled too.
+  // A live caller cancelled while the host's extension promise is still pending: that promise's later failure is
+  // handled too.
   const late = new AbortController();
   const pending = provider.create(spec(), late.signal);
   late.abort();
@@ -171,6 +167,30 @@ test("attach hands the driver the CDP URL from memory, or Kernel's after a resta
   assert.equal((await fresh.attach({ id: "kb_other", tag: "ar-x" })).sdkCdpUrl, "wss://kernel.fake.test/browser/cdp?jwt=other&sessionId=kb_other");
   fake.browsers.set("kb_dead", { id: "kb_dead", tags: {}, deletedAt: "2026-10-08T00:00:00Z", url: "wss://x/?jwt=dead", lookupsSinceDelete: null });
   await assert.rejects(fresh.attach({ id: "kb_dead", tag: "ar-x" }), /not available/);
+});
+
+test("liveView hands the host Kernel's live-view URL from memory, or Kernel's after a restart; a deleted session has none", async (t) => {
+  const { fake, provider, env } = await rig(t);
+  const ref = await provider.create(spec(), signal());
+  assert.deepEqual(await provider.liveView(ref), { fullscreen: "https://kernel.fake.test/live", framed: null, pages: [] });
+  assert.equal(fake.only("GET /browsers/{id}").length, 0, "held in memory: no lookup");
+  fake.browsers.set("kb_other", { id: "kb_other", tags: { agentrun_tag: "ar-x" }, deletedAt: null, url: "wss://kernel.fake.test/browser/cdp?jwt=other&sessionId=kb_other", lookupsSinceDelete: null });
+  const fresh = kernelProvider({ env });
+  assert.equal((await fresh.liveView({ id: "kb_other", tag: "ar-x" })).fullscreen, "https://kernel.fake.test/live");
+  fake.browsers.set("kb_dead", { id: "kb_dead", tags: {}, deletedAt: "2026-10-08T00:00:00Z", url: "wss://x/?jwt=dead", lookupsSinceDelete: null });
+  assert.equal(await fresh.liveView({ id: "kb_dead", tag: "ar-x" }), null);
+  await provider.release(ref);
+  assert.equal(await provider.liveView(ref), null, "a released session's URL is forgotten");
+});
+
+test("a session Kernel reports deleted forgets its cached URLs: liveView answers null and attach is refused", async (t) => {
+  const { fake, provider } = await rig(t);
+  const ref = await provider.create(spec(), signal());
+  assert.equal((await provider.liveView(ref)).fullscreen, "https://kernel.fake.test/live");
+  fake.browsers.get(ref.id).deletedAt = "2026-10-13T00:00:00Z";
+  assert.equal(await provider.status(ref), "stopped");
+  assert.equal(await provider.liveView(ref), null);
+  await assert.rejects(provider.attach(ref), /not available/);
 });
 
 test("release deletes and waits until Kernel shows the session gone; a second release is a no-op", async (t) => {
@@ -219,7 +239,8 @@ test("with no stored copy of the archive, the extension is uploaded once per pro
 });
 
 test("a stored extension with the archive's exact bytes is reused under its own name, read-only, and nothing is uploaded", async (t) => {
-  // The account's one stored extension is another tool's copy of this Stagehand (Kernel's checksum is the archive's SHA-256).
+  // The account's one stored extension is another tool's copy of this Stagehand (Kernel's checksum is the archive's
+  // SHA-256).
   const { fake, provider } = await rig(t, { knobs: { storedLimit: 1, pageSize: 1 } });
   fake.extensions.set("someone-else", { id: "ext_other", size: 9, checksum: "0".repeat(64) });
   fake.extensions.set("grep-stagehand-4.1.0", { id: "ext_grep", size: 440798, checksum: ARCHIVE_SHA });

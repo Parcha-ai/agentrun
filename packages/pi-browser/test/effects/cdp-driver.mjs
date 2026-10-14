@@ -1,7 +1,5 @@
-// A small CDP page driver for the effects tests, until the Stagehand driver lands: one raw CDP connection to the
-// browser endpoint the provider attaches, driving its first page. A `run`'s code is a JSON list of steps: {goto: path}
-// (resolved against the fixture server; it returns when THAT navigation's document has loaded, by its loader id, never on
-// another document's late load event), {click: selector} (waits for the element, an error when none appears), {wait: ms}, {waitLoad: true}.
+// `goto` returns when that navigation's own document has loaded (by its loader id), never on another document's late
+// load event.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function cdpDriver(base) {
@@ -12,8 +10,8 @@ export function cdpDriver(base) {
     const pending = new Map();
     const waiters = [];
     const loaded = new Set();
-    // Fetches and XHRs the browser itself dropped (net::ERR_ABORTED), as opposed to ones a client refused (net::ERR_BLOCKED_BY_CLIENT).
-    // Not documents: a navigation cut short is a different thing, and re-running a case over a navigation still in flight races it.
+    // Fetches and XHRs the browser dropped itself (net::ERR_ABORTED), not documents: re-running a case over a
+    // navigation still in flight races it.
     let aborted = 0;
     ws.onmessage = (event) => {
       const m = JSON.parse(String(event.data));
@@ -48,7 +46,7 @@ export function cdpDriver(base) {
             if (nav.loaderId && !nav.errorText) await waitFor(() => loaded.has(nav.loaderId));
           }
           else if (step.click) {
-            // The element is waited for, as any driver does: a document that has fired load can still be settling under load.
+            // The element is waited for: a document that has fired load can still be settling under load.
             const selector = JSON.stringify(step.click);
             for (let deadline = Date.now() + 10_000; !(await evaluate(`!!document.querySelector(${selector})`)); await sleep(50)) {
               if (Date.now() > deadline) throw new Error(`no ${step.click} on ${await evaluate("location.href")} (${await evaluate("document.readyState")}) after 10 s`);
@@ -60,16 +58,14 @@ export function cdpDriver(base) {
         }
         return { url: await evaluate("location.href") };
       },
-      /** Evaluate `expression` in the page and return the moment the browser answers: the request a page starts in it exists, and nothing
-       *  else (no follow-up call) has happened since. */
+      /** Returns the moment the browser answers: the request the page starts in it exists, and nothing else has
+       *  happened since. */
       fire: (expression) => evaluate(expression),
-      /** How many fetches the browser has dropped itself so far (`net::ERR_ABORTED`); a refusal by the observer is not one. */
       aborted: () => aborted,
       url: () => evaluate("location.href"),
       snapshot: () => evaluate("document.body ? document.body.innerText : ''"),
       page: async () => ({ url: await evaluate("location.href"), title: await evaluate("document.title"), text: await evaluate("document.body ? document.body.innerText : ''"), html: await evaluate("document.documentElement.outerHTML") }),
       screenshot: async () => ({ data: (await send("Page.captureScreenshot", { format: "png" }, sessionId)).data, mimeType: "image/png" }),
-      /** Close every page but the one this driver drives (popups a case opened). */
       async closeOthers() {
         for (const t of (await send("Target.getTargets")).targetInfos) if (t.type === "page" && t.targetId !== first.targetId) await send("Target.closeTarget", { targetId: t.targetId }).catch(() => undefined);
       },

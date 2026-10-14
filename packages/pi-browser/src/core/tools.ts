@@ -1,7 +1,3 @@
-// The page tools: snapshot, run, screenshot and browser_read, each over the custody port. Custody decides which
-// browser a call gets; these decide what the call does on its page and what the model is told. Every call first tells
-// custody's news (a session kept or lost, a run an interruption cut); a run identical to the one that was cut is
-// refused once; failures come back as the typed envelope, and the third identical failure is refused.
 import { BrowserFailureError, type AttachedSession, type BrowserDriver, type CustodyPort, type ToolOutput } from "./custody.js";
 import { defaultInline, type EvidenceRecord, type EvidenceSink } from "./evidence.js";
 import type { Decisions, PageVerdict } from "./decisions.js";
@@ -12,7 +8,6 @@ import { orderFacts, receiptFacts, sha256Hex } from "./receipts.js";
 import { scrubPageUrl, type Redact } from "./redact.js";
 import { pageNotice, wallFailure, wallOf } from "./web.js";
 
-/** What the page tools need of a driver, besides custody's `close`. */
 export type PageDriver = BrowserDriver & {
   snapshot(options?: { includeIframes?: boolean }): Promise<string>;
   run(input: { code?: string; actions?: unknown[] }): Promise<unknown>;
@@ -22,8 +17,6 @@ export type PageDriver = BrowserDriver & {
   page(): Promise<{ url: string; title: string; text: string; html: string }>;
 };
 
-/** What one call carries besides its arguments: where its reads are filed, under which label, the scrubber every
- *  filed body and every result passes, and the host's page judge. */
 export type ToolCall = { callId: string; conversationId: number; signal: AbortSignal | undefined; label: string; redact: Redact; evidence: EvidenceSink; classifyPage?: Decisions["classifyPage"] };
 export type ToolImpl<D extends BrowserDriver = BrowserDriver> = (args: any, port: CustodyPort<D>, call: ToolCall) => Promise<ToolOutput>;
 
@@ -34,10 +27,10 @@ const WHATS = ["markdown", "text", "html", "url", "title"] as const;
 const text = (value: unknown, isError = false): ToolOutput =>
   ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const withNews = (news: string, body: string) => (news ? `${news}\n\n${body}` : body);
+const pageUrl = (call: ToolCall, raw: string): string => scrubPageUrl(raw, call.redact);
 /** A cut run that was observed and sent nothing that left the browser is safe to run again. */
 const harmless = (p: NonNullable<Session["interrupted"]>) => p.observed === true && !(p.sent ?? []).some((r) => r.held !== "denied");
 
-/** What the model is told about a run an interruption cut: what its journal says it sent, or that it is unknown. */
 function interruptedNotice(p: NonNullable<Session["interrupted"]>, now: string): string {
   const head = `Your run call ${p.callId}${p.url ? ` on ${p.url}` : ""} was interrupted`;
   if (harmless(p)) return `${head} before it sent any request that changes anything; it is safe to run again. The page is now ${now}.`;
@@ -46,7 +39,6 @@ function interruptedNotice(p: NonNullable<Session["interrupted"]>, now: string):
   return `${head} and may have taken effect; the page is now ${now}. Check it with snapshot before acting again.`;
 }
 
-/** The page's main content (article, else main, else body) as markdown; its text when that is empty or fails. */
 async function markdown(html: string, fallback: string): Promise<Read> {
   try {
     const [{ parse }, { NodeHtmlMarkdown }] = await Promise.all([import("node-html-parser"), import("node-html-markdown")]);
@@ -54,7 +46,7 @@ async function markdown(html: string, fallback: string): Promise<Read> {
     const main = root.querySelector("article") ?? root.querySelector("main") ?? root.querySelector("body") ?? root;
     const md = NodeHtmlMarkdown.translate(main.toString(), { keepDataImages: false });
     if (md.trim()) return { body: md, extractor: "readability-md", ext: "md" };
-  } catch { /* the text below is the page as rendered */ }
+  } catch {}
   return { body: fallback, extractor: "inner-text", ext: "txt" };
 }
 
@@ -70,7 +62,6 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
     return classifyBrowserError(error, effectful, { ...facts, sessionEnded: true });
   }
 
-  /** One call: the repeat guard, the session, custody's news (a cut run is told once, then settled), the body. */
   async function perform(tool: string, args: unknown, port: CustodyPort<PageDriver>, call: ToolCall, effectful: boolean, body: (s: Session, news: string) => Promise<ToolOutput>): Promise<ToolOutput> {
     const guard = guardOf(call.conversationId);
     const refused = guard.check(tool, args);
@@ -81,7 +72,7 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
       const s = await port.session();
       news = s.notice ?? "";
       if (s.interrupted) {
-        const now = call.redact(await s.driver.url().catch(() => "gone"));
+        const now = pageUrl(call, await s.driver.url().catch(() => "gone"));
         news = [news, interruptedNotice(s.interrupted, now)].filter(Boolean).join(" ");
         await port.settle();
       }
@@ -90,16 +81,14 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
       return out;
     } catch (error) {
       let failure = await failureOf(error, effectful, port, call);
-      // The driver lost its connection to a session the provider still runs (a CDP socket closed after a navigation
-      // timeout): custody lets the dead connection go and the next attach reconnects to the same session, its pages and
-      // cookies kept. A read runs once more on it now; a run, which may have acted, is not repeated.
+      // A dropped CDP connection to a session the provider still runs: reconnect. A read runs once more; a run, which
+      // may have acted, is not repeated.
       if (failure.code === "browser_unavailable" && !(error instanceof BrowserFailureError)) {
         await port.dropped().catch(() => undefined);
         if (effectful) failure = { ...failure, retryable: true, message: "The connection to your browser session dropped; the session is still open, and your next browser call reconnects to it with its pages and cookies. This run may have acted before the drop: take a snapshot to see the page before running again." };
         else {
           let again: Session | null = null;
           try { again = await port.session(); } catch (reconnect) {
-            // The session could not be reached again though it runs: a fresh one is the way on.
             const refused = await failureOf(reconnect, effectful, port, call);
             failure = refused.code === "aborted" || refused.code === "auth" ? refused : { ...refused, code: "browser_unavailable", retryable: false, message: "The connection to your browser session dropped and could not be re-established, though the session is still open. Call browser_relaunch for a fresh session (its pages and cookies are gone), or use web_fetch." };
           }
@@ -115,7 +104,6 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
     }
   }
 
-  /** File `read` as evidence and return its receipt path and the facts it was filed with. */
   async function file(s: Session, call: ToolCall, record: Omit<EvidenceRecord, "facts"> & { facts: Omit<EvidenceRecord["facts"], "sha256"> }) {
     const facts = orderFacts({ ...record.facts, ...receiptFacts({ body: record.body, session: s.record, recorded: s.recorded }) });
     const filed = await call.evidence.file(call.label, { ...record, facts });
@@ -135,7 +123,6 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
           return text({ ok: false, code: "effect_unknown", retryable: true, effect: "possibly_effected", message: `${news} This is the same code, so it is not run again now: check whether it landed, then call run again only if it did not.` }, true);
         }
         await port.dispatching({ callId: call.callId, codeSha, url: s.record.lastUrl, observed: s.effects?.holding === true });
-        // What the run sends is committed as the observer sees it, so an interruption leaves a journal behind.
         const sent: Array<{ method: string; url: string; held: string | null }> = [];
         const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
         let value: unknown;
@@ -147,9 +134,10 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
           await port.settle();
         }
         const url = await s.driver.url().catch(() => null);
-        // Compared as custody keeps it: a page with a query value never looks new on every run.
+        // Compared as custody keeps it, so a page with a query value never looks new on every run.
         if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) await port.navigated(url);
-        const shown = typeof value === "string" ? value : value === undefined ? "(run completed; no return value)" : JSON.stringify(value, null, 2) ?? String(value);
+        const reported = args.actions !== undefined && value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string" ? { ...(value as object), url: pageUrl(call, (value as { url: string }).url) } : value;
+        const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; no return value)" : JSON.stringify(reported, null, 2) ?? String(reported);
         return { ...text(withNews(news, shown)), ...(sent.length ? { details: { sent } } : {}) };
       });
     },
@@ -158,7 +146,7 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
       const { ask: _ask, ...requested } = args ?? {};
       return perform("screenshot", args ?? {}, port, call, false, async (s, news) => {
         const shot = await captureWithinBudget((options) => s.driver.screenshot(options), requested);
-        const url = call.redact(await s.driver.url());
+        const url = pageUrl(call, await s.driver.url());
         const receipt = await file(s, call, { tool: "screenshot", args: requested, status: "ok", facts: { final_url: url }, body: Buffer.from(shot.data, "base64"), ext: shot.size.type === "png" ? "png" : "jpg" });
         const first = shot.adjusted?.first;
         const adjusted = shot.adjusted && `adjusted: the first capture${first ? ` (${first.width}x${first.height})` : ""} was over the ${shot.adjusted.why === "long_edge" ? "2,000 px long edge" : "size"} budget; this is the viewport at ${shot.size.width}x${shot.size.height}`;
@@ -174,20 +162,17 @@ export function pageTools(): Record<"snapshot" | "run" | "screenshot" | "browser
         const read: Read = what === "markdown" ? await markdown(page.html, page.text)
           : what === "html" ? { body: page.html, extractor: "raw", ext: "html" }
           : what === "text" ? { body: page.text, extractor: "inner-text", ext: "txt" }
-          : { body: what === "url" ? page.url : page.title, ext: "txt" };
+          : { body: what === "url" ? pageUrl(call, page.url) : page.title, ext: "txt" };
         const body = call.redact(read.body);
-        const [url, title] = [call.redact(page.url), call.redact(page.title)];
-        // The same judge as web_fetch, on the text a visitor sees: a wall is filed `failed`, never cited, and the
-        // model gets its class and the way out.
-        const verdict = call.classifyPage ? await call.classifyPage({ url: page.url, status: null, contentType: "text/html", text: page.text }).catch((): PageVerdict => ({ wall: "unjudged", injection: null, confidence: null })) : null;
+        const [url, title] = [pageUrl(call, page.url), call.redact(page.title)];
+        const verdict = call.classifyPage ? await call.classifyPage({ url, status: null, contentType: "text/html", text: page.text }).catch((): PageVerdict => ({ wall: "unjudged", injection: null, confidence: null })) : null;
         const wall = wallOf(verdict);
         const facts = { final_url: url, title, ...(read.extractor ? { extractor: read.extractor } : {}), via: "browser", ...(verdict?.guard ? { page_guard: call.redact(verdict.guard) } : {}) };
         const receipt = await file(s, call, { tool: "browser_read", args: { what }, status: wall ? "failed" : "ok", facts, body, ext: read.ext });
-        // A wall is a failure like any other: the repeat guard counts it.
         if (wall) throw new BrowserFailureError({ ...wallFailure(`The browser is on ${url}`, wall, call.redact(page.text)), evidence: receipt.path } as BrowserFailure);
         const prefix = `${news ? `${news}\n\n` : ""}url: ${url}\ntitle: ${title}\n${pageNotice(verdict)}evidence: ${receipt.path ?? "(not filed)"}\n---\n`;
         const shown = call.evidence.inline ? call.evidence.inline(body, { path: receipt.path, bodyLine: receipt.bodyLine, prefix, filed: body }) : defaultInline(body, { path: receipt.path, prefix });
-        return { content: [{ type: "text", text: shown }], details: { evidence: receipt.path, sha256: receipt.sha256 } };
+        return { content: [{ type: "text", text: shown }], details: { evidence: receipt.path, sha256: receipt.sha256, url } };
       });
     },
   };

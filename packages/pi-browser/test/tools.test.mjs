@@ -1,6 +1,3 @@
-// The page tools as a model meets them: the package's real snapshot, run, screenshot and browser_read, registered by
-// createBrowserExtension on a real pi-durable Harness, driven by a scripted faux model, on the shared fake provider and
-// driver. Each test asserts what the model was told, what was filed as evidence, and what the provider saw.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -15,7 +12,6 @@ const START = "https://example.test/start";
 const ARTICLE = { url: START, title: "Filing", text: "Menu Home Acme Corp file number 7741234 Footer", html: "<html><body><nav>Menu Home</nav><article><h1>Acme Corp</h1><p>File number <b>7741234</b></p></article><footer>Footer</footer></body></html>" };
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-/** Run `calls` ([tool, args] each, one per model turn) in one conversation; return what the model saw and was filed. */
 async function session(t, calls, { backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), between, decisions, provider, policy = {}, reconcileWith = (h) => h, prices, settle = false, tools, onSession } = {}) {
   const filed = [];
   const browser = createBrowserExtension({
@@ -63,7 +59,7 @@ test("snapshot and browser_read launch one session; the read files the page's ma
   assert.equal(md.facts.session, sessions.sessions[0].resourceId);
   assert.deepEqual([plain.facts.extractor, plain.body], ["inner-text", ARTICLE.text]);
   assert.match(texts[1], new RegExp(`^url: ${START}\\ntitle: Filing\\nevidence: evidence/node-a/1-browser_read.md\\n---\\n# Acme Corp`));
-  assert.deepEqual(seen[1].details, { evidence: "evidence/node-a/1-browser_read.md", sha256: md.facts.sha256 });
+  assert.deepEqual(seen[1].details, { evidence: "evidence/node-a/1-browser_read.md", sha256: md.facts.sha256, url: START });
 });
 
 test("a credential in the page's URL or body is scrubbed from the result, the filed body and its facts", async (t) => {
@@ -74,6 +70,17 @@ test("a credential in the page's URL or body is scrubbed from the result, the fi
   assert.doesNotMatch(shown, /planted-0123456789|run-token-0123456789/);
   assert.match(filed[0].record.facts.final_url, /api_key=\[redacted\]/);
   assert.equal(filed[0].record.facts.sha256, sha(filed[0].record.body), "the hash is of the bytes filed");
+});
+
+test("a provider key in the environment is scrubbed from the result and the filed body though the host registered none", async (t) => {
+  const keys = { BROWSERBASE_API_KEY: ["bb-env-key-0123456789abcdef"].join(""), KERNEL_API_KEY: ["kernel-env-key-0123456789abcdef"].join("") };
+  const before = Object.fromEntries(Object.keys(keys).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, keys);
+  t.after(() => { for (const [name, value] of Object.entries(before)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, `browserbase ${keys.BROWSERBASE_API_KEY} kernel ${keys.KERNEL_API_KEY}`, "Keys") } });
+  const { filed, texts } = await session(t, [["browser_read", { what: "text" }]], { backend });
+  const shown = JSON.stringify([texts, filed.map((f) => ({ ...f.record, body: String(f.record.body) }))]);
+  for (const [name, value] of Object.entries(keys)) assert.equal(shown.includes(value), false, `${name} reached the model`);
 });
 
 test("screenshot: a full page past 2,000 px is retaken as the viewport at CSS scale; the image and its receipt", async (t) => {
@@ -93,6 +100,29 @@ test("run: code runs once and settles its pending effect; exactly one of code or
   assert.equal(failure(texts[1]).code, "refused");
   assert.equal(sessions.sessions[0].pendingEffect, null, "a run that answered leaves no pending effect");
   assert.deepEqual([sessions.sessions[0].lastUrl, sessions.sessions[0].navigation.length], [START, 1], "the first page a run found starts the timeline");
+});
+
+test("a credential in the fragment, the userinfo or a query value of any name, in the page's URL, reaches no result, receipt, fact, detail or judge", async (t) => {
+  const pages = [
+    ["https://x.test/cb#access_token=SEKRET123456", "https://x.test/cb"],
+    ["https://x.test/p?sid=SEKRET123456&page=2", "https://x.test/p?sid=[redacted]&page=[redacted]"],
+    [["https:", "//user:SEKRET123456@x.test/p"].join(""), "https://x.test/p"],
+  ];
+  for (const [raw, scrubbed] of pages) {
+    const backend = new FakeBackend({ start: raw, pages: { [raw]: fixturePage(raw, "A page", "Page") } });
+    const judged = [];
+    const decisions = { classifyPage: async (page) => { judged.push(page.url); return { wall: "content", injection: null, confidence: 0.9, guard: `content 0.9 at ${page.url}` }; } };
+    const { filed, texts, seen } = await session(t, [["browser_read"], ["browser_read", { what: "url" }], ["screenshot"], ["run", { actions: [{ op: "click", id: "0-1" }] }]], { backend, decisions });
+    const everything = JSON.stringify([texts, seen, judged, filed.map((f) => ({ ...f.record, body: String(f.record.body) }))]);
+    assert.ok(!everything.includes("SEKRET123456"), `${raw}: a credential reached a result, a receipt, a fact, a detail or the judge`);
+    assert.equal(texts[0].split("\n")[0], `url: ${scrubbed}`, "browser_read's url line");
+    assert.equal(filed[0].record.facts.final_url, scrubbed);
+    assert.equal(filed[1].record.body, scrubbed, "what: url files and shows the scrubbed URL");
+    assert.equal(filed[2].record.facts.final_url, scrubbed, "screenshot's fact");
+    assert.equal(texts[2].split("\n")[0], `url: ${scrubbed}`, "screenshot's url line");
+    assert.equal(JSON.parse(texts[3]).url, scrubbed, "run's actions result names the page it ended on");
+    assert.ok(judged.every((u) => u === scrubbed), "the host's page judge is given the scrubbed URL");
+  }
 });
 
 test("a run that moves the page records the new URL with its query values scrubbed, once while the page stays", async (t) => {
@@ -216,7 +246,8 @@ test("an idle release whose timer a later call replaced releases nothing, even w
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // The extension's idle release looks its conversation up through this harness, 1.5 s late.
   const slow = (harness) => new Proxy(harness, { get: (target, key) => key === "conversation" ? async (...args) => { await sleep(1500); return target.conversation(...args); } : typeof target[key] === "function" ? target[key].bind(target) : target[key] });
-  // The first idle timer fires at 1 s and waits in the lookup until 2.5 s; the second call runs at 1.2 s, the third at 2.7 s.
+  // The first idle timer fires at 1 s and waits in the lookup until 2.5 s; the second call runs at 1.2 s, the third at
+  // 2.7 s.
   const { backend, seen } = await session(t, [["snapshot"], ["snapshot"], ["snapshot"]], { policy: { idleReleaseS: 1 }, reconcileWith: slow, between: { 1: () => sleep(1200), 2: () => sleep(1500) } });
   assert.ok(seen.every((m) => !m.isError));
   assert.equal(backend.tally().creates, 1, "the session the second call used was not released under the third");

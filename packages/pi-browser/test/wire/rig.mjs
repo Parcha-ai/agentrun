@@ -1,9 +1,5 @@
-// The rig: one pi-durable Harness on a real SQLite file, a faux model that follows a script and records every request
-// it is sent, and a collector for everything else a run emits (process logs, host rows). `collect()` hands all of it to
-// the scanner.
-//
-// The model is stateless over the transcript (its next step is the number of assistant turns so far), so a process
-// that is killed and reopens on the same file continues the same script without any state of its own.
+// The model is stateless over the transcript (its next step is the count of assistant turns), so a process killed and
+// reopened on the same file continues the same script.
 import fs from "node:fs";
 import path from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -12,7 +8,6 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@ear
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
-/** A script is a list of turns; a turn is a list of `{ tool, args }` calls the model makes together; the last turn may be text. */
 export const call = (tool, args = {}) => ({ tool, args });
 
 export async function openRig({ dir, install, script, rootOptions = {}, finalText = "done" }) {
@@ -24,7 +19,6 @@ export async function openRig({ dir, install, script, rootOptions = {}, finalTex
     host: path.join(dir, "host-rows.jsonl"),
   };
 
-  // Everything the process writes while the rig is open: the log source the scan reads.
   const restore = [];
   for (const stream of [process.stdout, process.stderr]) {
     const write = stream.write.bind(stream);
@@ -35,7 +29,6 @@ export async function openRig({ dir, install, script, rootOptions = {}, finalTex
   let requestCount = 0;
   const policy = (context) => {
     requestCount += 1;
-    // What the model is sent: system prompt sections, tool definitions, every message. Nothing is left out.
     fs.appendFileSync(files.requests, `${JSON.stringify({ pid: process.pid, n: requestCount, context })}\n`);
     const turns = context.messages.filter((m) => m.role === "assistant").length;
     const step = script[turns];
@@ -57,7 +50,6 @@ export async function openRig({ dir, install, script, rootOptions = {}, finalTex
   const hostRows = [];
   return {
     ctx, harness, root, files, reports, models,
-    /** Rows the host channel received (`onSession`), stored as the host would store them. */
     host: (row, change) => { hostRows.push({ change, row }); fs.appendFileSync(files.host, `${JSON.stringify({ change, row })}\n`); },
     async run(requestId = "go-1", waitMs = 30_000) {
       const submission = await root.submit({ type: "input", content: "go", requestId }, ctx);
@@ -70,7 +62,6 @@ export async function openRig({ dir, install, script, rootOptions = {}, finalTex
       }
       return settled;
     },
-    /** Every entry as pi stored it, oldest first, with its kind: the readable location for a finding. */
     async entries() {
       const page = await root.entries({}, 500, undefined, ctx);
       return [...page.items].reverse();
@@ -83,7 +74,6 @@ export async function openRig({ dir, install, script, rootOptions = {}, finalTex
   };
 }
 
-/** Feed the rig's outputs to a scanner. `extra` adds host sources (eval events, evidence directories, status rows). */
 export async function collect(rig, scan, { evidenceDirs = [], extra = [] } = {}) {
   for (const [i, entry] of (await rig.entries()).entries()) scan.json("entries", entry, `entry[${i}:${entry.kind}]`);
   for (const line of fs.existsSync(rig.files.requests) ? fs.readFileSync(rig.files.requests, "utf8").split("\n").filter(Boolean) : []) {

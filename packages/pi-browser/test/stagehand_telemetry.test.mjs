@@ -1,8 +1,5 @@
-// Integration: real Stagehand 4.1.0 on a real local Chrome with its own profile. Chrome resolves example.com
-// (Stagehand's default trace endpoint, which its in-browser runtime posts to) to a local TLS trap; the driver's
-// Stagehand (`stagehandDriver`, created sealed) must leave the trap silent while a bare create, on the same rig, reaches
-// it. Without Chrome or openssl, or with a Chrome that cannot load Stagehand's extension, the test skips with that
-// reason; AGENTRUN_REQUIRE_LOCAL_CHROME=1 turns each of those into a failure.
+// Chrome resolves example.com (Stagehand's default trace endpoint) to a local TLS trap: the sealed driver must leave it
+// silent while a bare create, on the same rig, reaches it.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -22,7 +19,7 @@ const SKIP = NO_CHROME || (!REQUIRED && !HAS_OPENSSL ? "needs openssl" : false);
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on("error", reject); s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 
-/** Stagehand as its default creates it, on the launched browser: the control. */
+/** Stagehand as its default creates it: the control. */
 async function bare(Stagehand, browser, pageUrl) {
   const stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
   const page = await stagehand.browser.context.activePage();
@@ -31,7 +28,6 @@ async function bare(Stagehand, browser, pageUrl) {
   return () => stagehand.close();
 }
 
-/** The driver's own Stagehand, attached to the launched browser through its CDP endpoint, driven by page code. */
 async function viaDriver(_Stagehand, _browser, pageUrl, debugPort) {
   const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
   const driver = await stagehandDriver()({ sdkCdpUrl: webSocketDebuggerUrl }, new AbortController().signal, { batchTimeoutMs: 30_000 });
@@ -68,7 +64,6 @@ async function exportsFor(drive) {
 test("Stagehand's default exports its trace to example.com; the driver's sealed Stagehand keeps it on this host", { skip: SKIP, timeout: 120_000 }, async (t) => {
   let control;
   try { control = await exportsFor(bare); } catch (error) {
-    // A Chrome that refuses to load an unpacked extension cannot run Stagehand at all, so it proves nothing either way.
     if (skipIncapable(t, error)) return;
     throw error;
   }
