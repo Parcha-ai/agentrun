@@ -1,7 +1,8 @@
 // npm run demo:reference [-- --json] [-- --dir <path>] [-- --chrome] [-- --box local|docker]: the reference job on the
 // no-key host. `--dir` keeps the run's directory, so a second process resumes what the first left. `--chrome` drives a
 // local Chrome (`CHROME_PATH`, default /usr/bin/google-chrome) that reaches the job's pages only. `--box` runs the
-// job's tools in a box of the transport package while the run's store stays on the disk.
+// job's tools in a box of the transport package while the run's store stays on the disk. `--record <dir>` keeps the run as
+// an agentrun.recording/1 directory (validate it with scripts/recording/validate.mjs).
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -12,6 +13,8 @@ import type { FixturePage } from '@parcha/pi-browser/testing';
 import { placeAt, run, type RunResult } from './assemble.ts';
 import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
 import { fakes, job } from './job.ts';
+import { codeOf, finishRecording, openRecorder } from './record.ts';
+import { packageCommitRecorder } from './record-store.ts';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
@@ -78,12 +81,22 @@ async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8A
 }
 
 if (import.meta.main) {
-  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' }, box: { type: 'string' } } });
+  const { values } = parseArgs({ options: { json: { type: 'boolean' }, dir: { type: 'string' }, chrome: { type: 'boolean' }, box: { type: 'string' }, record: { type: 'string' } } });
   const place = await placeAt(values.dir);
   const chrome = values.chrome ? await localChrome(place, fakes.pages) : undefined;
   const box = values.box ? await inBox(values.box, place, job.files ?? {}) : undefined;
-  const local = localHost(place, fakes, chrome ? { browser: chrome.browser } : {});
-  const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); });
+  const recorder = values.record ? openRecorder({ dir: values.record, commits: await packageCommitRecorder() }) : undefined;
+  const local = localHost(place, fakes, { ...(chrome ? { browser: chrome.browser } : {}), ...(recorder ? { recorder } : {}) });
+  const result = await run(place, local.host, job, box ? { env: box.env } : {}).finally(async () => { chrome?.close(); await box?.destroy(); recorder?.detach(); });
+  if (values.record) {
+    const resultBlob = recorder!.blob(readFileSync(join(place.root, 'out', 'record.json')), 'json');
+    finishRecording(values.record, {
+      title: 'The reference job, no key', task: job.workflow.name ?? 'reference', model: `${local.host.models.lead.provider}/${local.host.models.lead.modelId}`,
+      generations: result.generation, kills: 0, code: codeOf(join(import.meta.dirname, '..', '..')),
+      cost: { usd: Object.values(result.usage.models).reduce((sum, used) => sum + used.cost.total, 0), parts: Object.fromEntries(Object.entries({ ...result.usage.models, ...result.usage.tools }).map(([name, used]) => [name, used.cost.total])) },
+      source: { run: place.id, store: join(place.store, 'run.sqlite') }, result: { blob: resultBlob, title: 'The record' },
+    });
+  }
   const view = summary(place, result, local);
   if (values.json) console.log(JSON.stringify(view));
   else {

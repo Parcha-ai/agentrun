@@ -138,6 +138,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: { env?
     mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
   });
+  host.record?.generation(durable.generation);
+  await host.record?.attach?.(durable.harness, durable.generation);
   const harness = durable.harness;
   opened = harness;
   try {
