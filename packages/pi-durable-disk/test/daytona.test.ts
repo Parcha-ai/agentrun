@@ -23,7 +23,7 @@ import {
   type ExecResult,
   type SandboxInfo,
 } from "../src/hosts/daytona.ts";
-import { launchStatus, readState, serve, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { launchStatus, readState, serve, stop as stopLaunch, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
 import type { HostHandle } from "../src/supervise.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -789,3 +789,29 @@ test("REST: failures are typed with status and retryability; messages carry the 
   mode = "net";
   await check(null, true);
 });
+
+test("a launch's stop never signals pid 1, whatever its state file says (kill(-1) would reach every process this user may signal)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pda-launch-pid1-"));
+  try {
+    const ticks = Number(readFileSync("/proc/1/stat", "utf8").split(") ")[1]!.split(" ")[19]);
+    const state: LaunchState = { launcher: 1, launcherTicks: ticks, phase: "running", instance: 1, instanceTicks: ticks, spawned: 1, restarts: 0, exit: null, signal: null, reason: null, at: new Date().toISOString() };
+    writeFileSync(join(dir, "pid1.state"), JSON.stringify(state));
+    const signals: unknown[] = [];
+    const kill = process.kill;
+    process.kill = ((pid: number, signal?: string | number) => {
+      signals.push([pid, signal]);
+      return true;
+    }) as typeof process.kill;
+    let status;
+    try {
+      status = await stopLaunch(dir, "pid1", 200);
+    } finally {
+      process.kill = kill;
+    }
+    assert.deepEqual(signals, []);
+    assert.notEqual(status.status, "running", "pid 1 is not the launch's process, so the launch is not running");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

@@ -152,6 +152,28 @@ test('inventory generation works without build output and does not produce an ar
   await assert.rejects(access(join(f.root, '.release/source-export-receipt.json')));
 });
 
+test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
+  const f = await fixture(t);
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'].map(name => [`packages/${name}`, {}]));
+  const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
+    '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
+    ...workspaces,
+    ...(runtime ? { 'packages/dsl': { dependencies: { 'runtime-lib': runtime } }, 'node_modules/runtime-lib': { version: runtime, license: 'MIT' } } : {}),
+    ...(dev ? { 'node_modules/dev-tool': { version: dev, license: 'MIT', dev: true } } : {}),
+  } });
+  const inventory = async lockText => {
+    await f.write('package-lock.json', lockText);
+    await f.run('--inventory-only');
+    return readFile(join(f.root, 'docs/dependencies.md'));
+  };
+  const first = await inventory(lock({ dev: '1.0.0' }));
+  // Any two pull requests that touch the lock would otherwise conflict on the doc while the lock itself merges clean.
+  assert.deepEqual(await inventory(lock({ dev: '1.1.0' })), first, 'a dev-only change to the lock leaves the inventory byte for byte');
+  const withRuntime = await inventory(lock({ dev: '1.0.0', runtime: '2.0.0' }));
+  assert.notDeepEqual(withRuntime, first, 'a runtime dependency changes the inventory');
+  assert.match(withRuntime.toString('utf8'), /runtime-lib/);
+});
+
 test('a run-state directory under a package is never exported, and a long one-line journal does not stall the scan', async t => {
   const f = await fixture(t);
   await f.write('examples/public.mjs', 'export const value = 42;\n');

@@ -7,7 +7,8 @@
 // whose cause is that error; 1.1 rejected with the error itself. No pi-durable name that one of the versions lacks is
 // imported by name, since a missing named export fails the module at load.
 import * as piDurable from "@earendil-works/pi-durable";
-import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { Harness, ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
 
 /** The key the loaded pi-durable reads a tool result's blocks from. 1.2 renamed `content` to `output` in the release
  *  that added `SessionFailed`, so that export tells the two apart. */
@@ -44,4 +45,22 @@ export function resultBlocks(tool: string, result: unknown): unknown[] | undefin
 /** The storage error behind a Session that failed at one (`SessionFailed` on 1.2, matched by name), else the error. */
 export function storageError(error: unknown): unknown {
   return error instanceof Error && error.name === "SessionFailed" && error.cause !== undefined ? error.cause : error;
+}
+
+/** A live task of a newer pi-durable than the loaded one: pi-durable 1.2 keeps a tool call in flight as a version 2
+ *  `pi.tool` task, which an earlier version waits on without running. */
+export class NewerTaskError extends Error {
+  readonly code = "PI_TASK_NEWER";
+  constructor(readonly kind: string, readonly version: number) {
+    super(`A live ${kind} task is version ${version}, which pi-durable 1.2 or later runs and the loaded pi-durable (before 1.2) cannot: continue the run on pi-durable 1.2 or later.`);
+    this.name = "NewerTaskError";
+  }
+}
+
+/** Refuse a store a newer pi-durable left with a tool call in flight, instead of waiting on it: a host calls this after
+ *  opening its Harness and before resuming it. On pi-durable 1.2 it does nothing. */
+export async function refuseNewerTasks(harness: Pick<Harness, "inspect">, context: Context): Promise<void> {
+  if (RESULT_KEY === "output") return;
+  const newer = (await harness.inspect(context)).tasks.find(({ record }) => record.kind === "pi.tool" && record.version > 1)?.record;
+  if (newer) throw new NewerTaskError(newer.kind, newer.version);
 }

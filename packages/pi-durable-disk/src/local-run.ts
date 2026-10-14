@@ -41,6 +41,8 @@ class LocalClaim implements Claim {
   readonly root: string;
   readonly work: string;
   readonly store: string;
+  /** `<root>/commands`: a local run has no unit cgroup, so the next open ends the commands a killed one left running. */
+  readonly commands: string;
   readonly reused = false;
   readonly stray = null;
   readonly forced = false;
@@ -53,6 +55,7 @@ class LocalClaim implements Claim {
     this.root = root;
     this.work = join(root, "work");
     this.store = join(root, "store");
+    this.commands = join(root, "commands");
   }
 
   get fenced(): boolean {
