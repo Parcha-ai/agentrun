@@ -62,7 +62,10 @@ describe("moveWorkspace on local boxes", () => {
 		// Seeds are independent trees in their own directories: several at a time, every one still checked.
 		for (let first = 1; first <= SEEDS; first += SEED_BATCH) {
 			const batch = Array.from({ length: Math.min(SEED_BATCH, SEEDS - first + 1) }, (_, index) => first + index);
-			await Promise.all(batch.map(one));
+			// Every seed of the batch ends before the next test starts, also when one fails.
+			const settled = await Promise.allSettled(batch.map(one));
+			const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failed) throw failed.reason;
 		}
 	}, 600_000);
 
