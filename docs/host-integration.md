@@ -52,12 +52,12 @@ To make decisions durable across a restart, also supply `recovery.decision(id)`.
 
 A pi-durable host keeps a run's typed-question decisions as rows of the session document `agentrun.decisions`, from `@parcha/agentrun-pi/durable`. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also commits any row recorded while it runs, releases every Session the writer opened, then reports the first failed commit (or, when none failed, a failed release). `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
 
-Inside a workflow task (`createWorkflowExtension`), `decisionRecovery(runtime, context)` gives both hooks over the task's own commit. `recordDecision` commits each receipt as a row, in the order receipts are recorded, and resolves once that row is durable; the task's state is untouched. `decision(id)` rebuilds the receipt from the last answered row recorded under `id`. A row it writes also carries the receipt's `decision_id`, its `request` position and its `state_sha256`, so the row is the whole receipt again; a row without them is stored and never answers. Wire them in the host's `run`:
+Inside a workflow task (`createWorkflowExtension`), `decisionRecovery(invocation)` gives both hooks over the task's own commit, from the invocation the host's `run` is handed. `recordDecision` commits each receipt as a row, in the order receipts are recorded, and resolves once that row is durable; the task's state is untouched. `decision(id)` rebuilds the receipt from the last answered row this run recorded under `id`. A row it writes also carries the receipt's `decision_id`, its `request` position, its `state_sha256` and the run's key (`run_key`), so the row is the whole receipt again for that run. Every run in a Session shares the rows' document and a receipt's id does not name its run, so another run's row never answers, and neither does a row without these fields. Wire them in the host's `run`:
 
 ```ts
-run: ({ runtime, context, driver }) => {
-  const decisions = decisionRecovery(runtime, context);
-  const deps = withRecovery(driver, { runJudge, recordDecision: decisions.recordDecision });
+run: (invocation) => {
+  const decisions = decisionRecovery(invocation);
+  const deps = withRecovery(invocation.driver, { runJudge, recordDecision: decisions.recordDecision });
   return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
 },
 ```

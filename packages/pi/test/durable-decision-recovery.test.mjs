@@ -1,6 +1,6 @@
 // decisionRecovery: a workflow task's decision receipts as rows committed through the task's own commit, and a resumed
-// run answered from them. The task is killed once a decision's row is durable and before its answer reaches the run's
-// state; a counting server is the paid judge, and it answers differently when asked again.
+// run answered from them, and only from its own. The task is killed once a decision's row is durable and before its
+// answer reaches the run's state; a counting server is the paid judge, and it answers differently when asked again.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
@@ -55,7 +55,7 @@ test('killed between a decision\'s commit and its use: the resumed run decides w
   // The replayed decision is not recorded again, and its row is the whole receipt.
   assert.deepEqual(all(second, 'receipt'), []);
   const rows = pick(second, 'rows');
-  assert.deepEqual(rows.map((row) => [row.v, row.decision_id, row.node, row.kind]), [[DECISION_ROW_VERSION, receipt.id, 'triage', 'judge']]);
+  assert.deepEqual(rows.map((row) => [row.v, row.decision_id, row.node, row.kind, row.run_key]), [[DECISION_ROW_VERSION, receipt.id, 'triage', 'judge', 'run-1']]);
   assert.deepEqual(pick(second, 'rebuilt'), [receipt]);
 });
 
@@ -71,6 +71,18 @@ test('killed at the same point, a host that does not answer from its rows asks t
   assert.deepEqual(pick(second, 'rows').map((row) => row.decision_id), [pick(first, 'receipt').id, pick(first, 'receipt').id]);
 });
 
+test('the same workflow and input under two keys in one Harness: the second run asks its own judge and decides by its own answer', async () => {
+  judged = 0;
+  const file = join(mkdtempSync(join(root, 'two-keys-')), 'run.sqlite');
+  const both = await run('start', file, { KEYS: 'run-1,run-2' });
+  assert.equal(both.exit, 0, both.err);
+  assert.deepEqual([judged, all(both, 'ended').map(output)], [2, [{ urgent: true }, { urgent: false }]]);
+  // One request, one id, asked by each run: two rows, one per run.
+  const rows = pick(both, 'rows');
+  assert.deepEqual(rows.map((row) => [row.decision_id, row.run_key]), [[rows[0].decision_id, 'run-1'], [rows[0].decision_id, 'run-2']]);
+  assert.deepEqual(pick(both, 'rebuilt').map((receipt) => receipt.action), [{ urgent: true }, { urgent: false }]);
+});
+
 const receiptOf = (id, extra = {}) => ({
   v: 1, id, at: '2026-10-13T00:00:00.000Z', node: 'triage', kind: 'judge', item: null, execution_path: '/root/steps/0', request: { index: 0, count: 1 },
   status: 'answered', state_sha256: 'a'.repeat(64), questions: { urgent: { type: 'noul', instructions: 'Is the request urgent?' } },
@@ -79,7 +91,7 @@ const receiptOf = (id, extra = {}) => ({
 });
 const exchange = { request: { state: { request: 'The server room is flooding.' }, questions: { urgent: { type: 'noul', instructions: 'Is the request urgent?' } } } };
 
-test('decisionRecovery: rows commit in the order they are recorded; only an answered row recorded with its id answers, and the last one wins', async () => {
+test('decisionRecovery: rows commit in the order they are recorded; only an answered row this run recorded with its identity answers, the last one wins, and another run\'s rows never do', async () => {
   const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'rows-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
   // The first commit is the slowest, and the rows still land in the order they were recorded.
   let commits = 0;
@@ -87,21 +99,27 @@ test('decisionRecovery: rows commit in the order they are recorded; only an answ
     commit: async (change, context) => { commits += 1; if (commits === 1) await new Promise((resolve) => setTimeout(resolve, 50)); return harness.commit(change, context); },
     snapshot: (...args) => harness.snapshot(...args),
   };
-  const decisions = decisionRecovery(runtime, ctx);
+  const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
   const failed = receiptOf('b', { status: 'failed', answers: {}, rule: null, action: null, error: 'the judge refused' });
   const later = receiptOf('d', { answers: { urgent: { type: 'noul', noul: 0.2 } }, action: { urgent: false }, latency_ms: 9 });
   await Promise.all([decisions.recordDecision(receiptOf('a'), exchange), decisions.recordDecision(failed, exchange), decisions.recordDecision(receiptOf('d'), exchange)]);
-  // A row with the receipt's id and without its place and state digest is not the whole receipt: stored, never answering.
+  // A row with the receipt's id and without its place, state digest and run is not the whole receipt: stored, never answering.
   const { id: _, status: _s, request: _r, state_sha256: _d, ...bare } = receiptOf('c');
   await appendDecision(harness, { ...bare, v: DECISION_ROW_VERSION, request_bytes: 0, decision_id: 'c' }, ctx);
   await decisions.recordDecision(later, exchange);
+  // Another run in the Session records the same request after it, with another answer: each run reads its own.
+  const other = decisionRecovery({ key: 'run-2', runtime, context: ctx });
+  const theirs = receiptOf('a', { answers: { urgent: { type: 'noul', noul: 0.1 } }, action: { urgent: false } });
+  await other.recordDecision(theirs, exchange);
   const rows = await readDecisions(harness, ctx);
-  assert.deepEqual(rows.map((row) => row.decision_id ?? null), ['a', 'b', 'd', 'c', 'd']);
+  assert.deepEqual(rows.map((row) => [row.decision_id, row.run_key ?? null]), [['a', 'run-1'], ['b', 'run-1'], ['d', 'run-1'], ['c', null], ['d', 'run-1'], ['a', 'run-2']]);
   assert.equal(rows[0].request_bytes, Buffer.byteLength(JSON.stringify({ state: exchange.request.state, questions: exchange.request.questions })));
   assert.deepEqual(await decisions.decision('a'), receiptOf('a'));
   assert.equal(await decisions.decision('b'), undefined);
   assert.equal(await decisions.decision('c'), undefined);
   assert.deepEqual(await decisions.decision('d'), later);
   assert.equal(await decisions.decision('e'), undefined);
+  assert.deepEqual(await other.decision('a'), theirs);
+  assert.equal(await other.decision('d'), undefined);
   await harness.close(ctx);
 });

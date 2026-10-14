@@ -200,9 +200,9 @@ test('row version 1 with the receipt identity and without it: both are stored an
   try {
     const file = join(dir, 'run.sqlite');
     const harness = await open(await openNodeSqliteStorage(file));
-    // A row as a host wrote it before the identity fields, and one that carries all three.
+      // A row as a host wrote it before the identity fields, and one that carries all four.
     const before = row('before');
-    const identified = row('identified', { execution_path: '/root', decision_id: 'd'.repeat(64), request: { index: 0, count: 1 }, state_sha256: 'a'.repeat(64) });
+    const identified = row('identified', { execution_path: '/root', decision_id: 'd'.repeat(64), request: { index: 0, count: 1 }, state_sha256: 'a'.repeat(64), run_key: 'run-1' });
     try {
       await appendDecision(harness, before, ctx);
       await appendDecision(harness, identified, ctx);
@@ -211,6 +211,6 @@ test('row version 1 with the receipt identity and without it: both are stored an
     const stored = storedDecisions(file).receipts;
     assert.deepEqual(stored, [before, identified]);
     assert.deepEqual(Object.keys(stored[0]), ROW_FIELDS);
-    assert.deepEqual(Object.keys(stored[1]), [...ROW_FIELDS, 'decision_id', 'request', 'state_sha256']);
+    assert.deepEqual(Object.keys(stored[1]), [...ROW_FIELDS, 'decision_id', 'request', 'state_sha256', 'run_key']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

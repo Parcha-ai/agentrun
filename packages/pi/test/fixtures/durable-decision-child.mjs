@@ -2,7 +2,8 @@
 // durable-decision-recovery.test.mjs. `start` starts the run and waits for it; `resume` opens, installs the extension
 // and calls `resume()`, then waits for the task and logs the run's decision rows and the receipt each one rebuilds. With
 // KILL_AT=after-decision the process kills itself once the decision's row is durable, before the answer reaches the
-// run's state. With REPLAY=0 the host records rows and does not answer from them. Rows go to stdout as JSON.
+// run's state. With REPLAY=0 the host records rows and does not answer from them. KEYS (default `run-1`) lists the run
+// keys `start` starts, one after the other, each with the same workflow and input. Rows go to stdout as JSON.
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -29,8 +30,8 @@ if (mode) {
   // The judge is a counting server: what it answers is its business, and each ask is paid.
   const runJudge = async ({ signal }) => (await fetch(`${process.env.COUNT_URL}/judge`, { method: 'POST', signal })).json();
   const flow = createWorkflowExtension({
-    run: ({ runtime, context, driver }) => {
-      const decisions = decisionRecovery(runtime, context);
+    run: ({ key, runtime, context, driver }) => {
+      const decisions = decisionRecovery({ key, runtime, context });
       const deps = withRecovery(driver, {
         runJudge,
         recordDecision: async (receipt, exchange) => { log({ receipt }); await decisions.recordDecision(receipt, exchange); },
@@ -46,10 +47,12 @@ if (mode) {
   });
   const ended = (record) => record && { id: record.id, status: record.state.status, outcome: record.state.outcome ?? null };
   if (mode === 'start') {
-    const run = await flow.start(harness, { key: 'run-1', workflow: WORKFLOW, input: { request: 'The server room is flooding.' } }, ctx);
-    log({ task: run.taskId });
-    await run.wait(ctx);
-    log({ ended: ended(await harness.getTask(run.taskId, ctx)) });
+    for (const key of (process.env.KEYS || 'run-1').split(',')) {
+      const run = await flow.start(harness, { key, workflow: WORKFLOW, input: { request: 'The server room is flooding.' } }, ctx);
+      log({ task: run.taskId });
+      await run.wait(ctx);
+      log({ ended: ended(await harness.getTask(run.taskId, ctx)) });
+    }
   } else {
     harness.resume();
     const task = (await flow.read(harness, 'run-1', ctx)).taskId;
@@ -57,7 +60,6 @@ if (mode) {
   }
   const rows = await readDecisions(harness, ctx);
   log({ rows });
-  const read = decisionRecovery(harness, ctx);
-  log({ rebuilt: await Promise.all(rows.map((row) => read.decision(row.decision_id))) });
+  log({ rebuilt: await Promise.all(rows.map((row) => decisionRecovery({ key: row.run_key, runtime: harness, context: ctx }).decision(row.decision_id))) });
   await harness.close(ctx);
 }

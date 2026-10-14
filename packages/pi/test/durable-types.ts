@@ -33,7 +33,7 @@ import type { WorkflowDeps } from '@parcha/agentrun-dsl';
 import { decisionRecovery, type WorkflowInvocation } from '@parcha/agentrun-pi/durable';
 
 declare const invocation: WorkflowInvocation;
-const decisions = decisionRecovery(invocation.runtime, invocation.context);
+const decisions = decisionRecovery(invocation);
 const recordDecision: NonNullable<WorkflowDeps['recordDecision']> = decisions.recordDecision;
 const decision: NonNullable<NonNullable<WorkflowDeps['recovery']>['decision']> = decisions.decision;
 void [recordDecision, decision];
