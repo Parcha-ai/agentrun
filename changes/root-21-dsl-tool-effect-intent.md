@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+`@parcha/agentrun-dsl` admits a tool effect with the external call it makes. `RecoveryEffect` gains an optional `intent: { tool, argsHash }` and `RecoveryJournal.admit` an optional last `intent` argument; the driver admits a `via: "tool"` node with `gatewayIntentOf(node.tool, input)` (for a node that calls the gateway through the `fetch` wrapper, the tool the wrapper names and the hash of its inner arguments), and the intent is kept from admission, through completion, at every later open. Shell and executor effects get none, and an effect admitted without one has no `intent` key. Additive: a journal written before this change reads as before, and its unknown effects stay matched by name and hash alone. Before, a continuation could match a completed effect by its receipt but never an unknown one, so a tail dispatched an identical paid call again; `inheritableUnknowns` now carries the intent and `reuseReceipts` refuses a call whose key matches it. A store built for the store contract must keep the intent: the conformance suite gains a case for it, and a mutant store that drops it.

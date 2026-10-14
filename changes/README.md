@@ -12,5 +12,6 @@ Sub-bullets and further paragraphs go below it.
 ```
 
 - `packages`: one or more workspace package names, comma separated, or `repo` for the repository as a whole. A package with its own `CHANGELOG.md` gets the bullet there; every other one gets it in the root `CHANGELOG.md`.
-- `kind`: `breaking`, `feature`, `fix`, `ci` or `docs`. A breaking change says who breaks and what to do.
+- `kind`: `breaking`, `feature`, `fix`, `ci` or `docs`. A breaking change says who breaks and what to do. `breaking` means a correct program written against the documented API must change (a function that took a directory now takes a file); a call that returned a wrong result silently and now fails with a typed error is a behaviour change, so `feature` or `fix`, not `breaking`.
+- A fragment's text, its continuation lines and its nested bullets all start at column 0: the fold indents them under the bullet itself, so indenting them again in the fragment doubles the indent.
 - `node scripts/changes.mjs --check` validates the files (CI runs it). `node scripts/changes.mjs --fold <version>` is the release's one step: it turns `Unreleased` into the version's section, with the fragments after its bullets, and opens a new `Unreleased`.

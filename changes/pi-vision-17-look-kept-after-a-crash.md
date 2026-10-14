@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-vision
+kind: fix
+---
+A tool call cut by a crash and run again no longer reports a look as paid twice, nor pays a recording's reviewer twice. A look whose answer is read back from the call's memo (`vision:look:<key>`, so this attempt asked nothing) has `LookRecord.facts.kept: true` and the receipt line `kept: true`, whether or not its host was told before. `LookEvent.kept` is `true` only when the host heard of the look in an earlier attempt (the guard keeps `vision:told:<key>` once the look is filed and `onLook` has returned, and nothing when `onLook` throws, so the pi-durable adapter now passes the host's `onLook` through as it is): do not charge it again. A look read back whose host was never told reaches `onLook` without `kept` and is charged once; a call cut after `onLook` returns and before that memo is kept reaches `onLook` again without `kept` (at least once). A recording read by handle keeps its source's answer the same way, so a rerun asks the reviewer once. The result's `usage` still carries every look once, since pi counts a result's usage only when it commits that result.
