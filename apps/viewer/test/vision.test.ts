@@ -314,9 +314,20 @@ test('a redraw after a chip is chosen keeps the account where the reader scrolle
     chip.focus();
     chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 100));
-    return JSON.stringify({ replaced: !document.body.contains(chip), top: account().scrollTop, lit: document.activeElement.classList.contains('hot') });
+    const chosen = { replaced: !document.body.contains(chip), top: account().scrollTop, lit: document.activeElement.classList.contains('hot') };
+    // The chip scrolled out of view and the same point drawn again: the offset stays, and so does the focus.
+    account().scrollTop = account().scrollHeight;
+    const bottom = account().scrollTop;
+    const lines = [...document.querySelectorAll('.panel')].find((each) => each.scrollWidth > each.clientWidth);
+    if (lines) lines.scrollLeft = 40;
+    const range = document.querySelector('.controls input[type=range]');
+    range.dispatchEvent(new Event('input'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const again = [...document.querySelectorAll('.panel')].find((each) => each.scrollWidth > each.clientWidth);
+    return JSON.stringify({ ...chosen, kept: account().scrollTop === bottom && bottom > 300, focused: document.activeElement.classList.contains('hot'), sideways: lines ? again.scrollLeft : 40 });
   })()`)));
-  assert.deepEqual(seen, { replaced: true, top: 300, lit: true }, 'the panels were drawn again, the account kept its offset, and the chosen chip has the focus');
+  assert.deepEqual(seen, { replaced: true, top: 300, lit: true, kept: true, focused: true, sideways: 40 },
+    'the panels were drawn again, the account kept its offset, the chosen chip has the focus, and a redraw with the chip out of view moves nothing, sideways included');
 });
 
 const scripted = process.env.VISION_RECORDING;

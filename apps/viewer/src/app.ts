@@ -281,22 +281,23 @@ function placeKey(node: Element, root: Element): string {
   return steps.reverse().join('/');
 }
 
-/** Where the reader is in the panels, by place only: each scrolled element's offset, and the element with the keyboard
+/** Where the reader is in the panels, by place only: each scrolled element's offsets, and the element with the keyboard
  *  focus. */
-function placeIn(root: HTMLElement): { scrolls: Map<string, number>; focus?: string } {
-  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0).map((node) => [placeKey(node, root), node.scrollTop] as const));
+function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; focus?: string } {
+  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
   const active = document.activeElement;
   return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
 }
 
-/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was. */
+/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was, without
+ *  scrolling it into view. */
 function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
   if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
-    if (node.scrollHeight <= node.clientHeight) continue;
-    const top = place.scrolls.get(placeKey(node, root));
-    if (top !== undefined) node.scrollTop = top;
+    if (node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth) continue;
+    const offsets = place.scrolls.get(placeKey(node, root));
+    if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
   }
-  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus();
+  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
