@@ -10,12 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { placeAt, run, type RunResult } from '../reference/assemble.ts';
-import { cost } from '../reference/fold.ts';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import { localHost, type BrowserPlane, type Delivery, type LedgerRow } from '../reference/host.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from '../reference/record.ts';
-import { packageCommitRecorder } from '../reference/record-store.ts';
+import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from '../reference/index.ts';
+import type { BrowserPlane, Delivery, LedgerRow, RunResult } from '../reference/index.ts';
 import { heroFakes, heroJob, readGrids, watchScreenshots } from './job.ts';
 
 const SELF = fileURLToPath(import.meta.url);
@@ -59,7 +56,7 @@ async function child() {
       const page = await remote(target);
       return { ...page, run: async (input) => {
         const goto = /page\.goto\(\s*(["'`])(.+?)\1\s*\)/.exec(input.code ?? '');
-        return page.run(goto ? { actions: [{ op: 'goto', url: goto[2]! }] } : input);
+        return page.run(goto ? { actions: [{ op: 'goto', url: goto[2]! }] } : (input as Parameters<typeof page.run>[0]));
       } };
     },
   };

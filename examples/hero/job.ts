@@ -11,8 +11,7 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/provid
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { fakeImage, fixturePage, type FakeBackend } from '@parcha/pi-browser/testing';
 import { fakeEyes, type FakeEyes } from '@parcha/pi-vision/testing';
-import type { Job } from '../reference/assemble.ts';
-import type { Fakes } from '../reference/host.ts';
+import type { Fakes, Job } from '../reference/index.ts';
 
 /** One operator of `sources.json`, as the job takes it. */
 export type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; publishedUrl: string };
@@ -164,6 +163,8 @@ export function heroFakes(grids: readonly Grid[], options: { broken?: string; ey
     : fixturePage(grid.url, `${grid.operator} fuel mix. Renewables ${TRUTH[at(grid)]!.share}%.`, `${grid.operator} dashboard`)]));
   const eyes = fakeEyes({
     model: 'scripted-eyes',
+    // Scripted: it calls no model, so it costs 0.
+    price: { input: 0, output: 0 },
     ...(options.eyesLedger ? { ledgerPath: options.eyesLedger } : {}),
     answers: [(request) => {
       // The fake browser's screenshots are blank, so the backend gives each grid's a width of its own (`watchScreenshots`), which says whose chart this is.
