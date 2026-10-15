@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cuts the slice a run reads with no network from the checked files of ../sources.json, into this directory.
-# Usage: slice/cut.sh <a directory holding sources.json's files, checked> (a run's --cache after a --fetch-sources run is one).
+# Usage: slice/cut.sh <a directory holding sources.json's files, checked> (the work/ of a --fetch-sources run kept with --dir is one).
 # slice.json fixes each result by size and SHA-256, and the test checks them; these commands, with pypdf 6.15.0 and ffmpeg 6.1.1
 # (libvpx), give those bytes. Another version of either may give other bytes for the same cut.
 set -euo pipefail

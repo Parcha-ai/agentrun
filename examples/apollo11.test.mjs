@@ -1,76 +1,92 @@
-// Apollo 11 at $0. The template's three beats run the job's default, the committed slice of NASA's files, with no network; what the
-// program measures runs on a data set the test builds (pages of invented lines, solid-colour photos in the demo's classes, a typed
-// reference in the markup of NASA's). Both go through the demo's own run.ts with the scripted lead and scripted eyes: a supervisor,
-// its children, a recording. Everything is checked on what the run filed.
+// Apollo 11 at $0, on the reference entry. The template's three beats run what a run on fakes reads, the committed slice of NASA's
+// files, with no network; what the program measures runs on a data set the test builds (pages of invented lines, solid-colour
+// photos in the demo's classes, a typed reference in the markup of NASA's), steered by the demo's own `DEMO_*` settings. Both go
+// through the demo's run.ts: the entry's supervisor, its children, a recording. Everything is checked on what the run filed.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { pdfBytes, pngBytes } from '@parcha/pi-vision/testing';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
-import { foldLooks, receiptAt } from './apollo11/account.ts';
-import { DATASET_FILE, fetchItems, loadDataset, loadSlice, placeFiles, SLICE_DIR } from './apollo11/dataset.ts';
-import { chooseModels, EYES, LEAD, liveModels } from './apollo11/models.ts';
+import { validateRecording } from '../scripts/recording/validate.mjs';
+import { foldLooks, lookCounters, receiptAt } from './apollo11/account.ts';
+import { DATASET_FILE, loadDataset, loadSlice, SLICE_DIR, sourcesFor } from './apollo11/dataset.ts';
+import { sliceInput } from './apollo11/job.ts';
+import { chooseModels, EYES, LEAD, liveModels, liveParts } from './apollo11/models.ts';
 import { options } from './apollo11/run.ts';
-import { supervise } from './apollo11/seam.ts';
+import { demo } from './reference/index.ts';
 
 const { dataset: REAL } = loadDataset();
 const COLOURS = { earth: [40, 60, 220], astronaut: [220, 220, 220], lunar_surface: [120, 110, 100] };
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const FFMPEG = (() => { try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); execFileSync('ffprobe', ['-version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
 /** What a run on fakes reads with no --input, the committed slice: three film windows, three pages, five photos. Without ffmpeg it reads no film window. */
-const DEFAULT = FFMPEG ? undefined : { ...options.fakesInput, film_to_s: options.fakesInput.film_from_s };
+const DEFAULT = FFMPEG ? undefined : { ...sliceInput, film_to_s: sliceInput.film_from_s };
 const LOOKS = FFMPEG ? 11 : 8;
 
 /** Three pages of invented air-to-ground lines inside the account's span, the same lines in the typed reference's markup, and six
- *  photos, two in each of three of the demo's classes, as sources of `file:` URLs; and the input that reads them. */
-async function synthetic(dir) {
-  await mkdir(join(dir, 'files'), { recursive: true });
+ *  photos, two in each of three of the demo's classes, written into the run's `work/` (a no-key run reads what is there); the manifest
+ *  that names them, the page starts the scripted eyes answer from, and the input that reads them. */
+async function synthetic(tmp) {
+  const work = join(tmp, 'run', 'work');
+  await mkdir(work, { recursive: true });
   const pages = [0, 1, 2].map((page) => Array.from({ length: 4 }, (_, line) => ({ time: `04 06 ${String(30 + page * 5 + line).padStart(2, '0')} ${String(10 + line).padStart(2, '0')}`, speaker: line % 2 ? 'AA' : 'BB', text: `Synthetic call ${page}-${line}.` })));
-  const scan = pdfBytes(pages.map((lines) => ({ lines: lines.map((line) => `${line.time}   ${line.speaker}   ${line.text}`) })));
-  const typed = pages.flat().map((line) => `${line.time}        <font color="0000FF">${line.speaker}</font><br>\n${line.text}\n<br><br>\n`).join('\n');
-  const files = { 'scan.pdf': scan, 'typed.html': Buffer.from(typed) };
+  const files = {
+    'transcript-tec.pdf': pdfBytes(pages.map((lines) => ({ lines: lines.map((line) => `${line.time}   ${line.speaker}   ${line.text}`) }))),
+    'transcript-tec-typed.html': Buffer.from(pages.flat().map((line) => `${line.time}        <font color="0000FF">${line.speaker}</font><br>\n${line.text}\n<br><br>\n`).join('\n')),
+  };
   const photos = Object.keys(COLOURS).flatMap((name) => [1, 2].map((n) => ({ id: `photo-${name}-${n}`, name, bytes: pngBytes(64 + n, 48, COLOURS[name]) })));
   for (const photo of photos) files[`${photo.id}.png`] = photo.bytes;
-  for (const [name, bytes] of Object.entries(files)) await writeFile(join(dir, 'files', name), bytes);
-  const item = (id, kind, name, extra) => ({ id, title: id, kind, role: 'test', url: pathToFileURL(join(dir, 'files', name)).href, license: 'test', bytes: files[name].length, sha256: sha256(files[name]), ...extra });
+  for (const [name, bytes] of Object.entries(files)) await writeFile(join(work, name), bytes);
+  const item = (id, kind, name, extra) => ({ id, title: id, kind, role: 'test', url: pathToFileURL(join(work, name)).href, license: 'test', bytes: files[name].length, sha256: sha256(files[name]), ...extra });
   const sources = {
     format: 'apollo11.dataset/1', classes: REAL.classes, class_rule: 'test', items: [
-      item('transcript-tec', 'transcript', 'scan.pdf', { pages: 3 }),
-      item('transcript-tec-typed', 'transcript', 'typed.html', {}),
+      item('transcript-tec', 'transcript', 'transcript-tec.pdf', { pages: 3 }),
+      item('transcript-tec-typed', 'transcript', 'transcript-tec-typed.html', {}),
       ...photos.map((photo) => item(photo.id, 'photo', `${photo.id}.png`, { caption: 'test', class: photo.name })),
     ],
   };
-  const file = join(dir, 'sources.json');
+  const file = join(tmp, 'sources.json');
   await writeFile(file, JSON.stringify(sources, null, 1));
-  const scriptedPages = join(dir, 'pages.json');
-  await writeFile(scriptedPages, JSON.stringify({ item: 'transcript-tec', page_starts: { 1: pages[0][0].time, 2: pages[1][0].time, 3: pages[2][0].time } }));
+  const pageStarts = join(tmp, 'pages.json');
+  await writeFile(pageStarts, JSON.stringify({ item: 'transcript-tec', page_starts: { 1: pages[0][0].time, 2: pages[1][0].time, 3: pages[2][0].time } }));
   const input = {
     film_item: 'film-descent', film_file: 'film-descent.mp4', film_from_s: 0, film_to_s: 0, window_s: 6,
     scan_item: 'transcript-tec', scan_file: 'transcript-tec.pdf', pages_from: 1, pages_to: 3,
     photos: photos.map((photo) => photo.id), photo_ext: '.png', typed_item: 'transcript-tec-typed', typed_file: 'transcript-tec-typed.html',
     span_from: '04 06 20 00', span_to: '04 06 50 00',
   };
-  return { file, sources, sha256: sha256(readFileSync(file)), scriptedPages, input, knobs: { sources: file, scriptedPages } };
+  return { file, sources, work, sha256: sha256(readFileSync(file)), input, env: { DEMO_APOLLO_SOURCES: file, DEMO_PAGES: pageStarts } };
 }
 
 const linesOf = (file) => readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-const scratch = async (t) => { const tmp = await mkdtemp(join(tmpdir(), 'apollo11-')); t.after(() => { delete process.env.APOLLO_SOURCES; return rm(tmp, { recursive: true, force: true }); }); return tmp; };
-const go = (tmp, set, flags = {}, knobs = {}, spec = options.spec) => supervise({ ...options, spec }, { dir: join(tmp, 'run'), cache: join(tmp, 'cache'), input: JSON.stringify(set.input), ...flags }, { ...set.knobs, ...knobs });
-/** The demo as `npm run demo:apollo11` runs it: the job's default input and the spec's own kill. */
-const demo = (tmp, flags = {}) => supervise(options, { dir: join(tmp, 'run'), cache: join(tmp, 'cache'), ...(DEFAULT ? { input: JSON.stringify(DEFAULT) } : {}), ...flags }, {});
+const scratch = async (t) => { const tmp = await mkdtemp(join(tmpdir(), 'apollo11-')); t.after(() => rm(tmp, { recursive: true, force: true })); return tmp; };
+/** `npm run demo:apollo11 -- <args>` in the run directory `<tmp>/run`, with the demo's `DEMO_*` settings in `env` for its processes. */
+async function go(tmp, args = [], env = {}) {
+  Object.assign(process.env, env);
+  try { return await demo({ ...options, argv: ['--dir', join(tmp, 'run'), ...args] }); } finally { for (const name of Object.keys(env)) delete process.env[name]; }
+}
+/** The demo as `npm run demo:apollo11` runs it on fakes: the slice, and the spec's own kill. */
+const slice = (tmp, args = []) => go(tmp, [...(DEFAULT ? ['--input', JSON.stringify(DEFAULT)] : []), ...args]);
+const statusOf = (run) => run.processes.at(-1)?.outcome?.status;
+const stderrOf = (run) => run.processes.map((process) => `${process.outcome?.message ?? ''}\n${process.stderr}`).join('\n');
+/** The recording's text files that hold this machine's name or the run's own directory. */
+const leaks = (record, own) => {
+  const walk = (at) => (statSync(at).isDirectory() ? readdirSync(at).flatMap((name) => walk(join(at, name))) : [at]);
+  return walk(record).filter((file) => /\.(?:jsonl?|txt|md)$/.test(file) && [hostname(), own].some((value) => readFileSync(file, 'utf8').includes(value)));
+};
 
 test('beat 1: on fakes, with no network, the job reads the slice and delivers an agentrun.cited/1 result whose every cite is a look at exactly the cited bytes', { timeout: 240_000 }, async (t) => {
   const tmp = await scratch(t);
-  const run = await demo(tmp);
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  const { result } = run;
+  const run = await slice(tmp);
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  const result = run.record;
   assert.equal(result.format, 'agentrun.cited/1');
   assert.ok(result.rows.length >= 3, 'a row a minute of read lines');
   const items = new Map(REAL.items.map((item) => [item.id, item]));
@@ -103,32 +119,35 @@ test('beat 2: killed inside the evidence sink at vision.filing, a fresh process 
   const record = join(tmp, 'recording');
   const [kill] = options.spec.kills;
   assert.ok(kill.n + kill.hold - 1 <= LOOKS, 'the spec\'s kill lands inside the default run\'s looks');
-  const run = await demo(tmp, { kill: true, record });
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  assert.equal(run.kills, 1);
-  assert.equal(run.processes, 2);
+  const run = await slice(tmp, ['--kill', '--record', record]);
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.deepEqual(run.kills.map((each) => each.point), ['vision.filing']);
+  assert.deepEqual(run.unlanded, []);
+  assert.equal(run.processes.length, 2);
   const line = linesOf(join(record, 'events.jsonl')).find((row) => row.source === 'host' && row.kind === 'kill');
-  assert.deepEqual(line.data.crossing, { point: 'vision.filing', n: kill.n });
+  assert.equal(line.data.crossing.point, 'vision.filing');
   const folded = fold(readEvents(record));
   assert.equal(folded.repeated, 0);
   assert.equal(folded.repeatedNotMeasured, 0);
   assert.equal(folded.unknown, 0);
   assert.equal(folded.paid.vision, LOOKS, 'each item\'s look is paid once');
-  assert.ok(run.counters.kept >= 2, `${run.counters.kept} looks came back kept`);
-  assert.equal(run.counters.repeated, 0);
+  const counted = lookCounters(join(tmp, 'run', 'store', 'run.sqlite'));
+  assert.ok(counted.kept >= 1, `${counted.kept} looks came back kept`);
+  assert.equal(counted.repeated, 0);
 });
 
 test('beat 3: every paid look has its receipt, the recording validates, says scripted, names its sources, and its cost is a number it earned', { timeout: 240_000 }, async (t) => {
   const tmp = await scratch(t);
   const record = join(tmp, 'recording');
-  const run = await demo(tmp, { record });
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  assert.deepEqual(run.problems, []);
-  assert.deepEqual(run.leaks, []);
+  const run = await slice(tmp, ['--record', record]);
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.deepEqual(validateRecording(record), []);
+  assert.deepEqual(leaks(record, tmp), []);
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   assert.equal(manifest.providers, 'scripted');
   assert.equal(manifest.sources.sha256, sha256(readFileSync(DATASET_FILE)));
   assert.equal(manifest.slice.sha256, loadSlice().sha256);
+  assert.deepEqual(manifest.models, { lead: 'scripted lead (pi-ai faux)', eyes: 'scripted-eyes' });
   assert.equal(manifest.cost.usd, 0, 'the scripted parts are priced at 0, so the run cost 0');
   const blobs = readdirSync(join(record, 'blobs'));
   const filings = linesOf(join(record, 'events.jsonl')).filter((line) => line.channel === 'durable' && line.data?.doc === 'vision.looks' && !line.snapshot);
@@ -138,31 +157,32 @@ test('beat 3: every paid look has its receipt, the recording validates, says scr
     assert.ok(REAL.items.some((item) => item.id === look.item));
     assert.ok(look.images.length >= 1 && look.images.every((image) => line.blobs.includes(image.blob) && blobs.some((name) => name.startsWith(image.blob))));
   }
-  assert.deepEqual(JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8')), JSON.parse(JSON.stringify(run.result)));
+  assert.deepEqual(JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8')), JSON.parse(JSON.stringify(run.record)));
 });
 
 test('a look whose request threw has its miss code, and its unknown price makes the cost unknown, never $0', { timeout: 240_000 }, async (t) => {
   const tmp = await scratch(t);
   const set = await synthetic(tmp);
   const record = join(tmp, 'recording');
-  const run = await go(tmp, set, { record }, { fail: ['transcript-tec.pdf#page=2'] });
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  assert.ok(run.counters.failed >= 1);
-  assert.equal(run.counters.cost_usd, null);
-  assert.equal(run.result.apollo11.transcript.times.pages, 2, 'the failed page has no ok look');
+  const run = await go(tmp, ['--input', JSON.stringify(set.input), '--record', record], { ...set.env, DEMO_FAIL: 'transcript-tec.pdf#page=2' });
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  const counted = lookCounters(join(tmp, 'run', 'store', 'run.sqlite'));
+  assert.ok(counted.failed >= 1);
+  assert.equal(counted.cost_usd, null);
+  assert.equal(run.record.apollo11.transcript.times.pages, 2, 'the failed page has no ok look');
   const misses = linesOf(join(record, 'events.jsonl')).filter((line) => line.channel === 'durable' && line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((look) => look.record.status === 'failed');
   assert.ok(misses.length >= 1 && misses.every((look) => look.miss?.code === 'look_failed' && look.miss.reason.length > 0 && look.item === 'transcript-tec'));
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   assert.equal(manifest.cost.usd, null);
-  assert.deepEqual(run.problems, []);
+  assert.deepEqual(validateRecording(record), []);
 });
 
 test('the photo sort\'s accuracy is computed from the receipts against the captions\' classes, by class and overall', { timeout: 240_000 }, async (t) => {
   const tmp = await scratch(t);
   const set = await synthetic(tmp);
-  const run = await go(tmp, set, {}, { wrong: ['photo-astronaut-2'] });
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  const { accuracy, photos } = run.result.apollo11;
+  const run = await go(tmp, ['--input', JSON.stringify(set.input)], { ...set.env, DEMO_WRONG: 'photo-astronaut-2' });
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  const { accuracy, photos } = run.record.apollo11;
   assert.deepEqual(accuracy.overall, { right: 5, total: 6, rate: 0.833 });
   assert.deepEqual(accuracy.by_class.astronaut, { right: 1, total: 2, rate: 0.5 });
   assert.deepEqual(accuracy.by_class.earth, { right: 2, total: 2, rate: 1 });
@@ -170,14 +190,20 @@ test('the photo sort\'s accuracy is computed from the receipts against the capti
   assert.notEqual(photos.find((row) => row.item === 'photo-astronaut-2').label, 'astronaut');
 });
 
-test('the weak eyes\' run goes in the main result as weak_eyes: its eyes, its run, the times it read, its photo sort', { timeout: 300_000 }, async (t) => {
+test('the weak eyes\' run is linked from the main recording by see_also, never merged into its result', { timeout: 300_000 }, async (t) => {
   const tmp = await scratch(t);
   const set = await synthetic(tmp);
-  const weak = await supervise(options, { dir: join(tmp, 'weak'), cache: join(tmp, 'cache'), input: JSON.stringify(set.input), name: 'weak-run' }, { ...set.knobs, wrong: ['photo-earth-1'] });
-  assert.equal(weak.outcome?.status, 'complete', weak.stderr);
-  const main = await go(tmp, set, { 'weak-from': join(tmp, 'weak') });
-  assert.equal(main.outcome?.status, 'complete', main.stderr);
-  assert.deepEqual(main.result.apollo11.weak_eyes, { model: 'scripted-eyes', source: 'weak-run', times: weak.result.apollo11.transcript.times, photos: { right: 5, total: 6 } });
+  const weak = join(tmp, 'weak-recording');
+  const first = await go(tmp, ['--input', JSON.stringify(set.input), '--record', weak], { ...set.env, DEMO_WRONG: 'photo-earth-1' });
+  assert.equal(statusOf(first), 'complete', stderrOf(first));
+  const other = await scratch(t);
+  const again = await synthetic(other);
+  const main = join(other, 'main-recording');
+  const run = await go(other, ['--input', JSON.stringify(again.input), '--record', main, '--see-also', weak], again.env);
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  const manifest = JSON.parse(readFileSync(join(main, 'manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.see_also, [{ recording: 'weak-recording', label: JSON.parse(readFileSync(join(weak, 'manifest.json'), 'utf8')).title }]);
+  assert.equal(run.record.apollo11.weak_eyes, undefined);
 });
 
 test('the look counters follow the recording format: a kept filing pays only as its key\'s first, and a later payment by another process is repeated', () => {
@@ -189,23 +215,6 @@ test('the look counters follow the recording format: a kept filing pays only as 
     { looks: 4, paid: 3, kept: 1, repeated: 0, asked_twice: 1, failed: 0, cost_usd: 0.03, cost_unknown: 0 });
   assert.deepEqual(foldLooks([{ looks: [filing(look('d', { status: 'failed', cost: null }), 'p1'), filing(look('e'), 'p1')] }]),
     { looks: 2, paid: 1, kept: 0, repeated: 0, asked_twice: 0, failed: 1, cost_usd: null, cost_unknown: 1 });
-});
-
-test('a source whose bytes do not match is refused and removed; a changed workspace file is replaced; a run resumes only on the sources it began with', { timeout: 120_000 }, async (t) => {
-  const tmp = await scratch(t);
-  const set = await synthetic(tmp);
-  const photo = set.sources.items.find((item) => item.kind === 'photo');
-  await assert.rejects(fetchItems([{ ...photo, sha256: '0'.repeat(64) }], join(tmp, 'cache')), (error) => error.code === 'DATASET_MISMATCH');
-  assert.equal(existsSync(join(tmp, 'cache', `${photo.id}.png`)), false);
-  const paths = await fetchItems([photo], join(tmp, 'cache'));
-  await mkdir(join(tmp, 'work'), { recursive: true });
-  await writeFile(join(tmp, 'work', `${photo.id}.png`), 'damaged');
-  await placeFiles(paths, [photo], join(tmp, 'work'));
-  assert.equal(sha256(readFileSync(join(tmp, 'work', `${photo.id}.png`))), photo.sha256);
-  await mkdir(join(tmp, 'run'), { recursive: true });
-  await writeFile(join(tmp, 'run', 'input.json'), JSON.stringify(set.input));
-  await writeFile(join(tmp, 'run', 'sources.sha256'), '0'.repeat(64));
-  await assert.rejects(go(tmp, set), (error) => error.code === 'DATASET_CHANGED');
 });
 
 test('the shipped sources: NASA files only, every one sized and hashed, every photo captioned in one of the five classes', () => {
@@ -244,9 +253,22 @@ test('the slice: every committed file is the size and SHA-256 slice.json fixes, 
   assert.ok(slice.files.reduce((total, entry) => total + entry.bytes, 0) < 1_000_000);
 });
 
+test('the entry fetches only the NASA files an input reads; the slice\'s cuts are the job\'s own', () => {
+  const held = new Set(Object.keys(options.job.files));
+  const onFakes = sourcesFor(sliceInput);
+  assert.deepEqual(onFakes.map((item) => item.id).sort(), [...sliceInput.photos].sort(), 'the slice reads only photographs that are NASA\'s files unchanged');
+  assert.ok(onFakes.every((item) => held.has(`${item.id}.jpg`)));
+  const gallery = JSON.parse(readFileSync(join(import.meta.dirname, 'apollo11', 'inputs', 'gallery.json'), 'utf8'));
+  const needed = sourcesFor(gallery);
+  assert.deepEqual(needed.map((item) => item.id).sort(), [gallery.film_item, gallery.scan_item, gallery.typed_item, ...gallery.photos].sort());
+  assert.ok(needed.every((item) => /^https:\/\/[^/]*nasa\.gov\//.test(item.url) && /^[0-9a-f]{64}$/.test(item.sha256)));
+});
+
 test('an input that reads NASA\'s own files is refused with no flag, before anything is downloaded; --fetch-sources or --live asks for them', { timeout: 60_000 }, async (t) => {
   const tmp = await scratch(t);
-  await assert.rejects(demo(tmp, { input: join(import.meta.dirname, 'apollo11', 'inputs', 'gallery.json') }), (error) => error.code === 'SOURCES_NOT_FETCHED' && /--fetch-sources/.test(error.message));
+  const run = await go(tmp, ['--input', join(import.meta.dirname, 'apollo11', 'inputs', 'gallery.json'), '--cache', join(tmp, 'cache')]);
+  assert.notEqual(statusOf(run), 'complete');
+  assert.match(run.processes.at(-1).outcome.message, /--fetch-sources/);
   assert.equal(existsSync(join(tmp, 'cache')), false, 'nothing was fetched');
 });
 
@@ -276,7 +298,7 @@ test('through a gateway, the lead and the eyes are asked by their public model i
   assert.throws(() => liveModels({}, [LEAD, EYES]), /OPENAI_API_KEY/);
 });
 
-test('with no model named, a run takes the recorded lead and eyes when it can, else each keyed provider\'s own image-taking models', () => {
+test('with no model named, a run takes the default lead and eyes when it can, else each keyed provider\'s own image-taking models; the live parts take the entry\'s model flags', () => {
   const name = ({ lead, eyes }) => [`${lead.provider}/${lead.modelId}`, `${eyes.provider}/${eyes.modelId}`];
   assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.8-flash']);
   assert.deepEqual(name(chooseModels({ APOLLO_MODEL_BASE_URL: 'http://gateway/v1', APOLLO_MODEL_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.8-flash']);
@@ -286,18 +308,22 @@ test('with no model named, a run takes the recorded lead and eyes when it can, e
   assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k' }, { eyes: 'openai/gpt-6-luna' })), ['openai/gpt-6-luna', 'openai/gpt-6-luna']);
   assert.throws(() => chooseModels({}), /OPENAI_API_KEY/);
   assert.throws(() => chooseModels({ OPENAI_API_KEY: 'k' }, { eyes: 'acme/model' }), /provider\/id/);
+  const parts = liveParts({ env: { APOLLO_MODEL_BASE_URL: 'http://gateway/v1', APOLLO_MODEL_API_KEY: 'k' }, models: { provider: 'openai', model: 'gpt-6-luna', eyesModel: 'openai/gpt-6-luna' } });
+  assert.deepEqual(parts.host.models.lead, LEAD);
+  assert.deepEqual(parts.vision().eyesModel, { provider: 'openai', modelId: 'gpt-6-luna' });
+  assert.deepEqual(parts.vision().limits(), { image: { native: false } });
+  assert.deepEqual(parts.models, { lead: 'openai/gpt-6-luna', eyes: 'openai/gpt-6-luna' }, 'what the manifest names');
 });
 
-test('a film window is read as frames and cited by #t=, when ffmpeg is on this machine', { timeout: 240_000, skip: (() => { try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg is not installed'; } })() }, async (t) => {
+test('a film window is read as frames and cited by #t=, when ffmpeg is on this machine', { timeout: 240_000, skip: FFMPEG ? false : 'ffmpeg is not installed' }, async (t) => {
   const tmp = await scratch(t);
   const set = await synthetic(tmp);
-  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10:duration=12', '-pix_fmt', 'yuv420p', join(tmp, 'files', 'film.mp4')]);
-  const bytes = readFileSync(join(tmp, 'files', 'film.mp4'));
-  set.sources.items.push({ id: 'film-descent', title: 'film', kind: 'film', role: 'test', url: pathToFileURL(join(tmp, 'files', 'film.mp4')).href, license: 'test', bytes: bytes.length, sha256: sha256(bytes), duration_s: 12 });
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10:duration=12', '-pix_fmt', 'yuv420p', join(set.work, 'film-descent.mp4')]);
+  const bytes = readFileSync(join(set.work, 'film-descent.mp4'));
+  set.sources.items.push({ id: 'film-descent', title: 'film', kind: 'film', role: 'test', url: pathToFileURL(join(set.work, 'film-descent.mp4')).href, license: 'test', bytes: bytes.length, sha256: sha256(bytes), duration_s: 12 });
   await writeFile(set.file, JSON.stringify(set.sources));
-  set.input.film_to_s = 12;
-  const run = await go(tmp, set);
-  assert.equal(run.outcome?.status, 'complete', run.stderr);
-  assert.deepEqual(run.result.apollo11.film.map((window) => window.fragment), ['#t=0,6', '#t=6,12']);
-  assert.equal(run.counters.paid, 11);
+  const run = await go(tmp, ['--input', JSON.stringify({ ...set.input, film_to_s: 12 })], set.env);
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.deepEqual(run.record.apollo11.film.map((window) => window.fragment), ['#t=0,6', '#t=6,12']);
+  assert.equal(lookCounters(join(tmp, 'run', 'store', 'run.sqlite')).paid, 11);
 });

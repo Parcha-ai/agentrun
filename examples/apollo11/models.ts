@@ -9,6 +9,7 @@ import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import type { ModelRef } from '@earendil-works/pi-durable';
+import type { LiveParts } from '../reference/index.ts';
 
 /** A model by its provider and public id: what every receipt, line and screen names. */
 export type PublicModel = { provider: string; modelId: string };
@@ -18,6 +19,9 @@ export const publicName = (model: PublicModel) => `${model.provider}/${model.mod
 export const LEAD: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
 export const EYES: PublicModel = { provider: 'google', modelId: 'gemini-3.8-flash' };
 export const WEAK_EYES: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
+
+/** The run's limits: the lead takes images but is shown none, so every image a read makes goes to the eyes. */
+export const LIMITS = () => ({ image: { native: false } });
 
 /** Each provider's key, and the lead and the eyes it gives when it is the one a run has (every one takes images). */
 export const PROVIDERS: Record<string, { make: () => Provider; key: string; lead: string; eyes: string }> = {
@@ -88,4 +92,13 @@ export function liveModels(env: NodeJS.ProcessEnv, models: readonly PublicModel[
     if (!entry.input.includes('image') && model !== models[0]) throw new Error(`${publicName(model)} takes no images, so it cannot be the eyes`);
   }
   return { catalog, lead: { provider: models[0]!.provider, modelId: models[0]!.modelId } };
+}
+
+/** The reference entry's live parts: the lead and the eyes `--model` (or `--provider` with `--model`) and `--eyes-model` name, else
+ *  the defaults the keys allow, reached with the user's keys or a gateway; the pair by public name, for the recording's manifest. */
+export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?: string; model?: string; eyesModel?: string } }): LiveParts {
+  const { env, models } = context;
+  const lead = models.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models.model;
+  const chosen = chooseModels(env, { ...(lead ? { lead } : {}), ...(models.eyesModel ? { eyes: models.eyesModel } : {}) });
+  return { host: { models: liveModels(env, [chosen.lead, chosen.eyes]) }, models: { lead: publicName(chosen.lead), eyes: publicName(chosen.eyes) }, vision: () => ({ limits: LIMITS, eyesModel: chosen.eyes }) };
 }

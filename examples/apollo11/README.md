@@ -22,8 +22,8 @@ Watch the recorded run: https://parcha-ai.github.io/agentrun/?r=apollo11
 A live run reads NASA's own files, downloaded once and checked by SHA-256; on fakes, `--fetch-sources` reads them too (the landing
 hour is `--input examples/apollo11/inputs/landing.json`). Other inputs, one job: `inputs/gallery.json` (the recorded run: 8 film
 windows, 10 pages, 12 photos, about $0.15), `inputs/full.json` (all 626 pages, about $3.50; pass `--max-usd 5`), and
-`inputs/weak-eyes.json` with `--eyes-model openai/gpt-6-luna` (the landing's pages and photos through weaker eyes; `--weak-from
-<dir>` puts that run's account into the main result, `--see-also` links its recording).
+`inputs/weak-eyes.json` with `--eyes-model openai/gpt-6-luna` (the landing's pages and photos through weaker eyes; a main run's
+`--see-also <recording>` links that run's recording).
 
 ## Keys and programs
 
@@ -45,7 +45,8 @@ twice that.
 - `@parcha/pi-vision`: the eyes behind `read`; the lead's limits say it sees no image, so every look goes through them, filed with
   a receipt and kept before the result that reports it.
 - `@parcha/agentrun-pi` and pi-durable: the workflow as one durable task, resumed by the next process.
-- `sources.json`: NASA's files, each with its URL, size and SHA-256, downloaded once and checked before every run. `slice/`: the
-  default's files, cut from those by `slice/cut.sh` (680 kB; `slice/slice.json` fixes each, and `ASSETS.md` names the sources).
-- Everything else is the reference entry. `seam.ts` stands in for its `demo()` until that runs vision on fakes, files each look
-  with its images and holds filings at `vision.filing`; it takes the same flags.
+- `sources.json`: NASA's files, each with its URL, size and SHA-256; `sourcesFor` names the ones an input reads. `slice/`: what a
+  run on fakes reads, cut from those by `slice/cut.sh` (680 kB; `slice/slice.json` fixes each, and `ASSETS.md` names the sources).
+- Everything else is the reference entry (`demo()`): the flags, the supervisor and its kills, the looks it keeps with the images
+  the eyes were shown, the hold at `vision.filing`, the checked downloads, the recording. `run.ts` hands it the spec, the job, the
+  fakes with their scripted eyes, the live models, and the recording's extras (the sources' and the slice's SHA-256, the models).

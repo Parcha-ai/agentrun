@@ -6,9 +6,11 @@ import { basename, join } from 'node:path';
 import { citedOf, landingOf, typedLines, type Output } from '../account.ts';
 import { loadDataset } from '../dataset.ts';
 
-/** The run's directory, where its receipts are filed. SEAM: the reference entry is to hand a tool its place; until then the
- *  supervisor names it in `DIR`. */
-const rootOf = (context?: { place?: { root: string } }) => context?.place?.root ?? process.env.DIR!;
+/** The run's directory, where its receipts are filed: the place the reference entry hands every tool. */
+const rootOf = (context?: { place?: { root: string } }) => {
+  if (!context?.place) throw new Error('the reference entry hands every tool the run\'s place');
+  return context.place.root;
+};
 
 export const tools = {
   landing: (args: Record<string, unknown>, context?: { place?: { root: string } }) => landingOf(rootOf(context), args as Parameters<typeof landingOf>[1]),

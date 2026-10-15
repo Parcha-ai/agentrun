@@ -210,10 +210,6 @@ export function timesCheck(root: string, pages: Output['pages'], typed: readonly
   return check;
 }
 
-/** The weak eyes' run beside this one: its eyes, the run it was (its recording's `source.run`), the times it read off the same scans
- *  and its photo sort. */
-export type WeakEyes = { model: string; source: string; times: TimesCheck; photos: { right: number; total: number } };
-
 /** The Apollo 11 part of the result: the landing as entries, each cite resolved to its look, and what the program measured. */
 export type Account = {
   format: typeof ACCOUNT_FORMAT; dataset_sha256: string;
@@ -225,7 +221,6 @@ export type Account = {
   film: { item: string; from_s: number; to_s: number; seen: string; fragment: string; receipt: string }[];
   /** The eyes that answered, by the public name their looks carry. */
   eyes: string[];
-  weak_eyes?: WeakEyes;
 };
 
 /** The result a run delivers: `agentrun.cited/1`, a row per minute of the landing whose cites name the looks it rests on, with the
@@ -235,11 +230,6 @@ export type Cited = {
   rows: { label: string; value: string; cites: { look: string; fragment: string; note: string }[] }[];
   apollo11: Account;
 };
-
-/** What a weak-eyes run's result gives the main one, with the name its recording gives the run. */
-export const weakEyesOf = (weak: Cited, source: string): WeakEyes => ({
-  model: weak.apollo11.eyes.join(', '), source, times: weak.apollo11.transcript.times, photos: { right: weak.apollo11.accuracy.overall.right, total: weak.apollo11.accuracy.overall.total },
-});
 
 /** The cited result from what the run read, with every cite resolved against the receipts under `root`. */
 export function citedOf(root: string, dataset: Dataset, datasetSha256: string, output: Output, typed: readonly TypedLine[]): Cited {
@@ -278,9 +268,3 @@ export function citedOf(root: string, dataset: Dataset, datasetSha256: string, o
   };
 }
 
-/** The result the run delivered (`out/record.json`), or null. */
-export function resultOf(root: string): Cited | null {
-  const file = join(root, 'out', 'record.json');
-  if (!existsSync(file)) return null;
-  return (JSON.parse(readFileSync(file, 'utf8')) as { record: Cited }).record;
-}

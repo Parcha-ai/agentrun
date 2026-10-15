@@ -1,14 +1,18 @@
 // The run with no key: a scripted lead and scripted eyes stand in for the models, and the files are the real ones (the slice's, or
-// with --fetch-sources the whole checked set). The eyes answer a
-// page with NASA's typed transcript of it, a photo with its caption's class and a film window with a line that says no model looked;
-// every answer says it is scripted, and so does the recording. Nothing here is a model's reading.
+// with --fetch-sources the whole checked set). The eyes answer a page with NASA's typed transcript of it, a photo with its caption's
+// class and a film window with a line that says no model looked; every answer says it is scripted, and so does the recording.
+// Nothing here is a model's reading.
+import { readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Part } from '@parcha/pi-vision';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import type { Fakes } from '../reference/index.ts';
-import { fileOf, type Dataset, type PhotoItem } from './dataset.ts';
-import type { TypedLine } from './account.ts';
+import { typedLines, type TypedLine } from './account.ts';
+import { fileOf, loadDataset, type Dataset, type PhotoItem, type Reads, type TranscriptItem } from './dataset.ts';
+import pageStarts from './fakes-pages.json' with { type: 'json' };
+import { LIMITS } from './models.ts';
 import { tools } from './tools/index.ts';
 import { ASKS } from './workflow.ts';
 
@@ -73,7 +77,7 @@ export type PageStarts = { item: string; page_starts: Record<string, string> };
  *  (`... page N of M ...`); the eyes answer from what the data set and `pages` fix for it, page N being the source's page
  *  `firstPage + N - 1` of a cut. A photo in `wrong` is answered with another class; a source in `fail` makes the request throw, as a
  *  provider's error does. */
-export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], pages: PageStarts, options: { wrong?: ReadonlySet<string>; fail?: ReadonlySet<string>; firstPage?: number } = {}) {
+export function scriptedEyes(dataset: Dataset, typed: () => readonly TypedLine[], pages: PageStarts, options: { wrong?: ReadonlySet<string>; fail?: ReadonlySet<string>; firstPage?: number } = {}) {
   const starts = Object.entries(pages.page_starts).map(([page, time]) => [Number(page), time] as const).sort((a, b) => a[0] - b[0]);
   const photos = new Map(dataset.items.filter((item): item is PhotoItem => item.kind === 'photo').map((item) => [fileOf(item), item]));
   const classes = Object.keys(dataset.classes);
@@ -83,7 +87,7 @@ export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], page
     if (page) {
       const at = starts.findIndex(([number]) => number === Number(page) + (options.firstPage ?? 1) - 1);
       const [from, to] = at < 0 ? [undefined, undefined] : [starts[at]![1], starts[at + 1]?.[1]];
-      const own = from ? typed.filter((line) => line.time >= from && (to === undefined || line.time < to)) : [];
+      const own = from ? typed().filter((line) => line.time >= from && (to === undefined || line.time < to)) : [];
       return own.length ? own.map((line) => JSON.stringify(line)).join('\n') : JSON.stringify({ time: '', speaker: '', text: `(scripted eyes: no typed lines are fixed for page ${page})` });
     }
     const photo = photos.get(source.split('/').at(-1)!);
@@ -103,10 +107,23 @@ export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], page
   } };
 }
 
-/** The fakes the reference entry runs the job on: the scripted lead, the job's tools, and no judge (the job asks none). */
-export function fakesOf(classes: Record<string, string>): Fakes {
+/** A test's knobs: photos answered with another class, sources whose requests throw, other page starts. */
+export type FakeKnobs = { wrong?: readonly string[]; fail?: readonly string[]; pages?: PageStarts };
+
+/** The fakes the reference entry runs the job on: the scripted lead, the job's tools, no judge (the job asks none), and the vision
+ *  lane: the scripted eyes, for the run's input (its scan, and its typed transcript in the run's `work/`), and limits that keep every
+ *  image from the lead. */
+export function fakesOf(classes: Record<string, string>, knobs: FakeKnobs = {}): Fakes {
   return {
     model: scriptedLead(classes), tools, pages: {}, start: 'about:blank', responses: 20_000, tokensPerSecond: 400,
     judge: async () => { throw new Error('this job asks no judge'); },
+    vision: (_host, _running, { input, place }) => {
+      const reads = input as Reads;
+      const { dataset } = loadDataset();
+      const firstPage = (dataset.items.find((item) => item.id === reads.scan_item) as TranscriptItem | undefined)?.first_page;
+      let typed: TypedLine[] | undefined;
+      const read = () => (typed ??= typedLines(readFileSync(join(place.work, basename(reads.typed_file)), 'utf8')));
+      return { limits: LIMITS, eyes: scriptedEyes(dataset, read, knobs.pages ?? pageStarts, { wrong: new Set(knobs.wrong), fail: new Set(knobs.fail), ...(firstPage ? { firstPage } : {}) }) };
+    },
   };
 }
