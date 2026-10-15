@@ -230,12 +230,14 @@ export const counterFold: Fold<CounterState> = {
       if (actions?.length) {
         const pages = { ...next.pages, order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
         for (const action of actions) {
+          // A dispatch is its key and its callId: another conversation may number its calls the same way.
           const key = `${line.conv ?? ''}\u0001${action.tool}\u0001${action.codeSha}`;
-          if (pages.gen[action.callId] === undefined) {
-            pages.gen[action.callId] = line.gen ?? 0;
-            pages.order[key] = [...(pages.order[key] ?? []), action.callId];
+          const dispatch = `${key}\u0001${action.callId}`;
+          if (pages.gen[dispatch] === undefined) {
+            pages.gen[dispatch] = line.gen ?? 0;
+            pages.order[key] = [...(pages.order[key] ?? []), dispatch];
           }
-          if (action.reached) pages.reached[action.callId] = true;
+          if (action.reached) pages.reached[dispatch] = true;
         }
         next.pages = pages;
       }
@@ -398,13 +400,15 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // earlier ones that never showed reaching it is a possible extra, never a proven one.
   let pagePossible = 0;
   const pagesMeasured = !state.pages.seen || state.pages.timed;
-  for (const callIds of pagesMeasured ? Object.values(state.pages.order) : []) {
-    callIds.forEach((callId, index) => {
-      if (index === 0) return;
-      const reached = callIds.slice(0, index).filter((earlier) => state.pages.reached[earlier]).at(-1);
-      if (reached === undefined) pagePossible += 1;
-      else if (state.pages.gen[callId]! > state.pages.gen[reached]!) repeated += 1;
-      else askedTwice += 1;
+  for (const dispatches of pagesMeasured ? Object.values(state.pages.order) : []) {
+    let reached: string | undefined;
+    dispatches.forEach((dispatch, index) => {
+      if (index > 0) {
+        if (reached === undefined) pagePossible += 1;
+        else if (state.pages.gen[dispatch]! > state.pages.gen[reached]!) repeated += 1;
+        else askedTwice += 1;
+      }
+      if (state.pages.reached[dispatch]) reached = dispatch;
     });
   }
   const vision = Object.values(state.looks.gens).reduce((sum, gens) => sum + gens.length, 0);

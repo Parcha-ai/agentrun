@@ -56,6 +56,16 @@ test('an entry seen only as a later one\'s prior was dispatched before it, in th
   assert.deepEqual(pages([revision(2, { callId: 'call-1', finished: true, prior: { callId: 'call-0' } })]), { repeated: 0, askedTwice: 0, possible: 1 }, 'call-0 came first and never reached the page');
 });
 
+test('two conversations that number their calls the same way keep their dispatches apart', () => {
+  // Conversation 7 dispatches call-0 and reaches the page; conversation 8 dispatches its own call-0 (same code), then
+  // call-1 in a later process: conversation 8's repeat counts, and conversation 7's call-0 does not hide it.
+  assert.deepEqual(pages([revision(1, { callId: 'call-0', finished: true }, { conv: 7 }), revision(1, { callId: 'call-0', finished: true }, { conv: 8 }),
+    revision(2, { callId: 'call-1' }, { conv: 8 })]), { repeated: 1, askedTwice: 0, possible: 0 });
+  // Conversation 8's call-0 never reached the page, though conversation 7's call-0 did: its next dispatch is possible.
+  assert.deepEqual(pages([revision(1, { callId: 'call-0', finished: true }, { conv: 7 }), revision(1, { callId: 'call-0' }, { conv: 8 }),
+    revision(2, { callId: 'call-1' }, { conv: 8 })]), { repeated: 0, askedTwice: 0, possible: 1 });
+});
+
 test('a key is its conversation, its tool and its code: another conversation, tool or code is another action', () => {
   const done = { callId: 'call-0', finished: true };
   assert.deepEqual(pages([revision(1, done, { conv: 7 }), revision(2, { callId: 'call-1' }, { conv: 8 })]), { repeated: 0, askedTwice: 0, possible: 0 });
