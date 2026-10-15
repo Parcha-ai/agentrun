@@ -12,13 +12,13 @@ import { gateProblems } from './gate.mjs';
 const recordings = new URL('../../apps/viewer/recordings/', import.meta.url).pathname;
 const secret = () => `sk-${'a1'.repeat(20)}`;
 /** A built viewer whose gallery is a copy of the bundled recordings, changed by `edit` before the build. */
-const built = (t, edit = () => {}) => {
+const built = (t, edit = () => {}, { files = false } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'gallery-gate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(recordings, join(dir, 'recordings'), { recursive: true });
   rmSync(join(dir, 'recordings', 'README.md'), { force: true });
   edit(join(dir, 'recordings'));
-  build(join(dir, 'dist'), join(dir, 'recordings'));
+  build(join(dir, 'dist'), join(dir, 'recordings'), { files });
   return join(dir, 'dist');
 };
 const paths = (dist) => gateProblems(dist).map(({ path, message }) => `${path}: ${message}`);
@@ -73,4 +73,23 @@ test('the gallery embeds exactly the recordings beside it, and an empty gallery 
   assert.ok(paths(dist).includes('gallery.js: is missing or does not hold the gallery'), paths(dist).join('\n'));
   const empty = built(t, (dir) => { rmSync(dir, { recursive: true }); mkdirSync(dir); });
   assert.ok(paths(empty).includes('recordings/: holds no recording: an empty gallery is never published'), paths(empty).join('\n'));
+});
+
+test('a build that ships the recordings as files: the index lists exactly the recordings beside it, each blob inside its own', (t) => {
+  assert.deepEqual(paths(built(t, () => {}, { files: true })), [], 'the files build of the bundled recordings passes');
+  const dist = built(t, () => {}, { files: true });
+  const indexFile = join(dist, 'recordings', 'index.json');
+  const index = JSON.parse(readFileSync(indexFile, 'utf8'));
+  writeFileSync(indexFile, JSON.stringify([...index, { ...index[0], id: 'not-beside' }]));
+  assert.ok(paths(dist).some((problem) => problem.startsWith('recordings/index.json: lists')), paths(dist).join('\n'));
+  const sha = Object.keys(index[0].blobs)[0];
+  for (const path of ['../../index.html', `blobs/${'0'.repeat(64)}.json`]) {
+    writeFileSync(indexFile, JSON.stringify([{ ...index[0], blobs: { [sha]: path } }, ...index.slice(1)]));
+    assert.ok(paths(dist).some((problem) => problem.startsWith('recordings/index.json: names')), `${path}: ${paths(dist).join('\n')}`);
+  }
+  rmSync(indexFile);
+  assert.ok(paths(dist).includes('recordings/index.json: is missing or does not hold the gallery'), paths(dist).join('\n'));
+  writeFileSync(indexFile, JSON.stringify(index));
+  writeFileSync(join(dist, 'recordings', 'notes.txt'), 'beside the index');
+  assert.ok(paths(dist).includes('recordings/notes.txt: is not a recording directory'), 'only the index may sit beside the recordings');
 });

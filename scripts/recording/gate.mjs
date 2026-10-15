@@ -15,14 +15,20 @@ import { credentialIn, validateRecording } from './validate.mjs';
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
+/** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
+const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
 
 /** Every problem with publishing the built viewer at `dist`, each `{ path, message }` with `path` relative to it. */
 export function gateProblems(dist) {
   const problems = [];
   const add = (path, message) => problems.push({ path, message });
   const recordings = join(dist, 'recordings');
-  const entries = existsSync(recordings) ? readdirSync(recordings, { withFileTypes: true }) : [];
-  if (entries.length === 0) add('recordings/', 'holds no recording: an empty gallery is never published');
+  // A build that ships the recordings as files keeps its index beside them: the one entry there that is not a recording.
+  const galleryFile = join(dist, 'gallery.js');
+  const text = existsSync(galleryFile) ? readFileSync(galleryFile, 'utf8') : '';
+  const files = text === INDEX;
+  const entries = (existsSync(recordings) ? readdirSync(recordings, { withFileTypes: true }) : []).filter((entry) => !(files && entry.isFile() && entry.name === 'index.json'));
+  if (!entries.some((entry) => entry.isDirectory())) add('recordings/', 'holds no recording: an empty gallery is never published');
   for (const entry of entries) {
     const at = `recordings/${entry.name}`;
     if (!entry.isDirectory()) { add(at, 'is not a recording directory'); continue; }
@@ -44,15 +50,28 @@ export function gateProblems(dist) {
     const found = TEXT.test(file) ? credentialIn(readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
   }
-  // The gallery embeds the recordings beside the page, and no other: what it holds was read from what was checked.
-  const galleryFile = join(dist, 'gallery.js');
-  const text = existsSync(galleryFile) ? readFileSync(galleryFile, 'utf8') : '';
+  // The gallery holds the recordings beside the page, and no other: embedded in gallery.js, or, in a build that ships
+  // them as files, listed in the index gallery.js points at, each blob at a path inside its own recording.
+  const beside = JSON.stringify(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort());
+  if (files) {
+    let index;
+    try { index = JSON.parse(readFileSync(join(recordings, 'index.json'), 'utf8')); } catch { index = undefined; }
+    if (!Array.isArray(index)) add('recordings/index.json', 'is missing or does not hold the gallery');
+    else {
+      if (JSON.stringify(index.map((entry) => entry.id).sort()) !== beside) add('recordings/index.json', `lists ${JSON.stringify(index.map((entry) => entry.id))}, not the recordings beside it`);
+      for (const entry of index) {
+        for (const path of Object.values(entry.blobs ?? {})) {
+          const named = typeof path === 'string' ? /^blobs\/([0-9a-f]{64}\.[a-z0-9]+)$/.exec(path) : null;
+          if (!named || !existsSync(join(recordings, String(entry.id), path))) add('recordings/index.json', `names ${JSON.stringify(path)} for ${entry.id}, not a blob in its directory`);
+        }
+      }
+    }
+    return problems;
+  }
   let embedded;
   try { embedded = text.startsWith(GALLERY) && text.endsWith(';\n') ? JSON.parse(text.slice(GALLERY.length, -2)).map((entry) => entry.id) : undefined; } catch { embedded = undefined; }
   if (!Array.isArray(embedded)) add('gallery.js', 'is missing or does not hold the gallery');
-  else if (JSON.stringify([...embedded].sort()) !== JSON.stringify(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort())) {
-    add('gallery.js', `embeds ${JSON.stringify(embedded)}, not the recordings beside it`);
-  }
+  else if (JSON.stringify([...embedded].sort()) !== beside) add('gallery.js', `embeds ${JSON.stringify(embedded)}, not the recordings beside it`);
   return problems;
 }
 
@@ -62,5 +81,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const problems = gateProblems(dist);
   for (const { path, message } of problems) console.error(`${path}: ${message}`);
   if (problems.length > 0) process.exitCode = 1;
-  else console.log(`${dist}: ${readdirSync(join(dist, 'recordings')).length} recording(s), every published file checked`);
+  else console.log(`${dist}: ${readdirSync(join(dist, 'recordings'), { withFileTypes: true }).filter((entry) => entry.isDirectory()).length} recording(s), every published file checked`);
 }

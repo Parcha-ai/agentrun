@@ -40,7 +40,7 @@ test('the gate sits between the build and the upload, as the command run below a
     assert.ok(index > 0, String(match));
     return index;
   };
-  const order = [at((line) => line === 'run: node apps/viewer/build.mjs'), at((line) => line === `run: ${GATE}`),
+  const order = [at((line) => line === 'run: node apps/viewer/build.mjs --files'), at((line) => line === `run: ${GATE}`),
     at((line) => line.startsWith('uses: actions/upload-pages-artifact@')), at((line) => line.startsWith('uses: actions/deploy-pages@'))];
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   assert.match(workflow, /path: apps\/viewer\/dist\n/);
@@ -53,7 +53,7 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
-  build(join(dir, 'apps/viewer/dist'), recordings);
+  build(join(dir, 'apps/viewer/dist'), recordings, { files: true });
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
 
