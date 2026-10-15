@@ -487,6 +487,92 @@ describe("the record stream", () => {
 		});
 	}, 30_000);
 
+	it("pays once for a request a new process asks again under the same key, and answers it from the first answer", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const real = serveModels(made.models);
+			const seen: Frame[] = [];
+			let firstId: unknown;
+			// The host serves the first request in full, but its answer never reaches the runner, as when the runner's
+			// process is killed while the provider answers: a killed process sends nothing more, no abort either.
+			const server: ModelServer = {
+				receive(frame, reply) {
+					if (frame.t === "model") seen.push(frame);
+					if (frame.t === "model" && firstId === undefined) {
+						firstId = frame.id;
+						return real.receive(frame, () => true);
+					}
+					if (frame.id === firstId && frame.t !== "model") return true;
+					return real.receive(frame, reply);
+				},
+				down: (from) => real.down(from),
+				close: () => real.close(),
+				get paid() {
+					return real.paid;
+				},
+			};
+			const runner = createRunner(made.options);
+			const host = await hold(made, runner, 1, kept.sink, server);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			for (let waited = 0; waited < 5_000 && real.paid === 0; waited += 10) await sleep(10);
+			await runner.home?.close(context);
+			host.close("gone");
+			const again = createRunner(made.options);
+			const back = await hold(made, again, 1, kept.sink, server);
+			getOrThrow(await back.resume({ epoch: 1 }, context));
+			getOrThrow(await back.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			expect(seen[1]?.key).toBe(seen[0]?.key);
+			// One provider call for each key the runners asked under, the first one's twice: paid once.
+			expect(real.paid).toBe(new Set(seen.map((frame) => frame.key)).size);
+			back.close("done");
+			await again.home?.close(context);
+		});
+	}, 30_000);
+
+	it("asks the provider again for a key whose first call the runner aborted: an aborted call has no answer to give", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink();
+			const real = serveModels(made.models);
+			const seen: Frame[] = [];
+			let first = true;
+			// The first runner closes in order: it aborts the request it was waiting for, and the host stops the call.
+			const server: ModelServer = {
+				receive(frame, reply) {
+					if (frame.t === "model") seen.push(frame);
+					if (frame.t === "model" && first) {
+						first = false;
+						return real.receive(frame, () => true);
+					}
+					return real.receive(frame, reply);
+				},
+				down: (from) => real.down(from),
+				close: () => real.close(),
+				get paid() {
+					return real.paid;
+				},
+			};
+			const runner = createRunner(made.options);
+			const host = await hold(made, runner, 1, kept.sink, server);
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			for (let waited = 0; waited < 5_000 && real.paid === 0; waited += 10) await sleep(10);
+			await runner.home?.close(context);
+			host.close("gone");
+			const again = createRunner(made.options);
+			const back = await hold(made, again, 1, kept.sink, server);
+			getOrThrow(await back.resume({ epoch: 1 }, context));
+			getOrThrow(await back.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			expect(seen[1]?.key).toBe(seen[0]?.key);
+			// The aborted key is paid again: one call more than the keys.
+			expect(real.paid).toBe(new Set(seen.map((frame) => frame.key)).size + 1);
+			back.close("done");
+			await again.home?.close(context);
+		});
+	}, 30_000);
+
 	it("gives an order the answer the runner sent before it closed, behind a slow log", async () => {
 		const models = createModels();
 		const kept = memorySink({ appendMs: 50 });
