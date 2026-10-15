@@ -254,7 +254,22 @@ test('the registry consumer pins a family edge to the version the repository loc
   assert.equal(lock.packages[`node_modules/${FAMILY}pi-codemode`].version, '1.1.0');
   assert.equal((await load()).stdout.trim(), 'preamble');
 }));
-test('the registry consumer fails when a family package lands on a version the repository lockfile does not hold', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
+test('the registry consumer fails when the pins cannot be met', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
   await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
-  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), /ETARGET|No matching version|does not hold/);
+  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), /ETARGET|No matching version/);
+}));
+test('the installed tree is checked against the lockfile: an install that succeeds on a version the lockfile does not hold fails', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
+  // The install is honest, then the consumer's lockfile is rewritten as if npm had resolved the edge to the newer minor.
+  const drifting = async (command, args, options) => {
+    const done = await run(command, args, options);
+    if (command === 'npm' && args[0] === 'install') {
+      const path = join(consumer, 'package-lock.json');
+      const lock = JSON.parse(await readFile(path, 'utf8'));
+      lock.packages[`node_modules/${FAMILY}pi-codemode`].version = '1.2.0';
+      await writeFile(path, JSON.stringify(lock));
+    }
+    return done;
+  };
+  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run: drifting }), /does not hold|the repository does not hold/);
+  await installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run });
 }));
