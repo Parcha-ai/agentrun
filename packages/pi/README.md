@@ -230,6 +230,28 @@ With `rubricSections`, every supplied section must appear on every generated LLM
 
 The standalone CLI remains available as `node packages/pi/dist/cli.js --help` from source. It imports a trusted caller-owned `--config` module for `author` and `run`; importing that module executes its code. `validate` can evaluate code probes. Review executable workflows before using it.
 
+## Sign in, pick a model, check keys
+
+`@parcha/agentrun-pi/signin` is what a demo, or your own app, runs before its first model call. It is the only entry of this package that loads `@earendil-works/pi-ai`, an optional peer: install it beside the package (`npm install @earendil-works/pi-ai`) to use this entry. No other entry imports it.
+
+```js
+import { builtinModels } from '@earendil-works/pi-ai/providers/all';
+import { checkKeys, resolveModel, usageLimitError } from '@parcha/agentrun-pi/signin';
+
+const report = checkKeys(spec, { live: true, dir: demoDir });
+if (!report.ok) { console.error(report.text); process.exit(report.exitCode); } // 2: nothing was sent
+const { model, getApiKey, source } = await resolveModel(spec, { provider, model: modelId });
+const message = await builtinModels().completeSimple(model, context, { apiKey: await getApiKey() });
+if (usageLimitError(message)) throw usageLimitError(message);
+```
+
+- `checkKeys(spec, options)` lists what this run needs and what is missing: each key by its env name and where to create it, each program on `PATH` (refused outside its `platforms`, or below its `min` version as the first x.y.z that `<cmd> --version` prints), and each package as the demo's directory resolves it, with the exact `npm install --no-save <name>@<version>` line when it is missing. An item with `for: 'live'` or `for: 'kill'` counts only in that mode. A `oneOf` choice is met by any member, and an array member only by all of its items. A Jev judge asks for `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`. The check sends no request and prompts for nothing; a key's value is never printed.
+- `checkSetupPrompt(spec, text)` checks a demo's setup prompt against its spec: every key env name, program command and package name in the spec appears in it, and it names no credential env name (`*_API_KEY`, `*_KEY`, `*_TOKEN*`, `*_SECRET*`, `*_PROJECT_ID`) the spec does not list. `node scripts/check-setup-prompts.mjs` runs it for every `examples/*/demo.json` in CI.
+- `resolveModel(spec, options)` picks the model and its key. An explicit `provider` (and `model`) with that provider's env key wins, passed on as an explicit key; Anthropic takes `ANTHROPIC_API_KEY` only. Otherwise a stored ChatGPT sign-in is used, and the model is chosen from the account's own `GET /v1/models` by what the spec needs (text, tools, images): the spec's default when the account lists it, else the newest one pi-ai knows. With neither, it runs the sign-in. A sign-in's model takes only streaming Responses calls with `store: false` (`responsesOnly`, `unsupported`). The spec's eyes model resolves the same way: an explicit `eyes` model with its key, else the lead model when it meets the eyes' needs, else a `ResolveError` naming the gap; the ChatGPT plan takes no video input. The result serializes without its key.
+- `signIn(options)` runs pi-ai's own Sign in with ChatGPT once per install, with this app's name and a host id kept for the install. pi-ai's callback port is fixed at 1455; when another login holds it, the sign-in fails at once and says to finish or cancel that login. A pi-ai that ignores the app name (before 1.1) is refused before the page opens.
+- The sign-in lives in `$AGENTRUN_HOME/auth.json` (default `~/.config/agentrun/`): the directory is 0700 and the file 0600, written whole and renamed into place. An existing directory others can read is refused, not changed. Refreshes are serialized across processes by a lock file beside it, so the rotating refresh token is never sent twice; a process that waited reads the new token. A token never reaches a log, a URL or a recording.
+- The plan's usage limit (`subscription_sharing_usage_limit_exceeded`) maps to `UsageLimitError`: "Your ChatGPT plan's usage limit is reached; wait, or set a provider key." It is never retried.
+
 ## Develop from source
 
 To change the extension itself, clone and build the repository:
@@ -250,9 +272,9 @@ These commands create a separate `agentrun-pi-project` beside the checkout. You 
 
 ## Dependencies and retained data
 
-Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
+Pi is optional for `@parcha/agentrun-dsl`. This package depends on the DSL and the Jev adapter only. The Pi packages it uses (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-tui`, and `@earendil-works/pi-ai` for the sign-in entry only) and `typebox` are optional peer dependencies at `*`, as Pi's package guidance requires, so an installed copy never shadows the host's. The release inventory records the locked versions.
 
-When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent @earendil-works/pi-agent-core @earendil-works/pi-tui typebox`). The tested host is Pi 1.1.0; peer ranges at `*` do not make an older or newer host compatible. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
+When loaded as an extension, Pi resolves its core packages and TypeBox through the host loader, and `pi install` adds nothing else. A standalone application or the `agentrun-pi` CLI has no host: install the peers yourself (`npm install @earendil-works/pi-coding-agent @earendil-works/pi-agent-core @earendil-works/pi-tui typebox`). The tested host is Pi 1.1.0; peer ranges at `*` do not make an older or newer host compatible. The sign-in entry needs pi-ai 1.1.0 or later: pi-ai 1.0.x ignores the app name and would put pi's name on ChatGPT's sign-in page, so `signIn` refuses it with `SignInError` (`APP_NAME_IGNORED`) before the page is shown. The offline loader regression checks competing local dependencies, a native file read, and the scripted workflow. Pi's [package guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#dependencies) is the rule this follows.
 
 The durable entry (`@parcha/agentrun-pi/durable`) takes pi-durable and chord as optional peers from 1.0.4 to below 1.3; CI runs it on 1.0.4, 1.1.0 and 1.2.0. A run that pi-durable 1.1 left (killed, paused, or with a tool call in flight) continues on 1.2. The move does not go back. A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1: 1.1 waits on the newer task, and the only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. Continue such a run on 1.2, and do not downgrade pi under a live run. A host can call `refuseNewerTasks(harness, context)` from the durable entry after opening its Harness. On pi before 1.2, it then fails such a store with `NewerTaskError` (code `PI_TASK_NEWER`, naming the task's kind and version) instead of waiting.
 

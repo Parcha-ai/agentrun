@@ -19,6 +19,10 @@
     "./durable": {
       "types": "./dist/durable/index.d.ts",
       "import": "./dist/durable/index.js"
+    },
+    "./signin": {
+      "types": "./dist/signin/index.d.ts",
+      "import": "./dist/signin/index.js"
     }
   },
   "bin": {
@@ -51,6 +55,7 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*",
@@ -59,6 +64,9 @@
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-agent-core": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
       "optional": true
     },
     "@earendil-works/pi-coding-agent": {
