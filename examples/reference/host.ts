@@ -17,6 +17,7 @@ import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
 import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { ChildEnv } from '@parcha/pi-vision/node';
+import type { BoxProvider } from '@parcha/pi-transport';
 import type { Recorder } from './record.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
@@ -72,11 +73,14 @@ export type Host = {
   credentials: { redact?: () => readonly string[]; childEnv?: ChildEnv };
 };
 
+/** What a scripted tool is handed beside its arguments: the box provider of the demo's `boxes` (crossings and transport box lines already in it), when it declares one. */
+export type ToolContext = { boxes?: BoxProvider };
+
 /** What a job scripts for the no-key host. */
 export type Fakes = {
   /** The lead's next turn from the transcript so far, so a process that resumes a request answers it the same. */
   model(messages: readonly Message[]): AssistantMessage;
-  tools: Record<string, (args: Record<string, unknown>) => unknown>;
+  tools: Record<string, (args: Record<string, unknown>, context?: ToolContext) => unknown>;
   judge: RunJudge;
   /** Whether a page the browser read is content. Absent, the browser judges none. */
   page?: BrowserDecisions['classifyPage'];
@@ -102,7 +106,7 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
@@ -158,7 +162,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         const report = (outcome: 'applied' | 'failed') => call?.({ outcome, tool: node.tool, argsHash: effect.argsHash });
         let value: unknown;
         for (let send = 1; ; send += 1) {
-          try { value = await tool(input); break; } catch (error) {
+          try { value = await tool(input, options.boxes ? { boxes: options.boxes } : undefined); break; } catch (error) {
             report('failed');
             if (send >= 2 || (error as { retryable?: boolean } | null | undefined)?.retryable !== true) throw error;
           }

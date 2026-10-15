@@ -4,14 +4,25 @@
 /** A kill the supervisor makes. `point` names a crossing the child takes (`effect.kept <tool>`, `judge.asked <label>`, `model.request turn 1`, a package's
  *  own such as `vision.filing`); the first time the child crosses it, it is killed with SIGKILL. `kind: 'box'` says the whole machine or sandbox was
  *  taken away, and the supervisor destroys the process's boxes with it. */
-export type CrossingKill = { point: string; why: string; kind?: 'process' | 'box' };
+export type CrossingKill = {
+  point: string; why: string; kind?: 'process' | 'box';
+  /** `run` (the default): the process the run lives in dies, and the supervisor writes a kill line with its `kind`. `tool`: a box a tool made (the audit's install box) is
+   *  destroyed once at the crossing: the run's process lives, so no kill line is written, and the transport box lines record the loss. */
+  target?: 'run' | 'tool';
+  /** The nth time the child takes the crossing (default 1): the third box command in flight, say. */
+  n?: number;
+};
 /** A storm: `kills` kills, each at the first crossing the child takes once it has run `gapMs` since it started (a crossing between a tool's dispatch and the
  *  host keeping its answer is never cut: nothing records what the tool did yet). */
 export type StormKill = { storm: { kills: number; gapMs: number }; kind?: 'process' | 'box' };
 export type KillSpec = CrossingKill | StormKill;
 
 /** A box a job's tools run in: a directory of this machine (`local`), or a Docker container. Cloud boxes take their provider's package. */
-export type BoxSpec = { kind: 'local' | 'docker'; image?: string };
+export type BoxSpec = {
+  kind: 'local' | 'docker'; image?: string;
+  /** Also run the job's own tools (the disk package's shell and files) in a box of this provider. Without it the provider is only handed to the demo's tools (`context.boxes`). */
+  runIn?: boolean;
+};
 
 export type DemoSpec = {
   name: string;
@@ -34,6 +45,8 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
   const list = spec.kills ?? (spec.kill ? [{ point: spec.kill.point, why: spec.kill.why }] : []);
   for (const kill of list) {
     if (kill.kind !== undefined && kill.kind !== 'process' && kill.kind !== 'box') throw new Error(`a kill's kind is "process" or "box", not ${JSON.stringify(kill.kind)}`);
+    if (!('storm' in kill) && kill.target !== undefined && kill.target !== 'run' && kill.target !== 'tool') throw new Error(`a kill's target is "run" or "tool", not ${JSON.stringify(kill.target)}`);
+    if (!('storm' in kill) && kill.n !== undefined && !(Number.isInteger(kill.n) && kill.n >= 1)) throw new Error('a kill\'s n is a positive integer');
     if ('storm' in kill) {
       if (!Number.isInteger(kill.storm.kills) || kill.storm.kills < 1 || !(kill.storm.gapMs >= 0)) throw new Error('a storm names kills (a positive integer) and gapMs (0 or more)');
     } else if (typeof kill.point !== 'string' || !kill.point || typeof kill.why !== 'string') throw new Error('a kill names a point and says why');
@@ -42,15 +55,30 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
 }
 
 /** One kill the supervisor hands one process: the crossing to die at, or a storm's gap. */
-export type Plan = { point: string; kind: 'process' | 'box'; why: string } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string };
+export type Plan = { point: string; kind: 'process' | 'box'; why: string; target: 'run' | 'tool'; n: number } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string; target: 'run' };
+/** What one process is handed: the kill that ends it (if any), and the tool boxes it destroys on the way. */
+export type ChildPlan = { run?: Plan; tools: Plan[] };
 
 /** The list as one plan per kill (a storm of N is N plans). */
 export function plansOf(kills: KillSpec[]): Plan[] {
   return kills.flatMap((kill): Plan[] => {
     const kind = kill.kind ?? 'process';
-    if ('storm' in kill) return Array.from({ length: kill.storm.kills }, (_, index) => ({ storm: true as const, gapMs: kill.storm.gapMs, kind, why: `storm ${index + 1} of ${kill.storm.kills}` }));
-    return [{ point: kill.point, kind, why: kill.why }];
+    if ('storm' in kill) return Array.from({ length: kill.storm.kills }, (_, index) => ({ storm: true as const, gapMs: kill.storm.gapMs, kind, target: 'run' as const, why: `storm ${index + 1} of ${kill.storm.kills}` }));
+    return [{ point: kill.point, kind, why: kill.why, target: kill.target ?? 'run', n: kill.n ?? 1 }];
   });
+}
+
+/** The plans as what each process is handed: a tool-box plan rides with the next run kill (or the last process), so one process destroys its tool boxes and then dies. */
+export function childPlansOf(plans: Plan[]): ChildPlan[] {
+  const out: ChildPlan[] = [];
+  let tools: Plan[] = [];
+  for (const plan of plans) {
+    if (plan.target === 'tool') { tools.push(plan); continue; }
+    out.push({ run: plan, tools });
+    tools = [];
+  }
+  out.push({ tools });
+  return out;
 }
 
 /** `--input <path|json>`: a JSON object, from a file or inline. */

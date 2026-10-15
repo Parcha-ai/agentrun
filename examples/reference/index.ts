@@ -39,9 +39,12 @@ export type { Recorder, Supervisor, Header } from './record.ts';
 export { demo } from './demo.ts';
 /** What the entry acts on in a demo's `demo.json`: its `kills`, `expectedCost`, `input` and `boxes`. */
 export type { DemoSpec, KillSpec, CrossingKill, StormKill, BoxSpec } from './demo-spec.ts';
+export type { ToolContext } from './host.ts';
 export type { DemoOptions, DemoResult, LiveParts } from './demo.ts';
 /** The browser a live run drives, and the spend cap and kill plans the standard flags give. */
 export { chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf } from './demo-spec.ts';
 /** A crossing function and the taps that put the crossings at the host's seams: a package adds its own crossing (`vision.filing`) through the same function. */
 export { crossings, tapFakes, tapHost } from './crossings.ts';
 export type { Cross } from './crossings.ts';
+/** The box provider the entry hands a demo, with its crossings (`transport.box.exec`: a box command in flight) and transport box lines built in. */
+export { tapBox, BOX_CROSSINGS } from './boxes.ts';

@@ -23,9 +23,11 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
+import type { BoxProvider } from '@parcha/pi-transport';
 import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { crossings, tapFakes, tapHost, type Crossing } from './crossings.ts';
-import { chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type DemoSpec, type Plan } from './demo-spec.ts';
+import { tapBox } from './boxes.ts';
+import { crossings, tapFakes, tapHost, type Crossing, type EffectWindow } from './crossings.ts';
+import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
@@ -71,7 +73,8 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   const result = await supervise(options, values);
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result);
-  if (result.overBudget || result.processes.at(-1)?.outcome?.status !== 'complete') process.exitCode = 1;
+  // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
+  if (options.argv === undefined && (result.overBudget || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -93,10 +96,16 @@ function fakeBrowser(url: string): BrowserPlane {
   };
 }
 
-/** One box for this process: a directory of this machine whose workspace is the run's `work/`, or a container the job's files are uploaded to. */
-async function inBox(kind: 'local' | 'docker', image: string | undefined, place: { id: string; root: string; work: string }, files: Record<string, Uint8Array>) {
+/** The demo's box provider: its `boxes` declaration, a directory of this machine (`local`) or Docker. */
+async function boxProvider(spec: DemoSpec, place: { root: string }) {
+  if (!spec.boxes) return undefined;
+  return spec.boxes.kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(spec.boxes.image ? { image: spec.boxes.image } : undefined);
+}
+
+/** One box the job's own tools (the disk package's shell and files) run in: a directory of this machine whose workspace is the run's `work/`, or a container the
+ *  job's files are uploaded to. It comes from the tapped provider, so its commands are crossings and its life is on the recording. */
+async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { id: string; work: string }, files: Record<string, Uint8Array>) {
   const { boxEnv } = await import('@parcha/pi-transport/hands');
-  const provider = kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(image ? { image } : undefined);
   const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
   if (!created.ok) throw created.error;
   const box = created.value;
@@ -111,18 +120,21 @@ async function inBox(kind: 'local' | 'docker', image: string | undefined, place:
 async function child(options: DemoOptions) {
   const env = process.env;
   const place = await placeAt(env.DIR);
-  const plan = env.PLAN ? (JSON.parse(env.PLAN) as Plan) : undefined;
+  const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
   const cross = crossings(plan, env.CROSS_LOG);
+  const window: EffectWindow = { open: 0 };
   const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   try {
     const parts = live ? await options.live!({ env, browser: browserKind }) : {};
-    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}) });
-    tapHost(local.host, cross);
+    const provider = await boxProvider(options.spec, place);
+    const boxes = provider ? tapBox(provider, { cross, window, ...(recorder ? { recorder } : {}) }) : undefined;
+    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+    tapHost(local.host, cross, window);
     if (parts.host) Object.assign(local.host, parts.host);
-    if (options.spec.boxes) box = await inBox(options.spec.boxes.kind, options.spec.boxes.image, place, options.job.files ?? {});
+    if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
     await recorder?.detach();
@@ -201,19 +213,19 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // Metering: the recording's lines as they stand, folded; past the cap the run is stopped.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { const usd = meter(recordDir); if (usd !== null && usd > maxUsd) { overBudget = true; stopper.abort(); } }, 250);
   try {
-    let remaining = [...plans];
+    const remaining = childPlansOf(plans);
     for (;;) {
-      const plan = remaining.shift();
+      const plan = remaining.shift() ?? { tools: [] };
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
-      const result = await spawnChild(options.self, { ...base, CROSS_LOG: log, ...(plan ? { PLAN: JSON.stringify(plan) } : {}) }, (pid) => { supervisor.host('process.started', { gen, pid }); }, stopper);
+      const result = await spawnChild(options.self, { ...base, CROSS_LOG: log, PLAN: JSON.stringify(plan) }, (pid) => { supervisor.host('process.started', { gen, pid }); }, stopper);
       processes.push(result);
       if (overBudget) { supervisor.host('kill', { gen, label: 'max-usd', crossing: null, kind: 'process' }); kills.push({ gen, point: null, kind: 'process', why: `past --max-usd ${maxUsd}` }); break; }
       if (result.signal === 'SIGKILL') {
         const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);
-        const kind = plan?.kind ?? 'process';
-        supervisor.host('kill', { gen, label: plan && !('storm' in plan) ? plan.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
-        kills.push({ gen, point: at?.point ?? null, kind, why: plan?.why ?? 'a kill' });
+        const kind = plan.run?.kind ?? 'process';
+        supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
+        kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
         if (kind === 'box') destroyBoxes(spec, 'reference', dir);
         continue;
       }

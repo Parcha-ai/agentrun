@@ -2,22 +2,31 @@
 // to `CROSS_LOG` so a process that dies leaves them behind, and ends itself with SIGKILL at the planned one. A crossing is never a clock: where a kill lands
 // is a fact of the run. A package adds its own crossings through the same `cross` function (`vision.filing`), so `kills[].point` can name them.
 import { appendFileSync } from 'node:fs';
-import type { Fakes, Host, StatusEvent } from './host.ts';
-import type { Plan } from './demo-spec.ts';
+import type { Fakes, Host, StatusEvent, ToolContext } from './host.ts';
+import type { ChildPlan } from './demo-spec.ts';
 
-/** `cut: false` logs a crossing that is never a kill point. */
-export type Cross = (point: string, options?: { cut?: boolean }) => void;
+/** `cut: false` logs a crossing that is never a kill point. A crossing returns true when a tool-box kill is due at it: the caller destroys the box it is taking the crossing in. */
+export type Cross = (point: string, options?: { cut?: boolean }) => boolean;
 export type Crossing = { point: string; n: number; pid: number };
 
-/** The child's crossing function for the kill planned for this process (none: it only logs). */
-export function crossings(plan: Plan | undefined, log: string | undefined, started = Date.now()): Cross {
+/** The child's crossing function for the kills planned for this process (none: it only logs). */
+export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now()): Cross {
   let n = 0;
+  const seen = new Map<string, number>();
+  const done = new Set<number>();
   return (point, options = {}) => {
     const cut = options.cut !== false;
     if (cut) n += 1;
+    const times = (seen.get(point) ?? 0) + 1;
+    seen.set(point, times);
     if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid } satisfies Crossing)}\n`);
-    if (!cut || !plan) return;
-    if ('storm' in plan ? Date.now() - started >= plan.gapMs : plan.point === point) process.kill(process.pid, 'SIGKILL');
+    // A tool box destroyed at its crossing: once, at the nth time (a crossing that is not a kill point can be one: the box is the caller's to end).
+    const tool = plan?.tools.findIndex((entry, index) => !done.has(index) && 'point' in entry && entry.point === point && times === entry.n) ?? -1;
+    if (tool >= 0) { done.add(tool); return true; }
+    const run = plan?.run;
+    if (!cut || !run) return false;
+    if ('storm' in run ? Date.now() - started >= run.gapMs : run.point === point && times === run.n) process.kill(process.pid, 'SIGKILL');
+    return false;
   };
 }
 
@@ -32,10 +41,10 @@ export function tapFakes(fakes: Fakes, cross: Cross): Fakes {
       cross(`model.answered turn ${turn}`);
       return answer;
     },
-    tools: Object.fromEntries(Object.entries(fakes.tools).map(([name, tool]) => [name, async (args: Record<string, unknown>) => {
+    tools: Object.fromEntries(Object.entries(fakes.tools).map(([name, tool]) => [name, async (args: Record<string, unknown>, context?: ToolContext) => {
       // Between a tool's dispatch and the host keeping its answer nothing records what the tool did: a kill there leaves the effect unknown, for an operator.
       cross(`tool.dispatch ${name}`, { cut: false });
-      const result = await tool(args);
+      const result = await tool(args, context);
       cross(`tool.returned ${name}`, { cut: false });
       return result;
     }])),
@@ -48,16 +57,18 @@ export function tapFakes(fakes: Fakes, cross: Cross): Fakes {
   };
 }
 
+/** How many tool calls are between their dispatch and their kept answer: a crossing taken inside one is never a run kill point (a kill there leaves the effect unknown). */
+export type EffectWindow = { open: number };
+
 /** The host with a crossing at each of its seams: the span after the host keeps a tool's answer and before the driver commits it (`effect.kept`, cut only
  *  when no other call is between its dispatch and its kept answer: a kill there would leave that one unknown), an evidence filing, each row of events, the delivery. */
-export function tapHost(host: Host, cross: Cross): void {
+export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open: 0 }): void {
   const { runEffect } = host.tools;
-  let inFlight = 0;
   host.tools = { ...host.tools, runEffect: async (request) => {
-    inFlight += 1;
+    window.open += 1;
     let value: unknown;
-    try { value = await runEffect(request); } finally { inFlight -= 1; }
-    cross(`effect.kept ${request.node.tool}`, { cut: inFlight === 0 });
+    try { value = await runEffect(request); } finally { window.open -= 1; }
+    cross(`effect.kept ${request.node.tool}`, { cut: window.open === 0 });
     return value;
   } };
   const { evidence, status, deliver } = host;

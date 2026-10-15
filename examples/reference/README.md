@@ -143,3 +143,57 @@ Each is marked in the code with the package that owns it.
   A resumed workflow task would reach the browser before its sessions are reconciled. `assemble.ts` holds the task's
   steps until the reconcile has run, and until `start` has accepted this job's request: `start` refuses a request that is
   not the run's own with `RUN_STORE_BINDING_MISMATCH`, so a refused job never lets the saved task run.
+
+## The entry as a demo's platform: `demo()`
+
+A demo's `run.ts` is about twenty lines: its spec, its job, its fakes and one call. The entry reads the standard flags and runs the job on the no-key host.
+
+```ts
+import { demo } from '../reference/index.ts';
+import spec from './demo.json' with { type: 'json' };
+import { fakes } from './fakes.ts';
+import job from './job.ts';
+
+await demo({ self: import.meta.url, spec, job, fakes });
+```
+
+| Flag | What it does |
+|---|---|
+| (none) | the job on fakes: $0, no key |
+| `--live` | real models and services; refused unless the demo supplies them (`live`) |
+| `--kill` | the spec's `kills`, in order, each ending one process; a fresh process resumes on the same directory |
+| `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
+| `--input <path\|json>` | the job's input; the job's own is the default |
+| `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
+| `--local-chrome` | with `--live` and no Browserbase key: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used whenever its key is set; a local Chrome is never chosen for you |
+| `--dir <path>` | keeps the run's directory |
+| `--json` | the result as one JSON object |
+
+### The spec
+
+The parts of `demo.json` the entry acts on:
+
+- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs`. The template's single `kill` is a list of one.
+- `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
+- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. `runIn: true` also runs the job's own disk tools in a box of it.
+
+### Crossings
+
+A crossing is a named point the child takes; `kills[].point` names one, and the first time (or the nth) the child takes it, the child is killed with SIGKILL. A package adds its own through the same `cross` function (`vision.filing`).
+
+| Point | Where |
+|---|---|
+| `model.request turn <n>` / `model.answered turn <n>` | the scripted model's request, and its answer, at the turn after n tool results |
+| `judge.asked <label>` / `judge.answered <label>` | the judge's question and answer |
+| `tool.dispatch <tool>` / `tool.returned <tool>` | a scripted tool is called and returns. Never a kill point: between the dispatch and the host keeping the answer nothing records what the tool did, and a kill there leaves the call unknown |
+| `effect.kept <tool>` | the host has kept the tool's answer and the driver has not yet committed it. A kill point only when no other call is in that window. The resumed process settles the call from the kept answer: it is not sent again |
+| `receipt.filing <tool>` / `receipt.filed <tool>` | an evidence receipt is about to be filed, and has been |
+| `event <source>.<type>` | each row of events the run reports (`event workflow.node.start`, `event browser.launched`, `event vision.look`) |
+| `deliver.writing` / `deliver.written` | the delivery |
+| `transport.box.create` / `transport.box.created` | a box is about to be made, and exists |
+| `transport.box.exec` | a box command is in flight: started, its answer not yet read |
+| `transport.box.destroy` | a box is about to be destroyed |
+
+A crossing taken inside a tool call (`transport.box.*` from a tool that makes its own box) is never a `target: "run"` kill point, for the reason `tool.dispatch` is not. It can be a `target: "tool"` kill.
+
+The transport box lines are live lines of source `transport`: `box.created` `{ box, provider }`, `box.killed` `{ box, crossing }` (written before the box is destroyed) and `box.ended` `{ box, provider, killed }`.

@@ -22,11 +22,10 @@ async function run(t, spec, argv, env = {}) {
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before); });
   // The supervisor is this process; it starts the fixture as each child.
   const { demo: fixtureDemo } = await import('./reference/demo.ts');
-  const { fakes: scripted, job } = await import('./reference/job.ts');
-  const judgeCost = Number(env.DEMO_JUDGE_COST ?? 0);
-  const fakes = judgeCost ? { ...scripted, judge: async (request) => ({ ...(await scripted.judge(request)), cost_usd: judgeCost }) } : scripted;
+  // The supervisor needs the same fakes and job the fixture runs (it serves the fake browser's pages): the fixture's own module, imported.
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const recording = join(tmp, 'recording');
-  const result = await fixtureDemo({ self: FIXTURE, spec: JSON.parse(readFileSync(file, 'utf8')), job, fakes, argv: ['--record', recording, ...argv] });
+  const result = await fixtureDemo({ ...options, argv: ['--record', recording, ...argv] });
   return { result, recording, tmp };
 }
 
@@ -48,7 +47,7 @@ test('the spec\'s kills are a list: a named crossing and a storm, in order, each
 });
 
 test('a kill of kind box is written as a box kill, and the process\'s box is taken away with it', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, { boxes: { kind: 'local' }, kills: [{ point: 'judge.asked verdict', why: 'the machine goes with the process', kind: 'box' }] }, ['--kill', '--json']);
+  const { result, recording } = await run(t, { boxes: { kind: 'local', runIn: true }, kills: [{ point: 'judge.asked verdict', why: 'the machine goes with the process', kind: 'box' }] }, ['--kill', '--json']);
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
   assert.deepEqual(result.kills.map((kill) => kill.kind), ['box']);
   const kill = readEvents(recording).find((line) => line.source === 'host' && line.kind === 'kill');
@@ -85,6 +84,16 @@ test('--max-usd: the default is twice expectedCost, and a run past the cap is st
   assert.deepEqual(validateRecording(recording), []);
   const within = await run(t, { expectedCost: 1 }, ['--json'], { DEMO_JUDGE_COST: '0.3' });
   assert.equal(within.result.overBudget, false);
+  // A run still going when it passes the cap is stopped: the judge's 0.30 is on the recording, the next step lingers 20 s, and the supervisor ends the process
+  // long before, writes the kill (label max-usd) and does not resume it.
+  const started = Date.now();
+  const stopped = await run(t, { expectedCost: 0.05 }, ['--json'], { DEMO_JUDGE_COST: '0.3', DEMO_LINGER_MS: '20000' });
+  assert.ok(Date.now() - started < 15_000, 'the run was stopped, not waited out');
+  assert.equal(stopped.result.overBudget, true);
+  assert.deepEqual(stopped.result.processes.map((process) => process.signal), ['SIGKILL']);
+  assert.deepEqual(stopped.result.kills.map((kill) => kill.why), ['past --max-usd 0.1']);
+  assert.equal(readEvents(stopped.recording).find((line) => line.source === 'host' && line.kind === 'kill').data.label, 'max-usd');
+  assert.deepEqual(validateRecording(stopped.recording), []);
 });
 
 test('the browser: Browserbase when its key is set, else a local Chrome only when asked for and only live; fakes use the fake', () => {
@@ -106,4 +115,34 @@ test('the kills a spec asks for are checked: the template\'s single kill is a li
 
 test('--live is refused by a demo that supplies no live parts', { timeout: 60_000 }, async (t) => {
   await assert.rejects(() => run(t, {}, ['--live']), /supplies no live parts|needs a browser/);
+});
+
+test('the boxes capability: a tool\'s box is destroyed once at "a box command in flight", the run\'s process lives, no kill line is written, and the transport box lines record the loss', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { boxes: { kind: 'local' }, kills: [{ point: 'transport.box.exec', why: 'the install box is lost with its command running', target: 'tool' }] }, ['--kill', '--json'], { DEMO_BOX_TOOL: '1' });
+  assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status]), [[null, 'complete']], 'one process: the run itself was not killed');
+  assert.deepEqual(result.kills, []);
+  assert.equal(result.record.company, 'Acme Ltd');
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  assert.equal(lines.filter((line) => line.source === 'host' && line.kind === 'kill').length, 0, 'no kill line: the run\'s process lived');
+  const box = lines.filter((line) => line.source === 'transport').map((line) => [line.kind, line.data.killed ?? line.data.crossing ?? null]);
+  assert.deepEqual(box, [['box.created', null], ['box.killed', 'transport.box.exec'], ['box.ended', true], ['box.created', null], ['box.ended', false]], 'the first install box was lost and the second ran to its end');
+  assert.equal(fold(lines).kills, 0);
+});
+
+test('a run kill at "a box command in flight" is not a kill point inside a tool call (it would leave the call unknown): the crossing is logged and never cut', { timeout: 300_000 }, async (t) => {
+  const { result } = await run(t, { boxes: { kind: 'local' }, kills: [{ point: 'transport.box.exec', why: 'a kill here is the operator\'s, not the demo\'s' }] }, ['--kill', '--json'], { DEMO_BOX_TOOL: '1' });
+  assert.deepEqual(result.processes.map((process) => process.signal), [null], 'the run was not killed');
+  assert.equal(result.processes[0].outcome.status, 'complete');
+});
+
+test('a kill\'s n picks the nth time the crossing is taken: the third node start lands later in the process than the second', { timeout: 300_000 }, async (t) => {
+  const at = async (n) => {
+    const { result, recording } = await run(t, { kills: [{ point: 'event workflow.node.start', why: `node start ${n}`, n }] }, ['--kill', '--json']);
+    assert.equal(result.processes.at(-1).outcome.status, 'complete');
+    return readEvents(recording).find((line) => line.source === 'host' && line.kind === 'kill').data.crossing;
+  };
+  const [second, third] = [await at(2), await at(3)];
+  assert.equal(second.point, 'event workflow.node.start');
+  assert.ok(third.n > second.n, `the third (crossing ${third.n}) is after the second (${second.n})`);
 });
