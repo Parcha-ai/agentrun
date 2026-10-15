@@ -8,7 +8,7 @@ import { createContext, Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { bundle, checkModule, DSL_ITEM_STATE } from '../build.mjs';
 import { canonicalJson, stateDelta } from '../../../packages/dsl/src/recovery/item-state.ts';
-import { itemStateOf, statesBySha } from '../src/items.ts';
+import { itemStateOf, resultOf, statesBySha } from '../src/items.ts';
 import { sha256Hex } from '../src/sha256.ts';
 
 const nodeSha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -39,6 +39,19 @@ test('a v4 item\'s state rebuilds through the DSL\'s itemState with the page\'s 
   assert.match((itemStateOf(item, states, '/root/steps/9') as { unreadable: string }).unreadable, /keeps no state at \/root\/steps\/9/);
 });
 
+// A failed map's finished results, each any JSON value kept once in agentrun.states by its digest (the driver's canonicalHash).
+const RESULTS: unknown[] = [state, 'a string', 0, false, ['a', { b: 1 }]];
+const resultDocs = RESULTS.map((result) => ({ driver: 'd', sha256: nodeSha(canonicalJson(result)), state: result }));
+
+test('a failed map\'s result is read by its digest, any JSON value, or says why it cannot be', () => {
+  const held = statesBySha(resultDocs);
+  for (const [index, result] of RESULTS.entries()) assert.deepEqual(resultOf(resultDocs[index]!.sha256, held), { result }, JSON.stringify(result));
+  assert.deepEqual(resultOf(resultDocs[1]!.sha256, Object.fromEntries(held)), { result: 'a string' }, 'states as a record too');
+  assert.match((resultOf(resultDocs[0]!.sha256, new Map()) as { unreadable: string }).unreadable, /its document [0-9a-f]{64} is missing/);
+  assert.match((resultOf(resultDocs[1]!.sha256, statesBySha([{ sha256: resultDocs[1]!.sha256, state: 'another string' }])) as { unreadable: string }).unreadable, /does not match its SHA-256/);
+  for (const slot of [null, 'abc', 7, resultDocs[0]!.sha256.toUpperCase()]) assert.deepEqual(resultOf(slot, held), { unreadable: 'not a digest' }, String(slot));
+});
+
 test('the build inlines the DSL\'s module from its source, and refuses it once it imports anything', () => {
   const built = bundle('items.ts') as { body: string; modules: string[] };
   assert.deepEqual(built.modules, [DSL_ITEM_STATE, 'sha256.ts', 'items.ts']);
@@ -50,10 +63,11 @@ test('the build inlines the DSL\'s module from its source, and refuses it once i
   assert.doesNotThrow(() => checkModule('panel.ts', `import { itemStateOf } from './items.ts';`));
 });
 
-test('the bundled code, as the page runs it, rebuilds the same state', () => {
+test('the bundled code, as the page runs it, rebuilds the same state and reads the same result', () => {
   const context = createContext({ TextEncoder });
-  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, statesBySha };`).runInContext(context);
-  const got = (context as { got: { itemStateOf: typeof itemStateOf; statesBySha: typeof statesBySha } }).got;
+  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, resultOf, statesBySha };`).runInContext(context);
+  const got = (context as { got: { itemStateOf: typeof itemStateOf; resultOf: typeof resultOf; statesBySha: typeof statesBySha } }).got;
   assert.equal(JSON.stringify(got.itemStateOf(item, got.statesBySha([{ sha256: baseSha, state: base }]), PATH)), JSON.stringify({ state }));
   assert.match(JSON.stringify(got.itemStateOf(item, new Map(), PATH)), /is missing/);
+  assert.equal(JSON.stringify(got.resultOf(resultDocs[4]!.sha256, got.statesBySha(resultDocs))), JSON.stringify({ result: RESULTS[4] }));
 });
