@@ -11,6 +11,13 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	type ConnectOptions,
+	connectHome,
+	type HomeHandle,
+	type Ready,
+	RemoteError,
+} from "./host.ts";
+export {
 	LaunchError,
 	type LaunchErrorCode,
 	type LaunchPhase,
@@ -20,6 +27,27 @@ export {
 	launchStatus,
 	stopLaunch,
 } from "./launch.ts";
+export {
+	type Frame,
+	LINK_VERSION,
+	type Link,
+	type LinkOptions,
+	linkPair,
+	MAX_LINE_LENGTH,
+	processLink,
+	streamLink,
+} from "./link.ts";
+export { EXIT_USAGE, runMain } from "./main.ts";
+export {
+	type Catalog,
+	catalogOf,
+	crossingOptions,
+	HOST_REQUEST_OPTIONS,
+	type ModelServer,
+	type ProxyModels,
+	proxyModels,
+	serveModels,
+} from "./models.ts";
 export {
 	type ConditionalStore,
 	type Holder,
@@ -43,6 +71,14 @@ export {
 	openHome,
 	type ResumeOrder,
 } from "./run.ts";
+export {
+	createRunner,
+	EXIT_REFUSED,
+	type Runner,
+	type RunnerEnd,
+	type RunnerOptions,
+	type WireError,
+} from "./runner.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,

@@ -67,7 +67,7 @@ export const setDownloadBehavior = (url: string, options: { downloadPath?: strin
 
 export type BrowserbaseProvider = BrowserProvider & { readonly name: "browserbase" };
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, extension: "uploaded-per-launch" };
+const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true } };
 const notFound = (e: unknown): boolean => (e as { status?: number } | null)?.status === 404;
 
 /** ISO alpha-2 country, US state abbreviation, upper-case city; no two-letter country, no geolocation. */

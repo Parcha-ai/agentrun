@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, open, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, open, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { BrowserFailureError } from "../core/custody.js";
 import type { AttachTarget, BrowserProvider, ProviderCaps, RemoteFile } from "../core/host.js";
@@ -47,7 +49,7 @@ const CHROME_FLAGS: readonly string[] = [
   "--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
 ];
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, extension: "loaded-locally" };
+const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, extension: "loaded-locally", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 const downloadsDir = (profileRoot: string, tag: string) => path.join(profileDir(profileRoot, tag) + ".downloads");
 const READY_MS = 20_000;
 /** The browser is gone and directories it used are not: a profile left behind holds the session's cookies, so a release that cannot remove
@@ -124,6 +126,38 @@ const profileDir = (root: string, tag: string): string => {
   if (!SAFE_TAG.test(tag)) throw new Error("a cdp lease tag is one path segment of [A-Za-z0-9_.-]");
   return path.join(root, tag);
 };
+/** Chrome writes temp entries under its TMPDIR (its singleton socket directory, its url_fetcher entries) and a Chrome that is killed removes none of
+ *  them, so each lease's Chrome gets a TMPDIR of its own, made under the host's, named in the profile (`.pib-tmpdir`) and removed with the lease: what
+ *  Chrome writes there never lands in the host's TMPDIR. The directory carries an owner file naming the lease's tag, and only a directory that names the
+ *  tag asked for is ever removed, so a profile that names another path (a copied or hand-written one) removes nothing. Chrome aborts when its socket path
+ *  passes 107 bytes, so a host TMPDIR too long to leave room for the private directory's name and the socket's is left as it is (Chrome inherits it). Not
+ *  made on Windows, where Chrome's temp directory is not TMPDIR. */
+const TMP_MARKER = ".pib-tmpdir";
+const TMP_OWNER = ".pib-owner";
+const TMP_NAME = /^pib-[A-Za-z0-9]{6}$/;
+const SOCKET_PATH_MAX = 107;
+const SOCKET_PATH_TAIL = "/.org.chromium.Chromium.XXXXXX/SingletonSocket".length;
+async function makePrivateTmp(tag: string, profile: string, remove: RemoveDir): Promise<string | null> {
+  if (process.platform === "win32") return null;
+  const base = os.tmpdir();
+  if (Buffer.byteLength(path.join(base, "pib-XXXXXX")) + SOCKET_PATH_TAIL > SOCKET_PATH_MAX) return null;
+  const dir = await mkdtemp(path.join(base, "pib-"));
+  try {
+    await writeFile(path.join(dir, TMP_OWNER), tag);
+    await writeFile(path.join(profile, TMP_MARKER), dir);
+  } catch (error) {
+    // The directory is not recorded anywhere yet, so a setup that fails here removes it, and names it if it cannot.
+    const left = await removeTree(dir, remove);
+    throw left ? new ProfileNotRemovedError([dir], left.error, error) : error;
+  }
+  return dir;
+}
+/** The private directory the profile names, when it is one this provider made for this tag. */
+async function ownedTmp(profile: string, tag: string): Promise<string | null> {
+  const named = (await readFile(path.join(profile, TMP_MARKER), "utf8").catch(() => "")).trim();
+  if (!named || !path.isAbsolute(named) || !TMP_NAME.test(path.basename(named))) return null;
+  return (await readFile(path.join(named, TMP_OWNER), "utf8").catch(() => null)) === tag ? named : null;
+}
 /** Signal 0 only asks; EPERM means the process exists under another user. */
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
 
@@ -146,9 +180,25 @@ async function singletonDir(profile: string): Promise<string | null> {
   return dir && /^\.?(org\.chromium\.Chromium|com\.google\.Chrome)\.[A-Za-z0-9]{6}$/.test(path.basename(dir)) ? dir : null;
 }
 
-async function killTree(pid: number): Promise<void> {
+/** Whether `pid` leads its own process group (Chrome is started detached, so it does); null where there is no /proc to ask. */
+function leadsOwnGroup(pid: number): boolean | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // pid (comm) state ppid pgrp ...: the name may hold spaces and brackets, so the fields are counted from its last ")".
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]) === pid;
+  } catch { return false; }
+}
+
+/** A pid reaches here from a ref's id, which a restart reads back from a record: `kill(-1)` signals every process the user can,
+ *  `kill(0)` this process's own group, so neither a pid below 2 nor our own is ever signalled, and a negative pid (a whole group)
+ *  only for a process that leads one. */
+export async function killTree(pid: number, io: { kill?: (pid: number, signal: "SIGKILL") => void; leadsGroup?: (pid: number) => boolean | null } = {}): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return;
   if (process.platform === "win32") return void (await new Promise<void>((resolve) => execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => resolve())));
-  try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+  const kill = io.kill ?? ((target, signal) => process.kill(target, signal));
+  if ((io.leadsGroup ?? leadsOwnGroup)(pid) !== false) { try { return kill(-pid, "SIGKILL"); } catch { /* no such group: the process alone */ } }
+  try { kill(pid, "SIGKILL"); } catch { /* already gone */ }
 }
 
 /** `internals` is for tests: the removal a release uses. */
@@ -157,9 +207,12 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   const downloads = "chrome" in options ? localDownloads(options.chrome.profileRoot) : undefined;
   // So a release can wait for the exit it caused: an unreaped child still answers `kill 0`.
   const children = new Map<number, ChildProcess>();
-  /** A socket directory a release could not remove: the profile's link that named it may go with the profile, so the next release of the
-   *  lease in this process is told it here. (A restarted process has the report's text.) */
-  const socketsLeft = new Map<string, string>();
+  /** Directories besides the profile (Chrome's socket directory, the lease's private TMPDIR) that a release could not remove: the profile that named
+   *  them may go first, so the next release of the lease in this process is told them here. (A restarted process has the report's text.) */
+  const extrasLeft = new Map<string, string[]>();
+  /** The private TMPDIR of each lease this provider started, by tag: the profile's marker is the only record a restarted process has, and a profile
+   *  that something else removed first takes it along. */
+  const privateTmps = new Map<string, string>();
   /** A spawned Chrome whose handle we hold is ours (a handle cannot name a recycled pid); after a restart, only while
    *  the browser on the recorded port reports that pid. */
   const isOurs = async ({ pid, port }: { pid: number; port: number }): Promise<boolean> => {
@@ -182,10 +235,12 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       await writeFile(path.join(dir, "Default", "Preferences"), JSON.stringify({ download: { default_directory: downloadsDir(profileRoot, spec.tag), prompt_for_download: false }, savefile: { default_directory: downloadsDir(profileRoot, spec.tag) } }));
       // A file left by an earlier Chrome on this profile names a browser that is not this one.
       await rm(path.join(dir, "DevToolsActivePort"), { force: true });
+      const tmp = await makePrivateTmp(spec.tag, dir, remove);
+      if (tmp) privateTmps.set(spec.tag, tmp);
       const child = spawn(executablePath, [
         ...CHROME_FLAGS, ...(sandbox ? [] : ["--no-sandbox"]), ...(headless ? ["--headless=new"] : []), "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--user-data-dir=${dir}`,
         `--window-size=${spec.viewport.width},${spec.viewport.height}`, ...args, "about:blank",
-      ], { stdio: "ignore", detached: true });
+      ], { stdio: "ignore", detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
       // A Chrome that cannot start emits `error`, which unhandled would end the host: it rejects create instead.
       let failed: Error | null = null;
       child.once("error", (error) => { failed = error; });
@@ -198,7 +253,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       });
       if (child.pid === undefined) {
         await sleep(0);
-        const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag)], remove);
+        const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), ...(tmp ? [tmp] : [])], remove);
+        privateTmps.delete(spec.tag);
         const why = failed ?? new Error("Chrome could not be started");
         throw left ? new ProfileNotRemovedError(left.dirs, left.error, why) : why;
       }
@@ -271,11 +327,15 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // nothing is removed.
       if (!("endpoint" in options) && SAFE_TAG.test(local.tag)) {
         const dir = profileDir(options.chrome.profileRoot, local.tag);
-        const socketDir = (await singletonDir(dir)) ?? socketsLeft.get(local.tag) ?? null;
-        // Both are always tried, the profile first named: the profile's link is the only place the socket directory's name is read, so it is
-        // reported here with the profile's, not left for a later release to miss.
-        const left = await removeAll([dir, ...(socketDir ? [socketDir] : [])], remove);
-        if (socketDir && left?.dirs.includes(socketDir)) socketsLeft.set(local.tag, socketDir); else socketsLeft.delete(local.tag);
+        const socketDir = await singletonDir(dir);
+        const tmp = privateTmps.get(local.tag) ?? await ownedTmp(dir, local.tag);
+        // All are always tried, the profile first named: the profile's link and marker are the only places the other directories' names are read, so
+        // they are reported here with the profile's, not left for a later release to miss.
+        const extras = [...new Set([...(socketDir ? [socketDir] : []), ...(tmp ? [tmp] : []), ...(extrasLeft.get(local.tag) ?? [])])];
+        const left = await removeAll([dir, ...extras], remove);
+        const stuck = extras.filter((extra) => left?.dirs.includes(extra));
+        if (stuck.length > 0) extrasLeft.set(local.tag, stuck); else extrasLeft.delete(local.tag);
+        if (!tmp || !stuck.includes(tmp)) privateTmps.delete(local.tag);
         if (left) throw new ProfileNotRemovedError(left.dirs, left.error);
       }
     },

@@ -18,7 +18,7 @@ import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/p
 import type { Storage } from "@earendil-works/pi-durable";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
-import { LIVE, mintToken, mount, removeToken, scratchDisk, scratchDiskId, unmount } from "./_archil.ts";
+import { LIVE, mintToken, mount, removeToken, RUN_OWNER, scratchDisk, scratchDiskId, unmount } from "./_archil.ts";
 import { registerConformance } from "../_conformance.ts";
 import { ctx, entryCommitter, percentile, SQLITE_IOERR, withStoreIn } from "../_support.ts";
 import { openArchilStore, StoreBusyError, StoreFencedError } from "../../src/store.ts";
@@ -52,7 +52,7 @@ const now = () => new Date().toISOString();
 async function createRunDirectory(name: string): Promise<void> {
   const disk = await scratchDisk();
   const key = `runs/${name}/`;
-  await disk.putObject(key, "", { uid: 1000, gid: 1000, mode: 0o755 });
+  await disk.putObject(key, "", { ...RUN_OWNER, mode: 0o755 });
   resources.runDirectories.push({ key, createdAt: now() });
   flush();
 }

@@ -76,8 +76,14 @@
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "skills"
   ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
   "sideEffects": false,
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
@@ -116,6 +122,7 @@
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-codemode": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
     "@silvia-odwyer/photon-node": "0.3.4",
     "sharp": "0.35.5"

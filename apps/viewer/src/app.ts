@@ -3,9 +3,9 @@
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { panelsShown, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
+import { animatedPanels, featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
-import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, type Fold } from './replay.ts';
+import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
@@ -217,6 +217,11 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
   return svg;
 }
 
+/** A node's `vars` as CSS custom properties: numbers only, a name never a style string. */
+export function applyVars(target: { style: { setProperty(name: string, value: string): void } }, vars: Record<string, number> | undefined): void {
+  for (const [name, value] of Object.entries(vars ?? {})) if (/^[a-z][a-z0-9-]*$/i.test(name) && typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
+}
+
 function renderNode(node: Node, player: Player, frames: FrameState, t: number, onFocus: (path: string) => void, onCite: (cite: string) => void): globalThis.Node {
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
@@ -248,6 +253,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   const out = document.createElement(props.tag);
   if (props.class) out.className = props.class;
   if (props.title) out.title = props.title;
+  applyVars(out, props.vars);
   if (props.path) {
     out.classList.add('has-path');
     if (player.focus && under(props.path, player.focus)) out.classList.add('focused');
@@ -338,10 +344,11 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 }
 
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
- *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, and the result's JSON blobs read so far. */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json> } = {}): ViewContext {
-  const { focus, baseline, cite, json } = inputs;
-  return { t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
+ *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
+ *  playback clock (`now`, the time of the point at a stop). */
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number } = {}): ViewContext {
+  const { focus, baseline, cite, json, now } = inputs;
+  return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
 
@@ -367,6 +374,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // Only a seek sets the playback clock; playing advances it (a redraw never does).
   const head = playback(lines, player.stops);
   player.p = head.seek(player.p);
+  // `?t=<seconds>` opens at that time (it wins over `at` and `cite`): a link that shows the same moment to whoever opens it.
+  const opened = timeParam(params.get('t'));
+  if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
   player.cite = citeParam ?? undefined;
   let json: Map<string, Json> | undefined;
@@ -404,7 +414,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const focusBar = el('div', { class: 'focus' });
   const panels = el('div', { class: 'panels' });
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
-  root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
+  const featured = featuredPanel(panelsShown(), lines);
+  const featuredBox = el('div', { class: 'featured' });
+  if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+  else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -428,21 +442,45 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }));
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []),
       ...(player.cite !== undefined ? [el('span', { text: `Citation ${player.cite.length > 16 ? `${player.cite.slice(0, 12)}…` : player.cite}` }), Object.assign(el('button', { text: 'clear citation' }), { onclick: () => setCite(undefined) })] : []));
-    const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
-    const place = placeIn(panels);
-    panels.replaceChildren(...panelsShown().map((panel: Panel<unknown>) => {
-      // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
-      const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
-      return el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json })), player, frames, t, setFocus, setCite));
-    }));
-    restorePlace(panels, place);
+    drawPanels(t);
+    syncUrl();
+  }
+
+  /** The address names where the screen is: the commit, the selected citation, the focus, and (only while the clock is still where a `?t=` link opened it) the time. */
+  function syncUrl() {
+    const line = lines[player.p - 1];
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     // ?cite= names the selected citation; opened without ?at=, it lands at the commit that first wrote it.
     if (player.cite !== undefined) url.searchParams.set('cite', player.cite); else url.searchParams.delete('cite');
+    // A link that opened at a time keeps it only while the screen is still at that time: a scrub or a play would otherwise be undone by a reload.
+    const linked = linkedTime(opened, head.clock);
+    if (linked !== undefined) url.searchParams.set('t', linked); else url.searchParams.delete('t');
     if (player.focus) url.searchParams.set('focus', player.focus); else url.searchParams.delete('focus');
     if (location.protocol !== 'file:') history.replaceState(null, '', url);
+  }
+
+  /** The panels at the stop; what they draw by time is drawn at the playback clock. */
+  const sections = new Map<string, HTMLElement>();
+  /** `onlyAnimated`: between stops, redraw just the panels that move with the clock, in place; the others keep their elements (and their scroll). */
+  function drawPanels(t: number, onlyAnimated = false) {
+    const frames = cachedReduce(frameFold, lines, player.p, cacheOf(frameFold) as Map<number, never>);
+    // Focus is the view's input: every panel reduces the whole run (RECORDING.md section 4 rule 4).
+    const drawn = (panel: Panel<unknown>) => {
+      const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
+      const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock })), player, frames, t, setFocus, setCite));
+      sections.set(panel.id, section);
+      return section;
+    };
+    if (onlyAnimated) {
+      for (const panel of animatedPanels(panelsShown())) sections.get(panel.id)?.replaceWith(drawn(panel));
+      return;
+    }
+    if (featured) featuredBox.replaceChildren(drawn(featured));
+    const place = placeIn(panels);
+    panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
+    restorePlace(panels, place);
   }
 
   range.addEventListener('input', () => scrubTo(Number(range.value)));
@@ -451,11 +489,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   speed.addEventListener('change', () => { player.speed = Number((speed as HTMLSelectElement).value); });
   let frame = 0;
   let wall = 0;
+  let lastPanels = 0;
   const tick = (now: number) => {
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(panelsShown()).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };

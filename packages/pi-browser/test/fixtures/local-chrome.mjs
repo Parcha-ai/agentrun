@@ -15,7 +15,7 @@ export function skipIncapable(t, error) {
  *  closed loopback port. */
 export { STAGEHAND_TELEMETRY as LOCAL_TELEMETRY } from "../../dist/driver/stagehand.js";
 
-/** Through `ps`, which Linux and macOS share: the tests never read /proc, as the provider does not. */
+/** Through `ps`, which Linux and macOS share. */
 const ps = (pid, field) => { try { return execFileSync("ps", ["-p", String(pid), "-o", `${field}=`], { encoding: "utf8" }).trim(); } catch { return ""; } };
 export const isRunning = (pid) => { const state = ps(pid, "stat"); return state !== "" && !state.startsWith("Z"); };
 export const commandLine = (pid) => ps(pid, "args");

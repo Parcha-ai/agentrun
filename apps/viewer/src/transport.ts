@@ -75,6 +75,8 @@ export type TransportState = {
   highest: number;
   inSnapshot: boolean;
   opened: boolean;
+  /** A line from the transport source has happened. Without one the recording has no transport story (a reference run's kills and processes are the shell's own strip), and the panel draws nothing. */
+  seen: boolean;
   counters: CounterState;
 };
 
@@ -96,7 +98,7 @@ const known = (line: Line): boolean => {
   return false;
 };
 
-const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() });
+const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, seen: false, counters: counterFold.init() });
 
 const moveRecords = (line: Line): { id: string; value: Obj }[] => {
   const doc = docOf(line);
@@ -141,7 +143,7 @@ export const transportPanel: Panel<TransportState> = {
   init: initial,
   accepts: (line) => known(line) || counterFold.accepts(line),
   reduce(before, line) {
-    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t) };
+    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t), ...(line.source === 'transport' ? { seen: true } : {}) };
     if (counterFold.accepts(line)) state = { ...state, counters: counterFold.reduce(state.counters, line) };
     if (line.channel === 'durable') {
       if (line.commit === undefined) return state;
@@ -168,7 +170,9 @@ export const transportPanel: Panel<TransportState> = {
         return state.token === undefined || (state.token.awaiting !== undefined && state.token.box !== box) ? tokenTo(state, box, state.token?.epoch ?? null, line.t) : state;
       }
       if (line.kind === 'kill') {
-        const kind = data.kind === 'process' ? 'process' : 'box';
+        // A host kill's kind is 'process' or 'box'; absent means process, and a reader never infers a box (the rule of format draft 22, which the
+        // reference lead's RECORDING.md carries when that draft lands: this panel does not edit the format document).
+        const kind = data.kind === 'box' ? 'box' : 'process';
         return { ...state, kills: [...state.kills, { t: line.t, gen: processOf(line) ?? 0, kind, label: str(data.label) ?? 'killed', box: str(data.box) ?? null }] };
       }
       if (line.kind === 'result') return { ...state, result: { blob: str(data.blob) ?? '', title: str(data.title) ?? 'The result' } };
@@ -286,12 +290,13 @@ function flightNode(state: TransportState, flight: Flight): Node {
 
 function killNode(state: TransportState, kill: Kill): Node {
   const back = kill.recovered
-    ? `↳ back in ${seconds(kill.recovered.afterMs)}: process ${kill.recovered.gen} at ${label(state, kill.recovered.box)}`
+    ? `↳ back in ${seconds(kill.recovered.afterMs)}: process ${kill.recovered.gen}${kill.recovered.box === '?' ? '' : ` at ${label(state, kill.recovered.box)}`}`
     : '↳ not recovered yet';
   return h('li', { class: `kill ${kill.kind}` }, h('b', {}, kill.kind === 'box' ? '✗ the whole box' : '✗ a process'), ` — ${kill.label}`, kill.box ? ` (${label(state, kill.box)}, process ${kill.gen})` : ` (process ${kill.gen})`, h('div', { class: 'back' }, back));
 }
 
 function view(state: TransportState, now: number): Node {
+  if (!state.seen) return h('div', { class: 'transport none' });
   if (state.boxes.length === 0 && state.runners.length === 0 && state.flights.length === 0 && state.durableLines === 0) return h('div', { class: 'transport' }, h('p', { class: 'empty' }, 'The session has not started a box yet.'));
   const end = Math.max(state.lastT, now, 1);
   const lanes = environmentsOf(state);
