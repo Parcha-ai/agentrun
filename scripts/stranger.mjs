@@ -102,9 +102,11 @@ export const strangerEnv = (path, home, cache) => ({ PATH: path, HOME: home, npm
 
 /**
  * `env -i`, the empty environment; the shell never adds to it. With `group`, the command leads a process group of its own,
- * and a timeout (and the end of the command) kills every process of the group: an example starts instances of its own.
+ * and a timeout (and the end of the command) kills every process of the group: an example starts instances of its own. A
+ * process outside the group that keeps an output pipe open must not keep the runner waiting: `graceMs` after the command's
+ * exit the pipes are closed and what was read is the result.
  */
-function runCommand(command, args, { cwd, env, timeoutMs, group = false }) {
+export function runCommand(command, args, { cwd, env, timeoutMs, group = false, graceMs = 3000 }) {
   return new Promise(resolvePromise => {
     const child = spawn('/usr/bin/env', ['-i', ...Object.entries(env).map(([key, value]) => `${key}=${value}`), command, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: group });
     const killGroup = () => { if (group && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* ESRCH: nothing left */ } } };
@@ -112,7 +114,16 @@ function runCommand(command, args, { cwd, env, timeoutMs, group = false }) {
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     const timer = setTimeout(() => { timedOut = true; if (group) killGroup(); else child.kill('SIGKILL'); }, timeoutMs);
-    child.on('close', code => { clearTimeout(timer); killGroup(); resolvePromise({ exitCode: code ?? -1, stdout, stderr, timedOut }); });
+    let settled = false;
+    const settle = code => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); killGroup();
+      resolvePromise({ exitCode: typeof code === 'number' ? code : -1, stdout, stderr, timedOut });
+    };
+    child.on('close', settle);
+    if (group) {
+      child.on('exit', code => setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); settle(code); }, graceMs).unref());
+    }
   });
 }
 
