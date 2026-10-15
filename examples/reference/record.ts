@@ -173,7 +173,8 @@ export type Header = {
   code: { repo: string; commit: string; packages: Record<string, string> };
   /** The cost, or a function of the merged lines (fold.ts's cost: `null` while any part is unknown, never 0). */
   cost: { usd: number | null; parts: Record<string, number | null> } | ((lines: Record<string, unknown>[]) => { usd: number | null; parts: Record<string, number | null> });
-  source: { run: string; store: string };
+  /** `store`: the run's store file, hashed here; or `store_sha256`, when the run's own side has already hashed it (a supervisor that reads nothing under the run's directory). */
+  source: { run: string; store?: string; store_sha256?: string };
   result?: { blob: string; title: string };
   /** `real` when every priced part (model, eyes, browser, a door's outside call) is a real provider's; `scripted` when any is served by a fake, a cassette or a script. Default `scripted`: the reference example's parts are the faux's. */
   providers?: 'real' | 'scripted';
@@ -206,7 +207,7 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   for (const line of all) if (line.channel === 'durable' && line.order !== null) next.set(line.commit as number, Math.max(next.get(line.commit as number) ?? 0, (line.order as number) + 1));
   for (const line of all) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
   writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
-  const store = existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64);
+  const store = header.source.store_sha256 ?? (header.source.store && existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64));
   const started = readFileSync(startedFile(dir), 'utf8');
   const { source, cost, generations, ...rest } = header;
   const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;

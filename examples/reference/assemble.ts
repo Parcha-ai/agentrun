@@ -30,6 +30,9 @@ const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1
 /** The run's id, and the key its workflow's task and journal are kept under. */
 export const RUN_KEY = 'reference';
 
+/** The paths of a place under `root`, computed: nothing is made. */
+export const pathsAt = (root: string): RunPlace => { const at = resolve(root); return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'store') }; };
+
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
 export async function placeAt(root?: string): Promise<RunPlace> {

@@ -502,6 +502,12 @@ only the claim probe `.claim` is rewritten by the mount); `run.json`, `owner.loc
 that fails after that empties the directory through its own mount and removes it, and one that lost the directory to another
 fork or start leaves it alone.
 
+On a local directory, `forkLocal(from, [{ id, root }, ...])` makes the same copy without a disk: one new run directory per
+entry, from a directory of a run released and sealed (`SOURCE_NOT_RELEASED` for anything else, `TARGET_EXISTS` for a target
+that is there). The source is only read; every copy is made beside its target under a temporary name and none is published until all are complete, so a failed
+batch leaves no half copy. A target inside the source (also through a symlink) is `INVALID_ARGUMENT`. A local directory has no mount to take it exclusively, so nothing stops a process that opens the source while it
+is being copied: fork a run after it is released, and open the forks with `localRun` like any run.
+
 ### Setting up a host for production
 
 The Quickstart runs the supervisor as your own user. On a production host the instance and the agent's tools run as an
@@ -544,6 +550,8 @@ mount token reaches the journal, and that nothing is left behind. It needs syste
 |---|---|---|
 | The instance crashes or is OOM-killed, host alive | The unit restarts it in place on the same claim; the unit's cgroup kills the previous incarnation's commands; reopen, `resume()` | running tasks go back to pending; effects in flight are `interrupted`, never rerun; at most one cut model request is sent again |
 | The host is lost (power-off, VM loss, pre-emption) | The client's sockets close and Archil flags the delegation orphaned in 0.2 s; the supervisor revokes (tens of ms) and starts an instance elsewhere | every acknowledged commit is there; unflushed workspace writes are lost; no effect whose intent was committed runs again |
+| A Docker host is lost before its instance reaches running (the container killed or removed, or its daemon gone, between the start and the instance's first `run.json` write) | If the driver's start is still running, it fails typed (`START_FAILED`) and tries to remove the container it made (a removal that fails, as it does while the daemon is gone, is not retried); the supervisor's tick fails `HOST_START_FAILED`, counts no failed start, and the next tick starts again. If the start had returned, the supervisor's start mark (`runs/<id>/start.json`) keeps the run `starting` until the start grace passes (default the lease expiry, 90 s, doubled per consecutive failed start up to 10 min), so nothing is revoked or started twice; then it starts again, revoking first if the container had mounted (its FUSE daemon died with it, so its delegation is orphaned), and that start tries to remove the run's earlier dead containers. Removal is attempted, never guaranteed: once the daemon is back, look for leftovers with `docker ps -a --filter label=pda.run=<id>` | nothing is lost: an instance writes `run.json` at its generation before it opens the store, so it had committed nothing. The run has no instance for up to the grace; the time from the loss to the next instance's first commit is not measured on Docker |
+| A Daytona host is lost before its instance reaches running (the box errors, is deleted or never starts while the driver starts it, or is lost after the launcher returned and before the instance's first `run.json` write) | While the driver starts it, a box that goes to an error state or away, does not start within the start timeout, or refuses an upload gets a delete request (attempted: a failed delete is not retried) and the start fails typed (`START_FAILED`); the supervisor counts no failed start and starts again on the next tick. Lost after the start returned: as on Docker, `starting` until the grace passes, then revoke if its client had mounted, and start a new box. A box deletes itself once stopped and Daytona destroys it at its TTL (default 25 h), so a box whose delete failed leaks nothing past that | as on Docker: nothing committed, no instance for up to the grace; not measured on Daytona |
 | The host hangs or is partitioned (a zombie) | It is not orphaned, so the lease expires at 90 s; the supervisor stops the host if its driver can, revokes, and starts elsewhere | the zombie's next commit fails (`SQLITE_IOERR_FSYNC`) and it exits 75; a call it already has in flight may complete, but it cannot start a new one, because a new call needs an intent commit |
 | A zombie that never commits again | Its lease watchdog (a worker thread, so a main thread stuck in a FUSE request does not matter) kills its commands at 75 s without touching the mount | an in-flight command runs at most until the self-fence |
 | The mount is taken away under a live instance (an operator's `umount -l`, a cleanup's `fusermount -u`) | The instance writes `run.json` and creates its directories through the directory it opened at acquire, and checks before each write that the run's path is still that mount; at the next heartbeat the path names the local directory under the mountpoint, so it exits 75 (`CLAIM_UNMOUNTED`) | nothing of its own is written to the local disk; as host lost |
@@ -583,7 +591,10 @@ paid API an idempotency key from your own business key.
 
 Measured on a VM about 3 ms from `aws-us-east-1`, archil 0.8.42: acquire 222 ms p50, release 139 ms, takeover by revoke
 252 ms, commit 3.75 to 5.63 ms p50, a killed host's run back to its first commit in 1 to 1.5 s, a hung host replaced in 6
-to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
+to 6.3 s with a 6 s test lease (90 to 120 s with the defaults). A start that never reaches running costs its start grace: live on Archil with a 6 s grace and a 3 s tick,
+starts that all failed were retried six times in five minutes, each grace doubled (`test/live/supervise-slow.live.test.ts`),
+and a takeover whose start was slowed 5 s before its first `run.json` write started once and was never revoked, 5 of 5
+(`test/live/supervise.live.test.ts`). On Docker and Daytona hosts, a start lost before its instance runs is not measured.
 
 ## Security
 
