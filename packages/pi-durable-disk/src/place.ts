@@ -65,6 +65,11 @@ export interface Place {
   readonly kills: ReadonlyArray<PlaceKill>;
   start(order: RunnerOrder): Promise<PlaceRunner>;
   /**
+   * Where attempt `attempt`'s runner writes its kill request, as a path in the place (the supervisor puts it in the
+   * runner's order). A place with `signals` has it, and `signals(attempt)` reads what is written there.
+   */
+  requestFile?(attempt: number): string;
+  /**
    * The kill requests (and crossings) attempt `attempt`'s runner announces. The supervisor stops reading with `return()`
    * once the runner has exited, and `return()` ends a pending `next()`.
    */
@@ -93,6 +98,8 @@ const CLI = fileURLToPath(new URL(`./cli${extname(import.meta.url)}`, import.met
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /** After the instance exits, how long its output may take to close (a command it left running can hold it open). */
 const OUTPUT_GRACE_MS = 2_000;
+/** How often a local place looks for a kill request (a file of this machine). */
+const LOCAL_SIGNAL_POLL_MS = 20;
 const STDERR_KEEP = 600;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -216,7 +223,15 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       kills: ctx.destroyBoxes ? ["process", "box"] : ["process"],
       start,
       // The runner is a child of this machine, so its kill request is the supervisor's own file.
-      ...(ctx.requestFile ? { signals: (attempt: number) => requestSignals(ctx.requestFile!(attempt)) } : {}),
+      ...(ctx.requestFile
+        ? {
+            requestFile: ctx.requestFile,
+            signals: (attempt: number) => {
+              const file = ctx.requestFile!(attempt);
+              return requestSignals(async () => (existsSync(file) ? readFileSync(file, "utf8") : undefined), LOCAL_SIGNAL_POLL_MS);
+            },
+          }
+        : {}),
       kill,
       status: async () => ({ record: (await readRunRecord(root)) ?? null }),
       recover: async (last, kind, order) => {
@@ -236,36 +251,33 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
   };
 }
 
-const SIGNAL_POLL_MS = 20;
-
 /**
- * The kill request a runner writes whole (by rename) into `file` when it parks at its planned crossing, as one signal.
- * A custom iterator, not a generator: `return()` must end a pending `next()`, which a generator would queue behind the
- * poll.
+ * The kill request a runner writes whole when it parks at its planned crossing, as one signal, read with `read` every
+ * `pollMs` until it names a crossing. A custom iterator, not a generator: `return()` must end a pending `next()`, which a
+ * generator would queue behind the poll, and it does even while a read is in flight (a read over the network can hang).
  */
-function requestSignals(file: string): AsyncIterable<PlaceSignal> {
+function requestSignals(read: () => Promise<string | undefined>, pollMs: number): AsyncIterable<PlaceSignal> {
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
-      let wake: (() => void) | undefined;
+      let stop = () => {};
+      const stopped = new Promise<void>((r) => (stop = r));
       return {
         async next(): Promise<IteratorResult<PlaceSignal>> {
-          for (;;) {
-            if (closed) return { done: true, value: undefined };
-            const crossing = existsSync(file) ? requestIn(file) : undefined;
+          while (!closed) {
+            const text = await Promise.race([read().catch(() => undefined), stopped.then(() => undefined)]);
+            const crossing = closed || text === undefined ? undefined : requestIn(text);
             if (crossing) {
               closed = true;
               return { done: false, value: { kind: "kill-request", crossing } };
             }
-            await new Promise<void>((r) => {
-              const timer = setTimeout(r, SIGNAL_POLL_MS);
-              wake = () => (clearTimeout(timer), r());
-            });
+            await Promise.race([sleep(pollMs), stopped]);
           }
+          return { done: true, value: undefined };
         },
         async return(): Promise<IteratorResult<PlaceSignal>> {
           closed = true;
-          wake?.();
+          stop();
           return { done: true, value: undefined };
         },
       };
@@ -273,10 +285,13 @@ function requestSignals(file: string): AsyncIterable<PlaceSignal> {
   };
 }
 
-/** The crossing a request file names: `point` and `n` at least; anything else (a half write, another file) is not one yet. */
-function requestIn(file: string): PlaceSignal["crossing"] | undefined {
+/**
+ * The crossing a request names: `point` and `n` at least, with every other field it carries (a nonce the supervisor
+ * checks); anything else (a half write, another file) is not one yet.
+ */
+function requestIn(text: string): PlaceSignal["crossing"] | undefined {
   try {
-    const v = JSON.parse(readFileSync(file, "utf8")) as Partial<PlaceSignal["crossing"]>;
+    const v = JSON.parse(text) as Partial<PlaceSignal["crossing"]> | null;
     return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as PlaceSignal["crossing"]) : undefined;
   } catch {
     return undefined;
@@ -316,9 +331,18 @@ export interface ArchilPlaceOptions {
   pollMs?: number;
   /** How long a start waits on a mount another start has in flight. Default 60 s. */
   startTimeoutMs?: number;
+  /** How often `signals` reads the attempt's kill request over S3. Default 500 ms (the runner waits at its crossing). */
+  signalPollMs?: number;
 }
 
 type Minted = { token: string; identifier: string; nickname: string; removed: boolean };
+
+/** Where in the run's directory an Archil place's runners write their kill requests. */
+const REQUESTS = "signals";
+const requestName = (attempt: number): string => {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new PlaceError("INVALID_ARGUMENT", `attempt ${attempt} is not a count from 1`);
+  return `kill-${attempt}.json`;
+};
 
 /**
  * The run on an Archil disk, its instance run by a host driver. `token(attempt)` mints the attempt's mount token through
@@ -326,7 +350,8 @@ type Minted = { token: string; identifier: string; nickname: string; removed: bo
  * directory with `ensure.create` and writes the start mark) with that token and the order's environment. A kill is the
  * driver's `kill`: `process` or `box`, whichever the driver takes. A recovery is the takeover: the dead holder's
  * delegations revoked (its lease counts as expired, since the place killed it) and the next instance started, which
- * `revoked` and `ms` report. A runner ends when the driver no longer reports it running, or when the place killed it; its
+ * `revoked` and `ms` report. A runner writes its kill request in the run's directory (`requestFile`), and `signals` reads
+ * it over S3. A runner ends when the driver no longer reports it running, or when the place killed it; its
  * outcome is `run.json` read over S3, with `code`, `message`, `record` and `storeSha256` from the detail of the last
  * status the app set. `release` stops every instance it started and removes every token it minted; the run's directory
  * stays (`deleteRunTree`).
@@ -335,6 +360,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
   const { control, host } = options;
   const pollMs = options.pollMs ?? 1_000;
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
+  const signalPollMs = options.signalPollMs ?? 500;
   return (ctx) => {
     const ref: RunRef = { disk: options.disk, region: options.region, id: options.id ?? ctx.paths.id };
     runPath(ref.id);
@@ -468,6 +494,13 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       paths,
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
+      // The request goes in the run's directory, outside work/ where the agent's tools are confined, and the place reads
+      // it over S3: a runner on a box of its own cannot reach the supervisor's files.
+      requestFile: (attempt) => posix.join(root, REQUESTS, requestName(attempt)),
+      signals: (attempt) => {
+        const key = `${runPath(ref.id)}/${REQUESTS}/${requestName(attempt)}`;
+        return requestSignals(async () => new TextDecoder().decode(await control.getObject(key)), signalPollMs);
+      },
       start: async (order) => (await ensure(order, false)).runner,
       kill,
       status: async () => {

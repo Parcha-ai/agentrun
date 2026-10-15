@@ -53,6 +53,7 @@ describe("localPlace", () => {
     assert.deepEqual(place.kills, ["process"], "no box to lose without destroyBoxes");
     assert.equal(place.token, undefined, "a plain directory has no claim, so no token");
     assert.equal(place.signals, undefined, "no request file named, no signals");
+    assert.equal(place.requestFile, undefined);
 
     const first = await place.start({ gen: 1, env: { PLACE_ORDER: "one" } });
     const sleeper = Number(await waitFor("the first runner's sleeper", () => existsSync(join(root, "work", "sleeper.pid")) && readFileSync(join(root, "work", "sleeper.pid"), "utf8")));
@@ -112,6 +113,7 @@ describe("localPlace signals", () => {
     mkdirSync(dir, { recursive: true });
     const requestFile = (attempt: number) => join(dir, `kill-${attempt}.json`);
     const place = localPlace({ app: APP })({ paths: pathsAt(dir), requestFile });
+    assert.equal(place.requestFile!(4), requestFile(4), "the request file is the supervisor's own, where signals reads");
     const it1 = place.signals!(1)[Symbol.asyncIterator]();
     const first = it1.next();
     writeFileSync(requestFile(1), '{"point":"paid-call.ackno');
@@ -145,6 +147,8 @@ class FakeControl implements SupervisorControl {
   delegations: Delegation[] = [];
   users = new Map<string, { nickname: string; token: string }>();
   ops: string[] = [];
+  /** getObject of a key under this prefix never answers. */
+  hangUnder: string | null = null;
   /** The next this many removeUser calls fail. */
   removeFails = 0;
   #n = 0;
@@ -152,6 +156,7 @@ class FakeControl implements SupervisorControl {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -359,6 +364,34 @@ describe("archilPlace", () => {
     assert.equal(control.users.size, 1, "both removals failed: the user is still there");
     await at.release();
     assert.equal(control.users.size, 0, "release removed it");
+  });
+
+  it("signals: the attempt's request is read from the run's directory over S3, where requestFile says the runner writes it; return() ends a next() whose read hangs", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5 });
+    assert.equal(at.requestFile!(3), `/mnt/fake/runs/${ID}/signals/kill-3.json`, "in the run's mount, outside work/");
+    assert.throws(() => at.requestFile!(0), (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT");
+    const key = `runs/${ID}/signals/kill-3.json`;
+
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const first = it3.next();
+    let settled = false;
+    void first.then(() => (settled = true));
+    control.objects.set(key, '{"point":"paid-call.ackn');
+    await sleep(40);
+    assert.equal(settled, false, "half a request is not one");
+    control.objects.set(key, JSON.stringify({ point: "paid-call.acknowledged", n: 1, nonce: "0f1e" }));
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 1, nonce: "0f1e" } } }, "every field passes through");
+    assert.deepEqual(await it3.next(), { done: true, value: undefined });
+
+    control.hangUnder = `runs/${ID}/signals/`;
+    const it4 = at.signals!(4)[Symbol.asyncIterator]();
+    const pending = it4.next();
+    await sleep(20);
+    await it4.return!();
+    const ended = await Promise.race([pending, new Promise((r) => setImmediate(() => r("late")))]);
+    assert.deepEqual(ended, { done: true, value: undefined }, "the return ended it though its read never answered");
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {

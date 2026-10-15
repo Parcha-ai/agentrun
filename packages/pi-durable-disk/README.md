@@ -719,7 +719,7 @@ id and directory as the supervisor computed them.
   no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory. A box kill
   also calls `ctx.destroyBoxes`. `release()` kills what still runs, then ends the commands the run recorded (pi
   starts each in a process group of its own, which the instance's kill does not reach). With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
-  there when it parks at its planned crossing. `return()` ends a pending `next()`.
+  there when it parks at its planned crossing, and `requestFile` is that same file. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
@@ -727,8 +727,10 @@ id and directory as the supervisor computed them.
   - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
     instance starts. It reports `revoked` and `ms`.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
-  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
-    waits for the channel over the run's disk.
+  - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
+    `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
+    a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
+    it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).
