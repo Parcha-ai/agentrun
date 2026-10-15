@@ -23,17 +23,23 @@ export const text = (value) => ({ type: "text", text: value });
 export const thinking = (value) => ({ type: "thinking", thinking: value });
 export const call = (id, name, args) => ({ type: "toolCall", id, name, arguments: args });
 
-/** A run that signed in to a site, wrote notes.md and asked the person to look: ends waiting for the person. */
+/**
+ * A run that opens a site, finds a sign-in form and asks the person (request_sign_in ends the run: entries 1 to 8), then,
+ * after "done", saves a note and answers (entries 9 to 12).
+ */
 export const transcript = [
   user(1, "Log in to the practice site and write what the secure page says to notes.md"),
-  assistant(2, [thinking("Open the login page first."), text("Opening the login page."), call("c1", "run", { code: 'await page.goto("https://example.test/login")' })]),
+  assistant(2, [thinking("Open the secure page first."), text("Opening the page."), call("c1", "run", { code: 'await page.goto("https://example.test/secure")' })]),
   result(3, "c1", "run", "Navigated to https://example.test/login"),
-  assistant(4, [thinking("The form needs a username and a password."), call("c2", "screenshot", {}), call("c3", "run", { actions: [{ op: "fill", id: "1-4", value: "demo" }, { op: "click", id: "1-9" }] })]),
-  result(5, "c2", "screenshot", "[image]"),
-  result(6, "c3", "run", "Clicked 1-9"),
-  assistant(7, [thinking("Now save the message."), call("c4", "write", { path: "notes.md", content: "# Notes\n\nSigned in." })]),
-  result(8, "c4", "write", "Wrote notes.md"),
-  assistant(9, [text("I signed in and saved **notes.md**. Tell me when to continue.")]),
+  assistant(4, [thinking("It sent me to a sign-in form."), call("c2", "snapshot", {}), call("c3", "screenshot", {})]),
+  result(5, "c2", "snapshot", "[1-4] textbox username"),
+  result(6, "c3", "screenshot", "[image]"),
+  assistant(7, [text("The site needs a sign-in."), call("c4", "request_sign_in", { site: "example.test", reason: "Sign in to the demo site" })]),
+  result(8, "c4", "request_sign_in", "Asked the person to sign in to example.test in the live view; waiting for them to reply done."),
+  user(9, "done"),
+  assistant(10, [thinking("Signed in. Save the page text."), call("c5", "write", { path: "notes.md", content: "# Notes\n\nSigned in." })]),
+  result(11, "c5", "write", "Wrote notes.md"),
+  assistant(12, [text("I saved **notes.md**.")]),
 ];
 
 const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;

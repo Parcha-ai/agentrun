@@ -1,17 +1,19 @@
 // The runs app: a small web server over a directory of durable runs (`<runs>/<id>/{run.json, store/run.sqlite, work/}`).
-// It lists the runs, serves one run's page (live steps proxied from the run's own door, chat, files, live browser), and
+// It lists the runs, serves one run's page (timeline proxied from the run's own door, chat, files, live browser), and
 // starts runs with a command you give it. A live run is only ever read through its door; a released run's transcript is
 // read from its store, read-only. Node's http and nothing else. Binds to loopback unless you pass --host.
+// Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
+// GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=.
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { Timeline } from "./rows.mjs";
+import { timelineOf, timelineReducer } from "./timeline/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
@@ -23,6 +25,7 @@ const SEARCH_FILE_CAP = 1024 * 1024;
 const TEXT_TYPES = new Set(["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yml", "yaml", "xml", "js", "mjs", "ts", "py", "sh", "toml", "ini", "css", "sql"]);
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app.js", "text/javascript; charset=utf-8"], "/app.css": ["app.css", "text/css; charset=utf-8"] };
+const MODULE = /^\/timeline\/[a-z-]+\.js$/;
 const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
@@ -30,6 +33,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse).catch(() => null);
 const isLoopback = (host) => host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
+
+const QUIET = /:run:(start|end)$/;
+/** working while a run is in flight; waiting when the newest row (not counting cost and run start/end) is a wait for the person; idle otherwise. */
+const stateOf = (rows, working) => (working ? "working" : rows.findLast((r) => r.kind !== "usage" && !QUIET.test(r.id))?.kind === "waiting" ? "waiting" : "idle");
+const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -93,7 +101,7 @@ function doorOf(record) {
   return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
 }
 
-export async function startServer({ runs, host = "127.0.0.1", port = 0, start = [], allowHosts = [] }) {
+export async function startServer({ runs, host = "127.0.0.1", port = 0, start = [], allowHosts = [], agentName = "" }) {
   const root = runs;
   const children = new Map();
   const exits = new Map();
@@ -116,26 +124,26 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     if (!RELEASED.has(run.record?.status)) throw new HttpError(409, "the run is live: read it through its door");
     const file = join(run.dir, "store", "run.sqlite");
     const st = await stat(file).catch(() => null);
-    if (!st) return { rows: [], state: "idle", costUsd: 0, title: "" };
+    if (!st) return { rows: [], state: "idle", costUsd: null, title: "" };
     const sig = `${st.mtimeMs}:${st.size}`;
     const hit = stores.get(run.id);
     if (hit?.sig === sig) return hit;
     const { DatabaseSync } = await import("node:sqlite");
-    const timeline = new Timeline({ workDir: run.work });
+    const entries = [];
     try {
       const db = new DatabaseSync(file, { readOnly: true });
       try {
         const conversation = db.prepare("SELECT MIN(conversation_id) AS id FROM entries").get()?.id;
-        if (conversation != null) for (const row of db.prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id").iterate(conversation)) timeline.entry(JSON.parse(row.record));
+        if (conversation != null) for (const row of db.prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id").iterate(conversation)) entries.push(JSON.parse(row.record));
       } finally {
         db.close();
       }
     } catch (cause) {
       throw new HttpError(500, `the store cannot be read: ${cause.message}`);
     }
-    timeline.finish();
-    const title = timeline.rows.find((r) => r.kind === "user_message")?.text ?? "";
-    const value = { sig, rows: timeline.rows, state: timeline.state, costUsd: timeline.costUsd, title: clip(title, 80) };
+    const rows = timelineOf(entries, { settled: true });
+    const title = rows.find((r) => r.kind === "user_message")?.text ?? "";
+    const value = { sig, rows, state: stateOf(rows, false), costUsd: costOf(rows), title: clip(title, 80) };
     stores.set(run.id, value);
     if (stores.size > 64) stores.delete(stores.keys().next().value);
     return value;
@@ -145,7 +153,8 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     if (["done", "failed"].includes(run.record?.status)) return null;
     const live = await readJson(join(run.dir, "live.json"));
     const url = typeof live?.liveViewUrl === "string" ? URL.parse(live.liveViewUrl) : null;
-    return url && ["https:", "http:"].includes(url.protocol) ? { url: url.href, updatedAt: live.updatedAt ?? null } : null;
+    // `key` changes only when the address does: the page reloads its frame on that, never on a rewrite of the file.
+    return url && ["https:", "http:"].includes(url.protocol) ? { url: url.href, key: createHash("sha256").update(url.href).digest("hex").slice(0, 12) } : null;
   }
 
   async function summary(run) {
@@ -158,7 +167,9 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     return {
       id: run.id,
       title: run.meta.title || store?.title || run.id,
+      agent: run.meta.agent ?? null,
       status,
+      state: store?.state ?? null,
       live: door !== undefined,
       busy,
       generation: run.record?.generation ?? 0,
@@ -166,7 +177,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       endedAt: RELEASED.has(run.record?.status) ? run.record.updatedAt : null,
       costUsd: store ? store.costUsd : null,
       wakeAt: run.record?.wakeAt ?? null,
-      liveView: view ? { updatedAt: view.updatedAt } : null,
+      liveView: view ? { key: view.key } : null,
       error: startErrors.get(run.id) ?? null,
     };
   }
@@ -245,7 +256,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
     await mkdir(join(root, id), { recursive: true, mode: 0o700 });
-    await writeFile(join(root, id, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString() }));
+    await writeFile(join(root, id, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), ...(agentName ? { agent: agentName } : {}) }));
     launch(id);
     submit(id, content).then(
       (r) => r.status >= 400 && startErrors.set(id, r.body?.message ?? r.body?.error ?? "the first message was refused"),
@@ -254,23 +265,25 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     return id;
   }
 
-  // ---- the live steps ----------------------------------------------------------------------------------------------
-  async function steps(req, res, run) {
+  // ---- the live timeline -------------------------------------------------------------------------------------------
+  async function liveTimeline(res, run) {
     const door = doorOf(run.record);
     if (!door) throw new HttpError(409, "the run is not live");
-    const timeline = new Timeline({ workDir: run.work });
+    const reducer = timelineReducer();
     const abort = new AbortController();
     res.once("close", () => abort.abort());
     const write = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-content-type-options": "nosniff" });
     const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
+    let working = false;
     let first = true;
     let shown = "";
-    const push = () => {
-      const { set, drop } = timeline.take();
-      const { state, costUsd } = timeline;
-      if (first) write("rows", { reset: true, rows: timeline.rows, state, costUsd });
-      else if (set.length || drop.length || state !== shown) write("rows", { set, drop, state, costUsd });
+    const push = (changed) => {
+      const all = reducer.rows();
+      const state = stateOf(all, working);
+      const costUsd = costOf(all);
+      if (first) write("rows", { reset: true, rows: all, state, costUsd });
+      else if (changed.rows.length || changed.drop.length || state !== shown) write("rows", { set: changed.rows, drop: changed.drop, state, costUsd });
       first = false;
       shown = state;
     };
@@ -278,10 +291,15 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       const up = await fetch(new URL("/events", door), { signal: abort.signal, headers: { accept: "text/event-stream" } });
       if (!up.ok) throw new Error(`door answered ${up.status}`);
       for await (const { event, data } of frames(up.body)) {
-        if (event === "snapshot") timeline.event(data);
-        else if (event === "events") for (const ev of data) timeline.event(ev);
-        else if (event === "end") break;
-        push();
+        let events = [];
+        if (event === "snapshot") {
+          working = Boolean(data.run);
+          events = [data];
+        } else if (event === "events") {
+          events = data;
+          for (const ev of events) if (ev.type === "run_start" || ev.type === "run_end") working = ev.type === "run_start";
+        } else if (event === "end") break;
+        push(reducer.apply(events));
       }
       write("end", { reason: "ended" });
     } catch {
@@ -363,7 +381,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       }
       if (RELEASED.has(run.record?.status)) {
         const store = await readStore(run).catch(() => null);
-        for (const row of (store?.rows ?? []).filter((r) => ["user_message", "text_block"].includes(r.kind)).slice(0, 400)) {
+        for (const row of (store?.rows ?? []).filter((r) => ["user_message", "text_block", "final_answer"].includes(r.kind) && r.text).slice(0, 400)) {
           const at = row.text.toLowerCase().indexOf(needle);
           if (at >= 0 && hits < 8) found.push({ runId: s.id, title: s.title, kind: "transcript", snippet: snippet(row.text, at, needle.length) }), hits++;
         }
@@ -379,14 +397,14 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       const [file, type] = PAGE[path];
       return send(res, 200, await readFile(join(HERE, "page", file), "utf8"), { "content-type": type, ...(path === "/" ? { "content-security-policy": APP_CSP } : {}) });
     }
-    if (req.method === "GET" && path === "/rows.mjs") return send(res, 200, await readFile(join(HERE, "rows.mjs"), "utf8"), { "content-type": "text/javascript; charset=utf-8" });
-    if (req.method === "GET" && path === "/api/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
-    if (req.method === "POST" && path === "/api/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
-    if (req.method === "GET" && path === "/api/search") {
+    if (req.method === "GET" && MODULE.test(path)) return send(res, 200, await readFile(join(HERE, path), "utf8"), { "content-type": "text/javascript; charset=utf-8" });
+    if (req.method === "GET" && path === "/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
+    if (req.method === "POST" && path === "/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
+    if (req.method === "GET" && path === "/search") {
       const q = (url.searchParams.get("q") ?? "").trim();
       return send(res, 200, { results: q.length >= 2 && q.length <= 200 ? await search(q) : [] });
     }
-    const m = /^\/api\/runs\/([^/]+)(?:\/([a-z]+))?$/.exec(path);
+    const m = /^\/runs\/([^/]+)(?:\/([a-z]+)(?:\/(.+))?)?$/.exec(path);
     if (!m) throw new HttpError(404, "no such route");
     const run = await loadRun(m[1]);
     if (!run) throw new HttpError(404, "no such run");
@@ -395,16 +413,21 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       switch (part) {
         case "":
           return send(res, 200, await summary(run));
-        case "steps":
-          return steps(req, res, run);
         case "timeline": {
+          if (String(req.headers.accept).includes("text/event-stream")) return liveTimeline(res, run);
           const { rows, state, costUsd } = await readStore(run);
           return send(res, 200, { rows, state, costUsd });
         }
-        case "files":
-          return send(res, 200, { files: (await walk(run.work)).sort((a, b) => a.path.localeCompare(b.path)) });
-        case "file":
-          return serveFile(res, run, url.searchParams.get("path") ?? "", url.searchParams.get("download") === "1");
+        case "files": {
+          if (m[3] === undefined) return send(res, 200, { files: (await walk(run.work)).sort((a, b) => a.path.localeCompare(b.path)) });
+          let rel;
+          try {
+            rel = m[3].split("/").map(decodeURIComponent).join("/");
+          } catch {
+            throw new HttpError(404, "no such file");
+          }
+          return serveFile(res, run, rel, url.searchParams.get("download") === "1");
+        }
         case "live": {
           const view = await liveView(run);
           if (!view) throw new HttpError(404, "no live view");
@@ -412,7 +435,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
         }
       }
     } else if (req.method === "POST") {
-      if (part === "submit") {
+      if (part === "messages") {
         const result = await submit(run.id, (await bodyOf(req)).content);
         return send(res, result.status, result.body ?? {});
       }
@@ -451,7 +474,8 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       const live = [...children.values()];
       for (const child of live) {
         child.kill("SIGTERM");
-        setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 10_000).unref();
+        // A run mid-turn drains and releases its paid browser first; SIGKILL only if that takes far longer.
+        setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 45_000).unref();
       }
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
@@ -462,16 +486,19 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
 async function main() {
   const { values } = parseArgs({
     options: {
-      runs: { type: "string", default: "./runs" },
+      runs: { type: "string", default: join(HERE, ".data", "runs") },
       host: { type: "string", default: "127.0.0.1" },
       port: { type: "string", default: "8787" },
-      start: { type: "string", default: "" },
+      start: { type: "string", default: process.env.AGENT_RUN_LAUNCHER ?? "" },
       "allow-host": { type: "string", multiple: true, default: [] },
     },
   });
   const runs = resolve(values.runs);
   await mkdir(runs, { recursive: true });
-  const server = await startServer({ runs, host: values.host, port: Number(values.port), start: values.start.split(/\s+/).filter(Boolean), allowHosts: values["allow-host"] });
+  const launcher = join(HERE, "agent", "start-run.mjs");
+  const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
+  const agentName = process.env.AGENT_NAME ?? (await readJson(join(HERE, "agent", "agent.json")))?.name ?? "";
+  const server = await startServer({ runs, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], agentName });
   if (!isLoopback(values.host)) console.error(`warning: ${values.host} is not loopback. This server has no sign-in: anyone who can reach it can read the runs' files and start agents.`);
   console.log(`runs app on ${server.url}/ (runs in ${runs})`);
   const stop = () => server.close().then(() => process.exit(0));
