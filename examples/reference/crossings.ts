@@ -98,7 +98,15 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
     return value;
   } };
   const { evidence, status, deliver } = host;
-  host.evidence = { file: async (label, record) => { cross(`receipt.filing ${record.tool}`); const filed = await evidence.file(label, record); cross(`receipt.filed ${record.tool}`); return filed; } };
+  // A look the eyes have answered is a memo by the time it is filed: `vision.filing` is the answer kept and the look not yet filed, so a kill there makes the next
+  // process file the kept answer and not ask the eyes again.
+  host.evidence = { file: async (label, record) => {
+    const [filing, filed] = record.tool === 'look' ? ['vision.filing', 'vision.filed'] : [`receipt.filing ${record.tool}`, `receipt.filed ${record.tool}`];
+    cross(filing);
+    const done = await evidence.file(label, record);
+    cross(filed);
+    return done;
+  } };
   host.status = (event: StatusEvent) => {
     cross(`event ${event.source}.${event.source === 'workflow' ? event.event.type : 'change' in event ? event.change : 'look' in event ? 'look' : 'miss' in event ? 'miss' : 'reconciled'}`);
     return status(event);

@@ -15,7 +15,7 @@ import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
-import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
+import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { ChildEnv } from '@parcha/pi-vision/node';
 import type { BoxProvider } from '@parcha/pi-transport';
 import type { Recorder } from './record.ts';
@@ -86,6 +86,8 @@ export type Fakes = {
   page?: BrowserDecisions['classifyPage'];
   /** What the faux lead takes; default text and images. */
   lead?: { input: ('text' | 'image')[] };
+  /** Scripted eyes for the lead's images (with a lead that takes only text, every image a read or a screenshot makes goes to them). Absent: the lead sees its own images. */
+  eyes?: Eyes;
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;

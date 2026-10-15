@@ -55,3 +55,7 @@ export { capJudge, jevCost, JEV_CAPS, JEV_LIST_PRICE } from './judge.ts';
 /** The place seam: where the session lives and how its process starts, stops and restarts. The supervisor decides when to kill and writes the kill line first; a place decides how. `localPlace` is the child process of this machine; a package supplies another. */
 export { localPlace } from './place.ts';
 export type { Place, Runner, RunnerOrder, Exit, MoveReceipt } from './place.ts';
+
+/** The vision option: each look the guard or a read reports is filed, whole, in the run's `vision.looks` document (one per look key), with the screenshot it was of as a blob and its evidence path as its receipt, so the counters read the eyes' looks and cost. */
+export { keepLooks, shownShots, VisionLooks } from './looks.ts';
+export type { FiledLook, ShownImage } from './looks.ts';

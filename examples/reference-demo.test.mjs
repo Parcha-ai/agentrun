@@ -18,9 +18,9 @@ async function run(t, spec, argv, env = {}) {
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
   writeFileSync(file, JSON.stringify({ name: 'reference', ...spec }));
-  const before = { ...process.env };
   Object.assign(process.env, { DEMO_SPEC: file, ...env });
-  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before); });
+  // Back to the environment the test file started with, whatever order the hooks of several runs in one test come in.
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   // The supervisor is this process; it starts the fixture as each child.
   const { demo: fixtureDemo } = await import('./reference/demo.ts');
   // The supervisor needs the same fakes and job the fixture runs (it serves the fake browser's pages): the fixture's own module, imported.
@@ -211,6 +211,43 @@ test('a storm takes no crossing before the process has begun its first node, and
   const named = crossings({ run: { point: 'event browser.reconciled', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined);
   named('event browser.reconciled');
   assert.deepEqual(kills, ['SIGKILL']);
+
+test('the vision option: each look is filed, whole, in a vision.looks document with the image the eyes saw as a blob, and the counters read the look and its cost', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_EYES: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  const filed = lines.filter((line) => line.channel === 'durable' && line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks);
+  assert.equal(filed.length, 1, 'one look, filed once');
+  assert.equal(filed[0].record.status, 'ok');
+  assert.equal(filed[0].images.length, 1);
+  assert.equal(filed[0].images[0].type, 'image');
+  const bytes = readFileSync(join(recording, 'blobs', `${filed[0].images[0].blob}.png`));
+  assert.deepEqual([...bytes.subarray(1, 4)], [0x50, 0x4e, 0x47], 'the scan the eyes saw is in blobs/ as a PNG');
+  const counted = fold(lines);
+  assert.equal(counted.paid.vision, 1);
+  assert.ok(counted.cost > 0, 'the eyes\' price is in the cost');
+  assert.equal(JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).cost.parts.look, counted.cost);
+});
+
+test('a kill at vision.filing (the eyes answered, the look not yet filed): the next process files the kept answer and the eyes are asked once in all', { timeout: 300_000 }, async (t) => {
+  const { result, recording, tmp } = await run(t, { kills: [{ point: 'vision.filing', why: 'the answer is paid and kept, the look is not filed' }] }, ['--kill', '--json'], { DEMO_EYES: '1' });
+  assert.deepEqual(result.processes.map((process) => process.signal), ['SIGKILL', null]);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(result.unlanded, []);
+  assert.equal(result.kills[0].point, 'vision.filing');
+  const asked = readFileSync(join(result.dir, 'eyes.jsonl'), 'utf8').split('\n').filter(Boolean).length;
+  assert.equal(asked, 1, 'the eyes were asked once, across both processes');
+  assert.deepEqual(validateRecording(recording), []);
+  const counted = fold(readEvents(recording));
+  assert.deepEqual([counted.processes, counted.kills, counted.paid.vision, counted.repeated, counted.unknown], [2, 1, 1, 0, 0]);
+  assert.ok(tmp);
+});
+
+test('a kill that never lands is reported, not hidden: the process finished without taking the crossing', { timeout: 300_000 }, async (t) => {
+  const { result } = await run(t, { kills: [{ point: 'no.such.point', why: 'a point this demo never takes' }] }, ['--kill', '--json']);
+  assert.deepEqual(result.unlanded, ['no.such.point']);
+  assert.deepEqual(result.kills, []);
 });
 
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {

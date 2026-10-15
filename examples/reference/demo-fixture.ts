@@ -1,5 +1,7 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fakeEyes } from '@parcha/pi-vision/testing';
 import { demo } from './demo.ts';
 import type { ToolContext } from './host.ts';
 import { fakes, job } from './job.ts';
@@ -30,6 +32,8 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
   },
 } : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
-const scripted = { ...fakes, ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+// And scripted eyes for the lead's images: with them the lead takes text only, so the read of the filing scan goes to the eyes (a paid look).
+const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: { input: 1, output: 4 }, ...(process.env.DIR ? { ledgerPath: join(process.env.DIR, 'eyes.jsonl') } : {}), answers: ['A scanned certificate of incorporation. Incorporated on 2019-03-04.'] }) : undefined;
+const scripted = { ...fakes, ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(eyes ? { eyes, lead: { input: ['text' as const] } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 export const options = { self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: scripted };
-if (process.argv.includes('--child')) await demo(options);
+if (import.meta.main) await demo(options);

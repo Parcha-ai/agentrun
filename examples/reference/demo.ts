@@ -29,6 +29,7 @@ import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts'
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
+import { keepLooks, shownShots } from './looks.ts';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
@@ -69,6 +70,8 @@ export type DemoResult = {
   overBudget: boolean;
   /** Kills the place could not make: the attempt ended, and the run did not go on. Each has the place's error code. */
   failedKills: Array<{ gen: number; code: string }>;
+  /** The points of planned kills that never landed: the process finished without taking the crossing. A demo whose kill does not land is broken. */
+  unlanded: string[];
 };
 
 const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, dir: { type: 'string' }, json: { type: 'boolean' } } as const;
@@ -81,7 +84,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result);
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
-  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -161,8 +164,13 @@ async function child(options: DemoOptions) {
     // caps (Jev's), which a live judge is held to too.
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
+    // The vision option: every look is kept in a `vision.looks` document with the screenshot it was of, and the demo passes only its eyes.
+    const shown = shownShots(recorder ? { keep: (bytes, extension) => recorder.blob(bytes, extension) } : {});
+    local.host.tools = { ...local.host.tools, extensions: [...local.host.tools.extensions, shown.extension] };
+    const eyes = live ? undefined : options.fakes.eyes;
+    const vision: RunOptions['vision'] = (running) => ({ ...(eyes ? { eyes } : {}), ...(parts.vision?.(running) ?? {}), ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl') }) });
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision });
     await recorder?.detach();
     const storeFile = join(place.store, 'run.sqlite');
     const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
@@ -236,6 +244,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
   const failedKills: DemoResult['failedKills'] = [];
+  const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
   const paths = pathsAt(dir);
@@ -301,6 +310,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         previous = { runner, kind };
         continue;
       }
+      // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
+      for (const left of [plan, ...remaining]) for (const entry of [...(left.run ? [left.run] : []), ...left.tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       break;
     }
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
@@ -316,7 +327,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills };
+    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
     await place.release();
@@ -331,6 +342,7 @@ function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
+  if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
 }

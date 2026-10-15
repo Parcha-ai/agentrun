@@ -1,4 +1,4 @@
-// Every look the guard answers, kept in the run's store: one `vision.looks` document per look key, its entries in filing order, each the
+// The reference entry's vision option. Every look the guard answers, kept in the run's store: one `vision.looks` document per look key, its entries in filing order, each the
 // whole LookRecord (`facts.key`, `kept`, `cost_usd`, `status`, `model`), the screenshot's evidence path as its receipt, and the image the eyes
 // were shown as a blob. The counters fold from it (looks paid, kept after a kill, the eyes' cost, under draft 21 of the recording format), so a
 // screenshot the guard sends to the eyes is counted in the strip and the manifest's cost, the vision panel shows the chart, and a citation can
@@ -31,8 +31,10 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
   const extension = {
     name: 'hero-shots', tools: [], wraps: [],
     hooks: [{ task: 'pi.tool', handlers: { afterTool: async (call: { name: string }, result: Record<string, unknown>, api: { conversationId: unknown }) => {
-      if (call.name !== 'screenshot') return undefined;
+      // A browser screenshot and a read of an image file are the two ways an image reaches the guard; both are kept as what the eyes were shown.
+      if (call.name !== 'screenshot' && call.name !== 'read') return undefined;
       const blocks = (['output', 'content'].map((name) => result[name]).find(Array.isArray) ?? []) as { type: string; data?: string; mimeType?: string }[];
+      if (!blocks.some((block) => block.type === 'image')) return undefined;
       const images: ShownImage[] = blocks.flatMap((block) => {
         if (block.type !== 'image' || typeof block.data !== 'string') return [];
         const bytes = Buffer.from(block.data, 'base64');
