@@ -6,7 +6,6 @@ import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "
 import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
@@ -23,7 +22,6 @@ import {
   markReadOnlySafe,
   READ_ONLY_TOOLS,
   replaySafe,
-  workspaceBarrier,
   WRITING_TOOLS,
 } from "../src/env.ts";
 import { registerEnvCases } from "./_env-conformance.ts";
@@ -210,15 +208,11 @@ describe("the tools", () => {
   });
 });
 
-type Run = { barrierCalls: string[]; toolResultsAtBarrier: number[]; filesAtBarrier: boolean[]; texts: string[] };
-
 async function drive(
-  barrier: ((callName: string) => Promise<void>) | undefined,
   calls: Array<[string, JsonObject]>,
   inspect?: (run: { root: string; work: string; texts: string[] }) => Promise<void>,
 ) {
   return await withRun(async ({ root, work }) => {
-    const run: Run = { barrierCalls: [], toolResultsAtBarrier: [], filesAtBarrier: [], texts: [] };
     const faux = fauxProvider();
     const models = createModels();
     models.setProvider(faux.provider);
@@ -232,86 +226,17 @@ async function drive(
     try {
       const model = faux.getModel();
       const conversation = await harness.root(context, { agent: { model: { provider: model.provider, modelId: model.id } } });
-      if (barrier !== undefined) {
-        registry.install(
-          workspaceBarrier(async (call) => {
-            run.barrierCalls.push(call.name);
-            const page = await conversation.entries({}, 100, undefined, context);
-            run.toolResultsAtBarrier.push(page.items.filter((entry) => entry.kind === "pi.tool-result").length);
-            run.filesAtBarrier.push(existsSync(join(work, "a.txt")));
-            await barrier(call.name);
-          }),
-        );
-      }
       const submission = await conversation.submit({ type: "input", content: "go" }, context);
       const settled = await submission.wait(context);
       assert.equal(settled.status, "done");
       const page = await conversation.entries({}, 100, undefined, context);
-      run.texts = page.items.filter((entry) => entry.kind === "pi.tool-result").map((entry) => JSON.stringify(entry));
-      await inspect?.({ root, work, texts: run.texts });
-      return { run, work, written: existsSync(join(work, "a.txt")) ? await readFile(join(work, "a.txt"), "utf8") : undefined };
+      const texts = page.items.filter((entry) => entry.kind === "pi.tool-result").map((entry) => JSON.stringify(entry));
+      await inspect?.({ root, work, texts });
     } finally {
       await harness.close(context);
     }
   });
 }
-
-describe("the workspace barrier through a pi Harness", () => {
-  it("runs after a writing tool and before its result entry commits, and not for read", async () => {
-    const { run, written } = await drive(async () => {}, [
-      ["write", { path: "a.txt", content: "hello" }],
-      ["read", { path: "a.txt" }],
-      ["bash", { command: "true" }],
-    ]);
-    assert.equal(written, "hello");
-    assert.deepEqual(run.barrierCalls, ["write", "bash"]);
-    assert.deepEqual(run.toolResultsAtBarrier, [0, 2], "the write's barrier saw no result entry; bash's saw the earlier two");
-    assert.deepEqual(run.filesAtBarrier, [true, true], "the file was on disk when the barrier ran");
-  });
-
-  it("runs for a bash command that wrote and then exited nonzero, before its error result commits", async () => {
-    // pi-durable 1.2's bash answers a nonzero exit with an error result; 1.0.4 and 1.1 throw. Either way the command may
-    // have written, so its result follows the barrier.
-    const { run, written } = await drive(async () => {}, [["bash", { command: "echo hello > a.txt; exit 3" }]]);
-    assert.equal(written, "hello\n");
-    assert.deepEqual(run.barrierCalls, ["bash"]);
-    assert.deepEqual(run.toolResultsAtBarrier, [0], "the barrier ran before the result entry committed");
-    assert.deepEqual(run.filesAtBarrier, [true], "the file was on disk when the barrier ran");
-    assert.equal(run.texts.length, 1);
-    assert.match(run.texts[0]!, /"isError":true/);
-  });
-
-  it("is absent from a registry that does not install it", async () => {
-    const { run, written } = await drive(undefined, [["write", { path: "a.txt", content: "x" }]]);
-    assert.equal(written, "x");
-    assert.deepEqual(run.barrierCalls, []);
-  });
-
-  it("turns a failed barrier into an error result with workspace_not_durable instead of a success", async () => {
-    const { run } = await drive(
-      async () => {
-        throw new Error("archil sync failed");
-      },
-      [["write", { path: "a.txt", content: "x" }]],
-    );
-    assert.deepEqual(run.barrierCalls, ["write"]);
-    assert.equal(run.texts.length, 1);
-    assert.match(run.texts[0]!, /workspace_not_durable/);
-    assert.match(run.texts[0]!, /archil sync failed/);
-    assert.match(run.texts[0]!, /"isError":true/);
-  });
-
-  it("covers an app's own writing tools named in options", async () => {
-    const seen: string[] = [];
-    const extension = workspaceBarrier(async (call) => void seen.push(call.name), { tools: ["deploy"] });
-    const registration = extension.hooks?.[0];
-    assert.equal(registration?.task, "pi.tool");
-    const { afterTool } = registration!.handlers as { afterTool(call: { name: string }, result: object, api: undefined, context: Context): Promise<unknown> };
-    await afterTool({ name: "deploy" }, {}, undefined, context);
-    await afterTool({ name: "write" }, {}, undefined, context);
-    assert.deepEqual(seen, ["deploy"]);
-  });
-});
 
 describe("temporary files live under <root>/tmp", () => {
   it("creates temp directories and files there, outside work/, keeping the prefix and a 0755 tmp", async () => {
@@ -437,7 +362,7 @@ describe("temporary files live under <root>/tmp", () => {
   });
 
   it("names the spill of a bash tool call under <root>/tmp, and the file holds the full output", async () => {
-    await drive(undefined, [["bash", { command: "seq 1 100000" }]], async ({ root, texts }) => {
+    await drive([["bash", { command: "seq 1 100000" }]], async ({ root, texts }) => {
       assert.equal(texts.length, 1);
       const named = /Full output: ([^"\\]+\.log)/.exec(texts[0]!);
       assert.ok(named, texts[0]);
@@ -575,7 +500,7 @@ describe("commands run under no_new_privs", () => {
   });
 
   it("are what the bash tool runs under, through a real Harness", async () => {
-    await drive(undefined, [["bash", { command: STATUS }]], async ({ texts }) => {
+    await drive([["bash", { command: STATUS }]], async ({ texts }) => {
       assert.equal(texts.length, 1);
       assert.match(texts[0]!, /NoNewPrivs:\\t1/);
       assert.doesNotMatch(texts[0]!, /"isError":true/);

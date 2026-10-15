@@ -71,8 +71,10 @@ where FUSE is unavailable. Without Archil, a run can live on a plain directory o
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
 ```
+
+The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one.
 
 From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
 
@@ -93,7 +95,7 @@ In an empty directory, install the package and its peers, save this as `chat.mjs
 (it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
 ```
 
 ```js
@@ -660,10 +662,10 @@ then list the prefix and check it is empty.
 
 `openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, write `run.json`, open
 the store, check the seal, open and resume the Harness, keep the lease. `acquire`, `ensureRunning`, `localHost`,
-`archilEnv`, `openArchilStore` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported
-for apps that compose their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`,
-`busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
-are the reference.
+`archilEnv` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported for apps that compose
+their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`, `busyState`, and
+`leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. `src/index.ts` lists every export; the
+`.d.ts` files in `dist/` are the reference.
 
 A supervisor of your own (a driver `supervise` does not start, such as `daytonaHost`) gets its `control` from
 `archilControl({ apiKey, disk, region })`: the disk's S3 and control API, the same object `supervise` builds from its flags.
@@ -676,11 +678,16 @@ await ensureRunning({ disk: "dsk-...", region: "aws-us-east-1", id: "job-1" }, d
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:
 `@parcha/pi-durable-disk/lease` holds `openRunLease` (the claim, the owner lock, `run.json` with its heartbeat, the lease
 self-fence, the seal and the release, without a store or a Harness), `storeHead`, the store's fence and pragma helpers
-(`Fence`, `FencedDatabase`, `assertPragmas`, `PROFILE_PRAGMAS`, `openArchilStore`), and the typed errors and exit codes. It
-leaves out the supervisor, the host drivers, the CLI and the app contract, and the package declares `"sideEffects": false`, so
-a bundler keeps only what you use: a bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 60 KB
-minified against about 620 KB for `await import("@parcha/pi-durable-disk")` (esbuild `--bundle --minify --platform=node
---format=esm`, which inlines pi-durable, chord and their dependencies).
+(`Fence`, `FencedDatabase`, `assertPragmas`, `PROFILE_PRAGMAS`, `openArchilStore`), parking (`leaseParkTarget`,
+`watchParking`, `drain`, `busyState`), and the typed errors and exit codes. It leaves out the supervisor, the host drivers,
+the CLI and the app contract, and the package declares `"sideEffects": false`, so a bundler keeps only what you use: a
+bundle of the app with `await import("@parcha/pi-durable-disk/lease")` is about 63 KB minified against about 620 KB
+for `await import("@parcha/pi-durable-disk")` (esbuild `--bundle --minify --platform=node --format=esm`, which inlines
+pi-durable, chord and their dependencies).
+
+`@parcha/pi-durable-disk/internals` holds the claim, status and Daytona plumbing this repository's examples and demos use:
+`runPath`, `unmountClaim`, `createRunDir`, the mount-token and delegation helpers, `isLeaseFresh`, and the Daytona labels,
+names and `sweepSandboxes`. It carries no compatibility promise: a name there can change or go in any release.
 
 ### A run on a local directory
 
