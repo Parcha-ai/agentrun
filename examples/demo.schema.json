@@ -46,7 +46,11 @@
       "type": "object", "additionalProperties": false, "required": ["point", "why"],
       "properties": {
         "point": { "type": "string", "minLength": 1 }, "why": { "type": "string", "minLength": 1 },
-        "kind": { "enum": ["process", "box"] }, "target": { "enum": ["run", "tool"] }, "n": { "type": "integer", "minimum": 1 }
+        "kind": { "enum": ["process", "box"] }, "target": { "enum": ["run", "tool"] }, "n": { "type": "integer", "minimum": 1 },
+        "where": {
+          "description": "Only a crossing whose info has these values counts (announced through cross(point, { info })); with n, the nth matching crossing. A storm has none.",
+          "type": "object", "minProperties": 1, "additionalProperties": { "type": ["string", "number", "boolean"] }
+        }
       }
     },
     "stormKill": {
