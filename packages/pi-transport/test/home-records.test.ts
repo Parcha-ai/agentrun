@@ -1028,6 +1028,22 @@ describe("a home whose store wrapper fails", () => {
 		return resumed.ok ? "free" : resumed.error.code;
 	};
 
+	it("closes the store and lets it go when the wrapper itself fails, before pi has the store", async () => {
+		await withWorld(async (made) => {
+			const home = getOrThrow(
+				await openHome(
+					homeOf(made, async () => {
+						throw new Error("the wrapper failed");
+					}),
+				),
+			);
+			const resumed = await home.resume({ epoch: 1 }, context);
+			expect(resumed.ok ? "" : resumed.error.message).toContain("the wrapper failed");
+			expect(openOn(made.options.store)).toBe(0);
+			expect(await free(made)).toBe("free");
+		});
+	});
+
 	it("lets the store go when the wrapper's close fails", async () => {
 		await withWorld(async (made) => {
 			const home = getOrThrow(
