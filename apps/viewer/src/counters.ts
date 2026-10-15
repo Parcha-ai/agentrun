@@ -66,8 +66,10 @@ export type CounterState = {
     started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
   /** The browser's page actions (section 6): each key's dispatches (`callId`s) in the order they first appear, the
    *  generation of the line each first appears in (a snapshot's is an earlier process's), and those a revision showed
-   *  reaching the page. Never reset: a lost branch's actions were applied. */
-  pages: { order: Record<string, string[]>; gen: Record<string, number>; reached: Record<string, true> };
+   *  reaching the page. Never reset: a lost branch's actions were applied. `seen` and `timed`: a `browser.sessions` line,
+   *  and one with a `t` (only the in-process recorder stamps one; a bare export's lines carry none and only the latest
+   *  revision, so its page actions are not measured). */
+  pages: { order: Record<string, string[]>; gen: Record<string, number>; reached: Record<string, true>; seen: boolean; timed: boolean };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
@@ -91,8 +93,9 @@ export type Counters = {
    *  show started in a process that ended without filing its key). With any possible one, cost is a lower bound. */
   vision: { native: number; possible: number };
   /** The browser's page actions: dispatches of a key after one that never showed reaching the page are possible extra
-   *  applications, never proven ones (proven ones are in repeated and asked twice). */
-  pageActions: { possible: number };
+   *  applications, never proven ones (proven ones are in repeated and asked twice). Not measured when the recording's
+   *  `browser.sessions` lines are a bare export's (none carries a `t`): then none is counted, and never shown as 0. */
+  pageActions: { possible: number; measured: boolean };
   costLowerBound: boolean;
   /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
@@ -119,7 +122,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -223,8 +226,9 @@ export const counterFold: Fold<CounterState> = {
         next.looks = looks;
       }
       const actions = pageActionsOf(doc);
+      if (actions) next.pages = { ...next.pages, seen: true, timed: next.pages.timed || typeof line.t === 'number' };
       if (actions?.length) {
-        const pages = { order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
+        const pages = { ...next.pages, order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
         for (const action of actions) {
           const key = `${line.conv ?? ''}\u0001${action.tool}\u0001${action.codeSha}`;
           if (pages.gen[action.callId] === undefined) {
@@ -393,7 +397,8 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // repeated when its generation is later than that one's and in asked twice when it is the same; a dispatch after
   // earlier ones that never showed reaching it is a possible extra, never a proven one.
   let pagePossible = 0;
-  for (const callIds of Object.values(state.pages.order)) {
+  const pagesMeasured = !state.pages.seen || state.pages.timed;
+  for (const callIds of pagesMeasured ? Object.values(state.pages.order) : []) {
     callIds.forEach((callId, index) => {
       if (index === 0) return;
       const reached = callIds.slice(0, index).filter((earlier) => state.pages.reached[earlier]).at(-1);
@@ -424,7 +429,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   return {
     paid: { total: workflow + agent + vision, workflow, agent, vision },
     vision: { native: state.looks.native, possible },
-    pageActions: { possible: pagePossible },
+    pageActions: { possible: pagePossible, measured: pagesMeasured },
     costLowerBound: possible > 0,
     repeated,
     repeatedNotMeasured,
@@ -442,4 +447,6 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
 }
 
 /** The strip's repeated: "not measured" when nothing measured repeats and an effect's host reported no calls, never 0. */
-export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && counters.repeatedNotMeasured > 0 ? 'not measured' : String(counters.repeated));
+export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && (counters.repeatedNotMeasured > 0 || !counters.pageActions.measured) ? 'not measured' : String(counters.repeated));
+/** The strip's asked twice: "not measured" when nothing measured was asked twice and the browser's page actions are not measured. */
+export const askedTwiceLabel = (counters: Counters): string => (counters.askedTwice === 0 && !counters.pageActions.measured ? 'not measured' : String(counters.askedTwice));

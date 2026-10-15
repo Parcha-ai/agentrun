@@ -36,7 +36,10 @@ static host), or a recording folder dropped on the page or chosen with its picke
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
   or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool
   and arguments). An effect whose host reports no calls makes repeated "not measured", never 0. A lost branch's calls
-  were paid, and its redo counts as repeated.
+  were paid, and its redo counts as repeated. The browser's page actions count the same way, per conversation, tool and
+  code: a dispatch after one that reached the page is an extra, and one after dispatches that never showed reaching it
+  reads "+ N possible" beside repeated; a recording whose session records are a bare export's (no line carries a `t`)
+  shows them not measured.
   When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
   (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and

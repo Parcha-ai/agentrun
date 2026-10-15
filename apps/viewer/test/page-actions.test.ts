@@ -3,9 +3,9 @@
 // `(conv, tool, codeSha)`, after one that reached the page, is one extra application: in repeated when its generation is
 // later, in asked twice when it is the same; after dispatches that never showed reaching the page, a possible one.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { counterFold, countersOf } from '../src/counters.ts';
+import { askedTwiceLabel, counterFold, countersOf, repeatedLabel } from '../src/counters.ts';
 import { parseLines, type Json, type Line } from '../src/format.ts';
 
 type Entry = { callId: string; codeSha?: string; tool?: string; finished?: boolean; sent?: { held: string }[]; refused?: boolean; prior?: Entry };
@@ -70,4 +70,35 @@ test('the reference recording\'s one page action per key adds nothing', () => {
   assert.deepEqual(pages(lines).possible, 0);
   const without = pages(lines.filter((line) => line.kind !== 'browser.sessions'));
   assert.deepEqual([pages(lines).repeated, pages(lines).askedTwice], [without.repeated, without.askedTwice]);
+});
+
+const fixtures = new URL('./fixtures/page-actions/', import.meta.url);
+const counted = (lines: Line[]) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true);
+
+test('the recorded fixtures read what their expected.json says', () => {
+  const names = readdirSync(fixtures).filter((name) => /^\d-/.test(name)).sort();
+  assert.equal(names.length, 6);
+  for (const name of names) {
+    const lines = parseLines(readFileSync(new URL(`${name}/events.jsonl`, fixtures), 'utf8'));
+    const { expected } = JSON.parse(readFileSync(new URL(`${name}/expected.json`, fixtures), 'utf8')) as { expected: Json };
+    const counters = counted(lines);
+    if (expected === 'NOT MEASURED') {
+      assert.equal(counters.pageActions.measured, false, name);
+      assert.deepEqual([repeatedLabel(counters), askedTwiceLabel(counters)], ['not measured', 'not measured'], `${name}: never 0`);
+    } else {
+      assert.equal(counters.pageActions.measured, true, name);
+      assert.deepEqual({ repeated: counters.repeated, askedTwice: counters.askedTwice, possible: counters.pageActions.possible }, expected, name);
+    }
+  }
+});
+
+test('page actions are not measured only when every browser.sessions line carries no t: a bare export\'s', () => {
+  const recorded = parseLines(readFileSync(new URL('2-repeated/events.jsonl', fixtures), 'utf8'));
+  const untimed = recorded.map(({ t: _t, ...line }) => line as Line);
+  assert.equal(counted(untimed).pageActions.measured, false);
+  assert.equal(counted(untimed).repeated, 0, 'nothing is counted from an export');
+  assert.equal(counted([...untimed.slice(0, -1), recorded.at(-1)!]).pageActions.measured, true, 'one line the recorder stamped is enough');
+  const noBrowser = counted(parseLines(readFileSync(new URL('./fixtures/reference-killed/events.jsonl', import.meta.url), 'utf8')).filter((line) => line.kind !== 'browser.sessions'));
+  assert.equal(noBrowser.pageActions.measured, true, 'a run with no browser has nothing unmeasured');
+  assert.notEqual(askedTwiceLabel(noBrowser), 'not measured');
 });
