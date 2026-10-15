@@ -3,6 +3,7 @@
 // get it from fixtures/signin-refresh-child.mjs); a request to any other host fails the test.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -18,7 +19,7 @@ import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowExtension, recordingLines } from '@parcha/agentrun-pi/durable';
-import { AGENT_NAME, checkKeys, resolveModel, ResolveError, SignInError, signIn, UsageLimitError, usageLimitError } from '@parcha/agentrun-pi/signin';
+import { AGENT_NAME, AuthStoreError, checkKeys, fileCredentialStore, resolveModel, ResolveError, SignInError, signIn, UsageLimitError, usageLimitError } from '@parcha/agentrun-pi/signin';
 import { fakeOpenAI } from './fixtures/fake-openai.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-signin-'));
@@ -92,11 +93,8 @@ test('an expired access token is refreshed once, then the request goes through w
   assert.equal(server.seen.foreign, 1, 'a request without this test\'s secret is not one of its own');
 });
 
-test('two processes refreshing at once: one refreshes, the other re-reads; both hold the new token, and no refresh token is sent twice', async (t) => {
-  const server = await fakeOpenAI({ models: LISTED, tokenDelayMs: 400 });
-  t.after(server.close);
-  const home = newHome();
-  seed(home, oauth({ expires: Date.now() - 1000 }));
+/** Two processes resolving the model at once behind a barrier, each through fixtures/signin-refresh-child.mjs. */
+async function refreshPair(server, home) {
   const barrier = mkdtempSync(join(root, 'barrier-'));
   const child = fileURLToPath(new URL('./fixtures/signin-refresh-child.mjs', import.meta.url));
   const run = (name) => new Promise((done, fail) => {
@@ -111,15 +109,47 @@ test('two processes refreshing at once: one refreshes, the other re-reads; both 
   const both = Promise.all([run('a'), run('b')]);
   while (!(existsSync(join(barrier, 'ready-a')) && existsSync(join(barrier, 'ready-b')))) await new Promise((done) => setTimeout(done, 5));
   writeFileSync(join(barrier, 'go'), '');
-  const [a, b] = await both;
-  assert.ok(a.started < b.finished && b.started < a.finished, 'the two resolutions overlapped');
+  return both;
+}
+
+/** One refresh between the two, the rotated token in both, and auth.json beside its empty lock database. */
+function refreshedOnce(server, home, a, b) {
   assert.deepEqual(server.seen.refreshSent, ['refresh-1'], 'one refresh between them');
   assert.deepEqual(server.seen.reused, []);
-  const access = stored(home).credentials.openai.access;
-  const hash = createHash('sha256').update(access).digest('hex');
+  const hash = createHash('sha256').update(stored(home).credentials.openai.access).digest('hex');
   assert.equal(a.key, hash);
   assert.equal(b.key, hash);
-  assert.deepEqual(readdirSync(home).sort(), ['auth.json'], 'no lock or temporary file is left');
+  assert.deepEqual(readdirSync(home).sort(), ['auth.json', 'auth.json.lock'], 'no temporary file is left');
+  const lock = statSync(join(home, 'auth.json.lock'));
+  assert.equal(lock.mode & 0o777, 0o600);
+  assert.equal(lock.size, 0, 'the lock holds nothing');
+}
+
+test('two processes refreshing at once: one refreshes, the other re-reads; both hold the new token, and no refresh token is sent twice', async (t) => {
+  const server = await fakeOpenAI({ models: LISTED, tokenDelayMs: 400 });
+  t.after(server.close);
+  const home = newHome();
+  seed(home, oauth({ expires: Date.now() - 1000 }));
+  const [a, b] = await refreshPair(server, home);
+  assert.ok(a.started < b.finished && b.started < a.finished, 'the two resolutions overlapped');
+  refreshedOnce(server, home, a, b);
+});
+
+test('a writer killed while it holds the lock: the lock is free at once, and of the next two processes one refreshes', async (t) => {
+  const server = await fakeOpenAI({ models: LISTED, tokenDelayMs: 400 });
+  t.after(server.close);
+  const home = newHome();
+  seed(home, oauth({ expires: Date.now() - 1000 }));
+  const holder = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/signin-lock-holder.mjs', import.meta.url)), home], { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => holder.kill('SIGKILL'));
+  await new Promise((done, fail) => { holder.stdout.on('data', (chunk) => String(chunk).includes('held') && done()); holder.on('exit', (code) => fail(new Error(`the holder exited ${code}`))); });
+  await assert.rejects(fileCredentialStore(home, { lockTimeoutMs: 300 }).hostId(), (error) => error instanceof AuthStoreError && error.code === 'LOCK_TIMEOUT', 'held: a writer waits');
+  holder.kill('SIGKILL');
+  await once(holder, 'exit');
+  const started = Date.now();
+  const [a, b] = await refreshPair(server, home);
+  assert.ok(Date.now() - started < 20_000, 'nobody waited out a lock timeout');
+  refreshedOnce(server, home, a, b);
 });
 
 test('port 1455 busy: the sign-in fails at once with the clear message, and stores no credential', async (t) => {
@@ -220,7 +250,7 @@ test(`a sign-in on fakes (pi-ai ${piAiVersion}): auth.json is 0600 in a 0700 dir
   const file = stored(home);
   assert.equal(statSync(home).mode & 0o777, 0o700);
   assert.equal(statSync(join(home, 'auth.json')).mode & 0o777, 0o600);
-  assert.deepEqual(readdirSync(home), ['auth.json']);
+  assert.deepEqual(readdirSync(home).sort(), ['auth.json', 'auth.json.lock']);
   if (namesTheApp) assert.equal(page.searchParams.get('ext_agent_host_id'), `urn:uuid:${file.hostId}`, 'the persisted host id');
   assert.equal(signed.hostId, file.hostId);
   const { access, refresh } = file.credentials.openai;

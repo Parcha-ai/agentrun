@@ -1,14 +1,18 @@
 // The sign-in's token store: $AGENTRUN_HOME/auth.json, as pi-ai's `CredentialStore`.
 //
 // The directory is 0700 and the file 0600. Every write is the whole file, written beside it and renamed into place, so a
-// reader without the lock always sees one complete version. Writes are serialized across processes by an exclusive lock
-// file next to it (auth.json.lock, created with O_EXCL) and inside a process by one chain per file. `modify` re-reads
-// the file under the lock, so pi-ai's refresh, which runs inside `modify` and re-checks expiry there, refreshes once: a
-// process that waited sees the rotated token and leaves it. A token is never written anywhere else, logged or printed.
+// reader without the lock always sees one complete version. Writes are serialized inside a process by one chain per file,
+// and across processes by an operating-system lock: an exclusive SQLite transaction on auth.json.lock, an empty
+// database. The system drops that lock when its holder exits or is killed, so there is no abandoned lock to detect or
+// break, and a lock another writer holds is never moved or removed. `modify` re-reads the file under the lock, so
+// pi-ai's refresh, which runs inside `modify` and re-checks expiry there, refreshes once: a process that waited sees the
+// rotated token and leaves it. A token is never written anywhere else, logged or printed.
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 /** Where the sign-in lives: `home`, else $AGENTRUN_HOME, else ~/.config/agentrun. */
@@ -24,13 +28,10 @@ export class AuthStoreError extends Error {
 }
 
 type AuthFile = { version: 1; hostId?: string; credentials: Record<string, Credential> };
-type Holder = { pid: number; host: string; at: number; token: string };
 
 export type FileCredentialStoreOptions = {
-  /** How long a writer waits for another process's lock before failing. Default 60 s. */
+  /** How long a writer waits for another process's lock before failing. Default 60 s; pi-ai bounds a refresh at 15 s. */
   lockTimeoutMs?: number;
-  /** A lock from another machine older than this is taken as abandoned. Default 60 s; a refresh is bounded at 15 s. */
-  staleMs?: number;
 };
 
 /** One chain per auth file in this process: every instance on the same file queues on it, so the lock file only ever
@@ -43,26 +44,19 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((done, fai
   signal?.addEventListener("abort", onAbort, { once: true });
 });
 
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
+/** node:sqlite, loaded on the first write: Node 22 marks it experimental and warns once when it loads. */
+let sqlite: typeof import("node:sqlite") | undefined;
+const SQLITE_BUSY = 5;
 
 export class FileCredentialStore implements CredentialStore {
   readonly file: string;
   private readonly lockFile: string;
   private readonly lockTimeoutMs: number;
-  private readonly staleMs: number;
 
   constructor(readonly home: string, options: FileCredentialStoreOptions = {}) {
     this.file = join(home, "auth.json");
     this.lockFile = `${this.file}.lock`;
     this.lockTimeoutMs = options.lockTimeoutMs ?? 60_000;
-    this.staleMs = options.staleMs ?? 60_000;
   }
 
   async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
@@ -110,11 +104,11 @@ export class FileCredentialStore implements CredentialStore {
     const previous = chains.get(this.file) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(async () => {
       signal?.throwIfAborted();
-      const token = await this.lock(signal);
+      const lock = await this.lock(signal);
       try {
         return await fn(this.load());
       } finally {
-        this.unlock(token);
+        lock.close();
       }
     });
     const tail = run.catch(() => {});
@@ -169,75 +163,38 @@ export class FileCredentialStore implements CredentialStore {
     }
   }
 
-  private async lock(signal?: AbortSignal): Promise<string> {
+  /** The cross-process lock: an exclusive transaction on the lock database, taken without blocking the event loop (a
+   *  busy database answers at once and the wait is a timer). Closing the connection ends the transaction and frees it.
+   *  The lock file is created with O_EXCL and never opened or closed by hand afterwards: closing any descriptor of a file
+   *  drops every lock this process holds on it. */
+  private async lock(signal?: AbortSignal): Promise<DatabaseSync> {
     this.ensureHome();
-    const holder: Holder = { pid: process.pid, host: hostname(), at: Date.now(), token: randomUUID() };
+    try {
+      closeSync(openSync(this.lockFile, "wx", 0o600));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    sqlite ??= createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+    const db = new sqlite.DatabaseSync(this.lockFile);
     const deadline = Date.now() + this.lockTimeoutMs;
-    for (let delay = 5; ; delay = Math.min(delay * 2, 100)) {
-      signal?.throwIfAborted();
-      try {
-        const fd = openSync(this.lockFile, "wx", 0o600);
-        try { writeSync(fd, JSON.stringify({ ...holder, at: Date.now() })); } finally { closeSync(fd); }
-        return holder.token;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-      const current = this.holder();
-      if (current && this.abandoned(current)) {
-        this.breakLock(current);
-        continue;
-      }
-      if (Date.now() > deadline) {
-        const by = current ? ` by process ${current.pid}${current.host === holder.host ? "" : ` on ${current.host}`}` : "";
-        throw new AuthStoreError("LOCK_TIMEOUT", `${this.lockFile} is held${by}; it was not released within ${Math.round(this.lockTimeoutMs / 1000)} s`);
-      }
-      await sleep(delay + Math.random() * delay, signal);
-    }
-  }
-
-  /** The lock's holder, `{ token: "" }` with the file's age for one cut short before its holder wrote it, or undefined
-   *  when there is no lock. */
-  private holder(): Holder | undefined {
     try {
-      const text = readFileSync(this.lockFile, "utf8");
-      try {
-        return JSON.parse(text) as Holder;
-      } catch {
-        return { pid: 0, host: "", at: statSync(this.lockFile).mtimeMs, token: "" };
+      for (let delay = 5; ; delay = Math.min(delay * 2, 100)) {
+        signal?.throwIfAborted();
+        try {
+          db.exec("BEGIN EXCLUSIVE");
+          return db;
+        } catch (error) {
+          if ((error as { errcode?: number }).errcode !== SQLITE_BUSY) throw error;
+        }
+        if (Date.now() > deadline) {
+          throw new AuthStoreError("LOCK_TIMEOUT", `${this.lockFile} is held by another process; it was not released within ${Math.round(this.lockTimeoutMs / 1000)} s`);
+        }
+        await sleep(delay + Math.random() * delay, signal);
       }
-    } catch {
-      return undefined;
+    } catch (error) {
+      db.close();
+      throw error;
     }
-  }
-
-  /** On this machine a lock is abandoned when its process is gone; from elsewhere, or unwritten, when it is old. */
-  private abandoned(holder: Holder): boolean {
-    if (holder.token && holder.host === hostname()) return !alive(holder.pid);
-    return Date.now() - holder.at > this.staleMs;
-  }
-
-  /** Move the abandoned lock aside under a unique name, and delete it only when it is the one judged abandoned. When
-   *  another waiter broke it first and took the lock, the moved file is that waiter's: it goes back, unless a third
-   *  waiter's lock is already in place. */
-  private breakLock(abandoned: Holder): void {
-    const aside = `${this.lockFile}.${randomUUID()}.stale`;
-    try {
-      renameSync(this.lockFile, aside);
-    } catch {
-      return; // another waiter moved it first
-    }
-    let moved: Holder | undefined;
-    try { moved = JSON.parse(readFileSync(aside, "utf8")) as Holder; } catch { moved = undefined; }
-    if (moved && moved.token !== abandoned.token) {
-      try { linkSync(aside, this.lockFile); } catch { /* a newer lock is in place */ }
-    }
-    try { unlinkSync(aside); } catch { /* gone */ }
-  }
-
-  private unlock(token: string): void {
-    try {
-      if ((JSON.parse(readFileSync(this.lockFile, "utf8")) as Holder).token === token) unlinkSync(this.lockFile);
-    } catch { /* broken as abandoned: no longer ours to remove */ }
   }
 }
 

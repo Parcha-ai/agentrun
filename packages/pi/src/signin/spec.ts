@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 /** A run mode an item is needed for: `live` (paid calls) or `kill` (the kill on a real box). Without `for`, every run. */
 export type RunMode = "live" | "kill";
@@ -155,14 +155,15 @@ function checkMember(item: Member, ctx: Ctx): { met: boolean; fix?: string } {
 const applies = (item: { for?: RunMode }, options: CheckOptions) => !item.for || (item.for === "live" ? options.live || options.kill : options.kill) === true;
 
 /**
- * What this demo needs for this run, and what is missing. Items whose `for` is not this run's mode are left out; `kill`
- * implies `live`. A choice is met by any member, an array member only when all of its items are. A required program
+ * What this demo needs for this run, and what is missing. Items whose `for` is not this run's mode are left out, choice
+ * members included; `kill` implies `live`. A choice is met by any member, an array member only when all of its items
+ * are. A relative `dir` is taken from the current directory. A required program
  * outside its platforms is missing, before anything starts, and so is one below its `min` or whose version cannot be
  * read. It sends no request and prompts for nothing, so a run that checks first sends nothing while a required item is
  * missing (`exitCode` 2).
  */
 export function checkKeys(spec: DemoSpec, options: CheckOptions = {}): KeyReport {
-  const ctx: Ctx = { env: options.env ?? process.env, platform: options.platform ?? process.platform, dir: options.dir ?? process.cwd() };
+  const ctx: Ctx = { env: options.env ?? process.env, platform: options.platform ?? process.platform, dir: resolve(options.dir ?? ".") };
   const items: ReportItem[] = [];
   for (const item of requirements(spec)) {
     if (!applies(item, options)) continue;
@@ -171,8 +172,11 @@ export function checkKeys(spec: DemoSpec, options: CheckOptions = {}): KeyReport
       items.push({ kind, name: nameOf(item), why: item.why, required: item.required, ...checkMember(item, ctx) });
       continue;
     }
-    const options_ = item.oneOf.map((member) => {
-      const all = Array.isArray(member) ? member : [member];
+    // A member's own `for` applies too: an item this mode does not need drops out of its member, and a member left with
+    // nothing drops out of the choice, which this mode then does not need at all.
+    const members = item.oneOf.map((member) => (Array.isArray(member) ? member : [member]).filter((one) => applies(one, options))).filter((all) => all.length);
+    if (!members.length) continue;
+    const options_ = members.map((all) => {
       const checked = all.map((one) => ({ one, ...checkMember(one, ctx) }));
       return { name: all.map(nameOf).join(" + "), met: checked.every((one) => one.met), fixes: checked.filter((one) => !one.met).map((one) => one.fix) };
     });

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { after, afterEach, beforeEach, test } from 'node:test';
 import { checkKeys, checkSetupPrompt } from '@parcha/agentrun-pi/signin';
 
@@ -56,6 +56,10 @@ test('a required key missing: the report names its env name and where to create 
   assert.deepEqual(kill.missing.map((item) => item.name), ['BOX_API_KEY + BOX_PROJECT_ID or local-box'], 'an array member needs all of its items');
   assert.match(kill.missing[0].fix, /set BOX_PROJECT_ID .*; or install local-box/);
   assert.equal(checkKeys(SPEC, { env: { PATH, DEMO_API_KEY: 'x', BOX_API_KEY: 'x', BOX_PROJECT_ID: 'x' }, platform: 'linux', kill: true }).exitCode, 0);
+  const nested = { ...SPEC, keys: [{ oneOf: [[{ env: 'BOX_API_KEY', why: 'the box', where: 'https://box.test', required: true }, { env: 'BOX_KILL_TOKEN', why: 'the kill', where: 'https://box.test', required: true, for: 'kill' }], { cmd: 'local-box', why: 'here', required: true, for: 'kill' }], why: 'a box' }] };
+  assert.equal(checkKeys(nested, { env: { PATH, BOX_API_KEY: 'x' }, platform: 'linux', live: true }).exitCode, 0, 'a member\'s kill-only item is not needed live');
+  assert.deepEqual(checkKeys(nested, { env: { PATH, BOX_API_KEY: 'x' }, platform: 'linux', kill: true }).missing.map((item) => item.name), ['BOX_API_KEY + BOX_KILL_TOKEN or local-box'], 'and is with --kill');
+  assert.deepEqual(checkKeys(nested, { env: { PATH }, platform: 'linux' }).missing.map((item) => item.name), ['BOX_API_KEY'], 'on fakes the kill-only member drops out of the choice');
   const mac = checkKeys(SPEC, { env: { PATH, DEMO_API_KEY: 'x' }, platform: 'darwin', live: true });
   assert.equal(mac.exitCode, 2);
   assert.match(mac.text, /demo-fuse runs on linux only; this machine is darwin/);
@@ -97,7 +101,8 @@ test('a missing package prints the npm install --no-save line, and a choice may 
   install('0.10.0');
   assert.match(checkKeys(spec, { env, dir: demo }).missing[0].fix, /npm install --no-save modal@0\.11\.0 \(found 0\.10\.0\)/);
   install('0.11.0');
-  assert.equal(checkKeys(spec, { env, dir: join(demo) }).exitCode, 0);
+  assert.equal(checkKeys(spec, { env, dir: demo }).exitCode, 0);
+  assert.equal(checkKeys(spec, { env, dir: relative(process.cwd(), demo) }).exitCode, 0, 'a relative directory, from the current one');
   assert.equal(checkKeys(spec, { env: {}, dir: demo }).exitCode, 2, 'the package alone does not meet the choice');
   assert.equal(requests, 0);
 });
