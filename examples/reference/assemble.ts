@@ -30,18 +30,18 @@ export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<R
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
 
-/** The run's id, and the key its workflow's task and journal are kept under. */
+/** The run's id when nothing names one, and the key its workflow's task and journal are kept under. A demo's run is keyed by the demo's name (the place's `paths.id`), so two demos never share a run. */
 export const RUN_KEY = 'reference';
 
 /** The paths of a place under `root`, computed: nothing is made. */
-export const pathsAt = (root: string): RunPlace => { const at = resolve(root); return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'store') }; };
+export const pathsAt = (root: string, id: string = RUN_KEY): RunPlace => { const at = resolve(root); return { id, root: at, work: join(at, 'work'), store: join(at, 'store') }; };
 
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
-export async function placeAt(root?: string): Promise<RunPlace> {
+export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunPlace> {
   const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
   await mkdir(join(at, 'work'), { recursive: true });
-  return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'store') };
+  return { id, root: at, work: join(at, 'work'), store: join(at, 'store') };
 }
 
 /** A claim on a plain directory: nothing to mount, nothing to fence but this process's own mark. */

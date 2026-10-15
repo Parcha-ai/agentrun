@@ -152,7 +152,7 @@ export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: 
 }
 
 export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace): Promise<Prepared> {
-  const place = at ?? await placeAt(env.DIR);
+  const place = at ?? await placeAt(env.DIR, env.RUN_ID || options.spec.name);
   const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
   const window: EffectWindow = { open: 0 };
   const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST) : undefined, window);
@@ -255,7 +255,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const failedKills: DemoResult['failedKills'] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
-  const paths = pathsAt(dir);
+  const paths = pathsAt(dir, spec.name);
+  base.RUN_ID = paths.id;
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
   const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) } : {}) });
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.

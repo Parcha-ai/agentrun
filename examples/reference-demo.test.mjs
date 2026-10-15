@@ -470,3 +470,18 @@ test('the place\'s signals carry the kill request: a place with its own signals(
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
 });
+
+test('a run is keyed by its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
+  const { readJournal } = await import('@parcha/agentrun-pi/durable');
+  const { RUN_KEY } = await import('./reference/index.ts');
+  const parent = await mkdtemp(join(tmpdir(), 'reference-keyed-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  for (const name of ['alpha-demo', 'beta-demo']) {
+    const dir = join(parent, name);
+    const { result } = await run(t, { name }, ['--json', '--dir', dir]);
+    assert.equal(result.processes.at(-1).outcome.status, 'complete');
+    const file = join(dir, 'store', 'run.sqlite');
+    assert.ok(readJournal(file, name)?.binding, `${name}'s journal is under its own name`);
+    assert.equal(readJournal(file, RUN_KEY), undefined, `nothing is kept under the fixed key ${RUN_KEY}`);
+  }
+});
