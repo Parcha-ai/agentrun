@@ -43,6 +43,10 @@ export type StatusEvent =
   | { source: 'workflow'; event: WorkflowEvent }
   | { source: 'evidence'; label: string; tool: string; path: string };
 export type Delivery = { record: unknown };
+/** After `answered` has nothing for an effect a killed process left unknown, the host may run it again, when running it again is safe
+ *  (a read, or work in a fresh box): `rerun` is asked with the effect's id and intent, and an answer completes the effect. Undefined
+ *  leaves it unknown and it is never sent again. Only an effect with an intent is asked. */
+export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string } }) => Promise<{ args: unknown; value: unknown } | undefined>;
 /** What a recorder takes from the run: the process's generation once it has opened the run. */
 export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
@@ -52,10 +56,10 @@ export type Host = {
   /** 1. pi-ai's models, and the one the lead runs. */
   models: { catalog: Models; lead: ModelRef };
   /** 2. The host's own pi extensions, the door a workflow's `call` goes through, and the browser plane. `answered`
-   *  looks a call up by the admitted effect's `argsHash` (which names the call's step): what the door answered it,
+   *  looks a call up by the admitted effect (its id: polls and retries share an `argsHash`, so a hash would hand a later call an earlier one's answer): what the door answered it,
    *  if it did. A resumed run asks before it decides a call a killed process left unknown; absent, or with no answer,
    *  the call stays unknown and is never sent again. */
-  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(argsHash: string): Promise<{ args: unknown; value: unknown } | undefined>; browser: BrowserPlane };
+  tools: { extensions: readonly Extension[]; runEffect: RunEffect; answered?(effect: { id: string; argsHash: string }): Promise<{ args: unknown; value: unknown } | undefined>; rerun?: Rerun; browser: BrowserPlane };
   /** 3. Files a browser read or a look as a receipt; returns the path the model cites. */
   evidence: { file(label: string, record: EvidenceRecord | LookRecord): Promise<{ path: string } | null> };
   /** 4. Typed answers: the workflow's judge, and the browser's (absent, it files every page `ok`). */
@@ -81,6 +85,10 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */
+  tokensPerSecond?: number;
+  /** How many model turns one process can take before the faux provider has none queued; default 64. A job with many branches needs more. */
+  responses?: number;
 };
 
 /** One fake call, with the process incarnation that made it (a pid can be reused; this id is drawn at each start). A
@@ -93,10 +101,12 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
+/** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
 export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
-  const answerOf = (argsHash: string) => join(place.root, 'answers', `${argsHash}.json`);
+  // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
+  const answerOf = (effectId: string) => join(place.root, 'answers', `${createHash('sha256').update(effectId).digest('hex')}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
@@ -105,8 +115,12 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
   const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
-  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }] }) : fauxProvider();
-  faux.setResponses(Array.from({ length: 64 }, () => (context, stream) => {
+  // The faux streams like a real model: a turn takes a moment, pi commits the start of every ask and a throttled partial of the answer, and
+  // a kill mid-stream leaves both in the store. `tokensPerSecond: 0` answers at once.
+  const tokensPerSecond = fakes.tokensPerSecond ?? 50;
+  const streaming = tokensPerSecond > 0 ? { tokensPerSecond, tokenSize: { min: 1, max: 2 } } : {};
+  const faux = fakes.lead ? fauxProvider({ models: [{ id: 'faux-1', input: fakes.lead.input }], ...streaming }) : fauxProvider({ ...streaming });
+  faux.setResponses(Array.from({ length: fakes.responses ?? 64 }, () => (context, stream) => {
     count('model', `turn ${context.messages.filter((message) => message.role === 'toolResult').length}`, stream?.sessionId);
     return fakes.model(context.messages);
   }));
@@ -134,22 +148,34 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
       extensions: [],
-      runEffect: async ({ node, input, effect }) => {
+      runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
-        const value = await tool(input);
+        // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied. A send
+        // that failed with a retryable error is sent once more. The driver keeps each reported call on the effect's record.
+        const report = (outcome: 'applied' | 'failed') => call?.({ outcome, tool: node.tool, argsHash: effect.argsHash });
+        let value: unknown;
+        for (let send = 1; ; send += 1) {
+          try { value = await tool(input); break; } catch (error) {
+            report('failed');
+            if (send >= 2 || (error as { retryable?: boolean } | null | undefined)?.retryable !== true) throw error;
+          }
+        }
         // Kept under the admitted effect's argsHash before the driver commits the result, so a process killed between
         // the two is answered from here and the call is not sent again.
-        const at = answerOf(effect.argsHash);
+        const at = answerOf(effect.id);
         await mkdir(join(place.root, 'answers'), { recursive: true });
         await writeFile(`${at}.partial`, JSON.stringify({ args: input ?? {}, value }));
         await rename(`${at}.partial`, at);
+        // The applied call is listed once, after its answer is kept: a kill between the two leaves the answer as the evidence
+        // the next process's settle reports it from.
+        report('applied');
         return value;
       },
-      answered: async (argsHash) => {
-        try { return JSON.parse(await readFile(answerOf(argsHash), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
+      answered: async ({ id }) => {
+        try { return JSON.parse(await readFile(answerOf(id), 'utf8')) as { args: unknown; value: unknown }; } catch { return undefined; }
       },
       // The fake costs nothing; list prices would bill its session by the second and make every run's usage differ.
       browser: { prices: { sessionUsdPerHour: 0, sessionMinimumS: 0, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 }, ...browser },

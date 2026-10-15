@@ -102,6 +102,10 @@ export function checkPiFamily(copies, developed, peers, lagging = []) {
     const held = copies.filter(copy => copy.name === name);
     const want = developed[name];
     if (held.length !== 1) problems.push(`The consumer holds ${held.length} copies of ${name} (${held.map(copy => `${copy.version} at ${copy.location}`).join(', ') || 'none'}); a host needs exactly one.`);
+    // A package whose peer range excludes the version is named even when the copy the consumer holds is that version: a pinned install
+    // lands there whatever the ranges say, and the range is what a host that installs the package without the pin would meet.
+    const excluding = Object.entries(peers).filter(([, ranges]) => ranges[name] && !satisfies(want, ranges[name])).map(([pkg, ranges]) => `${pkg} (peer ${name} "${ranges[name]}")`);
+    if (excluding.length && held.every(copy => copy.version === want)) problems.push(`The peer range of ${excluding.join(', ')} excludes ${want}, the version the consumer holds; widen it to admit ${want}.`);
     for (const copy of held) {
       if (copy.version === want) continue;
       const blockers = Object.entries(peers).filter(([, ranges]) => ranges[name] && !satisfies(want, ranges[name])).map(([pkg, ranges]) => `${pkg} (peer ${name} "${ranges[name]}")`);
