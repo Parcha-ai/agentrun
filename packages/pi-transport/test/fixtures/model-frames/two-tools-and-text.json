@@ -1,0 +1,608 @@
+{
+ "events": [
+  {
+   "type": "start",
+   "partial": {
+    "role": "assistant",
+    "content": [],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "text_start",
+   "contentIndex": 0,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "text_delta",
+   "contentIndex": 0,
+   "delta": "Two calls.",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "text_end",
+   "contentIndex": 0,
+   "content": "Two calls.",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_start",
+   "contentIndex": 1,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_delta",
+   "contentIndex": 1,
+   "delta": "{\"n\":1}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_end",
+   "contentIndex": 1,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "c1",
+    "name": "a",
+    "arguments": {
+     "n": 1
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_start",
+   "contentIndex": 2,
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     },
+     {
+      "type": "toolCall",
+      "id": "c2",
+      "name": "b",
+      "arguments": {
+       "s": "x\"y\n"
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_delta",
+   "contentIndex": 2,
+   "delta": "{\"s\":\"x\\\"y\\n",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     },
+     {
+      "type": "toolCall",
+      "id": "c2",
+      "name": "b",
+      "arguments": {
+       "s": "x\"y\n"
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_delta",
+   "contentIndex": 2,
+   "delta": "\"}",
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     },
+     {
+      "type": "toolCall",
+      "id": "c2",
+      "name": "b",
+      "arguments": {
+       "s": "x\"y\n"
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "toolcall_end",
+   "contentIndex": 2,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "c2",
+    "name": "b",
+    "arguments": {
+     "s": "x\"y\n"
+    }
+   },
+   "partial": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     },
+     {
+      "type": "toolCall",
+      "id": "c2",
+      "name": "b",
+      "arguments": {
+       "s": "x\"y\n"
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "done",
+   "reason": "toolUse",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Two calls."
+     },
+     {
+      "type": "toolCall",
+      "id": "c1",
+      "name": "a",
+      "arguments": {
+       "n": 1
+      }
+     },
+     {
+      "type": "toolCall",
+      "id": "c2",
+      "name": "b",
+      "arguments": {
+       "s": "x\"y\n"
+      }
+     }
+    ],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "toolUse",
+    "timestamp": 1792095148215,
+    "durationMs": 1
+   }
+  }
+ ],
+ "frames": [
+  {
+   "type": "start",
+   "partial": {
+    "role": "assistant",
+    "content": [],
+    "api": "faux",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 2,
+     "output": 10,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "totalTokens": 12,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 1792095148215
+   }
+  },
+  {
+   "type": "text_start",
+   "contentIndex": 0,
+   "content": {
+    "type": "text",
+    "text": "Two calls."
+   }
+  },
+  null,
+  {
+   "type": "text_end",
+   "contentIndex": 0,
+   "content": "Two calls."
+  },
+  {
+   "type": "toolcall_start",
+   "contentIndex": 1,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "c1",
+    "name": "a",
+    "arguments": {
+     "n": 1
+    }
+   }
+  },
+  {
+   "type": "toolcall_checkpoint",
+   "contentIndex": 1,
+   "json": "{\"n\":1}"
+  },
+  {
+   "type": "toolcall_end",
+   "contentIndex": 1,
+   "id": "c1",
+   "name": "a",
+   "arguments": {
+    "n": 1
+   }
+  },
+  {
+   "type": "toolcall_start",
+   "contentIndex": 2,
+   "toolCall": {
+    "type": "toolCall",
+    "id": "c2",
+    "name": "b",
+    "arguments": {
+     "s": "x\"y\n"
+    }
+   }
+  },
+  {
+   "type": "toolcall_checkpoint",
+   "contentIndex": 2,
+   "json": "{\"s\":\"x\\\"y\\n"
+  },
+  {
+   "type": "toolcall_delta",
+   "contentIndex": 2,
+   "delta": "\"}"
+  },
+  {
+   "type": "toolcall_end",
+   "contentIndex": 2,
+   "id": "c2",
+   "name": "b",
+   "arguments": {
+    "s": "x\"y\n"
+   }
+  },
+  null
+ ]
+}
