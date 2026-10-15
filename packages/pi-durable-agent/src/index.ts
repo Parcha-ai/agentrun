@@ -4,5 +4,5 @@ export {
 } from "./home.js";
 export type { AgentAlias, AgentDefinition, AgentIdentity, BrowserProfile, ProfileLease, RunRecord, SkillFile, ToolBindings } from "./kinds.js";
 export { durableProfileStore, type ProfileStore, type ProfileTarget } from "./profiles.js";
-export { type CarryBack, carryBack, RUN_STORE_FILE, type RunStart, startRun } from "./runs.js";
+export { type CarryBack, carryBack, RUN_STORE_FILE, type RunPaths, runPaths, type RunStart, startRun } from "./runs.js";
 export { AgentHomeError, LOCK_FILE } from "./store.js";

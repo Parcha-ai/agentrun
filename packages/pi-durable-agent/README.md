@@ -2,8 +2,9 @@
 
 An agent you can carry. Its definition, its sign-ins and its runs live in one directory, the **agent home**, as
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) stores: `agent.sqlite` for the agent, and one
-`run.sqlite` per run. Copy the directory and the agent goes with it. A run starts from the agent's definition and its
-saved sign-ins, and when it ends, the sign-ins it made go back to the agent, so the next run starts signed in.
+`run.sqlite` per run. Each run is a `@parcha/pi-durable-disk` run directory, so `pi-durable-disk run --dir` can run it.
+Copy the directory and the agent goes with it. A run starts from the agent's definition and its saved sign-ins, and
+when it ends, the sign-ins it made go back to the agent, so the next run starts signed in.
 
 Both files are ordinary pi-durable stores at `synchronous = FULL`, read and written with pi's own Session: no second
 format and no second durability layer. The host keeps everything a run needs from outside: the model, the thinking
@@ -70,10 +71,16 @@ Run 1 signs in once. Run 2 finds the sign-in ready and never makes one.
 acme/                        the agent home
   agent.sqlite               the agent store: identity, definition, skills, sign-ins, the runs index
   owner.lock                 the writer lock (below); never open, copy or move it with the home
-  runs/<run id>/
-    run.sqlite               that run's pi-durable store; the host opens its Harness on it
-    workspace/               that run's files, with the agent's skills under .agents/skills/
+  runs/<run id>/             a pi-durable-disk run directory
+    store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
+    work/                    that run's files, with the agent's skills under .agents/skills/
+    run.json, owner.lock,    written by pi-durable-disk when it runs the run (and commands/ on a local
+    tmp/                     directory); carryBack reads only the store
 ```
+
+`runPaths(home, runId)` gives a run's `dir`, `storePath` and `workspace`. To run it under pi-durable-disk, start it with
+`startRun` first, then `pi-durable-disk run --dir <dir> --app MODULE` (the run id defaults to the directory's name), or
+`openDurableRun(ref, { ...localRun(dir), harness })` from code, and call `carryBack` after the instance released it.
 
 Every call opens `agent.sqlite` as its only writer and closes it before it returns, so an `AgentHome` handle holds
 nothing open. Writers queue in the process, then take `owner.lock`: an exclusive SQLite lock on an empty file, which
@@ -86,14 +93,14 @@ disk needs its own claim around the writer, which this release does not take.
 1. `startRun(home, { host, runId?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
    skills into the workspace (each checked against its SHA-256), copies the agent's `browser.profiles` into the run
    store, takes the save lease for each profile no live run holds, and records the run in `agent.runs`. It returns
-   `{ runId, storePath, workspace, agent: { instructions, tools }, leases }`. Seeding is this host step; nothing here is
+   `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`. Seeding is this host step; nothing here is
    a tool, and the model never sees a sign-in.
-2. The host opens its own Harness on `storePath` and creates the root conversation with `agent.instructions`, its
+2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root conversation with `agent.instructions`, its
    chosen model and thinking level, and its tools for the names in `agent.tools`.
 3. `durableProfileStore(harness)` is pi-browser's `ProfileStore` over the run store's `browser.profiles`: `resolve(key,
    make)` returns a ready profile's `ref`, or calls `make` once (one caller at a time per key, outside any commit) and
    commits the new `ref` as `ready`. A run opens a profile it does not hold the lease for without saving to it.
-4. After the host's Harness closes, `carryBack(home, run, { outcome, finalAnswer?, cost?, now? })` copies back, in one
+4. After the run's Harness closes, `carryBack(home, run, { outcome, finalAnswer?, cost?, now? })` copies back, in one
    commit, each profile the run holds the lease for and each profile new to the agent that no live run holds, releases
    the run's leases, and completes its `agent.runs` entry. A second call for the same run changes nothing.
 
@@ -130,6 +137,7 @@ through the host, and no tool reads or returns a profile.
 | `readAgentHome(home)` | Everything the home holds, read in one pass |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `startRun`, `carryBack` | A run's start and end, above |
+| `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy` or `format` |
 

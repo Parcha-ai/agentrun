@@ -1,10 +1,12 @@
-import { AgentDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { AgentDoc, createRegistry, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { AgentHomeError, carryBack, createAgentHome, durableProfileStore, readAgentHome, startRun } from "../dist/index.js";
+import { AgentHomeError, carryBack, createAgentHome, durableProfileStore, readAgentHome, runPaths, startRun } from "../dist/index.js";
 import { ctx, DEFINITION, openHost, openSession, Profiles, scratch } from "./support.mjs";
 
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
@@ -45,7 +47,9 @@ test("run 1 makes the sign-in and carries it back; run 2 starts signed in and ne
   const run1 = await startRun(home, { runId: "run-1", host: "test" });
   assert.deepEqual(run1.agent, { instructions: "Cite every claim.", tools: ["web_search", "browser"] });
   assert.deepEqual(run1.leases, []);
-  assert.equal(run1.storePath, path.join(home.dir, "runs", "run-1", "run.sqlite"));
+  const dir = path.join(home.dir, "runs", "run-1");
+  assert.deepEqual(runPaths(home, "run-1"), { dir, storePath: path.join(dir, "store", "run.sqlite"), workspace: path.join(dir, "work") });
+  assert.deepEqual({ dir: run1.dir, storePath: run1.storePath, workspace: run1.workspace }, runPaths(home, "run-1"));
   assert.equal(await readFile(path.join(run1.workspace, ".agents/skills/cite/SKILL.md"), "utf8"), "# Cite\n");
   assert.equal(await readFile(path.join(run1.workspace, ".agents/skills/cite/refs/style.md"), "utf8"), "APA\n");
 
@@ -72,6 +76,23 @@ test("run 1 makes the sign-in and carries it back; run 2 starts signed in and ne
   await host2.close(ctx);
   assert.deepEqual(await carryBack(home, run2, { outcome: "completed" }), { changed: true, profiles: ["acme"], released: ["acme"] });
   assert.deepEqual((await readAgentHome(home)).leases, {});
+});
+
+test("a run is a pi-durable-disk run: pi-durable-disk opens its directory, and carryBack reads it after release", { skip: process.platform !== "linux" && "pi-durable-disk runs a local directory on Linux only" }, async () => {
+  const home = await createAgentHome(await scratch(), { definition: DEFINITION, skills: { "cite/SKILL.md": "# Cite\n" } });
+  const run = await startRun(home, { runId: "on-disk", host: "test" });
+  const make = maker("ctx_disk");
+  const durable = await openDurableRun({ disk: "local", region: "local", id: run.runId }, { ...localRun(run.dir), harness: { models: createModels(), registry: createRegistry() } });
+  try {
+    await durable.harness.root(ctx, { agent: { instructions: run.agent.instructions } });
+    assert.equal(await durableProfileStore(durable.harness).resolve("acme", make), "ctx_disk");
+  } finally {
+    await durable.release();
+  }
+  for (const name of ["run.json", "tmp", "store/run.sqlite", "work/.agents/skills/cite/SKILL.md"]) assert.ok(existsSync(path.join(run.dir, name)), `${name} is in the run directory`);
+  assert.deepEqual(await carryBack(home, run, { outcome: "completed" }), { changed: true, profiles: ["acme"], released: [] });
+  assert.deepEqual((await readAgentHome(home)).profiles, { acme: { provider: "browserbase", ref: "ctx_disk", state: "ready" } });
+  assert.equal(make.calls, 1);
 });
 
 test("two concurrent runs: only the lease holder writes a profile back, and a new profile goes to the first run that carries it back", async () => {
