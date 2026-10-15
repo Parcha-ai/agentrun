@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
-import { credentialInFile, scanRecording } from './scan.ts';
+import { credentialInFile, exposuresOf, scanRecording } from './scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 type Meta = { path?: string; conv?: number; blobs?: string[] };
@@ -194,8 +194,10 @@ const readLines = (path: string): Record<string, unknown>[] => {
 /** Merges the spools into `events.jsonl` (by `t`, a tie by (commit, order), then seq), writes `manifest.json`, and removes
  *  the spool. Before the manifest it scans the recording (its lines, its blobs and the manifest's own text): a credential's
  *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording.
- *  A directory that already holds a finished recording is refused before anything in it changes. */
-export function finishRecording(dir: string, header: Header): { lines: number } {
+ *  A directory that already holds a finished recording is refused before anything in it changes. `secrets`: the env
+ *  names the demo lists (scan.ts `secretNamesOf`); their values, read now from the environment and kept in memory, and
+ *  this machine's host names are refused too, and an error names a secret by its env name, never its value. */
+export function finishRecording(dir: string, header: Header, { secrets = [] }: { secrets?: readonly string[] } = {}): { lines: number } {
   // A finished recording is never written over: its events would change beside a manifest that no longer describes them.
   if (existsSync(join(dir, 'manifest.json'))) throw new Error(`${dir} already holds a finished recording; record into an empty directory.`);
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
@@ -216,8 +218,9 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   const { source, cost, generations, ...rest } = header;
   const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;
   const manifest = JSON.stringify({ format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n';
-  const inManifest = credentialInFile('manifest.json', manifest);
-  const found = [...scanRecording(dir), ...(inManifest ? [{ file: 'manifest.json', found: inManifest }] : [])];
+  const exposures = exposuresOf(secrets);
+  const inManifest = credentialInFile('manifest.json', manifest, exposures);
+  const found = [...scanRecording(dir, exposures), ...(inManifest ? [{ file: 'manifest.json', found: inManifest }] : [])];
   if (found.length) {
     throw new Error(`${dir} is not finished: it holds ${found.map((each) => `a ${each.found} in ${each.file}`).join(', ')}. A recording is never published with one; redact it where it is written and record again.`);
   }

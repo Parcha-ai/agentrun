@@ -19,6 +19,11 @@ pulls if it is not there) that the job's files are uploaded to. The box is destr
 it finishes one, the recorder scans every line, every text blob and the manifest with `scan.ts`, the one scanner the
 repository's recording validator and the hosted gallery's gate import: a credential's shape or a machine path stops
 it with what it found and where, and the directory is left without a manifest, so it is never a finished recording.
+It also refuses a loopback or private-network address (127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, `::1`,
+fc00::/7, fe80::/10), this machine's host name, and the exact value of each secret env var the demo's `demo.json` lists
+under `keys`, read from the environment when the run is recorded and kept only in memory; an error names such a secret
+by its env name, never its value. A value under 8 characters cannot be told from ordinary text, so it is not scanned
+for, and one line on stderr names its env var.
 
 ## The job
 

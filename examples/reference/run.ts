@@ -15,7 +15,14 @@ import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type Statu
 import { fakes, job } from './job.ts';
 import { cost } from './fold.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
+import { secretNamesOf } from './scan.ts';
 import { packageCommitRecorder } from './record-store.ts';
+
+/** The secret env names the demo beside this file lists (`demo.json`'s keys), for the recorder's scan; none without one. */
+const demoSecrets = (): string[] => {
+  const demo = join(import.meta.dirname, 'demo.json');
+  return existsSync(demo) ? secretNamesOf(JSON.parse(readFileSync(demo, 'utf8'))) : [];
+};
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
@@ -96,7 +103,7 @@ if (import.meta.main) {
       kills: 0, code: codeOf(join(import.meta.dirname, '..', '..')),
       cost,
       source: { run: place.id, store: join(place.store, 'run.sqlite') }, result: { blob: resultBlob, title: 'The record' },
-    });
+    }, { secrets: demoSecrets() });
   }
   const view = summary(place, result, local);
   if (values.json) console.log(JSON.stringify(view));
