@@ -13,8 +13,11 @@ import { readAllEntries } from './folder.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 
+/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
+ *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
+type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
+declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
 const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
@@ -45,6 +48,13 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
 }
 
 // ---- loading ---------------------------------------------------------------------------------------------------
+
+/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
+async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
+  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
+  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
+}
 
 function fromGallery(entry: GalleryEntry): Recording {
   return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
@@ -519,8 +529,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   }
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
-  const entries = window.AGENTRUN_GALLERY ?? [];
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[]) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
@@ -559,10 +568,15 @@ async function main() {
   try {
     const id = params.get('r');
     const src = params.get('src');
-    const entry = id ? (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id) : undefined;
-    if (entry) open(fromGallery(entry), new URL(`recordings/${entry.id}/`, location.href).href);
+    // The bundled recordings: embedded, or listed in the index a files build ships beside them.
+    const entries: (GalleryEntry | IndexEntry)[] = window.AGENTRUN_GALLERY
+      ?? (window.AGENTRUN_GALLERY_INDEX ? await (await fetch(window.AGENTRUN_GALLERY_INDEX)).json() as IndexEntry[] : []);
+    const entry = id ? entries.find((each) => each.id === id) : undefined;
+    const dir = entry ? new URL(`recordings/${entry.id}/`, location.href).href : undefined;
+    const embedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
+    if (entry && dir) open(embedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir);
     else if (src) open(await fromUrl(src), new URL(src.endsWith('/') ? src : `${src}/`, location.href).href);
-    else gallery(root, open);
+    else gallery(root, open, entries);
   } catch (error) {
     root.replaceChildren(el('p', { class: 'problems', text: `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}` }));
   }
