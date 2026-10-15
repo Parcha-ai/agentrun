@@ -11,7 +11,8 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { ARCHIL_SCOPED, dockerHost, localHost, runPath, unmountClaim } from "@parcha/pi-durable-disk";
+import { ARCHIL_SCOPED, dockerHost, localHost } from "@parcha/pi-durable-disk";
+import { runPath, unmountClaim } from "@parcha/pi-durable-disk/internals";
 import type { HostHandle } from "@parcha/pi-durable-disk";
 
 export interface DemoOptions {
