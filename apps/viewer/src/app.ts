@@ -19,7 +19,7 @@ type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Rec
 type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf'];
+const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: { class?: string; text?: string; title?: string } = {}, ...children: (globalThis.Node | string)[]) => {
@@ -77,8 +77,8 @@ function fromGallery(entry: GalleryEntry): Recording {
 }
 
 /** Every blob a recording names: its lines', its images', its result's. */
-function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
-  const named = new Set<string>(manifest.result ? [manifest.result.blob] : []);
+export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
+  const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
   for (const line of lines) {
     for (const sha of line.blobs ?? []) named.add(sha);
     for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);
@@ -437,6 +437,15 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
     if (link) header.append(link);
   }
+  // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
+  // a tab; the store is a SQLite file and downloads.
+  // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
+  const { job, store } = recording.manifest;
+  const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
+  const at = store?.at;
+  const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
+    ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
+  for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
   const position = el('span', { class: 'position' });
