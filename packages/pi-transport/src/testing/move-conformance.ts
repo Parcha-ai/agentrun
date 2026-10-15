@@ -685,7 +685,10 @@ export function registerMoveConformance(
 								const lease = await run.held();
 								equal(lease?.epoch, epochAfter(step, who), "the lease after the kill");
 								const holder = lease?.environment === pair.b.environment ? pair.b : pair.a;
-								let home = moved?.ok === true ? moved.value.home : undefined;
+								// A move given up while the lease stayed with the source: the source opened its store again and runs on,
+								// and the session finishes there. Recovering over it would stop it and cut its call in flight, a cut of
+								// the test's own (recoverHome over a runner that runs has a case of its own).
+								let home = moved?.ok === true ? moved.value.home : holder === pair.a ? run.home : undefined;
 								if (home === undefined || !(await home.status(context)).ok) {
 									await sleep(300);
 									const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
