@@ -731,6 +731,9 @@ id and directory as the supervisor computed them.
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
     it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory.
+  - A request names `point` and `n`; every other field passes through unchanged, so a per-attempt nonce the supervisor
+    put in the order's env reaches its check. The place's token never goes into a request: on a disk it is the mount
+    token, and the app never holds it.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).

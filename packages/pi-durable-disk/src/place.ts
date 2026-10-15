@@ -286,8 +286,9 @@ function requestSignals(read: () => Promise<string | undefined>, pollMs: number)
 }
 
 /**
- * The crossing a request names: `point` and `n` at least, with every other field it carries (a nonce the supervisor
- * checks); anything else (a half write, another file) is not one yet.
+ * The crossing a request names: `point` and `n` at least, with every other field it carries (the per-attempt nonce the
+ * supervisor put in the order and checks; never the place's token); anything else (a half write, another file) is not
+ * one yet.
  */
 function requestIn(text: string): PlaceSignal["crossing"] | undefined {
   try {
