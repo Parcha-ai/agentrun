@@ -4,7 +4,8 @@
 // files fetched into the workspace. Until the entry has them, this file is that platform for Apollo 11 alone, with the template's
 // flags and `demo()`'s shape, so moving onto the entry changes run.ts's import and deletes this file.
 //
-//   (none)              fakes, $0, no key: the default, and what CI runs
+//   (none)              fakes, $0, no key, no network: the default input reads the committed slice; what CI runs
+//   --fetch-sources     an input that reads sources.json's own files downloads them once and checks them (--live does too)
 //   --live              real models (your keys, or a gateway: models.ts); --model (or --provider with --model) and --eyes-model name
 //                       the lead and the eyes as provider/id
 //   --kill              the spec's kills: here `vision.filing`, the Nth filing held with those reaching the sink after it
@@ -24,14 +25,12 @@ import { parseArgs } from 'node:util';
 import { cost as foldCost } from '../reference/fold.ts';
 import { codeOf, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run, type Fakes, type Job } from '../reference/index.ts';
 import { lookCounters, resultOf, typedLines, weakEyesOf, type Cited, type Counters } from './account.ts';
-import { fetchItems, fileOf, itemOf, itemsFor, loadDataset, placeFiles, type Reads } from './dataset.ts';
+import { fetchItems, fileOf, itemsFor, loadDataset, placeFiles, type Reads, type TranscriptItem } from './dataset.ts';
 import { scriptedEyes, type PageStarts } from './fakes.ts';
 import { requestKill, shownImages, visionOptions } from './looks.ts';
 import { chooseModels, liveModels, publicName } from './models.ts';
-import { TYPED_FILE } from './tools/index.ts';
 
 const REPO = join(import.meta.dirname, '..', '..');
-const TYPED = 'transcript-tec-typed';
 
 /** The parts of demo.json this platform acts on. */
 export type DemoSpec = { name: string; title?: string; expectedCost?: number; kills?: Array<{ point: string; why: string; n?: number; hold?: number }>; [other: string]: unknown };
@@ -46,10 +45,10 @@ function parseInput(argument: string): Record<string, unknown> {
 /** What a run is told beyond the template's flags: test knobs for the scripted eyes (photos answered with another class, sources whose
  *  requests throw) and the landing pages' first times they answer from. */
 export type Knobs = { wrong?: string[]; fail?: string[]; scriptedPages?: string; sources?: string; log?: (line: string) => void };
-type Flags = { live?: boolean; kill?: boolean; record?: string; input?: string; 'max-usd'?: string; dir?: string; cache?: string; json?: boolean; provider?: string; model?: string; 'eyes-model'?: string; 'weak-from'?: string; 'see-also'?: string; name?: string };
+type Flags = { live?: boolean; 'fetch-sources'?: boolean; kill?: boolean; record?: string; input?: string; 'max-usd'?: string; dir?: string; cache?: string; json?: boolean; provider?: string; model?: string; 'eyes-model'?: string; 'weak-from'?: string; 'see-also'?: string; name?: string };
 
 const FLAGS = {
-  child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, dir: { type: 'string' },
+  child: { type: 'boolean' }, live: { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, dir: { type: 'string' },
   cache: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'weak-from': { type: 'string' }, 'see-also': { type: 'string' }, name: { type: 'string' },
 } as const;
 
@@ -57,7 +56,14 @@ const FLAGS = {
 export async function demo(options: ApolloDemo): Promise<void> {
   const { values } = parseArgs({ args: process.argv.slice(2), options: FLAGS });
   if (values.child) return child(options);
-  const result = await supervise(options, values, { log: (line) => console.error(line) });
+  let result: Run;
+  try { result = await supervise(options, values, { log: (line) => console.error(line) }); } catch (error) {
+    // A refusal the run names (its code) is a line for the person running it, not a stack trace.
+    if (!(error as { code?: string }).code) throw error;
+    console.error((error as Error).message);
+    process.exitCode = 1;
+    return;
+  }
   if (values.json) console.log(JSON.stringify(result));
   else summarize(result);
   if (result.outcome?.status !== 'complete' || result.overBudget || result.problems.length || result.leaks.length) process.exitCode = 1;
@@ -70,7 +76,7 @@ async function child(options: ApolloDemo) {
   const dir = env.DIR!;
   const place = await placeAt(dir);
   const { dataset } = loadDataset();
-  const input = JSON.parse(readFileSync(join(dir, 'input.json'), 'utf8')) as Record<string, unknown>;
+  const input = JSON.parse(readFileSync(join(dir, 'input.json'), 'utf8')) as Reads & Record<string, unknown>;
   const recorder = env.RECORD ? openRecorder({ dir: env.RECORD, commits: await packageCommitRecorder() }) : undefined;
   const live = env.LIVE === '1';
   const local = localHost(place, options.fakes, recorder ? { recorder } : {});
@@ -89,10 +95,11 @@ async function child(options: ApolloDemo) {
     local.host.models = liveModels(env, [lead!, eyes!]);
     vision = { ...common, eyesModel: eyes! };
   } else {
-    const typed = typedLines(readFileSync(join(dir, 'work', TYPED_FILE), 'utf8'));
+    const typed = typedLines(readFileSync(join(dir, 'work', basename(input.typed_file)), 'utf8'));
     const pages = JSON.parse(readFileSync(env.SCRIPTED_PAGES || join(import.meta.dirname, 'fakes-pages.json'), 'utf8')) as PageStarts;
     const set = (name: string) => new Set((env[name] ?? '').split(',').filter(Boolean));
-    vision = { ...common, eyes: scriptedEyes(dataset, typed, pages, { wrong: set('WRONG'), fail: set('FAIL') }) };
+    const firstPage = (dataset.items.find((item) => item.id === input.scan_item) as TranscriptItem | undefined)?.first_page;
+    vision = { ...common, eyes: scriptedEyes(dataset, typed, pages, { wrong: set('WRONG'), fail: set('FAIL'), ...(firstPage ? { firstPage } : {}) }) };
   }
   try {
     const result = await run(place, local.host, { ...options.job, input }, { vision: (running) => visionOptions(local.host, { ...vision, harness: () => running.harness }) });
@@ -170,22 +177,26 @@ export async function supervise(options: ApolloDemo, flags: Flags, knobs: Knobs 
   const record = resolve(flags.record ?? join(dir, 'recording'));
   if (existsSync(join(record, '.spool')) || existsSync(join(record, 'manifest.json'))) throw new Error(`${record} already holds a recording or an unfinished one: record into a directory of its own`);
   mkdirSync(join(dir, 'work'), { recursive: true });
-  const { dataset, sha256 } = loadDataset();
+  const { dataset, sha256, slice, held } = loadDataset();
+  const fixed = slice ? `${sha256} ${slice}` : sha256;
   // The input is fixed once, here, so every process of the run reads the same one, and a run resumes only on the sources it began with.
   const inputFile = join(dir, 'input.json');
   const shaFile = join(dir, 'sources.sha256');
   if (!existsSync(inputFile)) {
-    writeFileSync(shaFile, sha256);
+    writeFileSync(shaFile, fixed);
     writeFileSync(inputFile, JSON.stringify(flags.input ? parseInput(flags.input) : options.job.input));
   }
   const started = existsSync(shaFile) ? readFileSync(shaFile, 'utf8') : '';
-  if (started !== sha256) throw Object.assign(new Error(`${dir} started on the sources with SHA-256 ${started || 'unknown'}, and this sources.json's is ${sha256}. Resume it with that file, or start a new directory.`), { code: 'DATASET_CHANGED' });
+  if (started !== fixed) throw Object.assign(new Error(`${dir} started on the sources with SHA-256 ${started || 'unknown'}, and these sources' are ${fixed}. Resume it with those files, or start a new directory.`), { code: 'DATASET_CHANGED' });
   const input = JSON.parse(readFileSync(inputFile, 'utf8')) as Reads;
-  const reads = itemsFor(dataset, input);
-  const paths = await fetchItems([...reads, itemOf(dataset, TYPED)], cache, knobs.log);
-  await placeFiles(paths, [...reads, itemOf(dataset, TYPED)], join(dir, 'work'));
-
+  const reads = itemsFor(dataset, input).map((item) => (held.has(item.id) ? { ...item, url: held.get(item.id)! } : item));
   const live = flags.live === true;
+  // With no flag a run touches no network: the slice's files and a test's are copied from `file:` URLs, and NASA's are downloaded only when asked.
+  const remote = reads.filter((item) => !item.url.startsWith('file:'));
+  if (remote.length && !live && !flags['fetch-sources']) throw Object.assign(new Error(`This input reads ${remote.length} of NASA's files the committed slice does not hold (${remote.slice(0, 3).map((item) => item.id).join(', ')}${remote.length > 3 ? ', ...' : ''}): add --fetch-sources, or --live, and they are downloaded once and checked by SHA-256.`), { code: 'SOURCES_NOT_FETCHED' });
+  const paths = await fetchItems(reads, cache, knobs.log);
+  await placeFiles(paths, reads, join(dir, 'work'));
+
   const lead = flags.model && flags.provider ? `${flags.provider}/${flags.model}` : flags.model;
   const chosen = live ? chooseModels(process.env, { ...(lead ? { lead } : {}), ...(flags['eyes-model'] ? { eyes: flags['eyes-model'] } : {}) }) : undefined;
   const models = { lead: chosen ? publicName(chosen.lead) : 'scripted lead (pi-ai faux)', eyes: chosen ? publicName(chosen.eyes) : 'scripted-eyes' };
@@ -249,7 +260,7 @@ export async function supervise(options: ApolloDemo, flags: Flags, knobs: Knobs 
   });
   const manifestFile = join(record, 'manifest.json');
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as { cost: { usd: number | null } } & Record<string, unknown>;
-  writeFileSync(manifestFile, `${JSON.stringify({ ...manifest, sources: { file: 'examples/apollo11/sources.json', sha256 }, models, ...(flags['see-also'] ? { see_also: { recording: flags['see-also'], label: 'the same pages and photos through weaker eyes' } } : {}) }, null, 2)}\n`);
+  writeFileSync(manifestFile, `${JSON.stringify({ ...manifest, sources: { file: 'examples/apollo11/sources.json', sha256 }, ...(slice ? { slice: { file: 'examples/apollo11/slice/slice.json', sha256: slice } } : {}), models, ...(flags['see-also'] ? { see_also: { recording: flags['see-also'], label: 'the same pages and photos through weaker eyes' } } : {}) }, null, 2)}\n`);
   const { validateRecording } = await import(new URL('../../scripts/recording/validate.mjs', import.meta.url).href) as { validateRecording(dir: string): { where: string; line?: number; message: string }[] };
   const problems = validateRecording(record).map((problem) => `${problem.where}${problem.line === undefined ? '' : `:${problem.line}`} ${problem.message}`);
   const leaks = leaksIn(record, [dir, cache, REPO]);

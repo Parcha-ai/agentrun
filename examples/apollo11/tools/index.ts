@@ -2,7 +2,7 @@
 // copies a page; `cite` resolves every cite of the account to the look that backs it and builds the cited result. Both only read
 // what the run filed under its directory.
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { citedOf, landingOf, typedLines, type Output } from '../account.ts';
 import { loadDataset } from '../dataset.ts';
 
@@ -10,14 +10,12 @@ import { loadDataset } from '../dataset.ts';
  *  supervisor names it in `DIR`. */
 const rootOf = (context?: { place?: { root: string } }) => context?.place?.root ?? process.env.DIR!;
 
-/** The typed transcript the times are checked against: placed in the run's workspace beside the files the eyes read. */
-export const TYPED_FILE = 'transcript-tec-typed.html';
-
 export const tools = {
   landing: (args: Record<string, unknown>, context?: { place?: { root: string } }) => landingOf(rootOf(context), args as Parameters<typeof landingOf>[1]),
+  // `typed` is the typed transcript's file in the run's workspace: the times read are checked against it.
   cite: (args: Record<string, unknown>, context?: { place?: { root: string } }) => {
     const root = rootOf(context);
     const { dataset, sha256 } = loadDataset();
-    return citedOf(root, dataset, sha256, args as Output, typedLines(readFileSync(join(root, 'work', TYPED_FILE), 'utf8')));
+    return citedOf(root, dataset, sha256, args as Output, typedLines(readFileSync(join(root, 'work', basename(String(args.typed))), 'utf8')));
   },
 };

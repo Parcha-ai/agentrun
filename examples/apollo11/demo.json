@@ -26,19 +26,21 @@
     { "cmd": "ffprobe", "why": "Reads the film's length and size.", "required": true },
     { "cmd": "pdftoppm", "why": "Renders the scanned pages; without it PDFium, which installs with the repository, renders them.", "required": false }
   ],
-  "expectedCalls": 380,
-  "expectedCost": 0.55,
+  "expectedCalls": 34,
+  "expectedCost": 0.06,
   "kills": [
-    { "point": "vision.filing", "n": 40, "hold": 6, "why": "Inside the evidence sink: the eyes have answered forty looks and the answers are kept, and the looks reaching the sink now are not yet filed. A fresh process reads those answers back: kept, not paid again." }
+    { "point": "vision.filing", "n": 5, "hold": 3, "why": "Inside the evidence sink, at its fifth filing: the eyes have answered the looks reaching the sink now and their answers are kept, and the looks are not yet filed. A fresh process reads those answers back: kept, not paid again." }
   ],
   "panels": ["workflow", "vision"],
   "targets": ["local"],
   "input": {
     "flag": "--input",
-    "shape": "examples/apollo11/workflow.ts, INPUT: the film's window range, the scan's page range, the photos by id, the account's span of mission time",
+    "shape": "examples/apollo11/workflow.ts, INPUT: the film's window range, the scan's page range, the photos by id, the typed transcript, the account's span of mission time",
+    "default": "the committed slice (slice/slice.json): 3 film windows, 3 pages (the landing), 5 photos; no network",
     "variants": {
-      "examples/apollo11/inputs/gallery.json": "the gallery take: 8 film windows, 10 pages (the 1202 alarm to the landing), 12 photos",
-      "examples/apollo11/inputs/full.json": "the whole archive: all 626 pages, the film's descent in 26 windows, all 60 photos (about $3.50)",
+      "examples/apollo11/inputs/landing.json": "the landing hour: 26 film windows, 40 pages, 60 photos (about $0.55; --max-usd 1.10)",
+      "examples/apollo11/inputs/gallery.json": "the gallery take: 8 film windows, 10 pages (the 1202 alarm to the landing), 12 photos (about $0.15; --max-usd 0.40)",
+      "examples/apollo11/inputs/full.json": "the whole archive: all 626 pages, the film's descent in 26 windows, all 60 photos (about $3.50; --max-usd 5)",
       "examples/apollo11/inputs/weak-eyes.json": "the weak-eyes pass: the landing's 40 pages and the 60 photos, no film; run it with --eyes-model openai/gpt-6-luna"
     }
   },
@@ -46,5 +48,6 @@
     { "name": "landing", "local": "examples/apollo11/tools/index.ts", "hosted": null },
     { "name": "cite", "local": "examples/apollo11/tools/index.ts", "hosted": null }
   ],
-  "sources": "examples/apollo11/sources.json"
+  "sources": "examples/apollo11/sources.json",
+  "slice": "examples/apollo11/slice/slice.json"
 }

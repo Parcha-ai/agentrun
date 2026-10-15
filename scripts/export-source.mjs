@@ -97,7 +97,7 @@ const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGE
 const allowedDirectories = new Set(['apps', 'changes', 'docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg']);
-const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm']);
+const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm', '.pdf']);
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
   const parts = path.split('/');

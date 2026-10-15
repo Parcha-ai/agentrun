@@ -5,6 +5,8 @@
  "scan_item": "transcript-tec",
  "scan_file": "transcript-tec.pdf",
  "photo_ext": ".jpg",
+ "typed_item": "transcript-tec-typed",
+ "typed_file": "transcript-tec-typed.html",
  "span_from": "04 06 20 00",
  "span_to": "04 06 50 00",
  "film_from_s": 1160,

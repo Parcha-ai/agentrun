@@ -1,0 +1,91 @@
+{
+ "format": "apollo11.slice/1",
+ "about": "What a run reads with no network: files cut from the checked files of sources.json by cut.sh, committed in this directory, each fixed by size and SHA-256. A photograph is NASA's file unchanged, so its SHA-256 is the one sources.json fixes; a cut names the item it was cut from and how.",
+ "files": [
+  {
+   "file": "transcript-tec-p317-319.pdf",
+   "from": "transcript-tec",
+   "cut": "PDF pages 317 to 319, the page objects copied unchanged",
+   "bytes": 58961,
+   "sha256": "b31b3d60f794c848b6ac671ba471fe9122ea4d28f6e3c0e1fd0470c1a2b62730",
+   "item": {
+    "id": "transcript-tec-p317-319",
+    "title": "Apollo 11 Technical Air-to-Ground Voice Transcription (GOSS NET 1), July 1969: the scanned typewritten pages, pages 317 to 319",
+    "kind": "transcript",
+    "role": "the pages the eyes read with no network: mission time 04 06 43 35 to 04 06 48 10, the end of the descent and the landing",
+    "license": "NASA public domain",
+    "pages": 3,
+    "first_page": 317
+   }
+  },
+  {
+   "file": "transcript-tec-typed-p317-319.html",
+   "from": "transcript-tec-typed",
+   "cut": "the entries typed 04 06 43 00 to 04 06 48 59, byte for byte",
+   "bytes": 7398,
+   "sha256": "3e6021069ec74bde7ae0871d98070415bc01ccf5658edd65419b9b77eb9101f4",
+   "item": {
+    "id": "transcript-tec-typed-p317-319",
+    "title": "Apollo 11 Technical Air-to-Ground Voice Transcription, typed from the same pages (Apollo Lunar Surface Journal, a NASA history publication), 04 06 43 00 to 04 06 48 59",
+    "kind": "transcript",
+    "role": "ground truth for the mission times read off pages 317 to 319; never shown to the eyes",
+    "license": "NASA public domain"
+   }
+  },
+  {
+   "file": "film-descent-1206-1224.webm",
+   "from": "film-descent",
+   "cut": "seconds 1206 to 1224, VP9 in WebM at the source size, no audio",
+   "bytes": 135843,
+   "sha256": "36fcbf82dd1cd9e4549e21ea0e7a033f75e48f2fc58b9b99f70de7c2f83d9aa2",
+   "item": {
+    "id": "film-descent-1206-1224",
+    "title": "Apollo 11 25th anniversary B-roll (NASA Kennedy Space Center, KSC-19690716-MH-NAS01-0001-Apollo_11_Historical_Footage_and_Broll-DVC_1560, preview rendition): the mission's film footage in seven cuts; cut 3 'Lunar orbit and descent' holds the lunar module's separation and the descent through Eagle's window, cut 4 'On the Moon' the 16 mm film from Eagle's window of the first steps, seconds 1206 to 1224",
+    "kind": "film",
+    "role": "the lunar surface through Eagle's window, read in three windows of 6 s",
+    "license": "NASA public domain",
+    "duration_s": 18,
+    "landing": {
+     "from_s": 0,
+     "to_s": 18
+    },
+    "window_s": 6
+   }
+  },
+  {
+   "file": "photo-AS11-36-5355.jpg",
+   "from": "photo-AS11-36-5355",
+   "cut": "unchanged",
+   "bytes": 46680,
+   "sha256": "292f2ad33746fc75c5a09c5d2a2727c9d258589d859bf3181bb0517eeab7b991"
+  },
+  {
+   "file": "photo-AS11-44-6581.jpg",
+   "from": "photo-AS11-44-6581",
+   "cut": "unchanged",
+   "bytes": 77262,
+   "sha256": "61a2ddfe8c2ac82afe4f6f8365f1af76fb6fd07b953fb9c080af9c0530c95aaa"
+  },
+  {
+   "file": "photo-AS11-40-5863.jpg",
+   "from": "photo-AS11-40-5863",
+   "cut": "unchanged",
+   "bytes": 157943,
+   "sha256": "50dcf6aaf9b7a96be43af91b18223d7542eceeba5d62e29e1fc2409918289c56"
+  },
+  {
+   "file": "photo-AS11-44-6665.jpg",
+   "from": "photo-AS11-44-6665",
+   "cut": "unchanged",
+   "bytes": 105076,
+   "sha256": "088ac75a360007ff20ba3aeac0be5a4e23a136c20e9ab48b98921847431decb8"
+  },
+  {
+   "file": "photo-AS11-45-6704.jpg",
+   "from": "photo-AS11-45-6704",
+   "cut": "unchanged",
+   "bytes": 91211,
+   "sha256": "58c374f314f572739657b927117c29151ca62ad94fa090326b9aedbb3b2cc92e"
+  }
+ ]
+}

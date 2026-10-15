@@ -18,7 +18,7 @@ const Receipt = { type: 'string', minLength: 1, description: 'The receipt the re
  *  the map, so the lists are built from the ranges by a code step and hold ids and numbers only; the asks are in the instructions. */
 export const INPUT = {
   type: 'object', additionalProperties: false,
-  required: ['film_item', 'film_file', 'film_from_s', 'film_to_s', 'window_s', 'scan_item', 'scan_file', 'pages_from', 'pages_to', 'photos', 'photo_ext', 'span_from', 'span_to'],
+  required: ['film_item', 'film_file', 'film_from_s', 'film_to_s', 'window_s', 'scan_item', 'scan_file', 'pages_from', 'pages_to', 'photos', 'photo_ext', 'typed_item', 'typed_file', 'span_from', 'span_to'],
   properties: {
     film_item: { type: 'string', description: 'The film\'s id in sources.json.' },
     film_file: { type: 'string', description: 'The film\'s file in the workspace.' },
@@ -31,6 +31,8 @@ export const INPUT = {
     pages_to: { type: 'integer', minimum: 0, description: 'The last page of the scan to read; below pages_from reads none.' },
     photos: { type: 'array', items: { type: 'string' }, description: 'The photographs to sort, by their ids in sources.json.' },
     photo_ext: { type: 'string', description: 'The photographs\' file extension in the workspace (each file is <id><photo_ext>).' },
+    typed_item: { type: 'string', description: 'NASA\'s typed transcript (or the slice\'s cut of it), the times read are checked against: its id.' },
+    typed_file: { type: 'string', description: 'The typed transcript\'s file in the workspace.' },
     span_from: { type: 'string', pattern: '^\\d\\d \\d\\d \\d\\d \\d\\d$', description: 'The first mission time the account covers, as the transcript types it (DD HH MM SS).' },
     span_to: { type: 'string', pattern: '^\\d\\d \\d\\d \\d\\d \\d\\d$', description: 'The last mission time the account covers, as the transcript types it.' },
   },
@@ -114,7 +116,7 @@ export function workflowOf(classes: Record<string, string>) {
         instructions: 'Write the Apollo 11 landing minute by minute from what was read. `lines` are the transcript\'s lines in mission-time order (mission_time is hhh:mm:ss since launch), each with the receipt of the page it was read from; `windows` are film windows with what the eyes saw and their receipts. For each minute that has lines, write one entry: mission_time, copied from the first line the entry rests on; text, one or two plain sentences of what happened in that minute, quoting call-outs exactly as transcribed; cites, each { item, receipt } the sentence rests on, copied from the input: the pages of its lines, and a film window only where its frames show what the sentence says. The film\'s seconds are not mission time: every entry rests on lines, and its time is a line\'s. Write nothing the lines and windows do not show.',
       },
       // A tool resolves every cite to the look that backs it and builds the cited result.
-      { node: 'call', label: 'cite', via: 'tool', tool: 'cite', args: { entries: '{account.entries}', windows: '{film}', pages: '{transcript}', photos: '{sorted}' }, out: 'Cited', as: 'result', deadline_s: 60 },
+      { node: 'call', label: 'cite', via: 'tool', tool: 'cite', args: { entries: '{account.entries}', windows: '{film}', pages: '{transcript}', photos: '{sorted}', typed: '{typed_file}' }, out: 'Cited', as: 'result', deadline_s: 60 },
     ] },
   } as const satisfies Workflow;
 }

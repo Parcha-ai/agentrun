@@ -1,4 +1,5 @@
-// The run with no key: a scripted lead and scripted eyes stand in for the models, and the files are the real ones. The eyes answer a
+// The run with no key: a scripted lead and scripted eyes stand in for the models, and the files are the real ones (the slice's, or
+// with --fetch-sources the whole checked set). The eyes answer a
 // page with NASA's typed transcript of it, a photo with its caption's class and a film window with a line that says no model looked;
 // every answer says it is scripted, and so does the recording. Nothing here is a model's reading.
 import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
@@ -69,9 +70,10 @@ function accountOf(lines: Array<{ mission_time: string; speaker: string; text: s
 export type PageStarts = { item: string; page_starts: Record<string, string> };
 
 /** The scripted eyes. A request names its source in each part's `fragment`, and a page by the line the package sends with its image
- *  (`... page N of M ...`); the eyes answer from what the data set and `pages` fix for it. A photo in `wrong` is answered with
- *  another class; a source in `fail` makes the request throw, as a provider's error does. */
-export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], pages: PageStarts, options: { wrong?: ReadonlySet<string>; fail?: ReadonlySet<string> } = {}) {
+ *  (`... page N of M ...`); the eyes answer from what the data set and `pages` fix for it, page N being the source's page
+ *  `firstPage + N - 1` of a cut. A photo in `wrong` is answered with another class; a source in `fail` makes the request throw, as a
+ *  provider's error does. */
+export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], pages: PageStarts, options: { wrong?: ReadonlySet<string>; fail?: ReadonlySet<string>; firstPage?: number } = {}) {
   const starts = Object.entries(pages.page_starts).map(([page, time]) => [Number(page), time] as const).sort((a, b) => a[0] - b[0]);
   const photos = new Map(dataset.items.filter((item): item is PhotoItem => item.kind === 'photo').map((item) => [fileOf(item), item]));
   const classes = Object.keys(dataset.classes);
@@ -79,7 +81,7 @@ export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], page
     const source = parts.find((part) => part.fragment)?.fragment ?? '';
     const page = parts.flatMap((part) => (part.type === 'text' ? [/\bpage (\d+) of \d+/.exec(part.text)?.[1]] : [])).find(Boolean);
     if (page) {
-      const at = starts.findIndex(([number]) => number === Number(page));
+      const at = starts.findIndex(([number]) => number === Number(page) + (options.firstPage ?? 1) - 1);
       const [from, to] = at < 0 ? [undefined, undefined] : [starts[at]![1], starts[at + 1]?.[1]];
       const own = from ? typed.filter((line) => line.time >= from && (to === undefined || line.time < to)) : [];
       return own.length ? own.map((line) => JSON.stringify(line)).join('\n') : JSON.stringify({ time: '', speaker: '', text: `(scripted eyes: no typed lines are fixed for page ${page})` });
