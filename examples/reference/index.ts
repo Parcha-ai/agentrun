@@ -21,6 +21,9 @@ export { codeOf } from './record.ts';
 /** The store export the recorder reads the run's commits through; it throws if this build of the package lacks it. */
 export { packageCommitRecorder } from './record-store.ts';
 
+/** The cost of the run a recording's lines record, for the manifest: `usd` is the sum of the priced parts, and null while any part is unknown (never 0). */
+export { cost } from './fold.ts';
+
 /** A job: the workflow, its input, and the files the run's tools find in `work/`. */
 export type { Job } from './assemble.ts';
 /** How a job ended, with the run's generation and what it spent. */
@@ -28,6 +31,6 @@ export type { RunResult } from './assemble.ts';
 /** The options `run` takes: the run's `env`, and `vision` options merged over the example's. */
 export type { RunOptions } from './assemble.ts';
 /** Where a run lives: id, root, `work/` and the store. */
-export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun } from './host.ts';
+export type { RunPlace, Host, LocalHost, Fakes, StatusEvent, BrowserPlane, Rerun, Delivery, LedgerRow } from './host.ts';
 /** What a recorder writes: live and host lines, memos and blobs. */
 export type { Recorder, Supervisor, Header } from './record.ts';

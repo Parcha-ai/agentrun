@@ -263,6 +263,15 @@ export function sandboxName(prefix: string, runId: string, now: number): string 
 }
 
 /** The last line of a command's output that parses as JSON, or null. */
+/**
+ * What the launcher printed, for a start it gave no reason for: the last 4 KB, or that it printed nothing. It prints only
+ * its state; the mount token is in a root-only file it reads, never in its output.
+ */
+function launcherOutput(text: string): string {
+  const out = text.trim();
+  return out ? `the launcher printed: ${out.slice(-4096)}` : "the launcher printed nothing and exited 0";
+}
+
 function lastJson<T>(text: string): T | null {
   for (const line of text.trim().split("\n").reverse()) {
     try {
@@ -394,7 +403,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
         const r = await run(box, launcher("start", name, left), Math.ceil(left / 1000) + 10, "starting the instance");
         const state = lastJson<LaunchState>(r.result);
         if (!state || !(state.spawned > 0)) {
-          throw new DaytonaHostError("START_FAILED", `the instance in ${name} did not start: ${state?.reason ?? r.result.trim().slice(0, 300)}`);
+          throw new DaytonaHostError("START_FAILED", `the instance in ${name} did not start: ${state?.reason || launcherOutput(r.result)}`);
         }
         return handle;
       } catch (err) {

@@ -281,9 +281,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   return {
     models,
     registry,
-    async beforeResume({ harness, context, generation }) {
+    async beforeResume({ harness, context, generation, previous }) {
       // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
       // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
+      // previous is run.json as the run was left (null when there was none): `sleeping` with its wakeAt after a park,
+      // `paused` with its detail after a planned stop or a fork, `running` with the dead holder and no new seal after a crash.
     },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and
@@ -642,6 +644,14 @@ the store, check the seal, open and resume the Harness, keep the lease. `acquire
 for apps that compose their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`,
 `busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
 are the reference.
+
+A supervisor of your own (a driver `supervise` does not start, such as `daytonaHost`) gets its `control` from
+`archilControl({ apiKey, disk, region })`: the disk's S3 and control API, the same object `supervise` builds from its flags.
+
+```ts
+const control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: "dsk-...", region: "aws-us-east-1" });
+await ensureRunning({ disk: "dsk-...", region: "aws-us-east-1", id: "job-1" }, daytonaHost({ client, snapshot }), { control });
+```
 
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:
 `@parcha/pi-durable-disk/lease` holds `openRunLease` (the claim, the owner lock, `run.json` with its heartbeat, the lease

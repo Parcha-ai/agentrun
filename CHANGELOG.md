@@ -106,6 +106,21 @@
   - `pi-durable-disk` names its quickstart's install line. A new CI job, `stranger-readme-line`, runs both modes and is not
     blocking yet: today both fail with `ERESOLVE` (the published 0.1.0-beta.12 accepts chord and pi-durable `~1.0.4`, main
     `<1.2.0`, and the registry's latest is 1.2.0), and the failure is shown as a warning.
+- **`apps/viewer`: vision on the counters strip**
+  - Paid calls made counts vision's paid looks, per look key over ok looks that are not the lead's own: each filing that
+    is not kept is a payment, and a key whose first ok filing is kept (the eyes answered in a process that died before
+    filing it) is one, priced from that filing; a kept filing after a payment adds nothing.
+  - Repeated and asked twice count each extra payment of a key once, by generation. Cost adds each payment's
+    `facts.cost_usd` and each failed look's (a failed look is no payment); a native look charges nothing and never makes
+    cost unknown. The latest revision of a filing says what it cost.
+  - The reference example's manifest cost (`examples/reference/fold.ts`, which stands alone) prices looks by the same
+    rule, and a test holds it equal to the viewer's on each rule. A look record with no `facts.key` is not a look and
+    prices nothing; before, every record's `cost_usd` counted.
+  - A look live lines show started in a process that neither filed it nor had it read back as kept later is a possible
+    payment no durable line shows: the strip says so, and the cost reads "at least".
+- `npm run demo:kill -- --record <dir>` records the killed and resumed run as an `agentrun.recording/1` directory: each process records its own durable and live lines, and the supervisor, which outlives every kill, writes the `process.started`, `kill` and `result` lines.
+- `examples/reference/index.ts` is one entry for another example that wants the reference example's pi-durable host: `run`, `placeAt`, `localHost` and the recorder, with a `vision` option on `run`, `Fakes.responses` and `Fakes.tokensPerSecond` (the faux model streams by default), `Host.tools.rerun` for an effect a killed process left unknown, and a host that lists each applied call once. The pi-1-2 job runs a mid-stream kill and resume on the pi it installed.
+- The run viewer gains a vision panel (`apps/viewer`) for a run whose lead reads through eyes. It draws three lanes from the `LookRecord`s a host files into a `vision.*` document (a film read in windows with its frames at their seconds, scanned pages with the cited line's box, a grid of photographs that flip to their labels), the cited account from the run's result (`apollo11.account/1`) with a chip per citation, the receipt of the look a chip names (ask, answer, model, tokens, price, kept), and its meters, folded as the counters strip folds vision (RECORDING.md section 6): looks paid, kept after a kill, repeated, possible extra payments (observed, from live lines, which make spend a lower bound), spend (unknown when a look's price is), and typed misses by code. The photo sort's accuracy against the captions and a weaker eyes model's dropped digits are drawn as the result states them. The shell gives every panel two new view inputs: `ViewContext.cite`, the citation a node with a `cite` prop selects on click (kept in `?cite=`, with no scrub), and `ViewContext.json`, the result's JSON blobs as the shell read them; and a node's `box` prop places it over its parent in percent. A redraw keeps each scrolled element's offset and the keyboard focus, found again by place.
 
 ## 0.1.0-beta.12, 2026-10-09
 

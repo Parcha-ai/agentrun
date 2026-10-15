@@ -258,7 +258,7 @@ test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_
   } finally { await provider.release(ref); await rm(root, { recursive: true, force: true }); }
 });
 
-test("release removes the directory Chrome made under TMPDIR for its singleton socket, which no Chrome exit removes", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
+test("Chrome's singleton socket directory, and everything else it writes to its TMPDIR, is in a private directory of the lease's, which release removes: the host's TMPDIR is as it was", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const root = await scratch(t, "cdp-singleton-");
   const tmp = path.join(root, "tmp");
   await mkdir(tmp);
@@ -271,14 +271,16 @@ test("release removes the directory Chrome made under TMPDIR for its singleton s
   t.after(() => provider.release(ref).catch(() => undefined));
   process.env.TMPDIR = outer;
   const made = await readdir(tmp);
-  // The directory this Chrome's SingletonSocket link names is release's to remove; a hidden temp file Chrome leaves in
-  // TMPDIR when it is killed (.org.chromium.Chromium.*) is no one Chrome's to attribute, and this test's scratch removes it.
+  // The host's TMPDIR holds the lease's private directory and nothing else: Chrome was given that directory as its TMPDIR, so what it makes goes in it.
+  assert.equal(made.length, 1, `the TMPDIR Chrome was started under holds one entry: ${made}`);
+  assert.match(made[0], /^pib-[A-Za-z0-9]{6}$/);
   const profiles = await readdir(path.join(root, "profiles"));
   const socket = await readlink(path.join(root, "profiles", profiles.find((name) => !name.endsWith(".downloads")), "SingletonSocket"));
-  const singleton = path.basename(path.dirname(socket));
-  assert.ok(made.includes(singleton) && CHROME_SINGLETON.test(singleton), `Chrome made its singleton directory under the TMPDIR it started with: ${made}`);
+  const singleton = path.dirname(socket);
+  assert.equal(path.dirname(singleton), path.join(tmp, made[0]), "Chrome's singleton directory is inside the private directory");
+  assert.ok(CHROME_SINGLETON.test(path.basename(singleton)), path.basename(singleton));
   await provider.release(ref);
   const left = await readdir(tmp);
-  t.diagnostic(`Chrome's TMPDIR entries before release: ${made.join(", ")}; after: ${left.join(", ") || "none"}`);
-  assert.equal(left.includes(singleton), false, `release removed ${singleton}`);
+  t.diagnostic(`the host's TMPDIR before release: ${made.join(", ")}; after: ${left.join(", ") || "none"}`);
+  assert.deepEqual(left, [], "release removed the private directory with the singleton directory in it, and nothing else of Chrome's is left in the host's TMPDIR");
 });

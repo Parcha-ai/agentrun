@@ -3,9 +3,8 @@
 // control API call is timed, so the rig can split a takeover into decide, revoke, mint and start. One JSON line per
 // decision on stdout: {tick, at, ms, decision, calls: [{call, at, ms, ok}]}; times are epoch milliseconds.
 // Argument: one JSON object, see `Config`. The key comes from $ARCHIL_API_KEY.
-import { configure, getDisk } from "disk";
 import { localHost } from "../../src/hosts/local-host.ts";
-import { diskControl, ensureRunning, type SupervisorControl } from "../../src/supervise.ts";
+import { archilControl, ensureRunning, type SupervisorControl } from "../../src/supervise.ts";
 
 export interface Config {
   disk: string;
@@ -60,9 +59,8 @@ if (!config || !apiKey) {
   process.stderr.write("usage: _supervisor.ts '<config json>' with $ARCHIL_API_KEY set\n");
   process.exit(2);
 }
-configure({ apiKey, region: config.region });
-const disk = await getDisk(config.disk);
-const base: SupervisorControl = diskControl(disk);
+// The package's own control API (`exec` included: a delegation listed with no path cannot be attributed without it).
+const base: SupervisorControl = await archilControl({ apiKey, disk: config.disk, region: config.region });
 const host = localHost({
   mountRoot: config.mountRoot,
   hostName: config.hostName,

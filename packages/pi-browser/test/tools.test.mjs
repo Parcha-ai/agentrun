@@ -25,7 +25,7 @@ async function session(t, calls, { backend = new FakeBackend({ start: START, pag
   });
   const model = fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: calls.length + 1 }, (_, turn) => async () => {
-    await between?.[turn]?.(backend, { browser, harness });
+    await between?.[turn]?.(backend, { browser, harness, root });
     return calls[turn] ? fauxAssistantMessage([fauxToolCall(calls[turn][0], calls[turn][1] ?? {}, { id: `call-${turn}` })], { stopReason: "toolUse" }) : fauxAssistantMessage([fauxText("done")], { stopReason: "stop" });
   }));
   const models = createModels();
@@ -42,7 +42,7 @@ async function session(t, calls, { backend = new FakeBackend({ start: START, pag
   const texts = seen.map((m) => m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n"));
   // `settle`: wait out the background tasks (a release) before reading the records.
   for (let i = 0; settle && i < 200 && (await harness.inspect(ctx)).tasks.length > 0; i += 1) await new Promise((r) => setTimeout(r, 25));
-  return { backend, filed, seen, texts, usage: await harness.usage(ctx), sessions: await harness.snapshot(browser.docs.Sessions, root.id, ctx) };
+  return { backend, filed, seen, texts, browser, root, usage: await harness.usage(ctx), sessions: await harness.snapshot(browser.docs.Sessions, root.id, ctx) };
 }
 const failure = (text) => JSON.parse(text);
 
@@ -93,12 +93,12 @@ test("screenshot: a full page past 2,000 px is retaken as the viewport at CSS sc
   assert.equal(filed[0].record.facts.sha256, sha(Buffer.from(seen[0].content[1].data, "base64")));
 });
 
-test("run: code runs once and settles its pending effect; exactly one of code or actions is required", async (t) => {
+test("run: code runs once and leaves its journal entry finished; exactly one of code or actions is required", async (t) => {
   const { backend, texts, sessions } = await session(t, [["run", { code: "await page.click('a')" }], ["run", {}]]);
   assert.equal(backend.tally().dispatches, 1);
   assert.match(texts[0], /page\.click/);
   assert.equal(failure(texts[1]).code, "refused");
-  assert.equal(sessions.sessions[0].pendingEffect, null, "a run that answered leaves no pending effect");
+  assert.equal(sessions.sessions[0].pendingEffect?.finished, true, "a run that answered leaves its entry finished, for a resumed run to check");
   assert.deepEqual([sessions.sessions[0].lastUrl, sessions.sessions[0].navigation.length], [START, 1], "the first page a run found starts the timeline");
 });
 
@@ -165,6 +165,27 @@ test("browser_read judges the page like web_fetch: a wall is filed failed with i
   assert.equal(down.filed[0].record.status, "ok");
 });
 
+test("a Stagehand extension that lost its own CDP connection is a dropped browser: a read reconnects and runs once more, a run is not repeated", async (t) => {
+  const LOOPBACK = "Stagehand loopback CDP is disconnected";
+  const lost = () => new Error(LOOPBACK, { cause: { code: -32603, message: LOOPBACK, data: { name: "Error" } } });
+  const reading = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  const snapshot = reading.driverFace.snapshot.bind(reading.driverFace);
+  let drops = 1;
+  reading.driverFace.snapshot = async (id) => { if (drops-- > 0) throw lost(); return snapshot(id); };
+  const read = await session(t, [["snapshot"]], { backend: reading });
+  assert.match(read.texts[0], /Acme Corp/, "the read reconnected and ran once more");
+  assert.equal(reading.tally().attaches, 2, "the dropped driver was attached again");
+
+  const running = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  let runs = 0;
+  running.driverFace.run = async () => { runs += 1; throw lost(); };
+  const acted = await session(t, [["run", { code: "await page.click('a')" }]], { backend: running });
+  const dropped = failure(acted.texts[0]);
+  assert.deepEqual([dropped.code, dropped.retryable], ["browser_unavailable", true]);
+  assert.match(dropped.message, /^The connection to your browser session dropped/);
+  assert.equal(runs, 1, "the run that may have acted was not repeated");
+});
+
 test("an action policy that holds requests never browses without its observer: one that cannot attach makes the browser unavailable", async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
   // The observer dials a closed loopback port; the fake driver finds its session by the URL's id.
@@ -192,6 +213,47 @@ test("a relaunch asking for a place under a policy without proxies is refused be
   const launched = failure(on.texts[1]);
   assert.deepEqual([launched.ok, launched.proxies, launched.geolocation], [true, true, { country: "GB", city: "LONDON" }]);
   assert.equal(on.backend.tally().creates, 2);
+});
+
+test("a relaunch answers with the settings the provider honours, not the ones it asked for", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } } });
+  const out = await session(t, [["snapshot"], ["browser_relaunch", { verified: true, geolocation: { country: "GB" } }]], { backend, policy: { proxies: true } });
+  const answer = failure(out.texts[1]);
+  assert.deepEqual([answer.ok, answer.verified, answer.proxies, answer.geolocation], [true, false, false, null], JSON.stringify(answer));
+  assert.equal(backend.tally().creates, 2);
+});
+
+test("a screenshot's question travels with the capture for the host to answer", async (t) => {
+  const out = await session(t, [["screenshot", { ask: "What does the filing say?" }]]);
+  assert.equal(out.seen[0].isError, false, out.texts[0]);
+  assert.equal(out.seen[0].details?.media?.ask, "What does the filing say?", JSON.stringify(out.seen[0].details));
+});
+
+test("a conversation's close leaves none of its state in the extension, whether it browsed or never launched", async (t) => {
+  for (const launches of [true, false]) {
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+    if (!launches) backend.fail("create", 10);
+    const out = await session(t, [["snapshot"], ["snapshot"]], { backend });
+    assert.equal(out.seen[0].isError, !launches, out.texts[0]);
+    assert.ok(out.browser.retained() > 0, `the conversation left state while it ran (launches: ${launches})`);
+    await out.browser.release(out.root, "close", ctx);
+    assert.equal(out.browser.retained(), 0, `launches: ${launches}`);
+  }
+});
+
+test("after an idle release, the next call's session still idles out", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  await session(t, [["snapshot"], ["snapshot"]], { backend, policy: { idleReleaseS: 1 }, between: { 1: (_b, { browser, root }) => browser.release(root, "idle", ctx) } });
+  for (let i = 0; i < 100 && backend.tally().releases < 2; i += 1) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [2, 2], "the session the second call opened was released by its idle timer");
+});
+
+test("an idle release keeps the conversation's repeat guard: a third identical failure is still refused", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  backend.fail("create", 10);
+  const out = await session(t, [["snapshot"], ["snapshot"], ["snapshot"]], { backend, between: { 2: (_b, { browser, root }) => browser.release(root, "idle", ctx) } });
+  assert.deepEqual(out.seen.map((m) => m.isError), [true, true, true]);
+  assert.match(failure(out.texts[2]).message, /already failed 2 times/);
 });
 
 test("the first call after a release the model did not ask for says so: an idle release, then a fresh session", async (t) => {

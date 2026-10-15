@@ -1,11 +1,11 @@
-// `diskControl` (src/supervise.ts), no Archil: the one control API the CLI and the acceptance rig build over a disk. A
+// `archilControl` (src/supervise.ts), no Archil (a fake `disk` client): the one control API the CLI and the acceptance rig build over a disk. A
 // shared disk lists delegations with no path (a dead client's private directories), and the supervisor must still start
 // a run. Without `exec` it cannot tell such a delegation from the run's own and refuses every pass (CONTROL_API_FAILED):
 // the acceptance rig, which kept its own copy without `exec`, started nothing on a disk other clients had died on.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { diskControl, ensureRunning, type ControlDisk, type HostDriver, type HostHandle, type HostStatus } from "../src/supervise.ts";
+import { archilControl, ensureRunning, type DiskClient, type HostDriver, type HostHandle, type HostStatus } from "../src/supervise.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "accept-r1" };
 
@@ -53,6 +53,9 @@ class FakeDisk {
   }
 }
 
+/** The package's control API over the fake disk, through the `disk` client seam (`archilControl`'s `client` option). */
+const control = (disk: FakeDisk) => archilControl({ apiKey: "k", disk: REF.disk, region: REF.region, client: { configure: () => {}, getDisk: async () => disk } as unknown as DiskClient });
+
 class FakeHost implements HostDriver {
   started = 0;
   async start(): Promise<HostHandle> {
@@ -68,26 +71,26 @@ class FakeHost implements HostDriver {
 test("a dead client's pathless delegation on the disk: the supervisor attributes it through exec and still starts the run", async () => {
   const disk = new FakeDisk();
   const host = new FakeHost();
-  const decision = await ensureRunning(REF, host, { control: diskControl(disk as unknown as ControlDisk), now: () => Date.parse("2026-10-10T08:00:00Z") });
+  const decision = await ensureRunning(REF, host, { control: await control(disk), now: () => Date.parse("2026-10-10T08:00:00Z") });
   assert.equal(decision.action, "started", `the pass decided ${JSON.stringify(decision)}`);
   assert.equal(host.started, 1);
   assert.ok(disk.ops.includes("exec"), "the pathless delegation was attributed through exec");
   assert.deepEqual(disk.delegations.map((d) => d.clientId), ["c-dead"], "another client's private directory is not the run's: left alone");
 });
 
-// The failure the rig had before it used `diskControl`: a hand-kept control API without `exec`. The same disk, the same pass.
+// The failure the rig had before it used `archilControl`: a hand-kept control API without `exec`. The same disk, the same pass.
 test("the same pass with a control API that lacks exec refuses (CONTROL_API_FAILED): what the rig's hand-kept copy did", async () => {
   const disk = new FakeDisk();
   const host = new FakeHost();
-  const { exec: _exec, ...withoutExec } = diskControl(disk as unknown as ControlDisk);
+  const { exec: _exec, ...withoutExec } = await control(disk);
   await assert.rejects(ensureRunning(REF, host, { control: withoutExec, now: () => Date.parse("2026-10-10T08:00:00Z") }), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
   assert.equal(host.started, 0, "nothing was started");
 });
 
 // The rig is a script (top-level await, needs a key), so it is read, not imported: it must build its control through
-// `diskControl`, never from a literal of its own, which is how `exec` was lost.
-test("the acceptance rig's supervisor builds its control API through diskControl", () => {
+// `archilControl`, never from a literal of its own, which is how `exec` was lost.
+test("the acceptance rig's supervisor builds its control API through archilControl", () => {
   const source = readFileSync(new URL("./acceptance/_supervisor.ts", import.meta.url), "utf8");
-  assert.match(source, /diskControl\(/);
+  assert.match(source, /archilControl\(/);
   assert.doesNotMatch(source, /revokeDelegation: \(d\) => disk\.revokeDelegation/, "a hand-built control literal is back");
 });

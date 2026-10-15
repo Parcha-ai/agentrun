@@ -21,18 +21,17 @@ import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts
 import { dockerHost } from "./hosts/docker.ts";
 import { localHost } from "./hosts/local-host.ts";
 import {
+  archilControl,
   checkHost,
   CONTROL_TIMEOUT_MS,
-  diskControl,
   readRunStatus,
   superviseRuns,
   sweepTokens,
   withTimeouts,
-  type CheckControl,
+  type ArchilControl,
+  type DiskClient,
   type HostDriver,
   type Json,
-  type SupervisorControl,
-  type TokenUser,
 } from "./supervise.ts";
 import { openDurableRun, type DurableRun } from "./run.ts";
 import { AppError, loadApp, type AppOptions } from "./app.ts";
@@ -149,16 +148,15 @@ const need = (v: Record<string, unknown>, ...keys: string[]) => {
 const str = (v: unknown, fallback?: string) => (typeof v === "string" ? v : fallback);
 const emit = (line: Record<string, unknown>) => process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), ...line })}\n`);
 
-/** The disk's control API for the supervisor, plus the two lists only the disk record carries (users, clients). */
-async function control(values: Record<string, unknown>): Promise<SupervisorControl & CheckControl & { listUsers(): Promise<TokenUser[]> }> {
+/**
+ * The disk's control API for the supervisor (`archilControl`), from the API key in `--api-key-env` (default
+ * ARCHIL_API_KEY) and `--disk` and `--region`. `client` replaces the `disk` client (tests).
+ */
+export async function cliControl(values: Record<string, unknown>, client?: DiskClient): Promise<ArchilControl> {
   const name = str(values["api-key-env"], "ARCHIL_API_KEY")!;
   const apiKey = process.env[name];
   if (!apiKey) throw new UsageError(`no API key in $${name}`);
-  const { configure, getDisk } = await import("disk");
-  configure({ apiKey, region: str(values.region)! });
-  const id = str(values.disk)!;
-  const disk = await getDisk(id);
-  return { ...diskControl(disk), listUsers: async () => (await getDisk(id)).authorizedUsers ?? [] };
+  return archilControl({ apiKey, disk: str(values.disk)!, region: str(values.region)!, ...(client ? { client } : {}) });
 }
 
 // ---- run ---------------------------------------------------------------------------------------------------------------
@@ -460,7 +458,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
   if (!docker && str(values.host, "local") !== "local") throw new UsageError(`--host is local or docker, got ${str(values.host)}`);
   if (docker && values.check) throw new UsageError("--check proves this host's own mounts; with --host docker the containers mount, so it does not apply");
   if (docker && (typeof values.image !== "string" || !values.image)) throw new UsageError("--host docker needs --image");
-  const disk = await control(values);
+  const disk = await cliControl(values);
   const controlTimeoutMs = values["control-timeout"] ? parseDuration(str(values["control-timeout"])!) : CONTROL_TIMEOUT_MS;
   if (values.check) {
     const report = await checkHost({
@@ -540,7 +538,7 @@ async function supervise(values: Record<string, unknown>): Promise<number> {
 
 async function status(values: Record<string, unknown>): Promise<number> {
   need(values, "disk", "region", "id");
-  const disk = await control(values);
+  const disk = await cliControl(values);
   const id = str(values.id)!;
   const run = await readRunStatus(disk, id);
   const { findDelegations } = await import("./claim.ts");
@@ -567,7 +565,7 @@ async function release(values: Record<string, unknown>): Promise<number> {
 
 async function forkRun(values: Record<string, unknown>): Promise<number> {
   need(values, "disk", "region", "id", "new-id");
-  const disk = await control(values);
+  const disk = await cliControl(values);
   const result = await fork({ disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! }, str(values["new-id"])!, {
     control: disk,
     mountRoot: str(values["mount-root"], DEFAULT_MOUNT_ROOT)!,
