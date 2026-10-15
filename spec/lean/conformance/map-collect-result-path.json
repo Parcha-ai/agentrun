@@ -1,0 +1,113 @@
+{
+  "description": "A map with onItemFailure \"collect\" and a resultPath: an item whose state lacks the path ends as a row (WorkflowStateError, missing_map_result) with the interpreter's message, the map's own label, null in its slot; the others keep their results.",
+  "workflow": {
+    "v": 2,
+    "name": "map-collect-result-path",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "resultPath": "doubled",
+      "onItemFailure": "collect",
+      "failedAs": "failed",
+      "body": {
+        "node": "code",
+        "label": "double",
+        "code": "s => (s.item === 2 ? { other: s.item } : { doubled: s.item * 2 })"
+      }
+    }
+  },
+  "input": {
+    "items": [
+      1,
+      2,
+      3
+    ]
+  },
+  "script": {
+    "code": {
+      "/root/items/0/body": {
+        "return": {
+          "doubled": 2
+        }
+      },
+      "/root/items/1/body": {
+        "return": {
+          "other": 2
+        }
+      },
+      "/root/items/2/body": {
+        "return": {
+          "doubled": 6
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        1,
+        2,
+        3
+      ],
+      "results": [
+        2,
+        null,
+        6
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "each",
+          "code": "state_invalid",
+          "message": "map node \"each\": resultPath \"doubled\" is missing from item 1"
+        }
+      ]
+    },
+    "output": {
+      "items": [
+        1,
+        2,
+        3
+      ],
+      "results": [
+        2,
+        null,
+        6
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "each",
+          "code": "state_invalid",
+          "message": "map node \"each\": resultPath \"doubled\" is missing from item 1"
+        }
+      ]
+    },
+    "events": {
+      "/root/items/0/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ],
+      "/root/items/1/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ],
+      "/root/items/2/body": [
+        "node.start:double",
+        "node.end:double:ok"
+      ]
+    }
+  }
+}

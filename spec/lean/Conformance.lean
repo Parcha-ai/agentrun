@@ -202,10 +202,12 @@ def scripted (catalog : List (String × Json)) (script : Json) (questionLimit : 
   declared e := match e with
     | .adapter _ m => declaredCode script m
     | _ => none
-  -- The message the TypeScript errors carry: `WorkflowCodeError`'s rendering, a declared failure's own text.
-  message e := match e with
+  -- The message the TypeScript errors carry: `WorkflowCodeError`'s rendering, a declared failure's own text, and a
+  -- map's missing `resultPath` (only the map raises it). Other state errors' texts are not rendered: no case collects one.
+  message i e := match e with
     | .transform l m => "code node \"" ++ l ++ "\" failed: " ++ m ++ "; check its state paths, synchronous function body and supported globals"
     | .adapter _ m => m
+    | .state .missingMapResult l p => "map node \"" ++ l ++ "\": resultPath \"" ++ ".".intercalate p ++ "\" is missing from item " ++ toString i
     | _ => ""
   choose l := l.headD (.ok [])
   choose_mem l h := by cases l with

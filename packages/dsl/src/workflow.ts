@@ -1481,6 +1481,14 @@ export function isItemFailure(error: unknown): boolean {
   return typeof (error as { code?: unknown }).code === "string" && (error as { itemFailure?: unknown }).itemFailure === true;
 }
 
+/** The failure a structure reports when several of its branches (a parallel's, a stopping map's items) fail at once: the
+ *  first, unless that is an item failure and another is not, whichever came first. An item failure never hides a failure a
+ *  collecting map must stop on. A sibling that ended on the structure's own stop (its reason, or an abort) is not one. */
+function reportedFailure(first: unknown, others: unknown[]): unknown {
+  if (!isItemFailure(first)) return first;
+  return others.find((error) => error !== first && (error as { name?: unknown } | null)?.name !== "AbortError" && !isItemFailure(error)) ?? first;
+}
+
 /** The label of the step an error failed in, set as the error leaves the innermost step and prefixed by every child
  *  invocation it leaves, as the child's events are: the row of a collected item names the node that failed. */
 const failedSteps = new WeakMap<object, string>();
@@ -2262,9 +2270,11 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
     return out;
   } catch (error) {
     if (isStep) deps.onEvent?.({ type: "node.end", label, detail: { kind: node.node, status: error instanceof EscalationSignal ? "escalated" : "failed", duration_ms: Date.now() - startedAt, error: String((error as any)?.message || error).slice(0, 300) } });
-    if (isStep && error !== null && typeof error === "object") {
+    if (error !== null && typeof error === "object") {
       const inner = failedSteps.get(error);
-      failedSteps.set(error, inner === undefined ? label : node.node === "workflow" ? `${label}/${inner}` : inner);
+      // A step names itself; so does a structural node whose own failure this is (its stage is its label).
+      if (inner === undefined && (isStep || (error as { stage?: unknown }).stage === label)) failedSteps.set(error, label);
+      else if (inner !== undefined && node.node === "workflow") failedSteps.set(error, `${label}/${inner}`);
     }
     throw error;
   }
@@ -2396,9 +2406,12 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       let failure: unknown;
       let failed = false;
       const uncertainties = new Set<EffectOutcomeUnknownError>();
+      /** Failures after the first: one the map must stop on is reported over an item failure (`reportedFailure`). */
+      const later: unknown[] = [];
       const stop = (error: unknown) => {
         uncertainEffects(error, uncertainties);
         if (!failed) { failed = true; failure = error; siblings.abort(error); }
+        else later.push(error);
       };
       await Promise.all(Array.from({ length: width }, async () => {
         while (!signal.aborted) {
@@ -2434,7 +2447,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
         }
       }));
       if (failed) {
-        failure = withSiblingUncertainty(failure, uncertainties);
+        failure = withSiblingUncertainty(reportedFailure(failure, later), uncertainties);
         const escalated = failure instanceof EscalationSignal;
         const collected = rows.filter(Boolean).length;
         deps.onEvent?.({ type: escalated ? "map.escalated" : "map.failed", label: node.label, detail: { completed: results.reduce<number>((n, r) => n + (r === undefined ? 0 : 1), 0) - collected, of: items.length, ...(collect ? { collected } : {}), message: String((failure as any)?.message || failure).slice(0, 300) } });
@@ -2459,15 +2472,17 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       let failure: unknown;
       let failed = false;
       const uncertainties = new Set<EffectOutcomeUnknownError>();
+      const later: unknown[] = [];
       const outs = await Promise.all((node.branches || []).map(async (branch, i) => {
         try { return await runNodeOnState(branch, inputs[i], workflow, scopeExecution({ ...deps, signal, checkpoint: undefined }, "branches", i)); }
         catch (error) {
           uncertainEffects(error, uncertainties);
           if (!failed) { failed = true; failure = error; siblings.abort(error); }
+          else later.push(error);
           return inputs[i];
         }
       }));
-      if (failed) throw withSiblingUncertainty(failure, uncertainties);
+      if (failed) throw withSiblingUncertainty(reportedFailure(failure, later), uncertainties);
       const merged: Record<string, unknown> = { ...state };
       const writer = new Map<string, number>();
       // Host state is engine-owned and merges by delta: every branch started from the same `$host`, so an
