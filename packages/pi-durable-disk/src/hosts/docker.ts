@@ -76,7 +76,7 @@ export interface DockerHostOptions {
 }
 
 export class DockerHostError extends PdaError {
-  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "DOCKER_FAILED", message: string, options: { cause?: unknown } = {}) {
+  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "KILL_FAILED" | "DOCKER_FAILED", message: string, options: { cause?: unknown } = {}) {
     super(code, message, options);
   }
 }
@@ -187,7 +187,7 @@ export function containerStatus(state: DockerState): HostStatus {
 
 export type ContainerInfo = { status: HostStatus; state: string; exitCode: number | null; oomKilled: boolean; error: string; startedAt: string | null; finishedAt: string | null };
 
-export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
+export function dockerHost(opts: DockerHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & {
   readonly fleet: string;
   readonly mountRoot: string;
   describe(handle: HostHandle): Promise<ContainerInfo | null>;
@@ -338,6 +338,7 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
   return {
     fleet,
     mountRoot,
+    kills: "box",
 
     async start(ref, token, attemptInfo?: StartAttempt) {
       runPath(ref.id);
@@ -393,6 +394,19 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       }
       await remove(ref);
       if (await inspect(ref)) throw new DockerHostError("STOP_FAILED", `container ${ref} is still there after docker rm -f`);
+    },
+
+    async kill(h) {
+      if (!(await mine(h))) return;
+      const ref = target(h);
+      const found = await inspect(ref);
+      if (!found || found.labels["pda.fleet"] !== fleet) return;
+      // SIGKILL, no stop timeout: the container dies with its mount (its own namespace), as on a power loss. It is left
+      // exited, not removed; the next start of the run removes it.
+      const r = await run(["kill", ref], { timeoutMs: 30_000 });
+      if (!ok(r) && !NO_SUCH.test(r.stderr) && (await inspect(ref).then((f) => f && containerStatus(f.state) === "running"))) {
+        throw new DockerHostError("KILL_FAILED", `docker kill ${ref}: ${firstLine(r)}`);
+      }
     },
   };
 }

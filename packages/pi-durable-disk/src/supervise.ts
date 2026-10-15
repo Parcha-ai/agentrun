@@ -53,6 +53,14 @@ export interface HostDriver {
   status(handle: HostHandle): Promise<HostStatus>;
   /** Stop the instance and whatever it left on its host. A handle the driver cannot reach is a no-op. */
   stop(handle: HostHandle): Promise<void>;
+  /**
+   * Optional: take the instance away abruptly, as a crash would. No drain, no release, nothing cleaned: the run's claim is
+   * left as a crash leaves it (orphaned with its box, or held by a live mount until its lease lapses), and the
+   * supervisor's next pass decides what follows. A handle the driver cannot reach is a no-op.
+   */
+  kill?(handle: HostHandle): Promise<void>;
+  /** What `kill` takes: `process`, the instance's processes while its machine stays (a restart policy may bring them back), or `box`, its machine. */
+  readonly kills?: "process" | "box";
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */

@@ -169,7 +169,7 @@ export function daytonaRest(options: DaytonaRestOptions): DaytonaClient {
 
 // ---- the driver ------------------------------------------------------------------------------------------------------
 
-export type DaytonaHostErrorCode = "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "DAYTONA_API_FAILED";
+export type DaytonaHostErrorCode = "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "KILL_FAILED" | "DAYTONA_API_FAILED";
 
 export class DaytonaHostError extends PdaError {
   constructor(code: DaytonaHostErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -289,7 +289,7 @@ function lastJson<T>(text: string): T | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
+export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly fleet: string; readonly mountRoot: string } {
   const client = opts.client;
   const fleet = opts.fleet ?? "pda";
   const prefix = opts.namePrefix ?? "pda-";
@@ -366,6 +366,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
   return {
     fleet,
     mountRoot,
+    kills: "box",
 
     async start(ref: RunRef, mountToken: string): Promise<HostHandle> {
       runPath(ref.id);
@@ -458,6 +459,30 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
           await client.remove(id);
         } catch (err) {
           throw new DaytonaHostError("STOP_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
+        }
+      }
+    },
+
+    async kill(h: HostHandle): Promise<void> {
+      if (!mine(h)) return;
+      const id = h.sandboxId as string;
+      let box: SandboxInfo | null;
+      try {
+        box = await client.get(id);
+      } catch (err) {
+        throw new DaytonaHostError("KILL_FAILED", `reading sandbox ${h.name} to confirm it is this fleet's: ${(err as Error).message}`, { cause: err });
+      }
+      if (box === null || box.labels?.[LABEL_FLEET] !== fleet) return;
+      // The box goes with everything in it, the instance and its mount: no launcher stop, no drain.
+      try {
+        await client.remove(id);
+      } catch (first) {
+        // A delete refused mid-transition: power the box off, then delete again.
+        await client.stop(id, true).catch(() => {});
+        try {
+          await client.remove(id);
+        } catch (err) {
+          throw new DaytonaHostError("KILL_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
         }
       }
     },
