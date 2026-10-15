@@ -9,20 +9,22 @@ import { hostname, networkInterfaces, tmpdir, userInfo } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { TEXT_FILE, credentialInFile, machineValueIn, machineValues } from '../../examples/reference/scan.ts';
+import { TEXT_FILE, credentialInFile, machineValueIn, machineValues, readMachine } from '../../examples/reference/scan.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const SKIP = new Set(['node_modules', '.git', 'dist']);
 const walk = (dir) => readdirSync(dir, { withFileTypes: true })
   .flatMap((entry) => (entry.isDirectory() ? (SKIP.has(entry.name) ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]));
 
-/** Each .jsonl changed since the branch left origin/main, committed or not, when there is a git checkout with that ref: a
- *  hand-folded fixture never went through --record's scan. */
+/** Each .jsonl changed since the branch left origin/main, committed, staged or never staged, when there is a git checkout
+ *  with that ref: a hand-folded fixture never went through --record's scan. Git's names are read NUL-separated (`-z`), so
+ *  a name git would quote (`docs/café.jsonl`) is read as it is. */
 const changedJsonl = (base) => {
+  const git = (...args) => execFileSync('git', args, { cwd: base, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   try {
-    const from = execFileSync('git', ['merge-base', 'origin/main', 'HEAD'], { cwd: base, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const changed = execFileSync('git', ['diff', '--name-only', '--diff-filter=AMR', from, '--', '*.jsonl'], { cwd: base, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    return changed.split('\n').filter(Boolean).map((file) => join(base, file)).filter(existsSync);
+    const from = git('merge-base', 'origin/main', 'HEAD').trim();
+    const names = [...git('diff', '--name-only', '-z', '--diff-filter=AMR', from, '--', '*.jsonl').split('\0'), ...git('ls-files', '--others', '--exclude-standard', '-z', '--', '*.jsonl').split('\0')];
+    return names.filter(Boolean).map((file) => join(base, file)).filter(existsSync);
   } catch { return []; }
 };
 
@@ -73,7 +75,7 @@ test('a fixture cut on this machine fails here by file and kind, never by value;
   assert.deepEqual(findingsIn(base, values), []);
 });
 
-test('a .jsonl changed since the branch left origin/main is checked wherever it is: a hand-folded fixture never went through --record', (t) => {
+test('a .jsonl changed since the branch left origin/main is checked wherever it is, staged or not, whatever its name', (t) => {
   const base = mkdtempSync(join(tmpdir(), 'machine-values-git-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const values = machineValues();
@@ -85,10 +87,36 @@ test('a .jsonl changed since the branch left origin/main is checked wherever it 
   git('commit', '-q', '-m', 'main');
   git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   mkdirSync(join(base, 'docs'));
+  // A hand-folded fixture, never staged; then committed, beside one whose name git quotes in its plain output.
   writeFileSync(join(base, 'docs', 'folded.jsonl'), runJsonLine(hostname(), 'boot-1'));
-  git('add', 'docs/folded.jsonl');
-  git('commit', '-q', '-m', 'a hand-folded fixture');
-  assert.deepEqual(findingsIn(base, values), [{ file: join('docs', 'folded.jsonl'), kind: 'host name' }]);
+  assert.deepEqual(findingsIn(base, values), [{ file: join('docs', 'folded.jsonl'), kind: 'host name' }], 'before it is staged');
+  writeFileSync(join(base, 'docs', 'café.jsonl'), runJsonLine(hostname(), 'boot-1'));
+  git('add', 'docs');
+  git('commit', '-q', '-m', 'hand-folded fixtures');
+  assert.deepEqual(findingsIn(base, values), [{ file: join('docs', 'café.jsonl'), kind: 'host name' }, { file: join('docs', 'folded.jsonl'), kind: 'host name' }]);
+});
+
+test('a check run as root passes clean fixtures: /root is where a workflow\'s paths start, and a home every machine shares names no one', () => {
+  for (const homedir of ['/root', '/root/', '/var/root', '/']) {
+    const values = machineValues({ ...readMachine(), homedir });
+    assert.ok(!values.some((each) => each.kind === 'home directory'), homedir);
+    const found = findingsIn(root, values);
+    assert.deepEqual(found, [], `${homedir}: ${report(found)}`);
+  }
+  assert.ok(machineValues({ hostname: 'x', bootId: '', homedir: '/home/someone', addresses: [] }).some((each) => each.kind === 'home directory'), 'a home that names someone is taken');
+  assert.equal(machineValueIn('{"path":"/root/steps/0"}', machineValues({ hostname: 'x', bootId: '', homedir: '/root', addresses: [] })), undefined);
+});
+
+test('a name stands whole: a hyphen or a dot with more name after it goes on (build-agent, ci.build), a path or a sentence may follow', () => {
+  const values = [{ kind: 'host name', value: 'build' }];
+  for (const text of ['"build-agent"', '"agent-build"', '"ci.build"', '"build.other.org"', 'rebuild', 'build2']) assert.equal(machineValueIn(text, values), undefined, text);
+  for (const text of ['"host":"build"', 'on build.', 'build:8080', 'build/x', '(build)']) assert.equal(machineValueIn(text, values), 'host name', text);
+  const home = [{ kind: 'home directory', value: '/home/someone' }];
+  for (const text of ['/home/someone2', '/home/someone.bak', '/mnt/home/someone']) assert.equal(machineValueIn(text, home), undefined, text);
+  for (const text of ['"/home/someone/work"', 'HOME=/home/someone', '"/home/someone"']) assert.equal(machineValueIn(text, home), 'home directory', text);
+  const address = [{ kind: 'tailnet address', value: '100.64.1.2' }];
+  for (const text of ['100.64.1.23', '1100.64.1.2', '5.100.64.1.2', '100.64.1.2.9']) assert.equal(machineValueIn(text, address), undefined, text);
+  for (const text of ['"100.64.1.2"', '100.64.1.2:443', 'at 100.64.1.2.']) assert.equal(machineValueIn(text, address), 'tailnet address', text);
 });
 
 test('every kind of value this machine has is looked for: its names, boot id, home directory and tailnet addresses', () => {
@@ -99,7 +127,7 @@ test('every kind of value this machine has is looked for: its names, boot id, ho
   if (!boot && process.platform === 'darwin') boot = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8' }).trim();
   if (boot) own.push(['boot id', boot]);
   const home = userInfo().homedir;
-  if (home.length >= 4 && home !== '/') own.push(['home directory', home]);
+  if (home.length >= 4 && !['/root', '/var/root'].includes(home.replace(/\/+$/, ''))) own.push(['home directory', home]);
   for (const addresses of Object.values(networkInterfaces())) for (const { address } of addresses ?? []) if (/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)) own.push(['tailnet address', address]);
   const values = machineValues();
   for (const [kind, value] of own) assert.equal(machineValueIn(runJsonLine('host-1', 'boot-1').replace('boot-1', value), values), kind, kind);
