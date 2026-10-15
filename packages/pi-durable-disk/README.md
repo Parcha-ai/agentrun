@@ -601,20 +601,22 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
 - **The API key stays with the supervisor.** Hosts and instances never hold it, and the local driver never copies its own
   environment into a unit.
 - **No privilege for the agent.** The instance, pi's tools and the agent's commands run as an unprivileged user. Every
-  command starts under `setpriv --no-new-privs`, so a command cannot use the run user's sudo rule (sudo refuses: "The no new
-  privileges flag is set"). An app that turns this off (`archilEnv(claim, { noNewPrivs: false })`) or runs commands another
-  way must confine them itself. Commands run next to the FUSE client on the host that holds the claim: if the agent is not
-  trusted with the host, sandbox its commands (for example with bubblewrap) and keep the FUSE client outside the sandbox.
+  command starts under `setpriv --no-new-privs` (on Linux; macOS has no equivalent, see [On macOS](#on-macos)), so a
+  command cannot use the run user's sudo rule (sudo refuses: "The no new privileges flag is set"). An app that turns
+  this off (`archilEnv(claim, { noNewPrivs: false })`) or runs commands another way must confine them itself. Commands
+  run next to the FUSE client on the host that holds the claim: if the agent is not trusted with the host, sandbox its
+  commands (for example with bubblewrap) and keep the FUSE client outside the sandbox.
 - **The file tools stay inside `work/`.** pi's `read`, `write` and `edit` run in the loop's process, not in a command
-  sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`, absolute
-  paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use `tmp/`, where
-  the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go inside a directory
-  the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
+  sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`,
+  absolute paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use
+  `tmp/`, where the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go
+  inside a directory the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
   ../store/run.sqlite`, `../run.json` or `../owner.lock`: the call fails with a `PathOutsideWorkError` the model sees as
   a failed tool result. A path is opened one component at a time from a held handle of `work/`, without following links,
-  so a link a command swaps in after the check is refused too. This covers the file tools only; a command still runs as
-  the run user and can reach anything that user can, which is what an app's own command sandbox is for. `archilEnv(claim, {
-  confineFiles: false })` turns it off where `/proc/self/fd` is unavailable.
+  so a link a command swaps in after the check is refused too (on Linux; on macOS the walk is by path, see [On
+  macOS](#on-macos)). This covers the file tools only; a command still runs as the run user and can reach anything that
+  user can, which is what an app's own command sandbox is for. `archilEnv(claim, { confineFiles: false })` turns it off
+  where `/proc/self/fd` is unavailable.
 - **`--serve` authenticates only with a bearer token.** On 127.0.0.1 (the default) the token is optional. A non-loopback
   `--serve-host` requires `--serve-token-file`, a file of mode 0600 holding the token (never argv or the environment); every
   request must send `authorization: Bearer <token>`, and it is compared in constant time. The file is readable by the run
@@ -710,13 +712,19 @@ required only with the default `acquire`; without either, the open is refused (`
 A local run works on macOS for development, and is weaker there than on Linux in four ways. Use Linux, or the
 [Docker quickstart](#quickstart-with-docker), when the agent is not trusted.
 
-- **Commands keep your rights.** macOS has no `no_new_privs`, so `noNewPrivs` defaults to false there and no `setpriv`
-  runs: a command can use `sudo` when you can, and setuid programs keep their privilege.
-- **The file tools are confined by path.** On Linux the confinement walks a path through `/proc/self/fd`, one held
-  directory at a time, which macOS does not have. There it opens each component by its full path, never following a
-  link, and checks that the path still names the directory it opened. It refuses `../store/run.sqlite`, absolute paths
-  and links out of `work/`, but a command that swaps a directory above the target for a link between that check and the
-  operation can win.
+- **Commands keep your rights: `no_new_privs` has no macOS equivalent.** On Linux every command starts under
+  `setpriv --no-new-privs`, so it cannot use `sudo` or gain privilege from a setuid program. macOS has no such flag and nothing
+  that does its job (`sandbox-exec` is deprecated), so `noNewPrivs` defaults to false there and no `setpriv` runs. That
+  leaves open: a command can use `sudo` wherever sudo asks it for no password (a `NOPASSWD` rule, for one), and setuid
+  programs keep their privilege. `runAs` is not available either (it needs `setpriv`). As on Linux, a command runs as
+  you and can reach anything you can.
+- **The file tools' confinement is path-based.** On Linux it walks a path through `/proc/self/fd`, one held directory at
+  a time, so no component can be swapped once it was checked; macOS has no `/proc/self/fd`. There it resolves the path
+  (`realpath`) and refuses it unless it lies in `work/` or another root the file tools may use, as on Linux, opens each
+  component by its full path with `O_NOFOLLOW`, then checks that the path still resolves to itself and names the
+  directory it opened (same device and inode). It refuses `../store/run.sqlite`, absolute paths and links out of
+  `work/`, a link already in place included. That leaves open: a command that swaps a directory above the target for a
+  link between that check and the operation can win, and the file tool then acts where the link points.
 - **The run's root is addressed by its path.** On Linux, `run.json` and the run's directories are written through the
   directory opened at acquire. On macOS each write is checked first against that directory, and a root renamed and
   replaced between the check and the write gets the write.
