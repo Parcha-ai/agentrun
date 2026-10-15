@@ -20,9 +20,9 @@ test('vars become custom properties: bare names, finite numbers only', () => {
 
 test('the clock in the context is the time of the point at a stop and the playback clock while playing', () => {
   const base = manifest as unknown as Manifest;
-  assert.equal(viewContext(5, undefined, undefined, base).now, 5);
-  assert.equal(viewContext(5, undefined, undefined, base, 5_730).now, 5_730);
-  assert.equal(viewContext(5, undefined, undefined, base, 5_730).t, 5, 't still says which lines happened');
+  assert.equal(viewContext(5, base).now, 5);
+  assert.equal(viewContext(5, base, { now: 5_730 }).now, 5_730);
+  assert.equal(viewContext(5, base, { now: 5_730 }).t, 5, 't still says which lines happened');
 });
 
 test('?t= is a time in seconds, and anything else is no time', () => {

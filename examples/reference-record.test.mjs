@@ -161,4 +161,20 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   writeFileSync(join(tied, '.spool', 'supervisor-1.jsonl'), JSON.stringify({ channel: 'live', source: 'host', kind: 'process.started', t: 7, seq: 0, data: { gen: 1 } }) + '\n');
   finishRecording(tied, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(lines(tied).map((line) => line.kind), ['process.started', 'pi.assistant']);
+  // a kill and the next start, one millisecond apart in no order: the supervisor's own seq decides
+  const sup = join(tmp, 'sup');
+  mkdirSync(join(sup, '.spool'), { recursive: true });
+  writeFileSync(join(sup, '.spool', 'started'), new Date().toISOString());
+  writeFileSync(join(sup, '.spool', 'supervisor-1.jsonl'), [{ kind: 'process.started', seq: 0, t: 8 }, { kind: 'kill', seq: 1, t: 9 }, { kind: 'process.started', seq: 2, t: 9 }].map((line) => JSON.stringify({ channel: 'live', source: 'host', data: { gen: 1 }, ...line })).join('\n') + '\n');
+  finishRecording(sup, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  assert.deepEqual(lines(sup).map((line) => line.seq), [0, 1, 2]);
+  // the circle the ranks once made: a kill, the next start and the lines that process writes, all at one millisecond
+  const circle = join(tmp, 'circle');
+  mkdirSync(join(circle, '.spool'), { recursive: true });
+  writeFileSync(join(circle, '.spool', 'started'), new Date().toISOString());
+  writeFileSync(join(circle, '.spool', 'supervisor-1.jsonl'), [{ kind: 'process.started', seq: 0, t: 3, data: { gen: 1 } }, { kind: 'kill', seq: 1, t: 4, data: { gen: 1 } }, { kind: 'process.started', seq: 2, t: 4, data: { gen: 2 } }].map((line) => JSON.stringify({ channel: 'live', source: 'host', ...line })).join('\n') + '\n');
+  writeFileSync(join(circle, '.spool', 'durable-2.jsonl'), JSON.stringify({ channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, commit: 1, order: 0, snapshot: true, t: 4, data: {} }) + '\n');
+  writeFileSync(join(circle, '.spool', 'live-2.jsonl'), JSON.stringify({ channel: 'live', source: 'workflow', kind: 'node.start', gen: 2, t: 4, seq: 0, data: {} }) + '\n');
+  finishRecording(circle, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
+  assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
 });
