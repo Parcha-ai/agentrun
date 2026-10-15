@@ -109,7 +109,7 @@ const NAME = /[A-Za-z0-9-]/;
 const PATH = /[A-Za-z0-9._-]/;
 /** Whether `value` at `at` in `text` stands whole. A name, boot id or address goes on through a hyphen, and through a dot
  *  with more of a name after it (`build` is not in `build-agent`, `ci.build` or `build.other.org`, but a sentence may end
- *  `build.`). A home directory is a path: another path may go on after it (`/home/a/x`), a longer name may not (`/home/a2`). */
+ *  `build.`). A home directory is a path: another path may go on after it (`<home>/x`), a longer name may not (`<home>2`). */
 const whole = (text: string, at: number, value: MachineValue): boolean => {
   const before = text[at - 1];
   const after = text[at + value.value.length];

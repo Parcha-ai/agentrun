@@ -103,7 +103,7 @@ test('a check run as root passes clean fixtures: /root is where a workflow\'s pa
     const found = findingsIn(root, values);
     assert.deepEqual(found, [], `${homedir}: ${report(found)}`);
   }
-  assert.ok(machineValues({ hostname: 'x', bootId: '', homedir: '/home/someone', addresses: [] }).some((each) => each.kind === 'home directory'), 'a home that names someone is taken');
+  assert.ok(machineValues({ hostname: 'x', bootId: '', homedir: '/srv/someone', addresses: [] }).some((each) => each.kind === 'home directory'), 'a home that names someone is taken');
   assert.equal(machineValueIn('{"path":"/root/steps/0"}', machineValues({ hostname: 'x', bootId: '', homedir: '/root', addresses: [] })), undefined);
 });
 
@@ -111,9 +111,9 @@ test('a name stands whole: a hyphen or a dot with more name after it goes on (bu
   const values = [{ kind: 'host name', value: 'build' }];
   for (const text of ['"build-agent"', '"agent-build"', '"ci.build"', '"build.other.org"', 'rebuild', 'build2']) assert.equal(machineValueIn(text, values), undefined, text);
   for (const text of ['"host":"build"', 'on build.', 'build:8080', 'build/x', '(build)']) assert.equal(machineValueIn(text, values), 'host name', text);
-  const home = [{ kind: 'home directory', value: '/home/someone' }];
-  for (const text of ['/home/someone2', '/home/someone.bak', '/mnt/home/someone']) assert.equal(machineValueIn(text, home), undefined, text);
-  for (const text of ['"/home/someone/work"', 'HOME=/home/someone', '"/home/someone"']) assert.equal(machineValueIn(text, home), 'home directory', text);
+  const home = [{ kind: 'home directory', value: '/srv/someone' }];
+  for (const text of ['/srv/someone2', '/srv/someone.bak', '/mnt/srv/someone']) assert.equal(machineValueIn(text, home), undefined, text);
+  for (const text of ['"/srv/someone/work"', 'HOME=/srv/someone', '"/srv/someone"']) assert.equal(machineValueIn(text, home), 'home directory', text);
   const address = [{ kind: 'tailnet address', value: '100.64.1.2' }];
   for (const text of ['100.64.1.23', '1100.64.1.2', '5.100.64.1.2', '100.64.1.2.9']) assert.equal(machineValueIn(text, address), undefined, text);
   for (const text of ['"100.64.1.2"', '100.64.1.2:443', 'at 100.64.1.2.']) assert.equal(machineValueIn(text, address), 'tailnet address', text);
