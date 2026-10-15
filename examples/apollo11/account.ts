@@ -7,13 +7,23 @@ import { join, relative, resolve } from 'node:path';
 import type { LookRecord } from '@parcha/pi-vision';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import type { Dataset, Item, PhotoItem } from './dataset.ts';
-import type { TypedLine } from './scripted.ts';
 
 export const ACCOUNT_FORMAT = 'apollo11.account/1';
 
+/** One line of the typed transcript: its mission time as typed, the call sign and the words. */
+export type TypedLine = { time: string; speaker: string; text: string };
+
+/** The typed transcript's lines, from its markup: a time and a call sign on one line, the words up to the next blank line. */
+export function typedLines(html: string): TypedLine[] {
+  const lines: TypedLine[] = [];
+  const entry = /^(\d\d \d\d \d\d \d\d)\s+<font[^>]*>([^<]+)<\/font>[^\n]*\n([\s\S]*?)<br><br>/gm;
+  for (const match of html.matchAll(entry)) lines.push({ time: match[1]!, speaker: match[2]!.trim(), text: match[3]!.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() });
+  return lines;
+}
+
+
 type Cite = { item: string; receipt: string };
-type Output = {
-  dataset_sha256: string;
+export type Output = {
   entries: { mission_time: string; text: string; cites: Cite[] }[];
   windows: { item: string; from_s: number; to_s: number; seen: string; receipt: string }[];
   pages: { item: string; page: number; receipt: string }[];
@@ -54,8 +64,8 @@ export const missionTime = (time: string) => {
 
 /** The landing for the account: every line the pages' receipts hold inside `span`, in mission-time order, each with its page and
  *  receipt; and the film's windows as the run read them. This is the workflow's `landing` call. */
-export function landingOf(root: string, input: { pages: Output['pages']; windows: Output['windows']; span: { from: string; to: string } }) {
-  const lines = input.pages.flatMap((page) => pageLines(root, page.receipt).filter((line) => line.time && line.time >= input.span.from && line.time <= input.span.to)
+export function landingOf(root: string, input: { pages: Output['pages']; windows: Output['windows']; span_from: string; span_to: string }) {
+  const lines = input.pages.flatMap((page) => pageLines(root, page.receipt).filter((line) => line.time && line.time >= input.span_from && line.time <= input.span_to)
     .map((line) => ({ ...line, mission_time: missionTime(line.time), item: page.item, page: page.page, receipt: page.receipt })));
   lines.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : a.page - b.page));
   return { lines, windows: input.windows.map(({ item, from_s, to_s, seen, receipt }) => ({ item, from_s, to_s, seen, receipt })) };
@@ -131,11 +141,12 @@ export function lookCounters(store: string): Counters {
 type Score = { right: number; total: number; rate: number };
 export type Accuracy = { overall: Score; by_class: Record<string, Score>; confusion: Record<string, Record<string, number>>; unsorted: string[] };
 
-/** The sort against NASA's captions: a photo counts as sorted only with an ok look of its exact file; by class is the share of
- *  that class's photos sorted into it, overall the share of all photos. */
+/** The sort against NASA's captions, over the photos the run sorted: a photo counts as sorted only with an ok look of its exact file;
+ *  by class is the share of that class's photos sorted into it, overall the share of all of them. */
 export function accuracy(root: string, dataset: Dataset, rows: Output['photos']): Accuracy {
   const items = new Map(dataset.items.map((item) => [item.id, item]));
-  const photos = dataset.items.filter((item): item is PhotoItem => item.kind === 'photo');
+  const asked = new Set(rows.map((row) => row.item));
+  const photos = dataset.items.filter((item): item is PhotoItem => item.kind === 'photo' && asked.has(item.id));
   const sorted = new Map(rows.filter((row) => 'record' in backing(root, items, row)).map((row) => [row.item, row.class]));
   const score = (right: number, total: number): Score => ({ right, total, rate: total ? Math.round((right / total) * 1000) / 1000 : 0 });
   const by_class: Accuracy['by_class'] = {};
@@ -203,24 +214,35 @@ export function timesCheck(root: string, pages: Output['pages'], typed: readonly
  *  and its photo sort. */
 export type WeakEyes = { model: string; source: string; times: TimesCheck; photos: { right: number; total: number } };
 
+/** The Apollo 11 part of the result: the landing as entries, each cite resolved to its look, and what the program measured. */
 export type Account = {
-  format: typeof ACCOUNT_FORMAT; dataset_sha256: string; run: string;
+  format: typeof ACCOUNT_FORMAT; dataset_sha256: string;
   entries: { mission_time: string; text: string; cites: { item: string; fragment: string; receipt: string }[] }[];
   dropped: { entry: number; item: string; why: string }[];
   photos: { item: string; label: string; truth: string; fragment: string; receipt: string }[];
   accuracy: Accuracy;
   transcript: { pages: { item: string; page: number; fragment: string; receipt: string; lines: number }[]; times: TimesCheck };
   film: { item: string; from_s: number; to_s: number; seen: string; fragment: string; receipt: string }[];
-  models: { lead: string; eyes: string; scripted: boolean };
-  counters: Counters;
+  /** The eyes that answered, by the public name their looks carry. */
+  eyes: string[];
   weak_eyes?: WeakEyes;
 };
 
-/** What a weak-eyes run's account gives the main one. */
-export const weakEyesOf = (weak: Account): WeakEyes => ({ model: weak.models.eyes, source: weak.run, times: weak.transcript.times, photos: { right: weak.accuracy.overall.right, total: weak.accuracy.overall.total } });
+/** The result a run delivers: `agentrun.cited/1`, a row per minute of the landing whose cites name the looks it rests on, with the
+ *  Apollo 11 account beside it. */
+export type Cited = {
+  format: 'agentrun.cited/1'; title: string;
+  rows: { label: string; value: string; cites: { look: string; fragment: string; note: string }[] }[];
+  apollo11: Account;
+};
 
-/** The account from the run's output, with every cite resolved against the receipts under `root`. */
-export function buildAccount(root: string, dataset: Dataset, datasetSha256: string, output: Output, typed: readonly TypedLine[], models: Account['models'], store: string, run: string, weak?: WeakEyes): Account {
+/** What a weak-eyes run's result gives the main one, with the name its recording gives the run. */
+export const weakEyesOf = (weak: Cited, source: string): WeakEyes => ({
+  model: weak.apollo11.eyes.join(', '), source, times: weak.apollo11.transcript.times, photos: { right: weak.apollo11.accuracy.overall.right, total: weak.apollo11.accuracy.overall.total },
+});
+
+/** The cited result from what the run read, with every cite resolved against the receipts under `root`. */
+export function citedOf(root: string, dataset: Dataset, datasetSha256: string, output: Output, typed: readonly TypedLine[]): Cited {
   const items = new Map(dataset.items.map((item) => [item.id, item]));
   const dropped: Account['dropped'] = [];
   const resolveCite = (cite: Cite, entry: number) => {
@@ -228,8 +250,7 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
     if ('why' in found) { dropped.push({ entry, item: cite.item, why: found.why }); return []; }
     return [{ item: cite.item, fragment: fragmentOf(found.record), receipt: found.record.facts.key, path: cite.receipt }];
   };
-  const keyOf = (path: string) => receiptAt(root, path);
-  const placed = <T extends { receipt: string }>(row: T) => { const record = keyOf(row.receipt); return { fragment: record ? fragmentOf(record) : '', receipt: record?.facts.key ?? '' }; };
+  const placed = <T extends { receipt: string }>(row: T) => { const record = receiptAt(root, row.receipt); return { fragment: record ? fragmentOf(record) : '', receipt: record?.facts.key ?? '' }; };
   const truth = new Map(dataset.items.filter((item): item is PhotoItem => item.kind === 'photo').map((item) => [item.id, item.class]));
   // An entry's time is one the transcript's lines carry, on a page it cites: the film's seconds are no mission time.
   const timesOf = new Map<string, Set<string>>();
@@ -241,21 +262,25 @@ export function buildAccount(root: string, dataset: Dataset, datasetSha256: stri
     dropped.push({ entry: at, item: '', why: `${entry.mission_time} is no time of a line on a page the entry cites` });
     return [];
   };
+  const entries = output.entries.flatMap(entryOf);
+  const eyes = [...new Set([...output.windows, ...output.pages, ...output.photos].flatMap((row) => { const record = receiptAt(root, row.receipt); return record && record.args.model !== 'none' ? [record.args.model] : []; }))].sort();
   return {
-    format: ACCOUNT_FORMAT, dataset_sha256: datasetSha256, run,
-    entries: output.entries.flatMap(entryOf),
-    dropped,
-    photos: output.photos.map((row) => ({ item: row.item, label: row.class, truth: truth.get(row.item) ?? '', ...placed(row) })),
-    accuracy: accuracy(root, dataset, output.photos),
-    transcript: { pages: output.pages.map((row) => ({ item: row.item, page: row.page, lines: pageLines(root, row.receipt).length, ...placed(row) })), times: timesCheck(root, output.pages, typed) },
-    film: output.windows.map((row) => ({ item: row.item, from_s: row.from_s, to_s: row.to_s, seen: row.seen, ...placed(row) })),
-    models, counters: lookCounters(store), ...(weak ? { weak_eyes: weak } : {}),
+    format: 'agentrun.cited/1', title: 'The Apollo 11 landing, minute by minute',
+    rows: entries.map((entry) => ({ label: entry.mission_time, value: entry.text, cites: entry.cites.map((cite) => ({ look: cite.receipt, fragment: cite.fragment, note: cite.item })) })),
+    apollo11: {
+      format: ACCOUNT_FORMAT, dataset_sha256: datasetSha256, entries, dropped,
+      photos: output.photos.map((row) => ({ item: row.item, label: row.class, truth: truth.get(row.item) ?? '', ...placed(row) })),
+      accuracy: accuracy(root, dataset, output.photos),
+      transcript: { pages: output.pages.map((row) => ({ item: row.item, page: row.page, lines: pageLines(root, row.receipt).length, ...placed(row) })), times: timesCheck(root, output.pages, typed) },
+      film: output.windows.map((row) => ({ item: row.item, from_s: row.from_s, to_s: row.to_s, seen: row.seen, ...placed(row) })),
+      eyes,
+    },
   };
 }
 
-/** The record the run delivered (`out/record.json`), or null. */
-export function outputOf(root: string): Output | null {
+/** The result the run delivered (`out/record.json`), or null. */
+export function resultOf(root: string): Cited | null {
   const file = join(root, 'out', 'record.json');
   if (!existsSync(file)) return null;
-  return (JSON.parse(readFileSync(file, 'utf8')) as { record: Output }).record;
+  return (JSON.parse(readFileSync(file, 'utf8')) as { record: Cited }).record;
 }

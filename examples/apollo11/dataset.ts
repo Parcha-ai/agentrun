@@ -1,13 +1,13 @@
-// The Apollo 11 data set: one manifest (`dataset.json`) of NASA files, each with its URL, size and SHA-256. A file is used only
-// after the bytes downloaded match its SHA-256; a cached copy is checked the same way before every run. What a run reads is a
-// selection of it: the film in windows, the transcript's pages, the photos.
+// The Apollo 11 sources: one manifest (`sources.json`) of NASA files, each with its URL, size and SHA-256. A file is used only after
+// the bytes downloaded match its SHA-256; a cached copy is checked the same way before every run. A job's input names what it reads
+// of them: the film's windows, the transcript's pages, the photos.
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync } from 'node:fs';
-import { link, mkdir, copyFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const DATASET_FILE = join(import.meta.dirname, 'dataset.json');
+export const DATASET_FILE = join(import.meta.dirname, 'sources.json');
 
 export type ItemBase = { id: string; title: string; kind: 'film' | 'transcript' | 'photo'; role: string; url: string; license: string; bytes: number; sha256: string; source?: string };
 export type FilmItem = ItemBase & { kind: 'film'; duration_s: number; landing: { from_s: number; to_s: number }; window_s: number };
@@ -17,7 +17,8 @@ export type Item = FilmItem | TranscriptItem | PhotoItem;
 export type Dataset = { format: 'apollo11.dataset/1'; classes: Record<string, string>; class_rule: string; items: Item[] };
 
 /** The manifest and the SHA-256 of its bytes, which every recording of it names. */
-export function loadDataset(file = DATASET_FILE): { dataset: Dataset; sha256: string } {
+/** `APOLLO_SOURCES` names another manifest: a test's own, of files it builds. */
+export function loadDataset(file = process.env.APOLLO_SOURCES || DATASET_FILE): { dataset: Dataset; sha256: string } {
   const bytes = readFileSync(file);
   const dataset = JSON.parse(bytes.toString('utf8')) as Dataset;
   if (dataset.format !== 'apollo11.dataset/1') throw new Error(`${file} is not an apollo11.dataset/1 manifest`);
@@ -81,40 +82,13 @@ export async function placeFiles(paths: Map<string, string>, items: readonly Ite
   }
 }
 
-export type Mode = 'quick' | 'full';
-/** What one run reads: the film's windows, the transcript's pages and the photos (by item id; each one's file is `<id><photo_ext>`),
- *  and the film's and the scan's item ids and files in the workspace. */
-export type Selection = {
-  files: { film: string; film_file: string; scan: string; scan_file: string; photo_ext: string };
-  windows: { from_s: number; to_s: number }[];
-  pages: number[];
-  photos: string[];
-};
+/** The parts of a job's input that name what it reads. */
+export type Reads = { film_item: string; film_from_s: number; film_to_s: number; scan_item: string; pages_from: number; pages_to: number; photos: readonly string[] };
 
-/** `quick`: the landing (the film's cuts that hold it, the transcript's landing pages, every photo). `full`: the whole film and every
- *  page; with `filmLanding`, every page and only the film's landing cuts. `only` narrows a selection to some of its lanes (the
- *  weak-eyes scene reads the pages and the photos). */
-export function select(dataset: Dataset, mode: Mode, only?: readonly ('film' | 'transcript' | 'photos')[], filmLanding = false): Selection {
-  const film = dataset.items.find((item): item is FilmItem => item.kind === 'film');
-  const scan = dataset.items.find((item): item is TranscriptItem => item.kind === 'transcript' && item.pages !== undefined);
-  const windows: Selection['windows'] = [];
-  if (film && (!only || only.includes('film'))) {
-    const [from, to] = mode === 'quick' || filmLanding ? [film.landing.from_s, film.landing.to_s] : [0, Math.floor(film.duration_s)];
-    for (let at = from; at < to; at += film.window_s) windows.push({ from_s: at, to_s: Math.min(to, at + film.window_s) });
-  }
-  const pages: number[] = [];
-  if (scan && (!only || only.includes('transcript'))) {
-    const [from, to] = mode === 'quick' && scan.landing ? [scan.landing.from, scan.landing.to] : [1, scan.pages!];
-    for (let page = from; page <= to; page += 1) pages.push(page);
-  }
-  const own = !only || only.includes('photos') ? dataset.items.filter((item): item is PhotoItem => item.kind === 'photo') : [];
-  const exts = new Set(own.map((item) => fileOf(item).slice(item.id.length)));
-  if (exts.size > 1) throw new Error(`the photos' files end in ${[...exts].join(' and ')}: a run reads one kind`);
-  return { files: { film: film?.id ?? '', film_file: film ? fileOf(film) : '', scan: scan?.id ?? '', scan_file: scan ? fileOf(scan) : '', photo_ext: [...exts][0] ?? '' }, windows, pages, photos: own.map((item) => item.id) };
-}
-
-/** The items a selection reads. */
-export const itemsOf = (dataset: Dataset, selection: Selection): Item[] => {
-  const ids = new Set([...(selection.windows.length ? [selection.files.film] : []), ...(selection.pages.length ? [selection.files.scan] : []), ...selection.photos]);
+/** The items a job's input reads: the film when it reads a window, the scan when it reads a page, and each photo. */
+export const itemsFor = (dataset: Dataset, input: Reads): Item[] => {
+  const ids = new Set([...(input.film_to_s > input.film_from_s ? [input.film_item] : []), ...(input.pages_to >= input.pages_from ? [input.scan_item] : []), ...input.photos]);
+  const missing = [...ids].filter((id) => !dataset.items.some((item) => item.id === id));
+  if (missing.length) throw new Error(`the input names items sources.json does not hold: ${missing.join(', ')}`);
   return dataset.items.filter((item) => ids.has(item.id));
 };

@@ -7,18 +7,9 @@ import type { Part } from '@parcha/pi-vision';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import type { Fakes } from '../reference/index.ts';
 import { fileOf, type Dataset, type PhotoItem } from './dataset.ts';
+import type { TypedLine } from './account.ts';
+import { tools } from './tools/index.ts';
 import { ASKS } from './workflow.ts';
-
-/** One line of the typed transcript: its mission time as typed, the call sign and the words. */
-export type TypedLine = { time: string; speaker: string; text: string };
-
-/** The typed transcript's lines, from its markup: a time and a call sign on one line, the words up to the next blank line. */
-export function typedLines(html: string): TypedLine[] {
-  const lines: TypedLine[] = [];
-  const entry = /^(\d\d \d\d \d\d \d\d)\s+<font[^>]*>([^<]+)<\/font>[^\n]*\n([\s\S]*?)<br><br>/gm;
-  for (const match of html.matchAll(entry)) lines.push({ time: match[1]!, speaker: match[2]!.trim(), text: match[3]!.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() });
-  return lines;
-}
 
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'));
@@ -74,7 +65,7 @@ function accountOf(lines: Array<{ mission_time: string; speaker: string; text: s
   return call('submit', { entries: entries.length ? entries : [{ mission_time: '000:00:00', text: '(scripted) nothing was read in the span', cites: [{ item: 'none', receipt: 'none' }] }] });
 }
 
-/** The first mission time on each page, for the scripted eyes (`scripted-pages.json`). */
+/** The first mission time on each page, for the scripted eyes (`fakes-pages.json`). */
 export type PageStarts = { item: string; page_starts: Record<string, string> };
 
 /** The scripted eyes. A request names its source in each part's `fragment`, and a page by the line the package sends with its image
@@ -108,4 +99,12 @@ export function scriptedEyes(dataset: Dataset, typed: readonly TypedLine[], page
     next = options.fail?.has(page ? `${source}#page=${page}` : source.split('/').at(-1)!) ? { fail: 'the scripted provider refused the request' } : answer(request.parts);
     return base.see(request, signal);
   } };
+}
+
+/** The fakes the reference entry runs the job on: the scripted lead, the job's tools, and no judge (the job asks none). */
+export function fakesOf(classes: Record<string, string>): Fakes {
+  return {
+    model: scriptedLead(classes), tools, pages: {}, start: 'about:blank', responses: 20_000, tokensPerSecond: 400,
+    judge: async () => { throw new Error('this job asks no judge'); },
+  };
 }
