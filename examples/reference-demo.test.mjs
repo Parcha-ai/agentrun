@@ -604,7 +604,8 @@ test('--fetch-sources: the entry fetches the demo\'s sources.json into the run\'
   const { createHash } = await import('node:crypto');
   const body = 'a checked scan';
   const asked = [];
-  const server = createServer((request, response) => { asked.push(request.url); response.end(body); });
+  // Only the file's own path counts: on a shared machine a stray probe of this port is not the entry's request.
+  const server = createServer((request, response) => { if (request.url === '/files/scan.png') asked.push(request.url); response.end(body); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
