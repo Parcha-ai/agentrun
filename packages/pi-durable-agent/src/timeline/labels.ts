@@ -70,7 +70,7 @@ registerLabel(
   "browser_read",
   (_a, result) => {
     const title = result && /^title: (.+)$/m.exec(result.text)?.[1];
-    return title ? `Read the page "${cut(title, 60)}"` : "Read the page";
+    return title ? `Read the page "${cut(scrubUrls(title), 60)}"` : "Read the page";
   },
   { many: (n) => `Read ${n} pages`, subject: (_input, output) => { const url = output && /^url: (\S+)/m.exec(output)?.[1]; return url ? where(url) : undefined; } },
 );

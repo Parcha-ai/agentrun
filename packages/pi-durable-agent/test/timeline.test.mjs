@@ -393,3 +393,108 @@ test("a saved file's phase row carries its path", () => {
   assert.deepEqual(saved.map((row) => [row.summary, row.path]), [["Saved invoices/summary.md", "invoices/summary.md"], ["Saved downloads/INV-1.pdf", "downloads/INV-1.pdf"]]);
   assert.ok(rows.filter((row) => row.kind !== "phase" || !row.summary.startsWith("Saved")).every((row) => !("path" in row)));
 });
+
+test("calls nested three levels deep all show, each under its own parent", () => {
+  const reducer = timelineReducer({ conversationId: 1 });
+  const start = (id, parent, name, args) => ({ type: "tool_execution_start", toolCallId: id, toolName: name, args, parentToolCallId: parent });
+  const end = (id, parent, name, output) => ({ type: "tool_execution_end", toolCallId: id, toolName: name, parentToolCallId: parent, result: { taskId: 9, isError: false, structuredOutput: output, diagnostics: [] } });
+  reducer.apply([{ type: "message_end", entry: assistant([call("a", "codemode", {})], 0) }]);
+  reducer.apply([
+    start("a/1", "a", "codemode", {}),
+    start("a/1/1", "a/1", "read", { path: "deep.md" }),
+    end("a/1/1", "a/1", "read", "x"),
+    start("a/2", "a", "bash", { command: "ls" }),
+    end("a/2", "a", "bash", "y"),
+    end("a/1", "a", "codemode", "z"),
+    { type: "tool_execution_end", toolCallId: "a", toolName: "codemode", entry: result("a", "codemode", "done", 2) },
+  ]);
+  assert.deepEqual(lines(reducer.rows()).map(norm), ["Ran a script ok", "  Ran 2 tools", "    Ran a script ok", "      Read deep.md ok", "    Ran `ls` ok"]);
+  const [group] = groupTimeline(reducer.rows().filter((row) => row.kind !== "usage"));
+  const [round] = group.calls[0].inner;
+  assert.deepEqual(round.calls.map((c) => c.use.tool_use_id), ["a/1", "a/2"]);
+  assert.deepEqual(round.calls[0].inner[0].calls.map((c) => c.result.tool_use_id), ["a/1/1"]);
+});
+
+test("a subagent's subagent shows under the call that spawned it", () => {
+  const rows = timelineOf([
+    user("Find it", 0),
+    assistant([call("sub1", "subagent", { task: "outer" })], 1),
+    inConv(assistant([call("sub2", "subagent", { task: "inner" })], 2), 2),
+    inConv(assistant([call("k1", "read", { path: "inner.md" })], 3), 3),
+    inConv(result("k1", "read", "found", 4), 3),
+    inConv(result("sub2", "subagent", "inner done", 5, { details: { conversationId: 3 } }), 2),
+    result("sub1", "subagent", "outer done", 6, { details: { conversationId: 2 } }),
+  ]);
+  assert.deepEqual(lines(rows).map(norm), [
+    "You: Find it",
+    "Using tool: subagent ok",
+    "  Subagent: outer",
+    "  Using tool: subagent ok",
+    "    Subagent: inner",
+    "    Read inner.md ok",
+    "    Subagent done: inner done",
+    "  Subagent done: outer done",
+  ]);
+});
+
+test("no URL value reaches a row, whichever path wrote it; only a user's own text stays as typed", () => {
+  const at = (id) => `https://x.example/${id}?token=SECRET${id}`;
+  const entries = [
+    user(`Open ${at(1)}`, 0),
+    assistant([{ type: "thinking", thinking: "I opened https://user:SECRET2@x.example/a?k=SECRET3#SECRET4 and read it." }, { type: "text", text: `Reading ${at(5)}` }, call("s", "subagent", { task: `Fetch ${at(6)}` }), call("b", "browser_read"), call("r", "request_sign_in", { reason: `Sign in at ${at(7)}` })], 1),
+    result("b", "browser_read", `url: https://x.example/p\ntitle: Login ${at(8)}\n---\nbody`, 2),
+    result("s", "subagent", `done ${at(9)}`, 3, { details: { conversationId: 2 } }),
+    result("r", "request_sign_in", "waiting", 4),
+    assistant([], 5, { stopReason: "error", errorMessage: `failed at ${at(10)}` }),
+    custom("agent.handover", { state: "waiting", reason: `Sign in at ${at(11)}`, session: "tag-1" }),
+    custom("pi.reset", undefined, { model: [{ role: "user", content: `Handoff ${at(12)}` }] }),
+    custom("pi.compaction", undefined, { model: [{ role: "user", content: `Summary ${at(13)}` }] }),
+    assistant([{ type: "text", text: `The answer is at ${at(14)}.` }], 6),
+  ];
+  const reducer = timelineReducer({ conversationId: 1 });
+  reducer.apply([{ type: "snapshot", entries: entries.slice(0, 2), agent: {} }]);
+  reducer.apply([
+    ...entries.slice(2).map((entry) => ({ type: "message_end", entry })),
+    { type: "message_start", message: { role: "assistant", content: [] } },
+    { type: "message_update", usage: {}, changes: [{ type: "thinking_delta", contentIndex: 0, delta: `Think ${at(15)}` }, { type: "text_delta", contentIndex: 1, delta: `Say ${at(16)}` }] },
+    { type: "tool_execution_start", toolCallId: "s/1", toolName: "browser_read", args: {}, parentToolCallId: "s" },
+    { type: "tool_execution_end", toolCallId: "s/1", toolName: "browser_read", parentToolCallId: "s", result: { taskId: 3, isError: false, structuredOutput: `title: ${at(17)}`, diagnostics: [] } },
+    { type: "auto_retry_start", attempt: 1, at: 0, errorMessage: `limit at ${at(18)}` },
+    { type: "task_failed", taskId: 4, kind: "tool", message: `crashed at ${at(19)}` },
+    { type: "compaction_end", taskId: 5, reason: "threshold", error: `no summary at ${at(20)}` },
+  ]);
+  for (const rows of [timelineOf(entries), reducer.rows()]) {
+    const [typed] = rows.filter((row) => row.kind === "user_message");
+    assert.ok(typed.text.includes("SECRET1"), "the person's own text stays as typed");
+    const rest = JSON.stringify(rows.map((row) => (row === typed ? { ...row, text: null } : row)));
+    assert.deepEqual(rest.match(/SECRET\d+/g), null);
+    assert.ok(rest.includes("https://x.example/14?token=…"));
+  }
+});
+
+test("a provider wait clears when the answer comes, fails, retries, or the run ends", () => {
+  const poll = () => {
+    const reducer = timelineReducer({ conversationId: 1, now: () => 0 });
+    assert.deepEqual(summaries(reducer.apply([{ type: "deferred_poll", pollAt: 3_000 }]).rows), ["Waiting for the model provider (next check in 3 s)"]);
+    return reducer;
+  };
+  const cleared = (events) => poll().apply(events).drop.includes("1:waiting:poll");
+  assert.ok(cleared([{ type: "message_end", entry: assistant([{ type: "text", text: "hi" }], 0) }]), "the answer");
+  assert.ok(cleared([{ type: "message_start", message: { role: "assistant", content: [] } }]), "the answer starts");
+  assert.ok(cleared([{ type: "message_end", entry: assistant([], 0, { stopReason: "error", errorMessage: "boom" }) }]), "the answer is an error");
+  assert.ok(cleared([{ type: "auto_retry_start", attempt: 1, at: 1_000, errorMessage: "boom" }]), "a retry");
+  assert.ok(cleared([{ type: "task_failed", taskId: 1, kind: "generation", message: "boom" }]), "a failed task");
+  assert.ok(cleared([{ type: "run_end", inputs: [] }]), "the run ends");
+  const retrying = timelineReducer({ conversationId: 1, now: () => 0 });
+  retrying.apply([{ type: "auto_retry_start", attempt: 1, at: 1_000, errorMessage: "boom" }]);
+  assert.ok(retrying.apply([{ type: "run_end", inputs: [] }]).drop.includes("1:waiting:retry"), "a retry row does not outlive its run");
+});
+
+test("a live thinking summary follows the thinking cap, as a stored one does", () => {
+  const options = { conversationId: 1, caps: { thinking: 12 } };
+  const reducer = timelineReducer(options);
+  const [live] = reducer.apply([{ type: "message_update", usage: {}, changes: [{ type: "thinking_delta", contentIndex: 0, delta: "Checking the page now. More." }] }]).rows;
+  assert.equal(live.summary, "Thinking: Checking ...");
+  const [stored] = timelineOf([assistant([{ type: "thinking", thinking: "Checking the page now. More." }, call("c", "read", { path: "a" })])], options);
+  assert.equal(stored.summary, live.summary);
+});

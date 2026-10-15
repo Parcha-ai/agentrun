@@ -155,8 +155,8 @@ const groups = groupTimeline(reducer.rows()); // rounds, folds and nested calls 
 
 Both paths read committed entries through one function, so live and replay give equal rows. A call and its result pair
 by `tool_use_id`, never by time. A row is built from pi entries and events only: it never carries a live-view URL, a
-browser context id or a cookie, and the previews and labels keep a URL's origin, path and query keys but drop its query
-values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
+browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
+origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
 
 ## Library
 

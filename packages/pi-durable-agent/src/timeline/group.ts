@@ -31,20 +31,30 @@ export function groupTimeline(rows: readonly TimelineEvent[]): Group[] {
   const inside = new Map<string, TimelineEvent[]>();
   const top: TimelineEvent[] = [];
   for (const row of rows) {
-    const named = row.parent_tool_use_id ?? (row.kind === "subagent_started" || row.kind === "subagent_completed" ? row.tool_use_id : null);
-    const parent = named && uses.has(named) ? named : undefined;
+    const spawned = row.kind === "subagent_started" || row.kind === "subagent_completed";
+    const named = spawned ? row.tool_use_id : row.parent_tool_use_id;
+    const parent = named && uses.has(named) && !(row.kind === "tool_use" && named === row.tool_use_id) ? named : undefined;
     if (parent) inside.set(parent, [...(inside.get(parent) ?? []), row]);
     else if (!(row.kind === "tool_result" && row.tool_use_id && uses.has(row.tool_use_id))) top.push(row);
   }
 
+  const order = new Map(rows.map((row, index) => [row, index]));
   const lead = (row: TimelineEvent) => (row.kind === "subagent_started" ? 0 : row.kind === "subagent_completed" ? 2 : 1);
+  /** Every row under a call, at any depth, in log order: the rows of a nested call's own nested calls included. */
+  const within = (id: string, seen = new Set<string>()): TimelineEvent[] => {
+    if (seen.has(id)) return [];
+    seen.add(id);
+    const direct = inside.get(id) ?? [];
+    const all = [...direct, ...direct.flatMap((row) => (row.kind === "tool_use" && row.tool_use_id ? within(row.tool_use_id, seen) : []))];
+    return all.sort((a, b) => order.get(a)! - order.get(b)!);
+  };
   const groups: Group[] = [];
   for (const row of top) {
     if (row.kind !== "tool_use" || !row.tool_use_id) {
       groups.push({ type: "row", row });
       continue;
     }
-    const call: Call = { use: row, result: results.get(row.tool_use_id), inner: groupTimeline((inside.get(row.tool_use_id) ?? []).sort((a, b) => lead(a) - lead(b))) };
+    const call: Call = { use: row, result: results.get(row.tool_use_id), inner: groupTimeline(within(row.tool_use_id).sort((a, b) => lead(a) - lead(b))) };
     const last = groups.at(-1);
     if (last?.type === "calls" && row.round !== undefined && last.round === row.round && last.conv === row.conversation_id) last.calls.push(call);
     else groups.push({ type: "calls", round: row.round, conv: row.conversation_id, rounds: 1, calls: [call] });

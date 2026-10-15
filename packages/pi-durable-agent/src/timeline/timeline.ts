@@ -65,6 +65,8 @@ const blocksOf = (message: Obj | undefined): Obj[] => {
 };
 const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
+/** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
+const clean = (text: string, max: number) => cut(scrubUrls(text), max);
 const dollars = (usd: number) => (usd === 0 ? "$0" : `$${usd.toFixed(4)}`);
 
 /** One place turns entries into rows, whether they come from a released store or from live events. */
@@ -95,8 +97,10 @@ function createProjector(options: TimelineOptions) {
     };
     const parent = fields.parent_tool_use_id ?? children.get(conv);
     if (parent !== undefined) row.parent_tool_use_id = parent;
-    if (row.summary !== null) row.summary = cut(row.summary, caps.summary);
-    if (row.text !== null) row.text = cut(row.text, caps.text);
+    if (row.summary !== null) row.summary = clean(row.summary, caps.summary);
+    if (row.tool_input_preview !== null) row.tool_input_preview = clean(row.tool_input_preview, caps.preview);
+    if (row.tool_result_preview !== null) row.tool_result_preview = clean(row.tool_result_preview, caps.preview);
+    if (row.text !== null) row.text = kind === "user_message" ? cut(row.text, caps.text) : clean(row.text, caps.text);
     for (const key of ["round", "parent_tool_use_id", "session", "path", "usage"] as const) if (row[key] === undefined) delete row[key];
     return row;
   }
@@ -109,7 +113,7 @@ function createProjector(options: TimelineOptions) {
     if (children.has(child) || child === conv) return [];
     children.set(child, callId);
     const patched = rows.filter((row) => row.conversation_id === child);
-    for (const row of patched) row.parent_tool_use_id = callId;
+    for (const row of patched) row.parent_tool_use_id ??= callId;
     const task = str(args.task) ?? str(args.prompt) ?? str(args.description) ?? fallback;
     const started = make("subagent_started", conv, `${conv}:sub:${callId}`, { summary: `Subagent: ${firstLine(task)}`, tool_use_id: callId });
     rows.push(started);
@@ -143,7 +147,7 @@ function createProjector(options: TimelineOptions) {
       } else if (message.stopReason !== "aborted") {
         const blocks = blocksOf(message);
         const first = (type: string) => blocks.findIndex((block) => block.type === type);
-        const thinking = textOf(message, "thinking", "thinking");
+        const thinking = scrubUrls(textOf(message, "thinking", "thinking"));
         if (thinking) add(make("thinking", conv, `${base}:${first("thinking")}`, { summary: `Thinking: ${cut(firstSentence(thinking), caps.thinking)}`, text: thinking }));
         const text = textOf(message);
         const final = message.stopReason === "stop" && !blocks.some((block) => block.type === "toolCall");
@@ -172,7 +176,7 @@ function createProjector(options: TimelineOptions) {
       const named = label(name, args, view);
       if (call) {
         call.done = true;
-        call.use.summary = cut(named, caps.summary);
+        call.use.summary = clean(named, caps.summary);
         touch(call.use);
       }
       add(make("tool_result", conv, base, {
@@ -242,7 +246,7 @@ function createProjector(options: TimelineOptions) {
     const failed = result.isError === true;
     const named = label(call.name, call.args, { text, details: result.details, isError: failed });
     call.done = true;
-    call.use.summary = cut(named, caps.summary);
+    call.use.summary = clean(named, caps.summary);
     const row = make("tool_result", conv, `${conv}:n:${id}:result`, {
       summary: failed ? `${named} failed: ${failure(text)}` : `${named}: ok`, tool_name: call.name, tool_use_id: id,
       tool_status: failed ? "failed" : "success", tool_result_preview: text ? cut(scrubUrls(text), caps.preview) : null,
@@ -310,6 +314,7 @@ const modelName = (agent: unknown): string | undefined => {
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
   const now = options.now ?? Date.now;
+  const thinkingCap = options.caps?.thinking ?? CAPS.thinking;
   let projector = createProjector(options);
   const store = new Map<string, TimelineEvent>();
   const streams = { thinking: new Map<number, string>(), text_block: new Map<number, string>() };
@@ -337,8 +342,8 @@ export function timelineReducer(options: TimelineOptions = {}) {
 
     const showStreams = () => {
       for (const kind of ["thinking", "text_block"] as const) {
-        const text = [...streams[kind].values()].join("").trim();
-        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), CAPS.thinking)}` : firstLine(text);
+        const text = scrubUrls([...streams[kind].values()].join("").trim());
+        const summary = kind === "thinking" ? `Thinking: ${cut(firstSentence(text), thinkingCap)}` : firstLine(text);
         live(kind, `${conv()}:live:${kind}`, text ? summary : undefined, { text });
       }
     };
@@ -346,6 +351,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
       streams.thinking.clear();
       streams.text_block.clear();
       showStreams();
+      wait("poll", undefined);
     };
     const readMessage = (message: Obj | undefined) => {
       streams.thinking.clear();
@@ -428,6 +434,8 @@ export function timelineReducer(options: TimelineOptions = {}) {
           break;
         case "run_end":
           for (const [id, call] of projector.open(conv())) put(projector.interrupt(call, id));
+          wait("poll", undefined);
+          wait("retry", undefined);
           live("phase", `${conv()}:run:end`, "Run finished");
           break;
         case "inbox_update": {
@@ -436,6 +444,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
           break;
         }
         case "auto_retry_start":
+          wait("poll", undefined);
           wait("retry", `Retrying in ${seconds(event.at)} s (attempt ${String(event.attempt)}): ${firstLine(str(event.errorMessage) ?? "")}`);
           break;
         case "auto_retry_end":
@@ -451,6 +460,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
           break;
         }
         case "task_failed":
+          wait("poll", undefined);
           live("error", `${conv()}:task:${String(event.taskId)}`, `Task failed: ${firstLine(str(event.message) ?? "")}`, { text: str(event.message) ?? null });
           break;
         case "compaction_start":
