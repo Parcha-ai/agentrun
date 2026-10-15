@@ -22,8 +22,8 @@ NASA's own files, downloaded once and checked by SHA-256.
 ## Keys (only for a live run; the first run needs none)
 
 For now a live run uses your own model provider key. The run names every model by its provider and public model id. By default
-it uses the models the published replay was recorded with: the lead `openai/gpt-6-luna` and the eyes `google/gemini-3.7-flash`.
-Set one of these, as environment variables in the shell that runs the example:
+the lead is `openai/gpt-6-luna` and the eyes are `google/gemini-3.8-flash`. Set one of these, as environment variables in the
+shell that runs the example:
 
 | Variable | Provider | Where to get it |
 | --- | --- | --- |
@@ -32,9 +32,10 @@ Set one of these, as environment variables in the shell that runs the example:
 | `ANTHROPIC_API_KEY` | Anthropic | https://console.anthropic.com/settings/keys |
 
 With only one provider's key, the run uses that provider's own models: OpenAI `gpt-6-luna` and `gpt-6-sol` as the eyes, Google
-`gemini-3.7-flash` for both, Anthropic `claude-haiku-5-5` for both. Name others with `--lead provider/id` and
-`--eyes provider/id` (the eyes must take images). Only the default pair and `openai/gpt-6-luna` as the eyes were tested end to
-end; the other defaults are image-taking models from pi-ai's catalog, not yet run here.
+`gemini-3.8-flash` for both, Anthropic `claude-haiku-5-5` for both. Name others with `--model provider/id` (the lead) and
+`--eyes-model provider/id` (the eyes, which must take images). Tested end to end: the lead `openai/gpt-6-luna` with the eyes
+`google/gemini-3.7-flash` or `openai/gpt-6-luna`; the other defaults are image-taking models from pi-ai's catalog, not yet run
+here.
 
 Instead of provider keys, an OpenAI-compatible gateway that serves the models under their public ids works too: set both
 `APOLLO_MODEL_BASE_URL` (its base URL, ending in `/v1`) and `APOLLO_MODEL_API_KEY` (its credential).

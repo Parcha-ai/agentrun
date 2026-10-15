@@ -14,16 +14,15 @@ import type { ModelRef } from '@earendil-works/pi-durable';
 export type PublicModel = { provider: string; modelId: string };
 export const publicName = (model: PublicModel) => `${model.provider}/${model.modelId}`;
 
-/** The lead writes; the eyes read; the weak eyes are the model the eyes bench measured dropping digits from identifiers. These are
- *  the models the recorded runs used. */
+/** The lead writes; the eyes read; the weak eyes are the model the eyes bench measured dropping digits from identifiers. */
 export const LEAD: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
-export const EYES: PublicModel = { provider: 'google', modelId: 'gemini-3.7-flash' };
+export const EYES: PublicModel = { provider: 'google', modelId: 'gemini-3.8-flash' };
 export const WEAK_EYES: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
 
 /** Each provider's key, and the lead and the eyes it gives when it is the one a run has (every one takes images). */
 export const PROVIDERS: Record<string, { make: () => Provider; key: string; lead: string; eyes: string }> = {
   openai: { make: openaiProvider as () => Provider, key: 'OPENAI_API_KEY', lead: 'gpt-6-luna', eyes: 'gpt-6-sol' },
-  google: { make: googleProvider as () => Provider, key: 'GEMINI_API_KEY', lead: 'gemini-3.7-flash', eyes: 'gemini-3.7-flash' },
+  google: { make: googleProvider as () => Provider, key: 'GEMINI_API_KEY', lead: 'gemini-3.8-flash', eyes: 'gemini-3.8-flash' },
   anthropic: { make: anthropicProvider as () => Provider, key: 'ANTHROPIC_API_KEY', lead: 'claude-haiku-5-5', eyes: 'claude-haiku-5-5' },
 };
 
@@ -33,7 +32,7 @@ const parse = (name: string): PublicModel => {
   return { provider, modelId: id.join('/') };
 };
 
-/** The lead and the eyes of a live run: those named (`provider/id`), else the recorded ones when a gateway serves them or their
+/** The lead and the eyes of a live run: those named (`provider/id`), else the defaults when a gateway serves them or their
  *  providers' keys are set, else the defaults of the providers whose keys are set (the lead's first, the eyes' preferring Google). */
 export function chooseModels(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): { lead: PublicModel; eyes: PublicModel } {
   const has = (provider: string) => Boolean(env.APOLLO_MODEL_BASE_URL || env[PROVIDERS[provider]!.key]);

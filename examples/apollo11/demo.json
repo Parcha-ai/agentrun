@@ -4,13 +4,13 @@
   "claim": "An agent that is never shown an image reads NASA's Apollo 11 archive through its eyes, writes the landing minute by minute with every sentence citing a look, survives a kill inside the evidence sink, and pays for each look once.",
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
-    "eyes": { "needs": ["images"], "default": "google/gemini-3.7-flash" }
+    "eyes": { "needs": ["images"], "default": "google/gemini-3.8-flash" }
   },
   "keys": [
     {
       "oneOf": [
         { "env": "OPENAI_API_KEY", "why": "The lead (openai/gpt-6-luna), and the eyes too when it is the only key (openai/gpt-6-sol).", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
-        { "env": "GEMINI_API_KEY", "why": "The eyes (google/gemini-3.7-flash), and the lead too when it is the only key.", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        { "env": "GEMINI_API_KEY", "why": "The eyes (google/gemini-3.8-flash), and the lead too when it is the only key.", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
         { "env": "ANTHROPIC_API_KEY", "why": "The lead and the eyes (anthropic/claude-haiku-5-5) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
         [
           { "env": "APOLLO_MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the models under their public ids, instead of provider keys.", "where": "your gateway's base URL, ending in /v1", "required": true },
@@ -39,7 +39,7 @@
     "variants": {
       "examples/apollo11/inputs/gallery.json": "the gallery take: 8 film windows, 10 pages (the 1202 alarm to the landing), 12 photos",
       "examples/apollo11/inputs/full.json": "the whole archive: all 626 pages, the film's descent in 26 windows, all 60 photos (about $3.50)",
-      "examples/apollo11/inputs/weak-eyes.json": "the weak-eyes pass: the landing's 40 pages and the 60 photos, no film; run it with --eyes openai/gpt-6-luna"
+      "examples/apollo11/inputs/weak-eyes.json": "the weak-eyes pass: the landing's 40 pages and the 60 photos, no film; run it with --eyes-model openai/gpt-6-luna"
     }
   },
   "tools": [

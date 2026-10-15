@@ -237,17 +237,17 @@ test('through a gateway, the lead and the eyes are asked by their public model i
   }
   assert.deepEqual([...new Set(seen.map((row) => JSON.stringify([row.url.split('?')[0], row.model, row.auth])))].map((row) => JSON.parse(row)), [
     ['/v1/responses', 'gpt-6-luna', 'Bearer gw-key'],
-    ['/v1/chat/completions', 'gemini-3.7-flash', 'Bearer gw-key'],
+    ['/v1/chat/completions', 'gemini-3.8-flash', 'Bearer gw-key'],
   ]);
   assert.throws(() => liveModels({}, [LEAD, EYES]), /OPENAI_API_KEY/);
 });
 
 test('with no model named, a run takes the recorded lead and eyes when it can, else each keyed provider\'s own image-taking models', () => {
   const name = ({ lead, eyes }) => [`${lead.provider}/${lead.modelId}`, `${eyes.provider}/${eyes.modelId}`];
-  assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.7-flash']);
-  assert.deepEqual(name(chooseModels({ APOLLO_MODEL_BASE_URL: 'http://gateway/v1', APOLLO_MODEL_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.7-flash']);
+  assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.8-flash']);
+  assert.deepEqual(name(chooseModels({ APOLLO_MODEL_BASE_URL: 'http://gateway/v1', APOLLO_MODEL_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.8-flash']);
   assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'openai/gpt-6-sol']);
-  assert.deepEqual(name(chooseModels({ GEMINI_API_KEY: 'k' })), ['google/gemini-3.7-flash', 'google/gemini-3.7-flash']);
+  assert.deepEqual(name(chooseModels({ GEMINI_API_KEY: 'k' })), ['google/gemini-3.8-flash', 'google/gemini-3.8-flash']);
   assert.deepEqual(name(chooseModels({ ANTHROPIC_API_KEY: 'k' })), ['anthropic/claude-haiku-5-5', 'anthropic/claude-haiku-5-5']);
   assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k' }, { eyes: 'openai/gpt-6-luna' })), ['openai/gpt-6-luna', 'openai/gpt-6-luna']);
   assert.throws(() => chooseModels({}), /OPENAI_API_KEY/);

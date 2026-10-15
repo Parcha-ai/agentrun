@@ -19,7 +19,7 @@ Watch the recorded run: https://parcha-ai.github.io/agentrun/?r=apollo11
    eyes were shown; the recording's cost is a number, or unknown where a failed request may have been billed, never an unearned 0.
 
 Other inputs, one job: `--input examples/apollo11/inputs/gallery.json` (the gallery's smaller take: 8 film windows, 10 pages, 12
-photos), `inputs/full.json` (all 626 pages, about $3.50), and `inputs/weak-eyes.json` with `--eyes openai/gpt-6-luna` (the same
+photos), `inputs/full.json` (all 626 pages, about $3.50), and `inputs/weak-eyes.json` with `--eyes-model openai/gpt-6-luna` (the same
 pages and photos through weaker eyes; `--weak-from <dir>` puts that run's account into the main result, `--see-also` links its
 recording).
 
@@ -29,7 +29,7 @@ _From `demo.json`; `SETUP-PROMPT.md` does the setup for you._
 
 | Needs | For | Why |
 | --- | --- | --- |
-| one of `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `APOLLO_MODEL_BASE_URL` with `APOLLO_MODEL_API_KEY` | `--live` | the lead (`openai/gpt-6-luna` by default) and the eyes (`google/gemini-3.7-flash`), each by provider and public id; `--lead` and `--eyes` name others |
+| one of `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `APOLLO_MODEL_BASE_URL` with `APOLLO_MODEL_API_KEY` | `--live` | the lead (`openai/gpt-6-luna` by default) and the eyes (`google/gemini-3.8-flash`), each by provider and public id; `--model` and `--eyes-model` name others |
 | `ffmpeg`, `ffprobe` | | cut the film's windows into frames |
 | `pdftoppm` (optional) | | renders the scanned pages; without it PDFium renders them |
 

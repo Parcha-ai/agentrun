@@ -5,7 +5,8 @@
 // flags and `demo()`'s shape, so moving onto the entry changes run.ts's import and deletes this file.
 //
 //   (none)              fakes, $0, no key: the default, and what CI runs
-//   --live              real models (your keys, or a gateway: models.ts); --lead and --eyes name them as provider/id
+//   --live              real models (your keys, or a gateway: models.ts); --model (or --provider with --model) and --eyes-model name
+//                       the lead and the eyes as provider/id
 //   --kill              the spec's kills: here `vision.filing`, the Nth filing held with those reaching the sink after it
 //   --record <dir>      an agentrun.recording/1 directory, through the reference recorder
 //   --input <path|json> the job's input (the job's own is the default)
@@ -45,11 +46,11 @@ function parseInput(argument: string): Record<string, unknown> {
 /** What a run is told beyond the template's flags: test knobs for the scripted eyes (photos answered with another class, sources whose
  *  requests throw) and the landing pages' first times they answer from. */
 export type Knobs = { wrong?: string[]; fail?: string[]; scriptedPages?: string; sources?: string; log?: (line: string) => void };
-type Flags = { live?: boolean; kill?: boolean; record?: string; input?: string; 'max-usd'?: string; dir?: string; cache?: string; json?: boolean; lead?: string; eyes?: string; 'weak-from'?: string; 'see-also'?: string; name?: string };
+type Flags = { live?: boolean; kill?: boolean; record?: string; input?: string; 'max-usd'?: string; dir?: string; cache?: string; json?: boolean; provider?: string; model?: string; 'eyes-model'?: string; 'weak-from'?: string; 'see-also'?: string; name?: string };
 
 const FLAGS = {
   child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, dir: { type: 'string' },
-  cache: { type: 'string' }, json: { type: 'boolean' }, lead: { type: 'string' }, eyes: { type: 'string' }, 'weak-from': { type: 'string' }, 'see-also': { type: 'string' }, name: { type: 'string' },
+  cache: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'weak-from': { type: 'string' }, 'see-also': { type: 'string' }, name: { type: 'string' },
 } as const;
 
 /** The run.ts call: the child with `--child`, else the supervisor with the flags. */
@@ -185,7 +186,8 @@ export async function supervise(options: ApolloDemo, flags: Flags, knobs: Knobs 
   await placeFiles(paths, [...reads, itemOf(dataset, TYPED)], join(dir, 'work'));
 
   const live = flags.live === true;
-  const chosen = live ? chooseModels(process.env, { ...(flags.lead ? { lead: flags.lead } : {}), ...(flags.eyes ? { eyes: flags.eyes } : {}) }) : undefined;
+  const lead = flags.model && flags.provider ? `${flags.provider}/${flags.model}` : flags.model;
+  const chosen = live ? chooseModels(process.env, { ...(lead ? { lead } : {}), ...(flags['eyes-model'] ? { eyes: flags['eyes-model'] } : {}) }) : undefined;
   const models = { lead: chosen ? publicName(chosen.lead) : 'scripted lead (pi-ai faux)', eyes: chosen ? publicName(chosen.eyes) : 'scripted-eyes' };
   const sink = flags.kill ? (spec.kills as Array<{ point: string; n?: number; hold?: number }> | undefined)?.find((kill) => kill.point === 'vision.filing') : undefined;
   const maxUsd = flags['max-usd'] !== undefined ? Number(flags['max-usd']) : typeof spec.expectedCost === 'number' ? spec.expectedCost * 2 : null;
