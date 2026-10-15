@@ -455,7 +455,8 @@ test('a live child gets exactly the environment names demo.json declares (keys, 
     { oneOf: [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }], { env: 'CHROME_PATH' }] },
   ];
   assert.deepEqual([...declaredEnv({ name: 'x', keys, programs: [{ name: 'chrome', env: 'CHROME_BIN' }] })].sort(), ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'CHROME_BIN', 'CHROME_PATH', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'TYPESAFE_API_KEY']);
-  const secrets = { OPENAI_API_KEY: 'sk-declared', TYPESAFE_API_KEY: 'ts-declared', BROWSERBASE_API_KEY: 'bb-declared', BROWSERBASE_PROJECT_ID: 'proj', GITHUB_TOKEN: 'ghp-NOT-declared', UNDECLARED_SECRET: 'nope', ANTHROPIC_API_KEY: 'sk-ant-not-declared' };
+  // Values are made up from the names, so no literal that looks like a credential is in the source.
+  const secrets = Object.fromEntries(['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
   // The test fixture's own settings are declared like any other name the child may see (`programs`), so the rule is exact.
   const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
   const { result } = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_SPEC_NOTE: 'also not declared', ...secrets });
