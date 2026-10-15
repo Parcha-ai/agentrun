@@ -2,7 +2,7 @@
 // one's manifest and blob paths, gallery.js embeds nothing, and the page fetches a recording when it is opened.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -39,10 +39,15 @@ test('the index lists each recording with its manifest and blob paths, and galle
   assert.ok(!existsSync(join(embedded, 'recordings', 'index.json')));
 });
 
-test('served over http, the gallery lists from the index and a recording plays, fetched with the blob paths it names', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
+test('served over http: the gallery lists from the index, a run and its bundled baseline open from it with their blobs, and ?src= does without it', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-files-'));
   t.after(() => rmSync(out, { recursive: true, force: true }));
-  build(join(out, 'dist'), fixtures, { files: true });
+  // Two copies of the fixture, the second naming the first as its baseline.
+  const recordings = join(out, 'recordings');
+  for (const id of ['uncut', 'killed']) cpSync(join(fixtures, 'reference-killed'), join(recordings, id), { recursive: true });
+  const manifest = JSON.parse(readFileSync(join(recordings, 'killed', 'manifest.json'), 'utf8'));
+  writeFileSync(join(recordings, 'killed', 'manifest.json'), JSON.stringify({ ...manifest, baseline: { recording: '../uncut', label: 'uncut' } }));
+  build(join(out, 'dist'), recordings, { files: true });
   const asked: string[] = [];
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
@@ -60,12 +65,18 @@ test('served over http, the gallery lists from the index and a recording plays, 
     browser.stdout.on('data', (chunk: Buffer) => { text += chunk; });
     browser.on('close', () => resolve(text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')));
   });
-  const title = JSON.parse(readFileSync(join(fixtures, 'reference-killed', 'manifest.json'), 'utf8')).title as string;
-  assert.ok((await page('')).includes(title), 'the gallery lists it from the index');
+  assert.ok((await page('')).includes(manifest.title), 'the gallery lists it from the index');
   asked.length = 0;
-  const played = await page('?r=reference-killed');
-  assert.ok(played.includes(title) && played.includes('paid calls made'), played.slice(0, 300));
-  assert.ok(asked.includes('GET /recordings/index.json'));
-  assert.ok(asked.includes('GET /recordings/reference-killed/events.jsonl'));
-  assert.deepEqual(asked.filter((request) => request.startsWith('HEAD ')), [], 'no blob is looked for by guessing its extension');
+  const played = await page('?r=killed');
+  assert.ok(played.includes('paid calls made') && played.includes('Beside it, uncut, at its end:'), played.slice(0, 400));
+  for (const request of ['GET /recordings/index.json', 'GET /recordings/killed/events.jsonl', 'GET /recordings/uncut/events.jsonl', `GET /recordings/killed/blobs/${manifest.result.blob}.json`]) {
+    assert.ok(asked.includes(request), `${request} in ${asked.join(', ')}`);
+  }
+  assert.deepEqual(asked.filter((request) => request.startsWith('HEAD ')), [], 'no blob is looked for by guessing its extension, the baseline\'s included');
+  // Without the index: a recording at a URL still opens, and the gallery says what it could not read and keeps the picker.
+  rmSync(join(out, 'dist', 'recordings', 'index.json'));
+  assert.ok((await page('?src=recordings/killed/')).includes('paid calls made'));
+  const lost = await page('');
+  assert.match(lost, /The gallery could not be read/);
+  assert.match(lost, /Drop a recording folder/);
 });
