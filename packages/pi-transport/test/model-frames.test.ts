@@ -17,14 +17,60 @@ const fixtures = readdirSync(DIRECTORY)
 const wire = (frame: ModelFrame | null | undefined) => JSON.stringify(frame ?? null);
 
 describe("the model frames this package writes and reads", () => {
-	it("has the five captured streams: text and thinking, a tool call, two tools, an error and an abort", () => {
+	it("has the captured streams: text and thinking, tool calls, an error, an abort, and three of live tool arguments", () => {
 		expect(fixtures.map((fixture) => fixture.name)).toEqual([
 			"abort.json",
 			"error.json",
 			"text-and-thinking.json",
+			"tool-args-empty-start.json",
+			"tool-args-grown.json",
+			"tool-args-late-match.json",
 			"tool-call.json",
 			"two-tools-and-text.json",
 		]);
+	});
+
+	// A tool call's arguments are rebuilt while it streams, not only at its end: after each frame between the start and the
+	// end, the rebuilt arguments are the ones the provider's own partial held at that event. The three streams reach the
+	// three paths of the encoder: a start with empty arguments (every delta is sent), a start with arguments that the
+	// deltas then grow beyond (one checkpoint, then deltas), and deltas that do not match the start until a later one does.
+	for (const name of ["tool-args-empty-start.json", "tool-args-grown.json", "tool-args-late-match.json"]) {
+		it(`rebuilds the arguments of ${name} before the tool call ends, as the provider's partial held them`, () => {
+			const fixture = fixtures.find((one) => one.name === name) as Fixture;
+			const state: FrameState = { partial: undefined, json: new Map() };
+			const checked: string[] = [];
+			fixture.frames.forEach((frame, at) => {
+				if (frame === null) return;
+				applyFrame(state, frame);
+				const event = fixture.events[at] as AssistantMessageEvent;
+				if (
+					frame.type === "start" ||
+					frame.type === "toolcall_start" ||
+					frame.type === "toolcall_end" ||
+					!("partial" in event)
+				)
+					return;
+				const rebuilt = state.partial?.content[0] as { arguments: unknown };
+				const held = (event.partial.content[0] as { arguments: unknown }).arguments;
+				expect(rebuilt.arguments, `after the ${frame.type} frame at event ${at}`).toEqual(held);
+				checked.push(frame.type);
+			});
+			expect(checked.length).toBeGreaterThan(0);
+			if (name === "tool-args-empty-start.json") expect(new Set(checked)).toEqual(new Set(["toolcall_delta"]));
+			else expect(checked).toContain("toolcall_checkpoint");
+		});
+	}
+
+	it("sends no frame for an empty delta of a tool call whose start was empty, and none for deltas that do not yet match a held start", () => {
+		const empty = fixtures.find((one) => one.name === "tool-args-empty-start.json") as Fixture;
+		const emptyDelta = empty.events.findIndex((event) => event.type === "toolcall_delta" && event.delta === "");
+		expect(emptyDelta).toBeGreaterThan(0);
+		expect(new FrameEncoder().encode(empty.events[0] as AssistantMessageEvent) !== undefined).toBe(true);
+		expect(empty.frames[emptyDelta]).toBeNull();
+		const late = fixtures.find((one) => one.name === "tool-args-late-match.json") as Fixture;
+		const firstDelta = late.events.findIndex((event) => event.type === "toolcall_delta");
+		expect(late.frames[firstDelta]).toBeNull();
+		expect((late.frames[firstDelta + 1] as { type: string }).type).toBe("toolcall_checkpoint");
 	});
 
 	for (const fixture of fixtures) {
