@@ -40,6 +40,42 @@
     {
       "operator": "Elia (Belgium)",
       "why": "the site answers every request, robots.txt included, with a Cloudflare managed bot check (\"Performing security verification\")"
+    },
+    {
+      "operator": "TenneT",
+      "why": "Cloudflare managed bot check, and its robots.txt disallows AI crawlers"
+    },
+    {
+      "operator": "Amprion (Germany)",
+      "why": "403 to a plain request and to headless Chrome"
+    },
+    {
+      "operator": "TransnetBW (Germany)",
+      "why": "403 to a plain request and to headless Chrome"
+    },
+    {
+      "operator": "50Hertz (Germany)",
+      "why": "its grid-data page has no generation-mix chart, only its own control area"
+    },
+    {
+      "operator": "PJM",
+      "why": "the home page Generation Fuel Mix widget prints a total and a renewables figure with no chart, and the Data Viewer fuel-mix page answers 500"
+    },
+    {
+      "operator": "Terna (Italy)",
+      "why": "no public page with a generation-mix chart found from the electric-system pages"
+    },
+    {
+      "operator": "Statnett (Norway)",
+      "why": "the mix sits in a tab behind a click; the first screen is a flow map"
+    },
+    {
+      "operator": "Hydro-Québec",
+      "why": "no public page with a generation-mix chart found"
+    },
+    {
+      "operator": "ENTSO-E Transparency Platform",
+      "why": "a single-page app that answers \"Requested URL no longer exists\" on direct links; reaching a chart needs menu navigation"
     }
   ],
   "sources": [
@@ -138,6 +174,54 @@
         "how": "local Chrome 155 (headless): the page and pie render under a Cookiebot banner that has to be dismissed before the pie is fully in view; no login; the json answers 200"
       },
       "robots": "allowed (Allow: /)"
+    },
+    {
+      "id": "bpa",
+      "operator": "Bonneville Power Administration (US federal)",
+      "country": "US",
+      "dashboardUrl": "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx",
+      "chart": "Load & total VER, hydro, fossil/biomass and nuclear generation, near-real-time, last 7 days (line chart), beside the capacity-by-type pie",
+      "numbers": "hydro share of the BA load now and the 7-day peak of VER (wind and solar), read from the lines",
+      "publishedDataUrl": "https://transmission.bpa.gov/business/operations/Wind/baltwg.txt",
+      "publishedFormat": "tab-separated text, 5-minute MW for Load, VER, Hydro, Fossil/Biomass, Nuclear, 7 days",
+      "status": "checked",
+      "robots": "no robots.txt",
+      "checked": {
+        "date": "2026-10-15",
+        "how": "local Chrome 155 (headless): the chart renders with labelled axes and legend, no login, no consent wall; the txt answers 200"
+      }
+    },
+    {
+      "id": "transpower",
+      "operator": "Transpower (New Zealand)",
+      "country": "NZ",
+      "dashboardUrl": "https://www.transpower.co.nz/power-system-live-data",
+      "chart": "Consolidated live data: 'Current Generation (MW)' bar chart by fuel (generation vs capacity) and the '% Renewables Generating' gauge",
+      "numbers": "hydro generation now (the Hydro bar) and the renewables share (the gauge)",
+      "publishedDataUrl": "https://www.transpower.co.nz/power-system-live-data",
+      "publishedFormat": "the same page prints a Power Generation table in MW per fuel and the renewables percentage; use it as the check",
+      "status": "checked",
+      "robots": "allowed (disallows /core/, /profiles/ and similar only)",
+      "checked": {
+        "date": "2026-10-15",
+        "how": "local Chrome 155 (headless): charts and table render, no login, no consent wall"
+      }
+    },
+    {
+      "id": "ree",
+      "operator": "Red Eléctrica (Spain)",
+      "country": "ES",
+      "dashboardUrl": "https://www.ree.es/en/datos/generation/generation-structure",
+      "chart": "REData 'Generation structure by technology (GWh)', national, stacked bars by day with a total line; a % toggle",
+      "numbers": "the largest technology for the latest day and its share (the % view)",
+      "publishedDataUrl": "https://apidatos.ree.es/en/datos/generacion/estructura-generacion?start_date=YYYY-MM-DDT00:00&end_date=YYYY-MM-DDT23:59&time_trunc=day",
+      "publishedFormat": "json, GWh and share per technology per day",
+      "status": "checked, needs the cookie banner dismissed",
+      "robots": "allowed (disallows /filter/tips, /*/search, news and event paths only)",
+      "checked": {
+        "date": "2026-10-15",
+        "how": "local Chrome 155 (headless): the stacked chart renders on the second try (the first showed an internal error); a cookie banner covers its lower half; the api answers 200"
+      }
     }
   ],
   "rules": [
