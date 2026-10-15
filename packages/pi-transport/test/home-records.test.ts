@@ -19,6 +19,7 @@ import {
 	createSession,
 	defineExtension,
 	defineTool,
+	type Harness,
 	type StorageWrite,
 } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -686,18 +687,30 @@ describe("the runner's end of the record stream", () => {
 
 	it("lets the outbox go when the host says its log holds the commits, though their acknowledgements were lost", async () => {
 		await withWorld(async (made) => {
-			const shipper = createShipper({ admits: () => false });
+			let record: (lines: readonly RecordLine[]) => void = () => {};
+			const shipper = createShipper({
+				admits: () => false,
+				recording: {
+					recordCommits: (_harness, { write }) => {
+						record = write;
+						return async () => {};
+					},
+				},
+			});
 			mkdirSync(join(made.directory, "store"), { recursive: true });
 			const wrapped = await shipper.wrapStore(made.options.store)(
 				await openNodeSqliteStorage(made.options.store),
 				context,
 			);
+			wrapped.opened?.({} as Harness);
 			shipper.up(() => true);
 			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
 			const session = createSession(wrapped.storage);
-			for (let n = 0; n < 2; n += 1)
+			for (let n = 1; n <= 2; n += 1) {
 				await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
-			// The host logged both; their acknowledgements went with the link.
+				record([{ commit: n, kind: "commit" } as RecordLine]);
+			}
+			// The host logged both, writes and lines; their acknowledgements went with the link.
 			expect(await shipper.drained(100)).toBe(false);
 			shipper.down();
 			shipper.up(() => true);
@@ -773,9 +786,41 @@ describe("the runner's end of the record stream", () => {
 			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
 			expect(snapshots(second)).toHaveLength(1);
 			expect(await shipper.drained(100)).toBe(false);
+			// An acknowledgement of another commit's snapshot is not this one's.
+			shipper.receive({ t: "lines-ack", commit: Number(snapshots(second)[0]?.commit) + 1, snapshot: true });
+			expect(await shipper.drained(100)).toBe(false);
 			shipper.receive({ t: "lines-ack", commit: Number(snapshots(second)[0]?.commit), snapshot: true });
 			expect(await shipper.drained(2_000)).toBe(true);
 			await wrapped.closed?.();
+		});
+	});
+
+	it("lets a dead process's outbox go when the host holds it all, though it said so before the store opened", async () => {
+		await withWorld(async (made) => {
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			// A process whose commits the host logged, and that died before their acknowledgements came.
+			const dead = createShipper({ admits: () => false });
+			const before = await dead.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			const session = createSession(before.storage);
+			for (let n = 0; n < 3; n += 1)
+				await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await session.close(context);
+			await before.closed?.();
+			// The next process hears the host holds all three before it opens the store: nothing is left to wait for.
+			const next = createShipper({ admits: () => false });
+			const sent: Frame[] = [];
+			next.up((frame) => sent.push(frame) > 0);
+			next.receive({ t: "resend-after", after: 3, linesAfter: 3 });
+			const after = await next.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			expect(sent).toEqual([]);
+			expect(await next.drained(2_000)).toBe(true);
+			await after.closed?.();
 		});
 	});
 
