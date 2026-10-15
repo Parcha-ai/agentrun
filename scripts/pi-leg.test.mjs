@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { accepts, checkResolved, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
+import { accepts, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
 
 const script = fileURLToPath(new URL('./pi-leg.mjs', import.meta.url));
 const repo = dirname(dirname(script));
@@ -210,4 +210,75 @@ test('a run whose npm ls fails stops before it builds, with what npm said', () =
     assert.match(out.stdout, /FAILED: npm ls reports 1 problem\(s\)/);
     assert.doesNotMatch(out.stdout, /\$ npm run build/);
   } finally { leg.env = {}; }
+});
+
+// The coding agent imports pi-codemode, which a later minor changed: the leg pins it with the coding agent, not at the lockfile's version.
+const CODING = '@earendil-works/pi-coding-agent', CODEMODE = '@earendil-works/pi-codemode', MCP = '@earendil-works/pi-mcp';
+const codingAgent = (at, version) => write(join(at, 'node_modules', CODING, 'package.json'), { name: CODING, version, dependencies: { [CODEMODE]: `^${version}`, [MCP]: `^${version}`, [AI]: `^${version}` } });
+
+test('the companions of the installed family packages are the @earendil-works packages outside the family they depend on', () => {
+  const root = join(scratch, 'companions');
+  codingAgent(root, '1.0.4');
+  pkg(root, DURABLE, '1.0.4');
+  assert.deepEqual(companionDependencies(root, [CODING, DURABLE, '@earendil-works/pi-tui']), [CODEMODE, MCP]);
+  assert.deepEqual(companionDependencies(root, [DURABLE]), []);
+});
+
+test('the resolved check names a companion the lockfile left at a newer minor than the coding agent', () => {
+  const root = join(scratch, 'companion-drift');
+  const dir = join(root, 'packages/pi');
+  codingAgent(dir, '1.0.4');
+  pkg(root, CODEMODE, '1.2.0'); pkg(root, MCP, '1.0.4');
+  const workspace = { name: '@parcha/agentrun-pi', dir, manifest: { devDependencies: { [CODING]: '1.0.4' } } };
+  assert.deepEqual(checkResolved(workspace, '1.0.4').wrong.map((row) => [row.from, row.name, row.version]), [["@parcha/agentrun-pi's pi-coding-agent", CODEMODE, '1.2.0']]);
+  pkg(root, CODEMODE, '1.0.4');
+  assert.deepEqual(checkResolved(workspace, '1.0.4').wrong, []);
+});
+
+/** A repository whose lockfile holds pi-codemode 1.2.0, and an npm that lays out what an install of the coding agent at the leg's
+ *  version brings (its dependencies on pi-codemode and pi-mcp at the leg's version) and installs a package at the version it is
+ *  asked for only when FAKE_PINS says it honors pins; every call is logged. */
+function lockedCodemode(name) {
+  const root = repoOf(name, [ws('@parcha/agentrun-pi', WIDE, { [CODING]: '1.1.0' })]);
+  pkg(root, CODEMODE, '1.2.0'); pkg(root, MCP, '1.2.0');
+  const npm = join(root, 'fake-npm.mjs');
+  write(npm, [
+    "import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';",
+    "const root = process.cwd(); const at = (name, version, extra = {}) => { mkdirSync(`${root}/node_modules/${name}`, { recursive: true }); writeFileSync(`${root}/node_modules/${name}/package.json`, JSON.stringify({ name, version, ...extra })); };",
+    "if (process.argv.includes('--version')) { console.log('11.21.0'); process.exit(0); }",
+    "if (process.argv[2] === 'install') {",
+    "  appendFileSync(`${root}/calls.log`, process.argv.slice(3).join(' ') + '\\n');",
+    "  for (const spec of process.argv.slice(3).filter((arg) => arg.startsWith('@'))) {",
+    "    const [name, version] = [spec.slice(0, spec.lastIndexOf('@')), spec.slice(spec.lastIndexOf('@') + 1)];",
+    "    if (name.endsWith('pi-coding-agent')) at(name, version, { dependencies: { '@earendil-works/pi-codemode': `^${version}`, '@earendil-works/pi-mcp': `^${version}` } });",
+    "    else if (name.endsWith('pi-codemode') || name.endsWith('pi-mcp')) at(name, version);",
+    "  }",
+    "  process.exit(0);",
+    "}",
+    "if (process.argv[2] === 'ls') { console.log('workspace@0.0.0'); process.exit(0); }",
+    'process.exit(9);',
+  ].join('\n'));
+  return { root, npm: `${process.execPath} ${npm}` };
+}
+
+test('a leg pins pi-codemode and pi-mcp at the coding agent\'s version before it checks, so a lockfile on a newer minor cannot reach it', () => {
+  const { root, npm } = lockedCodemode('locked-codemode');
+  leg.env = {};
+  const out = leg(root, '--pi', '1.0.4', '--scratch', '--npm', npm);
+  const calls = readFileSync(join(root, 'calls.log'), 'utf8');
+  assert.match(calls, /@earendil-works\/pi-coding-agent@1\.0\.4/);
+  assert.match(calls, /@earendil-works\/pi-codemode@1\.0\.4 @earendil-works\/pi-mcp@1\.0\.4/);
+  // The leg's checks passed: it went on to the build, which the empty fixture cannot run.
+  assert.match(out.stdout, /resolved from @parcha\/agentrun-pi's pi-coding-agent: @earendil-works\/pi-codemode 1\.0\.4/);
+  assert.doesNotMatch(out.stdout, /FAILED: @parcha\/agentrun-pi resolves/);
+});
+
+test('a companion that stays at the lockfile\'s version fails the leg before it builds, naming it', () => {
+  const { root, npm } = lockedCodemode('stale-codemode');
+  const stale = join(root, 'stale-npm.mjs');
+  write(stale, readFileSync(join(root, 'fake-npm.mjs'), 'utf8').replace("else if (name.endsWith('pi-codemode') || name.endsWith('pi-mcp')) at(name, version);", ''));
+  const out = leg(root, '--pi', '1.0.4', '--scratch', '--npm', `${process.execPath} ${stale}`);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /FAILED: @parcha\/agentrun-pi resolves .*@earendil-works\/pi-codemode 1\.2\.0 \(from @parcha\/agentrun-pi's pi-coding-agent\)/);
+  assert.doesNotMatch(out.stdout, /\$ npm run build/);
 });

@@ -5,7 +5,8 @@
 //
 // A workspace is in the leg when each pi-family peer range it declares accepts the version. `--plan` prints the leg and
 // changes nothing. `--scratch` says the checkout is disposable: the script pins the family at the version in the root
-// manifest and in each leg workspace's, so the root holds one copy of each family package at that version and every
+// manifest and in each leg workspace's, and the packages the family depends on outside it (pi-codemode, pi-mcp) at it
+// too, so the root holds one copy of each family package at that version and every
 // leg workspace loads it, as a host's install of these packages does (other workspaces keep their own copies, nested).
 // It fails unless every family package a leg workspace declares, and the chord and pi-ai its pi-durable loads, is that
 // one copy at that version, then builds the workspace and runs each leg workspace's type-check and tests with
@@ -98,12 +99,31 @@ export function resolvedFrom(dir, name) {
   }
 }
 
-/** Every family package a leg workspace installs, and the chord and pi-ai its pi-durable loads, at `version`: the
- *  mismatches, empty when the leg runs on what it was asked for. */
+/** The @earendil-works packages outside the family that the installed `names` depend on, as `<name>`s: pi-coding-agent imports
+ *  pi-codemode and pi-mcp, which are released with it and change their exports in a minor, so a leg that installs the coding
+ *  agent at a version installs them at that version too, not at whatever the lockfile holds. */
+export function companionDependencies(dir, names) {
+  const found = new Set();
+  for (const name of names) {
+    const installed = resolvedFrom(dir, name);
+    if (installed) for (const dependency of companionsAt(installed.path)) found.add(dependency);
+  }
+  return [...found].sort();
+}
+const companionsAt = (path) => {
+  const manifest = JSON.parse(readFileSync(join(path, 'package.json'), 'utf8'));
+  return Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }).filter((dependency) => dependency.startsWith('@earendil-works/') && !FAMILY.includes(dependency));
+};
+
+/** Every family package a leg workspace installs, the chord and pi-ai its pi-durable loads, and the companions its family
+ *  packages load (see `companionDependencies`), at `version`: the mismatches, empty when the leg runs on what it was asked for. */
 export function checkResolved(workspace, version) {
   const rows = familyInstalled(workspace.manifest).map((name) => ({ from: workspace.name, name, ...resolvedFrom(workspace.dir, name) }));
   const durable = rows.find((row) => row.name === '@earendil-works/pi-durable');
   if (durable?.path) for (const name of ['@earendil-works/chord', '@earendil-works/pi-ai']) rows.push({ from: `${workspace.name}'s pi-durable`, name, ...resolvedFrom(durable.path, name) });
+  for (const row of rows.filter((row) => row.path && FAMILY.includes(row.name) && row.from === workspace.name)) {
+    for (const name of companionsAt(row.path)) rows.push({ from: `${workspace.name}'s ${row.name.split('/')[1]}`, name, ...resolvedFrom(row.path, name) });
+  }
   return { rows, wrong: rows.filter((row) => row.version !== version) };
 }
 
@@ -171,13 +191,17 @@ function main() {
   // copy. The root's pins put the one copy at the top, where pi-durable resolves its own chord and pi-ai; each leg
   // workspace's pins make it load that copy instead of its locked one.
   const pins = ['install', '--save-dev', '--save-exact', '--ignore-scripts', '--no-audit', '--no-fund'];
-  const installs = [[...pins, ...packages.map((name) => `${name}@${args.pi}`)],
-    ...leg.map((w) => [...pins, '-w', w.name, ...familyInstalled(w.manifest).map((name) => `${name}@${args.pi}`)])];
-  for (const install of installs) {
-    const rc = run(args.npm, install, { cwd: args.root });
-    report.steps.push({ step: install.join(' '), rc });
+  const install = (arguments_) => {
+    const rc = run(args.npm, arguments_, { cwd: args.root });
+    report.steps.push({ step: arguments_.join(' '), rc });
     if (rc !== 0) { write(); process.exit(1); }
-  }
+  };
+  install([...pins, ...packages.map((name) => `${name}@${args.pi}`)]);
+  // The packages those depend on outside the family (pi-codemode and pi-mcp under the coding agent) are released with
+  // them at this version, and a minor can drop an export a released coding agent imports: pin them too, never leave them at the lock's.
+  const companions = companionDependencies(args.root, packages);
+  if (companions.length) install([...pins, ...companions.map((name) => `${name}@${args.pi}`)]);
+  for (const w of leg) install([...pins, '-w', w.name, ...familyInstalled(w.manifest).map((name) => `${name}@${args.pi}`)]);
   const ls = spawnSync(args.npm.split(/\s+/)[0], [...args.npm.split(/\s+/).slice(1), 'ls', ...packages, ...leg.flatMap((w) => ['-w', w.name])], { cwd: args.root, encoding: 'utf8' });
   if (ls.stdout) console.log(ls.stdout);
   const problems = lsProblems(ls);
