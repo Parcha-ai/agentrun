@@ -103,6 +103,37 @@ test('the page from file:// reads a cited result from the result blob', { skip: 
   assert.doesNotMatch(ran.stdout, /href="javascript:/, 'an address that is not a web page is never a link');
 });
 
+test('an address that is not a web page stays text, a fragment is encoded into its own link, and the link before its # is the file\'s plain link', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-cited-links-'));
+  t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  const tricky = {
+    format: 'agentrun.cited/1', title: 'Addresses and fragments',
+    rows: [
+      { label: 'A data address', value: 1, cites: [{ url: 'data:text/html,<b>x</b>' }] },
+      { label: 'A blob address', value: 2, cites: [{ url: 'blob:https://example.org/0b1c' }] },
+      { label: 'A host-relative address', value: 3, cites: [{ url: '//example.org/page' }] },
+      { label: 'A quoted fragment', value: 4, cites: [{ blob: FILM[1]!, fragment: 'page=2"><img src=x onerror=1>' }, { blob: FILM[1]! }] },
+    ],
+  };
+  writeRecording(join(out, 'recordings', 'vision-links'));
+  deliverInstead(join(out, 'recordings', 'vision-links'), tricky as unknown as Json);
+  build(join(out, 'dist'), join(out, 'recordings'));
+  const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
+    '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-links`], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(ran.status, 0, ran.stderr);
+  const rows = ran.stdout.match(/<p class="vz-entry[^"]*">.*?<\/p>/g) ?? [];
+  const row = (label: string) => rows.find((each) => each.includes(label)) ?? '';
+  for (const label of ['A data address', 'A blob address', 'A host-relative address']) {
+    assert.match(row(label), /page/, `${label} shows its cite`);
+    assert.doesNotMatch(row(label), /<a /, `${label} is text, never a link`);
+  }
+  const hrefs = [...row('A quoted fragment').matchAll(/<a [^>]*href="([^"]*)"[^>]*>/g)].map((each) => each[1]!);
+  assert.equal(hrefs.length, 2, 'both links of the quoted row are drawn');
+  assert.ok(hrefs[0]!.endsWith('#page=2%22%3E%3Cimg%20src=x%20onerror=1%3E'), `the fragment is encoded into the href: ${hrefs[0]!.slice(-60)}`);
+  assert.equal(hrefs[0]!.split('#')[0], hrefs[1], 'before its #, the fragment link is the same file\'s plain link');
+  assert.doesNotMatch(ran.stdout, /<img[^>]*src="x"/, 'nothing in the fragment became an element');
+});
+
 const recorded = process.env.CITED_RECORDING;
 test('a recording whose result is a cited result: the format holds, every look a row cites is filed, every file it cites is in blobs/, and a scrub equals a fresh reduce', { skip: recorded && existsSync(recorded) ? false : 'CITED_RECORDING names no recording' }, () => {
   const dir = recorded!;
