@@ -136,30 +136,32 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
     const backend = new FakeBackend({ start: fakes.start, pages: fakes.pages });
     watchScreenshots(backend, grids);
     const served = await backend.serve();
-    const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}), ...(options.eyesPrice ? { EYES_PRICE: String(options.eyesPrice) } : {}) };
-    const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
-    const processes: Process[] = [];
-    let kills = 0;
-    const next = async (env: Record<string, string>) => {
-      const gen = processes.length + 1;
-      const result = await spawnChild({ ...base, ...env }, (pid) => { supervisor?.host('process.started', { gen, pid }); });
-      processes.push(result);
-      if (result.signal === 'SIGKILL') { kills += 1; supervisor?.host('kill', { gen, label: 'effect.kept published', crossing: null, side: 'child' }); }
-      return result;
-    };
-    let last = await next(options.kill1 ? { KILL1: String(options.kill1) } : {});
-    if (last.signal === 'SIGKILL') last = await next({});
-    const record = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')).record as Record_; } catch { return null; } })();
-    if (options.record) {
-      const blob = openRecorder({ dir: options.record }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json');
-      supervisor?.host('result', { gen: processes.length, blob, title: 'The snapshot' }, { blobs: [blob] });
-      finishRecording(options.record, {
-        title: 'Nine grids, read from the chart', task: 'hero-grid-snapshot', model: 'faux/faux-1', generations: processes.length, kills,
-        code: codeOf(ROOT), cost, source: { run: 'hero', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'The snapshot' },
-      });
-    }
-    await served.close();
-    return { dir, processes, record, ledger: rows<LedgerRow>(join(dir, 'ledger.jsonl')), eyesRequests: rows(join(dir, 'eyes.jsonl')).length, ...(options.record ? { recording: options.record } : {}), cleanup };
+    // Closed on every way out: a listening server keeps the caller's process alive.
+    try {
+      const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}), ...(options.eyesPrice ? { EYES_PRICE: String(options.eyesPrice) } : {}) };
+      const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
+      const processes: Process[] = [];
+      let kills = 0;
+      const next = async (env: Record<string, string>) => {
+        const gen = processes.length + 1;
+        const result = await spawnChild({ ...base, ...env }, (pid) => { supervisor?.host('process.started', { gen, pid }); });
+        processes.push(result);
+        if (result.signal === 'SIGKILL') { kills += 1; supervisor?.host('kill', { gen, label: 'effect.kept published', crossing: null, side: 'child' }); }
+        return result;
+      };
+      let last = await next(options.kill1 ? { KILL1: String(options.kill1) } : {});
+      if (last.signal === 'SIGKILL') last = await next({});
+      const record = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')).record as Record_; } catch { return null; } })();
+      if (options.record) {
+        const blob = openRecorder({ dir: options.record }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json');
+        supervisor?.host('result', { gen: processes.length, blob, title: 'The snapshot' }, { blobs: [blob] });
+        finishRecording(options.record, {
+          title: 'Nine grids, read from the chart', task: 'hero-grid-snapshot', model: 'faux/faux-1', generations: processes.length, kills,
+          code: codeOf(ROOT), cost, source: { run: 'hero', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'The snapshot' },
+        });
+      }
+      return { dir, processes, record, ledger: rows<LedgerRow>(join(dir, 'ledger.jsonl')), eyesRequests: rows(join(dir, 'eyes.jsonl')).length, ...(options.record ? { recording: options.record } : {}), cleanup };
+    } finally { await served.close(); }
   } catch (error) { await cleanup(); throw error; }
 }
 

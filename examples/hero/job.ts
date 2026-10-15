@@ -14,13 +14,13 @@ import { fakeEyes, type FakeEyes } from '@parcha/pi-vision/testing';
 import type { Fakes, Job } from '../reference/index.ts';
 
 /** One operator of `sources.json`, as the job takes it. */
-export type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; publishedUrl: string };
+export type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; peakOf: string; peakUnit: string; publishedUrl: string };
 
 /** The nine operators the job reads, from `sources.json` (the file records how each page was checked by hand). */
 export function readGrids(): Grid[] {
   const file = JSON.parse(readFileSync(new URL('./sources.json', import.meta.url), 'utf8')) as { sources: Array<Record<string, string>> };
   return file.sources.map((entry) => ({
-    id: entry.id!, operator: entry.operator!, country: entry.country!, url: entry.dashboardUrl!, chart: entry.chart!, numbers: entry.numbers!, publishedUrl: entry.publishedDataUrl!,
+    id: entry.id!, operator: entry.operator!, country: entry.country!, url: entry.dashboardUrl!, chart: entry.chart!, numbers: entry.numbers!, peakOf: entry.peakOf!, peakUnit: entry.peakUnit!, publishedUrl: entry.publishedDataUrl!,
   }));
 }
 
@@ -35,23 +35,23 @@ const SNAPSHOT = `(s) => {
   const mean = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length * 10) / 10 : null;
   const close = read.filter((r) => r.gap <= 1).length;
   const line = (r) => r.status === 'read'
-    ? '<tr><td>' + esc(r.operator) + ' (' + esc(r.country) + ')</td><td><a href="' + esc(r.screenshot) + '">' + esc(r.share) + '%</a></td><td>' + esc(r.peak) + ' MW</td><td>' + esc(r.published) + '%</td><td>' + esc(r.gap) + '</td><td>read from the chart</td></tr>'
+    ? '<tr><td>' + esc(r.operator) + ' (' + esc(r.country) + ')</td><td><a href="' + esc(r.screenshot) + '">' + esc(r.share) + '%</a></td><td>' + esc(r.peak) + ' ' + esc(r.peakUnit) + '<br><small>' + esc(r.peakOf) + '</small></td><td>' + esc(r.published) + '%</td><td>' + esc(r.gap) + '</td><td>read from the chart</td></tr>'
     : '<tr><td>' + esc(r.operator) + ' (' + esc(r.country) + ')</td><td colspan="4">not read: ' + esc(r.note) + '</td><td>failed</td></tr>';
   const title = word.charAt(0).toUpperCase() + word.slice(1) + ' grids, read from the chart';
   const howClose = read.length ? 'Vision came within one point of the published figure on ' + close + ' of ' + read.length + ' grids read (mean gap ' + mean + ' points).' : 'No grid was read.';
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc(title) + '</title></head><body><h1>' + esc(title) + '</h1>'
     + '<p>Taken ' + esc(s.at) + '. Each reading is the number vision read from the operator\\'s own chart; the published figure beside it is the check. A page that was not the dashboard is listed as failed and cites nothing.</p>'
-    + '<table border="1" cellpadding="4"><thead><tr><th>Grid</th><th>Renewable share now</th><th>Today\\'s peak</th><th>Published</th><th>Gap (points)</th><th>Source</th></tr></thead><tbody>'
+    + '<table border="1" cellpadding="4"><thead><tr><th>Grid</th><th>Renewable share now</th><th>Peak the chart shows</th><th>Published</th><th>Gap (points)</th><th>Source</th></tr></thead><tbody>'
     + rows.map(line).join('') + '</tbody></table><p>' + esc(howClose) + '</p></body></html>';
   return { result: { at: s.at, grids: rows.length, read: read.length, failed: rows.length - read.length, closeWithinOnePoint: close, meanGap: mean === null ? 0 : mean, rows: rows, html: html } };
 }`;
 
 const CHECK = `(s) => {
   const r = s.reading;
-  const ok = r.status === 'read' && typeof r.share === 'number' && typeof r.screenshot === 'string' && r.screenshot.length > 0;
+  const ok = r.status === 'read' && typeof r.share === 'number' && typeof r.peak === 'number' && typeof r.screenshot === 'string' && r.screenshot.length > 0;
   return {
     id: s.item.id, operator: s.item.operator, country: s.item.country, status: ok ? 'read' : 'failed',
-    share: ok ? r.share : 0, peak: ok && typeof r.peak === 'number' ? r.peak : 0, screenshot: ok ? r.screenshot : '',
+    share: ok ? r.share : 0, peak: ok ? r.peak : 0, peakOf: s.item.peakOf, peakUnit: s.item.peakUnit, screenshot: ok ? r.screenshot : '',
     page: r.page, note: r.note, published: s.published.share, publishedFrom: s.item.publishedUrl,
     gap: ok ? Math.round(Math.abs(r.share - s.published.share) * 10) / 10 : 0,
   };
@@ -66,8 +66,8 @@ export const workflow = {
       properties: {
         at: { type: 'string', minLength: 1 },
         grids: { type: 'array', minItems: 1, items: {
-          type: 'object', additionalProperties: false, required: ['id', 'operator', 'country', 'url', 'chart', 'numbers', 'publishedUrl'],
-          properties: { id: { type: 'string' }, operator: { type: 'string' }, country: { type: 'string' }, url: { type: 'string' }, chart: { type: 'string' }, numbers: { type: 'string' }, publishedUrl: { type: 'string' } },
+          type: 'object', additionalProperties: false, required: ['id', 'operator', 'country', 'url', 'chart', 'numbers', 'peakOf', 'peakUnit', 'publishedUrl'],
+          properties: { id: { type: 'string' }, operator: { type: 'string' }, country: { type: 'string' }, url: { type: 'string' }, chart: { type: 'string' }, numbers: { type: 'string' }, peakOf: { type: 'string' }, peakUnit: { type: 'string' }, publishedUrl: { type: 'string' } },
         } },
       },
     },
@@ -76,7 +76,7 @@ export const workflow = {
       properties: {
         status: { type: 'string', enum: ['read', 'failed'], description: 'read: the page was the dashboard and the chart gave both numbers. failed: anything else.' },
         share: { type: 'number', description: 'The renewable share now, in percent, as read from the chart.' },
-        peak: { type: 'number', description: "Today's peak, in MW, as read from the chart." },
+        peak: { type: 'number', description: "The peak named in numbers, in the unit named there, as read from the chart." },
         screenshot: { type: 'string', description: 'The evidence path the screenshot tool returned. Omit it when the page was not the dashboard.' },
         page: { type: 'string', description: 'The URL the browser was on.' },
         note: { type: 'string' },
@@ -130,9 +130,9 @@ export function lead(messages: readonly Message[]) {
   const url = (first ? textOf(first).match(/https?:\/\/[^"\s\\]+/)?.[0] : undefined) ?? '';
   const results = messages.filter((message): message is ToolResultMessage => message.role === 'toolResult');
   if (results.length === 0) return call('run', { code: `await page.goto(${JSON.stringify(url)})` });
-  if (results.length === 1 && !results[0]!.isError) return call('screenshot', { type: 'jpeg', ask: 'Read the renewable share now (percent) and today\'s peak (MW) from this chart. If this is not the dashboard, say so.' });
+  if (results.length === 1 && !results[0]!.isError) return call('screenshot', { type: 'jpeg', ask: 'Read the renewable share now (percent) and the peak the chart shows, as the page asks for them. If this is not the dashboard, say so.' });
   const shot = results[1] ? textOf(results[1]) : '';
-  const read = shot.match(/renewable share now: ([\d.]+)%.*today's peak: ([\d.]+) MW/is);
+  const read = shot.match(/renewable share now: ([\d.]+)%.*peak: ([\d.]+)/is);
   const filed = shot.match(/evidence\/[\w./-]+\/screenshot-[\w]+\.json/)?.[0];
   if (results.some((result) => result.isError) || !read || !filed) return call('submit', { status: 'failed', page: url, note: results.some((result) => result.isError) ? 'a step failed' : 'the page was not the dashboard' });
   return call('submit', { status: 'read', share: Number(read[1]), peak: Number(read[2]), screenshot: filed, page: url, note: 'read from the chart' });
@@ -172,7 +172,7 @@ export function heroFakes(grids: readonly Grid[], options: { broken?: string; ey
       const grid = grids[width - SHOT_WIDTH];
       if (!grid || grid.id === options.broken) return 'A page with no chart: it says the page was not found. This is not a fuel-mix dashboard.';
       const truth = TRUTH[at(grid)]!;
-      return `A fuel-mix chart from ${grid.operator}. Renewable share now: ${(truth.share + MISREAD[at(grid)]!).toFixed(1)}%. Today's peak: ${truth.peak} MW.`;
+      return `A fuel-mix chart from ${grid.operator}. Renewable share now: ${(truth.share + MISREAD[at(grid)]!).toFixed(1)}%. Peak: ${truth.peak} ${grid.peakUnit}.`;
     }],
   });
   const fakes: Fakes = {

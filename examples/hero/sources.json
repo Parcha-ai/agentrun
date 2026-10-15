@@ -85,7 +85,7 @@
       "country": "US",
       "dashboardUrl": "https://www.caiso.com/todays-outlook/supply",
       "chart": "Today's Outlook, Supply tab: the 'Current supply' donut (share by resource, with MW) and the 'Current renewables' donut",
-      "numbers": "renewable share now (the donut's 'Renewables' wedge) and today's peak (the 'Supply trend' chart's highest renewables point)",
+      "numbers": "renewable share now, in percent (the donut's 'Renewables' wedge); peak: the highest renewables point on the Supply trend chart today, in MW",
       "publishedDataUrl": "https://www.caiso.com/outlook/current/fuelsource.csv",
       "publishedFormat": "csv, 5-minute rows, MW per fuel for the day",
       "status": "checked",
@@ -93,7 +93,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the page renders the donuts with legible labels, no login or consent wall; the csv answers 200"
       },
-      "robots": "allowed (disallows /resources/* only)"
+      "robots": "allowed (disallows /resources/* only)",
+      "peakOf": "the highest renewables point on the Supply trend chart today",
+      "peakUnit": "MW"
     },
     {
       "id": "ercot",
@@ -101,7 +103,7 @@
       "country": "US",
       "dashboardUrl": "https://www.ercot.com/gridmktinfo/dashboards/fuelmix",
       "chart": "Fuel Mix: the stacked bar for Real-Time (a legend beside it prints MW and percent)",
-      "numbers": "renewable share now (solar + wind + hydro + storage as the page groups them) and today's peak (the 'Current Day' view)",
+      "numbers": "renewable share now, in percent (solar, wind, hydro and storage as the page groups them); peak: the highest renewable (solar, wind, hydro and storage) point on the Current Day view, in MW",
       "publishedDataUrl": "https://www.ercot.com/api/1/services/read/dashboards/fuel-mix.json",
       "publishedFormat": "json: data by day and hour, per fuel, in MW",
       "status": "checked",
@@ -109,7 +111,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the bar and legend render, no login; the json answers 200"
       },
-      "robots": "allowed (/gridmktinfo is not listed)"
+      "robots": "allowed (/gridmktinfo is not listed)",
+      "peakOf": "the highest renewable (solar, wind, hydro and storage) point on the Current Day view",
+      "peakUnit": "MW"
     },
     {
       "id": "nyiso",
@@ -117,7 +121,7 @@
       "country": "US",
       "dashboardUrl": "https://www.nyiso.com/real-time-dashboard",
       "chart": "Real-Time Dashboard, 'Real-Time Fuel Mix' donut (percent by fuel, labelled on the chart) with 'Total' and 'Renewables' MW under it",
-      "numbers": "renewable share now (Renewables / Total) and today's peak (the 'Daily Fuel' chart further down the page)",
+      "numbers": "renewable share now, in percent (Renewables over Total); peak: the highest renewable point on the Daily Fuel chart further down the page, in MW",
       "publishedDataUrl": "http://mis.nyiso.com/public/csv/rtfuelmix/YYYYMMDDrtfuelmix.csv",
       "publishedFormat": "csv, 5-minute rows, MW per fuel category, one file per day",
       "status": "checked",
@@ -125,7 +129,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless, a 2600 px tall window: the donut is below the first screen): renders, no login; today's csv answers 200"
       },
-      "robots": "no robots.txt"
+      "robots": "no robots.txt",
+      "peakOf": "the highest renewable point on the Daily Fuel chart further down the page",
+      "peakUnit": "MW"
     },
     {
       "id": "isone",
@@ -133,7 +139,7 @@
       "country": "US",
       "dashboardUrl": "https://www.iso-ne.com/",
       "chart": "Home page, 'Resource Mix': the two donuts (resources, and renewables within them) with percent labels",
-      "numbers": "renewable share now (the '16% Renewables' wedge) and today's peak (the 'Today's Snapshot' strip: yesterday's and forecast peak demand; renewable peak is read from the Resource Mix history page)",
+      "numbers": "renewable share now, in percent (the 'Renewables' wedge of the Resource Mix donut); peak: the highest renewable point on the Resource Mix chart for the day (one click from the home page), in MW",
       "publishedDataUrl": "https://www.iso-ne.com/transform/csv/genfuelmix?start=YYYYMMDD",
       "publishedFormat": "csv, one row per fuel per interval",
       "status": "checked, data URL needs a browser",
@@ -141,7 +147,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the donuts render, no login. The csv link is on the 'Dispatch Fuel Mix' page; a plain HTTP client (curl) gets 403 from it, so its published reading must be taken through the browser, not fetched. Unverified until a browser downloads it."
       },
-      "robots": "no robots.txt"
+      "robots": "no robots.txt",
+      "peakOf": "the highest renewable point on the Resource Mix chart for the day (one click from the home page)",
+      "peakUnit": "MW"
     },
     {
       "id": "ieso",
@@ -149,7 +157,7 @@
       "country": "CA",
       "dashboardUrl": "https://www.ieso.ca/power-data",
       "chart": "Power Data: 'Hourly Output by Fuel Type' (a table in MW) and the Supply tab's stacked chart",
-      "numbers": "renewable share now (hydro + wind + solar + biofuel over total output) and today's peak (the Supply chart)",
+      "numbers": "renewable share now, in percent (hydro, wind, solar and biofuel over total output); peak: the highest renewable point on the Supply chart, in MW",
       "publishedDataUrl": "https://reports-public.ieso.ca/public/GenOutputbyFuelHourly/PUB_GenOutputbyFuelHourly.xml",
       "publishedFormat": "xml, hourly MW per fuel (large: 6 MB)",
       "status": "checked",
@@ -157,7 +165,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the fuel-type table and Demand chart render, no login; the xml answers 200. The Supply chart (a tab) is not yet screenshotted."
       },
-      "robots": "allowed"
+      "robots": "allowed",
+      "peakOf": "the highest renewable point on the Supply chart",
+      "peakUnit": "MW"
     },
     {
       "id": "eirgrid",
@@ -165,7 +175,7 @@
       "country": "IE",
       "dashboardUrl": "https://www.smartgriddashboard.com/",
       "chart": "Smart Grid Dashboard, Overview: the 'Fuel Mix (MWh)' pie (percent labels by fuel)",
-      "numbers": "renewable share now (wind + solar + hydro + biomass share of the pie) and today's peak (the 'System, Wind and Solar Generation' line chart)",
+      "numbers": "renewable share now, in percent (wind, solar, hydro and biomass share of the pie); peak: the highest point of the wind and solar line on the 'System, Wind and Solar Generation' chart, in MW",
       "publishedDataUrl": "https://www.smartgriddashboard.com/api/chart/?region=ALL&chartType=generation&dateRange=day&dateFrom=DD-Mon-YYYY&dateTo=DD-Mon-YYYY&areas=fuelmix",
       "publishedFormat": "json rows per fuel (FUEL_COAL, FUEL_GAS, ...), 15-minute MW",
       "status": "checked, needs the cookie banner dismissed",
@@ -173,7 +183,9 @@
         "date": "2026-10-14",
         "how": "local Chrome 155 (headless): the page and pie render under a Cookiebot banner that has to be dismissed before the pie is fully in view; no login; the json answers 200"
       },
-      "robots": "allowed (Allow: /)"
+      "robots": "allowed (Allow: /)",
+      "peakOf": "the highest point of the wind and solar line on the 'System, Wind and Solar Generation' chart",
+      "peakUnit": "MW"
     },
     {
       "id": "bpa",
@@ -181,7 +193,7 @@
       "country": "US",
       "dashboardUrl": "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx",
       "chart": "Load & total VER, hydro, fossil/biomass and nuclear generation, near-real-time, last 7 days (line chart), beside the capacity-by-type pie",
-      "numbers": "hydro share of the BA load now and the 7-day peak of VER (wind and solar), read from the lines",
+      "numbers": "renewable share now, in percent (hydro plus VER over hydro, VER, fossil/biomass and nuclear at the latest point of the lines); peak: the highest point of the VER (wind and solar) line over the 7 days, in MW",
       "publishedDataUrl": "https://transmission.bpa.gov/business/operations/Wind/baltwg.txt",
       "publishedFormat": "tab-separated text, 5-minute MW for Load, VER, Hydro, Fossil/Biomass, Nuclear, 7 days",
       "status": "checked",
@@ -189,7 +201,9 @@
       "checked": {
         "date": "2026-10-15",
         "how": "local Chrome 155 (headless): the chart renders with labelled axes and legend, no login, no consent wall; the txt answers 200"
-      }
+      },
+      "peakOf": "the highest point of the VER (wind and solar) line over the 7 days",
+      "peakUnit": "MW"
     },
     {
       "id": "transpower",
@@ -197,7 +211,7 @@
       "country": "NZ",
       "dashboardUrl": "https://www.transpower.co.nz/power-system-live-data",
       "chart": "Consolidated live data: 'Current Generation (MW)' bar chart by fuel (generation vs capacity) and the '% Renewables Generating' gauge",
-      "numbers": "hydro generation now (the Hydro bar) and the renewables share (the gauge)",
+      "numbers": "renewable share now, in percent (the '% Renewables Generating' gauge); peak: the tallest generation bar on the Current Generation chart (the largest fuel now), in MW",
       "publishedDataUrl": "https://www.transpower.co.nz/power-system-live-data",
       "publishedFormat": "the same page prints a Power Generation table in MW per fuel and the renewables percentage; use it as the check",
       "status": "checked",
@@ -205,7 +219,9 @@
       "checked": {
         "date": "2026-10-15",
         "how": "local Chrome 155 (headless): charts and table render, no login, no consent wall"
-      }
+      },
+      "peakOf": "the tallest generation bar on the Current Generation chart (the largest fuel now)",
+      "peakUnit": "MW"
     },
     {
       "id": "ree",
@@ -213,7 +229,7 @@
       "country": "ES",
       "dashboardUrl": "https://www.ree.es/en/datos/generation/generation-structure",
       "chart": "REData 'Generation structure by technology (GWh)', national, stacked bars by day with a total line; a % toggle",
-      "numbers": "the largest technology for the latest day and its share (the % view)",
+      "numbers": "renewable share now, in percent (the sum of the renewable technologies in the % view, latest day); peak: the tallest daily total on the generation structure chart, in GWh",
       "publishedDataUrl": "https://apidatos.ree.es/en/datos/generacion/estructura-generacion?start_date=YYYY-MM-DDT00:00&end_date=YYYY-MM-DDT23:59&time_trunc=day",
       "publishedFormat": "json, GWh and share per technology per day",
       "status": "checked, needs the cookie banner dismissed",
@@ -221,7 +237,9 @@
       "checked": {
         "date": "2026-10-15",
         "how": "local Chrome 155 (headless): the stacked chart renders on the second try (the first showed an internal error); a cookie banner covers its lower half; the api answers 200"
-      }
+      },
+      "peakOf": "the tallest daily total on the generation structure chart",
+      "peakUnit": "GWh"
     }
   ],
   "rules": [
