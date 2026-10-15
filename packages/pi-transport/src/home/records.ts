@@ -56,8 +56,8 @@ export type ShipperOptions = {
  * Ship a runner's commits to its host. Each commit's writes go out after the store has them, and its recorder lines
  * after that, on the same link: `record { commit, writes }`, then `lines { commit, lines }`. The host says where it is
  * when a link comes up (`resend-after { after, linesAfter }`, both exclusive), the runner sends what it has not
- * acknowledged from there, in order, and only then the commits that follow. A process's snapshot lines go once, after
- * the commits it opened at.
+ * acknowledged from there, in order, and only then the commits that follow. A process's snapshot lines go after the
+ * commits it opened at, once on each link, until the host acknowledges them.
  */
 export function createShipper(options: ShipperOptions = {}): Shipper {
 	let outbox: Outbox | undefined;
@@ -67,7 +67,9 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	let streaming = false;
 	// Where the host said its log is, on this link: what the runner holds from there goes first.
 	let hostAt: { readonly after: number; readonly linesAfter: number } | undefined;
+	// Kept until the host acknowledges it; sent once on each link.
 	let snapshot: { readonly commit: number; readonly lines: readonly RecordLine[] } | undefined;
+	let snapshotSentOn: ((frame: Frame) => boolean) | undefined;
 	// The last commit the host holds, and the commits that wait for it to hold theirs.
 	let acked = 0;
 	const waiting = new Set<{ readonly commit: number; readonly settle: (held: boolean) => void }>();
@@ -99,6 +101,11 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	const sendLines = (commit: number, lines: readonly unknown[], isSnapshot: boolean) => {
 		if (streaming) send?.({ t: "lines", commit, lines, ...(isSnapshot ? { snapshot: true } : {}) });
 	};
+	const sendSnapshot = () => {
+		if (snapshot === undefined || !streaming || send === undefined || snapshotSentOn === send) return;
+		snapshotSentOn = send;
+		sendLines(snapshot.commit, snapshot.lines, true);
+	};
 	/** What the host says its log holds lets the outbox go, whether or not the acknowledgements arrived. */
 	const heldByHost = (box: Outbox | undefined) => {
 		if (box === undefined || hostAt === undefined) return;
@@ -114,15 +121,11 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 		if (!streaming || hostAt === undefined) return;
 		for (const entry of outbox?.pending(hostAt.after, hostAt.linesAfter) ?? []) {
 			if (next !== undefined && entry.commit >= next) continue;
-			if (snapshot !== undefined && entry.commit > snapshot.commit) {
-				sendLines(snapshot.commit, snapshot.lines, true);
-				snapshot = undefined;
-			}
+			if (snapshot !== undefined && entry.commit > snapshot.commit) sendSnapshot();
 			if (entry.writes !== undefined) sendRecord(entry.commit, entry.writes);
 			if (entry.lines !== undefined) sendLines(entry.commit, entry.lines, false);
 		}
-		if (snapshot !== undefined) sendLines(snapshot.commit, snapshot.lines, true);
-		snapshot = undefined;
+		sendSnapshot();
 	};
 
 	return {
@@ -190,7 +193,10 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 					hold(frame.commit);
 				}
 			} else if (frame.t === "lines-ack") {
-				if (typeof frame.commit === "number") outbox?.ackLines(frame.commit);
+				// A snapshot's acknowledgement lets the snapshot go, and nothing of the commit's own lines.
+				if (frame.snapshot === true) {
+					if (snapshot !== undefined && frame.commit === snapshot.commit) snapshot = undefined;
+				} else if (typeof frame.commit === "number") outbox?.ackLines(frame.commit);
 			} else if (frame.t === "resend-after") {
 				const after = typeof frame.after === "number" ? frame.after : -1;
 				const linesAfter = typeof frame.linesAfter === "number" ? frame.linesAfter : -1;
@@ -233,7 +239,8 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
  * the log, and the last commit whose lines were written. A new session's log holds nothing, `{ after: 0, linesAfter:
  * 0 }`: a store's first commit is 1. The host calls `append` for each commit in
  * order, and `lines` for a commit only once its writes are in the log; a snapshot's lines come at the commit their
- * process opened at, whatever was written before.
+ * process opened at, whatever was written before. A snapshot is sent until the host acknowledges it, so it can come
+ * again after a link dropped: it is the same state at the same commit.
  */
 export interface RecordSink {
 	held(): { readonly after: number; readonly linesAfter: number };
@@ -297,6 +304,7 @@ async function keep(
 	if (commit > after) return true;
 	if (frame.snapshot === true) {
 		await sink.lines(commit, lines, true);
+		reply({ t: "lines-ack", commit, snapshot: true });
 		return true;
 	}
 	if (commit > linesAfter) await sink.lines(commit, lines, false);

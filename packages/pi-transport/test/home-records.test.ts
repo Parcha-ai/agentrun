@@ -736,6 +736,39 @@ describe("the runner's end of the record stream", () => {
 		});
 	});
 
+	it("keeps a snapshot until the host acknowledges it, and sends it again on the next link when one dropped first", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({
+				admits: () => false,
+				recording: {
+					snapshotLines: async (_storage, { at }) => [{ commit: at, state: "as it was" }],
+					recordCommits: () => async () => {},
+				},
+			});
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const wrapped = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			const snapshots = (frames: readonly Frame[]) =>
+				frames.filter((frame) => frame.t === "lines" && frame.snapshot);
+			const first: Frame[] = [];
+			shipper.up((frame) => first.push(frame) > 0);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			expect(snapshots(first)).toHaveLength(1);
+			// The link drops before the host acknowledged the snapshot: the next link carries it again.
+			shipper.down();
+			const second: Frame[] = [];
+			shipper.up((frame) => second.push(frame) > 0);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			expect(snapshots(second)).toHaveLength(1);
+			expect(await shipper.drained(100)).toBe(false);
+			shipper.receive({ t: "lines-ack", commit: Number(snapshots(second)[0]?.commit), snapshot: true });
+			expect(await shipper.drained(2_000)).toBe(true);
+			await wrapped.closed?.();
+		});
+	});
+
 	it("sends what a dead process left in the outbox when the store opens after the host said where it is", async () => {
 		await withWorld(async (made) => {
 			mkdirSync(join(made.directory, "store"), { recursive: true });
