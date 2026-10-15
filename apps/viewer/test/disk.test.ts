@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { diskPanel, type DiskState } from '../src/disk.ts';
-import { parseLines, validate, type Line } from '../src/format.ts';
+import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { type Node, panelsShown } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
 
@@ -102,4 +102,80 @@ test('what it does not know it skips: unknown kinds, a run.json with no generati
   assert.match(screen(extra), /No claim on a disk is in this recording/);
   const reference = parseLines(readFileSync(new URL('fixtures/reference-killed/events.jsonl', import.meta.url), 'utf8'));
   assert.equal(state(reference).seen, false);
+});
+
+// ---- what a poll can show that the hand fixture does not --------------------------------------------------------------
+
+let nextSeq = 100;
+const host = (t: number, kind: string, data: Line['data']): Line => ({ channel: 'live', source: 'host', kind, t, seq: (nextSeq += 1), data });
+const record = (t: number, generation: number, status: string, sealedSeq: number | null) =>
+  host(t, 'run.json', { gen: generation, run: 'r', status, generation, sealedSeq, wakeAt: null, holder: { driver: 'local', host: 'box', bootId: null, pid: 10 + generation, since: 'x' }, heartbeatAt: null, updatedAt: 'x', detail: null });
+const effectLine = (t: number, commit: number, gen: number, status: 'unknown' | 'completed', calls: Json[]): Line => ({
+  channel: 'durable', source: 'workflow', kind: 'agentrun.effects', gen, t, commit, order: 0, path: '/root/steps/0',
+  data: { doc: 'agentrun.effects', key: 'r\u0000step:/root/steps/0#call:0', value: { driver: 'r', name: 'charge', argsHash: 'a', status, session: 'r', result: null, intent: { tool: 'charge', argsHash: 'b' }, ...(calls.length ? { calls } : {}) }, version: 1 },
+});
+
+test('a kill names a process, and a claim is found through the process that holds it, not by the two numbers being equal', () => {
+  // The directory was resumed: process 1 holds claim generation 2.
+  const resumed = [host(0, 'process.started', { gen: 1 }), record(10, 2, 'running', 1), host(50, 'kill', { gen: 1, label: 'killed', crossing: null, kind: 'process' })];
+  const s = state(resumed);
+  assert.deepEqual(s.incarnations.map((each) => [each.gen, each.end?.how]), [[2, 'killed']]);
+  assert.match(screen(resumed), /no holder: generation 2 was killed/);
+  assert.doesNotMatch(screen(resumed), /holds the run/);
+});
+
+test('a running claim that still carries the previous release\'s seal is not released; the release is the status, with its seal', () => {
+  const polled = [host(0, 'process.started', { gen: 1 }), record(10, 2, 'running', 7)];
+  assert.equal(state(polled).incarnations[0]!.end, undefined);
+  assert.match(screen(polled), /generation 2 holds the run/);
+  const released = [...polled, record(60, 2, 'paused', 9)];
+  assert.deepEqual([state(released).incarnations[0]!.end?.how, state(released).incarnations[0]!.sealedSeq], ['released', 9]);
+});
+
+test('a release polled before its seal gets its seal from the next poll', () => {
+  const polled = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null), record(60, 1, 'sleeping', null)];
+  assert.equal(state(polled).incarnations[0]!.sealedSeq, undefined);
+  assert.match(screen(polled), /released the run \(sleeping\), no sealed sequence/);
+  const sealed = [...polled, record(70, 1, 'sleeping', 12)];
+  assert.equal(state(sealed).incarnations[0]!.sealedSeq, 12);
+  assert.match(screen(sealed), /sealed at sequence 12/);
+});
+
+test('a fence that arrives after the next claim replaces the ending the panel inferred', () => {
+  const polled = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null), host(50, 'process.started', { gen: 2 }), record(60, 2, 'running', null)];
+  assert.equal(state(polled).incarnations[0]!.end?.how, 'replaced');
+  const fenced = [...polled, host(70, 'fenced', { gen: 1, code: 'FENCED', message: 'm', exit: 75 })];
+  assert.equal(state(fenced).incarnations[0]!.end?.how, 'fenced');
+  assert.match(screen(fenced), /fenced: FENCED/);
+});
+
+test('a kill or a fence stops the calls in flight at once, before any later line says so', () => {
+  const asked = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null), effectLine(20, 3, 1, 'unknown', [])];
+  assert.match(screen(asked), /charge .* in flight in generation 1/);
+  const killed = [...asked, host(40, 'kill', { gen: 1, label: 'gone', crossing: null, kind: 'box' })];
+  assert.match(screen(killed), /charge .* cut in generation 1/);
+  assert.doesNotMatch(screen(killed), /in flight/);
+  const fenced = [...asked, host(40, 'fenced', { gen: 1, code: 'FENCED', message: 'm', exit: 75 })];
+  assert.match(screen(fenced), /charge .* cut in generation 1/);
+});
+
+test('a completed call whose outside calls were only failed or unknown is not shown as made once', () => {
+  const failed = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null), effectLine(20, 3, 1, 'completed', [{ outcome: 'failed' }, { outcome: 'unknown' }])];
+  const text = screen(failed);
+  assert.doesNotMatch(text, /charge step:\S+ made once/);
+  assert.match(text, /1 paid call: 0 made once, 1 with no applied call/);
+  assert.match(text, /charge .* completed, but no applied call is recorded: no payment is proven/);
+});
+
+test('a call that recorded two applied calls and was cut before it completed shows the repeat', () => {
+  const cut = [
+    host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null),
+    effectLine(20, 3, 1, 'unknown', [{ outcome: 'applied', at: 1 }]),
+    host(40, 'kill', { gen: 1, label: 'gone', crossing: null, kind: 'process' }),
+    host(60, 'process.started', { gen: 2 }), record(70, 2, 'running', null),
+    effectLine(80, 4, 2, 'unknown', [{ outcome: 'applied', at: 1 }, { outcome: 'applied', at: 2 }]),
+  ];
+  const text = screen(cut);
+  assert.match(text, /charge .* made 2 times \(generations 1, 2\), not completed/);
+  assert.match(text, /1 repeated/);
 });

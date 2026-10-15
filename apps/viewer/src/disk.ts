@@ -48,13 +48,17 @@ export type DiskState = {
   delegations: Record<string, { t: number; orphaned: boolean }>;
   /** The effect's label and workflow path, by the shell's document identity (the key the counter fold uses). */
   effects: Record<string, { label: string; path?: string }>;
+  /** Each process the supervisor started and the claim generation it came to hold (run.json carries no process; the claim a process holds is the next one polled after it started). */
+  owners: { process: number; claim?: number }[];
+  /** The durable generation in flight when a kill or a fence landed: its unfinished calls are cut, whatever the next line says. */
+  cuts: number[];
   ended: boolean;
   lastT: number;
   counters: CounterState;
 };
 
 const diskKnown = (line: Line): boolean => isSupervisor(line) && (DISK_KINDS.has(line.kind) || line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result');
-const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, ended: false, lastT: 0, counters: counterFold.init() });
+const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, owners: [], cuts: [], ended: false, lastT: 0, counters: counterFold.init() });
 
 const diskTime = (t: number) => `${(t / 1000).toFixed(1)} s`;
 const diskHolderOf = (value: Json | undefined): DiskHolder | undefined => {
@@ -67,7 +71,8 @@ const diskHolderText = (holder: DiskHolder | undefined) => (holder ? `${holder.d
 /** Close the incarnation of `gen` (the newest with that number) unless it already ended. */
 const diskEnd = (incarnations: DiskIncarnation[], gen: number, end: DiskEnd, sealedSeq?: number): DiskIncarnation[] => {
   const at = incarnations.map((each) => each.gen).lastIndexOf(gen);
-  if (at < 0 || incarnations[at]!.end !== undefined) return incarnations;
+  // An ending a poll inferred (`replaced`) gives way to a fact a later line states (a fence, a kill).
+  if (at < 0 || (incarnations[at]!.end !== undefined && !(incarnations[at]!.end!.how === 'replaced' && end.how !== 'replaced'))) return incarnations;
   return incarnations.map((each, index) => (index === at ? { ...each, end, ...(sealedSeq !== undefined ? { sealedSeq } : {}) } : each));
 };
 
@@ -87,7 +92,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
   switch (line.kind) {
     case 'process.started': {
       const gen = diskNum(data?.gen);
-      return gen === undefined ? next : add({ t: line.t, what: 'start', gen, text: `process ${gen} started` });
+      return gen === undefined ? next : { ...add({ t: line.t, what: 'start', gen, text: `process ${gen} started` }), owners: [...next.owners, { process: gen }] };
     }
     case 'kill': {
       const gen = diskNum(data?.gen);
@@ -95,7 +100,10 @@ function diskReduce(state: DiskState, line: Line): DiskState {
       const box = data?.kind === 'box';
       const label = diskStr(data?.label) ?? 'no label';
       const grown = add({ t: line.t, what: 'kill', gen, text: `${box ? 'the box of process' : 'process'} ${gen} ${box ? 'taken away' : 'killed'}: ${label}` });
-      return { ...grown, incarnations: diskEnd(grown.incarnations, gen, { how: 'killed', t: line.t, detail: label, box }) };
+      // The kill names a process; the claim it held is the one polled after it started.
+      const claim = grown.owners.find((owner) => owner.process === gen)?.claim;
+      return { ...grown, cuts: grown.counters.lastGen !== undefined ? [...grown.cuts, grown.counters.lastGen] : grown.cuts,
+        incarnations: claim === undefined ? grown.incarnations : diskEnd(grown.incarnations, claim, { how: 'killed', t: line.t, detail: label, box }) };
     }
     case 'result':
       return { ...add({ t: line.t, what: 'result', text: 'the result was delivered' }), ended: true };
@@ -112,15 +120,21 @@ function diskReduce(state: DiskState, line: Line): DiskState {
       if (latest === undefined || generation > latest.gen) {
         // A claim: the previous holder, if no kill or fence line ended it, was replaced between two polls.
         const replaced = latest && latest.end === undefined ? diskEnd(grown.incarnations, latest.gen, { how: 'replaced', t: line.t, detail: 'a new generation claimed the run', box: false }) : grown.incarnations;
-        grown = { ...grown, incarnations: [...replaced, { gen: generation, holder, from: line.t }], events: [...grown.events, { t: line.t, what: 'claim', gen: generation, text: `generation ${generation} claims the run: ${diskHolderText(holder)}` }] };
+        const free = grown.owners.map((owner) => owner.claim).lastIndexOf(undefined);
+        grown = { ...grown, owners: grown.owners.map((owner, index) => (index === free ? { ...owner, claim: generation } : owner)), incarnations: [...replaced, { gen: generation, holder, from: line.t }], events: [...grown.events, { t: line.t, what: 'claim', gen: generation, text: `generation ${generation} claims the run: ${diskHolderText(holder)}` }] };
       } else if (generation === latest.gen) {
         grown = { ...grown, incarnations: grown.incarnations.map((each, index) => (index === grown.incarnations.length - 1 ? { ...each, holder: holder ?? each.holder } : each)) };
       }
-      if (generation === grown.incarnations.at(-1)?.gen && (sealedSeq !== null || RELEASED.has(status))) {
-        const was = grown.incarnations.at(-1)!;
-        if (was.end === undefined) {
+      const newest = grown.incarnations.at(-1);
+      if (generation === newest?.gen && RELEASED.has(status)) {
+        // A release is the status. A running record may still carry the previous release's seal (the package clears it once the store is open), so a seal alone proves nothing.
+        if (newest.end === undefined) {
           grown = { ...grown, incarnations: diskEnd(grown.incarnations, generation, { how: 'released', t: line.t, detail: status, box: false }, sealedSeq ?? undefined),
             events: [...grown.events, { t: line.t, what: 'seal', gen: generation, text: `generation ${generation} released the run (${status})${sealedSeq !== null ? `, sealed at sequence ${sealedSeq}` : ', no sealed sequence'}` }] };
+        } else if (newest.end.how === 'released' && newest.sealedSeq === undefined && sealedSeq !== null) {
+          // The package writes the status first and the seal after: the later record carries it.
+          grown = { ...grown, incarnations: grown.incarnations.map((each, index) => (index === grown.incarnations.length - 1 ? { ...each, sealedSeq } : each)),
+            events: [...grown.events, { t: line.t, what: 'seal', gen: generation, text: `generation ${generation}'s release was sealed at sequence ${sealedSeq}` }] };
         }
       } else if (state.record?.status !== status && state.record !== undefined) {
         grown = { ...grown, events: [...grown.events, { t: line.t, what: 'status', gen: generation, text: `run.json says ${status}` }] };
@@ -148,7 +162,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
       if (gen === undefined) return next;
       const code = diskStr(data?.code) ?? 'FENCED';
       const grown: DiskState = { ...next, seen: true, events: [...next.events, { t: line.t, what: 'fence', gen, text: `generation ${gen} was fenced: its first refused write (${code}${diskNum(data?.exit) !== undefined ? `, exit ${diskNum(data?.exit)}` : ''})` }] };
-      return { ...grown, incarnations: diskEnd(grown.incarnations, gen, { how: 'fenced', t: line.t, detail: code, box: false }) };
+      return { ...grown, cuts: grown.counters.lastGen !== undefined ? [...grown.cuts, grown.counters.lastGen] : grown.cuts, incarnations: diskEnd(grown.incarnations, gen, { how: 'fenced', t: line.t, detail: code, box: false }) };
     }
     default:
       return next;
@@ -156,7 +170,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
 }
 
 /** A paid call (an `agentrun.effects` entry) as the counter fold sees it, in words. */
-type DiskCall = { id: string; label: string; path?: string; admitted: number | undefined; verdict: 'once' | 'repeated' | 'twice' | 'in-flight' | 'cut' | 'not-measured'; applied: number[]; text: string };
+type DiskCall = { id: string; label: string; path?: string; admitted: number | undefined; verdict: 'once' | 'repeated' | 'twice' | 'in-flight' | 'cut' | 'not-measured' | 'unproven'; applied: number[]; text: string };
 
 function diskCalls(state: DiskState): DiskCall[] {
   return Object.entries(state.counters.effects).map(([id, effect]): DiskCall => {
@@ -165,14 +179,20 @@ function diskCalls(state: DiskState): DiskCall[] {
     const path = state.effects[id]?.path;
     const base = { id, label, ...(path ? { path } : {}), admitted: effect.admitted, applied };
     const distinct = new Set(applied).size;
-    if (effect.status === 'completed') {
-      if (applied.length === 0 && !state.counters.reported[id]) return { ...base, verdict: 'not-measured', text: 'completed; the host reported no calls, so once-ness is not measured' };
-      if (applied.length <= 1) return { ...base, verdict: 'once', text: `made once${applied[0] !== undefined ? `, in generation ${applied[0]}` : ''}` };
-      return distinct < applied.length && distinct === 1
-        ? { ...base, verdict: 'twice', text: `made ${applied.length} times in generation ${applied[0]}, which no kill explains` }
-        : { ...base, verdict: 'repeated', text: `made ${applied.length} times (generations ${applied.join(', ')})` };
+    // Repeats come first: a call records each outside call while its effect is still unknown, so two applied calls are a repeat whether or not the effect completed.
+    if (applied.length > 1) {
+      const tail = effect.status === 'completed' ? '' : ', not completed';
+      return distinct === 1
+        ? { ...base, verdict: 'twice', text: `made ${applied.length} times in generation ${applied[0]}, which no kill explains${tail}` }
+        : { ...base, verdict: 'repeated', text: `made ${applied.length} times (generations ${applied.join(', ')})${tail}` };
     }
-    const alive = !state.ended && effect.admitted !== undefined && effect.admitted === state.counters.lastGen;
+    if (effect.status === 'completed') {
+      if (applied.length === 1) return { ...base, verdict: 'once', text: `made once, in generation ${applied[0]}` };
+      return state.counters.reported[id]
+        ? { ...base, verdict: 'unproven', text: 'completed, but no applied call is recorded: no payment is proven' }
+        : { ...base, verdict: 'not-measured', text: 'completed; the host reported no calls, so once-ness is not measured' };
+    }
+    const alive = !state.ended && effect.admitted !== undefined && effect.admitted === state.counters.lastGen && !state.cuts.includes(effect.admitted);
     return alive ? { ...base, verdict: 'in-flight', text: `in flight in generation ${effect.admitted}` }
       : { ...base, verdict: 'cut', text: `cut in generation ${effect.admitted ?? '?'} before it finished: unknown, not sent again` };
   });
@@ -202,6 +222,7 @@ function diskView(state: DiskState, context: ViewContext): Node {
   const once = calls.filter((call) => call.verdict === 'once').length;
   const repeated = calls.filter((call) => call.verdict === 'repeated' || call.verdict === 'twice').length;
   const cut = calls.filter((call) => call.verdict === 'cut').length;
+  const unproven = calls.filter((call) => call.verdict === 'unproven').length;
   return h('div', { class: 'disk' },
     h('div', { class: 'dk-badges' },
       holding && holding.end === undefined && h('span', { class: 'dk-badge ok' }, `generation ${holding.gen} holds the run`),
@@ -216,7 +237,7 @@ function diskView(state: DiskState, context: ViewContext): Node {
     h('h5', {}, 'Paid calls'),
     calls.length === 0 ? h('p', { class: 'empty' }, 'No paid call is in the store yet.')
       : h('div', {},
-        h('p', { class: 'dk-sum' }, `${calls.length} paid call${calls.length === 1 ? '' : 's'}: ${once} made once${repeated > 0 ? `, ${repeated} repeated` : ''}${cut > 0 ? `, ${cut} cut by a kill` : ''}`),
+        h('p', { class: 'dk-sum' }, `${calls.length} paid call${calls.length === 1 ? '' : 's'}: ${once} made once${repeated > 0 ? `, ${repeated} repeated` : ''}${cut > 0 ? `, ${cut} cut by a kill` : ''}${unproven > 0 ? `, ${unproven} with no applied call` : ''}`),
         h('ul', { class: 'dk-calls' }, ...calls.map((call) => h('li', { class: `dk-call ${call.verdict}${diskDim(call.path, context.focus)}`, ...(call.path ? { path: call.path } : {}) },
           h('span', { class: 'dk-label' }, call.label), h('span', { class: `dk-verdict ${call.verdict}` }, call.text))))));
 }
