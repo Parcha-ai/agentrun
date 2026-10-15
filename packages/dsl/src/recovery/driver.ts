@@ -250,6 +250,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   const writtenStates = new Set<string>();
   const lastItems = new Map<string, string>();
   const fileOwners = new Map<string, string>();
+  /** At a restore: the files the driver's own record keeps (the latest write of each, whoever made it), and, for a file
+   *  only item records keep, the revision of the record it was taken from (a later record's write is the latest). */
+  const driverFiles = new Set<string>();
+  const fileRevisions = new Map<string, number>();
+  /** The effects this process admitted, landed or still queued on the commit chain: an item's record lists each one it
+   *  owns, even one whose admission has not landed when the record is built. */
+  const queued = new Set<string>();
   const deltas = new WeakMap<object, StateDelta>();
   const digests = new WeakMap<object, string>();
   const digestOf = (state: object): string => { let digest = digests.get(state); if (digest === undefined) { digest = hash(state); digests.set(state, digest); } return digest; };
@@ -292,7 +299,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         if (item === undefined) continue;
         const path = paths[index]!;
         const record = item as unknown as ItemRecord;
-        const valid = record.driver === driver && record.map === mapPath && record.index === index && record.base === entry.base
+        const valid = record.driver === driver && record.map === mapPath && record.index === index && record.base === entry.base && Number.isSafeInteger(record.revision)
           && ["running", "committed", "failed"].includes(record.status) && isRecord(record.frame) && Array.isArray(record.frame.done)
           && [record.frame.states, record.frame.chains, record.frame.loops, record.frame.routes, record.frame.inputs, record.frame.steps, record.clocks, record.files, record.unknownResponses, record.maps].every(isRecord)
           && Array.isArray(record.effects) && record.effects.every((id) => typeof id === "string");
@@ -301,7 +308,11 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         frame.done.push(...record.frame.done);
         Object.assign(frame.steps, record.frame.steps);
         Object.assign(snapshot.clocks, record.clocks);
-        for (const [name, sha256] of Object.entries(record.files)) { snapshot.files[name] = sha256 as string; fileOwners.set(name, `${path}/body`); }
+        for (const [name, sha256] of Object.entries(record.files)) {
+          // A committed item keeps the record it last wrote, so a file a later step wrote again holds an older hash there.
+          if (driverFiles.has(name) || (fileRevisions.get(name) ?? -1) > record.revision) continue;
+          snapshot.files[name] = sha256 as string; fileOwners.set(name, `${path}/body`); fileRevisions.set(name, record.revision);
+        }
         if (Object.keys(record.unknownResponses).length) Object.assign(snapshot.unknownResponses ??= {}, record.unknownResponses);
         if (!committed) {
           for (const [at, delta] of Object.entries(record.frame.states)) {
@@ -331,6 +342,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const states: Record<string, State> = {};
     for (const [at, sha256] of Object.entries(pin.states)) states[at] = await stateBy(sha256);
     const restored = { ...rest, schema: FROZEN_SNAPSHOT_SCHEMA, pin: { ...pin, done: [...pin.done], states }, clocks: { ...rest.clocks }, files: { ...rest.files } } as Snapshot;
+    for (const name of Object.keys(restored.files)) driverFiles.add(name);
     // A failed map's finished results: the list of their slots is one value kept by its digest, each slot the digest of
     // its result or null for an item that never finished.
     if (pin.partial !== undefined) {
@@ -440,7 +452,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     for (const [name, sha256] of Object.entries(snapshot.files)) { const build = own(fileOwners.get(name)); if (build === undefined) files[name] = sha256; else if (build) build.record.files[name] = sha256; }
     const unknownResponses: Record<string, unknown> = {};
     for (const [id, value] of Object.entries(snapshot.unknownResponses ?? {})) { const build = own(frozenEffectPath(id)?.path); if (build === undefined) unknownResponses[id] = value; else if (build) build.record.unknownResponses[id] = value; }
-    for (const id of [...journal.effects().map((effect) => effect.id), ...(admitting === undefined || journal.effect(admitting) ? [] : [admitting])]) {
+    for (const id of new Set([...journal.effects().map((effect) => effect.id), ...queued, ...(admitting === undefined ? [] : [admitting])])) {
       const build = own(frozenEffectPath(id)?.path);
       if (build) build.record.effects.push(id);
     }
@@ -483,6 +495,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   };
   /** One write of the driver's state, in the layout this open keeps. */
   const writeOf = (admitting?: string): { state: unknown; parts?: (revision: number) => RecoveryParts; owner?: string } => {
+    if (admitting !== undefined) queued.add(admitting);
     if (moving && basesKnown()) { moving = false; layoutV4 = true; }
     return layoutV4 ? keyedWrite(admitting) : { state: serial() };
   };
