@@ -21,7 +21,7 @@ files, downloaded once and checked by SHA-256.
 
 ## Keys (only for a live run; the first run needs none)
 
-The run names every model by its provider and public model id. By default it uses the models the published replay was recorded
+For now a live run uses your own model provider key. The run names every model by its provider and public model id. By default it uses the models the published replay was recorded
 with: the lead `openai/gpt-6-luna` and the eyes `google/gemini-3.7-flash`. Set the keys of the providers you use, as environment
 variables in the shell that runs the example:
 
