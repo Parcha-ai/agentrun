@@ -24,6 +24,7 @@
     { "point": "effect.kept published", "n": 3, "why": "the third operator's published figure is kept and not yet committed: the worst moment for a paid call" }
   ],
   "panels": ["workflow-map", "vision"],
+  "sources": "examples/hero/sources.json",
   "tools": [
     { "name": "published", "local": "fakes", "hosted": null }
   ],

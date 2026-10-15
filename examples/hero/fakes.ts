@@ -14,7 +14,7 @@ export type Grid = { id: string; operator: string; country: string; url: string;
 
 /** The operators `sources.json` lists (the file records how each page was checked by hand). */
 export function readGrids(): Grid[] {
-  return sources.sources.map((entry) => ({
+  return sources.pages.map((entry) => ({
     id: entry.id, operator: entry.operator, country: entry.country, url: entry.dashboardUrl, chart: entry.chart, numbers: entry.numbers, peakOf: entry.peakOf, peakUnit: entry.peakUnit, publishedUrl: entry.publishedDataUrl,
   }));
 }

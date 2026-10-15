@@ -54,7 +54,7 @@ value, a note and `cites`, each cite naming the screenshot's `blob` and the look
 
 ## The sources
 
-`sources.json` lists the nine operators and how each page was checked by hand: the dashboard, which chart, the two numbers, where
+`sources.json` lists the nine operators as `pages` (visited live by the agent, never fetched) and how each was checked by hand: the dashboard, which chart, the two numbers, where
 the same mix is published as data, and the site's `robots.txt`. It also lists the operators left out and why. The rules for every
 entry:
 

@@ -13,7 +13,7 @@ import sources from './sources.json' with { type: 'json' };
 /** One operator of `sources.json`, as the job takes it. */
 type Grid = { id: string; operator: string; country: string; url: string; chart: string; numbers: string; peakOf: string; peakUnit: string; publishedUrl: string };
 
-const GRIDS: Grid[] = sources.sources.map((entry) => ({
+const GRIDS: Grid[] = sources.pages.map((entry) => ({
   id: entry.id, operator: entry.operator, country: entry.country, url: entry.dashboardUrl, chart: entry.chart, numbers: entry.numbers, peakOf: entry.peakOf, peakUnit: entry.peakUnit, publishedUrl: entry.publishedDataUrl,
 }));
 

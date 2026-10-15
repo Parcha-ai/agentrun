@@ -21,13 +21,13 @@ const NINE = ['caiso', 'ercot', 'nyiso', 'isone', 'ieso', 'eirgrid', 'bpa', 'tra
 const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'hero-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 
 test('sources.json lists nine operators, each with a dashboard and a published figure, and none of the excluded', () => {
-  assert.deepEqual(sources.sources.map((source) => source.id), NINE);
-  for (const source of sources.sources) {
+  assert.deepEqual(sources.pages.map((source) => source.id), NINE);
+  for (const source of sources.pages) {
     assert.match(source.dashboardUrl, /^https?:\/\//, source.id);
     assert.ok(source.publishedDataUrl && source.chart && source.numbers, source.id);
     assert.ok(source.checked?.date && source.robots, `${source.id} says how and when it was checked`);
   }
-  const names = sources.sources.map((source) => source.operator);
+  const names = sources.pages.map((source) => source.operator);
   for (const excluded of sources.excluded) assert.ok(!names.includes(excluded.operator), `${excluded.operator} is excluded and listed`);
   assert.equal(sources.rules.length, 4);
 });
