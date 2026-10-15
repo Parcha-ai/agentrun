@@ -190,6 +190,8 @@ class FakeControl implements SupervisorControl {
   delegations: Delegation[] = [];
   users = new Map<string, { nickname: string; token: string }>();
   ops: string[] = [];
+  /** getObject of a key under this prefix never answers. */
+  hangUnder: string | null = null;
   /** The next this many removeUser calls fail. */
   removeFails = 0;
   #n = 0;
@@ -197,6 +199,7 @@ class FakeControl implements SupervisorControl {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -431,6 +434,22 @@ describe("archilPlace", () => {
     control.ops.length = 0;
     await assert.rejects(at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) }), (e: unknown) => e instanceof PlaceError && e.code === "HELD");
     assert.ok(!control.ops.some((o) => o.startsWith("revoke") || o.startsWith("start")), control.ops.join(", "));
+  });
+
+  it("every disk call the place makes is bounded: a recovery whose run.json read stalls fails CONTROL_API_FAILED instead of waiting forever", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, ensure: { controlTimeoutMs: 50 } });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    await at.kill(first, "box");
+    const t2 = await at.token!(2);
+    control.hangUnder = `runs/${ID}/run.json`;
+    const ended = await Promise.race([
+      at.recover(first, "box", { gen: 2, env: {}, stdin: t2 }).then(() => "recovered", (e: unknown) => e),
+      sleep(5_000).then(() => "still waiting"),
+    ]);
+    assert.equal((ended as { code?: string }).code, "CONTROL_API_FAILED", String(ended));
+    control.hangUnder = null;
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {
