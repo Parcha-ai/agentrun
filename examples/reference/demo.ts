@@ -26,6 +26,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import type { BoxProvider } from '@parcha/pi-transport';
 import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { tapBox } from './boxes.ts';
+import { capJudge } from './judge.ts';
 import { crossings, tapFakes, tapHost, type Crossing, type EffectWindow } from './crossings.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
@@ -133,6 +134,8 @@ async function child(options: DemoOptions) {
     const boxes = provider ? tapBox(provider, { cross, window, ...(recorder ? { recorder } : {}) }) : undefined;
     const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
     tapHost(local.host, cross, window);
+    // The judge seam: Jev's caps and list price for every demo's typed questions, the count kept in the run's directory.
+    local.host.decisions = { ...local.host.decisions, runJudge: capJudge(local.host.decisions.runJudge, join(place.root, 'judge-spent.jsonl')) };
     if (parts.host) Object.assign(local.host, parts.host);
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;

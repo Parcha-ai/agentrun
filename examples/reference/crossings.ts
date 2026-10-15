@@ -12,6 +12,8 @@ export type Crossing = { point: string; n: number; pid: number };
 /** The child's crossing function for the kills planned for this process (none: it only logs). */
 export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now()): Cross {
   let n = 0;
+  // A storm takes no crossing before the process has opened the journal and begun its first node: a kill earlier than that leaves a generation the journal never recorded.
+  let begun = false;
   const seen = new Map<string, number>();
   const done = new Set<number>();
   return (point, options = {}) => {
@@ -24,8 +26,11 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const tool = plan?.tools.findIndex((entry, index) => !done.has(index) && 'point' in entry && entry.point === point && times === entry.n) ?? -1;
     if (tool >= 0) { done.add(tool); return true; }
     const run = plan?.run;
-    if (!cut || !run) return false;
-    if ('storm' in run ? Date.now() - started >= run.gapMs : run.point === point && times === run.n) process.kill(process.pid, 'SIGKILL');
+    if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
+    // A named point is taken as named; a storm waits for the first node to have begun.
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && times === run.n;
+    if (point === 'event workflow.node.start') begun = true;
+    if (due) process.kill(process.pid, 'SIGKILL');
     return false;
   };
 }

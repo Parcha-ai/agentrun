@@ -48,3 +48,6 @@ export { crossings, tapFakes, tapHost } from './crossings.ts';
 export type { Cross } from './crossings.ts';
 /** The box provider the entry hands a demo, with its crossings (`transport.box.exec`: a box command in flight) and transport box lines built in. */
 export { tapBox, BOX_CROSSINGS } from './boxes.ts';
+
+/** The judge seam: Jev's caps (50 requests, 40,000 tokens; the next is refused with JEV_CAP_REACHED, a failed request counts and a refused one does not) and Jev's public list price, for every demo. */
+export { capJudge, jevCost, JEV_CAPS, JEV_LIST_PRICE } from './judge.ts';

@@ -165,7 +165,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
-| `--local-chrome` | with `--live` and no Browserbase key: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used whenever its key is set; a local Chrome is never chosen for you |
+| `--local-chrome` | with `--live` and no Browserbase key pair: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used only when `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` are both set, decided before anything starts (a half pair is named, never used); a local Chrome is never chosen for you |
 | `--dir <path>` | keeps the run's directory |
 | `--json` | the result as one JSON object |
 
@@ -173,7 +173,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 
 The parts of `demo.json` the entry acts on:
 
-- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs`. The template's single `kill` is a list of one.
+- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
 - `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
 - `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. `runIn: true` also runs the job's own disk tools in a box of it.
 
@@ -197,3 +197,7 @@ A crossing is a named point the child takes; `kills[].point` names one, and the 
 A crossing taken inside a tool call (`transport.box.*` from a tool that makes its own box) is never a `target: "run"` kill point, for the reason `tool.dispatch` is not. It can be a `target: "tool"` kill.
 
 The transport box lines are live lines of source `transport`: `box.created` `{ box, provider }`, `box.killed` `{ box, crossing }` (written before the box is destroyed) and `box.ended` `{ box, provider, killed }`.
+
+### The judge seam
+
+Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.

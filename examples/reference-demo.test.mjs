@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { chooseBrowser, demo, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
+import { capJudge, chooseBrowser, crossings, demo, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
 
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
@@ -96,13 +96,19 @@ test('--max-usd: the default is twice expectedCost, and a run past the cap is st
   assert.deepEqual(validateRecording(stopped.recording), []);
 });
 
-test('the browser: Browserbase when its key is set, else a local Chrome only when asked for and only live; fakes use the fake', () => {
+test('the browser: Browserbase only when its key pair is set, else a local Chrome only when asked for and only live; a half pair is named, never used; fakes use the fake', () => {
+  const pair = { BROWSERBASE_API_KEY: 'x', BROWSERBASE_PROJECT_ID: 'p' };
   assert.equal(chooseBrowser({ live: false, env: {}, localChrome: false }), 'fake');
-  assert.equal(chooseBrowser({ live: true, env: { BROWSERBASE_API_KEY: 'x' }, localChrome: false }), 'browserbase');
-  assert.equal(chooseBrowser({ live: true, env: { BB_API_KEY: 'x', CHROME_PATH: '/c' }, localChrome: true }), 'browserbase', 'Browserbase wins when its key is set');
+  assert.equal(chooseBrowser({ live: true, env: pair, localChrome: false }), 'browserbase');
+  assert.equal(chooseBrowser({ live: true, env: { BB_API_KEY: 'x', BROWSERBASE_PROJECT_ID: 'p' }, localChrome: false }), 'browserbase', 'the alias of the key counts');
+  assert.equal(chooseBrowser({ live: true, env: { ...pair, CHROME_PATH: '/c' }, localChrome: true }), 'browserbase', 'the pair wins over a local Chrome');
   assert.equal(chooseBrowser({ live: true, env: { CHROME_PATH: '/c' }, localChrome: true }), 'chrome');
   assert.throws(() => chooseBrowser({ live: true, env: {}, localChrome: true }), /CHROME_PATH/);
   assert.throws(() => chooseBrowser({ live: true, env: { CHROME_PATH: '/c' }, localChrome: false }), /shows your address/, 'a local Chrome on real pages is never chosen for you');
+  // A half pair is not a provider that fails later: it is not chosen, and it is named.
+  assert.throws(() => chooseBrowser({ live: true, env: { BROWSERBASE_API_KEY: 'x' }, localChrome: false }), /Only BROWSERBASE_API_KEY is set: Browserbase needs BROWSERBASE_PROJECT_ID too/);
+  assert.throws(() => chooseBrowser({ live: true, env: { BROWSERBASE_PROJECT_ID: 'p' }, localChrome: false }), /Only BROWSERBASE_PROJECT_ID is set: Browserbase needs BROWSERBASE_API_KEY too/);
+  assert.equal(chooseBrowser({ live: true, env: { BROWSERBASE_API_KEY: 'x', CHROME_PATH: '/c' }, localChrome: true }), 'chrome', 'a half pair with a local Chrome asked for is the local Chrome');
 });
 
 test('the kills a spec asks for are checked: the template\'s single kill is a list of one, a storm of N is N plans, and a bad entry is refused', () => {
@@ -145,4 +151,63 @@ test('a kill\'s n picks the nth time the crossing is taken: the third node start
   const [second, third] = [await at(2), await at(3)];
   assert.equal(second.point, 'event workflow.node.start');
   assert.ok(third.n > second.n, `the third (crossing ${third.n}) is after the second (${second.n})`);
+});
+
+test('the judge seam: 50 requests and 40,000 tokens, the next refused with JEV_CAP_REACHED; a failed request counts and a refused one does not; the count survives a restart', async (t) => {
+  assert.deepEqual(JEV_CAPS, { requests: 50, tokens: 40_000 });
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  let sent = 0;
+  const ok = async () => { sent += 1; return { answers: {}, usage: { input_tokens: 10, output_tokens: 0 } }; };
+  const file = join(tmp, 'judge.jsonl');
+  const judge = capJudge(ok, file);
+  for (let index = 0; index < 50; index += 1) await judge({ label: 'q' });
+  assert.equal(sent, 50);
+  await assert.rejects(() => judge({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED' && /not sent/.test(error.message));
+  assert.equal(sent, 50, 'the 51st was refused and never sent');
+  await assert.rejects(() => capJudge(ok, file)({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', 'a restarted process continues the count');
+  // A failed request counts: three failures leave 47 requests.
+  const file2 = join(tmp, 'judge2.jsonl');
+  const failing = capJudge(async () => { throw new Error('the judge is down'); }, file2);
+  for (let index = 0; index < 3; index += 1) await assert.rejects(() => failing({ label: 'q' }), /the judge is down/);
+  const some = capJudge(ok, file2);
+  for (let index = 0; index < 47; index += 1) await some({ label: 'q' });
+  await assert.rejects(() => some({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', '3 failed + 47 answered = 50: the next is refused');
+  // The token cap: usage in and out, summed across requests.
+  const file3 = join(tmp, 'judge3.jsonl');
+  const big = capJudge(async () => ({ answers: {}, usage: { input_tokens: 15_000, output_tokens: 5_000 } }), file3);
+  await big({ label: 'q' }); await big({ label: 'q' });
+  await assert.rejects(() => big({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', '40,000 tokens spent');
+});
+
+test('the judge seam prices at Jev\'s public list price when the answer reports usage and no price of its own, and keeps a price it reports', async (t) => {
+  assert.deepEqual([JEV_LIST_PRICE.inputUsdPerMillionTokens, JEV_LIST_PRICE.outputUsdPerMillionTokens], [0.042, 0]);
+  assert.match(JEV_LIST_PRICE.source, /TypeSafe cookbook, 2026-07, jev-1.12/);
+  assert.equal(jevCost({ input_tokens: 1_000_000, output_tokens: 1_000_000 }), 0.042, 'output is free at list price');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const priced = await capJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 } }), join(tmp, 'a.jsonl'))({ label: 'q' });
+  assert.equal(priced.cost_usd, 0.021);
+  const own = await capJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 }, cost_usd: 0.5 }), join(tmp, 'b.jsonl'))({ label: 'q' });
+  assert.equal(own.cost_usd, 0.5);
+});
+
+test('a storm takes no crossing before the process has begun its first node, and a named point is taken as named', (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const storm = { run: { storm: true, gapMs: 0, kind: 'process', target: 'run', why: 'storm 1 of 1' }, tools: [] };
+  const cross = crossings(storm, undefined);
+  cross('event browser.reconciled'); cross('model.request turn 0');
+  assert.deepEqual(kills, [], 'nothing before the first node starts');
+  cross('event workflow.node.start');
+  assert.deepEqual(kills, [], 'the start of the first node is not itself a storm kill point');
+  cross('model.request turn 0');
+  assert.deepEqual(kills, ['SIGKILL'], 'the first crossing after it is');
+  // A named point earlier than any node start is still taken as named.
+  kills.length = 0;
+  const named = crossings({ run: { point: 'event browser.reconciled', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined);
+  named('event browser.reconciled');
+  assert.deepEqual(kills, ['SIGKILL']);
 });

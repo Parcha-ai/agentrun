@@ -90,16 +90,20 @@ export function parseInput(argument: string, read: (path: string) => string): Re
   return value as Record<string, unknown>;
 }
 
-/** The browser a live run drives: Browserbase when its key is set; else a local Chrome, only on a person's own machine and only when they say so with
- *  `--local-chrome` (a local Chrome on real pages shows this machine's address to every site). Fakes use the fake browser. */
+/** The browser a live run drives: Browserbase when its key PAIR is set (`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, a `oneOf` group of the demo's keys that is met
+ *  by the pair as a whole), decided here, before anything starts; else a local Chrome, only on a person's own machine and only when they say so with `--local-chrome` (a
+ *  local Chrome on real pages shows this machine's address to every site). A half pair is never used: it is named, so it is not a provider that fails later. Fakes use the fake. */
 export function chooseBrowser(options: { live: boolean; env: NodeJS.ProcessEnv; localChrome: boolean }): 'fake' | 'browserbase' | 'chrome' {
   if (!options.live) return 'fake';
-  if (options.env.BROWSERBASE_API_KEY?.trim() || options.env.BB_API_KEY?.trim()) return 'browserbase';
+  const key = options.env.BROWSERBASE_API_KEY?.trim() || options.env.BB_API_KEY?.trim();
+  const project = options.env.BROWSERBASE_PROJECT_ID?.trim();
+  if (key && project) return 'browserbase';
   if (options.localChrome) {
     if (!options.env.CHROME_PATH?.trim()) throw new Error('--local-chrome needs CHROME_PATH, the Chrome binary.');
     return 'chrome';
   }
-  throw new Error('A live run needs a browser: set BROWSERBASE_API_KEY (Browserbase), or pass --local-chrome with CHROME_PATH to drive a Chrome on your own machine. A local Chrome on real pages shows your address to each site.');
+  const half = key ? ' Only BROWSERBASE_API_KEY is set: Browserbase needs BROWSERBASE_PROJECT_ID too.' : project ? ' Only BROWSERBASE_PROJECT_ID is set: Browserbase needs BROWSERBASE_API_KEY too.' : '';
+  throw new Error(`A live run needs a browser: set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID (Browserbase), or pass --local-chrome with CHROME_PATH to drive a Chrome on your own machine.${half} A local Chrome on real pages shows your address to each site.`);
 }
 
 /** The spend cap in dollars: `--max-usd`, else twice the spec's `expectedCost`, else none. */
