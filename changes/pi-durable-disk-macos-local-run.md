@@ -17,3 +17,5 @@ kind: feature
 - `currentBootId()` and `procStartTicks()` read the same table: on macOS the boot session's uuid, and the second a
   process started.
 - A `macos-latest` CI job runs the stranger's no-key quickstart and the local run's tests on a Mac.
+- `status --dir` says `unknown` when this machine's boot or process listing cannot be read, where it said `gone` or
+  `stopped`.

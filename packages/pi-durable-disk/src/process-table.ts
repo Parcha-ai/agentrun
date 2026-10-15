@@ -164,10 +164,14 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
   };
 }
 
+/** Test seam: a table that stands in for this machine's everywhere `processTable()` is read. */
+export const processTableHooks: { table?: ProcessTable } = {};
+
 let platformTable: { readonly platform: NodeJS.Platform; readonly table: ProcessTable } | undefined;
 
 /** This machine's table: ps on macOS, /proc elsewhere. */
 export function processTable(): ProcessTable {
+  if (processTableHooks.table !== undefined) return processTableHooks.table;
   if (platformTable?.platform !== process.platform) {
     platformTable = { platform: process.platform, table: process.platform === "darwin" ? psTable() : procTable() };
   }
