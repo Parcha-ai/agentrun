@@ -10,3 +10,9 @@ kind: feature
   is never a finished recording.
 - `scripts/recording/validate.mjs` imports the same scanner instead of its own copy, and re-exports it, so the
   validator and the hosted gallery's gate refuse exactly what the recorder refuses.
+- The scanner refuses a JSON Web Token (`jwt`: a base64url JSON header and payload and a signature, the shape of a
+  ChatGPT sign-in's access and id tokens) and a Browserbase API key (`bb_live_`, the prefix Browserbase's docs show), in
+  a line, a blob or the manifest, and behind a JSON escape too. The source export keeps its own list
+  (`scripts/export-source.mjs`), unchanged.
+- The hosted gallery's gate scans every published text file as the recorder does, raw and decoded when it is JSON, so
+  an escaped credential in a blob no line names is found too.

@@ -53,6 +53,35 @@ test('a blob not named by its SHA-256, or not hashing to its name, is refused', 
   assert.ok(found.some((problem) => problem.endsWith('does not hash to its name')), found.join('\n'));
 });
 
+test('a JWT (a sign-in token) or a Browserbase key in a tool result, a text blob or the manifest is found, escaped in JSON too', (t) => {
+  // Made here from fake JSON, signed by nothing; and a key in the shape Browserbase's docs show (`bb_live_...`).
+  const jwt = `${[{ alg: 'RS256', typ: 'JWT' }, { sub: 'test-user', aud: 'https://example.invalid', exp: 0 }].map((part) => Buffer.from(JSON.stringify(part)).toString('base64url')).join('.')}.${Buffer.from('a test fixture, not a signature').toString('base64url')}`;
+  const escaped = JSON.stringify(jwt).replaceAll('eyJ', '\\u0065yJ');
+  const browserbase = `bb_live_${'Q7x-'.repeat(6)}`;
+  const toolResult = (text) => JSON.stringify({ channel: 'live', source: 'pi', kind: 'tool_execution_end', gen: 1, t: 1e9, seq: 1e6, data: { toolName: 'signin', result: { content: [{ type: 'text', text }] } } });
+  const append = (line) => (dir) => {
+    const file = join(dir, 'reference-job', 'events.jsonl');
+    writeFileSync(file, `${readFileSync(file, 'utf8')}${line}\n`);
+  };
+  const blob = (text, ext) => (dir) => writeFileSync(join(dir, 'reference-job', 'blobs', `${createHash('sha256').update(text).digest('hex')}.${ext}`), text);
+  const titled = (title) => (dir) => {
+    const manifest = join(dir, 'reference-job', 'manifest.json');
+    writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), title }));
+  };
+  const cases = [
+    ['a tool result', append(toolResult(`signed in: ${jwt}`)), /^recordings\/reference-job\/events\.jsonl: contains a jwt$/],
+    ['a text blob', blob(`token ${jwt}`, 'txt'), /^recordings\/reference-job\/blobs\/[0-9a-f]{64}\.txt: contains a jwt$/],
+    ['the manifest', titled(jwt), /^recordings\/reference-job\/manifest\.json: contains a jwt$/],
+    ['escaped in a line', append(toolResult('X').replace('"X"', escaped)), /^recordings\/reference-job\/events\.jsonl:\d+: contains a jwt$/],
+    ['escaped in a JSON blob no line names', blob(`{"token": ${escaped}}`, 'json'), /^recordings\/reference-job\/blobs\/[0-9a-f]{64}\.json: contains a jwt$/],
+    ['a browserbase key', append(toolResult(`the session used ${browserbase}`)), /^recordings\/reference-job\/events\.jsonl: contains a browserbase api key$/],
+  ];
+  for (const [where, edit, expected] of cases) {
+    const found = paths(built(t, edit));
+    assert.ok(found.some((problem) => expected.test(problem)), `${where}\n${found.join('\n')}`);
+  }
+});
+
 test('a credential anywhere in a published text file is found: a manifest, the page\'s script', (t) => {
   const dist = built(t, (dir) => {
     const manifest = join(dir, 'ten-kills-seed21', 'manifest.json');
