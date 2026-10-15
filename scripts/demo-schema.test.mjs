@@ -40,7 +40,7 @@ const sample = {
   kills: [{ point: 'effect.kept search', why: 'mid-call', kind: 'process', target: 'run', n: 2 }, { storm: { kills: 3, gapMs: 1000 } }],
   panels: ['workflow-map', 'vision'],
   tools: [{ name: 'landing', local: 'examples/sample/tools/index.ts', hosted: null }],
-  input: { flag: '--input', shape: 'examples/sample/workflow.ts, Input', default: { project: 'x' }, variants: {} },
+  input: { flag: '--input', shape: 'examples/sample/workflow.ts, Input', default: { project: 'x' }, variants: {}, fixtures: { spacedeck: 'examples/sample/fixtures/spacedeck' } },
   sources: 'examples/sample/sources.json', boxes: { kind: 'docker', image: 'node:22-slim' },
 };
 
@@ -57,6 +57,9 @@ test('a whole demo.json is valid, and each kind of mistake is refused', () => {
     'hosted with a tool that has no hosted source': { ...sample, targets: ['local', 'hosted'] },
     'a title of one word': { ...sample, title: 'Sample' },
     'a box of an unknown kind': { ...sample, boxes: { kind: 'vm' } },
+    'a capture that is not under fixtures/': { ...sample, input: { ...sample.input, fixtures: { spacedeck: 'examples/sample/elsewhere/spacedeck' } } },
+    'a capture whose name is not a name': { ...sample, input: { ...sample.input, fixtures: { 'Space Deck': 'examples/sample/fixtures/spacedeck' } } },
+    'fixtures as a key, not a map of captures': { ...sample, input: { ...sample.input, fixtures: { key: { project: 'x' } } } },
   };
   for (const [what, value] of Object.entries(wrong)) assert.notDeepEqual(problems(value), [], what);
   assert.deepEqual(problems({ ...sample, targets: ['local', 'hosted'], tools: [{ name: 'landing', local: 'a.ts', hosted: 'landing' }] }), [], 'hosted when every tool has a hosted source');
