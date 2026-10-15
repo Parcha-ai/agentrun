@@ -123,6 +123,15 @@ export async function readRunRecord(root: string | ClaimDir): Promise<RunRecord 
 }
 
 /**
+ * The status of a run on a local directory (`localRun`): the `run.json` under `dir`, read as `readRunStatus` reads a disk's
+ * through the control API: the same strict parser and the same `RunRecord`. A run with no `run.json` yet, or no directory,
+ * is `null`; a record that is malformed is `RunRecordError` (`RUN_JSON_INVALID`); any other read error is thrown.
+ */
+export async function readLocalRunStatus(dir: string): Promise<RunRecord | null> {
+  return (await readRunRecord(dir)) ?? null;
+}
+
+/**
  * True while the record's last heartbeat is younger than `expiryMs` on the reader's clock. The supervisor allows for
  * clock skew between hosts inside the expiry.
  */
