@@ -100,9 +100,13 @@ test('beat 2, a kill and resume: killed inside a paid call, the resumed process 
   const published = run.ledger.filter((row) => row.kind === 'tool' && row.name === 'published');
   assert.equal(published.length, 9);
   assert.equal(run.eyesRequests, 9);
-  const byProcess = published.reduce((counts, row) => ({ ...counts, [row.incarnation]: (counts[row.incarnation] ?? 0) + 1 }), {});
-  const [before, after] = Object.values(byProcess);
-  assert.ok(Object.keys(byProcess).length === 2 && before >= 3 && before + after === 9, `the killed process fetched at least the three it kept, the resumed one the rest: ${JSON.stringify(byProcess)}`);
+  // How the nine fetches split between the two processes is the scheduler's (on a loaded machine all nine branches can fetch before the third kept crossing is taken alone), so the claims are the ones that hold under any
+  // schedule: the killed process fetched at least the three it had kept when the kill came, at most two processes fetched, and the resumed one never re-fetched what the first kept: nine fetches in all, one per grid.
+  const byProcess = new Map();
+  for (const row of published) byProcess.set(row.incarnation, (byProcess.get(row.incarnation) ?? 0) + 1);
+  assert.ok(byProcess.size <= 2, `at most the two processes fetched: ${JSON.stringify([...byProcess])}`);
+  assert.ok(byProcess.get(published[0].incarnation) >= 3, `the killed process fetched at least the three it kept: ${JSON.stringify([...byProcess])}`);
+  assert.equal([...byProcess.values()].reduce((sum, count) => sum + count, 0), 9, 'nine fetches in all: none twice across the kill');
   assert.deepEqual(validateRecording(run.recording), []);
   const counted = fold(readEvents(run.recording));
   assert.deepEqual([counted.processes, counted.kills, counted.paid.workflow, counted.repeated, counted.repeatedNotMeasured, counted.unknown], [2, 1, 9, 0, 0, 0]);
