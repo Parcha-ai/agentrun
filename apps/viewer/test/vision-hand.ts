@@ -96,7 +96,7 @@ export const ACCOUNT = {
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
 
 /** The same run delivering the generic cited result (`agentrun.cited/1`): rows citing a look and where in it, a file,
- *  both, or nothing (a row not read). */
+ *  both, a page known only by its address, or nothing. */
 export const CITED = {
   format: 'agentrun.cited/1', title: 'Three pages and three photographs, read',
   rows: [
@@ -104,6 +104,8 @@ export const CITED = {
     { label: 'The first photograph', value: 'ground', cites: [{ look: K.photo1 }, { blob: PHOTOS[0]! }] },
     { label: 'A share read from a picture', value: 41, note: 'published 41.5, gap 0.5', cites: [{ blob: FILM[0]!, fragment: '#t=3.75', note: 'the picture it was read from' }] },
     { label: 'A page that was not the dashboard', value: 'failed', cites: [] },
+    { label: 'The published figure', value: '41.5%', cites: [{ url: 'https://data.example.org/figures.csv', at: '2026-10-15T00:00:00Z', note: 'the operator\'s own table' }] },
+    { label: 'A page with no web address', value: 'n/a', cites: [{ url: 'javascript:alert(1)' }] },
   ],
 };
 

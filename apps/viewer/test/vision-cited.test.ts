@@ -1,6 +1,7 @@
 // The vision panel reading the generic cited result (`agentrun.cited/1`) any run may deliver, on the hand recording of
 // vision-hand.ts made to deliver it: a row a line, a look's chip opens its receipt and moves its lane, a file's chip
-// opens the file, and a row that cites nothing was not read.
+// opens the file, a page known only by its address is linked when it is a web address, and a row that cites nothing
+// says so.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -31,19 +32,24 @@ const view = (context: Partial<ViewContext> = {}) => visionPanel.view(reduceTo(v
 test('the generic cited result reads as rows of a label, a value, a note and cites; a cite names a blob or a look', () => {
   const cited = visionCitedOf(CITED as unknown as Json)!;
   assert.equal(cited.title, 'Three pages and three photographs, read');
-  assert.deepEqual(cited.rows.map((row) => [row.label, row.value, row.cites.length]), [['The alarm', 'number 9', 1], ['The first photograph', 'ground', 2], ['A share read from a picture', '41', 1], ['A page that was not the dashboard', 'failed', 0]]);
+  assert.deepEqual(cited.rows.map((row) => [row.label, row.value, row.cites.length]), [['The alarm', 'number 9', 1], ['The first photograph', 'ground', 2], ['A share read from a picture', '41', 1],
+    ['A page that was not the dashboard', 'failed', 0], ['The published figure', '41.5%', 1], ['A page with no web address', 'n/a', 1]]);
+  assert.deepEqual(cited.rows[4]!.cites[0], { fragment: '', url: 'https://data.example.org/figures.csv', at: '2026-10-15T00:00:00Z', note: 'the operator\'s own table' }, 'a cite with a url alone, and when it was read');
   const loose = visionCitedOf({ format: 'agentrun.cited/1', rows: [{ label: 'kept', value: 1, cites: [{ fragment: '#page=1' }, { look: 'k' }] }, { value: 'no label', cites: [] }] })!;
-  assert.deepEqual(loose.rows, [{ label: 'kept', value: '1', cites: [{ look: 'k', fragment: '' }] }], 'a cite with neither a blob nor a look is left out, and a row with no label');
+  assert.deepEqual(loose.rows, [{ label: 'kept', value: '1', cites: [{ look: 'k', fragment: '' }] }], 'a cite with no blob, look or url is left out, and a row with no label');
   assert.equal(visionCitedOf({ format: 'report/1', rows: [] }), undefined);
   assert.equal(visionCitedOf(CITED as unknown as Json) !== undefined && typeof visionAccountOf(CITED as unknown as Json), 'string', 'it is not an account');
 });
 
-test('the panel draws a row a line: a look\'s chip selects its look, a file\'s chip links the file, and a row with no cite is not read', () => {
+test('the panel draws a row a line: a look\'s chip selects its look, a file\'s chip links the file, a page known by its address is linked and not kept, and a row with no cite says so', () => {
   const shown = view();
   const rows = find(shown, cls('vz-entry'));
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 6);
   assert.match(text(rows[0]!), /The alarm number 9 · read off page 2 p\.2 · box/);
-  assert.match(text(rows[3]!), /A page that was not the dashboard failed not read/);
+  assert.match(text(rows[3]!), /A page that was not the dashboard failed cites nothing/);
+  assert.match(text(rows[4]!), /The published figure 41\.5% page not kept/);
+  assert.deepEqual(find(rows[4]!, (each) => each.tag === 'a' && 'href' in each).map((each) => ('href' in each ? each.href : undefined)), ['https://data.example.org/figures.csv']);
+  assert.ok(find(rows[4]!, (each) => 'title' in each && each.title === 'the operator\'s own table · https://data.example.org/figures.csv · 2026-10-15T00:00:00Z').length === 1, 'its note, address and time on hover');
   assert.ok(find(shown, (each) => each.tag === 'h5').some((each) => text(each) === 'Three pages and three photographs, read'), 'the title heads the rows');
   const lookChips = find(shown, cls('vz-cite')).filter((each) => 'cite' in each);
   assert.deepEqual(lookChips.map((chip) => ('cite' in chip ? chip.cite : undefined)), [K.page2, K.photo1]);
@@ -64,7 +70,7 @@ test('a look chip opens the receipt, moves the pages lane to the page and draws 
 test('a cited result shows with no look at all, a box is drawn only over the page it names, and a file chip keeps its note', () => {
   const bare = [lines[0]!, lines.find((line) => line.kind === 'result')!];
   const shown = visionPanel.view(reduceTo(visionPanel, bare, bare.length), { t: 0, json });
-  assert.equal(find(shown, cls('vz-entry')).length, 4, 'the rows of a run whose eyes filed nothing');
+  assert.equal(find(shown, cls('vz-entry')).length, 6, 'the rows of a run whose eyes filed nothing');
   assert.doesNotMatch(text(shown), /The eyes have not looked at anything yet/);
   const photoBox = { format: 'agentrun.cited/1', rows: [{ label: 'a photo', value: 'ground', cites: [{ look: K.photo1, fragment: '#xywh=percent:10,10,20,20' }] }] };
   const photo = visionPanel.view(reduceTo(visionPanel, lines, lines.length), { t: 0, json: (sha) => (sha === RESULT ? photoBox as unknown as Json : undefined), cite: K.photo1 });
@@ -85,11 +91,16 @@ test('the page from file:// reads a cited result from the result blob', { skip: 
     '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-cited`], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(ran.status, 0, ran.stderr);
   const page = ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  for (const shown of ['Three pages and three photographs, read', 'The alarm number 9', 'A page that was not the dashboard failed not read']) assert.ok(page.includes(shown), `the page shows ${shown}`);
+  for (const shown of ['Three pages and three photographs, read', 'The alarm number 9', 'A page that was not the dashboard failed cites nothing', 'The published figure 41.5% page not kept']) assert.ok(page.includes(shown), `the page shows ${shown}`);
   assert.doesNotMatch(page, /breaks the format/);
-  assert.ok((ran.stdout.match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? []).every((chip) => /role="button"/.test(chip)), 'a look chip is a button');
+  const chips = (ran.stdout.match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? []).filter((chip) => /tabindex="0"/.test(chip));
+  assert.ok(chips.length === 2 && chips.every((chip) => /role="button"/.test(chip)), 'a look chip is a button');
   assert.match(ran.stdout, /<a [^>]*class="vz-cite"[^>]*>file<\/a>/, 'a file chip is a link to the blob');
   assert.match(ran.stdout, /<a [^>]*href="[^"]*#t=3\.75"[^>]*>#t=3\.75<\/a>/, 'and a cite\'s fragment is where its link opens');
+  const outside = ran.stdout.match(/<a [^>]*href="https:\/\/data\.example\.org\/figures\.csv"[^>]*>/)?.[0] ?? '';
+  assert.match(outside, /target="_blank"/, 'a page outside the recording opens apart');
+  assert.match(outside, /rel="noopener noreferrer"/);
+  assert.doesNotMatch(ran.stdout, /href="javascript:/, 'an address that is not a web page is never a link');
 });
 
 const recorded = process.env.CITED_RECORDING;

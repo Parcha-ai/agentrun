@@ -21,6 +21,7 @@ export type Node =
   | ({ tag: string; children?: Node[] } & Props)
   | { tag: 'img'; blob: string; alt: string; class?: string }
   | { tag: 'a'; blob: string; text: string; class?: string; fragment?: string }
+  | { tag: 'a'; href: string; text: string; class?: string }
   | { tag: 'frame'; session: string; class?: string };
 
 export const h = (tag: string, props: Props = {}, ...children: (Node | false | undefined)[]): Node =>

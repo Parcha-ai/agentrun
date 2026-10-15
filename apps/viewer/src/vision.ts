@@ -77,7 +77,7 @@ export const ACCOUNT_FORMAT = 'apollo11.account/1';
 
 /** The generic cited result any run may deliver (`agentrun.cited/1`, RECORDING.md): rows of a label and a value,
  *  each citing what it was read from: a file in `blobs/`, a look by its key, and where in it. */
-export type VisionCitedRow = { label: string; value: string; note?: string; cites: { blob?: string; look?: string; fragment: string; note?: string }[] };
+export type VisionCitedRow = { label: string; value: string; note?: string; cites: { blob?: string; look?: string; fragment: string; url?: string; at?: string; note?: string }[] };
 export type VisionCitedResult = { title?: string; rows: VisionCitedRow[] };
 export const CITED_FORMAT = 'agentrun.cited/1';
 
@@ -336,8 +336,9 @@ export function visionAccountOf(value: Json | undefined): VisionAccount | string
   };
 }
 
-/** The generic cited result in a result blob, or undefined when it is not one. A cite names a blob, a look or both; one
- *  that names neither is left out, and a row may cite nothing. */
+/** The generic cited result in a result blob, or undefined when it is not one. A cite names a blob, a look or both, and
+ *  may say the page it was read from and when (`url`, `at`); one with a url alone is linked, not kept; one that names none
+ *  of them is left out, and a row may cite nothing. */
 export function visionCitedOf(value: Json | undefined): VisionCitedResult | undefined {
   const result = visionObj(value);
   if (result?.format !== CITED_FORMAT) return undefined;
@@ -351,7 +352,9 @@ export function visionCitedOf(value: Json | undefined): VisionCitedResult | unde
       const blob = visionStr(cite?.blob);
       const look = visionStr(cite?.look);
       const note = visionStr(cite?.note);
-      return blob || look ? [{ ...(blob ? { blob } : {}), ...(look ? { look } : {}), fragment: visionStr(cite?.fragment) ?? '', ...(note ? { note } : {}) }] : [];
+      const url = visionStr(cite?.url);
+      const at = visionStr(cite?.at);
+      return blob || look || url ? [{ ...(blob ? { blob } : {}), ...(look ? { look } : {}), fragment: visionStr(cite?.fragment) ?? '', ...(url ? { url } : {}), ...(at ? { at } : {}), ...(note ? { note } : {}) }] : [];
     });
     const note = visionStr(row.note);
     return [{ label, value, ...(note ? { note } : {}), cites }];
@@ -500,19 +503,23 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
 }
 
 /** A cited result's rows, one a line: its label, its value, its note, and a chip per cite: a look's opens its receipt
- *  and moves its lane, a file's opens the file. A row that cites nothing was not read. */
+ *  and moves its lane, a file's opens the file, a page known only by its address is linked. A row that cites nothing
+ *  says so. */
 function visionCitedView(cited: VisionCitedResult, cite: string | undefined): Node {
   const chip = (each: VisionCitedRow['cites'][number]): Node[] => {
-    const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : 'file';
+    const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : each.blob ? 'file' : 'page';
+    const about = [each.note, each.url, each.at].filter(Boolean).join(' · ');
     return [
-      ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: each.note ?? 'the look that read it' }, words)] : []),
-      ...(each.blob ? [h('span', { ...(each.note ? { title: each.note } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
+      ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: about || 'the look that read it' }, words)] : []),
+      ...(each.blob ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
+      // A page named only by its address was not kept in the recording: it is linked, and says so.
+      ...(!each.look && !each.blob && each.url ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', href: each.url, text: words, class: 'vz-cite' }, h('span', { class: 'vz-note' }, ' not kept'))] : []),
     ];
   };
   return h('div', { class: 'vz-account' },
     ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => each.look !== undefined && each.look === cite) ? ' cited' : ''}` },
       h('span', { class: 'vz-name' }, row.label), ' ', h('b', {}, row.value), row.note !== undefined && h('span', { class: 'vz-note' }, ` · ${row.note}`), ' ',
-      ...(row.cites.length ? row.cites.flatMap(chip) : [h('span', { class: 'vz-note' }, 'not read')]))));
+      ...(row.cites.length ? row.cites.flatMap(chip) : [h('span', { class: 'vz-note' }, 'cites nothing')]))));
 }
 
 function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): Node {

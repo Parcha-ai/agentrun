@@ -38,6 +38,8 @@ Plain nodes, not DOM. The viewer draws them.
 - `{ tag: 'img', blob, alt }`: an image from the recording's `blobs/`, by its SHA-256.
 - `{ tag: 'a', blob, text, fragment? }`: a link to any file in `blobs/` (an evidence record, the result), opened beside
   the page, at `fragment` when it has one (`page=2`, `t=30`).
+- `{ tag: 'a', href, text }`: a link to a page outside the recording, drawn as a link only when `href` is an `http` or
+  `https` address, and opened apart from the viewer (`noopener`, `noreferrer`); any other address is plain text.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
@@ -88,7 +90,7 @@ unknown: show that, never its zeros.
 
 A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
 generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
-both). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
+both, and where and when it was read). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.

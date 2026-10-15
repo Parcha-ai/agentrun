@@ -229,6 +229,11 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     const url = player.recording.blobUrl(node.blob);
     return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: not in this recording]` });
   }
+  if (node.tag === 'a' && 'href' in node) {
+    // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
+    const web = URL.canParse(node.href) && ['http:', 'https:'].includes(new URL(node.href).protocol);
+    return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
+  }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
     return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
   }
