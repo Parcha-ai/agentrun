@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { build } from '../../apps/viewer/build.mjs';
-import { gateProblems } from './gate.mjs';
+import { gateProblems, STORE_LIMIT } from './gate.mjs';
 
 const recordings = new URL('../../apps/viewer/recordings/', import.meta.url).pathname;
 const secret = () => `sk-${'a1'.repeat(20)}`;
@@ -158,4 +158,27 @@ test('the gallery embeds exactly the recordings beside it, and an empty gallery 
   assert.ok(paths(dist).includes('gallery.js: is missing or does not hold the gallery'), paths(dist).join('\n'));
   const empty = built(t, (dir) => { rmSync(dir, { recursive: true }); mkdirSync(dir); });
   assert.ok(paths(empty).includes('recordings/: holds no recording: an empty gallery is never published'), paths(empty).join('\n'));
+});
+
+/** A recording edit that keeps `bytes` as reference-job's store and names it in the manifest (RECORDING.md draft 24). */
+const withStore = (bytes, { file = true } = {}) => (dir) => {
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  if (file) writeFileSync(join(dir, 'reference-job', 'blobs', `${sha}.sqlite`), bytes);
+  const manifest = join(dir, 'reference-job', 'manifest.json');
+  writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), store: { blob: sha, at: { gen: 1, commit: 1 } } }));
+  return sha;
+};
+const sqlite = (...parts) => Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(84), ...parts.map((part) => Buffer.from(part))]);
+
+test('a store is scanned byte for byte, like the text it holds', (t) => {
+  assert.deepEqual(paths(built(t, withStore(sqlite('a row of ordinary text')))), [], 'a clean store passes');
+  const found = paths(built(t, withStore(sqlite('header ', secret(), ' end'))));
+  assert.ok(found.some((problem) => /recordings\/reference-job\/blobs\/[0-9a-f]{64}\.sqlite: is a store that contains a provider secret/.test(problem)), found.join('\n'));
+});
+
+test('a store over 10 MB, or one the manifest names but blobs/ does not hold, is refused', (t) => {
+  const big = paths(built(t, withStore(Buffer.concat([sqlite(), Buffer.alloc(STORE_LIMIT)]))));
+  assert.ok(big.some((problem) => problem.includes('over the 10 MB a recording may publish')), big.join('\n'));
+  const missing = paths(built(t, withStore(sqlite('x'), { file: false })));
+  assert.ok(missing.some((problem) => /recordings\/reference-job\/manifest\.json: names a store, [0-9a-f]{64}, that is not in blobs\//.test(problem)), missing.join('\n'));
 });

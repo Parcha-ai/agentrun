@@ -80,7 +80,8 @@ The hosted gallery is published by `.github/workflows/pages.yml` on each push to
 It builds the page with `--files`, so the recordings ship as files with `recordings/index.json` and the page stays
 small however many runs it holds, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
 in it valid (`scripts/recording/validate.mjs`), holding only its manifest, its lines and its blobs; every text file
-free of credential shapes and machine paths; the gallery embedding exactly the recordings beside it. It deploys with the
+free of credential shapes and machine paths; a recording's store (a SQLite file its manifest names) at most 10 MB
+and scanned byte for byte the same way; the gallery embedding exactly the recordings beside it. It deploys with the
 job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that.
 
 ## Recordings

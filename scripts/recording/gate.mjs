@@ -2,7 +2,8 @@
 // The hosted gallery's gate: what a built viewer (`node apps/viewer/build.mjs`) would publish, checked before it goes
 // out. Every entry under recordings/ (a hidden one too) must be a valid recording (validate.mjs, its scan included); a
 // recording holds only its manifest, its lines and its blobs, each named by its own SHA-256; every text file published
-// is scanned for credential shapes and machine paths; and the gallery embeds exactly the recordings beside it. An empty
+// is scanned for credential shapes and machine paths; a recording's store (a SQLite file the manifest names, draft 24) is
+// at most 10 MB and scanned the same way, byte for byte; and the gallery embeds exactly the recordings beside it. An empty
 // gallery fails.
 //
 // `node scripts/recording/gate.mjs <dist-dir>`: prints each problem and exits 1, or says what passed.
@@ -15,6 +16,8 @@ import { validateRecording } from './validate.mjs';
 
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
+/** The largest store a recording may publish (RECORDING.md section 2, draft 24). */
+export const STORE_LIMIT = 10 * 1024 * 1024;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
 const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
@@ -38,6 +41,21 @@ export function gateProblems(dist) {
     if (!entry.isDirectory()) { add(at, 'is not a recording directory'); continue; }
     const dir = join(recordings, entry.name);
     for (const problem of validateRecording(dir)) add(`${at}/${problem.where}${problem.line === undefined ? '' : `:${problem.line}`}`, problem.message);
+    // The store is binary, so the text scan below never reads it: its bytes are scanned here, read as Latin-1 so every
+    // byte is one character and SQLite's UTF-8 text keeps its ASCII shapes.
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
+    const store = manifest?.store?.blob;
+    if (typeof store === 'string') {
+      const file = existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')).find((name) => name.startsWith(`${store}.`)) : undefined;
+      if (!file) add(`${at}/manifest.json`, `names a store, ${store}, that is not in blobs/`);
+      else {
+        const bytes = readFileSync(join(dir, 'blobs', file));
+        if (bytes.length > STORE_LIMIT) add(`${at}/blobs/${file}`, `is a store of ${bytes.length} bytes, over the 10 MB a recording may publish`);
+        const found = credentialIn(bytes.toString('latin1'));
+        if (found) add(`${at}/blobs/${file}`, `is a store that contains a ${found}`);
+      }
+    }
     for (const file of readdirSync(dir, { withFileTypes: true })) {
       if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
