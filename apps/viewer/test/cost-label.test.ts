@@ -33,6 +33,8 @@ test('on the page, a bundled scripted run reads scripted, $0 and says its provid
   build(join(out, 'dist'));
   const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
     '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=reference-job`], { encoding: 'utf8', timeout: 60_000 });
+  assert.ifError(ran.error);
+  assert.equal(ran.status, 0, ran.stderr);
   const text = ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   assert.match(text, /scripted, \$0 cost/);
   assert.doesNotMatch(text, /\$0\.0000/);

@@ -127,8 +127,9 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`) says so, and its zero is "$0",
- *  never "$0.0000", since what fakes and scripts report is not a provider's bill; a real run's in dollars to four places. */
+/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
+ *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
+ *  real run's in dollars to four places. */
 export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
   if (cost === null) return 'unknown';
   const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
@@ -158,7 +159,7 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: the run\'s priced parts were served by fakes, cassettes or scripts, so this is what they report, not a provider\'s bill.' : ''}`),
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
