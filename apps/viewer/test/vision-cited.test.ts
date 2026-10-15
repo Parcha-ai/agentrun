@@ -1,6 +1,6 @@
 // The vision panel reading the generic cited result (`agentrun.cited/1`) any run may deliver, on the hand recording of
 // vision-hand.ts made to deliver it: a row a line, a look's chip opens its receipt and moves its lane, a file's chip
-// opens the file, and a row that cites nothing says so.
+// opens the file, and a row that cites nothing was not read.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -38,12 +38,12 @@ test('the generic cited result reads as rows of a label, a value, a note and cit
   assert.equal(visionCitedOf(CITED as unknown as Json) !== undefined && typeof visionAccountOf(CITED as unknown as Json), 'string', 'it is not an account');
 });
 
-test('the panel draws a row a line: a look\'s chip selects its look, a file\'s chip links the file, and a row with no cite says so', () => {
+test('the panel draws a row a line: a look\'s chip selects its look, a file\'s chip links the file, and a row with no cite is not read', () => {
   const shown = view();
   const rows = find(shown, cls('vz-entry'));
   assert.equal(rows.length, 4);
   assert.match(text(rows[0]!), /The alarm number 9 · read off page 2 p\.2 · box/);
-  assert.match(text(rows[3]!), /A page that was not the dashboard failed cites nothing/);
+  assert.match(text(rows[3]!), /A page that was not the dashboard failed not read/);
   assert.ok(find(shown, (each) => each.tag === 'h5').some((each) => text(each) === 'Three pages and three photographs, read'), 'the title heads the rows');
   const lookChips = find(shown, cls('vz-cite')).filter((each) => 'cite' in each);
   assert.deepEqual(lookChips.map((chip) => ('cite' in chip ? chip.cite : undefined)), [K.page2, K.photo1]);
@@ -71,7 +71,7 @@ test('the page from file:// reads a cited result from the result blob', { skip: 
     '--virtual-time-budget=4000', '--dump-dom', `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-cited`], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(ran.status, 0, ran.stderr);
   const page = ran.stdout.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  for (const shown of ['Three pages and three photographs, read', 'The alarm number 9', 'A page that was not the dashboard failed cites nothing']) assert.ok(page.includes(shown), `the page shows ${shown}`);
+  for (const shown of ['Three pages and three photographs, read', 'The alarm number 9', 'A page that was not the dashboard failed not read']) assert.ok(page.includes(shown), `the page shows ${shown}`);
   assert.doesNotMatch(page, /breaks the format/);
   assert.ok((ran.stdout.match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? []).every((chip) => /role="button"/.test(chip)), 'a look chip is a button');
   assert.match(ran.stdout, /<a [^>]*class="vz-cite"[^>]*>file<\/a>/, 'a file chip is a link to the blob');

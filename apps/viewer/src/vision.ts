@@ -500,7 +500,7 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
 }
 
 /** A cited result's rows, one a line: its label, its value, its note, and a chip per cite: a look's opens its receipt
- *  and moves its lane, a file's opens the file. */
+ *  and moves its lane, a file's opens the file. A row that cites nothing was not read. */
 function visionCitedView(cited: VisionCitedResult, cite: string | undefined): Node {
   const chip = (each: VisionCitedRow['cites'][number]): Node[] => {
     const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : 'file';
@@ -512,7 +512,7 @@ function visionCitedView(cited: VisionCitedResult, cite: string | undefined): No
   return h('div', { class: 'vz-account' },
     ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => each.look !== undefined && each.look === cite) ? ' cited' : ''}` },
       h('span', { class: 'vz-name' }, row.label), ' ', h('b', {}, row.value), row.note !== undefined && h('span', { class: 'vz-note' }, ` · ${row.note}`), ' ',
-      ...(row.cites.length ? row.cites.flatMap(chip) : [h('span', { class: 'vz-note' }, 'cites nothing')]))));
+      ...(row.cites.length ? row.cites.flatMap(chip) : [h('span', { class: 'vz-note' }, 'not read')]))));
 }
 
 function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): Node {

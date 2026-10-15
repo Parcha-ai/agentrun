@@ -96,7 +96,7 @@ export const ACCOUNT = {
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
 
 /** The same run delivering the generic cited result (`agentrun.cited/1`): rows citing a look and where in it, a file,
- *  both, or nothing. */
+ *  both, or nothing (a row not read). */
 export const CITED = {
   format: 'agentrun.cited/1', title: 'Three pages and three photographs, read',
   rows: [
