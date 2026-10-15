@@ -3,6 +3,8 @@
 // for a later process of the same run.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import {
   openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta, itemState,
@@ -200,6 +202,24 @@ test('itemState rebuilds every state an item keeps from its record and the base,
   const swapped = { ...states, [item.base]: { ...states[item.base], state: { ...states[item.base].state, extra: true } } };
   assert.match(itemState(item, swapped, at).unreadable, /base does not match/);
   assert.match(itemState(null, states, at).unreadable, /not a map item's record/);
+});
+
+test('the module that defines itemState imports nothing, and with a caller\'s SHA-256 rebuilds what the default does', async () => {
+  const at = new URL('../dist/recovery/item-state.js', import.meta.url);
+  const text = readFileSync(at, 'utf8');
+  assert.deepEqual(text.match(/^\s*(import|export\s.*\sfrom)\b.*$/gm) ?? [], [], 'a static viewer inlines this module: it may import nothing');
+  assert.doesNotMatch(text, /\bimport\s*\(|\brequire\s*\(/);
+  const pure = await import(at.href);
+  const kept = inspectable();
+  await assert.rejects(run(kept.store, workflowOf(), { input: { items: itemsOf(5) }, layout: 'v4', cut: 'tally' }));
+  const record = kept.record();
+  const states = Object.fromEntries(Object.entries(record.states).map(([sha256, state]) => [sha256, { driver: KEY, sha256, state }]));
+  const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+  const pairs = Object.values(record.items).flatMap((item) => Object.keys(item.frame.states).map((path) => [item, path]));
+  assert.ok(pairs.length > 0);
+  for (const [item, path] of pairs) assert.deepEqual(pure.itemState(item, states, path, { sha256 }), itemState(item, states, path));
+  assert.equal(sha256(pure.canonicalJson({ b: 1, a: { d: 2, c: [3] } })), canonicalHash({ a: { c: [3], d: 2 }, b: 1 }), 'the digest is taken over the same JSON');
+  assert.throws(() => pure.itemState(pairs[0][0], states, pairs[0][1], {}), TypeError);
 });
 
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {
