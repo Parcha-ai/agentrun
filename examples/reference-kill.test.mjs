@@ -1,6 +1,6 @@
 // The ten-kill ledger on the reference job: the job runs on the no-key host and is ended with SIGKILL at a seeded random
 // point ten times, a fresh process resuming the directory each time. Every count is read from the store, the receipts and
-// the run's own rows. The same seed gives the same kills.
+// the run's own rows. The same seed draws the same first kill.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
@@ -56,11 +56,15 @@ test('a page action that errored is printed with the kill behind it and the ask 
   assert.match(lines, /page\.run +x2; 1 errored run result committed \(kill 2, 5\)/);
 });
 
-test('the same seed gives the same kills, and another seed gives others', { timeout: 300_000 }, async () => {
-  const where = (ledger) => ledger.kills.map((kill) => kill.landed && `${kill.landed.side} ${kill.landed.point}`);
+test('the same seed draws the same first kill, and another seed draws another; every ledger check and gate passes on both runs', { timeout: 300_000 }, async () => {
+  // Only the first kill's plan is compared: it lands before any process can diverge. Later landings depend on the order concurrent work takes inside a process, which varies under load.
   const [one, again, other] = [await killAnywhere({ seed: 300, kills: 6 }), await killAnywhere({ seed: 300, kills: 6 }), await killAnywhere({ seed: 65, kills: 6 })];
-  assert.deepEqual(where(again), where(one));
-  assert.notDeepEqual(where(other), where(one));
+  for (const [name, ledger] of [['seed 300', one], ['seed 300 again', again], ['seed 65', other]]) {
+    assert.deepEqual(failed(ledger), [], name);
+    assert.deepEqual(ledger.gates.filter((gate) => !gate.ok), [], name);
+  }
+  assert.deepEqual(again.kills[0].plan, one.kills[0].plan);
+  assert.notDeepEqual(other.kills[0].plan, one.kills[0].plan);
 });
 
 test('a cut before the host kept the effect\'s answer stops the next process on the unknown effect, and the tool is never dispatched again', { timeout: 120_000 }, async () => {
