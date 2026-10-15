@@ -182,6 +182,8 @@ export type Header = {
   see_also?: { recording: string; label: string }[];
   /** Manifest fields the demo adds (never one the entry writes itself). */
   extra?: Record<string, unknown>;
+  /** The manifest goes through it, as every line does. */
+  redact?: Redact;
 };
 
 const readLines = (path: string): Record<string, unknown>[] => {
@@ -213,9 +215,9 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
   const store = header.source.store_sha256 ?? (header.source.store && existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64));
   const started = readFileSync(startedFile(dir), 'utf8');
-  const { source, cost, generations, extra, ...rest } = header;
+  const { source, cost, generations, extra, redact: redactManifest, ...rest } = header;
   const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;
-  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...extra, format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
+  writeFileSync(join(dir, 'manifest.json'), (redactManifest ?? ((text: string) => text))(JSON.stringify({ ...extra, format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n'));
   rmSync(spool(dir), { recursive: true, force: true });
   return { lines: all.length };
 }

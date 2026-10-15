@@ -895,3 +895,66 @@ test('fakes.input is the no-key default (--input still wins), the models the liv
   } finally { console.log = log; }
   assert.ok(lines.some((line) => /^  stopped: this input needs 1 source file\(s\)/.test(line)), lines.join('\n'));
 });
+
+// ---- secrets in a recording ------------------------------------------------------------------------------------------------------------------
+
+/** A sign-in home with made-up tokens (derived from their names, so no literal in this file looks like a credential). */
+const signInHome = async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'reference-signin-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const tokens = Object.fromEntries(['access', 'refresh', 'idToken'].map((field) => [field, `made-up-${field}-token-${'x'.repeat(24)}`]));
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({ version: 1, hostId: 'host-for-the-test', credentials: { openai: { type: 'oauth', ...tokens, expires: 1_900_000_000_000, clientId: 'client-for-the-test', scopes: ['scope-for-the-test'] } } }));
+  return { home, tokens };
+};
+const filesIn = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesIn(join(dir, entry.name)) : [join(dir, entry.name)]));
+
+test('the sign-in\'s token strings are read from auth.json by key (access, refresh, id token only), a missing file is fine, and an unreadable or non-JSON one fails without a value in the message', async (t) => {
+  const { signInSecrets, signInFile } = await import('./reference/secrets.ts');
+  const { home, tokens } = await signInHome(t);
+  const found = signInSecrets(join(home, 'auth.json'));
+  assert.deepEqual(found.map((secret) => secret.key.replace(`${home}/auth.json `, '')), ['credentials.openai.access', 'credentials.openai.refresh', 'credentials.openai.idToken']);
+  assert.deepEqual(found.map((secret) => secret.value), [tokens.access, tokens.refresh, tokens.idToken], 'no expiry, client id, host id or scope is taken');
+  writeFileSync(join(home, 'short.json'), JSON.stringify({ credentials: { openai: { type: 'oauth', access: 'short', refresh: 'tiny' } } }));
+  assert.deepEqual(signInSecrets(join(home, 'short.json')), [], 'a short string is a word, not a secret');
+  assert.deepEqual(signInSecrets(join(home, 'absent.json')), [], 'no sign-in is fine');
+  mkdirSync(join(home, 'dir.json'));
+  assert.throws(() => signInSecrets(join(home, 'dir.json')), /cannot be read/);
+  writeFileSync(join(home, 'bad.json'), `{ not json ${tokens.access}`);
+  assert.throws(() => signInSecrets(join(home, 'bad.json')), (error) => /is not JSON/.test(error.message) && !error.message.includes(tokens.access));
+  assert.equal(signInFile({ AGENTRUN_HOME: '/elsewhere' }), '/elsewhere/auth.json');
+  assert.match(signInFile({}), /\.config\/agentrun\/auth\.json$/);
+});
+
+test('--record holds none of the sign-in\'s tokens in any line, text blob or the manifest, though a tool result carried each; a recording without a sign-in is unchanged', { timeout: 300_000 }, async (t) => {
+  const { home, tokens } = await signInHome(t);
+  const values = Object.values(tokens);
+  const leaked = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK: JSON.stringify(values) });
+  assert.equal(leaked.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(leaked.result.processes.at(-1)));
+  const files = filesIn(leaked.recording);
+  assert.ok(files.some((file) => file.endsWith('events.jsonl')) && files.some((file) => file.endsWith('manifest.json')));
+  for (const file of files) for (const value of values) assert.ok(!readFileSync(file).includes(value), `${file.slice(leaked.recording.length)} holds a token`);
+  assert.ok(readFileSync(join(leaked.recording, 'events.jsonl'), 'utf8').includes('[redacted]'), 'the tool result is there, with the values taken out');
+  assert.deepEqual(validateRecording(leaked.recording), []);
+  // No sign-in: nothing to redact, nothing refused, and the lines are what they were.
+  const bare = await mkdtemp(join(tmpdir(), 'reference-nosignin-'));
+  t.after(() => rm(bare, { recursive: true, force: true }));
+  const plain = await run(t, {}, ['--json'], { AGENTRUN_HOME: bare, DEMO_LEAK: JSON.stringify(values) });
+  assert.equal(plain.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(readFileSync(join(plain.recording, 'events.jsonl'), 'utf8').includes(values[0]), 'a recording without a sign-in is not touched');
+  assert.ok(!readFileSync(join(plain.recording, 'events.jsonl'), 'utf8').includes('[redacted]'));
+});
+
+test('a sign-in file that cannot be read fails the record before the run, and the record-time scan refuses a secret that slipped through, naming the key and the file and never the value', async (t) => {
+  const { scanRecording } = await import('./reference/secrets.ts');
+  const unreadable = await mkdtemp(join(tmpdir(), 'reference-unreadable-'));
+  t.after(() => rm(unreadable, { recursive: true, force: true }));
+  mkdirSync(join(unreadable, 'auth.json'));
+  await assert.rejects(() => run(t, {}, ['--json'], { AGENTRUN_HOME: unreadable }), /sign-in file .* cannot be read/);
+  const recording = await mkdtemp(join(tmpdir(), 'reference-slipped-'));
+  t.after(() => rm(recording, { recursive: true, force: true }));
+  mkdirSync(join(recording, 'blobs'));
+  const value = `made-up-slipped-token-${'y'.repeat(24)}`;
+  writeFileSync(join(recording, 'blobs', 'a.txt'), `a blob with ${value} in it`);
+  assert.throws(() => scanRecording(recording, [{ key: 'DEMO_SECRET', value }]), (error) => /DEMO_SECRET is in blobs\/a\.txt/.test(error.message) && !error.message.includes(value));
+  assert.doesNotThrow(() => scanRecording(recording, []));
+});

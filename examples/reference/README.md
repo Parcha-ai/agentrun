@@ -241,3 +241,7 @@ A demo may pass `manifest({ dir, record, input, live, models })` (`models` is wh
 ### The default input per mode, and why a run stopped
 
 `Fakes.input` is the input a no-key run takes when `--input` names none (a smaller slice than the job's own, which stays the live default); `--input` always wins. When the last process did not complete, the summary prints `  stopped: <its reason>` (a missing source file, a refused workflow).
+
+### Secrets in a recording
+
+`--record` knows the exact secret values and takes them out: the values of the environment names the demo declares, and the sign-in's tokens (the `access`, `refresh` and `idToken` strings of each credential in `$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; a missing file is fine, an unreadable or non-JSON one fails the record before the run starts). Every recorded line, text blob and the manifest has each value replaced by `[redacted]`, and when the recording is finished a scan of every file in it refuses one that still holds a value (its manifest is removed), naming the key and the file, never the value. A recording without a sign-in is unchanged. Strings under 12 characters are not treated as secrets.

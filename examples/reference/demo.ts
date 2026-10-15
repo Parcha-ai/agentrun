@@ -41,6 +41,7 @@ import { checkItems, fetchSources, missingCommitted, readSources, withSources } 
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
+import { redactorOf, scanRecording, secretsOf, signInFile } from './secrets.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
@@ -174,7 +175,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
   const window: EffectWindow = { open: 0 };
   const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST) : undefined, window);
-  const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
+  // A recording holds none of the secret values (the declared environment's, the sign-in's tokens): the supervisor names the sign-in's file, and this process reads the values itself.
+  const redact = env.RECORD_DIR && env.SIGNIN_FILE ? redactorOf(secretsOf(env, options.spec, env.SIGNIN_FILE)) : undefined;
+  const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder(), ...(redact ? { redact } : {}) }) : undefined;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
@@ -290,6 +293,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
+  // What a recording must not hold, read before anything starts: a sign-in file that cannot be read fails the record here, not after a paid run.
+  const secrets = values.record ? secretsOf(process.env, spec) : [];
+  const redact = redactorOf(secrets);
   const models: LiveModels = { ...(values.provider ? { provider: values.provider } : {}), ...(values.model ? { model: values.model } : {}), ...(values['eyes-model'] ? { eyesModel: values['eyes-model'] } : {}) };
   if (!live && Object.keys(models).length) throw new Error('--provider, --model and --eyes-model choose real models: they need --live');
   if (models.provider && !models.model) throw new Error('--provider needs --model (the model to use on that provider)');
@@ -307,10 +313,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
   options.fakes.backend?.(backend);
   const served = await backend.serve();
-  const supervisor = openSupervisor({ dir: recordDir });
+  const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
-  const base: Record<string, string> = { DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  const base: Record<string, string> = { ...(values.record ? { SIGNIN_FILE: signInFile(process.env) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
   // A live child gets exactly the environment names the demo declares in demo.json (every key, the members of a `oneOf` group included, and the programs' env), plus the process basics above; nothing undeclared reaches it.
   // A no-key run passes the demo's own `DEMO_*` settings (no secret) so a test can steer it.
   const declared = declaredEnv(spec);
@@ -396,7 +402,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
-    const blob = made ? openRecorder({ dir: recordDir }).blob(JSON.stringify(made.json, null, 2), 'json') : delivered ? openRecorder({ dir: recordDir }).blob(JSON.stringify({ record: delivered.record }, null, 2), 'json') : undefined;
+    const blob = made ? openRecorder({ dir: recordDir, ...(redact ? { redact } : {}) }).blob(JSON.stringify(made.json, null, 2), 'json') : delivered ? openRecorder({ dir: recordDir, ...(redact ? { redact } : {}) }).blob(JSON.stringify({ record: delivered.record }, null, 2), 'json') : undefined;
     const resultTitle = made?.title ?? 'The record';
     if (blob) supervisor.host('result', { gen: processesStarted, blob, title: resultTitle }, { blobs: [blob] });
     const resultBlob = blob ? { blob, title: resultTitle } : undefined;
@@ -406,9 +412,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
     finishRecording(recordDir, {
+      ...(redact ? { redact } : {}),
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
       code: codeOf(options.root ?? ROOT), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
+    // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
+    try { scanRecording(recordDir, secrets); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
     const usd = cost(readEventsOf(recordDir)).usd;
     return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
   } finally {
