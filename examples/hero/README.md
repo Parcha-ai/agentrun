@@ -30,14 +30,16 @@ reference host documents.
 
 | Flag | What it does |
 |---|---|
-| `--chrome` | a local Chrome (`CHROME_PATH`) on the job's own pages: no network, the lead and the eyes scripted. It checks the wiring: each browser session is screencast into the recording and leaves a video |
-| `--live` | the same Chrome on the real dashboards, the eyes and the lead on the machine's broker, the manifest's `providers` `real`. It spends money: run it only when asked |
+| `--chrome` | a local Chrome (`CHROME_PATH`) on the job's own pages: no network, the lead and the eyes scripted. It checks the wiring: each browser session is screencast into the recording and leaves a video. A local Chrome never visits a real page |
+| `--live` | the real dashboards on Browserbase (a sandboxed browser: no address of yours reaches a site), the eyes and the lead on a broker, the manifest's `providers` `real`. It spends money and visits real sites: it refuses unless `HERO_LIVE_SPEND_OK=1`, which you set only once the run is approved |
 | `--see` | `vision.see` from code mode, for the chart beat. It waits on agentrun #506 and refuses until then |
 
-`--live` takes `CHROME_PATH`; `HERO_BROKER_URL` (default `http://127.0.0.1:9421/v1`); `HERO_EYES` and `HERO_LEAD`, each `<provider>/<model id>` of pi-ai's catalog (default the OpenRouter entry
-`openrouter/google/gemini-3.7-flash`, which the broker's OpenAI API reaches). The broker swaps in its own credential: the example holds a placeholder and never a provider key. Where Chrome's
-sandbox cannot start, set `PI_BROWSER_NO_SANDBOX=1`. The frame recorder (`@parcha/pi-browser/recorder`) hands its lines to the recorder's own live write, and `exportFrameTracks` makes one WebM and
-its index per session at the end of the recording. Until the browser's screenshot clip lands, each branch frames its chart by scrolling.
+`--live` takes `PI_BROWSER_PROVIDER=browserbase` and `BROWSERBASE_API_KEY` (and `BROWSERBASE_PROJECT_ID` if your account needs it) in the environment of the one process that runs it: set them in a
+subshell for that command, never print them and never write them to a file. The models: `HERO_BROKER_URL` (an OpenAI-compatible gateway; default `http://127.0.0.1:9421/v1`), `HERO_EYES`
+(`<provider>/<model id>` of pi-ai's catalog, default `openrouter/google/gemini-3.7-flash`) and `HERO_LEAD` (a broker model id, default `openai/gpt-6-luna`; a model pi-ai's catalog describes keeps its
+price, and any other id is built as an OpenAI-compatible chat model priced by `HERO_LEAD_PRICE=<in>,<out>` dollars per million tokens, or not at all, in which case its cost reads 0). The gateway
+swaps in its own credential: the example holds a placeholder and never a provider key. The frame recorder (`@parcha/pi-browser/recorder`) hands its lines to the recorder's own live write, and
+`exportFrameTracks` makes one WebM and its index per session at the end. Until the browser's screenshot clip lands, each branch frames its chart by scrolling.
 
 ## The workflow
 

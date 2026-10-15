@@ -1,6 +1,6 @@
-// The live parts of the hero job: local Chrome on the real dashboards, the eyes and the lead on the machine's broker, and the frame
-// recorder that gives the recording its browser tiles. Nothing here runs unless `--live` (or `--chrome`, which serves the job's own pages to
-// a local Chrome and reaches nothing else) is asked for.
+// The live parts of the hero job: Browserbase on the real dashboards (a sandboxed browser, so this machine's address never reaches a site), the eyes and
+// the lead on the machine's broker, and the frame recorder that gives the recording its browser tiles. Nothing here runs unless `--live` (or `--chrome`,
+// which serves the job's own pages to a local Chrome and reaches nothing else) is asked for. A local Chrome never visits a real page.
 //
 // Eyes: a pi-ai catalog entry whose base URL is replaced by the broker's (the broker speaks the OpenAI API, so the OpenRouter entry), keyed by
 // a placeholder: the broker swaps in its own credential. The lead takes its model the same way, through the host's models function. Neither
@@ -13,9 +13,11 @@ import { getModel } from '@earendil-works/pi-ai/compat';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { createModels, createProvider, type Models } from '@earendil-works/pi-ai/models';
 import type { ModelRef } from '@earendil-works/pi-durable';
+import { browserbaseProvider } from '@parcha/pi-browser/providers/browserbase';
 import { cdpProvider } from '@parcha/pi-browser/providers/cdp';
 import { stagehandDriver } from '@parcha/pi-browser/driver/stagehand';
 import { exportFrameTracks, frameRecorder, type FrameRecorder } from '@parcha/pi-browser/recorder';
+import type { BrowserProvider } from '@parcha/pi-browser';
 import type { Eyes } from '@parcha/pi-vision';
 import { piAiEyes } from '@parcha/pi-vision/eyes/pi-ai';
 import type { BrowserPlane, Recorder, RunPlace } from '../reference/index.ts';
@@ -23,20 +25,35 @@ import type { FixturePage } from '@parcha/pi-browser/testing';
 
 /** The machine's facts for a live run, from the environment. */
 export type LiveConfig = {
-  /** The Chrome binary: `CHROME_PATH`. */
-  chrome: string;
+  /** `--chrome` only: the Chrome binary, `CHROME_PATH`, for the loopback fixtures. */
+  chrome?: string;
+  /** `--live` only: the browser is Browserbase (`PI_BROWSER_PROVIDER=browserbase`), its key `BROWSERBASE_API_KEY` in this process's environment and only there. */
+  browserbase: boolean;
   /** The broker's OpenAI-compatible base URL: `HERO_BROKER_URL`, default http://127.0.0.1:9421/v1. */
   broker: string;
-  /** The eyes' and the lead's pi-ai catalog entries, `<provider>/<model id>`: `HERO_EYES` and `HERO_LEAD`, default the OpenRouter entry the broker serves. */
+  /** The eyes' pi-ai catalog entry, `<provider>/<model id>`: `HERO_EYES`, default the OpenRouter entry the broker serves. */
   eyes: string;
+  /** The lead's model: `HERO_LEAD`, default `openai/gpt-6-luna`, this machine's paid-proof model. A broker model id (OpenRouter's ids, over the OpenAI chat API)
+   *  or `openrouter/<id>`; a model pi-ai's catalog describes keeps its price and abilities, any other id is sent as written through a definition the host builds. */
   lead: string;
+  /** What an uncatalogued lead costs, dollars per million tokens in and out (`HERO_LEAD_PRICE=<in>,<out>`); null when unset, and its cost then reads 0 in usage, which is not a price. */
+  leadPrice: { input: number; output: number } | null;
 };
 
-export function liveConfig(env: NodeJS.ProcessEnv = process.env): LiveConfig {
+export function liveConfig(env: NodeJS.ProcessEnv = process.env, mode: 'chrome' | 'live' = 'chrome'): LiveConfig {
   const chrome = env.CHROME_PATH?.trim();
-  if (!chrome || !existsSync(chrome)) throw new Error('--live needs a Chrome: set CHROME_PATH to its binary.');
+  if (mode === 'chrome' && (!chrome || !existsSync(chrome))) throw new Error('--chrome needs a Chrome: set CHROME_PATH to its binary.');
+  if (mode === 'live') {
+    if (env.HERO_LIVE_SPEND_OK !== '1') throw new Error('--live spends money and visits real sites: set HERO_LIVE_SPEND_OK=1 only once the run has been approved.');
+    if (env.PI_BROWSER_PROVIDER?.trim() !== 'browserbase') throw new Error('--live drives Browserbase: set PI_BROWSER_PROVIDER=browserbase. A local Chrome never visits a real page.');
+    if (!env.BROWSERBASE_API_KEY?.trim() && !env.BB_API_KEY?.trim()) throw new Error('--live needs BROWSERBASE_API_KEY in the environment (from the route in local.md, one subshell, never printed or written).');
+  }
   const eyes = env.HERO_EYES?.trim() || 'openrouter/google/gemini-3.7-flash';
-  return { chrome, broker: env.HERO_BROKER_URL?.trim() || 'http://127.0.0.1:9421/v1', eyes, lead: env.HERO_LEAD?.trim() || eyes };
+  const price = /^\s*([\d.]+)\s*,\s*([\d.]+)\s*$/.exec(env.HERO_LEAD_PRICE ?? '');
+  return {
+    ...(chrome ? { chrome } : {}), browserbase: mode === 'live', broker: env.HERO_BROKER_URL?.trim() || 'http://127.0.0.1:9421/v1', eyes, lead: env.HERO_LEAD?.trim() || 'openai/gpt-6-luna',
+    leadPrice: price ? { input: Number(price[1]), output: Number(price[2]) } : null,
+  };
 }
 
 const split = (spec: string) => {
@@ -54,41 +71,55 @@ export function liveEyes(config: LiveConfig): Eyes {
   return piAiEyes({ ...entry, baseUrl: config.broker }, { apiKey: () => 'placeholder' });
 }
 
-/** The lead's models: one provider whose only model is the catalog entry, reached at the broker's base URL with a placeholder key. */
+const getCatalog = getModel as (provider: string, modelId: string) => ReturnType<typeof getModel> | undefined;
+/** The lead's catalog entry, if there is one. `openrouter/<id>` names the OpenRouter entry; a bare id (`openai/gpt-6-luna`) is the broker's own, which speaks
+ *  OpenRouter's ids over the OpenAI chat API, so its entry is the OpenRouter one of that id. Anything else has no entry. */
+const catalogEntry = (spec: string) => (spec.startsWith('openrouter/') ? getCatalog('openrouter', spec.slice('openrouter/'.length)) : getCatalog('openrouter', spec));
+
+/** The lead's models: one provider, "broker", whose only model is the lead, reached at the broker's base URL with a placeholder key. A model pi-ai's catalog
+ *  describes is used as the catalog describes it (its price and abilities). A broker id it does not know is built here: an OpenAI-compatible chat model, the id
+ *  sent as written, priced by `HERO_LEAD_PRICE` or not at all. */
 export function liveModels(config: LiveConfig): { catalog: Models; lead: ModelRef } {
-  const { provider, modelId } = split(config.lead);
-  const entry = (getModel as (provider: string, modelId: string) => ReturnType<typeof getModel> | undefined)(provider, modelId);
-  if (!entry) throw new Error(`pi-ai's catalog has no model ${config.lead}`);
+  const entry = catalogEntry(config.lead);
+  const model = entry
+    ? { ...entry, provider: 'broker', baseUrl: config.broker }
+    : {
+      id: config.lead, name: config.lead, api: 'openai-completions' as const, provider: 'broker', baseUrl: config.broker, reasoning: false, input: ['text', 'image'] as ('text' | 'image')[],
+      cost: { input: config.leadPrice?.input ?? 0, output: config.leadPrice?.output ?? 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_384,
+    };
   const catalog = createModels();
   catalog.setProvider(createProvider({
     id: 'broker', name: 'The machine\'s broker', baseUrl: config.broker,
     auth: { apiKey: { name: 'The broker (placeholder credential)', resolve: async () => ({ auth: { apiKey: 'placeholder', baseUrl: config.broker }, source: 'placeholder' }) } },
-    models: [{ ...entry, provider: 'broker', baseUrl: config.broker }],
+    models: [model],
     api: { 'openai-completions': openAICompletionsApi() },
   } as never));
-  return { catalog, lead: { provider: 'broker', modelId } };
+  return { catalog, lead: { provider: 'broker', modelId: model.id } };
 }
 
-/** A local Chrome per session. `pages` given: its only way out is this process, which serves those pages as Chrome's proxy and fails every other host
- *  (the `--chrome` smoke, on no network). Absent: Chrome reaches the real sites (`--live`). `frames` given: each session is screencast into the recording. */
-export async function liveBrowser(place: RunPlace, config: LiveConfig, options: { pages?: Record<string, FixturePage>; frames?: FrameRecorder } = {}): Promise<{ browser: BrowserPlane; close(): void }> {
-  let close = () => {};
-  let args: string[] = [];
-  if (options.pages) {
-    const pages = options.pages;
-    const server = createServer((request, response) => {
-      const url = request.url ?? '';
-      const page = pages[url] ?? Object.values(pages).find((candidate) => candidate.url === url);
-      response.writeHead(page ? 200 : 404, { 'content-type': 'text/html' });
-      response.end(page ? `<html><head><title>${page.title}</title></head><body>${page.html}</body></html>` : 'Not a page of this job.');
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    args = [`--proxy-server=http://127.0.0.1:${(server.address() as AddressInfo).port}`, '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'];
-    close = () => { server.close(); };
-  }
-  const provider = cdpProvider({ chrome: { executablePath: config.chrome, profileRoot: join(place.root, 'chrome'), args } });
+/** The browser plane. `pages` given (`--chrome`): a local Chrome per session whose only way out is this process, which serves those pages as Chrome's proxy and
+ *  fails every other host. Absent (`--live`): Browserbase, with its list prices (the host's zero prices are for fakes). `frames` given: each session is screencast
+ *  into the recording. `env` is where Browserbase finds its key. */
+export async function liveBrowser(place: RunPlace, config: LiveConfig, options: { pages?: Record<string, FixturePage>; frames?: FrameRecorder; env?: NodeJS.ProcessEnv } = {}): Promise<{ browser: BrowserPlane; close(): void }> {
   const frames = options.frames;
-  return { browser: { provider: (target) => (frames ? frames.watch(provider, Number(target.conversationId)) : provider), driver: stagehandDriver() }, close };
+  const watch = (provider: BrowserProvider) => (target: { conversationId: unknown }) => (frames ? frames.watch(provider, Number(target.conversationId)) : provider);
+  if (config.browserbase) {
+    if (options.pages) throw new Error('a live run does not serve fixture pages');
+    const provider = browserbaseProvider({ env: options.env ?? process.env });
+    return { browser: { provider: watch(provider), driver: stagehandDriver(), prices: undefined } as unknown as BrowserPlane, close: () => {} };
+  }
+  if (!config.chrome || !options.pages) throw new Error('--chrome needs CHROME_PATH and the job\'s pages');
+  const pages = options.pages;
+  const server = createServer((request, response) => {
+    const url = request.url ?? '';
+    const page = pages[url] ?? Object.values(pages).find((candidate) => candidate.url === url);
+    response.writeHead(page ? 200 : 404, { 'content-type': 'text/html' });
+    response.end(page ? `<html><head><title>${page.title}</title></head><body>${page.html}</body></html>` : 'Not a page of this job.');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const args = [`--proxy-server=http://127.0.0.1:${(server.address() as AddressInfo).port}`, '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'];
+  const provider = cdpProvider({ chrome: { executablePath: config.chrome, profileRoot: join(place.root, 'chrome'), args } });
+  return { browser: { provider: watch(provider), driver: stagehandDriver() } as unknown as BrowserPlane, close: () => { server.close(); } };
 }
 
 /** The frame recorder for this process, its sink the recorder's own live write (which assigns `seq`) and blob store. */

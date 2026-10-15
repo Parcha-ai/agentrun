@@ -3,7 +3,8 @@
 // is killed with SIGKILL inside a paid call (the operator's published figure, after the host kept the answer and before the
 // driver committed it), and a fresh process resumes the run on the same directory: the paid call is settled from the kept
 // answer and is not sent again. `--record <dir>` keeps the run as an agentrun.recording/1 directory. `--chrome` runs it in a local Chrome on the job's own
-// pages (no network, eyes and lead scripted); `--live` takes the real dashboards, CHROME_PATH and the broker's models, and is run only on the TL's ask.
+// pages (no network, eyes and lead scripted); `--live` takes the real dashboards on Browserbase (PI_BROWSER_PROVIDER=browserbase, BROWSERBASE_API_KEY) and the
+// broker's models, and is run only on the TL's ask.
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -66,14 +67,14 @@ async function child() {
   const grids = readGrids();
   const mode = (process.env.MODE ?? 'fake') as 'fake' | 'chrome' | 'live';
   if (process.env.SEE) throw new Error('--see is not available yet: vision.see from code mode is agentrun #506, which has not landed.');
-  const config = mode === 'fake' ? undefined : liveConfig();
+  const config = mode === 'fake' ? undefined : liveConfig(process.env, mode);
   const { fakes, eyes: scripted } = heroFakes(grids, { eyesLedger: join(place.root, 'eyes.jsonl'), ...(process.env.EYES_PRICE ? { eyesPrice: Number(process.env.EYES_PRICE) } : {}), ...(process.env.BROKEN ? { broken: process.env.BROKEN } : {}) });
   const recorder = process.env.RECORD_DIR ? openRecorder({ dir: process.env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
   // `--chrome`: no network, a local Chrome that reaches the job's own pages, the lead and eyes scripted (its eyes answer one fixed reading for any chart: this checks the
   // wiring, not the numbers). `--live`: local Chrome on the real dashboards, the eyes and the lead on the broker.
   const eyes = mode === 'live' ? liveEyes(config!) : mode === 'chrome' ? fakeEyes({ model: 'scripted-eyes', price: { input: 0, output: 0 }, ...(process.env.DIR ? { ledgerPath: join(place.root, 'eyes.jsonl') } : {}), answers: ['A fuel-mix chart. Renewable share now: 50.0%. Peak: 1000 MW.'] }) : scripted;
   const frames = config && recorder ? liveFrames(recorder, Date.now(), process.env.RECORD_DIR!) : undefined;
-  const chrome = config ? await liveBrowser(place, config, { ...(mode === 'chrome' ? { pages: fakes.pages } : {}), ...(frames ? { frames } : {}) }) : undefined;
+  const chrome = config ? await liveBrowser(place, config, { ...(mode === 'chrome' ? { pages: fakes.pages } : {}), ...(frames ? { frames } : {}), env: process.env }) : undefined;
   // The fake browser has no navigation of its own (a session opens on the backend's start page, and `run` hands back the code it was given),
   // so this plane turns the lead's `page.goto("<url>")` into the fake's `goto` action: each session then stands on its own grid's page.
   const remote = remoteDriver(process.env.BACKEND!);
@@ -141,7 +142,10 @@ function spawnChild(env: Record<string, string>, onSpawn: (pid: number) => void)
 const rows = <T,>(file: string): T[] => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T); } catch { return []; } };
 
 /** What a child needs of this process's environment for a Chrome or live run, and nothing else. */
-const passed = (mode?: string): Record<string, string> => (mode ? Object.fromEntries(['CHROME_PATH', 'PI_BROWSER_NO_SANDBOX', 'HERO_BROKER_URL', 'HERO_EYES', 'HERO_LEAD'].flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : []))) : {});
+const passed = (mode?: string): Record<string, string> => {
+  const names = [...(mode ? ['HERO_LIVE_SPEND_OK', 'HERO_LEAD_PRICE', 'HERO_BROKER_URL', 'HERO_EYES', 'HERO_LEAD'] : []), ...(mode === 'chrome' ? ['CHROME_PATH', 'PI_BROWSER_NO_SANDBOX'] : []), ...(mode === 'live' ? ['PI_BROWSER_PROVIDER', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'] : [])];
+  return Object.fromEntries(names.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
+};
 
 export type HeroRun = {
   dir: string;
