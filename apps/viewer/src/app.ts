@@ -386,6 +386,20 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
 
+/** The chapter a point is in: the last one whose stop is at or before it, or -1 before the first. */
+export const chapterAt = (chapters: readonly { p: number }[], p: number): number => chapters.reduce((at, chapter, index) => (chapter.p <= p ? index : at), -1);
+
+/** What an embedded viewer (`?embed=1`) posts to the page that frames it when the point enters a chapter: that chapter
+ *  only, its title and its stop. The viewer listens to no message. */
+export const chapterMessage = (chapter: { title: string; p: number }) => ({ source: 'agentrun-viewer', type: 'chapter', title: chapter.title, stop: chapter.p });
+
+/** The origin of the page that frames this one, when the browser says what it is (an http or https page); else `*`, as
+ *  for a page opened from a file. A message carries only a chapter's title and stop. */
+export const parentOrigin = (ancestor: string | undefined, referrer: string): string => {
+  const known = ancestor ?? (referrer ? new URL(referrer).origin : undefined);
+  return known !== undefined && /^https?:\/\//.test(known) ? known : '*';
+};
+
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
   const problems = validate(recording.manifest, recording.lines);
   const player: Player = { recording, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
@@ -432,7 +446,10 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
     `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
-  if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
+  // Embedded (`?embed=1`), the page is its frame's: no header, but a recording that breaks the format still says so.
+  const embedded = params.get('embed') === '1';
+  const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
+  if (problemsNote && !embedded) header.append(problemsNote);
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
     if (link) header.append(link);
@@ -462,8 +479,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const shown = panelsFor(lines);
   const featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
-  if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
-  else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
+  if (embedded) document.documentElement.classList.add('embed');
+  if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+  else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  let postedChapter: number | undefined;
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -480,6 +500,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
+    // Framed, tell the parent page when the point enters another chapter (the first draw included).
+    if (embedded && window.parent !== window) {
+      const index = chapterAt(chapters, player.p);
+      if (index >= 0 && index !== postedChapter) {
+        postedChapter = index;
+        window.parent.postMessage(chapterMessage(chapters[index]!), parentOrigin(location.ancestorOrigins?.item(0) ?? undefined, document.referrer));
+      }
+    }
     chapterList.replaceChildren(...chapters.map((chapter) => {
       const button = el('button', { class: chapter.p === player.p ? 'current' : '', text: chapter.title });
       button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
