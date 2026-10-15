@@ -10,3 +10,5 @@ kind: feature
   shown as "+ N possible" beside repeated and never counted.
 - A recording whose `browser.sessions` lines all carry no `t` (a bare export's) shows page actions not measured, and
   repeated and asked twice read "not measured" rather than 0 when nothing else measured adds to them.
+- `apps/viewer/RECORDING.md` names that signal in the format's own words: a recording whose `browser.sessions` lines all
+  carry no `t` (a bare export's) shows page actions not measured, never 0.
