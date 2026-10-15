@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, removeMountToken, runPath, type RunRef } from "./claim.ts";
 import { reapCommands } from "./commands.ts";
-import { PdaError } from "./errors.ts";
+import { HeldError, PdaError } from "./errors.ts";
+import { takeOwnerLock } from "./run.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
   ensureRunning,
@@ -147,7 +148,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
     const paths = pathsUnder(ctx.paths.id, root);
     const command = options.command ?? [process.execPath, CLI];
     const alive = new Map<PlaceRunner, number>();
-    const boxesTaken = new Set<PlaceRunner>();
+    /** A runner's boxes being taken, or taken: one deletion per runner, shared while in flight, retried after a failure. */
+    const boxesTaken = new Map<PlaceRunner, Promise<void>>();
 
     const start = async (order: RunnerOrder): Promise<PlaceRunner> => {
       const argv = [...command.slice(1), "run", "--dir", root, "--id", paths.id, "--app", options.app, ...(options.runArgs ?? [])];
@@ -210,10 +212,21 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
         }
       }
       await runner.exited;
-      // Once per runner: a supervisor that kills and then recovers the same runner takes its boxes once.
-      if (kind === "box" && !boxesTaken.has(runner)) {
-        boxesTaken.add(runner);
-        await ctx.destroyBoxes?.();
+      // Once per runner: a supervisor that kills and then recovers the same runner takes its boxes once. A deletion that
+      // failed is forgotten, so the next kill or recover tries again before any runner starts.
+      if (kind === "box" && ctx.destroyBoxes) {
+        let taking = boxesTaken.get(runner);
+        if (!taking) {
+          taking = (async () => ctx.destroyBoxes!())().then(
+            () => undefined,
+            (error: unknown) => {
+              boxesTaken.delete(runner);
+              throw error;
+            },
+          );
+          boxesTaken.set(runner, taking);
+        }
+        await taking;
       }
     };
 
@@ -241,8 +254,23 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       release: async () => {
         await Promise.all([...alive.keys()].map((runner) => kill(runner, "process")));
         // pi runs each command in a process group of its own, which the instance's kill does not reach: end what the
-        // run recorded, as its next open would, since there may be none.
-        const reaped = await reapCommands(join(root, "commands"));
+        // run recorded, as its next open would, since there may be none. Only under the run's owner lock, as an open
+        // does: while another process holds the run, the commands are its own, not this place's.
+        const commands = join(root, "commands");
+        if (!existsSync(commands)) return;
+        let lock: ReturnType<typeof takeOwnerLock>;
+        try {
+          lock = takeOwnerLock(root);
+        } catch (error) {
+          if (error instanceof HeldError) return;
+          throw error;
+        }
+        let reaped: Awaited<ReturnType<typeof reapCommands>>;
+        try {
+          reaped = await reapCommands(commands);
+        } finally {
+          lock.release();
+        }
         if (reaped.survivors.length > 0) {
           throw new PlaceError("RELEASE_FAILED", `releasing ${root} left commands alive after SIGKILL: pids ${reaped.survivors.map((m) => m.pid).join(", ")}`);
         }
@@ -457,9 +485,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };
           killed.set(runner, w.kill);
           handleOf.set(runner, result.handle);
-          // A runner that ended on its own is gone: a later kill of it is a no-op.
-          const forget = () => void killed.delete(runner);
-          w.exited.then(forget, forget);
+          // A runner the driver reports ended is gone: a later kill of it is a no-op. One whose status could not be read
+          // may still run, so it stays killable.
+          w.exited.then(
+            () => void killed.delete(runner),
+            () => undefined,
+          );
           return { result, runner, ms: Math.round(performance.now() - t0) };
         }
         if ((result.action === "pending" || result.action === "starting") && Date.now() < deadline) {
@@ -486,6 +517,9 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
         await host.kill(handle);
         killed.delete(runner);
         end();
+        // The kill is made; a runner whose status reads had failed still reports that failure through `exited`.
+        await runner.exited.catch(() => undefined);
+        return;
       }
       await runner.exited;
     };
@@ -510,7 +544,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       },
       recover: async (last, kind, order) => {
         if (killed.has(last)) await kill(last, kind);
-        const { result, runner, ms } = await ensure(order, true);
+        // Forced only while the newest incarnation the disk knows of (run.json or a start mark) is the one this place
+        // killed. A newer one, another supervisor's, gets the usual lease and start-grace checks.
+        const [record, mark] = await Promise.all([readRunStatus(control, ref.id), readStartMark(control, ref.id)]);
+        const newest = Math.max(record?.generation ?? 0, mark?.generation ?? 0);
+        const { result, runner, ms } = await ensure(order, handleOf.has(last) && newest <= last.epoch);
         return { runner, revoked: result.action === "started" ? result.revoked : [], ms };
       },
       release: async () => {

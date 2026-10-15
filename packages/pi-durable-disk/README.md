@@ -717,15 +717,18 @@ id and directory as the supervisor computed them.
 - `localPlace({ app, root? })` runs `pi-durable-disk run --dir <root> --id <id> --app <app>` as a child in its own
   process group, with `{ PATH, ...order.env }` and nothing else of the caller's environment. It needs no disk, no key and
   no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory. A box kill
-  also calls `ctx.destroyBoxes`. `release()` kills what still runs, then ends the commands the run recorded (pi
-  starts each in a process group of its own, which the instance's kill does not reach). With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
+  also calls `ctx.destroyBoxes` (a deletion that failed is tried again by the next kill or recover). `release()` kills
+  what still runs, then, under the run's owner lock, ends the commands the run recorded (pi starts each in a process
+  group of its own, which the instance's kill does not reach). While another process holds the run, they are its own,
+  and release leaves them. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
   there when it parks at its planned crossing, and `requestFile` is that same file. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
   - A kill is the driver's `kill`, and `kills` is the driver's.
   - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
-    instance starts. It reports `revoked` and `ms`.
+    instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
+    supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
