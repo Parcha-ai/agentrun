@@ -735,9 +735,22 @@ test("options: the instance never runs as root; box paths are plain; the fleet i
   bad({ mountRoot: "relative/path" });
   bad({ boxDir: "/run/pda; rm -rf /" });
   bad({ node: "/usr/bin/node $(id)" });
+  bad({ packageDir: "/opt/app/node_modules/@scope/pkg$(id)" });
+  bad({ packageDir: "/opt/app/node_modules/@scope/pkg;id" });
+  bad({ packageDir: "/opt/app/../../etc" });
+  bad({ mountRoot: "/mnt/archil/.." });
   bad({ fleet: "Upper" });
   bad({ snapshot: "" });
   assert.equal(daytonaHost({ client, snapshot: "s" }).mountRoot, "/mnt/archil");
+});
+
+test("a package installed with npm is a plain box path: a scoped directory is accepted, a climbing one is not", () => {
+  const client = fakeDaytona().client;
+  assert.doesNotThrow(() => daytonaHost({ client, snapshot: "s", packageDir: "/opt/app/node_modules/@scope/pkg" }));
+  assert.doesNotThrow(() => daytonaHost({ client, snapshot: "s", packageDir: "/opt/app/node_modules/@parcha/pi-durable-disk", launcher: "/opt/app/node_modules/@parcha/pi-durable-disk/dist/hosts/daytona-launch.js" }));
+  for (const packageDir of ["/opt/app/../x", "/opt/app/node_modules/@scope/pkg/..", "/opt/..", "/opt/@scope/../../etc"]) {
+    assert.throws(() => daytonaHost({ client, snapshot: "s", packageDir }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", packageDir);
+  }
 });
 
 test("sandboxName: lowercase, at most 63 characters, safe for any run id", () => {
