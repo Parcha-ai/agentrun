@@ -4,10 +4,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import {
-  openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta, itemState, partialResults,
+  openRecovery, withRecovery, openJournal, workspaceFiles, canonicalHash, stateDelta, applyStateDelta, itemState, partialResults,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4,
 } from '@parcha/agentrun-dsl/recovery';
 
@@ -280,6 +282,56 @@ test('a failed map adds the same to the driver record however many items it has'
   assert.equal(await partialBytes(40), await partialBytes(8));
 });
 
+test('two calls admitted together in one map item are both listed in its record, so the next process finds both', async () => {
+  const both = { node: 'parallel', label: 'both', branches: [
+    { node: 'call', label: 'lookup-a', via: 'tool', tool: 'lookup', args: { id: '{item.id}' }, out: 'Found', as: 'a', deadline_s: 30 },
+    { node: 'call', label: 'lookup-b', via: 'tool', tool: 'lookup', args: { id: '{item.id}' }, out: 'Found', as: 'b', deadline_s: 30 },
+  ] };
+  const workflow = workflowOf(both);
+  const kept = inspectable();
+  // One process: both calls of the first item are admitted and in flight when it dies.
+  const driver = await openRecovery(kept.store, workflow, { key: KEY, layout: 'v4' });
+  void runWorkflow(workflow, { items: itemsOf(1) }, withRecovery(driver, { runEffect: () => new Promise(() => {}) })).catch(() => undefined);
+  for (let wait = 0; wait < 200 && (kept.record()?.effects?.length ?? 0) < 2; wait += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  const record = structuredClone(kept.record());
+  assert.equal(record.effects.length, 2, 'both calls were admitted');
+  const item = record.items[`${MAP}/items/0`];
+  assert.deepEqual([...item.effects].sort(), record.effects.map((effect) => effect.id).sort(), 'the item lists every call admitted in it');
+  // The next process opens a copy of the store as the kill left it, and finds both calls unknown.
+  const next = inspectable(); next.set(record);
+  const settled = [];
+  const reopened = await openRecovery(next.store, workflow, { key: KEY, layout: 'v4', reconcile: async (unknown, complete) => { for (const effect of unknown) { settled.push(effect.id); await complete(effect.id, answerOf(effect.args.id)); } } });
+  await reopened.close();
+  assert.deepEqual(settled.sort(), record.effects.map((effect) => effect.id).sort());
+});
+
+test('a file a map item produced and a later step replaced is restored with its latest hash', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'keyed-files-')); const files = workspaceFiles(cwd);
+  const render = (label) => ({ node: 'call', label, via: 'shell', command: 'render', produces: ['report.json'], deadline_s: 5, as: label });
+  const workflow = {
+    v: 2, name: 'keyed-files',
+    schemas: { Input: { type: 'object', required: ['items'], properties: { items: { type: 'array' } } }, Result: { type: 'object' } },
+    input: { schemaId: 'Input' }, output: { schemaId: 'Result', path: 'result' },
+    root: { node: 'chain', steps: [
+      { node: 'map', label: 'each', itemsPath: 'items', as: 'found', resultPath: 'render-item', body: render('render-item') },
+      render('render-final'),
+      { node: 'code', label: 'done', code: "() => ({ result: { done: true } })" },
+    ] },
+  };
+  const deps = { runEffect: async ({ node }) => { writeFileSync(join(cwd, 'report.json'), node.label === 'render-item' ? 'item bytes' : 'final bytes'); return { code: 0, stdout: '', stderr: '' }; } };
+  const kept = inspectable();
+  const process = async (cut) => {
+    const driver = await openRecovery(kept.store, workflow, { key: KEY, layout: 'v4', files });
+    const wrapped = withRecovery(driver, deps);
+    if (cut) wrapped.recovery = { ...wrapped.recovery, commit: (node, ...rest) => (node.label === cut ? Promise.reject(new Error(`cut at ${cut}`)) : driver.recovery.commit(node, ...rest)) };
+    try { return await runWorkflow(workflow, { items: [{ id: 'x' }] }, wrapped); } finally { await driver.close(); }
+  };
+  await assert.rejects(process('done'), /cut at done/);
+  assert.equal(readFileSync(join(cwd, 'report.json'), 'utf8'), 'final bytes');
+  const resumed = await process();
+  assert.equal(resumed.status, 'complete');
+});
+
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {
   const kept = inspectable();
   const input = { items: itemsOf(6) };
@@ -343,6 +395,29 @@ test('a run stored whole moves to the keyed layout once it knows its running map
   assert.ok(Object.keys(kept.record().items).length > 0);
   assert.deepEqual(output, await uncutOutput(8));
   onceEach(calls, settled, itemsOf(8).map((item) => item.id));
+});
+
+test('a run stored whole that moves in its map\'s own commit writes the records its items never had: every call stays listed', async () => {
+  const kept = inspectable();
+  const calls = [];
+  const input = { items: itemsOf(5) };
+  // Every item committed and the map did not: the next process answers every item, and its first commit is the map's.
+  await assert.rejects(run(kept.store, workflowOf(), { input, calls, cut: 'each' }), /cut at each/);
+  const whole = kept.record();
+  assert.equal(whole.state.schema, FROZEN_SNAPSHOT_SCHEMA);
+  const itemPaths = whole.state.pin.done.filter((at) => at.startsWith(`${MAP}/items/`));
+  const { output } = await run(kept.store, workflowOf(), { input, layout: 'v4', calls });
+  assert.deepEqual(output, await uncutOutput(5));
+  const record = kept.record();
+  assert.equal(record.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
+  const items = Object.values(record.items ?? {});
+  assert.deepEqual(items.map((item) => [item.index, item.status]).sort(), [0, 1, 2, 3, 4].map((index) => [index, 'committed']), 'each item has its record');
+  assert.deepEqual(items.flatMap((item) => item.effects).sort(), whole.effects.map((effect) => effect.id).sort(), 'every call is listed by its item');
+  assert.deepEqual(items.flatMap((item) => item.frame.done).sort(), itemPaths.sort(), 'every committed path is kept');
+  assert.equal(record.state.maps[MAP].items, 5);
+  // A later process reads them back, and its run is the same.
+  assert.deepEqual((await run(kept.store, workflowOf(), { input, layout: 'v4', calls })).output, output);
+  assert.equal(calls.length, 5, 'every call once');
 });
 
 test('a run in the keyed layout on a store that keeps no parts is refused, never run with its items missing', async () => {
