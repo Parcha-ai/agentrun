@@ -142,6 +142,9 @@ export const transportPanel: Panel<TransportState> = {
   title: 'Where the session lives',
   init: initial,
   accepts: (line) => known(line) || counterFold.accepts(line),
+  // It reduces the strip's lines for its own counters, but it is for a run with transport lines: a run without them has
+  // no box, flight or token to draw (its processes and kills are the strip's).
+  shows: (line) => line.source === 'transport',
   reduce(before, line) {
     let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t), ...(line.source === 'transport' ? { seen: true } : {}) };
     if (counterFold.accepts(line)) state = { ...state, counters: counterFold.reduce(state.counters, line) };
