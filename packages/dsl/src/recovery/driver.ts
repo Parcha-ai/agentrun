@@ -165,10 +165,10 @@ export type RecoveryOptions = {
    *  keeps parts (its opened journal has `items` and `stateOf`) can hold it; on any other the driver keeps `"v3"` and says
    *  why once per open, in a `layout` note. A run stored in the keyed layout stays in it whatever this says, and a driver
    *  that knows only `"v3"` refuses to open it (`FROZEN_CHECKPOINT_INVALID`). Release 0.1.0-beta.13 and earlier fail their
-   *  own task on a run in the keyed layout and report it refused; a host that treats refused as final will tell its user
-   *  the run failed; a later start on this release resumes it with no call repeated. So opt in only when every process
-   *  that can open the run is on this release or later. A build from this release on leaves a run stored in a schema
-   *  newer than it knows pending (`RECOVERY_SCHEMA_NEWER`), for a build that knows it. */
+   *  own task on a run in the keyed layout and report it refused; that ends the run's agent nodes in flight, and the run
+   *  then fails on this release too, with no call repeated and nothing corrupted. So opt in only when no process on an
+   *  earlier release can open the run. A build from this release on leaves a run stored in a schema newer than it knows
+   *  pending (`RECOVERY_SCHEMA_NEWER`), for a build that knows it. */
   layout?: "v3" | "v4";
 };
 
@@ -314,7 +314,9 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   /** The whole state of a run stored in the keyed layout: its own record with every state read back by digest, and what
    *  its map items keep. */
   const restoreV4 = async (stored: FrozenSnapshotV4): Promise<Snapshot> => {
-    const { maps: table, pin, ...rest } = stored;
+    // A copy: what the items hold is merged into the restored frame, and the store's own state (which it writes back for
+    // a completion that names none) must stay the driver's record alone.
+    const { maps: table, pin, ...rest } = structuredClone(stored);
     if (!isRecord(pin) || !isRecord(pin.states) || !Object.values(pin.states).every((sha256) => typeof sha256 === "string" && SHA.test(sha256)) || !Array.isArray(pin.done)) throw invalid("Invalid frozen recovery checkpoint");
     const states: Record<string, State> = {};
     for (const [at, sha256] of Object.entries(pin.states)) states[at] = await stateBy(sha256);

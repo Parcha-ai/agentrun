@@ -65,12 +65,12 @@ const answerOf = (id) => ({ id, score: Number(String(id).replace(/\D/g, '')) });
 /** One process of the run. `cut` names a node whose commits never land, as in a process that dies after the node ran
  *  and before its commit: the run stops there, and a call still in flight is left admitted and unknown. The host settles
  *  such a call at the next open, from the arguments the journal kept, as a host whose provider answers by key does; it
- *  lists it in `settled`. */
-async function run(store, workflow, { input, cut, layout, calls, settled } = {}) {
+ *  lists it in `settled`. `hang` names items whose call never answers in this process: it is in flight when the run stops. */
+async function run(store, workflow, { input, cut, layout, calls, settled, hang } = {}) {
   const driver = await openRecovery(store, workflow, { key: KEY, ...(layout ? { layout } : {}),
     reconcile: async (unknown, complete) => { for (const effect of unknown) { settled?.push(effect.args.id); await complete(effect.id, answerOf(effect.args.id)); } } });
   const wrapped = withRecovery(driver, {
-    runEffect: async ({ input: args }) => { calls?.push(args.id); return answerOf(args.id); },
+    runEffect: async ({ input: args }) => { calls?.push(args.id); if (hang?.includes(args.id)) { calls.pop(); return new Promise(() => {}); } return answerOf(args.id); },
   });
   if (cut) wrapped.recovery = { ...wrapped.recovery, commit: (node, ...rest) => (node.label === cut ? Promise.reject(new Error(`cut at ${cut}`)) : driver.recovery.commit(node, ...rest)) };
   try { return { output: await runWorkflow(workflow, input, wrapped), layout: driver.layout }; } finally { await driver.close(); }
@@ -139,6 +139,37 @@ test('a process killed inside the map resumes from the item records, calls nothi
   const { output } = await run(kept.store, workflowOf(), { input, layout: 'v4', calls, settled });
   assert.deepEqual(output, await uncutOutput(9));
   onceEach(calls, settled, itemsOf(9).map((item) => item.id));
+});
+
+/** The same store as the pi document store hands its state over: the open's state is the store's own object, and a
+ *  completion that names no state writes that object back. */
+const aliasing = (store) => ({ open: async (bound) => {
+  const journal = await store.open(bound);
+  const opened = journal.state;
+  return Object.assign(Object.create(journal), {
+    get state() { return opened; },
+    complete: (id, result, state = opened, parts) => journal.complete(id, result, state, parts),
+  });
+} });
+
+test('a resumed process that settles a call writes nothing of a map item into the driver record, on a store that hands over its own state', async () => {
+  const kept = inspectable();
+  const written = [];
+  const store = { open: async (bound) => { const journal = await aliasing(kept.store).open(bound);
+    // What each completion writes, as it is written: a store keeps the state as it was at its write.
+    return Object.assign(Object.create(journal), { complete: (id, result, state, parts) => { written.push(structuredClone(state === undefined ? journal.state : state)); return journal.complete(id, result, state, parts); } }); } };
+  const input = { items: itemsOf(9) };
+  const calls = []; const settled = [];
+  await assert.rejects(run(store, workflowOf(), { input, layout: 'v4', calls, settled, cut: 'tally', hang: ['item-0001'] }), /cut at tally|uncertain effects/);
+  const before = kept.record();
+  assert.ok(Object.values(before.items).some((item) => Object.keys(item.frame.chains).length > 0), 'an item committed a step before the cut');
+  written.length = 0;
+  const { output } = await run(store, workflowOf(), { input, layout: 'v4', calls, settled });
+  assert.ok(settled.length > 0, 'the resumed process settled a call the cut left unknown');
+  assert.deepEqual(output, await uncutOutput(9));
+  onceEach(calls, settled, itemsOf(9).map((item) => item.id));
+  const leaked = written.filter((state) => state?.schema === FROZEN_SNAPSHOT_SCHEMA_V4 && JSON.stringify(state.pin).includes('/items/'));
+  assert.equal(leaked.length, 0, `a completion wrote map-item paths into the driver record: ${String(JSON.stringify(leaked[0]?.pin)).slice(0, 300)}`);
 });
 
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {
