@@ -11,6 +11,7 @@ import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 import { setLongTimeout, type LongTimer } from "./long-timer.js";
+import { isRecoveryError } from "./recovery/errors.js";
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -43,7 +44,13 @@ export type WorkflowNode =
   | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
   | ArtifactNode
-  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number; metadata?: NodeMetadata }
+  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number;
+      /** What an item's failure does: `stop` (the default) stops the map and the run; `collect` ends the item as a row
+       *  of `failedAs` when its failure is an item failure (`isItemFailure`), and the other items finish. */
+      onItemFailure?: "stop" | "collect";
+      /** With `onItemFailure: "collect"`, the state key the map writes its failed items under, one row each in item order:
+       *  `{ item_index, label, code, message }`. `as` stays aligned with the items, `null` in a failed item's slot. */
+      failedAs?: string; metadata?: NodeMetadata }
   | { node: "parallel"; label: string; branches: WorkflowNode[]; metadata?: NodeMetadata }
   | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number; expect_iters?: number; metadata?: NodeMetadata }
   | { node: "escalate"; label: string; when: Predicate; kind: string; stage: string; summary: string; metadata?: NodeMetadata }
@@ -341,6 +348,13 @@ export type WorkflowDeps = {
     pollStartedAt: (node: CallNode, item?: MapItem, executionPath?: string) => number;
     wait: (node: CallNode, ms: number, item?: MapItem, executionPath?: string) => Promise<void>;
     fail?: (node: WorkflowNode, results: unknown[], error: unknown, executionPath?: string) => Promise<void>;
+    /** A map with `onItemFailure: "collect"` commits an item that ended on its failure here, at the item's body path,
+     *  once, before the map goes on; `node` is the map. A store without both hooks cannot hold such a map: it is refused
+     *  before any step runs. */
+    failItem?: (node: WorkflowNode, failure: MapItemFailure, executionPath?: string) => Promise<void>;
+    /** The failure an earlier process committed for the item whose body path this is, if any: the item ends on it again,
+     *  and its body never runs again. */
+    itemFailure?: (node: WorkflowNode, executionPath?: string) => Promise<MapItemFailure | undefined>;
     /** The receipt an earlier run recorded under this id, if any. An `answered` one answers the request:
      *  the judge is not asked again, so a resumed run decides what the interrupted run decided. Any
      *  other receipt, or none, means the request is asked. */
@@ -378,7 +392,7 @@ export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
     if (!n || typeof n !== "object") return;
     if (n.node === "report") out.add("report_markdown");
     else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
-    if (n.node === "map") return;
+    if (n.node === "map") { if (typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs); return; }
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
     else if (n.node === "route" && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
@@ -397,6 +411,7 @@ const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
     if (n.node === "report") out.add("report_markdown");
     else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
     else if (["agent", "decide", "extract"].includes(n.node) && typeof n.label === "string") out.add(n.label);
+    if (n.node === "map" && typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs);
     if (n.node === "map" || n.node === "workflow") return;
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
@@ -960,6 +975,12 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (!node.itemsPath) errors.push(`${path} (${node.label}): itemsPath required`);
         checkItemsPath(node, path);
         if (!node.as) errors.push(`${path} (${node.label}): as required`);
+        if (node.onItemFailure !== undefined && node.onItemFailure !== "stop" && node.onItemFailure !== "collect") errors.push(`${path} (${node.label}): onItemFailure must be "stop" or "collect"`);
+        if (node.onItemFailure === "collect") {
+          if (typeof node.failedAs !== "string" || !node.failedAs.trim()) errors.push(`${path} (${node.label}): onItemFailure "collect" needs failedAs, the state key the map writes its failed items under`);
+          else if (node.failedAs.startsWith("$")) errors.push(`${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
+          else if (node.failedAs === node.as) errors.push(`${path} (${node.label}): failedAs must differ from as: the map writes its results and its failed items under two keys`);
+        } else if (node.failedAs !== undefined) errors.push(`${path} (${node.label}): failedAs is written only with onItemFailure "collect"`);
         if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a map body — the report is the workflow's ONE terminal rendering (a mapped copy lands in the item results, never at state.report_markdown)`);
         if (reachability) reachability.unknowable = true;
         walk(node.body, `${path}.body`);
@@ -1412,6 +1433,42 @@ export class WorkflowStateError extends Error {
     super(summary);
     this.name = "WorkflowStateError";
   }
+}
+
+/** A map item that ended on its failure (`onItemFailure: "collect"`), as `failedAs` holds it: the item's index, the
+ *  label of the node that failed, the failure's code and its message (at most 300 characters). */
+export type MapItemFailure = { item_index: number; label: string; code: string; message: string };
+
+/** Whether an item's failure is one a map with `onItemFailure: "collect"` ends the item on: one of the interpreter's own
+ *  typed node failures (a call that failed after its retries, output that does not match its schema, a state contract, a
+ *  code transform, a failed verification), or a host's failure that declares itself one, with a string `code` and
+ *  `itemFailure: true`. Never one whose cause chain holds an effect whose outcome is unknown, a recovery failure, an
+ *  escalation or an abort, never several failures at once, and nothing else: a new error class is never collected by
+ *  accident. */
+export function isItemFailure(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof AggregateError || isRecoveryError(error)) return false;
+  for (let current: unknown = error, depth = 0; current && depth < 16; current = (current as { cause?: unknown }).cause, depth += 1) {
+    if (current instanceof EffectOutcomeUnknownError || current instanceof EscalationSignal || current instanceof AggregateError
+      || (current as { name?: unknown }).name === "AbortError") return false;
+  }
+  if (error instanceof EffectFailure || error instanceof WorkflowOutputInvalidError || error instanceof WorkflowStateError
+    || error instanceof WorkflowCodeError || error instanceof WorkflowVerificationError) return true;
+  return typeof (error as { code?: unknown }).code === "string" && (error as { itemFailure?: unknown }).itemFailure === true;
+}
+
+/** The label of the step an error failed in, set as the error leaves the innermost step and prefixed by every child
+ *  invocation it leaves, as the child's events are: the row of a collected item names the node that failed. */
+const failedSteps = new WeakMap<object, string>();
+
+/** A collected item's row. A failure that left no step (the map's own `resultPath` check) is the map's. */
+function itemFailureRow(index: number, error: Error, mapLabel: string): MapItemFailure {
+  const code = (error as { code?: unknown }).code;
+  return {
+    item_index: index,
+    label: failedSteps.get(error) ?? mapLabel,
+    code: typeof code === "string" ? code : "effect_failed",
+    message: String(error.message || error).slice(0, 300),
+  };
 }
 
 
@@ -2073,6 +2130,8 @@ function scopeDepsToItem(deps: WorkflowDeps, item: MapItem, signal?: AbortSignal
       pollStartedAt: (node, nestedItem, path) => recovery.pollStartedAt(node, nestedItem ?? item, path),
       wait: (node, ms, nestedItem, path) => recovery.wait(node, ms, nestedItem ?? item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(node, results, error, path) } : {}),
+      ...(recovery.failItem ? { failItem: (node, failure, path) => recovery.failItem!(node, failure, path) } : {}),
+      ...(recovery.itemFailure ? { itemFailure: (node, path) => recovery.itemFailure!(node, path) } : {}),
       ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
   };
@@ -2098,6 +2157,8 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
       pollStartedAt: (node, item, path) => recovery.pollStartedAt(relabel(node), item, path),
       wait: (node, ms, item, path) => recovery.wait(relabel(node), ms, item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(relabel(node), results, error, path) } : {}),
+      ...(recovery.failItem ? { failItem: (node, failure, path) => recovery.failItem!(relabel(node), failure, path) } : {}),
+      ...(recovery.itemFailure ? { itemFailure: (node, path) => recovery.itemFailure!(relabel(node), path) } : {}),
       ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
     ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, label: `${prefix}/${event.label}` })) } : {}),
@@ -2176,6 +2237,10 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
     return out;
   } catch (error) {
     if (isStep) deps.onEvent?.({ type: "node.end", label, detail: { kind: node.node, status: error instanceof EscalationSignal ? "escalated" : "failed", duration_ms: Date.now() - startedAt, error: String((error as any)?.message || error).slice(0, 300) } });
+    if (isStep && error !== null && typeof error === "object") {
+      const inner = failedSteps.get(error);
+      failedSteps.set(error, inner === undefined ? label : node.node === "workflow" ? `${label}/${inner}` : inner);
+    }
     throw error;
   }
 }
@@ -2295,6 +2360,10 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const items = getPath(state, node.itemsPath);
       if (!Array.isArray(items)) throw new WorkflowStateError(`map node "${node.label}": ${node.itemsPath} is not a list`, node.label, node.itemsPath, "expected_list");
       const results: unknown[] = new Array(items.length);
+      // With `collect`, an item that ends on an item failure is a row here and `null` in its slot of `as`: the slots stay
+      // aligned with the items, so a later node reads item i's result at i.
+      const collect = node.onItemFailure === "collect";
+      const rows: MapItemFailure[] = new Array(items.length);
       let cursor = 0;
       const width = Math.min(node.maxConcurrency ?? 4, Math.max(items.length, 1));
       const siblings = new AbortController();
@@ -2302,6 +2371,10 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       let failure: unknown;
       let failed = false;
       const uncertainties = new Set<EffectOutcomeUnknownError>();
+      const stop = (error: unknown) => {
+        uncertainEffects(error, uncertainties);
+        if (!failed) { failed = true; failure = error; siblings.abort(error); }
+      };
       await Promise.all(Array.from({ length: width }, async () => {
         while (!signal.aborted) {
           const i = cursor++;
@@ -2311,25 +2384,35 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
           // Under recovery each item is its own child: the body's session, effects and commit
           // carry the item, so a resumed map answers finished items from their rows and
           // continues the ones that were running.
+          const itemDeps = scopeDepsToItem(scopeExecution(deps, "items", i, "body"), { label: node.label, index: i }, signal);
           try {
+            // A failure an earlier process committed ends the item again: its body never runs twice.
+            const committed = collect ? await itemDeps.recovery?.itemFailure?.(node, executionPath(itemDeps)) : undefined;
+            if (committed) { rows[i] = committed; results[i] = null; continue; }
             const itemState = snapshotState({ ...state, item: items[i], item_index: i });
-            const out = await runNodeOnState(node.body, itemState, workflow, scopeDepsToItem(scopeExecution(deps, "items", i, "body"), { label: node.label, index: i }, signal));
+            const out = await runNodeOnState(node.body, itemState, workflow, itemDeps);
             if (node.resultPath !== undefined) {
               const selected = node.resultPath.split(".").reduce<unknown>((value, key) => value == null ? undefined : (value as Record<string, unknown>)[key], out);
               if (selected === undefined) throw new WorkflowStateError(`map node "${node.label}": resultPath "${node.resultPath}" is missing from item ${i}`, node.label, node.resultPath, "missing_map_result");
               results[i] = structuredClone(selected);
             } else results[i] = (node.body as any).as ? (out as any)[(node.body as any).as] : out;
           } catch (error) {
-            uncertainEffects(error, uncertainties);
-            if (!failed) { failed = true; failure = error; siblings.abort(error); }
-            return;
+            // An item failure ends its item; the map's stop and every other failure stop the map.
+            if (!collect || signal.aborted || !isItemFailure(error)) { stop(error); return; }
+            const row = itemFailureRow(i, error as Error, node.label);
+            try { await itemDeps.recovery?.failItem?.(node, row, executionPath(itemDeps)); }
+            catch (persistenceError) { stop(persistenceError); return; }
+            rows[i] = row;
+            results[i] = null;
+            deps.onEvent?.({ type: "map.item_failed", label: node.label, detail: { item_index: i, label: row.label, code: row.code } });
           }
         }
       }));
       if (failed) {
         failure = withSiblingUncertainty(failure, uncertainties);
         const escalated = failure instanceof EscalationSignal;
-        deps.onEvent?.({ type: escalated ? "map.escalated" : "map.failed", label: node.label, detail: { completed: results.reduce<number>((n, r) => n + (r === undefined ? 0 : 1), 0), of: items.length, message: String((failure as any)?.message || failure).slice(0, 300) } });
+        const collected = rows.filter(Boolean).length;
+        deps.onEvent?.({ type: escalated ? "map.escalated" : "map.failed", label: node.label, detail: { completed: results.reduce<number>((n, r) => n + (r === undefined ? 0 : 1), 0) - collected, of: items.length, ...(collect ? { collected } : {}), message: String((failure as any)?.message || failure).slice(0, 300) } });
         if (!escalated && deps.recovery?.fail) {
           try { await deps.recovery.fail(node, results, failure, executionPath(deps)); }
           catch (persistenceError) {
@@ -2338,7 +2421,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
         }
         throw failure;
       }
-      return { ...state, [node.as]: results };
+      return { ...state, [node.as]: results, ...(collect ? { [node.failedAs!]: rows.filter(Boolean) } : {}) };
     }
     case "parallel": {
       // Every branch starts from the same state and runs at once; what comes back is each branch's
@@ -2577,6 +2660,8 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   if ((["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) || "verify" in node && node.verify ||
       node.node === "loop" && (node.until as AskPredicate)?.predicate === "ask" ||
       node.node === "escalate" && (node.when as AskPredicate)?.predicate === "ask") && !deps.runJudge) missing("runJudge");
+  // A store that cannot commit an item's failure would run the item again in the next process.
+  if (node.node === "map" && node.onItemFailure === "collect" && deps.recovery && !(deps.recovery.failItem && deps.recovery.itemFailure)) missing("recovery.failItem and recovery.itemFailure");
   if (node.node === "chain") node.steps.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "parallel") node.branches.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "map" || node.node === "loop") assertWorkflowCapabilities(node.body, deps, workflow);

@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from '@earendil-works/pi-durable';
-import { runWorkflow } from '@parcha/agentrun-dsl';
+import { isItemFailure, runWorkflow } from '@parcha/agentrun-dsl';
 import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { hostScope, NodeIndex } from '../dist/durable/node.js';
 import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
@@ -128,7 +128,7 @@ test('a schema that requires a field its properties do not declare is delivered 
 
 test('a node that spends its delivery attempts fails for good, by rejections or by yields without a record', async () => {
   const rejected = await rig([submit({ nope: 1 }), submit({ nope: 2 }), say('never asked')], { maxAttempts: 2 });
-  await assert.rejects(rejected.runNode(verdict()), final(/^Verdict did not submit \(its delivery attempts are spent\)$/));
+  await assert.rejects(rejected.runNode(verdict()), (error) => final(/^Verdict did not submit \(its delivery attempts are spent\)$/)(error) && error.itemFailure === true && isItemFailure(error));
   assert.equal(rejected.requests.length, 2);
   await rejected.harness.close(ctx);
   const silent = await rig([say('thinking'), say('still thinking'), say('I am done.'), say('never asked')], { maxAttempts: 2 });
@@ -138,11 +138,23 @@ test('a node that spends its delivery attempts fails for good, by rejections or 
   await silent.harness.close(ctx);
 });
 
+test('a model that will not answer (a provider\'s content filter) fails the node for good, as an item failure a collecting map ends the item on', async () => {
+  const filtered = await rig([fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'The response was blocked by the provider\'s content filter' }), say('never asked')]);
+  await assert.rejects(filtered.runNode(verdict()), (error) => final(/^Verdict: the model did not answer \(model_error\)$/)(error)
+    && error.unanswered?.reason === 'model_error' && error.itemFailure === true && isItemFailure(error));
+  assert.equal(filtered.requests.length, 1, 'a refusal is not asked again');
+  await filtered.harness.close(ctx);
+  // A schema no submit call can satisfy is the node's contract, not the item's: it fails every item the same way.
+  const unsatisfiable = await rig([say('never asked')]);
+  await assert.rejects(unsatisfiable.runNode(verdict({ schema: { type: 'string' } })), (error) => error instanceof NodeFailure && error.final === true && error.itemFailure === false && !isItemFailure(error));
+  await unsatisfiable.harness.close(ctx);
+});
+
 test('a run a host tool ended without a record is a failure a second attempt may follow', async () => {
   const seen = [];
   const { harness, nodes, runNode, requests, opened } = await rig([fauxAssistantMessage([fauxToolCall('halt', {})], { stopReason: 'toolUse' }), say('never asked')],
     { agent: () => ({ model: MODEL, extensions: [tools], tools: [halt] }), stance: (_node, offered) => { seen.push(offered.tools); return undefined; } }, [tools]);
-  await assert.rejects(runNode(verdict()), (error) => error instanceof NodeFailure && error.final === false && /^Verdict did not submit \(it ended its run without a record\)$/.test(error.message));
+  await assert.rejects(runNode(verdict()), (error) => error instanceof NodeFailure && error.final === false && error.itemFailure === false && !isItemFailure(error) && /^Verdict did not submit \(it ended its run without a record\)$/.test(error.message));
   assert.deepEqual(seen, [['halt']], 'the stance is told the tools the host\'s agent lists');
   assert.equal(requests.length, 1, 'the tool ended the run: nothing more was asked');
   // What the tool answered stays in the node's conversation: it is what a next request of it would carry.
@@ -173,7 +185,7 @@ test('a pause leaves the node\'s work for the attempt\'s next entry; any other s
     await assert.rejects(running, (error) => error === reason);
     release();
     if (kept) assert.deepEqual(await runNode(verdict()), { verdict: 'buy' }, 'the request in flight at the pause delivers to the attempt\'s next entry');
-    else await assert.rejects(runNode(verdict()), (error) => final(/^Verdict: the model did not answer \(aborted\)$/)(error) && error.unanswered?.reason === 'aborted');
+    else await assert.rejects(runNode(verdict()), (error) => final(/^Verdict: the model did not answer \(aborted\)$/)(error) && error.unanswered?.reason === 'aborted' && error.itemFailure === false && !isItemFailure(error));
     assert.equal(requests.length, 1);
     await harness.close(ctx);
   }
@@ -216,6 +228,34 @@ test('no listener is left on the run\'s stop when a call ends, however it ends: 
   const { harness, runNode } = await rig([submit({ verdict: 'buy' }), say('never asked')]);
   assert.deepEqual(await runNode(verdict({ signal: stop.signal })), { verdict: 'buy' });
   assert.equal(getEventListeners(stop.signal, 'abort').length, 0, 'after a delivery');
+  await harness.close(ctx);
+});
+
+test('a map that collects its items\' failures ends an item whose model the provider\'s content filter blocked, and the others finish; the next process asks nothing again', async () => {
+  // The model answers each item by its own id (the prompt holds the whole list too), and blocks item c: an error
+  // response with nothing delivered.
+  const answer = (context) => (context.messages.find((message) => message.role === 'user').content.includes('"item":{"id":"c"}')
+    ? fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'The response was blocked by the provider\'s content filter' })
+    : submit({ verdict: 'buy' }));
+  const { harness, runNode, requests } = await rig(Array.from({ length: 6 }, () => answer));
+  const workflow = { v: 2, name: 'collect-filtered', input: { schemaId: 'In' }, output: { schemaId: 'Out' },
+    schemas: { Verdict: VERDICT, In: { type: 'object', required: ['items'], properties: { items: { type: 'array' } } }, Out: { type: 'object' } },
+    root: { node: 'map', label: 'each', itemsPath: 'items', as: 'verdicts', resultPath: 'decision', maxConcurrency: 2, onItemFailure: 'collect', failedAs: 'failed',
+      body: { node: 'decide', label: 'Verdict', instructions: 'Decide buy or pass.', out: 'Verdict', as: 'decision' } } };
+  const input = { items: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id })) };
+  const store = memoryStore();
+  const process = async () => {
+    const driver = await openRecovery(store, workflow, { key: 'run-1' });
+    try { return await runWorkflow(workflow, input, withRecovery(driver, { runNode }, { durableNodes: true })); } finally { await driver.close(); }
+  };
+  const first = await process();
+  assert.equal(first.status, 'complete');
+  assert.deepEqual(first.state.verdicts, [{ verdict: 'buy' }, { verdict: 'buy' }, null, { verdict: 'buy' }, { verdict: 'buy' }]);
+  assert.deepEqual(first.state.failed, [{ item_index: 2, label: 'Verdict', code: 'NODE_NOT_DELIVERED', message: 'Verdict: the model did not answer (model_error)' }]);
+  assert.equal(requests.length, 5, 'one request per item: the blocked one is not asked again');
+  const again = await process();
+  assert.deepEqual([again.state.verdicts, again.state.failed], [first.state.verdicts, first.state.failed]);
+  assert.equal(requests.length, 5, 'a later process answers every item from the store, the blocked one from its row');
   await harness.close(ctx);
 });
 

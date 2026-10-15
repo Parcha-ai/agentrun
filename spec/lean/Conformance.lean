@@ -88,6 +88,12 @@ def thrown (e : Json) : Option String :=
   | some (.str m) => some m
   | _ => none
 
+/-- The code a scripted adapter failure declares (`"itemFailure": "<code>"` beside its `"throw"`), found by
+its message: a case gives each declared failure a message of its own. -/
+def declaredCode (script : Json) (m : String) : Option String :=
+  (fields script).findSome? fun (_, entries) => (fields entries).findSome? fun (_, e) =>
+    if thrown e == some m then (match get? e "itemFailure" with | some (.str c) => some c | _ => none) else none
+
 def roundTo4 (q : Rat) : Rat := ((q * 10000 + 1 / 2).floor : Rat) / 10000
 
 def answerConfidence (a : Json) : Rat :=
@@ -193,6 +199,14 @@ def scripted (catalog : List (String × Json)) (script : Json) (questionLimit : 
     else none
   render := renderDescribe
   questionLimit := questionLimit
+  declared e := match e with
+    | .adapter _ m => declaredCode script m
+    | _ => none
+  -- The message the TypeScript errors carry: `WorkflowCodeError`'s rendering, a declared failure's own text.
+  message e := match e with
+    | .transform l m => "code node \"" ++ l ++ "\" failed: " ++ m ++ "; check its state paths, synchronous function body and supported globals"
+    | .adapter _ m => m
+    | _ => ""
   choose l := l.headD (.ok [])
   choose_mem l h := by cases l with
     | nil => exact absurd rfl h
@@ -214,7 +228,7 @@ def reasonName : StateReason → String
 def errJson : Err → List (String × String)
   | .required l _ p _ => [("kind", "state"), ("reason", "required_nonempty"), ("label", l), ("path", ".".intercalate p)]
   | .state r l p => [("kind", "state"), ("reason", reasonName r), ("label", l), ("path", ".".intercalate p)]
-  | .adapter _ _ => [("kind", "adapter")]
+  | .adapter _ _ | .transform _ _ => [("kind", "adapter")]
   | .engine _ _ => [("kind", "engine")]
   | .outputInvalid _ => [("kind", "output_invalid")]
   | .inputInvalid _ => [("kind", "input_invalid")]
