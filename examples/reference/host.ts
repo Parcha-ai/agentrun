@@ -74,7 +74,7 @@ export type Host = {
 };
 
 /** What a scripted tool is handed beside its arguments: the box provider of the demo's `boxes` (crossings and transport box lines already in it), when it declares one. */
-export type ToolContext = { boxes?: BoxProvider };
+export type ToolContext = { boxes?: BoxProvider; /** The run's directory and its `work/`: a tool that reads the run's evidence files or the job's files reads them here. */ place?: { root: string; work: string } };
 
 /** What a job scripts for the no-key host. */
 export type Fakes = {
@@ -162,7 +162,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         const report = (outcome: 'applied' | 'failed') => call?.({ outcome, tool: node.tool, argsHash: effect.argsHash });
         let value: unknown;
         for (let send = 1; ; send += 1) {
-          try { value = await tool(input, options.boxes ? { boxes: options.boxes } : undefined); break; } catch (error) {
+          try { value = await tool(input, { place: { root: place.root, work: place.work }, ...(options.boxes ? { boxes: options.boxes } : {}) }); break; } catch (error) {
             report('failed');
             if (send >= 2 || (error as { retryable?: boolean } | null | undefined)?.retryable !== true) throw error;
           }

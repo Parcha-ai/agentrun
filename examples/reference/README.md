@@ -175,7 +175,7 @@ The parts of `demo.json` the entry acts on:
 
 - `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
 - `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
-- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. `runIn: true` also runs the job's own disk tools in a box of it.
+- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
 
 ### Crossings
 

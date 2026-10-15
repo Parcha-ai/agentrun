@@ -211,3 +211,14 @@ test('a storm takes no crossing before the process has begun its first node, and
   named('event browser.reconciled');
   assert.deepEqual(kills, ['SIGKILL']);
 });
+
+test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  let seen;
+  const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: { look: (_args, context) => { seen = context; return {}; } }, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' });
+  await local.host.tools.runEffect({ node: { tool: 'look' }, input: {}, effect: { id: 'e', argsHash: 'h' } });
+  assert.deepEqual(seen.place, { root: place.root, work: place.work });
+});
