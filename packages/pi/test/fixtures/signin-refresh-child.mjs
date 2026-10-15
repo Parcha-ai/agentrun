@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { redirect } from './fake-openai.mjs';
 
 const [home, barrier, name] = process.argv.slice(2);
+// It never outlives its test, even one that dies before the go: its stdin is a pipe from the test, which closes however
+// the test process ends.
+process.stdin.on('end', () => process.exit(0)).resume();
 globalThis.fetch = redirect(process.env.FAKE_OPENAI_BASE, process.env.FAKE_OPENAI_SECRET);
 const { resolveModel } = await import('@parcha/agentrun-pi/signin');
 writeFileSync(join(barrier, `ready-${name}`), '');
@@ -14,4 +17,4 @@ while (!existsSync(join(barrier, 'go'))) await new Promise((done) => setTimeout(
 const started = Date.now();
 const resolved = await resolveModel({ name: 'refresh', models: { lead: { needs: ['text'] } }, keys: [], programs: [], expectedCalls: 1, expectedCost: 0 }, { home, env: {} });
 const key = await resolved.getApiKey();
-process.stdout.write(JSON.stringify({ started, finished: Date.now(), key: createHash('sha256').update(key).digest('hex') }));
+process.stdout.write(JSON.stringify({ started, finished: Date.now(), key: createHash('sha256').update(key).digest('hex') }), () => process.exit(0));

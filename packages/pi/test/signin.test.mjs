@@ -56,6 +56,7 @@ const piAiVersion = (() => {
   }
 })();
 const namesTheApp = (([major, minor]) => major > 1 || minor >= 1)(piAiVersion.split('.').map(Number));
+const LOCK_HOLDER = fileURLToPath(new URL('./fixtures/signin-lock-holder.mjs', import.meta.url));
 const spec = (models = { lead: { needs: ['text', 'tools'] } }) => ({ name: 'signin-test', models, keys: [], programs: [], expectedCalls: 4, expectedCost: 0.05 });
 
 async function fake(t, options) {
@@ -93,12 +94,25 @@ test('an expired access token is refreshed once, then the request goes through w
   assert.equal(server.seen.foreign, 1, 'a request without this test\'s secret is not one of its own');
 });
 
+/** A child of this test, gone when the test ends: killed and waited for on every path out of the test. */
+function owned(t, proc) {
+  t.after(async () => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    proc.kill('SIGKILL');
+    await once(proc, 'exit');
+  });
+  return proc;
+}
+
+/** Whether process `pid` is gone. */
+const gone = (pid) => { try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; } };
+
 /** Two processes resolving the model at once behind a barrier, each through fixtures/signin-refresh-child.mjs. */
-async function refreshPair(server, home) {
+async function refreshPair(t, server, home) {
   const barrier = mkdtempSync(join(root, 'barrier-'));
   const child = fileURLToPath(new URL('./fixtures/signin-refresh-child.mjs', import.meta.url));
   const run = (name) => new Promise((done, fail) => {
-    const proc = spawn(process.execPath, [child, home, barrier, name], { env: { ...process.env, FAKE_OPENAI_BASE: server.base, FAKE_OPENAI_SECRET: server.secret }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = owned(t, spawn(process.execPath, [child, home, barrier, name], { env: { ...process.env, FAKE_OPENAI_BASE: server.base, FAKE_OPENAI_SECRET: server.secret }, stdio: ['pipe', 'pipe', 'pipe'] }));
     let out = '';
     let err = '';
     proc.stdout.on('data', (chunk) => { out += chunk; });
@@ -130,7 +144,7 @@ test('two processes refreshing at once: one refreshes, the other re-reads; both 
   t.after(server.close);
   const home = newHome();
   seed(home, oauth({ expires: Date.now() - 1000 }));
-  const [a, b] = await refreshPair(server, home);
+  const [a, b] = await refreshPair(t, server, home);
   assert.ok(a.started < b.finished && b.started < a.finished, 'the two resolutions overlapped');
   refreshedOnce(server, home, a, b);
 });
@@ -140,17 +154,41 @@ test('a writer killed while it holds the lock: the lock is free at once, and of 
   t.after(server.close);
   const home = newHome();
   seed(home, oauth({ expires: Date.now() - 1000 }));
-  const holder = spawn(process.execPath, ['--expose-gc', fileURLToPath(new URL('./fixtures/signin-lock-holder.mjs', import.meta.url)), home], { stdio: ['ignore', 'pipe', 'inherit'] });
-  t.after(() => holder.kill('SIGKILL'));
+  const holder = owned(t, spawn(process.execPath, ['--expose-gc', LOCK_HOLDER, home], { stdio: ['pipe', 'pipe', 'inherit'] }));
   await new Promise((done, fail) => { holder.stdout.on('data', (chunk) => String(chunk).includes('held') && done()); holder.on('exit', (code) => fail(new Error(`the holder exited ${code}`))); });
   await new Promise((done) => setTimeout(done, 200)); // garbage collections run in the holder meanwhile
   await assert.rejects(fileCredentialStore(home, { lockTimeoutMs: 300 }).hostId(), (error) => error instanceof AuthStoreError && error.code === 'LOCK_TIMEOUT', 'held: a writer waits');
   holder.kill('SIGKILL');
   await once(holder, 'exit');
+  assert.ok(gone(holder.pid), 'the holder is gone');
   const started = Date.now();
-  const [a, b] = await refreshPair(server, home);
+  const [a, b] = await refreshPair(t, server, home);
   assert.ok(Date.now() - started < 20_000, 'nobody waited out a lock timeout');
   refreshedOnce(server, home, a, b);
+});
+
+test('a lock holder whose test process dies leaves on its own: no holder outlives its test', async (t) => {
+  const home = newHome();
+  // A stand-in for the test process: it starts a holder the way the test above does, reports the holder's pid, and is
+  // then killed outright, with no chance to clean up.
+  const parent = owned(t, spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const holder = spawn(process.execPath, ['--expose-gc', ${JSON.stringify(LOCK_HOLDER)}, ${JSON.stringify(home)}], { stdio: ['pipe', 'pipe', 'inherit'] });
+    holder.stdout.on('data', (chunk) => String(chunk).includes('held') && process.stdout.write(holder.pid + '\\n'));
+    setInterval(() => {}, 1000);`], { stdio: ['ignore', 'pipe', 'inherit'] }));
+  const pid = Number((await once(parent.stdout, 'data'))[0]);
+  t.after(() => {
+    // Only if this test failed: the holder by its pid, after checking it is still this test's holder.
+    let cmdline = '';
+    try { cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch {}
+    if (!gone(pid) && cmdline.includes('signin-lock-holder.mjs')) process.kill(pid, 'SIGKILL');
+  });
+  assert.ok(pid > 0 && !gone(pid), 'the holder is running');
+  parent.kill('SIGKILL');
+  await once(parent, 'exit');
+  const deadline = Date.now() + 10_000;
+  while (!gone(pid) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 50));
+  assert.ok(gone(pid), 'the holder left when its parent died');
 });
 
 test('port 1455 busy: the sign-in fails at once with the clear message, and stores no credential', async (t) => {
