@@ -63,10 +63,10 @@ const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes
 const live = process.env.DEMO_LIVE_PROBE ? (context: { env: NodeJS.ProcessEnv; models: unknown }) => {
   writeFileSync(join(process.env.DIR!, 'models-seen.json'), JSON.stringify(context.models));
   writeFileSync(join(process.env.DIR!, 'env-seen.json'), JSON.stringify(Object.keys(context.env).sort()));
-  return { vision: (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'live-vision.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } };
+  return { models: { lead: 'chosen-lead', eyes: 'chosen-eyes' }, vision: (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'live-vision.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } };
 } : undefined;
 // And a manifest hook: extras, or a name the entry owns when DEMO_MANIFEST is `reserved`.
-const manifest = process.env.DEMO_MANIFEST ? () => (process.env.DEMO_MANIFEST === 'reserved' ? { source: 'mine' } : { sources: [{ file: 'a.pdf', sha256: 'ab' }], models: { lead: 'x' } }) : undefined;
+const manifest = process.env.DEMO_MANIFEST ? (context: { models?: unknown }) => (process.env.DEMO_MANIFEST === 'reserved' ? { source: 'mine' } : process.env.DEMO_MANIFEST === 'models' ? { chosen: context.models ?? null } : { sources: [{ file: 'a.pdf', sha256: 'ab' }], models: { lead: 'x' } }) : undefined;
 // The demo's own vision lane: its eyes, and (DEMO_OWN_HOOKS) an `onLook` and an `onMiss` of its own, which the entry's must call and never replace.
 const ownLane = () => ({
   eyes: eyes!,
@@ -75,5 +75,5 @@ const ownLane = () => ({
     onMiss: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'miss\n'); },
   } : {}),
 });
-export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

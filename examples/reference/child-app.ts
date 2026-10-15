@@ -20,7 +20,7 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   return appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256, made) }));
+    console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) }));
     await prepared.done();
   });
 }

@@ -44,7 +44,7 @@ import { packageCommitRecorder } from './record-store.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
-export type LiveParts = { host?: Partial<Host>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, unknown>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
@@ -58,7 +58,7 @@ export type DemoOptions = {
   fakes: Fakes;
   live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
   /** Fields the demo adds to the manifest, from the run it just finished (never a field the entry writes: `format`, `source`, `result`, `providers`, ...). It runs in the supervisor, once, after the last process. */
-  manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean }) => Record<string, unknown>;
+  manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean; /** What the live parts reported choosing (`LiveParts.models`); absent on fakes. */ models?: Record<string, unknown> }) => Record<string, unknown>;
   /** The run's result, as the recording shows it: the entry writes the result line and its blob from `json` (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record. `keep` stores a file in the recording's blobs and returns its SHA-256; `dir` is the run's directory, where the run's own files are. It runs in the process that delivered. */
   result?: (record: unknown, context: { dir: string; keep(bytes: Uint8Array | string, extension: string): string }) => { json: unknown; title: string } | Promise<{ json: unknown; title: string }>;
   /** The source items an input needs (`{ id, url, bytes, sha256 }`): only these are fetched, on --live or --fetch-sources; without either, a run that lacks one of their files (not in `job.files`) is refused in one line. */
@@ -162,11 +162,11 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
 }
 
 /** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. `made` is the demo's result hook, run on the delivered result. */
-export type Prepared = { place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
+export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
-export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }) {
-  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
+export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, unknown>) {
+  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
 }
 
 export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace): Promise<Prepared> {
@@ -189,7 +189,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
   // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
-  const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
+  // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
+  const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : (live ? undefined : options.fakes.input) ?? options.job.input;
   let boxFiles = options.job.files;
   if (options.sourcesFor || options.spec.sources) {
     const items = options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(sourcesPath(options)).items;
@@ -224,7 +225,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
@@ -239,7 +240,7 @@ async function child(options: DemoOptions) {
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made) }));
+    console.log(JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
@@ -401,7 +402,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const resultBlob = blob ? { blob, title: resultTitle } : undefined;
     // `source.run` names the run: the demo, and the input file it ran on when one was given.
     const runName = values.input !== undefined && !values.input.trimStart().startsWith('{') ? `${spec.name}-${basename(values.input).replace(/\.[^.]*$/, '')}` : spec.name;
-    const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live }) : undefined;
+    const chosen = [...processes].reverse().find((entry) => entry.outcome?.models)?.outcome?.models;
+    const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
     finishRecording(recordDir, {
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
@@ -423,6 +425,8 @@ function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
+  const last = result.processes.at(-1)?.outcome;
+  if (last && last.status !== 'complete' && last.message) console.log(`  stopped: ${last.message}`);
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);

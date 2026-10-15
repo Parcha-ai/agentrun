@@ -94,6 +94,8 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** The input a no-key run takes when `--input` names none (a smaller slice than the job's own, which is the live default). */
+  input?: Record<string, unknown>;
   /** Called once with the backend the supervisor serves the pages from, before it serves: a demo shapes what its fake browser answers (a screenshot's size, a page's behavior). */
   backend?: (backend: FakeBackend) => void;
   /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */

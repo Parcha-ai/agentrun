@@ -863,3 +863,29 @@ test('every order a place is handed carries the demo\'s entry module and name in
     assert.equal(env.DEMO_NAME, 'order-demo', `${how}: the demo's name`);
   }
 });
+
+test('fakes.input is the no-key default (--input still wins), the models the live parts chose reach manifest(), and a refused child\'s reason is in the summary', { timeout: 300_000 }, async (t) => {
+  const smaller = await run(t, {}, ['--json'], { DEMO_FAKES_INPUT: '1' });
+  assert.equal(smaller.result.record.company, 'Beta Ltd', 'no --input: the fakes\' input');
+  const named = await run(t, {}, ['--json', '--input', '{"company":"Gamma Ltd"}'], { DEMO_FAKES_INPUT: '1' });
+  assert.equal(named.result.record.company, 'Gamma Ltd', '--input wins');
+  // Live: the job's own input is the default, and manifest() is told what the live parts chose.
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const live = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_FAKES_INPUT: '1', DEMO_MANIFEST: 'models', ...browser });
+  assert.equal(live.result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(live.result.record.company, 'Acme Ltd', 'live: the job\'s own input, not the fakes\'');
+  assert.deepEqual(JSON.parse(readFileSync(join(live.recording, 'manifest.json'), 'utf8')).chosen, { lead: 'chosen-lead', eyes: 'chosen-eyes' });
+  // The summary says why a child stopped.
+  const lines = [];
+  const log = console.log;
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    const tmp = await mkdtemp(join(tmpdir(), 'reference-stopped-'));
+    t.after(() => rm(tmp, { recursive: true, force: true }));
+    writeFileSync(join(tmp, 'items.json'), JSON.stringify([{ id: 'a-1', url: 'http://127.0.0.1:1/a-1.png', bytes: 1, sha256: 'a'.repeat(64) }]));
+    await run(t, {}, [], { DEMO_SOURCES_ITEMS: join(tmp, 'items.json'), DEMO_FAKES_INPUT: '', DEMO_LIVE_PROBE: '', DEMO_MANIFEST: '' });
+  } finally { console.log = log; }
+  assert.ok(lines.some((line) => /^  stopped: this input needs 1 source file\(s\)/.test(line)), lines.join('\n'));
+});
