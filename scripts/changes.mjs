@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Changelog fragments: one file per pull request in changes/, folded into the CHANGELOGs by the release. Nothing but the release
 // edits an Unreleased section, so two pull requests never touch the same lines.
-//   node scripts/changes.mjs --check [--base <commit>]   validate fragments; fail an edit of any Unreleased section
+//   node scripts/changes.mjs --check [--base <commit>]   validate fragments; fail an edit of any Unreleased section, and a release commit that carries a fragment
 //   node scripts/changes.mjs --fold <version> [--date YYYY-MM-DD]   move each fragment into the CHANGELOG its package names
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -233,6 +233,29 @@ export async function fold(root, version, date) {
   return { folded: fragments.length, files: changed };
 }
 
+/** The workspace packages whose manifest version differs from the merge base's. A package the base does not have is new, not bumped. */
+async function bumpedPackages(root, mergeBase) {
+  const bumped = [];
+  for (const directory of (await workspacePackages(root)).keys()) {
+    const was = await gitShow(root, mergeBase, `packages/${directory}/package.json`);
+    if (was === null) continue;
+    const is = JSON.parse(await readFile(join(root, 'packages', directory, 'package.json'), 'utf8')).version;
+    if (JSON.parse(was).version !== is) bumped.push(directory);
+  }
+  return bumped;
+}
+
+/** Whether the tree is a release commit (a workspace package's version differs from the merge base's) and what changes/ holds
+ *  besides its README. A release commit folds every fragment, so on one anything else is a fragment the fold did not see: another
+ *  pull request added it after the fold was made. */
+export async function releaseRace(root, base) {
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  const bumped = await bumpedPackages(root, mergeBase);
+  let names = [];
+  try { names = (await readdir(join(root, 'changes'))).filter(entry => entry !== 'README.md').sort(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return { release: bumped.length > 0, bumped, unfolded: bumped.length > 0 ? names : [] };
+}
+
 /** Whether a changelog's text has the section for `version`. */
 export const hasVersionSection = (text, version) => text.split('\n').some(line => isVersionHeading(line, version));
 
@@ -246,6 +269,8 @@ async function main() {
     if (!base || /^0+$/.test(base)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
     const { fold: isFold, edited } = await unreleasedEdits(root, base);
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
+    const { unfolded } = await releaseRace(root, base);
+    if (unfolded.length) throw new Error(`release commit carries unfolded fragments: ${unfolded.join(', ')}; refold on current main`);
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];
