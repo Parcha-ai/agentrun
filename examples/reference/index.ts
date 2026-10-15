@@ -18,7 +18,6 @@ export { openSupervisor } from './record.ts';
 export { finishRecording } from './record.ts';
 /** The code a recording was cut from: repository, commit, and each package's version. */
 export { codeOf } from './record.ts';
-export { keepBlob } from './record.ts';
 /** The store export the recorder reads the run's commits through; it throws if this build of the package lacks it. */
 export { packageCommitRecorder } from './record-store.ts';
 
@@ -52,3 +51,11 @@ export { tapBox, BOX_CROSSINGS } from './boxes.ts';
 
 /** The judge seam: Jev's caps (50 requests, 40,000 tokens; the next is refused with JEV_CAP_REACHED, a failed request counts and a refused one does not) and Jev's public list price, for every demo. */
 export { capJudge, jevCost, JEV_CAPS, JEV_LIST_PRICE } from './judge.ts';
+
+/** The place seam: where the session lives and how its process starts, stops and restarts. The supervisor decides when to kill and writes the kill line first; a place decides how. `localPlace` is the child process of this machine; a package supplies another. */
+export { localPlace } from './place.ts';
+export type { Place, Runner, RunnerOrder, Exit, MoveReceipt } from './place.ts';
+
+/** The vision option: each look the guard or a read reports is filed, whole, in the run's `vision.looks` document (one per look key), with the screenshot it was of as a blob and its evidence path as its receipt, so the counters read the eyes' looks and cost. */
+export { keepLooks, shownShots, VisionLooks } from './looks.ts';
+export type { FiledLook, ShownImage } from './looks.ts';

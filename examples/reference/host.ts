@@ -3,7 +3,7 @@
 // backend, and evidence, status and the record are files under the run's directory. Every fake call, and each page
 // operation the browser makes, is counted in `<run>/ledger.jsonl`, which outlives a killed process.
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
@@ -15,7 +15,7 @@ import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
-import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
+import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { ChildEnv } from '@parcha/pi-vision/node';
 import type { BoxProvider } from '@parcha/pi-transport';
@@ -120,11 +120,13 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const answerOf = (effectId: string) => join(place.root, 'answers', `${createHash('sha256').update(effectId).digest('hex')}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
-  for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  // (A run under `pi-durable-disk run --app` builds its host before the run's directory exists: then the logs are made at their first row, and again when the run opens.)
+  const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
+  for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } }
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
-    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
-  const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
+    append(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
+  const status = quiet((event: StatusEvent) => { append(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
   // The faux streams like a real model: a turn takes a moment, pi commits the start of every ask and a throttled partial of the answer, and
   // a kill mid-stream leaves both in the store. `tokensPerSecond: 0` answers at once.

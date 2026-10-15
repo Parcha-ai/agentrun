@@ -38,14 +38,12 @@ The models come from the shared sign-in or a provider key, not from this demo. `
 - `job.ts`: the workflow as data (a `map` over the operators nine at a time; each branch an `agent` that opens its dashboard and takes one screenshot, a `call` for the published figure, and a `code` check that files the reading with its gap to the published figure; a last `code` step builds the snapshot), its default input, and nothing else. It is the unit `agent.run()` and the playground take.
 - `fakes.ts`: the scripted lead, eyes, pages and published figures, and the screenshot widths that tell the eyes whose chart they look at. A live host brings its own.
 - `result.ts`: the cited result and the snapshot files.
-- `looks.ts`: files each look the vision guard reports into a `vision.looks` document of the run's store, with the screenshot's evidence path and the image as a blob.
 - `sources.json`: the nine operators and how each page was checked by hand (below).
 - `run.ts`: the reference entry (`examples/reference`) plus the above. The host, recorder, supervisor, kills and spend cap are the entry's.
 
 ## The looks
 
-The vision guard answers a screenshot's image through the eyes and reports the look; nothing else keeps it. `looks.ts` keeps each
-reported look, the whole `LookRecord`, in a `vision.looks` document of the run's store (one per look key), so the recording's
+The vision guard answers a screenshot's image through the eyes and reports the look. The reference entry keeps each reported look, the whole `LookRecord`, in a `vision.looks` document of the run's store (one per look key), so the recording's
 counters read `paid.vision` and the manifest's cost holds the eyes' price. A test fails if the strip understates it.
 
 The look is filed with the screenshot's evidence path as its receipt and the image the eyes were shown as a blob (`blobs/<sha256>.jpg`),

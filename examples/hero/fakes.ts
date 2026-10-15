@@ -5,8 +5,7 @@ import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { fakeImage, fixturePage, type FakeBackend } from '@parcha/pi-browser/testing';
 import { fakeEyes, type FakeEyes } from '@parcha/pi-vision/testing';
-import { keepBlob, type Fakes } from '../reference/index.ts';
-import { keepLooks, shownShots } from './looks.ts';
+import type { Fakes } from '../reference/index.ts';
 import sources from './sources.json' with { type: 'json' };
 
 /** One operator of `sources.json`, as the fakes take it. */
@@ -104,16 +103,15 @@ export function heroFakes(grids: readonly Grid[], options: { broken?: string; ey
 }
 
 
-/** The fakes as the entry runs them: the run's directory (`DIR`), where the eyes' ledger and the cites file go, and the recording (`RECORD_DIR`), where each screenshot the eyes were shown is kept as an image blob, come from the entry's
- *  environment. `DEMO_HERO_BROKEN` (a grid id whose page is not its dashboard) and `DEMO_HERO_EYES_PRICE` (the scripted eyes' price per million tokens) are the test's knobs. */
+/** The fakes as the entry runs them. The entry files every look the guard reports (the screenshot it was of, as an image blob in the recording, and its cite) and calls the demo's own lane; this one brings only its eyes. The run's
+ *  directory (`DIR`, where the eyes' ledger goes) comes from the entry's environment, and `DEMO_HERO_BROKEN` (a grid id whose page is not its dashboard) and `DEMO_HERO_EYES_PRICE` (the scripted eyes' price per million
+ *  tokens) are the test's knobs. */
 const grids = readGrids();
 const dir = process.env.DIR;
 const { fakes: scripted, eyes } = heroFakes(grids, { ...(dir ? { eyesLedger: join(dir, 'eyes.jsonl') } : {}), ...(process.env.DEMO_HERO_BROKEN ? { broken: process.env.DEMO_HERO_BROKEN } : {}), ...(process.env.DEMO_HERO_EYES_PRICE ? { eyesPrice: Number(process.env.DEMO_HERO_EYES_PRICE) } : {}) });
-const shown = shownShots(process.env.RECORD_DIR ? { keep: (bytes, extension) => keepBlob(process.env.RECORD_DIR!, bytes, extension) } : {});
 export const fakes: Fakes = {
   ...scripted,
-  extensions: [shown.extension],
-  vision: (_host, running) => ({ eyes, ...keepLooks(() => running.harness, { shown, ...(dir ? { cites: join(dir, 'cites.jsonl') } : {}) }) }),
+  vision: () => ({ eyes }),
   // Each grid's screenshot has the width of its page's grid, so the scripted eyes know whose chart they look at.
   backend: (backend) => watchScreenshots(backend, grids),
 };
