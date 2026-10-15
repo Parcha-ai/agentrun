@@ -48,8 +48,12 @@ test('--test-concurrency reaches the command line of every suite, as a value or 
 });
 
 test('TEST_CONCURRENCY sets it when no flag does, and the flag wins over it', () => {
-  for (const call of suites([out()], { TEST_CONCURRENCY: '5' }).calls) assert.deepEqual(flags(call), ['--test-concurrency=5']);
-  for (const call of suites(['--test-concurrency=2', out()], { TEST_CONCURRENCY: '5' }).calls) assert.deepEqual(flags(call), ['--test-concurrency=2']);
+  const envCalls = suites([out()], { TEST_CONCURRENCY: '5' }).calls;
+  assert.equal(envCalls.length, 3);
+  for (const call of envCalls) assert.deepEqual(flags(call), ['--test-concurrency=5']);
+  const flagCalls = suites(['--test-concurrency=2', out()], { TEST_CONCURRENCY: '5' }).calls;
+  assert.equal(flagCalls.length, 3);
+  for (const call of flagCalls) assert.deepEqual(flags(call), ['--test-concurrency=2']);
 });
 
 test('a concurrency that is not a positive whole number stops the collector before it runs a suite', () => {
