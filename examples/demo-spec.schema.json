@@ -1,0 +1,366 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "title": "name"
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "lead": {
+          "type": "object",
+          "properties": {
+            "needs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ModelNeed"
+              },
+              "title": "needs"
+            },
+            "default": {
+              "type": "string",
+              "title": "default"
+            }
+          },
+          "required": [
+            "needs"
+          ],
+          "title": "lead"
+        },
+        "eyes": {
+          "description": "A second model the run calls itself.",
+          "type": "object",
+          "properties": {
+            "needs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/EyesNeed"
+              },
+              "title": "needs"
+            },
+            "default": {
+              "type": "string",
+              "title": "default"
+            }
+          },
+          "required": [
+            "needs"
+          ],
+          "title": "eyes"
+        },
+        "judge": {
+          "type": "object",
+          "properties": {
+            "jev": {
+              "type": "boolean",
+              "const": true,
+              "title": "jev"
+            }
+          },
+          "required": [
+            "jev"
+          ],
+          "title": "judge"
+        }
+      },
+      "required": [
+        "lead"
+      ],
+      "title": "models"
+    },
+    "keys": {
+      "$ref": "#/definitions/Array",
+      "title": "keys"
+    },
+    "programs": {
+      "$ref": "#/definitions/Array_2",
+      "title": "programs"
+    },
+    "packages": {
+      "$ref": "#/definitions/Array_3",
+      "title": "packages"
+    },
+    "expectedCalls": {
+      "type": "number",
+      "title": "expectedCalls"
+    },
+    "expectedCost": {
+      "description": "USD for one `--live` run.",
+      "type": "number",
+      "title": "expectedCost"
+    }
+  },
+  "required": [
+    "expectedCalls",
+    "expectedCost",
+    "keys",
+    "models",
+    "name",
+    "programs"
+  ],
+  "definitions": {
+    "ModelNeed": {
+      "title": "ModelNeed",
+      "enum": [
+        "images",
+        "text",
+        "tools"
+      ],
+      "type": "string"
+    },
+    "EyesNeed": {
+      "title": "EyesNeed",
+      "enum": [
+        "images",
+        "video"
+      ],
+      "type": "string"
+    },
+    "Array": {
+      "title": "Array",
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Key"
+          },
+          {
+            "$ref": "#/definitions/Choice",
+            "description": "One of its members; an array member means all of its items (a key pair, or a key with its package)."
+          }
+        ]
+      }
+    },
+    "__type": {
+      "title": "__type",
+      "type": "object",
+      "properties": {
+        "env": {
+          "type": "string",
+          "title": "env"
+        },
+        "why": {
+          "type": "string",
+          "title": "why"
+        },
+        "where": {
+          "type": "string",
+          "title": "where"
+        },
+        "required": {
+          "type": "boolean",
+          "title": "required"
+        },
+        "for": {
+          "$ref": "#/definitions/RunMode",
+          "title": "for"
+        }
+      },
+      "required": [
+        "env",
+        "required",
+        "where",
+        "why"
+      ]
+    },
+    "RunMode": {
+      "description": "A run mode an item is needed for: `live` (paid calls) or `kill` (the kill on a real box). Without `for`, every run.",
+      "title": "RunMode",
+      "enum": [
+        "kill",
+        "live"
+      ],
+      "type": "string"
+    },
+    "Key": {
+      "$ref": "#/definitions/__type"
+    },
+    "__type_1": {
+      "description": "One of its members; an array member means all of its items (a key pair, or a key with its package).",
+      "title": "__type_1",
+      "type": "object",
+      "properties": {
+        "oneOf": {
+          "$ref": "#/definitions/Array_1",
+          "title": "oneOf"
+        },
+        "why": {
+          "type": "string",
+          "title": "why"
+        },
+        "for": {
+          "$ref": "#/definitions/RunMode",
+          "title": "for"
+        }
+      },
+      "required": [
+        "oneOf",
+        "why"
+      ]
+    },
+    "Array_1": {
+      "title": "Array_1",
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Key"
+          },
+          {
+            "$ref": "#/definitions/Program",
+            "description": "`min` is an x.y.z version, compared with the first x.y.z that `<cmd> --version` prints."
+          },
+          {
+            "$ref": "#/definitions/Package",
+            "description": "An npm package the demo loads only when used, installed with `--no-save` so it is never a dependency."
+          },
+          {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/Key"
+                },
+                {
+                  "$ref": "#/definitions/Program",
+                  "description": "`min` is an x.y.z version, compared with the first x.y.z that `<cmd> --version` prints."
+                },
+                {
+                  "$ref": "#/definitions/Package",
+                  "description": "An npm package the demo loads only when used, installed with `--no-save` so it is never a dependency."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "__type_2": {
+      "description": "`min` is an x.y.z version, compared with the first x.y.z that `<cmd> --version` prints.",
+      "title": "__type_2",
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "type": "string",
+          "title": "cmd"
+        },
+        "why": {
+          "type": "string",
+          "title": "why"
+        },
+        "required": {
+          "type": "boolean",
+          "title": "required"
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Platform"
+          },
+          "title": "platforms"
+        },
+        "min": {
+          "type": "string",
+          "title": "min"
+        },
+        "for": {
+          "$ref": "#/definitions/RunMode",
+          "title": "for"
+        }
+      },
+      "required": [
+        "cmd",
+        "required",
+        "why"
+      ]
+    },
+    "Platform": {
+      "title": "Platform",
+      "enum": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "type": "string"
+    },
+    "Program": {
+      "$ref": "#/definitions/__type_2"
+    },
+    "__type_3": {
+      "description": "An npm package the demo loads only when used, installed with `--no-save` so it is never a dependency.",
+      "title": "__type_3",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "title": "name"
+        },
+        "version": {
+          "type": "string",
+          "title": "version"
+        },
+        "why": {
+          "type": "string",
+          "title": "why"
+        },
+        "required": {
+          "type": "boolean",
+          "title": "required"
+        },
+        "for": {
+          "$ref": "#/definitions/RunMode",
+          "title": "for"
+        }
+      },
+      "required": [
+        "name",
+        "required",
+        "version",
+        "why"
+      ]
+    },
+    "Package": {
+      "$ref": "#/definitions/__type_3"
+    },
+    "Choice": {
+      "$ref": "#/definitions/__type_1"
+    },
+    "Array_2": {
+      "title": "Array_2",
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Program",
+            "description": "`min` is an x.y.z version, compared with the first x.y.z that `<cmd> --version` prints."
+          },
+          {
+            "$ref": "#/definitions/Choice",
+            "description": "One of its members; an array member means all of its items (a key pair, or a key with its package)."
+          }
+        ]
+      }
+    },
+    "Array_3": {
+      "title": "Array_3",
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Package",
+            "description": "An npm package the demo loads only when used, installed with `--no-save` so it is never a dependency."
+          },
+          {
+            "$ref": "#/definitions/Choice",
+            "description": "One of its members; an array member means all of its items (a key pair, or a key with its package)."
+          }
+        ]
+      }
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentrun.ai/schema/demo-spec.schema.json",
+  "title": "AgentRun demo spec",
+  "$comment": "Generated from the DemoSpec TypeScript type of @parcha/agentrun-pi/signin. Generation: node scripts/generate-demo-schema.mjs"
+}

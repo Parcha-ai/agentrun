@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentrun.ai/schema/demo.schema.json",
+  "title": "AgentRun demo (demo.json)",
+  "$comment": "A demo's demo.json: the DemoSpec (demo-spec.schema.json, generated from its type in @parcha/agentrun-pi/signin) and the demo template's own fields. Every field is listed, so a misspelt one is refused. scripts/demo-schema.test.mjs validates every examples/*/demo.json against it.",
+  "allOf": [{ "$ref": "https://agentrun.ai/schema/demo-spec.schema.json" }],
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": true, "models": true, "keys": true, "programs": true, "packages": true, "expectedCalls": true, "expectedCost": true,
+    "title": { "description": "The gallery card: 2 to 5 words.", "type": "string", "pattern": "^\\S+( \\S+){1,4}$" },
+    "claim": { "description": "One line: what the agent does and the hard thing it survives.", "type": "string", "pattern": "^[^\\n]+$" },
+    "targets": { "description": "Where the demo runs: hosted only when every tool has a hosted source.", "enum": [["local"], ["local", "hosted"]] },
+    "kill": { "description": "The template's single kill; `kills` is the list.", "$ref": "#/definitions/crossingKill" },
+    "kills": { "description": "What --kill does: each entry in order, one per process (examples/reference/demo-spec.ts).", "type": "array", "items": { "oneOf": [{ "$ref": "#/definitions/crossingKill" }, { "$ref": "#/definitions/stormKill" }] } },
+    "panels": { "description": "The viewer's own panel ids the recording draws.", "type": "array", "uniqueItems": true, "items": { "enum": ["lines", "pi-turns", "transport", "vision", "workflow-map"] } },
+    "tools": {
+      "description": "The job's tools that are code of its own: where each runs locally, and the hosted executor tool it is granted (null when none).",
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false, "required": ["name", "local"], "properties": { "name": { "type": "string", "minLength": 1 }, "local": { "type": "string", "minLength": 1 }, "hosted": { "type": ["string", "null"] } } }
+    },
+    "input": {
+      "description": "The job's input for --input: what it looks like, its default, and named variants.",
+      "type": "object", "additionalProperties": false,
+      "properties": { "flag": { "const": "--input" }, "shape": { "type": "string" }, "default": {}, "variants": { "type": "object" } }
+    },
+    "sources": { "description": "The demo's sources.json: the public pages or data the job reads, each checked by hand.", "type": "string", "pattern": "^examples/[^/]+/sources\\.json$" },
+    "boxes": {
+      "description": "The box the job's tools run in (examples/reference/demo-spec.ts).",
+      "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": { "kind": { "enum": ["local", "docker"] }, "image": { "type": "string", "minLength": 1 }, "runIn": { "type": "boolean" } }
+    }
+  },
+  "if": { "required": ["targets"], "properties": { "targets": { "type": "array", "contains": { "const": "hosted" } } } },
+  "then": { "properties": { "tools": { "type": "array", "items": { "type": "object", "required": ["hosted"], "properties": { "hosted": { "type": "string" } } } } } },
+  "definitions": {
+    "crossingKill": {
+      "description": "A kill at the nth time the child takes a named crossing.",
+      "type": "object", "additionalProperties": false, "required": ["point", "why"],
+      "properties": {
+        "point": { "type": "string", "minLength": 1 }, "why": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["process", "box"] }, "target": { "enum": ["run", "tool"] }, "n": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "stormKill": {
+      "description": "kills kills, each at the first crossing taken once gapMs has run.",
+      "type": "object", "additionalProperties": false, "required": ["storm"],
+      "properties": {
+        "storm": { "type": "object", "additionalProperties": false, "required": ["kills", "gapMs"], "properties": { "kills": { "type": "integer", "minimum": 1 }, "gapMs": { "type": "number", "minimum": 0 } } },
+        "kind": { "enum": ["process", "box"] }
+      }
+    }
+  }
+}
