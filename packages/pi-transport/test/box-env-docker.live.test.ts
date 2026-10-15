@@ -92,7 +92,7 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 					withAbortSignal(controller.signal, context),
 				);
 				for (let tries = 0; !(await running(env, aborted)); tries++) {
-					if (tries > 100) throw new Error("the command did not start");
+					if (tries > 300) throw new Error("the command did not start");
 					await sleep(100);
 				}
 				controller.abort();

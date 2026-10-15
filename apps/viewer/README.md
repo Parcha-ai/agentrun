@@ -3,6 +3,9 @@
 A static page that replays one agentrun run recorded as `agentrun.recording/1` (`RECORDING.md`): every process of
 the run, every kill, every commit of its store. No key, no server: it opens from `file://` or any static host.
 
+The hosted gallery is at https://parcha-ai.github.io/agentrun/. It is this replay viewer with the recordings in
+`recordings/`: it plays recorded runs, and never runs an agent or calls a model.
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Parcha-ai/agentrun/tree/main/apps/viewer)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FParcha-ai%2Fagentrun&root-directory=apps%2Fviewer)
 
@@ -12,6 +15,9 @@ the run, every kill, every commit of its store. No key, no server: it opens from
 node apps/viewer/build.mjs          # writes apps/viewer/dist/
 open apps/viewer/dist/index.html    # the gallery of recorded runs, or drop a recording folder on the page
 ```
+
+When the manifest keeps the job that ran and the run's store at its end (`job`, `store`), the header links both: the job
+is JSON and opens in a tab; the store is a SQLite file and downloads.
 
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
@@ -27,7 +33,7 @@ static host), or a recording folder dropped on the page or chosen with its picke
   `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
   committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
   measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
-  never $0; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
+  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
   (per look key: a native look charges nothing, and a look read back after a kill is paid once), and the journal's
   opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
@@ -52,6 +58,12 @@ Cloudflare (static assets, no Worker code) and `vercel.json` for Vercel.
 The buttons deploy this replay viewer only: it plays recorded runs, never runs an agent or calls a model, and asks for no key.
 A test (`test/deploy.test.ts`) holds both configs and both buttons to that: no variable, secret or binding.
 
+The hosted gallery is published by `.github/workflows/pages.yml` on each push to `main` that touches `apps/viewer/`.
+It builds the page, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
+in it valid (`scripts/recording/validate.mjs`), holding only its manifest, its lines and its blobs; every text file
+free of credential shapes and machine paths; the gallery embedding exactly the recordings beside it. It deploys with the
+job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that.
+
 ## Recordings
 
 `recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
@@ -62,6 +74,11 @@ counters' fold. The tests play a fixture cut by hand from a
 real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut). A
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
 down to the lines their fold reads (`test/fixtures/spacedeck-asks`).
+
+`node apps/viewer/build.mjs --files` (off by default) ships the recordings as files instead: `recordings/index.json` lists
+each one's manifest and blob paths, `gallery.js` embeds nothing, and the page fetches a recording only when it is
+opened, so a gallery of large runs stays a small page. It needs a static host: a page opened from `file://` cannot
+fetch.
 
 ## Develop
 

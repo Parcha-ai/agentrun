@@ -544,13 +544,18 @@ describe("a home: a drain that does not complete", () => {
 			const running = new Promise<void>((resolve) => {
 				executing = resolve;
 			});
+			// The work ends when the test lets it, not after a time a loaded machine could outlast before a drain looks.
+			let letWorkEnd: () => void = () => {};
+			const workEnds = new Promise<void>((resolve) => {
+				letWorkEnd = resolve;
+			});
 			const stuck = defineTool({
 				name: "work",
 				description: "A unit of work that takes a while.",
 				parameters: Type.Object({ n: Type.Number() }),
 				async execute(args) {
 					executing();
-					await sleep(400);
+					await workEnds;
 					return textResult(`did ${args.n}`);
 				},
 			});
@@ -579,6 +584,7 @@ describe("a home: a drain that does not complete", () => {
 			const aborted = await pending;
 			expect(aborted.ok ? "" : (aborted.error as DrainError).code).toBe("aborted");
 			home.abandon();
+			letWorkEnd();
 			await root.waitForIdle(context);
 			expect(await transcript(root)).toMatchObject({ interrupted: 0, blocked: 0, answered: true });
 			await home.close(context);

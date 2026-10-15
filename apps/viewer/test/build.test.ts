@@ -115,3 +115,23 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   const ended = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill');
   assert.match(ended, /after commit 6 of generation 2 · line 18 of 18/, 'with no ?at=, the end');
 });
+
+test('a panel with no line it is for is not drawn, its title included, at any stop', noChrome, (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-panels-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const recordings = join(out, 'recordings');
+  for (const name of ['reference-killed', 'transport-route-docker']) cpSync(join(fixtures, name), join(recordings, name), { recursive: true });
+  // The reference run again, with one transport line after all of its lines.
+  cpSync(join(fixtures, 'reference-killed'), join(recordings, 'late-transport'), { recursive: true });
+  const late = { channel: 'live', source: 'transport', kind: 'box.created', gen: 2, t: 5400, seq: 3, data: { box: 'b1', environment: 'local' } };
+  writeFileSync(join(recordings, 'late-transport', 'events.jsonl'), `${readFileSync(join(recordings, 'late-transport', 'events.jsonl'), 'utf8')}${JSON.stringify(late)}\n`);
+  build(join(out, 'dist'), recordings);
+  const title = '<h3>Where the session lives</h3>';
+  const reference = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed');
+  assert.ok(reference.includes('<h3>Model turns</h3>'), 'the page drew its panels');
+  assert.ok(!reference.includes(title), 'no transport line: no transport panel, no title');
+  assert.ok(pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=transport-route-docker').includes(title));
+  const early = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=late-transport&at=1');
+  assert.match(early, /after commit 1 /, 'at the first commit');
+  assert.ok(early.includes(title), 'its transport line comes last, and the panel is there from the first stop');
+});
