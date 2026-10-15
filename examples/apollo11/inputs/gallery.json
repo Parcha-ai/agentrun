@@ -1,0 +1,30 @@
+{
+ "film_item": "film-descent",
+ "film_file": "film-descent.mp4",
+ "window_s": 20,
+ "scan_item": "transcript-tec",
+ "scan_file": "transcript-tec.pdf",
+ "photo_ext": ".jpg",
+ "typed_item": "transcript-tec-typed",
+ "typed_file": "transcript-tec-typed.html",
+ "span_from": "04 06 20 00",
+ "span_to": "04 06 50 00",
+ "film_from_s": 1160,
+ "film_to_s": 1320,
+ "pages_from": 312,
+ "pages_to": 321,
+ "photos": [
+  "photo-AS11-36-5299",
+  "photo-AS11-36-5337",
+  "photo-AS11-37-5437",
+  "photo-AS11-42-6237",
+  "photo-AS11-37-5448",
+  "photo-AS11-40-5899",
+  "photo-AS11-40-5875",
+  "photo-AS11-40-5902",
+  "photo-AS11-40-5903",
+  "photo-AS11-37-5545",
+  "photo-AS11-40-5880",
+  "photo-AS11-45-6704"
+ ]
+}
