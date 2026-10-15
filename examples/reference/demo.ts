@@ -1,0 +1,249 @@
+// `demo()`: the reference entry as a demo's platform. A demo's `run.ts` is about twenty lines: its spec, its job, its fakes, and this call. It reads the
+// standard flags, runs the job on the no-key host, and (with `--kill`) runs the spec's kills through a supervisor that starts the job as a child process,
+// kills it at each named crossing or in a storm, and resumes it in a fresh one on the same directory.
+//
+//   (none)              fakes, $0, no key: the default, and what CI runs
+//   --live              real models and services; refused unless the demo supplies them (`live`) and the keys they need are set
+//   --kill              the spec's `kills`, in order, each ending one process; a fresh process resumes
+//   --record <dir>      an agentrun.recording/1 directory, through the reference recorder
+//   --input <path|json> the job's input (the job's own is the default)
+//   --max-usd <n>       stops the run past n dollars, metered on the recording's lines; default twice the spec's `expectedCost`
+//   --local-chrome      with --live and no Browserbase key: a Chrome on your own machine (CHROME_PATH). Never against real pages from a shared host
+//   --dir <path>        keeps the run's directory
+//   --json              prints the result as one JSON object
+//
+// The supervisor serves the fake browser's backend on loopback so its sessions outlive a killed child, and writes the host lines (`process.started`, `kill`
+// with its `kind`, `result`) from outside every process.
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
+import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
+import { crossings, tapFakes, tapHost, type Crossing } from './crossings.ts';
+import { chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type DemoSpec, type Plan } from './demo-spec.ts';
+import { cost } from './fold.ts';
+import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
+import { packageCommitRecorder } from './record-store.ts';
+
+/** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
+ *  own keys; a demo that supplies none refuses `--live`. */
+export type LiveParts = { host?: Partial<Host>; vision?: RunOptions['vision'] };
+export type DemoOptions = {
+  /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
+  self: string;
+  spec: DemoSpec;
+  job: Job;
+  fakes: Fakes;
+  live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' }) => LiveParts | Promise<LiveParts>;
+  /** The arguments to read (default `process.argv.slice(2)`). */
+  argv?: string[];
+  /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
+  root?: string;
+};
+
+export type DemoResult = {
+  /** How each process ended: its exit or signal, and the outcome it printed. */
+  processes: Array<{ exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string }; stderr: string }>;
+  kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string }>;
+  /** The record the job delivered, or null. */
+  record: unknown;
+  dir: string;
+  recording?: string;
+  /** The recording's cost: dollars, or null while any part is unknown (never 0). */
+  usd: number | null;
+  maxUsd: number | null;
+  /** The run was stopped past `--max-usd`, or finished past it. */
+  overBudget: boolean;
+};
+
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, dir: { type: 'string' }, json: { type: 'boolean' } } as const;
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+
+export async function demo(options: DemoOptions): Promise<DemoResult | undefined> {
+  const { values } = parseArgs({ args: options.argv ?? process.argv.slice(2), options: FLAGS });
+  if (values.child) { await child(options); return undefined; }
+  const result = await supervise(options, values);
+  if (values.json) console.log(JSON.stringify(result));
+  else summarize(options, result);
+  if (result.overBudget || result.processes.at(-1)?.outcome?.status !== 'complete') process.exitCode = 1;
+  return result;
+}
+
+// ---- the child: one process of the run ------------------------------------------------------------------------------------------------------
+
+/** The fake browser's plane, on the backend the supervisor serves: a session opens on the backend's start page and `run` hands back the code it was given, so a
+ *  lead's `page.goto("<url>")` is turned into the fake's `goto` action and each session stands on its own page. */
+function fakeBrowser(url: string): BrowserPlane {
+  const remote = remoteDriver(url);
+  return {
+    provider: () => remoteProvider(url), createDeadlineMs: 3_000,
+    driver: async (target) => {
+      const page = await remote(target);
+      return { ...page, run: async (input) => {
+        const goto = /page\.goto\(\s*(["'`])(.+?)\1\s*\)/.exec(input.code ?? '');
+        return page.run(goto ? { actions: [{ op: 'goto', url: goto[2]! }] } : (input as Parameters<typeof page.run>[0]));
+      } };
+    },
+  };
+}
+
+/** One box for this process: a directory of this machine whose workspace is the run's `work/`, or a container the job's files are uploaded to. */
+async function inBox(kind: 'local' | 'docker', image: string | undefined, place: { id: string; root: string; work: string }, files: Record<string, Uint8Array>) {
+  const { boxEnv } = await import('@parcha/pi-transport/hands');
+  const provider = kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(image ? { image } : undefined);
+  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
+  if (!created.ok) throw created.error;
+  const box = created.value;
+  if (kind === 'docker') {
+    const uploaded = await box.upload(Object.entries(files).map(([path, bytes]) => ({ path, bytes })), ctx);
+    if (!uploaded.ok) { await box.destroy(ctx); throw uploaded.error; }
+  }
+  const env = Object.assign(() => boxEnv(box), { cleanup: async () => undefined });
+  return { env: () => env, destroy: async () => { await box.destroy(ctx); } };
+}
+
+async function child(options: DemoOptions) {
+  const env = process.env;
+  const place = await placeAt(env.DIR);
+  const plan = env.PLAN ? (JSON.parse(env.PLAN) as Plan) : undefined;
+  const cross = crossings(plan, env.CROSS_LOG);
+  const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
+  const live = env.LIVE === '1';
+  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
+  let box: Awaited<ReturnType<typeof inBox>> | undefined;
+  try {
+    const parts = live ? await options.live!({ env, browser: browserKind }) : {};
+    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}) });
+    tapHost(local.host, cross);
+    if (parts.host) Object.assign(local.host, parts.host);
+    if (options.spec.boxes) box = await inBox(options.spec.boxes.kind, options.spec.boxes.image, place, options.job.files ?? {});
+    const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
+    await recorder?.detach();
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } }));
+  } catch (error) {
+    console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
+  } finally {
+    await box?.destroy();
+  }
+}
+
+// ---- the supervisor ---------------------------------------------------------------------------------------------------------------------------
+
+type Spawned = DemoResult['processes'][number];
+
+function spawnChild(self: string, env: Record<string, string>, onSpawn: (pid: number) => void, stop?: { signal?: AbortSignal }): Promise<Spawned> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', fileURLToPath(self), '--child'], { env: { PATH: process.env.PATH!, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    onSpawn(proc.pid!);
+    stop?.signal?.addEventListener('abort', () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, { once: true });
+    let stdout = ''; let stderr = '';
+    proc.stdout.on('data', (chunk) => { stdout += chunk; });
+    proc.stderr.on('data', (chunk) => { stderr += chunk; });
+    proc.on('error', reject);
+    proc.on('close', (code, signal) => {
+      const row = stdout.split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } }).find((parsed) => parsed.outcome);
+      resolve({ exit: signal ?? code, signal, ...(row ? { outcome: row.outcome } : {}), stderr: stderr.trim().slice(0, 600) });
+    });
+  });
+}
+
+const rows = <T,>(file: string): T[] => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as T]; } catch { return []; } }); } catch { return []; } };
+
+/** The cost of a recording still being written: its spools folded as they stand. Null while any part is unknown. */
+export function meter(recordDir: string): number | null {
+  const spool = join(recordDir, '.spool');
+  if (!existsSync(spool)) return null;
+  const lines = readdirSync(spool).filter((name) => name.endsWith('.jsonl')).flatMap((name) => rows<Record<string, unknown>>(join(spool, name)));
+  return cost(lines).usd;
+}
+
+/** A box taken away with its machine: its containers (by the label the run put on them) and its directory. */
+function destroyBoxes(spec: DemoSpec, runId: string, root: string): void {
+  if (spec.boxes?.kind === 'docker') {
+    const ids = spawnSync('docker', ['ps', '-aq', '--filter', `label=agentrun-reference=${runId}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    if (ids.length) spawnSync('docker', ['rm', '-f', ...ids], { stdio: 'ignore' });
+  } else if (spec.boxes?.kind === 'local') rmSync(join(root, 'boxes'), { recursive: true, force: true });
+}
+
+async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
+  const { spec, job } = options;
+  const live = values.live === true;
+  if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
+  const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
+  const plans = values.kill ? plansOf(killsOf(spec)) : [];
+  const maxUsd = maxUsdOf(values['max-usd'], spec);
+  const input = values.input === undefined ? undefined : parseInput(values.input, (path) => readFileSync(path, 'utf8'));
+  if (values.record && (existsSync(join(values.record, '.spool')) || existsSync(join(values.record, 'manifest.json')))) throw new Error(`${values.record} already holds a recording or an unfinished one: record into a directory of its own`);
+
+  const scratch = await mkdtemp(join(tmpdir(), `agentrun-${spec.name}-`));
+  const dir = values.dir ?? join(scratch, 'run');
+  const recordDir = values.record ?? join(scratch, 'recording');
+  mkdirSync(recordDir, { recursive: true });
+  // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
+  const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
+  const served = await backend.serve();
+  const supervisor = openSupervisor({ dir: recordDir });
+  const base: Record<string, string> = { HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  // A live child needs what the demo's live parts read from the environment, and nothing else of ours.
+  // And any `DEMO_*` variable, the demo's own settings.
+  for (const name of Object.keys(process.env)) if ((live && /^(BROWSERBASE_|BB_|CHROME_PATH|PI_BROWSER_|HERO_|OPENROUTER_|OPENAI_|ANTHROPIC_)/.test(name)) || name.startsWith('DEMO_')) base[name] = process.env[name]!;
+  const processes: DemoResult['processes'] = [];
+  const kills: DemoResult['kills'] = [];
+  let overBudget = false;
+  const stopper = new AbortController();
+  // Metering: the recording's lines as they stand, folded; past the cap the run is stopped.
+  const meterTimer = maxUsd === null ? undefined : setInterval(() => { const usd = meter(recordDir); if (usd !== null && usd > maxUsd) { overBudget = true; stopper.abort(); } }, 250);
+  try {
+    let remaining = [...plans];
+    for (;;) {
+      const plan = remaining.shift();
+      const gen = processes.length + 1;
+      const log = join(scratch, `crossings-${gen}.jsonl`);
+      const result = await spawnChild(options.self, { ...base, CROSS_LOG: log, ...(plan ? { PLAN: JSON.stringify(plan) } : {}) }, (pid) => { supervisor.host('process.started', { gen, pid }); }, stopper);
+      processes.push(result);
+      if (overBudget) { supervisor.host('kill', { gen, label: 'max-usd', crossing: null, kind: 'process' }); kills.push({ gen, point: null, kind: 'process', why: `past --max-usd ${maxUsd}` }); break; }
+      if (result.signal === 'SIGKILL') {
+        const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);
+        const kind = plan?.kind ?? 'process';
+        supervisor.host('kill', { gen, label: plan && !('storm' in plan) ? plan.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
+        kills.push({ gen, point: at?.point ?? null, kind, why: plan?.why ?? 'a kill' });
+        if (kind === 'box') destroyBoxes(spec, 'reference', dir);
+        continue;
+      }
+      break;
+    }
+    const delivered = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')) as { record: unknown }; } catch { return null; } })();
+    const finalUsd = meter(recordDir);
+    if (maxUsd !== null && finalUsd !== null && finalUsd > maxUsd) overBudget = true;
+    const processesStarted = processes.length;
+    const blob = delivered ? openRecorder({ dir: recordDir }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json') : undefined;
+    if (blob) supervisor.host('result', { gen: processesStarted, blob, title: 'The record' }, { blobs: [blob] });
+    const resultBlob = blob ? { blob, title: 'The record' } : undefined;
+    finishRecording(recordDir, {
+      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
+      code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
+    });
+    const usd = cost(readEventsOf(recordDir)).usd;
+    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget };
+  } finally {
+    if (meterTimer) clearInterval(meterTimer);
+    await served.close();
+    if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
+
+function summarize(options: DemoOptions, result: DemoResult) {
+  console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
+  for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
+  console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
+  if (result.recording) console.log(`recording: ${result.recording}`);
+}
