@@ -67,7 +67,7 @@
     },
     {
       "operator": "Statnett (Norway)",
-      "why": "the mix sits in a tab behind a click; the first screen is a flow map"
+      "why": "with the Production and consumption tab clicked, the chart frame (driftsdata.statnett.no) shows Chrome's broken-page icon in headless Chrome and the frame loaded alone renders blank; the data is production against consumption, not a mix by fuel"
     },
     {
       "operator": "Hydro-Québec",
