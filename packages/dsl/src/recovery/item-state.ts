@@ -58,3 +58,32 @@ export function itemState(item: unknown, states: Readonly<Record<string, unknown
   if (sha256(canonicalJson(state)) !== delta.sha256) return { unreadable: `the state at ${path} does not rebuild to its SHA-256 ${delta.sha256}` };
   return { state };
 }
+
+/** A slot of a failed map: `null` for an item that never finished, its result, or why it cannot be read. */
+export type PartialSlot = null | { result: unknown } | { unreadable: string };
+
+/** A failed map's finished results, read as the driver reads them: `partial` is the driver state's `pin.partial`. In the
+ *  keyed layout its `results` is one SHA-256 naming the `agentrun.states` value that lists each slot (null, or the
+ *  SHA-256 of that item's result); `states` holds `agentrun.states` values by SHA-256, and every digest is checked. A
+ *  whole-state run's `results` is the list itself. A document that is missing or does not match its digest is
+ *  unreadable, never guessed: the list as a whole, or one slot. */
+export function partialResults(partial: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, { sha256 }: { sha256: Sha256 }): { slots: PartialSlot[] } | { unreadable: string } {
+  if (typeof sha256 !== "function") throw new TypeError("partialResults needs a sha256 function");
+  if (!isObject(partial) || typeof partial.path !== "string" || typeof partial.as !== "string") return { unreadable: "not a failed map's results" };
+  if (Array.isArray(partial.results)) return { slots: partial.results.map((result) => (result === null ? null : { result })) };
+  if (typeof partial.results !== "string") return { unreadable: "not a failed map's results" };
+  const read = (digest: string): { value: unknown } | { unreadable: string } => {
+    const held = states instanceof Map ? states.get(digest) : Object.hasOwn(states, digest) ? (states as State)[digest] : undefined;
+    if (!isObject(held) || !Object.hasOwn(held, "state")) return { unreadable: `${digest} is missing` };
+    if (sha256(canonicalJson(held.state)) !== digest) return { unreadable: `${digest} does not match its SHA-256` };
+    return { value: held.state };
+  };
+  const list = read(partial.results);
+  if ("unreadable" in list) return { unreadable: `the list of results ${list.unreadable}` };
+  if (!Array.isArray(list.value) || !list.value.every((slot) => slot === null || (typeof slot === "string" && /^[a-f0-9]{64}$/.test(slot)))) return { unreadable: "the list of results is not a list of digests" };
+  return { slots: list.value.map((slot): PartialSlot => {
+    if (slot === null) return null;
+    const result = read(slot as string);
+    return "unreadable" in result ? { unreadable: `the result ${result.unreadable}` } : { result: result.value };
+  }) };
+}

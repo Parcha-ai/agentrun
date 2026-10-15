@@ -3,7 +3,7 @@
 // the path grammar, maps nodes onto these records and owns the store's lifecycle.
 import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
-import { itemState as rebuildItemState, type Sha256, type StateDelta } from "./item-state.js";
+import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
 
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
@@ -14,7 +14,7 @@ export const FROZEN_SNAPSHOT_SCHEMA_V4 = "agentrun.frozen_run.v4";
 
 type State = Record<string, unknown>;
 
-export { stateDelta, applyStateDelta, canonicalJson, type StateDelta, type Sha256 } from "./item-state.js";
+export { stateDelta, applyStateDelta, canonicalJson, type StateDelta, type Sha256, type PartialSlot } from "./item-state.js";
 
 /** A map the run started: how many items it has, how many item records were written (always the first ones: items
  *  start in order, and an item has a record from its start), and the digest of its base. */
@@ -51,7 +51,7 @@ export type ItemRecord = {
  *  digest, and the maps the run started. */
 export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
   schema: typeof FROZEN_SNAPSHOT_SCHEMA_V4;
-  pin: Omit<PathFrame, "states" | "partial"> & { states: Record<string, string>; partial?: { path: string; as: string; results: Array<string | null> } };
+  pin: Omit<PathFrame, "states" | "partial"> & { states: Record<string, string>; partial?: { path: string; as: string; results: string } };
   maps: Record<string, MapEntry>;
 };
 
@@ -63,6 +63,14 @@ export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
  *  the base is missing, or a digest differs, it says why and never guesses. `sha256` defaults to Node's. */
 export function itemState(item: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, path: string, options: { sha256?: Sha256 } = {}): { state: State } | { unreadable: string } {
   return rebuildItemState(item, states, path, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
+}
+
+/** A failed map's finished results from the driver state's `pin.partial` (`./item-state.ts`, which imports nothing): in
+ *  the keyed layout, the list of slots and each result read by digest and checked; a whole-state run's list as it is.
+ *  Each slot is null (the item never finished), `{ result }`, or `{ unreadable }`, never a guess. `sha256` defaults to
+ *  Node's. */
+export function partialResults(partial: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, options: { sha256?: Sha256 } = {}): { slots: PartialSlot[] } | { unreadable: string } {
+  return readPartialResults(partial, states, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
 }
 
 /** What a question's receipts need beyond its answer: the request's producer invocation, its size and its

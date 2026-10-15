@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import {
-  openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta, itemState,
+  openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta, itemState, partialResults,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4,
 } from '@parcha/agentrun-dsl/recovery';
 
@@ -235,21 +235,49 @@ test('a map that fails in the keyed layout keeps its finished results by digest,
   const record = kept.record();
   assert.equal(record.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
   const { partial } = record.state.pin;
-  assert.deepEqual([partial.path, partial.as, partial.results.length], [MAP, 'found', 8]);
-  for (const slot of partial.results) {
-    assert.ok(slot === null || (typeof slot === 'string' && /^[a-f0-9]{64}$/.test(slot)), `a result kept inline in the driver record: ${JSON.stringify(slot).slice(0, 80)}`);
+  assert.deepEqual([partial.path, partial.as], [MAP, 'found']);
+  assert.ok(typeof partial.results === 'string' && /^[a-f0-9]{64}$/.test(partial.results), `the driver record keeps one digest for a failed map's results, not ${JSON.stringify(partial.results).slice(0, 80)}`);
+  const slots = record.states[partial.results];
+  assert.equal(canonicalHash(slots), partial.results, 'the list of slots is kept once, under its digest');
+  assert.equal(slots.length, 8);
+  for (const slot of slots) {
+    assert.ok(slot === null || (typeof slot === 'string' && /^[a-f0-9]{64}$/.test(slot)), `a result kept inline: ${JSON.stringify(slot).slice(0, 80)}`);
     if (slot !== null) assert.equal(canonicalHash(record.states[slot]), slot, 'each result is kept once, under its digest');
   }
-  assert.deepEqual(partial.results.map((slot) => slot === null), failed.found.map((result) => result === null), 'a slot with no result stays null');
+  assert.deepEqual(slots.map((slot) => slot === null), failed.found.map((result) => result === null), 'a slot with no result stays null');
+  // A reader of a recording reads the same results with partialResults, and marks what it cannot read.
+  const values = Object.fromEntries(Object.entries(record.states).map(([sha256, state]) => [sha256, { driver: KEY, sha256, state }]));
+  const read = partialResults(partial, values);
+  assert.deepEqual(JSON.parse(JSON.stringify(read.slots.map((slot) => (slot === null ? null : slot.result)))), failed.found);
+  const pure = await import(new URL('../dist/recovery/item-state.js', import.meta.url).href);
+  assert.deepEqual(pure.partialResults(partial, values, { sha256: (text) => createHash('sha256').update(text).digest('hex') }), read);
+  const one = slots.findIndex((slot) => slot !== null);
+  const tampered = { ...values, [slots[one]]: { ...values[slots[one]], state: { forged: true } } };
+  assert.match(partialResults(partial, tampered).slots[one].unreadable, /does not match/);
+  const { [partial.results]: _list, ...withoutList } = values;
+  assert.match(partialResults(partial, withoutList).unreadable, /list of results .* is missing/);
+  assert.deepEqual(partialResults({ path: MAP, as: 'found', results: [{ a: 1 }, null] }, {}).slots, [{ result: { a: 1 } }, null], 'a whole-state run keeps its list inline');
   // The next process rebuilds the same results from their digests.
   const next = await openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' });
   try { assert.deepEqual(JSON.parse(JSON.stringify(next.lastState())), failed); } finally { await next.close(); }
   // A result that does not match its digest refuses the open.
   const forged = kept.record();
-  const at = forged.state.pin.partial.results.find((slot) => slot !== null);
+  const at = forged.states[forged.state.pin.partial.results].find((slot) => slot !== null);
   forged.states[at] = { ...forged.states[at], forged: true };
   kept.set(forged);
   await assert.rejects(openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' }), (error) => error.code === 'FROZEN_CHECKPOINT_INVALID');
+});
+
+test('a failed map adds the same to the driver record however many items it has', async () => {
+  const partialBytes = async (n) => {
+    const kept = inspectable();
+    const driver = await openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' });
+    const wrapped = withRecovery(driver, { runEffect: async ({ input: args }) => { if (args.id === `item-${String(n - 1).padStart(4, '0')}`) throw new Error('last item failed'); return answerOf(args.id); } });
+    await assert.rejects(runWorkflow(workflowOf(), { items: itemsOf(n) }, wrapped), /last item failed/);
+    await driver.close();
+    return JSON.stringify(kept.record().state.pin.partial).length;
+  };
+  assert.equal(await partialBytes(40), await partialBytes(8));
 });
 
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {

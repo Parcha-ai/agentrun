@@ -331,12 +331,16 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const states: Record<string, State> = {};
     for (const [at, sha256] of Object.entries(pin.states)) states[at] = await stateBy(sha256);
     const restored = { ...rest, schema: FROZEN_SNAPSHOT_SCHEMA, pin: { ...pin, done: [...pin.done], states }, clocks: { ...rest.clocks }, files: { ...rest.files } } as Snapshot;
-    // A failed map's finished results, each kept once by its digest; a slot with no result stays null.
+    // A failed map's finished results: the list of their slots is one value kept by its digest, each slot the digest of
+    // its result or null for an item that never finished.
     if (pin.partial !== undefined) {
       const partial = pin.partial as unknown;
-      if (!isRecord(partial) || typeof partial.path !== "string" || typeof partial.as !== "string" || !Array.isArray(partial.results)
-        || !partial.results.every((slot) => slot === null || (typeof slot === "string" && SHA.test(slot)))) throw invalid("A failed map's results are not kept by digest");
-      restored.pin.partial = { path: partial.path, as: partial.as, results: await Promise.all(partial.results.map((slot) => (slot === null ? null : valueBy(slot as string)))) };
+      if (!isRecord(partial) || typeof partial.path !== "string" || typeof partial.as !== "string" || typeof partial.results !== "string" || !SHA.test(partial.results)) {
+        throw invalid("A failed map's results are not kept by digest");
+      }
+      const slots = await valueBy(partial.results);
+      if (!Array.isArray(slots) || !slots.every((slot) => slot === null || (typeof slot === "string" && SHA.test(slot)))) throw invalid("A failed map's results are not a list of digests");
+      restored.pin.partial = { path: partial.path, as: partial.as, results: await Promise.all(slots.map((slot) => (slot === null ? null : valueBy(slot as string)))) };
     }
     await restoreMaps(table, restored);
     return restored;
@@ -415,7 +419,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       return delta;
     };
     const pin: FrozenSnapshotV4["pin"] = { input: frame.input, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {},
-      ...(frame.partial ? { partial: { path: frame.partial.path, as: frame.partial.as, results: frame.partial.results.map((result) => (result === null || result === undefined ? null : keptValue(result))) } } : {}) };
+      // A failed map's results: one digest, of the list of each result's digest (null for an item that never finished).
+      ...(frame.partial ? { partial: { path: frame.partial.path, as: frame.partial.as, results: keptValue(frame.partial.results.map((result) => (result === null || result === undefined ? null : keptValue(result)))) } } : {}) };
     for (const at of frame.done) { const build = own(at); if (build === undefined) pin.done.push(at); else if (build) build.record.frame.done.push(at); }
     for (const [at, state] of Object.entries(frame.states)) {
       const build = own(at);
