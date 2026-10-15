@@ -50,11 +50,38 @@ export function secretsOf(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: stri
   return [...found, ...signInSecrets(authFile)];
 }
 
-/** Replaces each value, as it is written raw and as it is written inside a JSON string, with `[redacted]`: the longest first, so one value that holds another goes whole. */
+const formsOf = (secrets: Iterable<Secret>): string[] => [...new Set([...secrets].flatMap((secret) => [secret.value, JSON.stringify(secret.value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
+/** Replaces each form of each value (raw, and as written inside a JSON string) with `[redacted]`, the longest first, so one value that holds another goes whole. */
+const apply = (forms: readonly string[], text: string): string => forms.reduce((out, form) => (out.includes(form) ? out.split(form).join('[redacted]') : out), text);
+
+/** Replaces each value with `[redacted]`. */
 export function redactorOf(secrets: readonly Secret[]): Redact | undefined {
-  const forms = [...new Set(secrets.flatMap((secret) => [secret.value, JSON.stringify(secret.value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
-  if (!forms.length) return undefined;
-  return (text) => forms.reduce((out, form) => (out.includes(form) ? out.split(form).join('[redacted]') : out), text);
+  const forms = formsOf(secrets);
+  return forms.length ? (text) => apply(forms, text) : undefined;
+}
+
+const stampOf = (file: string): string => { try { const stat = statSync(file); return `${stat.mtimeMs}:${stat.size}`; } catch { return 'absent'; } };
+
+/** The secrets of a recording as they are over a run. A sign-in refreshes its access token during a long run, and the new token is a value the list read at the start never saw: before each write the sign-in file's
+ *  stamp (mtime and size) is checked, and when it changed its values are read again and added. The redaction uses the union of every value seen. `final()` reads the file once more, for the scan at the end: an event
+ *  can be written before the recorder sees the file change. A file that cannot be read when the tracker is made, or at the end, fails; one that cannot be read in between (a writer mid-rename) is read again at the next write. */
+export function trackSecrets(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: string = signInFile(env)): { redact: Redact; final(): Secret[] } {
+  const seen = new Map<string, Secret>();
+  const add = (list: readonly Secret[]) => { for (const secret of list) if (!seen.has(secret.value)) seen.set(secret.value, secret); };
+  add(secretsOf(env, spec, authFile));
+  let stamp = stampOf(authFile);
+  let forms = formsOf(seen.values());
+  let count = seen.size;
+  const refresh = () => {
+    const now = stampOf(authFile);
+    if (now === stamp) return;
+    try { add(signInSecrets(authFile)); stamp = now; } catch { return; }
+    if (seen.size !== count) { count = seen.size; forms = formsOf(seen.values()); }
+  };
+  return {
+    redact: (text) => { refresh(); return forms.length ? apply(forms, text) : text; },
+    final: () => { add(signInSecrets(authFile)); return [...seen.values()]; },
+  };
 }
 
 const filesUnder = (dir: string): string[] => readdirSync(dir).flatMap((name) => {

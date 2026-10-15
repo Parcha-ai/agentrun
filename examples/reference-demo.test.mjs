@@ -969,3 +969,47 @@ test('a sign-in file that cannot be read fails the record before the run, and th
   assert.throws(() => scanRecording(recording, [{ key: 'DEMO_SECRET', value }]), (error) => /DEMO_SECRET is in blobs\/a\.txt/.test(error.message) && !error.message.includes(value));
   assert.doesNotThrow(() => scanRecording(recording, []));
 });
+
+test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is handed down), a token the sign-in refreshes mid-run is redacted from the next write on, and a token that was written before the recorder saw the file change refuses the recording', { timeout: 300_000 }, async (t) => {
+  const { home, tokens } = await signInHome(t);
+  const files = (recording) => filesIn(recording).filter((file) => !file.endsWith('.png'));
+  const holds = (recording, value) => files(recording).some((file) => readFileSync(file).includes(value));
+  // (c) A child that reads its token from its own AGENTRUN_HOME gets the file the recorder reads, so what it returns is redacted.
+  const child = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'homeToken' });
+  assert.equal(child.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(child.result.processes.at(-1)));
+  assert.ok(!holds(child.recording, tokens.access), 'the child\'s token is not in the recording');
+  assert.ok(readFileSync(join(child.recording, 'events.jsonl'), 'utf8').includes('[redacted]'), 'and it was there to be redacted');
+  // (d) A refresh mid-run: the sign-in rewrites auth.json with a new access token, and a later line carries it.
+  const refreshed = `made-up-refreshed-access-token-${'r'.repeat(30)}`;
+  const mid = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'rotate,homeToken', DEMO_ROTATE_TOKEN: refreshed });
+  assert.equal(mid.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(mid.result.processes.at(-1)));
+  assert.ok(!holds(mid.recording, refreshed), 'the refreshed token, unknown at the start, is not in the recording');
+  assert.ok((readFileSync(join(mid.recording, 'events.jsonl'), 'utf8').match(/\[redacted\]/g) ?? []).length >= 1);
+  // (e) An event carries the new token BEFORE the file shows it; the final read of auth.json catches it, and the recording is refused: no manifest, the key and the file named, the value never.
+  const late = `made-up-late-access-token-${'l'.repeat(30)}`;
+  const { home: lateHome } = await signInHome(t);
+  const recording = join(await mkdtemp(join(tmpdir(), 'reference-late-')), 'recording');
+  t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
+  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access is in /.test(error.message) && !error.message.includes(late));
+  assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
+});
+
+test('the tracker keeps the union of every value seen, reads a changed auth.json before the next write, and reads it once more at the end', async (t) => {
+  const { trackSecrets } = await import('./reference/secrets.ts');
+  const { home, tokens } = await signInHome(t);
+  const file = join(home, 'auth.json');
+  const tracked = trackSecrets({ AGENTRUN_HOME: home }, { name: 'x' });
+  assert.equal(tracked.redact(`a line with ${tokens.access}`), 'a line with [redacted]');
+  const next = `made-up-next-access-token-${'n'.repeat(30)}`;
+  assert.equal(tracked.redact(`a line with ${next}`), `a line with ${next}`, 'a token the file does not hold yet is not known');
+  const stored = JSON.parse(readFileSync(file, 'utf8'));
+  stored.credentials.openai.access = next;
+  writeFileSync(file, JSON.stringify(stored));
+  assert.equal(tracked.redact(`a line with ${next}`), 'a line with [redacted]', 'the changed file is read before the write');
+  assert.equal(tracked.redact(`a line with ${tokens.access}`), 'a line with [redacted]', 'the old token is still known: the union');
+  const last = `made-up-last-access-token-${'t'.repeat(30)}`;
+  stored.credentials.openai.access = last;
+  writeFileSync(file, JSON.stringify(stored));
+  assert.ok(tracked.final().some((secret) => secret.value === last), 'the final read sees the newest token');
+  assert.ok(tracked.final().some((secret) => secret.value === tokens.access), 'and every earlier one');
+});
