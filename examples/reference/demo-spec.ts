@@ -35,6 +35,8 @@ export type DemoSpec = {
   expectedCost?: number;
   /** The job's input: where its default lives and what it looks like, for `--input`. The job's own `input` is the default. */
   input?: { shape?: string };
+  /** The checked files the job reads: `sources.json` beside the demo (`true`), or another path relative to it. They are fetched into the run's `work/` on `--live` and with `--fetch-sources`. */
+  sources?: boolean | string;
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   [other: string]: unknown;

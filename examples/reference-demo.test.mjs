@@ -374,3 +374,24 @@ test('a child started with the spend cap already passed is ended at once, and no
   assert.equal(result.signal, 'SIGKILL');
   assert.ok(Date.now() - started < 10_000);
 });
+
+test('--fetch-sources: the entry fetches the demo\'s sources.json into the run\'s work/ before the job runs, and a no-key run without the flag does not', { timeout: 300_000 }, async (t) => {
+  const { createServer } = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const { rmSync } = await import('node:fs');
+  const body = 'a checked scan';
+  const asked = [];
+  const server = createServer((request, response) => { asked.push(request.url); response.end(body); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const file = new URL('./reference/sources.json', import.meta.url);
+  writeFileSync(file, JSON.stringify({ items: [{ id: 'scan-1', url: `http://127.0.0.1:${server.address().port}/files/scan.png`, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') }] }));
+  t.after(() => rmSync(file, { force: true }));
+  const plain = await run(t, { sources: true }, ['--json']);
+  assert.equal(plain.result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, [], 'a no-key run uses the files the demo commits: nothing fetched');
+  const fetched = await run(t, { sources: true }, ['--json', '--fetch-sources']);
+  assert.equal(fetched.result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, ['/files/scan.png']);
+  assert.equal(readFileSync(join(fetched.result.dir, 'work', 'scan-1.png'), 'utf8'), body);
+});
