@@ -18,6 +18,35 @@ export const itemStateOf = (item: unknown, states: Readonly<Record<string, unkno
 export const partialResultsOf = (partial: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>) =>
   partialResults(partial, states, { sha256: sha256Hex });
 
+/** How a map item that failed ended, in a map that collects failed items (`onItemFailure: "collect"`, draft 28). */
+export type ItemFailure = { code: string; label: string; message: string };
+
+const failureIn = (value: unknown): ItemFailure | undefined => {
+  const { code, label, message } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  return typeof code === 'string' && typeof label === 'string' && typeof message === 'string' ? { code, label, message } : undefined;
+};
+
+/** Whether the map item at `path` (`<map>/items/<i>`) failed, read from the one place the run keeps it, never guessed:
+ *  its `agentrun.items` record (`item`, undefined when the run keeps none), whose status is `"failed"` with its
+ *  `outcome`; else the driver state's `pin.failures` row for its path (every failed item of a v3 run; in the keyed layout,
+ *  only an item of a map that committed before the run moved to it, which has no record). `{ failed, from }`, undefined
+ *  when the item did not fail, or `{ unreadable }` when that place holds no `{ code, label, message }` or the item is
+ *  kept in both. */
+export const itemFailureOf = (path: string, item: unknown, pin: unknown): { failed: ItemFailure; from: 'item' | 'pin' } | { unreadable: string } | undefined => {
+  const failures = typeof pin === 'object' && pin !== null ? (pin as { failures?: unknown }).failures : undefined;
+  const row = typeof failures === 'object' && failures !== null && Object.hasOwn(failures, path) ? (failures as Record<string, unknown>)[path] : undefined;
+  if (item !== undefined) {
+    if (typeof item !== 'object' || item === null) return { unreadable: `${path}'s record is not a map item's record` };
+    if (row !== undefined) return { unreadable: `${path} is kept both in its item record and in pin.failures` };
+    if ((item as { status?: unknown }).status !== 'failed') return undefined;
+    const failed = failureIn((item as { outcome?: unknown }).outcome);
+    return failed ? { failed, from: 'item' } : { unreadable: `${path}'s record is failed with no outcome { code, label, message }` };
+  }
+  if (row === undefined) return undefined;
+  const failed = failureIn(row);
+  return failed ? { failed, from: 'pin' } : { unreadable: `${path}'s row in pin.failures is not { code, label, message }` };
+};
+
 /** `agentrun.states` values, by the SHA-256 each names, as `itemStateOf` and `partialResultsOf` take them. */
 export const statesBySha = (values: Iterable<unknown>): Map<string, unknown> =>
   new Map([...values].flatMap((value) => (typeof value === 'object' && value !== null && typeof (value as { sha256?: unknown }).sha256 === 'string'

@@ -120,6 +120,16 @@ runs the DSL's own `partialResults` with the page's SHA-256, for either layout. 
 `{ result }` or `{ unreadable }`, or a whole `{ unreadable }` when the list is missing, does not hash to its digest or
 is not a list of digests; every digest is checked.
 
+A map with `onItemFailure: "collect"` (draft 28) collects an item that fails instead of failing, and keeps how the item
+ended in exactly one place: in the keyed layout, the item's `agentrun.items` record, with status `"failed"` and
+`outcome: { code, label, message }`; otherwise the driver state's `pin.failures`,
+`{ <item path>: { code, label, message } }`, which holds every failed item of a v3 run and, in the keyed layout, only an
+item of a map that committed before the run moved to it (such an item has no record). A panel reads it with
+`itemFailureOf(path, item, pin)` from `./items.ts`, passing the item's record when the run keeps one: it returns
+`{ failed, from }` (`from` is `"item"` or `"pin"`), `undefined` when the item did not fail, or `{ unreadable }` when
+that place holds no `{ code, label, message }` or the item is kept in both. A panel shows a failed item as failed, with
+its outcome, and has nothing to rebuild for it.
+
 The DSL's module, `itemState` and `partialResults` both, is read from `packages/dsl/src/recovery/item-state.ts` each time
 the viewer is built, never copied here: it is the one file outside `apps/viewer` a viewer module may import, the build
 inlines it in a scope of its own, and it refuses to build if that module ever imports anything.
