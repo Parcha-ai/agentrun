@@ -11,4 +11,4 @@ kind: feature
   documents both.
 - The build reads `packages/dsl/src/recovery/item-state.ts` from the DSL's source at build time, inlines it in a scope of
   its own, and refuses to build if it ever imports anything; it is the one file outside the viewer a viewer module may
-  import. `./sha256.ts` is a SHA-256 of a text's UTF-8 bytes, tested against node's.
+  import. Both run with the page's own synchronous SHA-256, `sha256Hex` from `./receipt-key.ts`.

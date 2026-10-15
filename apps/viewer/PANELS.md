@@ -107,10 +107,11 @@ focus.
 
 A v4 run (RECORDING.md section 5, draft 26: the keyed layout) keeps each map item in an `agentrun.items` document, its
 states as deltas against its map's base, and each base in an `agentrun.states` document. A panel never rebuilds an
-item's state itself: it imports `itemStateOf(item, states, path)` from `./items.ts`, which runs the DSL's own `itemState`
-with the page's SHA-256 (`./sha256.ts`). It returns `{ state }`, or `{ unreadable }` saying why (the base is missing, a
-digest differs, the item keeps no state at that path), and a panel shows such an item as unreadable, never a guess.
-`statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup `itemStateOf` takes.
+item's state itself: it imports `itemStateOf(item, states, path)` from `./items.ts`, which runs the DSL's own
+`itemState` with the page's SHA-256 (`sha256Hex`, `./receipt-key.ts`). It returns `{ state }`, or `{ unreadable }`
+saying why (the base is missing, a digest differs, the item keeps no state at that path), and a panel shows such an item
+as unreadable, never a guess. `statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup
+`itemStateOf` takes.
 
 A failed map's finished results (draft 27) are the driver's `state.pin.partial.results`. A v3 pin keeps them inline. In
 the keyed layout, `results` is the SHA-256 of an `agentrun.states` document whose state is the list of slots, one per
