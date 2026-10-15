@@ -46,6 +46,9 @@ export type Panel<S> = Fold<S> & {
   /** True for a recording whose story this panel tells: the shell shows it first, under the title, with the playback controls right under it. */
   featured?(lines: Line[]): boolean;
   view(state: S, context: ViewContext): Node;
+  /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
+   *  line in the whole recording is not drawn, its title included. */
+  shows?(line: Line): boolean;
 };
 
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
@@ -112,3 +115,7 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
 
 /** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
 export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];
+
+/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording.
+ *  Judged over every line, never up to the stop, so a panel never appears mid-scrub. */
+export const panelsFor = (lines: readonly Line[]): Panel<any>[] => panelsShown().filter((panel) => lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));
