@@ -43,3 +43,14 @@ line the cost is unknown (RECORDING.md section 6), and it was `0` when these wer
 
 `transport-route-real` is the second real run of the route (the first had its box kill after the cut): the Daytona box is destroyed with its disk 7 s into the download,
 and the session is rebuilt in a new box from its last checkpoint; a runner process is killed mid-install on the Modal T4 box and recovered in place.
+
+## disk-takeover
+
+A hand-built run on a disk place (no disk, no key, nothing real ran): three claims of one run. Generation 1's box is
+deleted while a paid call (`charge`) is in flight, the claim is orphaned and revoked, generation 2 claims it and finishes
+`ship`, then stalls and is fenced (`LEASE_LAPSED`, exit 75) after a second revoke, and generation 3 finishes `notify` and
+releases with a sealed sequence of 9. Its host lines are in the shapes RECORDING.md section 5 gives for a disk place
+(`run.json` with `gen`, `delegation`, `revoke`, `fenced`, with `process.started` and `kill`); its durable lines are the
+`agentrun.driver` and `agentrun.effects` documents the store would hold (a process's snapshot at its open, with each
+effect's calls list unchanged). Its `t` values are placed, not observed. The disk panel's tests read it.
+

@@ -92,7 +92,7 @@ Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line f
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
 while the rest stays drawn). Keep the lines that have no `path` in the state: a conversation entry or a driver
 checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/format.ts` says whether a path is in
-the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
+the focused branch. The two panels the viewer ships dim what is outside it, and so do the disk panel's paid calls. The counters strip never changes with the
 focus.
 
 ## A panel in full
@@ -149,3 +149,14 @@ is still a replay:
 `?t=<seconds>` opens the viewer at a time (a number of seconds, no less than 0; anything else is ignored). It wins over
 `at` and `cite`. The stop is the last whose lines all happened by then, so a time between two commits shows the stop
 before it (never the inside of a commit), with the clock at the time asked for.
+
+## The disk panel (`src/disk.ts`)
+
+One panel for every demo that runs on a disk place. It reads the supervisor's `host` lines `run.json`, `delegation`,
+`revoke` and `fenced` (RECORDING.md section 5), the shell's own `process.started` and `kill`, and the durable
+`agentrun.effects` documents; it draws a lane per claim generation (who held it, from when, and how it ended: released
+with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the events between them
+in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once,
+repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
+(`appliedIn`), so the panel and the counters strip agree. A recording with no disk line draws "No claim on a disk is in
+this recording". Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
