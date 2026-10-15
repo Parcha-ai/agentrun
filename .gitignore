@@ -22,6 +22,9 @@ pi.config.mjs
 /support.config.mjs
 /request.json
 
+# Runs the web example starts from the repository root
+/runs/
+
 # Session notes stay outside the public source
 precap.md
 

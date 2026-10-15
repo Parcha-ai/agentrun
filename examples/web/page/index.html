@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentRun runs</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-pane="run" data-tab="files">
+<header class="top">
+  <a class="brand" href="#/">agentrun <span>runs</span></a>
+  <input id="q" type="search" placeholder="Search runs and files" autocomplete="off" aria-label="Search runs and files">
+</header>
+<main>
+  <aside id="hist" class="hist" aria-label="Job history">
+    <div class="head"><b>Job history</b><button id="new" class="btn primary">New run</button></div>
+    <ul id="runs"></ul>
+  </aside>
+  <section id="run" class="run"></section>
+  <aside id="side" class="side">
+    <div class="tabs"><button data-tab="browser">Live browser</button><button data-tab="files">Files</button></div>
+    <div id="browser" class="tab"></div>
+    <div id="files" class="tab"></div>
+  </aside>
+</main>
+<nav class="bar"><button data-pane="hist">Runs</button><button data-pane="run">Steps</button><button data-pane="browser">Browser</button><button data-pane="files">Files</button></nav>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
