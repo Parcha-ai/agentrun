@@ -14,7 +14,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from '../reference/index.ts';
 import type { BrowserPlane, Delivery, LedgerRow, RunResult } from '../reference/index.ts';
 import { heroFakes, heroJob, readGrids, watchScreenshots } from './job.ts';
-import { keepLooks } from './looks.ts';
+import { keepLooks, shownShots } from './looks.ts';
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -23,6 +23,21 @@ export const AT = '2026-10-15T12:00:00Z';
 
 type Out = { status: string; generation: number | null; code?: string | null; message?: string };
 type Record_ = { at: string; grids: number; read: number; failed: number; closeWithinOnePoint?: number; meanGap?: number; rows: Array<Record<string, unknown>>; html: string };
+
+/** The result a recording carries (`agentrun.cited/1`): rows of a label, a value and the cites behind it. Each cite names the screenshot the number was read
+ *  from (`blob`, the image's SHA-256) and the look that read it (`look`, the LookRecord's `facts.key`). A grid that was not read has a row and no cite. */
+export type Cited = { format: 'agentrun.cited/1'; title?: string; rows: Array<{ label: string; value: string | number; note?: string; cites: Array<{ blob?: string; look?: string; fragment?: string; note?: string }> }> };
+export function citedOf(record: Record_, cites: ReadonlyArray<{ receipt: string; look: string; blob: string | null }>): Cited {
+  const rows: Cited['rows'] = [];
+  for (const row of record.rows) {
+    const at = typeof row.screenshot === 'string' ? cites.find((cite) => cite.receipt === row.screenshot) : undefined;
+    const cite = (note: string) => (at ? [{ ...(at.blob ? { blob: at.blob } : {}), look: at.look, note }] : []);
+    if (row.status !== 'read') { rows.push({ label: String(row.operator), value: `not read: ${String(row.note)}`, cites: [] }); continue; }
+    rows.push({ label: `${String(row.operator)}: renewable share now`, value: `${String(row.share)}%`, note: `the operator publishes ${String(row.published)}% (gap ${String(row.gap)} points)`, cites: cite('read from the chart') });
+    rows.push({ label: `${String(row.operator)}: peak`, value: `${String(row.peak)} ${String(row.peakUnit)}`, note: String(row.peakOf), cites: cite('read from the chart') });
+  }
+  return { format: 'agentrun.cited/1', title: 'Nine grids, read from the chart', rows };
+}
 
 /** What a delivered snapshot is made of: `snapshot.html`, and each cited screenshot copied beside it as an image the page links to. */
 export async function deliverSnapshot(root: string, result: Delivery): Promise<void> {
@@ -65,10 +80,12 @@ async function child() {
   const { runEffect } = local.host.tools;
   // The kill: after the host has kept a paid call's answer and before the driver commits it. It waits for the paid call to be the only
   // one in the tool (a call between its dispatch and the kept answer cannot be settled, and a kill there is the operator's to resolve).
+  // The screenshot each branch takes, kept as a blob (the image bytes) and tied to its evidence path, so each look is filed with what it saw.
+  const shown = shownShots(recorder ? { keep: (bytes, extension) => recorder.blob(bytes, extension) } : {});
   let inFlight = 0;
   let finished = 0;
   const killAt = process.env.KILL1 ? Number(process.env.KILL1) : undefined;
-  local.host.tools = { ...local.host.tools, runEffect: async (request) => {
+  local.host.tools = { ...local.host.tools, extensions: [shown.extension], runEffect: async (request) => {
     inFlight += 1;
     let value: unknown;
     try { value = await runEffect(request); } finally { inFlight -= 1; }
@@ -82,7 +99,7 @@ async function child() {
   const record_ = local.host.deliver;
   local.host.deliver = async (result) => { await deliverSnapshot(place.root, result); await record_(result); };
   try {
-    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: (running) => ({ eyes, ...keepLooks(() => running.harness) }) });
+    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: (running) => ({ eyes, ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl') }) }) });
     await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } satisfies Out }));
   } catch (error) {
@@ -113,6 +130,8 @@ export type HeroRun = {
   dir: string;
   processes: Process[];
   record: Record_ | null;
+  /** The result a recording carries: rows with the screenshot and look behind each number. */
+  cited: Cited | null;
   /** The host's own row for every fake call, from every process. */
   ledger: LedgerRow[];
   /** The scripted eyes' requests, from every process: the paid vision calls. */
@@ -152,15 +171,16 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
       let last = await next(options.kill1 ? { KILL1: String(options.kill1) } : {});
       if (last.signal === 'SIGKILL') last = await next({});
       const record = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')).record as Record_; } catch { return null; } })();
+    const cited = record ? citedOf(record, rows<{ receipt: string; look: string; blob: string | null }>(join(dir, 'cites.jsonl'))) : null;
       if (options.record) {
-        const blob = openRecorder({ dir: options.record }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json');
-        supervisor?.host('result', { gen: processes.length, blob, title: 'The snapshot' }, { blobs: [blob] });
+        const blob = openRecorder({ dir: options.record }).blob(JSON.stringify(cited), 'json');
+        supervisor?.host('result', { gen: processes.length, blob, title: 'Nine grids, read from the chart' }, { blobs: [blob] });
         finishRecording(options.record, {
           title: 'Nine grids, read from the chart', task: 'hero-grid-snapshot', model: 'faux/faux-1', generations: processes.length, kills,
-          code: codeOf(ROOT), cost, source: { run: 'hero', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'The snapshot' },
+          code: codeOf(ROOT), cost, source: { run: 'hero', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'Nine grids, read from the chart' },
         });
       }
-      return { dir, processes, record, ledger: rows<LedgerRow>(join(dir, 'ledger.jsonl')), eyesRequests: rows(join(dir, 'eyes.jsonl')).length, ...(options.record ? { recording: options.record } : {}), cleanup };
+      return { dir, processes, record, cited, ledger: rows<LedgerRow>(join(dir, 'ledger.jsonl')), eyesRequests: rows(join(dir, 'eyes.jsonl')).length, ...(options.record ? { recording: options.record } : {}), cleanup };
     } finally { await served.close(); }
   } catch (error) { await cleanup(); throw error; }
 }

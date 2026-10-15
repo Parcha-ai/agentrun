@@ -38,6 +38,10 @@ The vision guard answers a screenshot's image through the eyes and reports the l
 reported look, the whole `LookRecord`, in a `vision.looks` document of the run's store (one per look key), so the recording's
 counters read `paid.vision` and the manifest's cost holds the eyes' price. A test fails if the strip understates it.
 
+The look is filed with the screenshot's evidence path as its receipt and the image the eyes were shown as a blob (`blobs/<sha256>.jpg`),
+so the vision panel shows the chart and a citation is tied to its look. The recording's result is `agentrun.cited/1`: rows of a label, a
+value, a note and `cites`, each cite naming the screenshot's `blob` and the look's `facts.key`. A grid that was not read is a row with no cite.
+
 ## The sources
 
 `sources.json` lists the nine operators and how each page was checked by hand: the dashboard, which chart, the two numbers, where

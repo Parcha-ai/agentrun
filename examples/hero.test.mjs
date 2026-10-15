@@ -119,3 +119,53 @@ test('the recording counts the guard\'s looks: paid.vision is nine and the cost 
   assert.deepEqual(manifest.cost, cost(lines));
   assert.deepEqual([counted.repeated, counted.unknown], [0, 0]);
 });
+
+test('the recording holds each screenshot as an image blob and a cited result that names, per number, the blob and the look that read it', { timeout: 240_000 }, async (t) => {
+  const tmp = await scratch(t);
+  const recording = join(tmp, 'recording');
+  const run = await heroRun({ kill1: 3, record: recording });
+  t.after(() => run.cleanup());
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  // The result the manifest points at is the cited shape.
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const cited = JSON.parse(readFileSync(join(recording, 'blobs', manifest.result.blob + '.json'), 'utf8'));
+  assert.equal(cited.format, 'agentrun.cited/1');
+  assert.equal(cited.rows.length, 18, 'two numbers for each of nine grids');
+  // Every look the run filed, by key: its screenshot's evidence path as receipt, and the image the eyes saw as a blob in blobs/.
+  const filed = new Map();
+  for (const line of lines) {
+    const value = line.channel === 'durable' && line.data?.doc === 'vision.looks' ? line.data.value : undefined;
+    for (const entry of value?.looks ?? []) filed.set(entry.record.facts.key, entry);
+  }
+  assert.equal(filed.size, 9, 'nine looks, one per screenshot');
+  for (const entry of filed.values()) {
+    assert.match(entry.receipt, /^evidence\/chart\/screenshot-\w+\.json$/, 'the look is filed with the screenshot\'s evidence path');
+    assert.equal(entry.images.length, 1);
+    const bytes = readFileSync(join(recording, 'blobs', `${entry.images[0].blob}.jpg`));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.images[0].blob, 'the blob is named by the image\'s own hash');
+    assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xd8], 'and it is a JPEG');
+  }
+  for (const row of cited.rows) {
+    assert.equal(row.cites.length, 1, row.label);
+    const [cite] = row.cites;
+    assert.ok(filed.has(cite.look), `${row.label} names a look the run filed`);
+    assert.equal(cite.blob, filed.get(cite.look).images[0].blob, `${row.label}: the cite's blob is the image that look was shown`);
+    assert.ok(existsSync(join(recording, 'blobs', `${cite.blob}.jpg`)));
+  }
+  // Nine different charts.
+  assert.equal(new Set(cited.rows.map((row) => row.cites[0].blob)).size, 9);
+});
+
+test('a grid that was not read is a row in the cited result with no cite', { timeout: 240_000 }, async (t) => {
+  const tmp = await scratch(t);
+  const recording = join(tmp, 'recording');
+  const run = await heroRun({ broken: 'isone', record: recording });
+  t.after(() => run.cleanup());
+  assert.deepEqual(validateRecording(recording), []);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  const cited = JSON.parse(readFileSync(join(recording, 'blobs', manifest.result.blob + '.json'), 'utf8'));
+  assert.equal(cited.rows.length, 17);
+  const row = cited.rows.find((entry) => entry.label.startsWith('ISO New England'));
+  assert.deepEqual([row.cites, row.value.startsWith('not read')], [[], true]);
+});
