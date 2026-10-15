@@ -20,6 +20,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 |---|---|---|
 | Linux and Node 22.19 or later, nothing else | [Quickstart on one machine](#quickstart-on-one-machine-no-disk-no-key) | A durable chat on a directory of this machine, killed with `SIGKILL` and finished by a second process. One machine and no fence: the directory is the claim |
 | Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: `kill -9` it and run the same command again, and it resumes. One machine and no fence |
+| macOS and Node 22.19 or later, for development | The same [quickstart](#quickstart-on-one-machine-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights, and the file tools' confinement holds against the agent's paths but not a command racing it ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
 | Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | A host killed in the middle of a paid charge, and the run resumed on another, every instance in a container |
 | A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
 | An app or a host of your own | [The app](#the-app) and [Library](#library) | `openDurableRun`, `localRun`, the supervisor and host drivers, `serve`, parking and `fork` from your code |
@@ -85,11 +86,12 @@ cd packages/pi-durable-disk
 
 ## Quickstart on one machine: no disk, no key
 
-The fastest look, on Linux with Node 22.19 or later: a durable chat on a directory of this machine, with
-[`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model instead of a key. One process answers the
-first messages and is killed (`SIGKILL`) after its third answer; a second opens the same run and answers the rest, and the
-transcript, read back from the store, has every message answered once. The directory is the claim, so this guards one
-machine only; the quickstarts below put the run on a disk that outlives the machine.
+The fastest look, on Linux with Node 22.19 or later (or on macOS, [for development](#on-macos)): a durable chat on a
+directory of this machine, with [`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model
+instead of a key. One process answers the first messages and is killed (`SIGKILL`) after its third answer; a second
+opens the same run and answers the rest, and the transcript, read back from the store, has every message answered once.
+The directory is the claim, so this guards one machine only; the quickstarts below put the run on a disk that outlives
+the machine.
 
 In an empty directory, install the package and its peers, save this as `chat.mjs`
 (it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
@@ -322,7 +324,7 @@ Until the hook commits, the current state is the state at `head`, which is how a
 | `run --dir PATH --app MODULE [--id ID]` | The instance on a local directory (`localRun`): no disk, no mount token, no key. The same app contract and exit codes as on a disk (76 when another process holds the run, or when a process its last incarnation left will not die; 75 when fenced), and the same run flags but the Archil ones (`--disk`, `--region`, `--mount-root`, `--archil`, `--token-stdin` are refused beside it, exit 2). `--id` defaults to the directory's name |
 | `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below). `--run-as USER` runs the agent's commands as USER when the instance runs as root (in a container) |
 | `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. `--host docker --image IMAGE` starts each instance in a container (`--app-root`, `--fleet`, `--name-prefix`, `--run-as`, `--docker-arg`, `--apparmor`). Prints one JSON line per decision |
-| `status --dir PATH` | `run.json` read from the directory, and whether its holder is still the process that claimed it: `running` (this boot, its pid alive with the start ticks `run --dir` recorded), `stopped`, or `gone` (another boot) |
+| `status --dir PATH` | `run.json` read from the directory, and whether its holder is still the process that claimed it: `running` (this boot, its pid alive with the start ticks `run --dir` recorded), `stopped`, `gone` (another boot), or `unknown` when this machine's boot or processes cannot be read |
 | `status --disk D --region R --id ID` | `run.json` over the S3 API, the run's delegations and the holder's state |
 | `release --id ID` | Unmount the run's mount on this host (a dead mount is cleaned) |
 | `fork --id A --new-id B` | Copy a released, sealed run into a new run (see Serve, parking and fork) |
@@ -601,20 +603,22 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
 - **The API key stays with the supervisor.** Hosts and instances never hold it, and the local driver never copies its own
   environment into a unit.
 - **No privilege for the agent.** The instance, pi's tools and the agent's commands run as an unprivileged user. Every
-  command starts under `setpriv --no-new-privs`, so a command cannot use the run user's sudo rule (sudo refuses: "The no new
-  privileges flag is set"). An app that turns this off (`archilEnv(claim, { noNewPrivs: false })`) or runs commands another
-  way must confine them itself. Commands run next to the FUSE client on the host that holds the claim: if the agent is not
-  trusted with the host, sandbox its commands (for example with bubblewrap) and keep the FUSE client outside the sandbox.
+  command starts under `setpriv --no-new-privs` (on Linux; macOS has no equivalent, see [On macOS](#on-macos)), so a
+  command cannot use the run user's sudo rule (sudo refuses: "The no new privileges flag is set"). An app that turns
+  this off (`archilEnv(claim, { noNewPrivs: false })`) or runs commands another way must confine them itself. Commands
+  run next to the FUSE client on the host that holds the claim: if the agent is not trusted with the host, sandbox its
+  commands (for example with bubblewrap) and keep the FUSE client outside the sandbox.
 - **The file tools stay inside `work/`.** pi's `read`, `write` and `edit` run in the loop's process, not in a command
-  sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`, absolute
-  paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use `tmp/`, where
-  the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go inside a directory
-  the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
+  sandbox, so every file operation of the environment resolves its path to the file the kernel would reach (`..`,
+  absolute paths, symlinks, dangling links, a missing tail) and refuses it unless it lies in `work/` (reads may also use
+  `tmp/`, where the bash tool tells the model its long output went, and `readRoots` the app names; writes may also go
+  inside a directory the environment's `createTempDir` returned, for the tool it was handed to). An agent cannot `write
   ../store/run.sqlite`, `../run.json` or `../owner.lock`: the call fails with a `PathOutsideWorkError` the model sees as
   a failed tool result. A path is opened one component at a time from a held handle of `work/`, without following links,
-  so a link a command swaps in after the check is refused too. This covers the file tools only; a command still runs as
-  the run user and can reach anything that user can, which is what an app's own command sandbox is for. `archilEnv(claim, {
-  confineFiles: false })` turns it off where `/proc/self/fd` is unavailable.
+  so a link a command swaps in after the check is refused too (on Linux; on macOS the walk is by path, see [On
+  macOS](#on-macos)). This covers the file tools only; a command still runs as the run user and can reach anything that
+  user can, which is what an app's own command sandbox is for. `archilEnv(claim, { confineFiles: false })` turns it off
+  where `/proc/self/fd` is unavailable.
 - **`--serve` authenticates only with a bearer token.** On 127.0.0.1 (the default) the token is optional. A non-loopback
   `--serve-host` requires `--serve-token-file`, a file of mode 0600 holding the token (never argv or the environment); every
   request must send `authorization: Bearer <token>`, and it is compared in constant time. The file is readable by the run
@@ -710,10 +714,36 @@ like a mount's, but syncs nothing: the store's commits are made durable by SQLit
 `work/` are the operating system's to flush, so a power loss can lose what it had not written yet. `mountToken` is
 required only with the default `acquire`; without either, the open is refused (`INVALID_ARGUMENT`) before anything mounts.
 
-It needs Linux, for now. The run's root is held open through `/proc/self/fd` (`openClaimDir`), and the default
-environment confines commands with `setpriv` (util-linux, `noNewPrivs`) and the file tools through `/proc/self/fd`
-(`confineFiles`). macOS has neither, and turning the environment's two off does not help: the open still holds the root
-through `/proc/self/fd`. A portable claim directory is what a local run on macOS would need.
+#### On macOS
+
+A local run works on macOS for development, and is weaker there than on Linux in four ways. Use Linux, or the
+[Docker quickstart](#quickstart-with-docker), when the agent is not trusted.
+
+- **Commands keep your rights: `no_new_privs` has no macOS equivalent.** On Linux every command starts under
+  `setpriv --no-new-privs`, so it cannot use `sudo` or gain privilege from a setuid program. macOS has no such flag and nothing
+  that does its job (`sandbox-exec` is deprecated), so `noNewPrivs` defaults to false there and no `setpriv` runs. That
+  leaves open: a command can use `sudo` wherever sudo asks it for no password (a `NOPASSWD` rule, for one), and setuid
+  programs keep their privilege. `runAs` is not available either (it needs `setpriv`). As on Linux, a command runs as
+  you and can reach anything you can.
+- **The file tools' confinement is path-based.** On Linux it walks a path through `/proc/self/fd`, one held directory at
+  a time, so no component can be swapped once it was checked; macOS has no `/proc/self/fd`. There it resolves the path
+  (`realpath`) and refuses it unless it lies in `work/` or another root the file tools may use, as on Linux, opens each
+  component by its full path with `O_NOFOLLOW`, then checks that the path still resolves to itself and names the
+  directory it opened (same device and inode). It refuses `../store/run.sqlite`, absolute paths and links out of
+  `work/`, a link already in place included. That leaves open: a command that swaps a directory above the target for a
+  link between that check and the operation can win, and the file tool then acts where the link points.
+- **The run's root is addressed by its path.** On Linux, `run.json` and the run's directories are written through the
+  directory opened at acquire. On macOS each write is checked first against that directory, and a root renamed and
+  replaced between the check and the write gets the write.
+- **Commands are recorded from `ps`.** With no `/proc`, the instance reads one `ps` listing every 0.5 s while commands run,
+  `ps -E` for a command's mark and `sysctl kern.bootsessionuuid` for the boot. A command started within about 0.5 s
+  before a kill can be missed, and a process is told from a later one with the same pid by the second it started. The
+  lease watchdog reads the same listing.
+
+`fsync` on macOS does not flush the drive's cache, so the store also sets SQLite's `fullfsync` and
+`checkpoint_fullfsync` there (SQLite then syncs with `F_FULLFSYNC`), and refuses to open unless they read back. CI runs
+the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
+the file tools' confinement) on macOS.
 
 ## Tests
 

@@ -1,24 +1,25 @@
 // The commands a run's environment starts, recorded where the next open of the same claim finds them. pi makes each
 // command the leader of a process group of its own, so killing an instance does not reach its commands: a host's unit
 // cgroup or a container ends them with it, and a run on a local directory has neither. While commands run, the instance
-// walks its own process tree (`/proc/<pid>/task/<tid>/children`) and records each of its commands' group leader and every
-// descendant it has seen, each by pid, start ticks and boot. Its commands are the children that lead their own group and
-// carry its mark (COMMANDS_MARK=<its token>) in their environment: another environment's commands in the same process,
-// or the app's own helpers, are not its to record. The next open, which holds the owner lock, kills whatever a
-// previous incarnation recorded that is still the same process (pid, start ticks and boot all match), waits until it is
-// gone, and clears the records, before the Harness opens. Only the instance writes records: a command never does.
-// Nothing stops a command from writing one too, and none needs stopping: a run's commands run as the instance's user (or,
-// with `runAs`, as another one that cannot write the instance's 0700 directory), so a record a command forged names only
-// what that command could already kill itself. A record grants nothing.
+// walks its own process tree (`/proc/<pid>/task/<tid>/children` on Linux, one ps listing on macOS: process-table.ts) and
+// records each of its commands' group leader and every descendant it has seen, each by pid, start and boot. Its commands
+// are the children that lead their own group and carry its mark (COMMANDS_MARK=<its token>) in their environment:
+// another environment's commands in the same process, or the app's own helpers, are not its to record. The next open,
+// which holds the owner lock, kills whatever a previous incarnation recorded that is still the same process (pid, start
+// and boot all match), waits until it is gone, and clears the records, before the Harness opens. Only the instance writes
+// records: a command never does. Nothing stops a command from writing one too, and none needs stopping: a run's commands
+// run as the instance's user (or, with `runAs`, as another one that cannot write the instance's 0700 directory), so a
+// record a command forged names only what that command could already kill itself. A record grants nothing.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HeldError } from "./errors.ts";
+import { processTable, procTable, type ProcessSnapshot, type ProcessTable } from "./process-table.ts";
 
 /** The environment variable that marks a command as one environment's: its value is that recorder's token. */
 export const COMMANDS_MARK = "PI_DURABLE_DISK_COMMANDS";
 
-/** One process, as recorded: a pid alone could be reused, a pid with its start ticks on one boot cannot. */
+/** One process, as recorded: a pid alone could be reused, a pid with its start on one boot cannot (process-table.ts). */
 export interface ProcessMark {
   readonly pid: number;
   readonly start: number;
@@ -40,74 +41,17 @@ export interface Reaped {
 export interface CommandsOptions {
   /** The `/proc` to read; for tests. */
   readonly proc?: string;
+  /** The process table to read; default this machine's (`/proc`, or `proc` when given; ps on macOS). For tests. */
+  readonly table?: ProcessTable;
   /** How a reap signals; default `process.kill`. For tests. */
   readonly kill?: (target: number, signal: NodeJS.Signals) => void;
 }
 
-interface Stat {
-  readonly ppid: number;
-  readonly pgrp: number;
-  readonly start: number;
-}
+const tableOf = (options: CommandsOptions): ProcessTable => options.table ?? (options.proc === undefined ? processTable() : procTable(options.proc));
 
-/** `/proc/<pid>/stat`: fields after the last `)` (the command name may hold spaces and parentheses); a zombie is gone. */
-function stat(proc: string, pid: number): Stat | undefined {
-  try {
-    const text = readFileSync(join(proc, String(pid), "stat"), "utf8");
-    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
-    if (fields[0] === "Z" || fields[0] === "X") return undefined;
-    return { ppid: Number(fields[1]), pgrp: Number(fields[2]), start: Number(fields[19]) };
-  } catch {
-    return undefined;
-  }
-}
-
-function bootId(proc: string): string | undefined {
-  try {
-    return readFileSync(join(proc, "sys/kernel/random/boot_id"), "utf8").trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The direct children of `pid`, from each of its threads' `children` list. */
-function children(proc: string, pid: number): number[] {
-  let tasks: string[];
-  try {
-    tasks = readdirSync(join(proc, String(pid), "task"));
-  } catch {
-    return [];
-  }
-  return tasks.flatMap((tid) => {
-    try {
-      return readFileSync(join(proc, String(pid), "task", tid, "children"), "utf8").split(" ").filter(Boolean).map(Number);
-    } catch {
-      return [];
-    }
-  });
-}
-
-/** Whether the process `pid` was started with `name=value` in its environment (false when it cannot be read). */
-function marked(proc: string, pid: number, name: string, value: string): boolean {
-  try {
-    return readFileSync(join(proc, String(pid), "environ"), "utf8").split("\0").includes(`${name}=${value}`);
-  } catch {
-    return false;
-  }
-}
-
-/** Whether `mark` is still the process it was: same pid, same start ticks, not a zombie. Never pid 1 or below. */
-function same(proc: string, mark: ProcessMark): boolean {
-  return mark.pid > 1 && stat(proc, mark.pid)?.start === mark.start;
-}
-
-/** A process's command line for a message, best effort. */
-function commandLine(proc: string, pid: number): string {
-  try {
-    return readFileSync(join(proc, String(pid), "cmdline"), "utf8").split("\0").filter(Boolean).join(" ") || "?";
-  } catch {
-    return "?";
-  }
+/** Whether `mark` is still the process it was: same pid, same start, not a zombie. Never pid 1 or below. */
+function same(look: ProcessSnapshot, mark: ProcessMark): boolean {
+  return mark.pid > 1 && look.info(mark.pid)?.start === mark.start;
 }
 
 const RECORD = /^(\d+)-(\d+)\.json$/;
@@ -123,7 +67,7 @@ export class CommandRecorder {
   /** The value of `COMMANDS_MARK` in this environment's commands. */
   readonly token = randomUUID();
   readonly #dir: string;
-  readonly #proc: string;
+  readonly #table: ProcessTable;
   readonly #instance: number;
   readonly #everyMs: number;
   readonly #boot: string | undefined;
@@ -140,10 +84,10 @@ export class CommandRecorder {
     options: CommandsOptions & { readonly instance?: number; readonly everyMs?: number; readonly onError?: (error: unknown) => void } = {},
   ) {
     this.#dir = dir;
-    this.#proc = options.proc ?? "/proc";
+    this.#table = tableOf(options);
     this.#instance = options.instance ?? process.pid;
-    this.#everyMs = options.everyMs ?? 100;
-    this.#boot = bootId(this.#proc);
+    this.#everyMs = options.everyMs ?? this.#table.walkMs;
+    this.#boot = this.#table.bootId();
     this.#onError = options.onError;
   }
 
@@ -189,21 +133,22 @@ export class CommandRecorder {
   #scan(): void {
     const boot = this.#boot;
     if (boot === undefined) return;
-    const own = stat(this.#proc, this.#instance);
+    const look = this.#table.snapshot();
+    const own = look.info(this.#instance);
     if (own === undefined) return;
     // New commands: children of this process that lead their own group (pi spawns each one so) and carry this
     // environment's mark. Once recorded, a leader stays its environment's whatever it execs next (same pid and start).
-    for (const pid of children(this.#proc, this.#instance)) {
-      const leader = stat(this.#proc, pid);
+    for (const pid of look.children(this.#instance)) {
+      const leader = look.info(pid);
       if (leader === undefined || leader.pgrp !== pid || leader.pgrp === own.pgrp) continue;
       const key = `${pid}-${leader.start}`;
-      if (this.#records.has(key) || !marked(this.#proc, pid, COMMANDS_MARK, this.token)) continue;
+      if (this.#records.has(key) || !look.marked(pid, COMMANDS_MARK, this.token)) continue;
       this.#records.set(key, { leader: { pid, start: leader.start }, members: new Map() });
     }
     // Every record: walk from each of its processes still alive, the leader and every member, so a background worker whose
     // leader (or parent) exited and was reparented away is still followed, and so are the children it starts later.
     for (const [key, record] of this.#records) {
-      const live = [record.leader, ...record.members.values()].filter((mark) => same(this.#proc, mark));
+      const live = [record.leader, ...record.members.values()].filter((mark) => same(look, mark));
       if (live.length === 0) {
         this.#records.delete(key);
         this.#written.delete(key);
@@ -212,8 +157,8 @@ export class CommandRecorder {
       }
       let grew = !this.#written.has(key);
       const walk = (parent: number) => {
-        for (const child of children(this.#proc, parent)) {
-          const s = stat(this.#proc, child);
+        for (const child of look.children(parent)) {
+          const s = look.info(child);
           if (s === undefined || child === record.leader.pid) continue;
           const known = record.members.get(child)?.start === s.start;
           if (!known) {
@@ -245,7 +190,7 @@ export class CommandRecorder {
  * again, and they are returned. Run only while holding the run (after its owner lock), before the Harness opens.
  */
 export async function reapCommands(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
-  const proc = options.proc ?? "/proc";
+  const table = tableOf(options);
   const signal = options.kill ?? ((target: number, name: NodeJS.Signals) => process.kill(target, name));
   let files: string[];
   try {
@@ -253,8 +198,13 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   } catch {
     return { signalled: 0, survivors: [] };
   }
-  const boot = bootId(proc);
-  const own = stat(proc, process.pid);
+  if (files.length === 0) {
+    rmSync(dir, { recursive: true, force: true });
+    return { signalled: 0, survivors: [] };
+  }
+  const boot = table.bootId();
+  const before = table.snapshot();
+  const own = before.info(process.pid);
   let signalled = 0;
   /**
    * False for what is never a target: this process, its group, and a pid of 1 or below, since `kill(0)` is the caller's
@@ -284,18 +234,24 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       rmSync(file, { force: true }); // another boot's pids mean nothing on this one
       continue;
     }
-    const leader = record.leader !== null && same(proc, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
+    const leader = record.leader !== null && same(before, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
     // A member that is the leader went with its group.
-    const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(proc, member) && kill(member.pid, member));
+    const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(before, member) && kill(member.pid, member));
     pending.push({ file, boot, leader, members });
   }
-  const alive = () => pending.flatMap((p) => [...(p.leader ? [p.leader] : []), ...p.members]).filter((mark) => same(proc, mark));
+  const alive = () => {
+    const marks = pending.flatMap((p) => [...(p.leader ? [p.leader] : []), ...p.members]);
+    if (marks.length === 0) return marks;
+    const look = table.snapshot();
+    return marks.filter((mark) => same(look, mark));
+  };
   const deadline = Date.now() + (options.timeoutMs ?? 5_000);
   while (alive().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   const survivors: ProcessMark[] = [];
+  const after = pending.length === 0 ? before : table.snapshot();
   for (const record of pending) {
-    const leader = record.leader !== null && same(proc, record.leader) ? record.leader : null;
-    const members = record.members.filter((member) => same(proc, member));
+    const leader = record.leader !== null && same(after, record.leader) ? record.leader : null;
+    const members = record.members.filter((member) => same(after, member));
     if (leader === null && members.length === 0) {
       rmSync(record.file, { force: true });
       continue;
@@ -316,12 +272,12 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
 export async function reapOrRefuse(dir: string, options: CommandsOptions & { readonly timeoutMs?: number } = {}): Promise<Reaped> {
   const reaped = await reapCommands(dir, options);
   if (reaped.survivors.length > 0) {
-    const proc = options.proc ?? "/proc";
+    const look = tableOf(options).snapshot();
     const pids = reaped.survivors.map((s) => s.pid);
     throw new HeldError(
       "commands",
       `${pids.length} process(es) a killed incarnation's commands started are still alive after SIGKILL: ` +
-        `${reaped.survivors.map((s) => `pid ${s.pid} (${commandLine(proc, s.pid)})`).join(", ")}. ` +
+        `${reaped.survivors.map((s) => `pid ${s.pid} (${look.commandLine(s.pid)})`).join(", ")}. ` +
         `The run does not resume beside them. End them (kill -9 ${pids.join(" ")}, as their owner, or wait for them) and open the run again; ` +
         `they stay recorded in ${dir} until then.`,
     );

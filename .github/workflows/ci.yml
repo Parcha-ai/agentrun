@@ -297,6 +297,35 @@ jobs:
           node scripts/stranger.mjs "${{ matrix.spec }}" | tee "$RUNNER_TEMP/stranger.out"
           if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
 
+  macos-local-run:
+    # A run on a local directory on macOS, which has no /proc and no setpriv: the process table comes from ps and
+    # sysctl, the run's root is addressed by its path, the file tools are confined by path, and the store syncs with
+    # F_FULLFSYNC. No other job runs on a Mac, so every macOS line of the README stands on this one: the stranger's
+    # no-key quickstart, and the local run's tests on the Mac's own ps.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: The local run's tests
+        working-directory: packages/pi-durable-disk
+        run: >-
+          node --test --test-timeout=240000
+          test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
+          test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
+      - name: The stranger's no-key quickstart
+        # Not blocking until a release with macOS support is on npm. On a pull request the job runs on the branch merged
+        # into main, where the stranger also walks the examples against the registry's beta (#557); the published beta
+        # predates macOS support, and its examples fail on a Mac. The Mac's proof is the step above, whose quickstart test
+        # runs the same example from this tree.
+        continue-on-error: true
+        run: node scripts/stranger.mjs pi-durable-disk
+
   stranger-readme-line:
     # The README's own install line, as a stranger types it, against what the registry serves now (--readme-line):
     # `packed` puts this tree's package in the line, so it says whether the next release installs; `registry` runs the line
