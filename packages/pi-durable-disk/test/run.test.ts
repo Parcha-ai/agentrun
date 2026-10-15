@@ -330,6 +330,66 @@ describe("openDurableRun", () => {
     }
   });
 
+  it("beforeResume's previous is null on a run's first open; record is this incarnation's", async () => {
+    const dir = scratchRoot("before-resume-first");
+    try {
+      let got: Pick<BeforeResume, "previous" | "record" | "generation"> | undefined;
+      const t = setup(dir.root, { options: { beforeResume: ({ previous, record, generation }) => void (got = { previous, record, generation }) } });
+      const run = await t.open();
+      assert.equal(got!.previous, null);
+      assert.deepEqual([got!.generation, got!.record.generation, got!.record.status], [1, 1, "running"]);
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("after a park, beforeResume's previous is the parked record: sleeping, its wakeAt and detail, the seal its release wrote", async () => {
+    const dir = scratchRoot("before-resume-parked");
+    try {
+      const first = setup(dir.root);
+      const parked = await first.open();
+      const wakeAt = new Date(Date.now() + 90_000).toISOString();
+      await parked.setStatus("sleeping", { why: "retry backoff" }, { wakeAt });
+      await parked.release();
+      const left = runJson(dir.root);
+      let got: Pick<BeforeResume, "previous" | "record"> | undefined;
+      const second = setup(dir.root, { options: { beforeResume: ({ previous, record }) => void (got = { previous, record }) } });
+      const run = await second.open();
+      assert.deepEqual(got!.previous, left, "exactly run.json as the parked incarnation left it");
+      assert.deepEqual([got!.previous!.status, got!.previous!.wakeAt, got!.previous!.detail, got!.previous!.generation], ["sleeping", wakeAt, { why: "retry backoff" }, 1]);
+      assert.equal(typeof got!.previous!.sealedSeq, "number", "the seal its release wrote");
+      // The open had already written this incarnation's record over it: running, generation 2, the detail gone.
+      assert.deepEqual([got!.record.status, got!.record.generation, got!.record.detail, got!.record.wakeAt], ["running", 2, null, null]);
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("after a crash, beforeResume's previous is the dead incarnation's record: running, the killed process as holder, no seal", async () => {
+    const dir = scratchRoot("before-resume-crashed");
+    const child = spawn(process.execPath, [new URL("./fixtures/open-and-hold.ts", import.meta.url).pathname, dir.root, "r1"], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+    try {
+      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+      const opened = String((await lines.next()).value);
+      const deadPid = Number(/^opened 1 (\d+)$/.exec(opened)?.[1]);
+      assert.equal(deadPid, child.pid, opened);
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill("SIGKILL");
+      await exited;
+      let previous: RunRecord | null | undefined;
+      const t = setup(dir.root, { options: { beforeResume: (run) => void (previous = run.previous) } });
+      const run = await t.open();
+      assert.deepEqual([previous!.status, previous!.generation, previous!.sealedSeq, previous!.holder?.pid, previous!.detail], ["running", 1, null, deadPid, null]);
+      assert.equal(run.generation, 2);
+      await run.release();
+    } finally {
+      child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+
   it("a beforeResume that rejects fails the open, before resume, and releases the claim", async () => {
     const dir = scratchRoot("before-resume-fails");
     try {
