@@ -6,8 +6,15 @@ import type { Fakes, Host, StatusEvent, ToolContext } from './host.ts';
 import type { ChildPlan } from './demo-spec.ts';
 
 /** `cut: false` logs a crossing that is never a kill point. A crossing returns true when a tool-box kill is due at it: the caller destroys the box it is taking the crossing in. */
-export type Cross = (point: string, options?: { cut?: boolean }) => boolean;
-export type Crossing = { point: string; n: number; pid: number };
+export type Cross = ((point: string, options?: { cut?: boolean; /** Facts about this crossing (`{ tool: 'install' }`): logged with it, and what a kill's `where` is matched against. */ info?: Info }) => boolean) & {
+  /** A crossing that parks (`vision.filing`): when a kill with `hold` is planned for this point, the nth filing and those after it are parked, forever, and the process is killed once `hold` are parked or `waitMs` has passed. The caller awaits what this returns. */
+  park?(point: string, info?: Info): Promise<never> | undefined;
+};
+export type Info = Record<string, string | number | boolean>;
+export type Crossing = { point: string; n: number; pid: number; info?: Info };
+
+/** A kill's `where` holds when every field it names equals the crossing's info field. */
+const matches = (where: Info | undefined, info: Info | undefined) => !where || Object.entries(where).every(([field, value]) => info?.[field] === value);
 
 /** What a process does when its planned kill is due at a crossing. Default: it ends itself with SIGKILL. A process under a supervisor asks it instead (`askToBeKilled`): the supervisor writes the kill line first and kills it through the place. */
 export type Kill = (crossing: Crossing) => void;
@@ -30,30 +37,51 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   let n = 0;
   // A storm takes no crossing before the process has opened the journal and begun its first node: a kill earlier than that leaves a generation the journal never recorded.
   let begun = false;
-  const seen = new Map<string, number>();
-  const eligible = new Map<string, number>();
+  // Per kill: how many crossings it names (its point and `where`) were taken, and how many of those could have been kill points.
+  const seen = new Map<unknown, number>();
+  const eligible = new Map<unknown, number>();
   const done = new Set<number>();
-  return (point, options = {}) => {
+  let parkedCount = 0;
+  let killAsked = false;
+  const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
     const cut = options.cut !== false && window.open === 0;
     if (cut) n += 1;
-    const times = (seen.get(point) ?? 0) + 1;
-    seen.set(point, times);
-    // A run kill's `n` counts the crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all.
-    const timesEligible = cut ? (eligible.get(point) ?? 0) + 1 : eligible.get(point) ?? 0;
-    eligible.set(point, timesEligible);
-    if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid } satisfies Crossing)}\n`);
-    // A tool box destroyed at its crossing: once, at the nth time (a crossing that is not a kill point can be one: the box is the caller's to end).
-    const tool = plan?.tools.findIndex((entry, index) => !done.has(index) && 'point' in entry && entry.point === point && times === entry.n) ?? -1;
+    const count = (map: Map<unknown, number>, kill: unknown, hit: boolean) => { const value = (map.get(kill) ?? 0) + (hit ? 1 : 0); map.set(kill, value); return value; };
+    const info = options.info;
+    if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid, ...(info ? { info } : {}) } satisfies Crossing)}\n`);
+    // A tool box destroyed at its crossing: once, at the nth matching time (a crossing that is not a kill point can be one: the box is the caller's to end).
+    let tool = -1;
+    plan?.tools.forEach((entry, index) => {
+      if (!('point' in entry) || entry.point !== point || !matches(entry.where, info)) return;
+      const times = count(seen, entry, true);
+      if (tool < 0 && !done.has(index) && times === entry.n) tool = index;
+    });
     if (tool >= 0) { done.add(tool); return true; }
     const run = plan?.run;
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
+    // A run kill's `n` counts the matching crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all.
+    const timesEligible = 'storm' in run ? 0 : count(eligible, run, run.point === point && matches(run.where, info));
+    // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
+    if (!('storm' in run) && run.hold !== undefined) return false;
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && timesEligible === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
     if (point === 'event workflow.node.start') begun = true;
     if (due) kill({ point, n, pid: process.pid });
     return false;
+  }) as Cross;
+  (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
+    const run = plan?.run;
+    if (!run || 'storm' in run || run.hold === undefined || run.point !== point || !matches(run.where, info) || window.open > 0) return undefined;
+    // The nth time the point is reached, counting the crossings that could have been kill points (the call that follows this one in `cross` has already counted this one).
+    if ((eligible.get(run) ?? 0) < run.n) return undefined;
+    parkedCount += 1;
+    const ask = () => { if (killAsked) return; killAsked = true; kill({ point, n, pid: process.pid }); };
+    if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
+    if (parkedCount >= run.hold) ask();
+    return new Promise<never>(() => {});
   };
+  return cross;
 }
 
 /** The fakes with a crossing before and after each scripted answer: the model's request, a tool's dispatch and return, the judge's question. */
@@ -98,7 +126,18 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
     return value;
   } };
   const { evidence, status, deliver } = host;
-  host.evidence = { file: async (label, record) => { cross(`receipt.filing ${record.tool}`); const filed = await evidence.file(label, record); cross(`receipt.filed ${record.tool}`); return filed; } };
+  // A look the eyes have answered is a memo by the time it is filed: `vision.filing` is the answer kept and the look not yet filed, so a kill there makes the next
+  // process file the kept answer and not ask the eyes again.
+  host.evidence = { file: async (label, record) => {
+    const [filing, filed] = record.tool === 'look' ? ['vision.filing', 'vision.filed'] : [`receipt.filing ${record.tool}`, `receipt.filed ${record.tool}`];
+    cross(filing);
+    // A planned kill that holds parks this filing (and the ones after it): the answers are kept, none is filed.
+    const parked = cross.park?.(filing);
+    if (parked) await parked;
+    const done = await evidence.file(label, record);
+    cross(filed);
+    return done;
+  } };
   host.status = (event: StatusEvent) => {
     cross(`event ${event.source}.${event.source === 'workflow' ? event.event.type : 'change' in event ? event.change : 'look' in event ? 'look' : 'miss' in event ? 'miss' : 'reconciled'}`);
     return status(event);

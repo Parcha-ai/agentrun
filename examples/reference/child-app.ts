@@ -18,8 +18,9 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   if (!options) throw new Error(`${entry} exports no \`options\` (the DemoOptions the demo passes to demo()).`);
   const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store });
   return appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
+    const made = await prepared.made(result);
     await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256) }));
+    console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256, made) }));
     await prepared.done();
   });
 }

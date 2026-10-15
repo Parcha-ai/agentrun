@@ -11,10 +11,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from '../reference/index.ts';
+import { codeOf, cost, finishRecording, keepLooks, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run, shownShots } from '../reference/index.ts';
 import type { BrowserPlane, Delivery, LedgerRow, RunResult } from '../reference/index.ts';
 import { heroFakes, heroJob, readGrids, watchScreenshots } from './job.ts';
-import { keepLooks, shownShots } from './looks.ts';
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
