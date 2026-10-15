@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, browserChargesOf, callsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, browserChargesOf, callsOf, pageActionsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -64,6 +64,10 @@ export type CounterState = {
    *  in a process that has not filed its key since (`<process> <key>`). Never reset: a lost branch's looks were paid. */
   looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; priced: Record<string, number>; native: number;
     started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
+  /** The browser's page actions (section 6): each key's dispatches (`callId`s) in the order they first appear, the
+   *  generation of the line each first appears in (a snapshot's is an earlier process's), and those a revision showed
+   *  reaching the page. Never reset: a lost branch's actions were applied. */
+  pages: { order: Record<string, string[]>; gen: Record<string, number>; reached: Record<string, true> };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
@@ -86,6 +90,9 @@ export type Counters = {
   /** Vision: native looks (the lead's own, no payment), and possible payments no durable line shows (a look live lines
    *  show started in a process that ended without filing its key). With any possible one, cost is a lower bound. */
   vision: { native: number; possible: number };
+  /** The browser's page actions: dispatches of a key after one that never showed reaching the page are possible extra
+   *  applications, never proven ones (proven ones are in repeated and asked twice). */
+  pageActions: { possible: number };
   costLowerBound: boolean;
   /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
@@ -112,7 +119,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -214,6 +221,19 @@ export const counterFold: Fold<CounterState> = {
           looks.priced[id] = looks.costs.push(filing.usd) - 1;
         }
         next.looks = looks;
+      }
+      const actions = pageActionsOf(doc);
+      if (actions?.length) {
+        const pages = { order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
+        for (const action of actions) {
+          const key = `${line.conv ?? ''}\u0001${action.tool}\u0001${action.codeSha}`;
+          if (pages.gen[action.callId] === undefined) {
+            pages.gen[action.callId] = line.gen ?? 0;
+            pages.order[key] = [...(pages.order[key] ?? []), action.callId];
+          }
+          if (action.reached) pages.reached[action.callId] = true;
+        }
+        next.pages = pages;
       }
       if (priced.length) {
         const charges = { ...next.charges };
@@ -369,6 +389,19 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // A vision look key's payments, in the order seen, are extras the same way (a first-kept payment sits just before its
   // kept filing's generation).
   Object.values(state.looks.gens).forEach(extras);
+  // A page action's key: each dispatch after one that reached the page is one extra application, counted once, in
+  // repeated when its generation is later than that one's and in asked twice when it is the same; a dispatch after
+  // earlier ones that never showed reaching it is a possible extra, never a proven one.
+  let pagePossible = 0;
+  for (const callIds of Object.values(state.pages.order)) {
+    callIds.forEach((callId, index) => {
+      if (index === 0) return;
+      const reached = callIds.slice(0, index).filter((earlier) => state.pages.reached[earlier]).at(-1);
+      if (reached === undefined) pagePossible += 1;
+      else if (state.pages.gen[callId]! > state.pages.gen[reached]!) repeated += 1;
+      else askedTwice += 1;
+    });
+  }
   const vision = Object.values(state.looks.gens).reduce((sum, gens) => sum + gens.length, 0);
   const possible = Object.entries(state.looks.started).filter(([at]) => ended || Number(at.split(' ')[0]) < state.processes || state.looks.ended[at.split(' ')[0]!])
     .reduce((sum, [, count]) => sum + count, 0);
@@ -391,6 +424,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   return {
     paid: { total: workflow + agent + vision, workflow, agent, vision },
     vision: { native: state.looks.native, possible },
+    pageActions: { possible: pagePossible },
     costLowerBound: possible > 0,
     repeated,
     repeatedNotMeasured,
