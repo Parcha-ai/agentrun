@@ -1,4 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -27,6 +36,7 @@ import {
 	type RecordSink,
 	receiveRecords,
 } from "../src/home/records.ts";
+import { type HomeOptions, openHome } from "../src/home/run.ts";
 import { createRunner, EXIT_REFUSED, type Runner, type RunnerOptions } from "../src/home/runner.ts";
 import { admitsTool } from "../src/home/shipping.ts";
 import { textResult } from "../src/testing/tool-result.ts";
@@ -843,3 +853,88 @@ function dump(path: string): Record<string, unknown[]> {
 		database.close();
 	}
 }
+
+type World = ReturnType<typeof world>;
+
+/** The file descriptors this process holds open on `path`. */
+function openOn(path: string): number {
+	let count = 0;
+	for (const fd of readdirSync("/proc/self/fd")) {
+		try {
+			if (readlinkSync(`/proc/self/fd/${fd}`) === path) count += 1;
+		} catch {
+			// Closed while it was listed.
+		}
+	}
+	return count;
+}
+
+describe("a home whose store wrapper fails", () => {
+	const homeOf = (made: World, wrapStore?: HomeOptions["wrapStore"]): HomeOptions => {
+		const { recording: _recording, resumeWithinMs: _resume, ...base } = made.options;
+		return { ...base, models: made.models, ...(wrapStore === undefined ? {} : { wrapStore }) };
+	};
+	/** Whether another home can take the store now: the first let it go. */
+	const free = async (made: World) => {
+		const other = getOrThrow(await openHome(homeOf(made)));
+		const resumed = await other.resume({ epoch: 1 }, context);
+		await other.close(context);
+		return resumed.ok ? "free" : resumed.error.code;
+	};
+
+	it("lets the store go when the wrapper's close fails", async () => {
+		await withWorld(async (made) => {
+			const home = getOrThrow(
+				await openHome(
+					homeOf(made, async (storage) => ({
+						storage,
+						closed: async () => {
+							throw new Error("the recorder's stop failed");
+						},
+					})),
+				),
+			);
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			await home.close(context).catch(() => {});
+			expect(await free(made)).toBe("free");
+		});
+	});
+
+	it("fails the order, closes what it opened and lets the store go when the recorder does not start", async () => {
+		await withWorld(async (made) => {
+			const home = getOrThrow(
+				await openHome(
+					homeOf(made, async (storage) => ({
+						storage,
+						opened: () => {
+							throw new Error("the recorder did not start");
+						},
+					})),
+				),
+			);
+			const resumed = await home.resume({ epoch: 1 }, context);
+			expect(resumed.ok ? "" : resumed.error.message).toContain("the recorder did not start");
+			expect(openOn(made.options.store)).toBe(0);
+			expect(await free(made)).toBe("free");
+		});
+	});
+
+	it("closes the store and the outbox, and lets the store go, when the recorder's snapshot fails", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({
+				recording: {
+					snapshotLines: async () => {
+						throw new Error("the snapshot failed");
+					},
+					recordCommits: () => async () => {},
+				},
+			});
+			const home = getOrThrow(await openHome(homeOf(made, shipper.wrapStore(made.options.store))));
+			const resumed = await home.resume({ epoch: 1 }, context);
+			expect(resumed.ok ? "" : resumed.error.message).toContain("the snapshot failed");
+			expect(openOn(made.options.store)).toBe(0);
+			expect(openOn(`${made.options.store}.outbox.jsonl`)).toBe(0);
+			expect(await free(made)).toBe("free");
+		});
+	});
+});

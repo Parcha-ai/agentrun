@@ -142,7 +142,18 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				heldByHost(opened);
 				const recording = options.recording;
 				// Nothing has committed through pi yet, and this process holds the store alone: the state is exact.
-				const lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
+				let lines: readonly RecordLine[] | undefined;
+				try {
+					lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
+				} catch (cause) {
+					// The home gets no wrapper to close: the outbox is closed here.
+					opened.close();
+					if (outbox === opened) {
+						outbox = undefined;
+						next = undefined;
+					}
+					throw cause;
+				}
 				if (lines !== undefined && lines.length > 0) snapshot = { commit: head.value - 1, lines };
 				catchUp();
 				let stop: (() => Promise<void>) | undefined;
