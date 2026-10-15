@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems, STORE_LIMIT } from './gate.mjs';
+import { credentialIn } from './validate.mjs';
 
 const recordings = new URL('../../apps/viewer/recordings/', import.meta.url).pathname;
 const secret = () => `sk-${'a1'.repeat(20)}`;
@@ -168,17 +169,41 @@ const withStore = (bytes, { file = true } = {}) => (dir) => {
   writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), store: { blob: sha, at: { gen: 1, commit: 1 } } }));
   return sha;
 };
-const sqlite = (...parts) => Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(84), ...parts.map((part) => Buffer.from(part))]);
+/** A real SQLite store, as its bytes, with one table holding `values`. */
+const sqliteStore = (values) => {
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'gate-store-'));
+  try {
+    const db = new DatabaseSync(join(dir, 'store.sqlite'));
+    db.exec('CREATE TABLE notes (body TEXT)');
+    const insert = db.prepare('INSERT INTO notes (body) VALUES (?)');
+    for (const value of values) insert.run(value);
+    db.close();
+    return readFileSync(join(dir, 'store.sqlite'));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+const storeProblems = (found) => found.filter((problem) => /recordings\/reference-job\/(blobs\/[0-9a-f]{64}\.sqlite|manifest\.json): .*store/.test(problem));
 
-test('a store is scanned byte for byte, like the text it holds', (t) => {
-  assert.deepEqual(paths(built(t, withStore(sqlite('a row of ordinary text')))), [], 'a clean store passes');
-  const found = paths(built(t, withStore(sqlite('header ', secret(), ' end'))));
-  assert.ok(found.some((problem) => /recordings\/reference-job\/blobs\/[0-9a-f]{64}\.sqlite: is a store that contains a provider secret/.test(problem)), found.join('\n'));
+test('a store is scanned through SQLite and byte for byte: a key in it is refused, a clean one passes', (t) => {
+  assert.deepEqual(paths(built(t, withStore(sqliteStore(['a row of ordinary text'])))), [], 'a clean store passes');
+  assert.match(storeProblems(paths(built(t, withStore(sqliteStore([`header ${secret()} end`])))))[0] ?? '', /is a store that contains a provider secret/);
 });
 
-test('a store over 10 MB, or one the manifest names but blobs/ does not hold, is refused', (t) => {
-  const big = paths(built(t, withStore(Buffer.concat([sqlite(), Buffer.alloc(STORE_LIMIT)]))));
+test('a key SQLite split across two pages, which no byte scan sees, is found in the value SQLite reads back', (t) => {
+  // SQLite fills a long value's overflow pages from its end, so a longer tail after the key moves the page boundaries
+  // across it; once the key straddles two pages, its bytes in the file have a page pointer between them.
+  let split;
+  for (let tail = 0; tail < 8200 && !split; tail += 1) {
+    const bytes = sqliteStore([`${'a'.repeat(3000)} ${secret()} ${'b'.repeat(tail)}`]);
+    if (!credentialIn(bytes.toString('latin1'))) split = bytes;
+  }
+  assert.ok(split, 'a padding that splits the key across pages');
+  assert.match(storeProblems(paths(built(t, withStore(split))))[0] ?? '', /is a store that contains a provider secret/);
+});
+
+test('a store SQLite cannot read, one over 10 MB, or one the manifest names but blobs/ does not hold, is refused', (t) => {
+  assert.match(storeProblems(paths(built(t, withStore(Buffer.from('not a database at all')))))[0] ?? '', /is a store SQLite cannot read/);
+  const big = storeProblems(paths(built(t, withStore(sqliteStore(['x'.repeat(STORE_LIMIT + 1)])))));
   assert.ok(big.some((problem) => problem.includes('over the 10 MB a recording may publish')), big.join('\n'));
-  const missing = paths(built(t, withStore(sqlite('x'), { file: false })));
-  assert.ok(missing.some((problem) => /recordings\/reference-job\/manifest\.json: names a store, [0-9a-f]{64}, that is not in blobs\//.test(problem)), missing.join('\n'));
+  assert.match(storeProblems(paths(built(t, withStore(sqliteStore(['x']), { file: false }))))[0] ?? '', /manifest\.json: names a store, [0-9a-f]{64}, that is not in blobs\//);
 });

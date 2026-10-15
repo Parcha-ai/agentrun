@@ -11,13 +11,34 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { credentialInFile } from '../../examples/reference/scan.ts';
+import { credentialIn, credentialInFile, credentialInValue } from '../../examples/reference/scan.ts';
 import { validateRecording } from './validate.mjs';
 
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 /** The largest store a recording may publish (RECORDING.md section 2, draft 24). */
 export const STORE_LIMIT = 10 * 1024 * 1024;
+
+/** Every text a SQLite store holds, read back through SQLite: each table's schema and every text and blob value of every
+ *  row. A value SQLite split across overflow pages, with page pointers between its pieces, is whole again here. A store
+ *  SQLite cannot read throws, and is refused: what cannot be read cannot be checked. */
+export function storeTexts(path) {
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const out = [];
+    for (const { name, sql } of db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'").all()) {
+      out.push(String(sql ?? ''));
+      for (const row of db.prepare(`SELECT * FROM "${String(name).replaceAll('"', '""')}"`).all()) {
+        for (const value of Object.values(row)) {
+          if (typeof value === 'string') out.push(value);
+          else if (value instanceof Uint8Array) out.push(Buffer.from(value).toString('latin1'));
+        }
+      }
+    }
+    return out;
+  } finally { db.close(); }
+}
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
 const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
@@ -42,7 +63,8 @@ export function gateProblems(dist) {
     const dir = join(recordings, entry.name);
     for (const problem of validateRecording(dir)) add(`${at}/${problem.where}${problem.line === undefined ? '' : `:${problem.line}`}`, problem.message);
     // The store is binary, so the text scan below never reads it: its bytes are scanned here, read as Latin-1 so every
-    // byte is one character and SQLite's UTF-8 text keeps its ASCII shapes.
+    // byte is one character and SQLite's UTF-8 text keeps its ASCII shapes, and then every value read back through
+    // SQLite, raw and decoded when it is JSON, since a value split across pages is whole only there.
     let manifest;
     try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
     const store = manifest?.store?.blob;
@@ -52,7 +74,14 @@ export function gateProblems(dist) {
       else {
         const bytes = readFileSync(join(dir, 'blobs', file));
         if (bytes.length > STORE_LIMIT) add(`${at}/blobs/${file}`, `is a store of ${bytes.length} bytes, over the 10 MB a recording may publish`);
-        const found = credentialIn(bytes.toString('latin1'));
+        let found = credentialIn(bytes.toString('latin1'));
+        try {
+          for (const text of found ? [] : storeTexts(join(dir, 'blobs', file))) {
+            found = credentialIn(text);
+            if (!found) { try { found = credentialInValue(JSON.parse(text)); } catch { /* not JSON */ } }
+            if (found) break;
+          }
+        } catch { add(`${at}/blobs/${file}`, 'is a store SQLite cannot read, so it cannot be checked'); }
         if (found) add(`${at}/blobs/${file}`, `is a store that contains a ${found}`);
       }
     }
