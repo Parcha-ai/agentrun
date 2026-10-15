@@ -54,7 +54,7 @@ the definition's prompt and tools and the browser's configuration in the commit 
 
 | Variable | Needed | What |
 | --- | --- | --- |
-| `AGENT_BROWSER` | no | `browserbase` (default) or `chrome`: the run's own Chrome on this machine, so nothing leaves it but the model. |
+| `AGENT_BROWSER` | no | `browserbase` (default) or `chrome`: the run's own Chrome on this machine, so nothing leaves it but the model. Browserbase stays the default until pi-browser ships `./live-view`: without it the person cannot see or drive the local Chrome, so cannot sign in. |
 | `BROWSERBASE_API_KEY` | with Browserbase | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. |
 | `CHROME_PATH` | with `chrome` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
 | `AGENT_PAGE_ORIGIN` | no | The origin people open the server's page at; the server sets it. A local Chrome's live view allows only that page to frame it. |
@@ -72,6 +72,9 @@ lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same d
 answered.
 
 ## A local Chrome
+
+Browserbase is the default. A local Chrome is for a run that must keep everything on this machine but the model, and a
+person can sign in through it only once pi-browser ships its live view (`./live-view`).
 
 With `AGENT_BROWSER=chrome`, start-run.mjs starts one headless Chrome for the run, on a debugging port Chrome picks on
 127.0.0.1, and pi-browser attaches to it by endpoint (`AGENT_CHROME_ENDPOINT`). Its profile directory is the sign-in:

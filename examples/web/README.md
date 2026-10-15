@@ -35,6 +35,11 @@ time, owner-only, and opens it as it is after that: to change the agent, start a
 
 Without a start command the server only shows the home's runs: it cannot start or wake one.
 
+The agent's browser is Browserbase by default. `AGENT_BROWSER=chrome` runs each run on its own headless Chrome on this
+machine instead (see [agent/README.md](agent/README.md#a-local-chrome)); the person signs in through it once pi-browser
+ships its live view (`./live-view`), which this server then shows at `/live/<run id>/`. Until then Browserbase stays the
+default.
+
 | Flag | Default | What |
 | --- | --- | --- |
 | `--home DIR` | `examples/web/.data/agent-home` | The agent home. |
