@@ -192,6 +192,8 @@ test('the recorder scans before it finishes: a credential or a machine path in a
     ['a blob', (recorder) => recorder.blob(`token ${secret}`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
     // A JSON string in a text blob can hide the shape behind an escape; the scan decodes it, as the validator does.
     ['an escaped key in a text blob', (recorder) => recorder.blob(`"\\u0073k-${'a1'.repeat(20)}"`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
+    // A .jsonl file need not be JSON lines: one object across several lines, none of which parses alone.
+    ['an escaped key across the lines of a .jsonl blob', (recorder) => recorder.blob(`{\n  "token": "\\u0073k-${'a1'.repeat(20)}"\n}`, 'jsonl'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.jsonl/],
     ['a machine path', (recorder) => recorder.live('pi', 'message_end', { cwd: machinePath }), {}, /holds a machine path in events\.jsonl/],
     ['the manifest', () => undefined, { title: secret }, /holds a provider secret in manifest\.json/],
   ];
