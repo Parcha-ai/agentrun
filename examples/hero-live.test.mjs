@@ -3,6 +3,12 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { test } from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fold, readEvents } from '../scripts/recording/fold.mjs';
+import { validateRecording } from '../scripts/recording/validate.mjs';
+import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from './reference/index.ts';
 import { liveBrowser, liveConfig, liveEyes, liveModels } from './hero/live.ts';
 import { heroRun } from './hero/run.ts';
 
@@ -91,7 +97,8 @@ test('the default lead, openai/gpt-6-luna, is the broker\'s model id: the catalo
 test('a broker model id pi-ai\'s catalog does not know is built by the host: unpriced unless HERO_LEAD_PRICE says so, and sent as written', { timeout: 60_000 }, async (t) => {
   const loopback = await broker(t);
   const unpriced = await ask(liveConfig({ CHROME_PATH: here, HERO_BROKER_URL: loopback.url, HERO_LEAD: 'acme/not-in-the-catalog' }, 'chrome'));
-  assert.deepEqual([unpriced.model.cost.input, unpriced.model.cost.output, unpriced.model.api], [0, 0, 'openai-completions']);
+  assert.equal(unpriced.model.api, 'openai-completions');
+  assert.equal(unpriced.answer.usage.cost.total, null, 'an unknown price is a null cost, not 0');
   const priced = liveModels(liveConfig({ CHROME_PATH: here, HERO_LEAD: 'acme/not-in-the-catalog', HERO_LEAD_PRICE: '0.4,1.6' }, 'chrome'));
   const model = priced.catalog.getModel(priced.lead.provider, priced.lead.modelId);
   assert.deepEqual([model.cost.input, model.cost.output], [0.4, 1.6]);
@@ -106,4 +113,50 @@ test('the other option, google/gemini-3.7-flash on the OpenRouter entry, is the 
   assert.deepEqual([model.baseUrl, model.cost.input > 0, model.input], [loopback.url, true, ['text', 'image']], 'the catalog\'s own price and abilities');
   assert.equal(answer.stopReason, 'stop', String(answer.errorMessage ?? ''));
   assert.deepEqual(loopback.seen.map((request) => [request.url, request.auth, request.model]), [['/v1/chat/completions', 'Bearer placeholder', 'google/gemini-3.7-flash']]);
+});
+
+// A one-node job whose lead is the live model: the loopback broker answers its request with a `submit` tool call and a usage block.
+const oneNode = { v: 2, name: 'priced-lead', schemas: { Input: { type: 'object', additionalProperties: false, properties: {} }, Answer: { type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: { type: 'string' } } } }, input: { schemaId: 'Input' }, output: { schemaId: 'Answer', path: 'answer' }, root: { node: 'agent', label: 'answer', out: 'Answer', as: 'answer', instructions: 'Answer with the word ok.', tools: [] } };
+
+async function recordedWith(t, env) {
+  const { createServer } = await import('node:http');
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const chunk = (delta, finish = null, usage) => `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'x', choices: [{ index: 0, delta, finish_reason: finish }], ...(usage ? { usage } : {}) })}\n\n`;
+      response.end(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'submit', arguments: '{"answer":"ok"}' } }] }) + chunk({}, 'tool_calls', { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 }) + 'data: [DONE]\n\n');
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const tmp = await mkdtemp(join(tmpdir(), 'hero-priced-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const place = await placeAt(join(tmp, 'run'));
+  const recording = join(tmp, 'recording');
+  const recorder = openRecorder({ dir: recording, commits: await packageCommitRecorder(), supervisor: openSupervisor({ dir: recording }) });
+  const local = localHost(place, { model: () => { throw new Error('the live model answers, not the script'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 }), pages: {}, start: 'about:blank' }, { recorder });
+  local.host.models = liveModels(liveConfig({ CHROME_PATH: here, HERO_BROKER_URL: `http://127.0.0.1:${server.address().port}/v1`, ...env }, 'chrome'));
+  const result = await run(place, local.host, { workflow: oneNode, input: {} });
+  await recorder.detach();
+  assert.equal(result.status, 'complete', JSON.stringify(result));
+  finishRecording(recording, { title: 'a lead on a broker', task: 'priced-lead', model: 'broker', kills: 0, code: codeOf(new URL('..', import.meta.url).pathname), cost, source: { run: place.id, store: join(place.store, 'run.sqlite') } });
+  assert.deepEqual(validateRecording(recording), []);
+  return { lines: readEvents(recording), manifest: JSON.parse((await import('node:fs')).readFileSync(join(recording, 'manifest.json'), 'utf8')) };
+}
+
+test('a recording with an unpriced lead folds to cost null, never 0: the strip says unknown and the manifest says usd null', { timeout: 120_000 }, async (t) => {
+  const { lines, manifest } = await recordedWith(t, { HERO_LEAD: 'acme/not-in-the-catalog' });
+  const turns = lines.filter((line) => line.channel === 'durable' && Array.isArray(line.data?.model)).flatMap((line) => line.data.model).filter((message) => message.role === 'assistant');
+  assert.ok(turns.length >= 1 && turns.every((message) => message.usage.cost.total === null), 'the lead\'s usage carries no cost');
+  assert.equal(manifest.cost.usd, null);
+  assert.equal(manifest.cost.parts.model, null);
+  assert.equal(fold(lines).cost, null, 'the viewer\'s counters: cost unknown');
+});
+
+test('the same lead priced by HERO_LEAD_PRICE folds to the number its tokens cost', { timeout: 120_000 }, async (t) => {
+  const { lines, manifest } = await recordedWith(t, { HERO_LEAD: 'acme/not-in-the-catalog', HERO_LEAD_PRICE: '2,8' });
+  // 1000 tokens in at 2 dollars a million and 500 out at 8 a million.
+  assert.ok(Math.abs(manifest.cost.usd - (1000 * 2 + 500 * 8) / 1e6) < 1e-12, String(manifest.cost.usd));
+  assert.ok(Math.abs(fold(lines).cost - manifest.cost.usd) < 1e-12, 'the viewer\'s counters agree with the manifest');
 });

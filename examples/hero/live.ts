@@ -12,6 +12,8 @@ import { join } from 'node:path';
 import { getModel } from '@earendil-works/pi-ai/compat';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { createModels, createProvider, type Models } from '@earendil-works/pi-ai/models';
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import type { ProviderStreams } from '@earendil-works/pi-ai';
 import type { ModelRef } from '@earendil-works/pi-durable';
 import { browserbaseProvider } from '@parcha/pi-browser/providers/browserbase';
 import { cdpProvider } from '@parcha/pi-browser/providers/cdp';
@@ -36,7 +38,7 @@ export type LiveConfig = {
   /** The lead's model: `HERO_LEAD`, default `openai/gpt-6-luna`, this machine's paid-proof model. A broker model id (OpenRouter's ids, over the OpenAI chat API)
    *  or `openrouter/<id>`; a model pi-ai's catalog describes keeps its price and abilities, any other id is sent as written through a definition the host builds. */
   lead: string;
-  /** What an uncatalogued lead costs, dollars per million tokens in and out (`HERO_LEAD_PRICE=<in>,<out>`); null when unset, and its cost then reads 0 in usage, which is not a price. */
+  /** What an uncatalogued lead costs, dollars per million tokens in and out (`HERO_LEAD_PRICE=<in>,<out>`); null when unset, and its cost is then unknown (null in the recording), never 0. */
   leadPrice: { input: number; output: number } | null;
 };
 
@@ -71,6 +73,24 @@ export function liveEyes(config: LiveConfig): Eyes {
   return piAiEyes({ ...entry, baseUrl: config.broker }, { apiKey: () => 'placeholder' });
 }
 
+const NO_COST = { input: null, output: null, cacheRead: null, cacheWrite: null, total: null };
+/** A message with its cost set to unknown (null). */
+const unknownCost = <M extends { usage: { cost: unknown } }>(message: M): M => ({ ...message, usage: { ...message.usage, cost: NO_COST } });
+/** `streams` with every message's cost unknown: a model nothing prices answers with null, never a computed 0. */
+function unpriced(streams: ProviderStreams): ProviderStreams {
+  const rewrite = (event: Record<string, unknown>) => {
+    const copy = { ...event };
+    for (const key of ['partial', 'message', 'error']) if (copy[key] && typeof copy[key] === 'object') copy[key] = unknownCost(copy[key] as { usage: { cost: unknown } });
+    return copy;
+  };
+  const wrap = (source: AsyncIterable<unknown>) => {
+    const out = createAssistantMessageEventStream();
+    void (async () => { try { for await (const event of source) out.push(rewrite(event as Record<string, unknown>) as never); } finally { out.end(); } })();
+    return out;
+  };
+  return { ...streams, stream: (model, context, options) => wrap(streams.stream(model, context, options)), streamSimple: (model, context, options) => wrap(streams.streamSimple(model, context, options)) };
+}
+
 const getCatalog = getModel as (provider: string, modelId: string) => ReturnType<typeof getModel> | undefined;
 /** The lead's catalog entry, if there is one. `openrouter/<id>` names the OpenRouter entry; a bare id (`openai/gpt-6-luna`) is the broker's own, which speaks
  *  OpenRouter's ids over the OpenAI chat API, so its entry is the OpenRouter one of that id. Anything else has no entry. */
@@ -78,7 +98,7 @@ const catalogEntry = (spec: string) => (spec.startsWith('openrouter/') ? getCata
 
 /** The lead's models: one provider, "broker", whose only model is the lead, reached at the broker's base URL with a placeholder key. A model pi-ai's catalog
  *  describes is used as the catalog describes it (its price and abilities). A broker id it does not know is built here: an OpenAI-compatible chat model, the id
- *  sent as written, priced by `HERO_LEAD_PRICE` or not at all. */
+ *  sent as written, priced by `HERO_LEAD_PRICE`, and unpriced otherwise: its cost is then null (unknown), never 0. */
 export function liveModels(config: LiveConfig): { catalog: Models; lead: ModelRef } {
   const entry = catalogEntry(config.lead);
   const model = entry
@@ -92,7 +112,8 @@ export function liveModels(config: LiveConfig): { catalog: Models; lead: ModelRe
     id: 'broker', name: 'The machine\'s broker', baseUrl: config.broker,
     auth: { apiKey: { name: 'The broker (placeholder credential)', resolve: async () => ({ auth: { apiKey: 'placeholder', baseUrl: config.broker }, source: 'placeholder' }) } },
     models: [model],
-    api: { 'openai-completions': openAICompletionsApi() },
+    // An unknown price is unknown, never 0: the answers of a model nothing prices carry a null cost, which the recording's fold reads as cost unknown.
+    api: { 'openai-completions': entry || config.leadPrice ? openAICompletionsApi() : unpriced(openAICompletionsApi()) },
   } as never));
   return { catalog, lead: { provider: 'broker', modelId: model.id } };
 }
