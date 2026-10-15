@@ -213,14 +213,16 @@ test('a run whose npm ls fails stops before it builds, with what npm said', () =
 });
 
 // The coding agent imports pi-codemode, which a later minor changed: the leg pins it with the coding agent, not at the lockfile's version.
+// pi-codemode is in the family, but the family pins only what a leg workspace declares, so an undeclared one is a companion.
 const CODING = '@earendil-works/pi-coding-agent', CODEMODE = '@earendil-works/pi-codemode', MCP = '@earendil-works/pi-mcp';
 const codingAgent = (at, version) => write(join(at, 'node_modules', CODING, 'package.json'), { name: CODING, version, dependencies: { [CODEMODE]: `^${version}`, [MCP]: `^${version}`, [AI]: `^${version}` } });
 
-test('the companions of the installed family packages are the @earendil-works packages outside the family they depend on', () => {
+test('the companions of the installed family packages are the @earendil-works packages they depend on that the leg does not pin itself', () => {
   const root = join(scratch, 'companions');
   codingAgent(root, '1.0.4');
   pkg(root, DURABLE, '1.0.4');
-  assert.deepEqual(companionDependencies(root, [CODING, DURABLE, '@earendil-works/pi-tui']), [CODEMODE, MCP]);
+  assert.deepEqual(companionDependencies(root, [CODING, DURABLE, '@earendil-works/pi-tui']), [AI, CODEMODE, MCP], 'family packages no workspace declares are companions too');
+  assert.deepEqual(companionDependencies(root, [CODING, AI, CODEMODE, DURABLE]), [MCP], 'the family packages the leg pins are not');
   assert.deepEqual(companionDependencies(root, [DURABLE]), []);
 });
 
@@ -228,7 +230,7 @@ test('the resolved check names a companion the lockfile left at a newer minor th
   const root = join(scratch, 'companion-drift');
   const dir = join(root, 'packages/pi');
   codingAgent(dir, '1.0.4');
-  pkg(root, CODEMODE, '1.2.0'); pkg(root, MCP, '1.0.4');
+  pkg(root, CODEMODE, '1.2.0'); pkg(root, MCP, '1.0.4'); pkg(root, AI, '1.0.4');
   const workspace = { name: '@parcha/agentrun-pi', dir, manifest: { devDependencies: { [CODING]: '1.0.4' } } };
   assert.deepEqual(checkResolved(workspace, '1.0.4').wrong.map((row) => [row.from, row.name, row.version]), [["@parcha/agentrun-pi's pi-coding-agent", CODEMODE, '1.2.0']]);
   pkg(root, CODEMODE, '1.0.4');
