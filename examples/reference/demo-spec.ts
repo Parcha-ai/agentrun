@@ -33,8 +33,8 @@ export type DemoSpec = {
   kill?: { point: string; why: string };
   /** The dollars a live run is expected to cost. `--max-usd` defaults to twice this. */
   expectedCost?: number;
-  /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures.key` names the input property that picks a project: on fakes, `--input` with another project's value is refused unless its capture is at `fixtures/<value>` (a directory) or `fixtures/<value>.json` beside the demo. */
-  input?: { shape?: string; fixtures?: { key: string } };
+  /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures` maps a capture's name (`[a-z0-9-]`) to its fixture, a JSON file at `examples/<demo>/fixtures/...`: `--input <name>` runs the job on it. */
+  input?: { shape?: string; fixtures?: Record<string, string> };
   /** The keys and programs the demo needs (the DSL's DemoSpec): each `{ env, ... }` or a `oneOf` group of them. A live child's environment is exactly these names. */
   keys?: unknown[];
   programs?: unknown[];
@@ -125,16 +125,25 @@ export function effectiveBoxes(spec: DemoSpec, live: boolean): BoxSpec | undefin
   return spec.boxes.kind === 'docker' && !live ? { ...spec.boxes, kind: 'local' } : spec.boxes;
 }
 
-/** `--input` on fakes: another project than the job's default needs its capture, and the refusal says where it goes. `dir` is the demo's directory. A value is a name, not a path: one that escapes `fixtures/`
- *  (a separator or `..`) is refused, and the capture is accepted only as the file `fixtures/<value>.json` or the directory `fixtures/<value>/`. `kind` says what is at a path. */
-export function checkInputCapture(spec: DemoSpec, input: Record<string, unknown> | undefined, defaults: Record<string, unknown>, dir: string, kind: (path: string) => 'file' | 'directory' | undefined): void {
-  const key = spec.input?.fixtures?.key;
-  if (!key || !input || input[key] === undefined || input[key] === defaults[key]) return;
-  const value = String(input[key]);
-  const as = `${dir}/fixtures/${value}`;
-  if (!value || value === '.' || value === '..' || /[\\/]/.test(value) || value.includes('\0')) throw new Error(`--input names ${key} ${JSON.stringify(value)}, which is not a name a capture can have (no path separators). A capture is fixtures/<name>.json or fixtures/<name>/ beside the demo.`);
-  if (kind(`${as}.json`) === 'file' || kind(as) === 'directory') return;
-  throw new Error(`--input names ${key} "${value}", and a run on fakes replays a capture of it, which does not exist. Put it at ${as}.json (or ${as}/), or run with --live to read the real thing.`);
+/** `--input`: a JSON object (inline or a file), or the name of one of the demo's captures (`input.fixtures`), which is read from the path the map gives. The path must be a file under
+ *  `examples/<demo>/fixtures/` (no `..`). On fakes a bare name that is not a capture, and not a file either, is refused with the captures there are; `--live` takes any input the job accepts. */
+export function inputOf(argument: string, spec: DemoSpec, where: { demo: string; root: string; live: boolean; read: (path: string) => string; kind: (path: string) => 'file' | 'directory' | undefined }): Record<string, unknown> {
+  const captures = spec.input?.fixtures ?? {};
+  const bare = !argument.trimStart().startsWith('{') && /^[a-z0-9][a-z0-9-]*$/.test(argument);
+  if (bare && Object.hasOwn(captures, argument)) {
+    const path = captures[argument]!;
+    const under = `examples/${where.demo}/fixtures/`;
+    if (typeof path !== 'string' || !path.startsWith(under) || path.split('/').some((part) => part === '..' || part === '.' || part === '') || path.includes('\\') || path.includes('\0')) throw new Error(`capture "${argument}" points at ${JSON.stringify(path)}, which is not a path under ${under}`);
+    const file = `${where.root}/${path}`;
+    const kind = where.kind(file);
+    if (kind !== 'file') throw new Error(`capture "${argument}" is ${path}, which ${kind === 'directory' ? 'is a directory: a capture read as the input is a JSON file' : 'does not exist: put the capture there'}`);
+    return parseInput(where.read(file), () => { throw new Error('unreachable'); });
+  }
+  if (bare && !where.live && where.kind(argument) === undefined) {
+    const names = Object.keys(captures);
+    throw new Error(`--input ${argument} is not a capture of ${where.demo}, and a run on fakes replays a capture. ${names.length ? `The captures are: ${names.join(', ')}.` : 'It has none.'} Run with --live to read the real thing.`);
+  }
+  return parseInput(argument, where.read);
 }
 
 /** The environment names a demo declares in demo.json: every `env` of its `keys` (a `oneOf` group's members included, however deep a member's own group nests) and of its `programs`. A live child is given these and nothing else. */

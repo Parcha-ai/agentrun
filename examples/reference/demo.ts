@@ -32,7 +32,7 @@ import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
-import { checkInputCapture, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
@@ -249,8 +249,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   if (!live && Object.keys(models).length) throw new Error('--provider, --model and --eyes-model choose real models: they need --live');
   if (models.provider && !models.model) throw new Error('--provider needs --model (the model to use on that provider)');
   const seeAlso = (values['see-also'] ?? []).map((path) => seeAlsoOf(path));
-  const input = values.input === undefined ? undefined : parseInput(values.input, (path) => readFileSync(path, 'utf8'));
-  if (!live) checkInputCapture(spec, input, job.input, dirname(fileURLToPath(options.self)), (path) => { try { const stat = statSync(path); return stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : undefined; } catch { return undefined; } });
+  const kindOf = (path: string) => { try { const stat = statSync(path); return stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : undefined; } catch { return undefined; } };
+  const demoDir = dirname(fileURLToPath(options.self));
+  const input = values.input === undefined ? undefined : inputOf(values.input, spec, { demo: basename(demoDir), root: options.root ?? ROOT, live, read: (path) => readFileSync(path, 'utf8'), kind: kindOf });
   if (values.record && (existsSync(join(values.record, '.spool')) || existsSync(join(values.record, 'manifest.json')))) throw new Error(`${values.record} already holds a recording or an unfinished one: record into a directory of its own`);
 
   const scratch = await mkdtemp(join(tmpdir(), `agentrun-${spec.name}-`));

@@ -428,22 +428,26 @@ test('boxes on fakes are local, and Docker is used only with --live: a no-key ru
   assert.deepEqual(created, ['local'], 'the box was a local one');
 });
 
-test('--input naming another project on fakes is refused unless its capture exists under fixtures/ beside the demo, and the refusal says where', async (t) => {
-  const spec = { input: { fixtures: { key: 'company' } } };
+test('--input <name> runs a capture from input.fixtures: a name not in the map is refused with the known captures, and a path outside fixtures/ is refused', async (t) => {
+  const { mkdirSync, writeFileSync: write, rmSync } = await import('node:fs');
   const fixtures = new URL('./reference/fixtures/', import.meta.url);
-  const capture = new URL('./Other Ltd.json', fixtures);
-  await assert.rejects(() => run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']), (error) => /--input names company "Other Ltd"/.test(error.message) && error.message.includes('fixtures/Other Ltd.json') && /--live/.test(error.message));
-  // A value is a name, never a path: one that escapes fixtures/ is refused even though the file it names exists (the demo\'s own job.ts).
-  for (const value of ['../job.ts', '..', 'a/b', 'x\\\\y']) await assert.rejects(() => run(t, spec, ['--json', '--input', JSON.stringify({ company: value })]), /not a name a capture can have/, value);
-  // The job's own project needs no capture.
+  const capture = new URL('./other-ltd.json', fixtures);
+  const spec = { input: { fixtures: { 'other-ltd': 'examples/reference/fixtures/other-ltd.json', 'acme-ltd': 'examples/reference/fixtures/acme-ltd.json' } } };
+  // A name that is not a capture, on fakes: refused, and the refusal lists the captures there are.
+  await assert.rejects(() => run(t, spec, ['--json', '--input', 'nobody']), (error) => /--input nobody is not a capture of reference/.test(error.message) && /The captures are: other-ltd, acme-ltd\./.test(error.message) && /--live/.test(error.message));
+  await assert.rejects(() => run(t, {}, ['--json', '--input', 'nobody']), /It has none/);
+  // A capture in the map whose file is not there says where to put it.
+  await assert.rejects(() => run(t, spec, ['--json', '--input', 'other-ltd']), /examples\/reference\/fixtures\/other-ltd\.json, which does not exist/);
+  // A path outside this demo's fixtures/ is refused, whatever it names.
+  for (const path of ['examples/reference/job.ts', 'examples/other/fixtures/x.json', 'examples/reference/fixtures/../job.ts', '/etc/passwd']) await assert.rejects(() => run(t, { input: { fixtures: { escape: path } } }, ['--json', '--input', 'escape']), /not a path under examples\/reference\/fixtures\//, path);
+  // The job's own input and an inline object need no capture.
   const own = await run(t, spec, ['--json', '--input', '{"company":"Acme Ltd"}']);
   assert.equal(own.result.processes.at(-1).outcome.status, 'complete');
-  // With its capture in place, another project is accepted.
-  const { mkdirSync, writeFileSync: write, rmSync } = await import('node:fs');
+  // With its fixture in place, the name runs the job on it.
   mkdirSync(fixtures, { recursive: true });
-  write(capture, '{}');
+  write(capture, '{"company":"Other Ltd"}');
   t.after(() => { rmSync(capture, { force: true }); try { rmSync(fixtures); } catch { /* not empty or gone */ } });
-  const other = await run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']);
+  const other = await run(t, spec, ['--json', '--input', 'other-ltd']);
   assert.equal(other.result.record.company, 'Other Ltd');
 });
 
