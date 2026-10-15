@@ -2,6 +2,8 @@
 // @parcha/pi-durable-agent, a run's Harness is opened on its store with the options the app returns, and its root
 // conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { chmod, cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -218,4 +220,25 @@ export function liveViewProvider(provider) { return provider; }
   await options.wake({ harness, setStatus: async () => {} }, null);
   assert.equal(made.at(-1), 'closed', 'the viewer goes with the run');
   await assert.rejects(fetch(`http://127.0.0.1:${port}/live/run-1/v/abc`));
+});
+
+test('a stop while the run\'s Chrome starts ends that Chrome by its pid, and the launcher exits', async (t) => {
+  const { tmp, home } = await agentHome(t);
+  const { run } = await started(home, 'run-1');
+  // A stand-in Chrome that never opens its debugging port: the launcher is still waiting for it when it is stopped.
+  const pidFile = join(tmp, 'chrome.pid');
+  const fake = join(tmp, 'slow-chrome.mjs');
+  await writeFile(fake, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.FAKE_PID_FILE, String(process.pid));\nsetInterval(() => {}, 1000);\n');
+  const exe = join(tmp, 'chrome');
+  await writeFile(exe, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
+  await chmod(exe, 0o755);
+  const env = { ...process.env, AGENT_BROWSER: 'chrome', CHROME_PATH: exe, AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model', FAKE_PID_FILE: pidFile };
+  const launcher = spawn(process.execPath, ['--no-warnings', join(import.meta.dirname, 'start-run.mjs'), run.dir], { env, stdio: 'ignore' });
+  t.after(() => launcher.kill('SIGKILL'));
+  for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+  const chrome = Number(await readFile(pidFile, 'utf8'));
+  launcher.kill('SIGTERM');
+  const ended = await new Promise((resolve) => launcher.once('exit', (code, signal) => resolve(code ?? signal)));
+  assert.equal(ended, 1, 'the launcher exits on its own, after its cleanup');
+  assert.throws(() => process.kill(chrome, 0), { code: 'ESRCH' }, 'the Chrome it was starting is gone');
 });

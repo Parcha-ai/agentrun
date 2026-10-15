@@ -40,24 +40,42 @@ if (!existsSync(join(run, 'store', 'run.sqlite'))) {
 
 let chrome = null;
 let profile = null;
+let child = null;
+/** The run's Chrome goes, and a profile of the run's own with it (it holds nothing the agent keeps); then this exits. */
+const finish = async (code) => {
+  await chrome?.stop().catch(() => {});
+  if (profile && !profile.shared) await rm(profile.dir, { recursive: true, force: true }).catch(() => {});
+  process.exit(code);
+};
+// Installed before anything starts: a stop while Chrome starts ends that Chrome by its pid, never leaves it on the
+// profile; once the run is up, the signal goes to the run, which releases its browser first.
+const starting = new AbortController();
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (child) return void child.kill(signal);
+    if (!starting.signal.aborted) starting.abort(new Error(`stopped by ${signal} while starting`));
+  });
+}
+
 const env = { ...process.env };
 if (browser === 'chrome') {
   const home = resolve(run, '..', '..');
-  profile = chromeProfileFor(home, { runId: basename(run), dir: run }, await readAgentHome(await openAgentHome(home)));
-  chrome = await startChrome(process.env.CHROME_PATH, profile.dir, { sandbox: process.env.PI_BROWSER_NO_SANDBOX !== '1' });
+  try {
+    profile = chromeProfileFor(home, { runId: basename(run), dir: run }, await readAgentHome(await openAgentHome(home)));
+    chrome = await startChrome(process.env.CHROME_PATH, profile.dir, { sandbox: process.env.PI_BROWSER_NO_SANDBOX !== '1', signal: starting.signal });
+  } catch (error) {
+    console.error(`start-run: ${error.message}`);
+    await finish(1);
+  }
   Object.assign(env, { AGENT_CHROME_ENDPOINT: chrome.endpoint, AGENT_CHROME_PROFILE: profile.shared ? 'shared' : 'own' });
 }
+if (starting.signal.aborted) await finish(1);
 
 const cli = fileURLToPath(new URL('./cli.js', import.meta.resolve('@parcha/pi-durable-disk')));
 const app = join(import.meta.dirname, 'app.ts');
-const child = spawn(process.execPath, [
+child = spawn(process.execPath, [
   '--no-warnings=ExperimentalWarning', cli, 'run', '--dir', run, '--app', app,
   '--serve', '0', '--serve-host', '127.0.0.1', '--drain-timeout', '30s',
 ], { stdio: 'inherit', env });
-for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => child.kill(signal));
-child.on('exit', async (code, signal) => {
-  // The run has let go of its browser; its Chrome goes now. A profile of the run's own holds nothing the agent keeps.
-  await chrome?.stop().catch(() => {});
-  if (profile && !profile.shared) await rm(profile.dir, { recursive: true, force: true }).catch(() => {});
-  process.exit(code ?? (signal ? 1 : 0));
-});
+// The run has let go of its browser by the time it exits; its Chrome goes now.
+child.on('exit', (code, signal) => void finish(code ?? (signal ? 1 : 0)));

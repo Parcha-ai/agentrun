@@ -69,8 +69,10 @@ async function closeGracefully(endpoint: string): Promise<void> {
 
 /** Start Chrome on `userDataDir` (created 0700) and wait for its debugging port, read from the profile's own
  *  `DevToolsActivePort`. `stop` closes that browser cleanly, then ends that process by its pid if it is still there,
- *  and no other. */
-export async function startChrome(executablePath: string, userDataDir: string, options: { sandbox?: boolean; readyMs?: number } = {}): Promise<RunChrome> {
+ *  and no other. An abort of `signal` before the port is known stops the Chrome being started, by its pid, and rejects:
+ *  a launcher told to stop while Chrome starts leaves no Chrome holding the profile. */
+export async function startChrome(executablePath: string, userDataDir: string, options: { sandbox?: boolean; readyMs?: number; signal?: AbortSignal } = {}): Promise<RunChrome> {
+  options.signal?.throwIfAborted();
   await mkdir(userDataDir, { recursive: true, mode: 0o700 });
   await keepSessionCookies(userDataDir);
   const portFile = join(userDataDir, "DevToolsActivePort");
@@ -94,6 +96,10 @@ export async function startChrome(executablePath: string, userDataDir: string, o
   };
   for (const deadline = Date.now() + (options.readyMs ?? 20_000); ; await sleep(100)) {
     if (exited) throw new Error(`Chrome did not start: ${exited}`);
+    if (options.signal?.aborted) {
+      await stop();
+      throw options.signal.reason;
+    }
     const port = Number((await readFile(portFile, "utf8").catch(() => "")).split("\n")[0]);
     if (Number.isInteger(port) && port > 0) {
       endpoint = `http://127.0.0.1:${port}`;
