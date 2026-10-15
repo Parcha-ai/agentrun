@@ -50,7 +50,9 @@ export type DiskState = {
   effects: Record<string, { label: string; path?: string }>;
   /** Each process the supervisor started and the claim generation it came to hold (run.json carries no process; the claim a process holds is the next one polled after it started). */
   owners: { process: number; claim?: number }[];
-  /** The durable generation in flight when a kill or a fence landed: its unfinished calls are cut, whatever the next line says. */
+  /** The durable generations each claim wrote under (the non-snapshot durable lines seen while it was the newest claim; a poll that lags can credit a generation to the claim before). */
+  durable: Record<number, number[]>;
+  /** The durable generations of a claim whose holder a kill or a fence ended: their unfinished calls are cut, whatever the next line says, and a later generation's are not. */
   cuts: number[];
   ended: boolean;
   lastT: number;
@@ -58,7 +60,7 @@ export type DiskState = {
 };
 
 const diskKnown = (line: Line): boolean => isSupervisor(line) && (DISK_KINDS.has(line.kind) || line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result');
-const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, owners: [], cuts: [], ended: false, lastT: 0, counters: counterFold.init() });
+const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, owners: [], durable: {}, cuts: [], ended: false, lastT: 0, counters: counterFold.init() });
 
 const diskTime = (t: number) => `${(t / 1000).toFixed(1)} s`;
 const diskHolderOf = (value: Json | undefined): DiskHolder | undefined => {
@@ -79,6 +81,10 @@ const diskEnd = (incarnations: DiskIncarnation[], gen: number, end: DiskEnd, sea
 function diskReduce(state: DiskState, line: Line): DiskState {
   let next: DiskState = { ...state, lastT: Math.max(state.lastT, line.t) };
   if (counterFold.accepts(line)) next = { ...next, counters: counterFold.reduce(state.counters, line) };
+  const newest = next.incarnations.at(-1);
+  if (newest !== undefined && line.channel === 'durable' && line.snapshot !== true && line.gen !== undefined && !(next.durable[newest.gen] ?? []).includes(line.gen)) {
+    next = { ...next, durable: { ...next.durable, [newest.gen]: [...(next.durable[newest.gen] ?? []), line.gen] } };
+  }
   const doc = docOf(line);
   const effect = doc ? effectOf(doc) : undefined;
   if (doc && effect && doc.key !== undefined) {
@@ -102,7 +108,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
       const grown = add({ t: line.t, what: 'kill', gen, text: `${box ? 'the box of process' : 'process'} ${gen} ${box ? 'taken away' : 'killed'}: ${label}` });
       // The kill names a process; the claim it held is the one polled after it started.
       const claim = grown.owners.find((owner) => owner.process === gen)?.claim;
-      return { ...grown, cuts: grown.counters.lastGen !== undefined ? [...grown.cuts, grown.counters.lastGen] : grown.cuts,
+      return { ...grown, cuts: claim === undefined ? grown.cuts : [...grown.cuts, ...(grown.durable[claim] ?? [])],
         incarnations: claim === undefined ? grown.incarnations : diskEnd(grown.incarnations, claim, { how: 'killed', t: line.t, detail: label, box }) };
     }
     case 'result':
@@ -162,7 +168,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
       if (gen === undefined) return next;
       const code = diskStr(data?.code) ?? 'FENCED';
       const grown: DiskState = { ...next, seen: true, events: [...next.events, { t: line.t, what: 'fence', gen, text: `generation ${gen} was fenced: its first refused write (${code}${diskNum(data?.exit) !== undefined ? `, exit ${diskNum(data?.exit)}` : ''})` }] };
-      return { ...grown, cuts: grown.counters.lastGen !== undefined ? [...grown.cuts, grown.counters.lastGen] : grown.cuts, incarnations: diskEnd(grown.incarnations, gen, { how: 'fenced', t: line.t, detail: code, box: false }) };
+      return { ...grown, cuts: [...grown.cuts, ...(grown.durable[gen] ?? [])], incarnations: diskEnd(grown.incarnations, gen, { how: 'fenced', t: line.t, detail: code, box: false }) };
     }
     default:
       return next;

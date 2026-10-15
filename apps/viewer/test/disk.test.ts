@@ -179,3 +179,13 @@ test('a call that recorded two applied calls and was cut before it completed sho
   assert.match(text, /charge .* made 2 times \(generations 1, 2\), not completed/);
   assert.match(text, /1 repeated/);
 });
+
+test('a fence or a kill that arrives after the next generation wrote cuts only the calls of the generation it is about', () => {
+  const effect = (t: number, commit: number, gen: number, key: string): Line => ({ ...effectLine(t, commit, gen, 'unknown', []), data: { doc: 'agentrun.effects', key: `r\u0000${key}`, value: { driver: 'r', name: key, argsHash: 'a', status: 'unknown', session: 'r', result: null, intent: { tool: key, argsHash: 'b' } }, version: 1 } });
+  const polled = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null), effect(20, 3, 1, 'first'), host(50, 'process.started', { gen: 2 }), record(60, 2, 'running', null), effect(70, 4, 2, 'second')];
+  for (const [what, late] of [['fence', host(80, 'fenced', { gen: 1, code: 'FENCED', message: 'm', exit: 75 })], ['kill', host(80, 'kill', { gen: 1, label: 'gone', crossing: null, kind: 'process' })]] as const) {
+    const text = screen([...polled, late]);
+    assert.match(text, /first .* cut in generation 1/, what);
+    assert.match(text, /second .* in flight in generation 2/, what);
+  }
+});
