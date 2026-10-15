@@ -35,7 +35,8 @@ export type RunStart = RunPaths & {
   runId: string;
   /** The root conversation's agent: the definition's instructions and tool names, which the host binds to its tools. */
   agent: { instructions: string; tools: string[] };
-  /** The profile keys this run may save back; every other profile is read-only for it. */
+  /** The profiles this run holds the save lease for: the only ones seeded with their `ref`, so the only ones it can
+   *  write to and the only ones it saves back. Every other profile reaches it `held`, with no `ref`. */
   leases: string[];
 };
 
@@ -45,13 +46,21 @@ export type CarryBack = { changed: boolean; profiles: string[]; released: string
 const invalid = (message: string) => new AgentHomeError("invalid", message);
 const own = <T>(record: Record<string, T>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
 const iso = (ms: number) => new Date(ms).toISOString();
+/** A profile for a run without its save lease: no `ref`, so the run cannot write to the saved sign-in (pi-browser's
+ *  Browserbase provider opens every saved context it is handed with saving on). */
+const withoutRef = (profile: BrowserProfile, holder: string): BrowserProfile => ({
+  provider: profile.provider, ref: "", state: "held", heldBy: holder,
+  ...(profile.startUrl !== undefined ? { startUrl: profile.startUrl } : {}),
+  ...(profile.allowedOrigins !== undefined ? { allowedOrigins: profile.allowedOrigins } : {}),
+});
 /** A lease is free when absent, past its expiry, or held by a run that has ended. */
 const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>, now: number) =>
   !lease || Date.parse(lease.expiresAt) <= now || own(runs, lease.runId)?.endedAt !== undefined;
 
 /** Start a run of the agent: `runs/<runId>/` with `store/run.sqlite` and `work/`, the skills written into `work/`, the
- *  agent's `browser.profiles` copied into the run store, the save lease taken for every profile no live run holds, and
- *  the run recorded in `agent.runs`. Seeding is this host step, never a tool. */
+ *  save lease taken for every profile no live run holds, the agent's `browser.profiles` copied into the run store (a
+ *  profile another run holds without its `ref`), and the run recorded in `agent.runs`. Seeding is this host step, never
+ *  a tool. */
 export async function startRun(home: AgentHome, options: { runId?: string; host: string; now?: number; leaseMs?: number }): Promise<RunStart> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
@@ -79,7 +88,9 @@ export async function startRun(home: AgentHome, options: { runId?: string; host:
       const run = await openStore(storePath);
       try {
         await run.session.commit(async (tx) => {
-          for (const [key, profile] of Object.entries(state.profiles)) put(await tx.doc(ProfilesDoc, key, null), profile);
+          for (const [key, profile] of Object.entries(state.profiles)) {
+            put(await tx.doc(ProfilesDoc, key, null), leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId));
+          }
         }, BACKGROUND_CONTEXT);
       } finally {
         await run.close();

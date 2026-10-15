@@ -36,7 +36,8 @@ export function durableProfileStore(target: ProfileTarget, options: { provider?:
         if (known?.state === "ready" && typeof known.ref === "string" && known.ref !== "") return known.ref;
         const ref = await make(options.signal ?? new AbortController().signal);
         if (typeof ref !== "string" || ref === "") throw new AgentHomeError("invalid", `making the profile ${key} returned no ref`);
-        const profile: BrowserProfile = { ...(known ?? {}), provider: known?.provider || provider, ref, state: "ready" };
+        const { heldBy: _holder, ...kept } = (known ?? {}) as Partial<BrowserProfile>;
+        const profile: BrowserProfile = { ...kept, provider: kept.provider || provider, ref, state: "ready" };
         await target.commit(async (tx) => { put(await tx.doc(ProfilesDoc, key, null), profile); }, BACKGROUND_CONTEXT);
         return ref;
       });

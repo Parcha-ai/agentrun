@@ -91,22 +91,27 @@ disk needs its own claim around the writer, which this release does not take.
 ## A run
 
 1. `startRun(home, { host, runId?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
-   skills into the workspace (each checked against its SHA-256), copies the agent's `browser.profiles` into the run
-   store, takes the save lease for each profile no live run holds, and records the run in `agent.runs`. It returns
-   `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`. Seeding is this host step; nothing here is
-   a tool, and the model never sees a sign-in.
-2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root conversation with `agent.instructions`, its
-   chosen model and thinking level, and its tools for the names in `agent.tools`.
+   skills into the workspace (each checked against its SHA-256), takes the save lease for each profile no live run
+   holds, copies the agent's `browser.profiles` into the run store, and records the run in `agent.runs`. A profile
+   another run holds the lease for is copied without its `ref` (`state: "held"`, `heldBy` naming that run). It returns
+   `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`, where `leases` lists the profiles
+   this run can write to. Seeding is this host step; nothing here is a tool, and the model never sees a sign-in.
+2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root
+   conversation with `agent.instructions`, its chosen model and thinking level, and its tools for the names in
+   `agent.tools`.
 3. `durableProfileStore(harness)` is pi-browser's `ProfileStore` over the run store's `browser.profiles`: `resolve(key,
    make)` returns a ready profile's `ref`, or calls `make` once (one caller at a time per key, outside any commit) and
-   commits the new `ref` as `ready`. A run opens a profile it does not hold the lease for without saving to it.
+   commits the new `ref` as `ready`. A `held` profile has no `ref`, so the run starts signed out of that site and
+   `make` gives it a context of its own, which is never carried back.
 4. After the run's Harness closes, `carryBack(home, run, { outcome, finalAnswer?, cost?, now? })` copies back, in one
    commit, each profile the run holds the lease for and each profile new to the agent that no live run holds, releases
    the run's leases, and completes its `agent.runs` entry. A second call for the same run changes nothing.
 
 **The save lease.** Two runs of one agent can run at once, and neither Browserbase nor Kernel locks a saved context:
-the last writer wins. So one run at a time holds a profile's save lease, and only that run's changes go back. A new
-profile goes to the first run that carries it back. A lease expires after `leaseMs` (default 6 hours), so a run that
+the last writer wins. So one run at a time holds a profile's save lease: only that run gets the saved sign-in, and only
+its changes go back. pi-browser's Browserbase provider opens every saved context it is handed with saving on, so a run
+without the lease never gets the `ref`; reusing a sign-in read-only waits for pi-browser to let the host open a saved context without saving.
+A new profile goes to the first run that carries it back. A lease expires after `leaseMs` (default 6 hours), so a run that
 died does not hold a profile forever; a run whose lease passed to another saves nothing back.
 
 ## Stored kinds
@@ -123,7 +128,7 @@ fields are the stored format.
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
-| `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one |
+| `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
 through the host, and no tool reads or returns a profile.

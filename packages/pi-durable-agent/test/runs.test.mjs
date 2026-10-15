@@ -95,14 +95,23 @@ test("a run is a pi-durable-disk run: pi-durable-disk opens its directory, and c
   assert.equal(make.calls, 1);
 });
 
-test("two concurrent runs: only the lease holder writes a profile back, and a new profile goes to the first run that carries it back", async () => {
+test("two concurrent runs: only the lease holder gets the saved sign-in, the other makes its own, and only the holder's goes back", async () => {
   const home = await signedIn();
   const [a, b] = [await startRun(home, { runId: "run-a", host: "test" }), await startRun(home, { runId: "run-b", host: "test" })];
   assert.deepEqual([a.leases, b.leases], [["acme"], []]);
   assert.equal((await readAgentHome(home)).leases.acme.runId, "run-a");
 
-  await editProfile(a.storePath, "acme", { ref: "ctx_a", verifiedAt: "2026-10-15T20:00:00.000Z" });
-  await editProfile(b.storePath, "acme", { ref: "ctx_b", verifiedAt: "2026-10-15T20:00:01.000Z" });
+  const [hostA, hostB] = [await openSession(a.storePath), await openSession(b.storePath)];
+  assert.deepEqual(await hostA.snapshot(Profiles, "acme", ctx), { provider: "browserbase", ref: "ctx_1", state: "ready" });
+  assert.deepEqual(await hostB.snapshot(Profiles, "acme", ctx), { provider: "browserbase", ref: "", state: "held", heldBy: "run-a" }, "no ref reaches the run without the lease");
+  const [makeA, makeB] = [maker("ctx_never"), maker("ctx_b")];
+  assert.equal(await durableProfileStore(hostA).resolve("acme", makeA), "ctx_1");
+  assert.equal(await durableProfileStore(hostB).resolve("acme", makeB), "ctx_b");
+  assert.deepEqual([makeA.calls, makeB.calls], [0, 1]);
+  assert.deepEqual(await hostB.snapshot(Profiles, "acme", ctx), { provider: "browserbase", ref: "ctx_b", state: "ready" });
+  await Promise.all([hostA.close(ctx), hostB.close(ctx)]);
+
+  await editProfile(a.storePath, "acme", { verifiedAt: "2026-10-15T20:00:00.000Z" });
   await editProfile(b.storePath, "globex", { provider: "browserbase", ref: "ctx_globex_b", state: "ready" });
   await editProfile(a.storePath, "globex", { provider: "browserbase", ref: "ctx_globex_a", state: "ready" });
 
@@ -111,7 +120,7 @@ test("two concurrent runs: only the lease holder writes a profile back, and a ne
   assert.deepEqual(backA, { changed: true, profiles: ["acme"], released: ["acme"] });
   const state = await readAgentHome(home);
   assert.deepEqual(state.profiles, {
-    acme: { provider: "browserbase", ref: "ctx_a", state: "ready", verifiedAt: "2026-10-15T20:00:00.000Z" },
+    acme: { provider: "browserbase", ref: "ctx_1", state: "ready", verifiedAt: "2026-10-15T20:00:00.000Z" },
     globex: { provider: "browserbase", ref: "ctx_globex_b", state: "ready" },
   });
   assert.deepEqual(state.leases, {});
