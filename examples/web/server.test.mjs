@@ -9,7 +9,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { assistant, fakeDoor, makeRun, text, transcript, user } from "./fixtures.mjs";
+import { assistant, call, fakeDoor, makeRun, result, text, transcript, user } from "./fixtures.mjs";
 import { startServer } from "./server.mjs";
 import { foldCalls, groupTimeline } from "./timeline/index.js";
 
@@ -111,6 +111,63 @@ test("a live run's timeline is its door's events as rows, a released run's store
   const goto = live.rows.find((r) => r.tool_use_id === "c1" && r.kind === "tool_use");
   assert.deepEqual([goto.summary, goto.tool_input_preview, goto.tool_name], ['Opened example.test/secure', 'await page.goto("https://example.test/secure")', "run"]);
   assert.equal((await json("/runs/after")).state, "waiting");
+});
+
+const ASKED = "Asked the person to sign in to the practice site in the live view; waiting for them to reply done.";
+/** The agent's sign-in turn as it is stored: the call alone (no prose), then the tool result that ended the run. */
+const asking = [
+  user(1, "Log in and report."),
+  assistant(2, [call("c1", "request_sign_in", { site: "the practice site", reason: "The secure page needs a sign-in." })]),
+  result(3, "c1", "request_sign_in", ASKED, false, { site: "the practice site", reason: "The secure page needs a sign-in." }),
+];
+
+test("a turn that ends on request_sign_in is a wait: its own group, the reason, the waiting state, no blank assistant bubble", async (t) => {
+  const { root, get, post, json } = await app(t);
+  const door = await fakeDoor({
+    snapshot: asking.slice(0, 1),
+    run: true,
+    gapMs: 10,
+    answer: { entry: 3, text: "" },
+    batches: [
+      [{ type: "message_end", entry: asking[1] }, { type: "tool_execution_start", toolCallId: "c1", toolName: "request_sign_in", args: {} }],
+      [{ type: "tool_execution_end", toolCallId: "c1", toolName: "request_sign_in", entry: asking[2] }],
+      [{ type: "run_end", inputs: [1] }],
+    ],
+  });
+  t.after(() => door.close());
+  makeRun(root, "live", { status: "running", door: door.url });
+  makeRun(root, "stored", { status: "sleeping", entries: asking });
+
+  const live = await liveRows(get, "live");
+  const stored = await json("/runs/stored/timeline");
+  for (const { rows, state } of [live, stored]) {
+    assert.equal(state, "waiting");
+    const groups = groupTimeline(rows.filter((r) => r.kind !== "usage" && !r.id.includes(":run:")));
+    assert.deepEqual(groups.map((g) => (g.type === "row" ? g.row.kind : `calls:${g.calls.map((c) => c.use.tool_name)}`)), ["user_message", "calls:request_sign_in", "waiting"]);
+    assert.equal(groups[1].calls[0].result.tool_result_preview, ASKED);
+    assert.equal(groups[2].row.summary, "Waiting for you: The secure page needs a sign-in.");
+    assert.deepEqual(rows.filter((r) => ["text_block", "final_answer"].includes(r.kind)), [], "no assistant bubble: the turn had no prose");
+  }
+  assert.equal((await json("/runs/stored")).state, "waiting");
+  const sent = await post("/runs/live/messages", { content: "done" });
+  assert.equal(sent.status, 200);
+  assert.equal((await sent.json()).answer.text, "", "the door's empty answer on this turn is passed on; the page draws rows, not answers");
+});
+
+test("a live run that ended on a successful tool result is waiting; one that is working, answered or failed is not", async (t) => {
+  const { root, get } = await app(t);
+  const ended = [user(1, "File the form."), assistant(2, [call("c1", "submit_form", {})]), result(3, "c1", "submit_form", "Form sent; waiting for the person to approve.")];
+  const doors = {
+    ended: await fakeDoor({ snapshot: ended }),
+    working: await fakeDoor({ snapshot: ended, run: true, hold: false }),
+    answered: await fakeDoor({ snapshot: [...ended, assistant(4, [text("Done.")])] }),
+    failed: await fakeDoor({ snapshot: [...ended.slice(0, 2), result(3, "c1", "submit_form", "boom", true)] }),
+  };
+  t.after(() => Promise.all(Object.values(doors).map((d) => d.close())));
+  for (const [id, door] of Object.entries(doors)) makeRun(root, id, { status: "running", door: door.url });
+  const states = {};
+  for (const id of Object.keys(doors)) states[id] = (await liveRows(get, id)).state;
+  assert.deepEqual(states, { ended: "waiting", working: "working", answered: "idle", failed: "idle" });
 });
 
 test("rows group the way the page draws them: rounds, pairs by call id, saved files and the final answer", async (t) => {

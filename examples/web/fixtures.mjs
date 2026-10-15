@@ -13,11 +13,11 @@ export const assistant = (id, content, stopReason = content.some((b) => b.type =
   kind: "pi.assistant",
   model: [{ role: "assistant", content, stopReason, usage: cost(0.01), timestamp: id, ...extra }],
 });
-export const result = (id, callId, tool, text, isError = false) => ({
+export const result = (id, callId, tool, text, isError = false, details = undefined) => ({
   id,
   conversationId: 1,
   kind: "pi.tool-result",
-  model: [{ role: "toolResult", toolCallId: callId, toolName: tool, isError, content: [{ type: "text", text }], timestamp: id }],
+  model: [{ role: "toolResult", toolCallId: callId, toolName: tool, isError, content: [{ type: "text", text }], ...(details === undefined ? {} : { details }), timestamp: id }],
 });
 export const text = (value) => ({ type: "text", text: value });
 export const thinking = (value) => ({ type: "thinking", thinking: value });
@@ -46,9 +46,10 @@ const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n
 
 /**
  * A fake door. `/events` sends a snapshot of `snapshot` entries, then each of `batches` (arrays of agent events) `gapMs`
- * apart, then an `end` unless `hold` keeps it open. `busy` is what `/status` reports.
+ * apart, then an `end` unless `hold` keeps it open. `busy` is what `/status` reports; `answer` is added to each `/submit`
+ * reply, as the real door does once a submission is done.
  */
-export async function fakeDoor({ snapshot = [], batches = [], gapMs = 20, hold = false, busy = false, run = false } = {}) {
+export async function fakeDoor({ snapshot = [], batches = [], gapMs = 20, hold = false, busy = false, run = false, answer } = {}) {
   const door = { submits: [], aborts: [], busy, paths: [] };
   const server = createServer((req, res) => {
     door.paths.push(`${req.method} ${req.url}`);
@@ -71,7 +72,7 @@ export async function fakeDoor({ snapshot = [], batches = [], gapMs = 20, hold =
       let body = "";
       req.on("data", (c) => (body += c)).on("end", () => {
         (req.url === "/submit" ? door.submits : door.aborts).push(JSON.parse(body || "{}"));
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ run: "r", generation: 1, submission: { id: 1, status: "queued" } }));
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ run: "r", generation: 1, submission: { id: 1, status: "queued" }, ...(answer === undefined ? {} : { answer }) }));
       });
     } else res.writeHead(404).end("{}");
   });

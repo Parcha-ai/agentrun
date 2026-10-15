@@ -124,6 +124,7 @@ function thinking(r) {
 const callState = (c) => (!c.result ? "running" : !failedCall(c) ? "ok" : c.result.tool_result_size_bytes === null ? "paused" : "error");
 
 function callLine(c) {
+  if (c.use.tool_name === "request_sign_in") return details(c.use.id, "call signin", [pill(callState(c)), el("b", {}, "Sign-in"), el("span", { class: "s" }, c.use.summary)], c.result?.tool_result_preview ? el("pre", {}, c.result.tool_result_preview) : null);
   const inner = c.inner.length ? el("div", { class: "kids" }, c.inner.map(item)) : null;
   const failed = failedCall(c) && c.result.tool_result_size_bytes !== null ? el("pre", {}, c.result.summary) : null;
   return details(c.use.id, "call", [pill(callState(c)), el("b", {}, c.use.summary), el("span", { class: "s" }, c.use.tool_name)], c.use.tool_input_preview ? el("pre", {}, c.use.tool_input_preview) : null, c.result?.tool_result_preview ? el("pre", {}, c.result.tool_result_preview) : null, failed, inner);

@@ -35,8 +35,18 @@ const readJson = (path) => readFile(path, "utf8").then(JSON.parse).catch(() => n
 const isLoopback = (host) => host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
 
 const QUIET = /:run:(start|end)$/;
-/** working while a run is in flight; waiting when the newest row (not counting cost and run start/end) is a wait for the person; idle otherwise. */
-const stateOf = (rows, working) => (working ? "working" : rows.findLast((r) => r.kind !== "usage" && !QUIET.test(r.id))?.kind === "waiting" ? "waiting" : "idle");
+/**
+ * working while a run is in flight. Otherwise waiting when the newest row (not counting cost, run start and end, or
+ * phases) is a wait for the person. A live run that ended on a successful tool result is waiting too: a run that is
+ * not working and has no answer after its last result was ended by that tool (request_sign_in does this). A released
+ * run's store cannot tell that apart from a run parked between steps, so there only a wait row counts.
+ */
+function stateOf(rows, working, live = false) {
+  if (working) return "working";
+  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+  if (last?.kind === "waiting") return "waiting";
+  return live && last?.kind === "tool_result" && last.tool_status === "success" ? "waiting" : "idle";
+}
 const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
 
 class HttpError extends Error {
@@ -280,7 +290,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     let shown = "";
     const push = (changed) => {
       const all = reducer.rows();
-      const state = stateOf(all, working);
+      const state = stateOf(all, working, true);
       const costUsd = costOf(all);
       if (first) write("rows", { reset: true, rows: all, state, costUsd });
       else if (changed.rows.length || changed.drop.length || state !== shown) write("rows", { set: changed.rows, drop: changed.drop, state, costUsd });

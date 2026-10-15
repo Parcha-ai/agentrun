@@ -67,6 +67,8 @@ details[open] > summary:before { content: "-"; }
 .call { margin: 3px 0; }
 .call > summary { font-size: 13px; }
 .call > summary .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mute); font: 12px var(--mono); }
+.call.signin { border-left: 3px solid var(--accent); padding-left: 8px; }
+.call.signin > summary b { color: var(--accent); }
 .call .kids { margin-left: 18px; border-left: 1px solid var(--line); padding-left: 8px; }
 .composer { border-top: 1px solid var(--fg); padding: 10px 16px; display: flex; gap: 8px; align-items: flex-end; background: var(--bg); }
 .composer textarea { flex: 1; border: 1px solid var(--line); padding: 8px; resize: vertical; min-height: 40px; max-height: 200px; background: var(--bg); }
