@@ -1,5 +1,5 @@
 // The exact secret values a recording must not hold. A shape cannot catch a token (a refresh token is opaque), so the recorder is told the values: the values of the environment names a demo declares, and the sign-in's tokens
-// in `auth.json` (`$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; one credential per provider, each `{ type: 'oauth', access, refresh, ... }`). Every recorded line, text blob and the manifest has none of them, and
+// in `auth.json` (`$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; one credential per provider, each `{ type: 'oauth', access, refresh, ... }` or `{ type: 'api_key', key }`). Every recorded line, text blob and the manifest has none of them, and
 // a recording that still holds one is refused. A value is never printed: a finding names the key and the file only.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -12,8 +12,8 @@ export type Secret = { key: string; value: string };
 
 /** The shortest value that counts as a secret: a short string is a word, and redacting it would damage the lines around it. */
 const MIN = 12;
-/** The credential fields that hold a token. Never `expires`, an id, a scope list or any other non-secret field. */
-const TOKEN_FIELDS = ['access', 'refresh', 'idToken', 'id_token'];
+/** The credential fields that hold a secret string: an OAuth credential's tokens and an API-key credential's key (a user's own provider key has no shape). Never `expires`, an id, a scope list or any other non-secret field. */
+const TOKEN_FIELDS = ['access', 'refresh', 'idToken', 'id_token', 'key'];
 
 /** Where the sign-in keeps its tokens. */
 export const signInFile = (env: NodeJS.ProcessEnv): string => join(resolve(env.AGENTRUN_HOME ?? join(homedir(), '.config', 'agentrun')), 'auth.json');
