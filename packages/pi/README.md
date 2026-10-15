@@ -1,13 +1,13 @@
 # agent.run() + Pi
 
-Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.1.0.
+Describe a task in Pi, inspect the workflow, run it with your current model, and save its definition for new input. Requires Node 22.19+ and Pi 1.2.0.
 
 ## Install
 
 If you do not have Pi, install the tested host version first:
 
 ```sh
-npm install -g @earendil-works/pi-coding-agent@1.1.0
+npm install -g @earendil-works/pi-coding-agent@1.2.0
 ```
 
 Then, in your project:
