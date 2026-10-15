@@ -311,14 +311,19 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - name: The stranger's no-key quickstart
-        run: node scripts/stranger.mjs pi-durable-disk
       - name: The local run's tests
         working-directory: packages/pi-durable-disk
         run: >-
           node --test --test-timeout=240000
           test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts
+      - name: The stranger's no-key quickstart
+        # Not blocking until a release with macOS support is on npm. On a pull request the job runs on the branch merged
+        # into main, where the stranger also walks the examples against the registry's beta (#557); the published beta
+        # predates macOS support, and its examples fail on a Mac. The Mac's proof is the step above, whose quickstart test
+        # runs the same example from this tree.
+        continue-on-error: true
+        run: node scripts/stranger.mjs pi-durable-disk
 
   stranger-readme-line:
     # The README's own install line, as a stranger types it, against what the registry serves now (--readme-line):
