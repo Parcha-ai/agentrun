@@ -13,10 +13,13 @@ import { readAllEntries } from './folder.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 
+/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
+ *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
+type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
+declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf'];
+const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: { class?: string; text?: string; title?: string } = {}, ...children: (globalThis.Node | string)[]) => {
@@ -46,14 +49,36 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
 
 // ---- loading ---------------------------------------------------------------------------------------------------
 
+/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
+async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
+  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
+  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
+}
+
+/** The bundled recordings: embedded in gallery.js, or listed in the index a files build ships beside them, read once and
+ *  only when something needs them (a gallery, a `?r=`, a bundled baseline). */
+let bundled: Promise<(GalleryEntry | IndexEntry)[]> | undefined;
+const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Promise.resolve(window.AGENTRUN_GALLERY)
+  : window.AGENTRUN_GALLERY_INDEX ? fetch(window.AGENTRUN_GALLERY_INDEX).then((response) => {
+    if (!response.ok) throw new Error(`${window.AGENTRUN_GALLERY_INDEX} answered ${response.status}`);
+    return response.json() as Promise<IndexEntry[]>;
+  }) : Promise.resolve([]));
+const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
+/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
+async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
+  const dir = new URL(`recordings/${entry.id}/`, location.href).href;
+  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
+}
+
 function fromGallery(entry: GalleryEntry): Recording {
   return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
     blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
 }
 
 /** Every blob a recording names: its lines', its images', its result's. */
-function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
-  const named = new Set<string>(manifest.result ? [manifest.result.blob] : []);
+export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
+  const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
   for (const line of lines) {
     for (const sha of line.blobs ?? []) named.add(sha);
     for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);
@@ -127,7 +152,16 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-function drawCounters(counters: Counters, measured = counters.measured): HTMLElement {
+/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
+ *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
+ *  real run's in dollars to four places. */
+export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
+  if (cost === null) return 'unknown';
+  const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
+  return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
+};
+
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted'): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
@@ -149,8 +183,8 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `${counters.costLowerBound ? 'at least ' : ''}$${counters.cost.toFixed(4)}`,
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}`),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
@@ -330,8 +364,8 @@ async function baselineOf(recording: Recording, base: string | undefined): Promi
   const named = recording.manifest.baseline;
   if (!named) return undefined;
   const id = named.recording.replace(/\/$/, '').split('/').at(-1)!;
-  const entry = (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id || each.id === named.recording);
-  const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
+  const entry = (await bundledRecordings().catch(() => [])).find((each) => each.id === id || each.id === named.recording);
+  const other = entry ? (await openBundled(entry)).recording : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
   if (!other) return undefined;
   return baselineViewOf(named.label, other);
 }
@@ -397,12 +431,21 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
+    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
     if (link) header.append(link);
   }
+  // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
+  // a tab; the store is a SQLite file and downloads.
+  // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
+  const { job, store } = recording.manifest;
+  const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
+  const at = store?.at;
+  const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
+    ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
+  for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
   const position = el('span', { class: 'position' });
@@ -432,7 +475,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured, recording.manifest.providers));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
@@ -512,15 +555,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
   }
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
-  const entries = window.AGENTRUN_GALLERY ?? [];
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
@@ -549,7 +591,8 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
     onOpen(await fromFiles(files));
   });
   root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
-    el('h2', { text: 'Recordings' }), entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
+    el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
+      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 
 async function main() {
@@ -559,10 +602,17 @@ async function main() {
   try {
     const id = params.get('r');
     const src = params.get('src');
-    const entry = id ? (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id) : undefined;
-    if (entry) open(fromGallery(entry), new URL(`recordings/${entry.id}/`, location.href).href);
+    // The bundled recordings are read only when they are needed: a recording at a URL (`?src=`) opens without them, and
+    // a gallery whose index cannot be read still offers the folder picker.
+    let entries: (GalleryEntry | IndexEntry)[] = [];
+    let unread: string | undefined;
+    if (id || !src) {
+      try { entries = await bundledRecordings(); } catch (error) { unread = error instanceof Error ? error.message : String(error); }
+    }
+    const entry = id ? entries.find((each) => each.id === id) : undefined;
+    if (entry) { const { recording, dir } = await openBundled(entry); open(recording, dir); }
     else if (src) open(await fromUrl(src), new URL(src.endsWith('/') ? src : `${src}/`, location.href).href);
-    else gallery(root, open);
+    else gallery(root, open, entries, unread);
   } catch (error) {
     root.replaceChildren(el('p', { class: 'problems', text: `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}` }));
   }

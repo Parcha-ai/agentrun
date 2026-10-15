@@ -46,7 +46,7 @@ export type Delivery = { record: unknown };
 /** After `answered` has nothing for an effect a killed process left unknown, the host may run it again, when running it again is safe
  *  (a read, or work in a fresh box): `rerun` is asked with the effect's id and intent, and an answer completes the effect. Undefined
  *  leaves it unknown and it is never sent again. Only an effect with an intent is asked. */
-export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string } }) => Promise<{ args: unknown; value: unknown } | undefined>;
+export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string }; /** What the call was admitted with, from the journal: send these. Absent on a record written before args were kept. */ args?: unknown }) => Promise<{ args: unknown; value: unknown } | undefined>;
 /** What a recorder takes from the run: the process's generation once it has opened the run. */
 export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
