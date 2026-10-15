@@ -56,6 +56,9 @@ test('beat 2, a kill and a resume: the box goes at the fifth paid call, the next
   assert.deepEqual(charges(dir).length, 10);
   const perProcess = Object.values(Object.groupBy(charges(dir), (row) => row.incarnation)).map((group) => group.length);
   assert.deepEqual(perProcess, [5, 5], 'five charges before the kill, the other five after it, by two processes');
+  // The run is the disk package's own: run.json names the demo's run and says done at generation 2, which the next open after the kill took.
+  const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+  assert.deepEqual([run.run, run.status, run.generation], ['disk', 'done', 2]);
   // The resumed run's payoff is the unkilled run's.
   assert.deepEqual(result.record.receipts.map((receipt) => receipt.invoice), INVOICES);
   assert.equal(result.record.charged, 10);
