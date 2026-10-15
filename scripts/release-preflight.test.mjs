@@ -60,7 +60,7 @@ async function recordPackages(root) {
     packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
   }
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -144,6 +144,16 @@ test('incomplete or unsuccessful verification cannot approve release', () => fix
   await assert.rejects(preflight(root), /verification must pass/);
   await putJson(path, { ...receipt, audit: { vulnerabilities: { high: 1, critical: 0 } } });
   await assert.rejects(preflight(root), /High dependency advisories/);
+}));
+
+test('a receipt names every installed package smoke, the agent home included, and verify-packages checks that same set', () => fixture(async root => {
+  const path = join(root, '.release/verification.json');
+  const receipt = JSON.parse(await readFile(path));
+  assert.equal((await preflight(root)).status, 'passed', 'the receipt verify-packages writes, with agent: true, passes');
+  const { agent: _, ...withoutAgent } = receipt.runtimeSmoke;
+  await putJson(path, { ...receipt, runtimeSmoke: withoutAgent });
+  await assert.rejects(preflight(root), /All installed package smoke checks/);
+  assert.match(readFileSync(new URL('./verify-packages.mjs', import.meta.url), 'utf8'), /assert\.deepEqual\(smoke, runtimeSmokeChecks\);/, 'verify-packages asserts its smoke against the set the preflight requires');
 }));
 
 test('only the scoped, unexpired audit exception admits a high advisory to publication', () => fixture(async root => {

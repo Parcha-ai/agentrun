@@ -12,6 +12,7 @@ import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
+import { runtimeSmokeChecks } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
@@ -294,7 +295,7 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, network: 'prohibited' });
+  assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.

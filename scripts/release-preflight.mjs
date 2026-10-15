@@ -17,6 +17,9 @@ const exec = promisify(execFile);
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
 export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent' };
 export const listedPackages = Object.keys(releasePackageNames);
+// The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
+// smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
+export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -92,7 +95,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   }
   const receipt = await json(join(root, '.release/verification.json'));
   assert.equal(receipt.status, 'passed', 'Clean package verification must pass first');
-  assert.deepEqual(receipt.runtimeSmoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' }, 'All installed package smoke checks are required');
+  assert.deepEqual(receipt.runtimeSmoke, runtimeSmokeChecks, 'All installed package smoke checks are required');
   await checkReleaseAudit(root, receipt.audit?.vulnerabilities);
   assert.equal(receipt.packages?.length, listedPackages.length, `Expected exactly ${listedPackages.length} verified packages`);
   // The gate for a new package: every workspace package that is not private is named in releasePackageNames.
