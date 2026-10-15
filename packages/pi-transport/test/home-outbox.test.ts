@@ -1,5 +1,15 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, fdatasyncSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	fdatasyncSync,
+	fsyncSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
@@ -9,7 +19,13 @@ import { openOutbox } from "../src/home/outbox.ts";
 // Every sync the outbox makes, counted: what a power cut would lose is what was not synced. A rename can be made to fail.
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, fdatasyncSync: vi.fn(actual.fdatasyncSync), renameSync: vi.fn(actual.renameSync) };
+	return {
+		...actual,
+		fdatasyncSync: vi.fn(actual.fdatasyncSync),
+		fsyncSync: vi.fn(actual.fsyncSync),
+		openSync: vi.fn(actual.openSync),
+		renameSync: vi.fn(actual.renameSync),
+	};
 });
 
 const directories: string[] = [];
@@ -59,25 +75,86 @@ describe("a runner's outbox", () => {
 		again.close();
 	});
 
-	it("keeps appending to a whole file when clearing it out fails, and clears it out later", () => {
+	/** Ways the clearing out fails once: each makes the next one fail, and gives back what undoes it. */
+	const failures: readonly (readonly [string, () => () => void])[] = [
+		[
+			"the rename",
+			() => {
+				vi.mocked(renameSync).mockImplementationOnce(() => {
+					throw new Error("the disk refused the rename");
+				});
+				return () => {};
+			},
+		],
+		[
+			"the new file",
+			() => {
+				const real = vi.mocked(openSync).getMockImplementation() as (
+					...args: Parameters<typeof openSync>
+				) => number;
+				let refused = false;
+				vi.mocked(openSync).mockImplementation((...args: Parameters<typeof openSync>) => {
+					if (!refused && String(args[0]).endsWith(".tmp")) {
+						refused = true;
+						throw new Error("no room for the new file");
+					}
+					return real(...args);
+				});
+				return () => {
+					vi.mocked(openSync).mockImplementation(real);
+				};
+			},
+		],
+	];
+	for (const [what, fail] of failures) {
+		it(`never fails an acknowledgement when clearing the file out fails at ${what}, and clears it out later`, () => {
+			const path = place();
+			const outbox = openOutbox(path, { head: 1 });
+			const restore = fail();
+			const failed: unknown[] = [];
+			try {
+				longSession(outbox, (ack) => {
+					try {
+						ack();
+					} catch (cause) {
+						failed.push(cause);
+					}
+				});
+			} finally {
+				restore();
+			}
+			// The old file stayed whole and in use, nothing was left beside it, and a later try cleared it out.
+			expect(failed).toEqual([]);
+			expect(existsSync(`${path}.tmp`)).toBe(false);
+			expect(rowsIn(path)).toBeLessThan(2_048);
+			outbox.close();
+			const again = openOutbox(path, { head: 3_002 });
+			expect(again.pending()).toEqual(keptOfLongSession);
+			again.close();
+		});
+	}
+
+	it("never fails an acknowledgement when the directory sync after clearing out fails, and makes it before the next commit", () => {
 		const path = place();
 		const outbox = openOutbox(path, { head: 1 });
-		vi.mocked(renameSync).mockImplementationOnce(() => {
-			throw new Error("the disk refused the rename");
+		const directorySyncs = vi.mocked(fsyncSync);
+		directorySyncs.mockClear();
+		directorySyncs.mockImplementationOnce(() => {
+			throw new Error("the directory sync failed");
 		});
-		const failed: unknown[] = [];
-		longSession(outbox, (ack) => {
-			try {
-				ack();
-			} catch (cause) {
-				failed.push(cause);
-			}
-		});
-		expect(failed).toEqual([new Error("the disk refused the rename")]);
-		expect(rowsIn(path)).toBeLessThan(2_048);
+		let commit = 0;
+		while (directorySyncs.mock.calls.length === 0 && commit < 5_000) {
+			commit += 1;
+			outbox.entry(commit, writes(commit));
+			outbox.ack(commit);
+		}
+		expect(directorySyncs.mock.calls).toHaveLength(1);
+		// The next commit's entry is synced with the directory that names the new file.
+		outbox.entry(commit + 1, writes(commit + 1));
+		expect(directorySyncs.mock.calls).toHaveLength(2);
 		outbox.close();
-		const again = openOutbox(path, { head: 3_002 });
-		expect(again.pending()).toEqual(keptOfLongSession);
+		const again = openOutbox(path, { head: commit + 2 });
+		expect(again.pending()).toEqual([{ commit: commit + 1, writes: writes(commit + 1) }]);
 		again.close();
 	});
 

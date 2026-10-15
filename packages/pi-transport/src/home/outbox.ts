@@ -1,4 +1,14 @@
-import { closeSync, constants, fdatasyncSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fdatasyncSync,
+	fsyncSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 
@@ -130,7 +140,7 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	/**
 	 * The file again with only what is pending, whole, renamed into place, and kept open to append to: there is no moment
 	 * when the path holds the new file and the outbox writes to the old one. Before the rename, a failure leaves the old
-	 * file as it was. The caller syncs the directory once it writes to the new file.
+	 * file as it was, and the temporary file is removed. The caller syncs the directory once it writes to the new file.
 	 */
 	const rewrite = (): { readonly file: number; readonly rows: number } => {
 		const temp = `${path}.tmp`;
@@ -151,6 +161,11 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 			renameSync(temp, path);
 		} catch (cause) {
 			closeSync(fresh);
+			try {
+				unlinkSync(temp);
+			} catch {
+				// Gone already, or it stays: the next rewrite truncates it, and nothing reads it.
+			}
 			throw cause;
 		}
 		return { file: fresh, rows };
@@ -168,6 +183,10 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	let dirty = false;
 	let idle: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
+	// A rename into place whose directory sync failed: the next sync before a commit makes it again.
+	let directoryDirty = false;
+	// The rows at which the file is cleared out next: higher after a try that failed.
+	let compactAt = COMPACT_AT_ROWS;
 	const append = (line: Line) => {
 		if (closed) throw new Error("the outbox is closed");
 		writeSync(file, `${JSON.stringify(line)}\n`);
@@ -178,21 +197,44 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 		idle = undefined;
 		fdatasyncSync(file);
 		dirty = false;
+		if (directoryDirty) {
+			syncDirectory(path);
+			directoryDirty = false;
+		}
 	};
 
 	/**
 	 * The file follows what is pending, not the session's history: once acknowledged rows far outnumber what is left,
-	 * it is written again with only that.
+	 * it is written again with only that. It is housekeeping and never fails the acknowledgement that set it off: a
+	 * failure leaves the old file whole and in use, and the next try waits until the file has grown as much again.
 	 */
 	const compact = () => {
-		if (rows < COMPACT_AT_ROWS || rows <= 4 * (writes.size + lines.size)) return;
-		if (dirty) sync();
-		const fresh = rewrite();
+		if (rows < compactAt || rows <= 4 * (writes.size + lines.size)) return;
+		let fresh: { readonly file: number; readonly rows: number };
+		try {
+			fresh = rewrite();
+		} catch {
+			compactAt = rows * 2;
+			return;
+		}
 		const old = file;
 		file = fresh.file;
 		rows = fresh.rows;
-		closeSync(old);
-		syncDirectory(path);
+		compactAt = COMPACT_AT_ROWS;
+		// Everything pending is in the new file, synced: nothing written to the old one waits for a sync.
+		dirty = false;
+		clearTimeout(idle);
+		idle = undefined;
+		try {
+			closeSync(old);
+		} catch {
+			// A file no path names any more: closing it loses nothing.
+		}
+		try {
+			syncDirectory(path);
+		} catch {
+			directoryDirty = true;
+		}
 	};
 
 	return {
