@@ -394,7 +394,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (!at) return undefined;
       // A committed map's items keep the records they last wrote; one that committed before the run took the keyed
       // layout has none, and what lies in its items stays in the driver's record, as it was.
-      if (done.has(at.map)) return maps.has(at.map) ? null : undefined;
+      // A map that commits in the very write that moves the run has items with no record yet: they are written once, here.
+      if (done.has(at.map) && (!maps.has(at.map) || lastItems.has(at.item))) return maps.has(at.map) ? null : undefined;
       let build = builds.get(at.item);
       if (!build) {
         const map = maps.get(at.map);

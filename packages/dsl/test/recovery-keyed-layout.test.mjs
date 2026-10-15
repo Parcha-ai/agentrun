@@ -397,6 +397,29 @@ test('a run stored whole moves to the keyed layout once it knows its running map
   onceEach(calls, settled, itemsOf(8).map((item) => item.id));
 });
 
+test('a run stored whole that moves in its map\'s own commit writes the records its items never had: every call stays listed', async () => {
+  const kept = inspectable();
+  const calls = [];
+  const input = { items: itemsOf(5) };
+  // Every item committed and the map did not: the next process answers every item, and its first commit is the map's.
+  await assert.rejects(run(kept.store, workflowOf(), { input, calls, cut: 'each' }), /cut at each/);
+  const whole = kept.record();
+  assert.equal(whole.state.schema, FROZEN_SNAPSHOT_SCHEMA);
+  const itemPaths = whole.state.pin.done.filter((at) => at.startsWith(`${MAP}/items/`));
+  const { output } = await run(kept.store, workflowOf(), { input, layout: 'v4', calls });
+  assert.deepEqual(output, await uncutOutput(5));
+  const record = kept.record();
+  assert.equal(record.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
+  const items = Object.values(record.items ?? {});
+  assert.deepEqual(items.map((item) => [item.index, item.status]).sort(), [0, 1, 2, 3, 4].map((index) => [index, 'committed']), 'each item has its record');
+  assert.deepEqual(items.flatMap((item) => item.effects).sort(), whole.effects.map((effect) => effect.id).sort(), 'every call is listed by its item');
+  assert.deepEqual(items.flatMap((item) => item.frame.done).sort(), itemPaths.sort(), 'every committed path is kept');
+  assert.equal(record.state.maps[MAP].items, 5);
+  // A later process reads them back, and its run is the same.
+  assert.deepEqual((await run(kept.store, workflowOf(), { input, layout: 'v4', calls })).output, output);
+  assert.equal(calls.length, 5, 'every call once');
+});
+
 test('a run in the keyed layout on a store that keeps no parts is refused, never run with its items missing', async () => {
   const kept = inspectable();
   const input = { items: itemsOf(4) };
