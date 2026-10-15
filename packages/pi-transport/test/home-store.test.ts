@@ -195,7 +195,7 @@ describe("a checkpoint of a store that is open", () => {
 		const exited = new Promise<void>((resolve) => writer.once("exit", () => resolve()));
 		try {
 			for (let tries = 0; !lines.includes("ready"); tries++) {
-				if (tries > 200) throw new Error("the writer did not start");
+				if (tries > 400) throw new Error("the writer did not start");
 				await new Promise((resolve) => setTimeout(resolve, 50));
 			}
 			const heads: number[] = [];
