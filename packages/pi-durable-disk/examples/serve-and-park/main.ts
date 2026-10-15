@@ -13,7 +13,8 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { localRun, openDurableRun, parseRunRecord, RUN_JSON, serveRun, watchParking } from "@parcha/pi-durable-disk";
+import { localRun, openDurableRun, serveRun, watchParking } from "@parcha/pi-durable-disk";
+import { parseRunRecord, RUN_JSON } from "@parcha/pi-durable-disk/internals";
 
 const root = join(process.cwd(), "serve-and-park-run");
 /** The model's retry wait. A wait longer than the park threshold is what parks the run. */
