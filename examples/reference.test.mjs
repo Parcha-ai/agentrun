@@ -86,16 +86,20 @@ const driver = async (...args) => {
     : name === 'url' ? () => { if (ran) kill('page-ran'); return target.url(); }
     : typeof target[name] === 'function' ? target[name].bind(target) : target[name]) });
 };
-const local = localHost(place, { ...fakes, model }, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
+// FAIL_ONCE: the first send of the search fails with a retryable error; the door sends it again.
+let sent = 0;
+const taps = { ...fakes, model, tools: process.env.FAIL_ONCE ? { search: (args) => { sent += 1; if (sent === 1) throw Object.assign(new Error('transient'), { retryable: true }); return fakes.tools.search(args); } } : fakes.tools };
+const local = localHost(place, taps, { browser: { provider: () => remoteProvider(process.env.BACKEND), driver } });
 const door = local.host.tools.runEffect;
 let calls = 0;
 local.host.tools.runEffect = async (params) => {
   calls += 1;
   for (const point of ['search-admitted', \`search-admitted:\${calls}\`]) kill(point);
-  const value = await door(params);
+  const value = await door({ ...params, call: params.call && ((record) => { if (record.outcome === 'applied') kill('before-applied'); return params.call(record); }) });
   for (const point of ['search-landed', \`search-landed:\${calls}\`]) kill(point);
   return value;
 };
+if (process.env.RERUN) local.host.tools.rerun = async ({ intent }) => ({ args: { query: 'Acme Ltd' }, value: fakes.tools[intent.tool]({ query: 'Acme Ltd' }) });
 const judge = local.host.decisions.runJudge;
 local.host.decisions.runJudge = async (request) => { const answer = await judge(request); kill('judge-asked'); return answer; };
 const status = local.host.status;
@@ -167,7 +171,7 @@ async function killedAndResumed(t, kill, { between = [], env: every = {} } = {})
   assert.equal(resumed.code, 0, resumed.stderr);
   const rows = (await readFile(join(dir, 'ledger.jsonl'), 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const failing = gates(dir, job).filter(({ ok }) => !ok).map(({ id }) => id);
-  return { cut, view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
+  return { cut, journal: readJournal(join(dir, 'store', 'run.sqlite'), RUN_KEY), view: JSON.parse(resumed.stdout), others, rows, pages: backend.dispatched.map((row) => row.op), failing };
 }
 const named = (rows, kind) => rows.filter((row) => row.kind === kind).map((row) => row.name);
 
@@ -186,6 +190,22 @@ test('killed after the search was admitted and before it was sent, the resumed r
 
 const SCAN_ONLY = { answer: 'Whether the registry page was opened is not known, so the filing scan is cited alone.', citations: [LOOK] };
 const recordOf = (view) => ({ answer: view.output.answer, citations: view.output.citations });
+
+test('killed after the search was admitted and before it was sent, a host that can run it again completes the effect through rerun, and the door is not asked for it', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'search-admitted' }, { env: { RERUN: '1' } });
+  assert.equal(view.status, 'complete');
+  assert.deepEqual(view.output, OUTPUT, 'the same record');
+  assert.deepEqual(named(rows, 'tool'), [], 'no process sent the search through the door: rerun answered it');
+  assert.deepEqual(failing, []);
+});
+
+test('a first send failed, a retry applied, and the kill landed before the door listed it: the next process settles from the kept answer, and the search is sent once', { timeout: 120_000 }, async (t) => {
+  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'before-applied' }, { env: { FAIL_ONCE: '1' } });
+  assert.equal(view.status, 'complete');
+  assert.deepEqual(view.output, OUTPUT, 'the same record');
+  assert.deepEqual(named(rows, 'tool'), ['search'], 'the search was sent once');
+  assert.deepEqual(failing, []);
+});
 
 test('killed inside the first browser run, recorded and not yet sent, the lead looks before anything else, cannot tell, and cites only the scan', { timeout: 120_000 }, async (t) => {
   const { view, pages, failing } = await killedAndResumed(t, { KILL_IN: 'page-run' });
@@ -274,4 +294,13 @@ test('killed after the judge\'s answer was recorded, the resumed run takes the r
   assert.deepEqual(view.output, OUTPUT);
   assert.deepEqual(named(rows, 'judge'), ['verdict'], 'asked once, in the killed process');
   assert.deepEqual(failing, []);
+});
+
+test('a run killed once opens its journal once in each process: two generations, with or without something to settle', { timeout: 120_000 }, async (t) => {
+  const plain = await killedAndResumed(t, { KILL_AT: '2' });
+  assert.deepEqual(plain.view.output, OUTPUT);
+  assert.deepEqual([plain.cut.generation, plain.journal.generation], [1, 2], 'one open by the killed process, one by the resumed one');
+  // an unknown effect settled from the door's kept answer goes through the driver's own open: still one open in the resumed process
+  const settled = await killedAndResumed(t, { KILL_IN: 'search-landed' });
+  assert.deepEqual([settled.cut.generation, settled.journal.generation], [1, 2]);
 });

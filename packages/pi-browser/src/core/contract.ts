@@ -73,7 +73,7 @@ const screenshot: ToolContract = {
     fullPage: { type: "boolean" },
     type: { type: "string", enum: ["png", "jpeg"] },
     quality: { type: "number", minimum: 0, maximum: 100 },
-    ask: { type: "string", description: "What you want to know from this capture. Answered from the pixels when your model cannot see them; echoed back when it can." },
+    ask: { type: "string", description: "What you want to know from this capture. It travels with the image, so a host can answer it from the pixels when your model cannot see them." },
   }),
   effect: "read", replay: "safe", executionMode: "sequential", evidence: "image", listedWhen: "always",
 };

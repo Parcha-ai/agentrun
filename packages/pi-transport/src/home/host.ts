@@ -65,7 +65,8 @@ export interface HomeHandle {
 	): Promise<Result<{ readonly submission: string }, RemoteError>>;
 	/** Settles when the root conversation is idle. */
 	idle(context: Context): Promise<Result<void, RemoteError>>;
-	status(context: Context): Promise<Result<{ readonly state: HomeState; readonly epoch: number | null }, RemoteError>>;
+	/** Where the home is: its state, its epoch, and the seal of a store it sealed and has not opened again. */
+	status(context: Context): Promise<Result<HomeStatus, RemoteError>>;
 	/**
 	 * The epoch of the lease that names this runner. A model frame from any other epoch is refused, and the runner
 	 * then ends: a home the lease has left behind has no model.
@@ -128,13 +129,26 @@ function isCheckpoint(value: unknown): value is CheckpointTaken {
 	return typeof taken === "object" && taken !== null && isSeal(taken.seal) && typeof taken.path === "string";
 }
 
-function isStatus(value: unknown): value is { readonly state: HomeState; readonly epoch: number | null } {
-	const status = value as { state?: unknown; epoch?: unknown } | null;
+/**
+ * A home's answer to `status`. `sealed` is there only for a home that holds a sealed store; `session` names the session
+ * the note it keeps on disk is for, when the note names one.
+ */
+export type HomeStatus = {
+	readonly state: HomeState;
+	readonly epoch: number | null;
+	readonly sealed?: Seal;
+	readonly session?: string;
+};
+
+function isStatus(value: unknown): value is HomeStatus {
+	const status = value as { state?: unknown; epoch?: unknown; sealed?: unknown; session?: unknown } | null;
 	return (
 		typeof status === "object" &&
 		status !== null &&
 		HOME_STATES.has(status.state) &&
-		(status.epoch === null || Number.isSafeInteger(status.epoch))
+		(status.epoch === null || Number.isSafeInteger(status.epoch)) &&
+		(status.sealed === undefined || isSeal(status.sealed)) &&
+		(status.session === undefined || typeof status.session === "string")
 	);
 }
 

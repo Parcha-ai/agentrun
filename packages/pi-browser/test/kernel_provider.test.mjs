@@ -28,6 +28,13 @@ async function rig(t, { knobs = {}, sentinels = {}, extra = {}, key = newKey() }
   return { fake, provider, env, key };
 }
 
+test("a failure names the browser provider, never Browserbase, whatever the provider", () => {
+  const status = (code) => Object.assign(new Error(`HTTP ${code}`), { status: code });
+  for (const failure of [classifyBrowserError(status(401), false), classifyBrowserError(status(403), false), classifyBrowserError(new Error("gone"), true, { sessionEnded: true })]) {
+    assert.doesNotMatch(failure.message, /Browserbase/, `${failure.code}: ${failure.message}`);
+  }
+});
+
 test("create sends one explicit body with the tag stamped, and the ref carries no token", async (t) => {
   const { fake, provider } = await rig(t);
   const ref = await provider.create(spec(), signal());

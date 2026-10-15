@@ -359,22 +359,34 @@ Not covered: in this release a home in a box runs its tools in its own box, and 
    The boxes are the host's: it made them and passes them in each `Place`, and it ends or keeps the source's box
    after the move.
 
-Before the take, a failure leaves the session where it was: a sealed source is told to open its store again
-(`seal`, `ship`, `target`). A lost take (`lost`) means another host acted: this host deletes the copy it shipped, unless the lease names
-the target's own place (then the copy is that host's too), and does nothing more. After the
-take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where it says
-and makes that home run (a home sealed at the lease's epoch is told to reopen; any other, a target that never
-resumed or a sealed home the lease names at a later epoch, is told to resume with the lease's seal and move id, and
-the `notice` the recovering host passes). A host that starts again calls it. Never two runners on one store: a home
-holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the process), and a
-second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops one that still
-runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command line names this
-store), and a call that runner had in flight is cut, at most once. A host whose runners a launcher keeps passes the
-launcher's stop as `stop`.
+Before the take, a failure leaves the session where it was: the source is told to run again (`seal`, `ship`,
+`target`): a sealed source opens its store again, and one whose seal failed after it closed its store resumes at its
+own epoch; the error says whether it runs. A lost take (`lost`) means another host acted: this host deletes the copy it
+shipped, unless the lease names the target's own place (then the copy is that host's too), and does nothing more;
+the error's `lease` says where the session is. A session can move back to a place it left: that place's note refuses
+orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before anything
+lands. Only for a place whose note is this session's, and only the workspace's entries (links as links; never the
+directory above it or the store): a workspace that is not an absolute path in normal form, is a directory of the
+system, holds the store, or is the box's home, a directory above it or a link, is refused and nothing is removed.
+
+After the take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where
+it says and makes that home run. A target that never resumed, or a sealed home the lease names at a later epoch, is
+told to resume with the lease's seal and move id, and the `notice` the recovering host passes. A home sealed at the
+lease's epoch may be the source of a move that is about to take the next epoch for another place, so the lease
+decides: recovery takes that next epoch for the same place, with the seal the home reports, and resumes the home
+there; when the move took it first, the take is `lost`, recovery opens nothing, and its error's `lease` says where the
+session is. **Recovering a sealed home moves the epoch.** A host that starts again calls it. Never two runners on one
+store: a home holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the
+process), and a second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops
+one that still runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command
+line names this store), and a call that runner had in flight is cut, at most once. A runner names itself in
+`<store>.pid` when it starts, unless the file names another live runner of the store, and again whenever it takes the
+store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
+launcher keeps passes the launcher's stop as `stop`.
 
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
-with nothing cut, a move given up at the drain and at the ship, a take whose answer was lost, a take another host
-won (to another place, and to the same place), a kill of the host,
+with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
+a take another host won (to another place, and to the same place), a kill of the host,
 the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
 its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
 recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it

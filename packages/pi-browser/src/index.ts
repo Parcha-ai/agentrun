@@ -1,5 +1,6 @@
 // The host-neutral core: it imports no pi package and no host, only Node's builtins and the package's own dependencies.
 export * from "./core/contract.js";
+export { BrowserFailureError, type AttachedSession, type BrowserDriver, type CustodyPort, type DriverFactory, type DriverOptions, type Overrides, type ToolOutput } from "./core/custody.js";
 export * from "./core/decisions.js";
 export * from "./core/downloads.js";
 export * from "./core/effects.js";

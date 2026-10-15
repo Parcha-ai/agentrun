@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Context } from "@earendil-works/chord";
+import { withoutAbortSignal } from "@earendil-works/chord/context";
 import {
 	AgentDoc,
 	type Conversation,
@@ -105,6 +106,11 @@ export type HomeOptions = {
 	readonly wrapStore?: (storage: Storage, context: Context) => Promise<WrappedStore>;
 	/** Extensions the home installs in the app's registry, beside its gate. */
 	readonly extensions?: readonly Extension[];
+	/**
+	 * Called each time this home takes the store into its hold, before the order runs: a runner process names itself
+	 * there as the one that holds the store. A failure here fails no order.
+	 */
+	readonly onHold?: () => void | Promise<void>;
 };
 
 /** What `wrapStore` gives the home. */
@@ -129,6 +135,10 @@ export interface Home {
 	readonly state: HomeState;
 	/** The epoch of the lease this home last ran at, or `undefined` for a home that never ran. */
 	readonly epoch: number | undefined;
+	/** The seal of the store this home sealed and has not opened again: what a recovery's take carries forward. */
+	readonly sealed: Seal | undefined;
+	/** The session the note this home keeps on disk is for, when the note names one. */
+	readonly noteSession: string | undefined;
 	/** The open Harness: for submissions, aborts and events. `undefined` unless `open`. */
 	readonly harness: Harness | undefined;
 	/**
@@ -175,6 +185,8 @@ type Marker = {
 	readonly move?: string;
 	readonly sealed?: Seal;
 	readonly retired?: true;
+	/** The session the note is for. A note written before it was kept names none. */
+	readonly session?: string;
 };
 
 class SessionHome implements Home {
@@ -210,6 +222,14 @@ class SessionHome implements Home {
 
 	get epoch(): number | undefined {
 		return this.#marker?.epoch;
+	}
+
+	get sealed(): Seal | undefined {
+		return this.#marker?.sealed;
+	}
+
+	get noteSession(): string | undefined {
+		return this.#marker?.session;
 	}
 
 	get harness(): Harness | undefined {
@@ -273,6 +293,7 @@ class SessionHome implements Home {
 			const written = await this.#writeMarker({
 				v: 1,
 				epoch: order.epoch,
+				session: this.#options.session,
 				...(order.seal === undefined ? {} : { seal: order.seal }),
 				...(order.move === undefined ? {} : { move: order.move.id }),
 			});
@@ -329,7 +350,8 @@ class SessionHome implements Home {
 			return err(new HomeError("wrong_state", "the session does not run here"));
 		}
 		if (!this.#drained) return err(new HomeError("wrong_state", "a seal follows a drain that completed"));
-		await this.#close(context);
+		// Closing is not cut by an abort: an abort stops the seal, and the store stays whole and closed for a resume.
+		await this.#close(withoutAbortSignal(context));
 		const sealed = await sealStore(this.#options.store, context);
 		// The store is closed and whole either way. Without a seal the host tells this home to resume.
 		if (!sealed.ok) return err(new HomeError("store", `could not seal the store: ${sealed.error.message}`));
@@ -382,7 +404,7 @@ class SessionHome implements Home {
 		// The note goes first: a home that dies while it deletes still refuses every order at this epoch or before.
 		const noted: Result<void, HomeError> = again
 			? ok(undefined)
-			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
+			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true, session: this.#options.session });
 		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {
@@ -438,6 +460,11 @@ class SessionHome implements Home {
 				);
 			}
 			if (this.#hold === undefined) return err(new HomeError("busy", `another runner holds the store at ${store}`));
+			try {
+				await this.#options.onHold?.();
+			} catch {
+				// Naming the holder serves a later stop; the order goes on without it.
+			}
 		}
 		const done = await work();
 		if (this.#harness === undefined) this.#letGo();
@@ -521,7 +548,11 @@ class SessionHome implements Home {
 		return ok(this.#marker);
 	}
 
-	/** Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. */
+	/**
+	 * Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. The note
+	 * never travels with the store: a move ships the store and the workspace only, and a target writes its own note on
+	 * its first resume.
+	 */
 	async #writeMarker(marker: Marker): Promise<Result<void, HomeError>> {
 		const temp = `${this.#markerPath}.tmp`;
 		try {

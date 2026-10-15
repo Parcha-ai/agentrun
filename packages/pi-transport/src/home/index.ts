@@ -39,6 +39,7 @@ export {
 	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
+	type HomeStatus,
 	type Ready,
 	RemoteError,
 } from "./host.ts";

@@ -5,6 +5,13 @@ import test from "node:test";
 import { cdpProvider } from "../../dist/providers/cdp.js";
 import { scratch } from "./scratch.mjs";
 
+// suite_hygiene.test.mjs runs this file with VICTIM_READY naming where to report; anything else (a plain `node --test`
+// over the package) is refused before it writes a byte.
+if (!process.env.VICTIM_READY) {
+  process.stderr.write("hygiene-victim: VICTIM_READY is not set; this fixture runs only under suite_hygiene.test.mjs\n");
+  process.exit(2);
+}
+
 const spec = { tag: "victim-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 800, height: 600 }, metadata: {} };
 
 test("holds a Chrome, a child host and a scratch directory until it is killed", async (t) => {

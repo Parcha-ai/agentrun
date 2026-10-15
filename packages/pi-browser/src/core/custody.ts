@@ -1,7 +1,8 @@
-import type { BrowserFailure } from "./failures.js";
+import { browserFailure, type BrowserFailure } from "./failures.js";
 import type { EffectObserver } from "./effects.js";
-import type { AttachTarget, BrowserConfig, Geo, ReleaseReason, SentEffect, SessionRecord, SessionSpec, SessionsState } from "./host.js";
+import type { AttachTarget, BrowserConfig, Geo, ProviderCaps, ReleaseReason, SentEffect, SessionRecord, SessionSpec, SessionsState } from "./host.js";
 import { isLeaseTransition, type LeaseState } from "./lease.js";
+import { startSpent } from "./usage.js";
 
 export type BrowserDriver = { close(): Promise<void> };
 /** A Stagehand close after a dropped and reconnected connection can hang forever; the provider ends the session anyway. */
@@ -27,6 +28,7 @@ export type AttachedSession<D> = {
   sessionId: string;
   record: SessionRecord;
   notice: string | null;
+  /** The cut this call answers for: a journal entry an earlier custody process left without a committed answer. */
   interrupted: SessionRecord["pendingEffect"];
   recorded: boolean;
   effects: Pick<EffectObserver, "record" | "flush" | "holding"> | null;
@@ -40,9 +42,12 @@ export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
   /** No session, or one already released, is not an error. */
   release(): Promise<{ released: boolean; sessionId: string | null }>;
   /** Committed before the `run` is dispatched. */
-  dispatching(effect: { callId: string; codeSha: string; url: string | null; observed: boolean }): Promise<void>;
+  dispatching(effect: { callId: string; codeSha: string; url: string | null; observed: boolean; watched: boolean }): Promise<void>;
   journal(row: SentEffect): Promise<void>;
-  settle(): Promise<void>;
+  /** A journal entry's next step, by its call: the action returned, its cut was told, or an identical action was refused. */
+  mark(step: "finished" | "told" | "refused", callId: string): Promise<void>;
+  /** Clears the journal entry of that call only: another action's entry, journaled meanwhile, stays. */
+  settle(callId: string): Promise<void>;
   navigated(url: string): Promise<void>;
   /** When the provider reports the session ended, custody records it and the next call opens a fresh one. */
   ended(): Promise<boolean>;
@@ -61,10 +66,7 @@ export type ToolOutput = {
 export const NAVIGATION_CAP = 500;
 export const VIEWPORT = Object.freeze({ width: 1288, height: 711 });
 
-export const SESSION_REPLACED: BrowserFailure = {
-  ok: false, code: "session_replaced", retryable: true, effect: "none",
-  message: "The browser session this call was using ended in an interruption, so its page is gone. Navigate again with run, or take a snapshot, to continue in a fresh session.",
-};
+export const SESSION_REPLACED: BrowserFailure = browserFailure("session_replaced", "The browser session this call was using ended in an interruption, so its page is gone. Navigate again with run, or take a snapshot, to continue in a fresh session.", { retryable: true });
 
 export const notices = {
   kept: (url: string | null) => `Your browser session survived an interruption and is still open${url ? ` on ${url}` : ""}. Take a snapshot before acting again.`,
@@ -78,13 +80,18 @@ export function currentRecord(state: SessionsState | undefined, plane: string): 
   return index === null || index === undefined ? null : state!.sessions[index] ?? null;
 }
 
-export function newSessionRecord(input: { plane: string; tag: string; provider: string; spec: SessionSpec; at: string }): SessionRecord {
-  const { spec } = input;
+export function newSessionRecord(input: { plane: string; tag: string; provider: string; spec: SessionSpec; at: string; honours?: ProviderCaps["settings"] }): SessionRecord {
+  const { spec, honours = {} } = input;
+  const proxies = spec.proxies !== false && honours.proxies !== false;
   return {
     tag: input.tag, state: "creating", resourceId: null, createdAt: input.at, endedAt: null, releaseReason: null,
     plane: input.plane, provider: input.provider,
-    settings: { proxies: spec.proxies !== false, verified: spec.verified, geolocation: typeof spec.proxies === "object" ? spec.proxies.geolocation : null, region: spec.region ?? null, contextId: spec.contextId ?? null },
-    navigation: [], lastUrl: null, pendingEffect: null, spent: { seconds: 0, usd: 0, chargedThrough: input.at },
+    settings: {
+      proxies, verified: spec.verified && honours.verified !== false,
+      geolocation: proxies && honours.geolocation !== false && typeof spec.proxies === "object" ? spec.proxies.geolocation : null,
+      region: honours.region === false ? null : spec.region ?? null, contextId: honours.context === false ? null : spec.contextId ?? null,
+    },
+    navigation: [], lastUrl: null, pendingEffect: null, spent: startSpent(input.at),
   };
 }
 
@@ -116,7 +123,7 @@ export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overr
  *  silently. */
 export function relaunchRefusal(policy: BrowserConfig["policy"], overrides: Overrides): BrowserFailure | null {
   if (!overrides.geolocation || policy.proxies) return null;
-  return { ok: false, code: "refused", retryable: false, effect: "none", message: "browser_relaunch: geolocation needs a proxy, and this run's browser policy has proxies off, so no session can browse from a chosen place. Nothing was relaunched and your session is unchanged; browser_relaunch can still change verified, with geolocation left out." };
+  return browserFailure("refused", "browser_relaunch: geolocation needs a proxy, and this run's browser policy has proxies off, so no session can browse from a chosen place. Nothing was relaunched and your session is unchanged; browser_relaunch can still change verified, with geolocation left out.");
 }
 
 /** An ISO alpha-2 country, a US state abbreviation, a city in capitals; null when the country is not two letters. */
@@ -148,7 +155,7 @@ export const custodyTools = {
   },
   async browser_relaunch(args: { verified?: boolean; geolocation?: unknown }, port: CustodyPort): Promise<ToolOutput> {
     const geolocation = args.geolocation === undefined ? undefined : normalizeGeolocation(args.geolocation);
-    if (geolocation === null) return text({ ok: false, code: "refused", retryable: false, effect: "none", message: 'browser_relaunch: geolocation needs a two-letter ISO country code (e.g. {country: "GB"}).' }, true);
+    if (geolocation === null) return text(browserFailure("refused", 'browser_relaunch: geolocation needs a two-letter ISO country code (e.g. {country: "GB"}).'), true);
     try {
       // A relaunch that names no `verified` keeps the run's policy: an omitted flag never downgrades a Verified session.
       const { sessionId, record } = await port.relaunch({ ...(args.verified !== undefined ? { verified: args.verified === true } : {}), ...(geolocation ? { geolocation } : {}) });

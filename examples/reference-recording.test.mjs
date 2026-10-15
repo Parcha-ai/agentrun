@@ -129,9 +129,11 @@ test('the ten-kill ledger\'s store as recording lines: invariants, values, every
   const firstDriver = lines.find((line) => line.kind === 'agentrun.driver');
   assert.ok(lines.filter((line) => line.commit < firstDriver.commit).every((line) => line.gen === undefined));
   assert.ok(lines.filter((line) => line.commit >= firstDriver.commit).every((line) => typeof line.gen === 'number'));
-  // It counts journal opens, not processes (section 6, "processes"): this host opens the journal twice in each one.
+  // It counts journal opens, not processes (section 6, "processes"): a process that dies before it opens the journal adds none, so it can be
+  // below the process count. (The reference host used to open the journal twice in each process, settling killed effects itself; it now settles
+  // through the driver's own open, so it is at most one per process.)
   assert.equal(Math.max(...lines.map((line) => line.gen ?? 0)), durableDoc(file, 'agentrun.driver', RUN_KEY).generation);
-  assert.ok(ledger.processes < durableDoc(file, 'agentrun.driver', RUN_KEY).generation);
+  assert.ok(durableDoc(file, 'agentrun.driver', RUN_KEY).generation <= ledger.processes);
 
   // The last line of every document is the store's value: Session documents as durableDoc reads them, every document as
   // the frozen reader materializes it.
