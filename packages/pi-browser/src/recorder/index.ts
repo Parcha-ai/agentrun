@@ -4,3 +4,4 @@
 export { frameRecorder, type FrameData, type FrameGapData, type FrameLine, type FrameRecorder, type FrameRecorderOptions, type FrameSink } from "./frames.js";
 export { CREDENTIAL_PROBE } from "./credential.js";
 export { jpegSize } from "./jpeg.js";
+export { exportFrameTracks, planTrack, TrackExportError, type FrameTrackData, type FrameTrackLine, type Track, type TrackFrame, type TrackGap, type TrackIndex, type TrackOptions, type TrackPlan, type TrackSegment } from "./track.js";

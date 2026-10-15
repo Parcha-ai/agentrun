@@ -13,7 +13,7 @@
 // incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { procStartTicks, TERMINAL_EXITS } from "./local-host.ts";
@@ -289,7 +289,21 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === LAUNCH_SCRIPT) {
+/**
+ * Whether Node was started with this module. LAUNCH_SCRIPT comes from import.meta.url, which is the real path; argv[1] is
+ * the path as given, which may go through a link (a symlinked package directory, pnpm's linked node_modules).
+ */
+function invokedAsMain(): boolean {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  try {
+    return realpathSync(arg) === LAUNCH_SCRIPT;
+  } catch {
+    return resolve(arg) === LAUNCH_SCRIPT;
+  }
+}
+
+if (invokedAsMain()) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err: unknown) => {

@@ -206,6 +206,7 @@ const harness = await Harness.open(storage, { models, registry }, context);
 await browser.reconcile(harness, () => true, context);   // settles what a dead process left
 // A conversation selects the extension and writes its BrowserConfig in its creating commit (`browser.docs.Config`);
 // when it ends: `await browser.release(conversation, "close", context)`.
+// Before `harness.close()`: `await browser.drain(harness, context)`, so the releases reach the provider.
 ```
 
 `createBrowserExtension` takes no key and sends nothing anywhere but the provider you give it. The options:
@@ -226,10 +227,12 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the
 package's defaults to spread and override) in the conversation's creating commit,
-selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. At run open,
-after the extensions are installed and before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every
-session a dead process left is bound, kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause,
-call records, a result cap, media for the route.
+selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. Releases run
+as background tasks, which `waitForIdle` skips and closing the harness aborts: before it closes, a host calls
+`handle.drain(harness, ctx, signal?)`, which resolves once none is live. At run open, after the extensions are installed and
+before anything resumes, it calls `handle.reconcile(harness, isActive, ctx)`, and every session a dead process left is bound,
+kept or released. The host wraps the tools (`handle.tools`) with its own policy: pause, call records, a result cap, media for
+the route.
 
 A host with its own provider implements `BrowserProvider`: `name`, `caps`, `create` (at most once, the tag stamped on the
 provider's side), `findByTag`, `status`, `attach`, `release`, and optionally `liveView`, `recordings`, `downloads`, `fetch`
@@ -281,8 +284,7 @@ A session is captured from the moment it is created or reattached (so after a ki
 - **No frame is kept while a credential or a code is on the page**, and anything the recorder cannot read counts as one being there. A frame is
   judged against the page the moment it arrives (one check, standing for the page at its capture) and again when its turn to be kept comes (both
   checks go through one pace per session: each is sent at least 50 ms after the last, so a session sends at most 20 `Runtime.evaluate` in any
-  second, however fast frames arrive); a
-  credential seen in either drops it, and a frame held across a navigation or a move to another page is not kept. The check looks at password
+  second, however fast frames arrive); a credential seen in either drops it, and a frame held across a navigation or a move to another page is not kept. The check looks at password
   fields, `one-time-code` fields and fields named like a code (name, id, `<label>`, `aria-labelledby`, `aria-label` or placeholder says otp, totp,
   2fa, passcode, ...) that hold a value, in the page, open shadow roots and same-origin frames; a value typed and cleared between two checks is
   still seen (the page keeps a flag, `window.__piFramesSecret`, set by the fields' own `input` events). A page that nests deeper than the check
@@ -296,7 +298,24 @@ A session is captured from the moment it is created or reattached (so after a ki
   call: that line is dropped and counted in `frames.stats()`, and a frame that was not saved never becomes the point a later gap starts from.
 - `frames.watch(...).release` ends the capture, and writes the `session_released` gap, once the provider has released the session: a release it
   refuses leaves the capture running.
-- `frame.track` (a WebM per session with an index) is made at export, from the frames, by a step of its own.
+- **`frame.track`** (a WebM per session with an index) is made at export, from the recorded frames, by `exportFrameTracks`:
+
+  ```js
+  import { exportFrameTracks } from "@parcha/pi-browser/recorder";
+  const tracks = await exportFrameTracks({ lines, readBlob: (sha256) => bytesOfBlob(sha256), endAt: recordingEndMs, fps: 10 });
+  for (const { line, blobs } of tracks) { /* line is the frame.track line; blobs holds the WebM and its index by sha256 */ }
+  ```
+
+  One track per session that has a frame. The video is VP9 at a constant `fps` (default 10) on one canvas, the largest frame in even numbers (a smaller
+  frame is centred on it); each frame is shown until the next one, and while a gap lasts the video shows a slate: from the moment a
+  `credential_on_page` or `session_released` gap was written, and from the last frame the earlier process saved for a `process_killed` gap (nothing is
+  known after it). The track runs from the session's first frame to `endAt` (default: the last line, a lone frame lasting one frame's time). The line is
+  `{ kind: "frame.track", t: <the track's end>, conv, data: { session, fps, from, to }, blobs: [<webm sha256>, <index sha256>] }`; the index (JSON) lists every
+  frame with its `t` and its `ms` offset into the video, and every gap with `from`, `to`, `reason` and `detail`, so a viewer maps a time in the recording to a
+  time in the video (`t - from`). A frame whose blob is missing, does not hash to its name or is not a JPEG shows the slate and is reported in `skipped`.
+  The step starts `ffmpeg` (`ffmpeg` option: a path; default the one on the PATH) in a private temporary directory with `PATH`, `LANG`, `LC_ALL` and `HOME`
+  only, with fixed arguments and no URL, a timeout (`timeoutMs`, 120 s) and an `AbortSignal`; a failure is a `TrackExportError` (`ffmpeg_missing`,
+  `ffmpeg_failed`, `ffmpeg_timeout`, `aborted`) and writes nothing.
 
 ## How it compares
 
