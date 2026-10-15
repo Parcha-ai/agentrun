@@ -84,6 +84,43 @@ test('a build that ships the recordings as files: the index lists exactly the re
   assert.ok(paths(dist).includes('recordings/notes.txt: is not a recording directory'), 'only the index may sit beside the recordings');
 });
 
+test('each gallery entry is exactly what its files give: no swapped or missing blob, no other manifest, lines or field', (t) => {
+  // A files build: the page plays the index's own copy of each entry.
+  const dist = built(t, () => {}, { files: true });
+  const indexFile = join(dist, 'recordings', 'index.json');
+  const index = JSON.parse(readFileSync(indexFile, 'utf8'));
+  const id = index[0].id;
+  const indexWith = (edit) => {
+    const copy = structuredClone(index);
+    edit(copy[0]);
+    writeFileSync(indexFile, JSON.stringify(copy));
+    return paths(dist).filter((problem) => problem.startsWith('recordings/index.json: '));
+  };
+  const [a, b] = Object.keys(index[0].blobs);
+  const has = (found, part) => assert.ok(found.some((problem) => problem.includes(part)), `${part}\n${found.join('\n')}`);
+  has(indexWith((entry) => { [entry.blobs[a], entry.blobs[b]] = [entry.blobs[b], entry.blobs[a]]; }), `for ${a} of ${id}, not that blob in its directory`);
+  has(indexWith((entry) => { delete entry.blobs[a]; }), `for ${id}, not the blobs in its directory`);
+  has(indexWith((entry) => { entry.blobs = {}; }), `for ${id}, not the blobs in its directory`);
+  has(indexWith((entry) => { entry.manifest = { ...entry.manifest, title: 'Another run' }; }), `holds a manifest for ${id} other than its manifest.json`);
+  has(indexWith((entry) => { entry.events = ''; }), `for ${id}, not ["blobs","id","manifest"]`);
+  assert.deepEqual(indexWith((entry) => { entry.manifest = Object.fromEntries(Object.entries(entry.manifest).reverse()); }), [], 'its keys in another order, the same manifest');
+  // Embedded: its lines, and each blob's bytes as a data: URL, too.
+  const embedded = built(t);
+  const galleryFile = join(embedded, 'gallery.js');
+  const prefix = 'window.AGENTRUN_GALLERY = ';
+  const gallery = JSON.parse(readFileSync(galleryFile, 'utf8').slice(prefix.length, -2));
+  const galleryWith = (edit) => {
+    const copy = structuredClone(gallery);
+    edit(copy[0]);
+    writeFileSync(galleryFile, `${prefix}${JSON.stringify(copy)};\n`);
+    return paths(embedded).filter((problem) => problem.startsWith('gallery.js: '));
+  };
+  const [c, d] = Object.keys(gallery[0].blobs);
+  has(galleryWith((entry) => { entry.events = entry.events.split('\n').slice(1).join('\n'); }), `holds lines for ${gallery[0].id} other than its events.jsonl`);
+  has(galleryWith((entry) => { entry.blobs[c] = entry.blobs[d]; }), `for ${c} of ${gallery[0].id}, not that blob in its directory`);
+  assert.deepEqual(galleryWith(() => {}), [], 'the entry as built passes');
+});
+
 test('the gallery embeds exactly the recordings beside it, and an empty gallery is refused', (t) => {
   const dist = built(t);
   rmSync(join(dist, 'recordings', 'ten-kills-seed21'), { recursive: true });
