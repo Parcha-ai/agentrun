@@ -37,7 +37,8 @@ export type RunRecord = { path: string; host: string; startedAt: string; endedAt
 /** `agent.leases`, keyed by profile key: the one run that may save that profile back. */
 export type ProfileLease = { runId: string; expiresAt: string };
 /** `browser.profiles`, keyed by profile key, in the agent store and in each run store. `ref` is the provider's saved
- *  sign-in (a Browserbase context id, for one); `state` is `ready` once `ref` names one. */
+ *  sign-in (a Browserbase context id, for one); `state` is `ready` once `ref` names one. Sign-in state: it reaches a
+ *  run only through the host (`startRun`, `durableProfileStore`), and no tool ever reads or returns a profile. */
 export type BrowserProfile = { provider: string; ref: string; state: string; startUrl?: string; allowedOrigins?: string[]; verifiedAt?: string };
 
 const session = { version: FORMAT_VERSION, scope: "session" } as const;

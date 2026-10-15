@@ -119,7 +119,7 @@ fields are the stored format.
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
-through the host, never through a tool.
+through the host, and no tool reads or returns a profile.
 
 ## Library
 
@@ -132,6 +132,11 @@ through the host, never through a tool.
 | `startRun`, `carryBack` | A run's start and end, above |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy` or `format` |
+
+The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
+(after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
+pi-browser's `fileProfileStore` once `@parcha/pi-browser/providers/browserbase` exports it, and from a copy of
+pi-browser's declaration until then.
 
 ## Not yet
 
