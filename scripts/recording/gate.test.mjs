@@ -65,16 +65,6 @@ test('a credential anywhere in a published text file is found: a manifest, the p
   assert.ok(found.includes('gallery.js: contains a provider secret'), 'the gallery embeds it too');
 });
 
-test('the gallery embeds exactly the recordings beside it, and an empty gallery is refused', (t) => {
-  const dist = built(t);
-  rmSync(join(dist, 'recordings', 'ten-kills-seed21'), { recursive: true });
-  assert.ok(paths(dist).some((problem) => problem.startsWith('gallery.js: embeds')), paths(dist).join('\n'));
-  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [');
-  assert.ok(paths(dist).includes('gallery.js: is missing or does not hold the gallery'), paths(dist).join('\n'));
-  const empty = built(t, (dir) => { rmSync(dir, { recursive: true }); mkdirSync(dir); });
-  assert.ok(paths(empty).includes('recordings/: holds no recording: an empty gallery is never published'), paths(empty).join('\n'));
-});
-
 test('a build that ships the recordings as files: the index lists exactly the recordings beside it, each blob inside its own', (t) => {
   assert.deepEqual(paths(built(t, () => {}, { files: true })), [], 'the files build of the bundled recordings passes');
   const dist = built(t, () => {}, { files: true });
@@ -92,4 +82,14 @@ test('a build that ships the recordings as files: the index lists exactly the re
   writeFileSync(indexFile, JSON.stringify(index));
   writeFileSync(join(dist, 'recordings', 'notes.txt'), 'beside the index');
   assert.ok(paths(dist).includes('recordings/notes.txt: is not a recording directory'), 'only the index may sit beside the recordings');
+});
+
+test('the gallery embeds exactly the recordings beside it, and an empty gallery is refused', (t) => {
+  const dist = built(t);
+  rmSync(join(dist, 'recordings', 'ten-kills-seed21'), { recursive: true });
+  assert.ok(paths(dist).some((problem) => problem.startsWith('gallery.js: embeds')), paths(dist).join('\n'));
+  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [');
+  assert.ok(paths(dist).includes('gallery.js: is missing or does not hold the gallery'), paths(dist).join('\n'));
+  const empty = built(t, (dir) => { rmSync(dir, { recursive: true }); mkdirSync(dir); });
+  assert.ok(paths(empty).includes('recordings/: holds no recording: an empty gallery is never published'), paths(empty).join('\n'));
 });

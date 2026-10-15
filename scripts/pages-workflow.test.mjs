@@ -8,9 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { build } from '../apps/viewer/build.mjs';
+import { build as buildViewer } from '../apps/viewer/build.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+/** The viewer built as the build step builds it (`build.mjs --files`): the recordings as files with their index. */
+const build = (target, recordings) => buildViewer(target, recordings, { files: true });
 const workflow = readFileSync(join(root, '.github/workflows/pages.yml'), 'utf8');
 /** A top-level block of the workflow, its key line through the line before the next top-level key. */
 const block = (key) => {
@@ -53,7 +55,7 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
-  build(join(dir, 'apps/viewer/dist'), recordings, { files: true });
+  build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
 
