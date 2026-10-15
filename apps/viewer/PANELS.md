@@ -112,10 +112,12 @@ with the page's SHA-256 (`./sha256.ts`). It returns `{ state }`, or `{ unreadabl
 digest differs, the item keeps no state at that path), and a panel shows such an item as unreadable, never a guess.
 `statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup `itemStateOf` takes.
 
-A failed map's finished results (the driver's `state.pin.partial.results`) are, in the keyed layout, SHA-256 digests of
-`agentrun.states` documents too, each result any JSON value; a slot with no result stays `null`. A panel reads each
-non-null slot with `resultOf(digest, states)`, which returns `{ result }`, or `{ unreadable }` when the document is
-missing or does not hash to the digest.
+A failed map's finished results are the driver's `state.pin.partial.results`. A v3 pin keeps them inline. In the keyed
+layout, `results` is the SHA-256 of an `agentrun.states` document whose state is the list of slots, one per item in index
+order, each `null` (the item never finished) or the SHA-256 of the document holding that item's result, any JSON value. A
+panel reads them with `resultsOf(partial, states)`, for either layout: `{ results }`, each slot `null`, `{ result }` or
+`{ unreadable }`, or `{ unreadable }` for the whole when the list is missing, does not hash to its digest or is not a list
+of digests. Every digest is checked, by `resultOf(digest, states)`, which reads any one `agentrun.states` value.
 
 The DSL's module is read from `packages/dsl/src/recovery/item-state.ts` each time the viewer is built, never copied
 here: it is the one file outside `apps/viewer` a viewer module may import, the build inlines it in a scope of its own,

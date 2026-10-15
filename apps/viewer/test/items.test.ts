@@ -8,7 +8,7 @@ import { createContext, Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { bundle, checkModule, DSL_ITEM_STATE } from '../build.mjs';
 import { canonicalJson, stateDelta } from '../../../packages/dsl/src/recovery/item-state.ts';
-import { itemStateOf, resultOf, statesBySha } from '../src/items.ts';
+import { itemStateOf, resultOf, resultsOf, statesBySha } from '../src/items.ts';
 import { sha256Hex } from '../src/sha256.ts';
 
 const nodeSha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -52,6 +52,31 @@ test('a failed map\'s result is read by its digest, any JSON value, or says why 
   for (const slot of [null, 'abc', 7, resultDocs[0]!.sha256.toUpperCase()]) assert.deepEqual(resultOf(slot, held), { unreadable: 'not a digest' }, String(slot));
 });
 
+// A failed map's pin.partial: v3 keeps its results inline; v4 keeps one digest, of the list of each result's digest.
+const slots = [resultDocs[0]!.sha256, null, resultDocs[1]!.sha256, resultDocs[4]!.sha256];
+const listDoc = { driver: 'd', sha256: nodeSha(canonicalJson(slots)), state: slots };
+const v4 = { path: '/root/steps/0/map', as: 'found', results: listDoc.sha256 };
+const unreadable = (slot: unknown) => (slot as { unreadable: string }).unreadable;
+
+test('a failed map\'s results: inline in v3; in v4 a list of digests read by its digest, then each slot, every digest checked', () => {
+  const held = statesBySha([...resultDocs, listDoc]);
+  assert.deepEqual(resultsOf(v4, held), { results: [{ result: RESULTS[0] }, null, { result: RESULTS[1] }, { result: RESULTS[4] }] });
+  assert.deepEqual(resultsOf({ ...v4, results: [RESULTS[0], null, 'x'] }, new Map()), { results: [{ result: RESULTS[0] }, null, { result: 'x' }] }, 'v3: inline, nothing looked up');
+  // The list missing, mismatched (its slots swapped under the same digest), or not a list of digests: none of it reads.
+  assert.match(unreadable(resultsOf(v4, statesBySha(resultDocs))), /^its list of results: its document [0-9a-f]{64} is missing$/);
+  const swapped = { ...listDoc, state: [slots[2], null, slots[0], slots[3]] };
+  assert.match(unreadable(resultsOf(v4, statesBySha([...resultDocs, swapped]))), /^its list of results: its document does not match its SHA-256/);
+  const notList = { driver: 'd', sha256: nodeSha(canonicalJson({ a: 1 })), state: { a: 1 } };
+  assert.deepEqual(resultsOf({ ...v4, results: notList.sha256 }, statesBySha([notList])), { unreadable: 'its list of results is not a list of digests' });
+  assert.deepEqual(resultsOf({ path: v4.path, as: v4.as }, held), { unreadable: 'its list of results: not a digest' });
+  // A slot whose document is missing or changed is unreadable alone; the others still read.
+  const some = resultsOf(v4, statesBySha([listDoc, resultDocs[1], { ...resultDocs[4], state: 'changed' }])) as { results: unknown[] };
+  assert.match(unreadable(some.results[0]), /its document [0-9a-f]{64} is missing/);
+  assert.equal(some.results[1], null);
+  assert.deepEqual(some.results[2], { result: RESULTS[1] });
+  assert.match(unreadable(some.results[3]), /does not match its SHA-256/);
+});
+
 test('the build inlines the DSL\'s module from its source, and refuses it once it imports anything', () => {
   const built = bundle('items.ts') as { body: string; modules: string[] };
   assert.deepEqual(built.modules, [DSL_ITEM_STATE, 'sha256.ts', 'items.ts']);
@@ -63,11 +88,12 @@ test('the build inlines the DSL\'s module from its source, and refuses it once i
   assert.doesNotThrow(() => checkModule('panel.ts', `import { itemStateOf } from './items.ts';`));
 });
 
-test('the bundled code, as the page runs it, rebuilds the same state and reads the same result', () => {
+test('the bundled code, as the page runs it, rebuilds the same state and reads the same results', () => {
   const context = createContext({ TextEncoder });
-  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, resultOf, statesBySha };`).runInContext(context);
-  const got = (context as { got: { itemStateOf: typeof itemStateOf; resultOf: typeof resultOf; statesBySha: typeof statesBySha } }).got;
+  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, resultOf, resultsOf, statesBySha };`).runInContext(context);
+  const got = (context as { got: { itemStateOf: typeof itemStateOf; resultOf: typeof resultOf; resultsOf: typeof resultsOf; statesBySha: typeof statesBySha } }).got;
   assert.equal(JSON.stringify(got.itemStateOf(item, got.statesBySha([{ sha256: baseSha, state: base }]), PATH)), JSON.stringify({ state }));
   assert.match(JSON.stringify(got.itemStateOf(item, new Map(), PATH)), /is missing/);
   assert.equal(JSON.stringify(got.resultOf(resultDocs[4]!.sha256, got.statesBySha(resultDocs))), JSON.stringify({ result: RESULTS[4] }));
+  assert.equal(JSON.stringify(got.resultsOf(v4, got.statesBySha([...resultDocs, listDoc]))), JSON.stringify({ results: [{ result: RESULTS[0] }, null, { result: RESULTS[1] }, { result: RESULTS[4] }] }));
 });
