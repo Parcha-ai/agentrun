@@ -136,6 +136,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 						state: home.state,
 						epoch: home.epoch ?? null,
 						...(home.sealed === undefined ? {} : { sealed: home.sealed }),
+						...(home.noteSession === undefined ? {} : { session: home.noteSession }),
 					},
 				};
 			default:

@@ -58,14 +58,21 @@ function sourceThat(
 	return { home: home as HomeHandle, orders };
 }
 
-/** A target that is ready in `state` (retired at `retiredAt`), and writes down that it was closed. */
-function target(state: HomeState = "closed", retiredAt = 0): { start: StartRunner; closed: string[] } {
+/**
+ * A target that is ready in `state` (retired at `retiredAt`, by the note of `noteFor`; `null`: a note that names no
+ * session), and writes down that it was closed.
+ */
+function target(
+	state: HomeState = "closed",
+	retiredAt = 0,
+	noteFor: string | null = SESSION,
+): { start: StartRunner; closed: string[] } {
 	const closed: string[] = [];
 	const start: StartRunner = async () => {
 		const handle: Partial<HomeHandle> = {
 			ready: Promise.resolve(ok({ session: SESSION, state })),
 			async status() {
-				return ok({ state, epoch: retiredAt });
+				return ok({ state, epoch: retiredAt, ...(noteFor === null ? {} : { session: noteFor }) });
 			},
 			close(reason: string) {
 				closed.push(reason);
@@ -95,19 +102,64 @@ async function withLease(use: (lease: Ownership) => Promise<void>) {
 	}
 }
 
-const moveFrom = (lease: Ownership, home: HomeHandle, start: StartRunner) =>
+const moveFrom = (lease: Ownership, home: HomeHandle, start: StartRunner, to: Place = place("b")) =>
 	moveHome(
 		{
 			session: SESSION,
 			host: "h",
 			ownership: lease,
 			from: { place: place("a"), home, epoch: 1 },
-			to: place("b"),
+			to,
 			start,
 			notice: "unused",
 		},
 		context,
 	);
+
+/** A place whose box writes down every program it is asked to run, and runs none. */
+function watched(workspace: string, store: string): { place: Place; calls: unknown[] } {
+	const calls: unknown[] = [];
+	const box = {
+		id: "box-b",
+		exec: async (argv: readonly string[]) => {
+			calls.push(argv);
+			return err(new Error("the box runs nothing"));
+		},
+	} as unknown as Box;
+	return { place: { environment: "b", provider: "test", box, store, workspace }, calls };
+}
+
+describe("a move back to a place the session left", () => {
+	it("refuses, before the drain, a retired place whose note is another session's or names none", async () => {
+		for (const noteFor of ["s-other", null]) {
+			await withLease(async (lease) => {
+				const source = sourceThat("works", "open");
+				const to = target("retired", 1, noteFor);
+				const moved = await moveFrom(lease, source.home, to.start);
+				expect(moved.ok ? "" : moved.error.code, String(noteFor)).toBe("prepare");
+				expect(moved.ok ? "" : moved.error.message).toContain("it takes nothing back");
+				expect(source.orders).toEqual([]);
+			});
+		}
+	});
+
+	it("empties nothing, and asks the box nothing, for a workspace that is the root or holds the store", async () => {
+		for (const [workspace, store] of [
+			["/", "/session/run.sqlite"],
+			["/srv/b", "/srv/b/session/run.sqlite"],
+		] as const) {
+			await withLease(async (lease) => {
+				const source = sourceThat("works", "sealed");
+				const to = watched(workspace, store);
+				const moved = await moveFrom(lease, source.home, target("retired", 1).start, to.place);
+				expect(moved.ok ? "" : moved.error.code, workspace).toBe("ship");
+				expect(moved.ok ? "" : moved.error.message).toContain("the old workspace may not be emptied");
+				expect(to.calls, workspace).toEqual([]);
+				expect(source.orders).toEqual([{ reopen: 1 }]);
+			});
+		}
+	});
+});
 
 describe("a move given up before the take", () => {
 	it("refuses, before the drain, a place that retired at the epoch the move would bring the session at or later", async () => {

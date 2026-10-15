@@ -364,7 +364,10 @@ Before the take, a failure leaves the session where it was: the source is told t
 own epoch; the error says whether it runs. A lost take (`lost`) means another host acted: this host deletes the copy it
 shipped, unless the lease names the target's own place (then the copy is that host's too), and does nothing more;
 the error's `lease` says where the session is. A session can move back to a place it left: that place's note refuses
-orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before the ship.
+orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before anything
+lands. Only for a place whose note is this session's, and only the workspace's entries (links as links; never the
+directory above it or the store): a workspace that is not an absolute path in normal form, is a directory of the
+system, holds the store, or is the box's home, a directory above it or a link, is refused and nothing is removed.
 
 After the take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where
 it says and makes that home run. A target that never resumed, or a sealed home the lease names at a later epoch, is

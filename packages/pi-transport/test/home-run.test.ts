@@ -501,6 +501,7 @@ describe("a home: what it refuses", () => {
 				v: 1,
 				epoch: 2,
 				retired: true,
+				session: "session-1",
 			});
 			const ran = made.effects().length;
 			await sleep(200);

@@ -101,6 +101,8 @@ export interface Home {
 	readonly epoch: number | undefined;
 	/** The seal of the store this home sealed and has not opened again: what a recovery's take carries forward. */
 	readonly sealed: Seal | undefined;
+	/** The session the note this home keeps on disk is for, when the note names one. */
+	readonly noteSession: string | undefined;
 	/** The open Harness: for submissions, aborts and events. `undefined` unless `open`. */
 	readonly harness: Harness | undefined;
 	/**
@@ -138,6 +140,8 @@ type Marker = {
 	readonly move?: string;
 	readonly sealed?: Seal;
 	readonly retired?: true;
+	/** The session the note is for. A note written before it was kept names none. */
+	readonly session?: string;
 };
 
 class SessionHome implements Home {
@@ -176,6 +180,10 @@ class SessionHome implements Home {
 
 	get sealed(): Seal | undefined {
 		return this.#marker?.sealed;
+	}
+
+	get noteSession(): string | undefined {
+		return this.#marker?.session;
 	}
 
 	get harness(): Harness | undefined {
@@ -239,6 +247,7 @@ class SessionHome implements Home {
 			const written = await this.#writeMarker({
 				v: 1,
 				epoch: order.epoch,
+				session: this.#options.session,
 				...(order.seal === undefined ? {} : { seal: order.seal }),
 				...(order.move === undefined ? {} : { move: order.move.id }),
 			});
@@ -333,7 +342,7 @@ class SessionHome implements Home {
 		// The note goes first: a home that dies while it deletes still refuses every order at this epoch or before.
 		const noted: Result<void, HomeError> = again
 			? ok(undefined)
-			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
+			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true, session: this.#options.session });
 		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {

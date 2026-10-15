@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
@@ -159,6 +160,17 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		if (!status.ok) {
 			return giveUp(target, new MoveError("prepare", `the target did not say its epoch: ${status.error.message}`));
 		}
+		// Only this session's own note: the old workspace the ship empties must be the copy this session left.
+		if (status.value.session !== session) {
+			const whose = status.value.session === undefined ? "names no session" : `is for ${status.value.session}`;
+			return giveUp(
+				target,
+				new MoveError(
+					"prepare",
+					`the target retired, and its note ${whose}, not ${session}: it takes nothing back`,
+				),
+			);
+		}
 		if (status.value.epoch !== null && status.value.epoch > epoch) {
 			return giveUp(
 				target,
@@ -276,12 +288,64 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	});
 }
 
-/** Empties a directory and keeps it: what is in it goes, whatever it is. */
-const EMPTY_DIR_SCRIPT = 'mkdir -p -- "$1" && find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +';
+/** Directories whose contents no move empties, whatever a place says its workspace is. */
+const NEVER_EMPTIED: ReadonlySet<string> = new Set([
+	"/",
+	"/bin",
+	"/boot",
+	"/dev",
+	"/etc",
+	"/home",
+	"/lib",
+	"/lib64",
+	"/media",
+	"/mnt",
+	"/opt",
+	"/proc",
+	"/root",
+	"/run",
+	"/sbin",
+	"/srv",
+	"/sys",
+	"/tmp",
+	"/usr",
+	"/var",
+]);
+
+/**
+ * Why a place's workspace may not be emptied for a session that comes back, or `undefined` when it may: it must be an
+ * absolute path in normal form, none of the system's own directories, and hold neither the store nor be it. The box
+ * itself refuses its home directory, one above it, and a workspace that is a link (`EMPTY_WORKSPACE_SH`).
+ */
+export function workspaceNotEmptiable(place: Pick<Place, "workspace" | "store">): string | undefined {
+	const { workspace, store } = place;
+	if (workspace === "") return "the workspace is an empty path";
+	if (!posix.isAbsolute(workspace)) return `the workspace ${workspace} is not an absolute path`;
+	if (posix.normalize(workspace) !== workspace || (workspace !== "/" && workspace.endsWith("/"))) {
+		return `the workspace ${workspace} is not a path in normal form`;
+	}
+	if (NEVER_EMPTIED.has(workspace)) return `the workspace ${workspace} is a directory of the system`;
+	if (store === workspace || store.startsWith(`${workspace}/`)) return `the workspace ${workspace} holds the store`;
+	return undefined;
+}
+
+/**
+ * Empties a workspace in the box and keeps the directory: its entries go, links as links, and nothing above it or
+ * outside it. Exit 9, and nothing removed, for a workspace that is the box's home, a directory above it, or a link, or
+ * when the box has no home to compare with.
+ */
+export const EMPTY_WORKSPACE_SH = [
+	'w=$1; [ -n "$HOME" ] || exit 9',
+	'case "$HOME/" in "$w"/*) exit 9;; esac',
+	'[ -L "$w" ] && exit 9',
+	'mkdir -p -- "$w" && find "$w" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+].join("\n");
 
 /**
  * The store, then the workspace, from one place to the other, each checked on the target. A place the session comes
- * back to has its old workspace emptied first: the copy it holds is the one the session left, not the one it brings.
+ * back to has its old workspace emptied first, before anything lands: the copy it holds is the one the session left,
+ * not the one it brings. Only the workspace's entries go, and only a workspace that `workspaceNotEmptiable` and the
+ * box both allow.
  */
 async function ship(
 	from: Place,
@@ -291,17 +355,24 @@ async function ship(
 	options: MoveOptions,
 	context: Context,
 ): Promise<Result<{ bytes: number }, Error>> {
-	const file = await moveFile(from.box, from.store, to.box, to.store, seal, undefined, context);
-	if (!file.ok) return file;
 	if (returning) {
-		const started = await to.box.exec(["sh", "-c", EMPTY_DIR_SCRIPT, "sh", to.workspace], undefined, context);
+		const refused = workspaceNotEmptiable(to);
+		if (refused !== undefined) return err(new Error(`the old workspace may not be emptied: ${refused}`));
+		const started = await to.box.exec(["sh", "-c", EMPTY_WORKSPACE_SH, "sh", to.workspace], undefined, context);
 		if (!started.ok) return err(new Error(`could not empty the old workspace: ${started.error.message}`));
 		const emptied = await finish(started.value);
 		if (!emptied.ok) return err(new Error(`could not empty the old workspace: ${emptied.error.message}`));
+		if (emptied.value.exitCode === 9) {
+			return err(
+				new Error(`the old workspace may not be emptied: ${to.workspace} is the box's home, above it, or a link`),
+			);
+		}
 		if (emptied.value.exitCode !== 0) {
 			return err(new Error(`could not empty the old workspace: exit ${emptied.value.exitCode}`));
 		}
 	}
+	const file = await moveFile(from.box, from.store, to.box, to.store, seal, undefined, context);
+	if (!file.ok) return file;
 	const tree = await moveWorkspace(
 		from.box,
 		to.box,

@@ -456,6 +456,16 @@ export function registerMoveConformance(
 							pair.a.workspace,
 						]);
 						if (left === undefined) throw new Error(`could not leave a file in ${pair.a.environment}`);
+						// And a file beside the workspace, which no move touches.
+						const beside = await read(pair.a, [
+							"sh",
+							"-c",
+							'printf kept > "$(dirname "$1")/beside-the-workspace.txt"',
+							"sh",
+							pair.a.workspace,
+						]);
+						if (beside === undefined)
+							throw new Error(`could not leave a file beside ${pair.a.environment}'s workspace`);
 						// Back to the place it left, which holds the note of its retirement and that workspace.
 						const back = getOrThrow(
 							await moveHome(
@@ -485,6 +495,14 @@ export function registerMoveConformance(
 							pair.a.workspace,
 						]);
 						equal(gone !== undefined, true, "the old workspace's file is gone");
+						const kept = await read(pair.a, [
+							"sh",
+							"-c",
+							'test "$(cat "$(dirname "$1")/beside-the-workspace.txt")" = kept',
+							"sh",
+							pair.a.workspace,
+						]);
+						equal(kept !== undefined, true, "the file beside the workspace is kept");
 						equal(await run.held(), { epoch: 3, environment: pair.a.environment }, "the lease");
 						equal(run.notices(), 2, "the notices the model saw");
 					}),

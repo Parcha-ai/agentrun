@@ -89,17 +89,26 @@ function isSeal(value: unknown): value is Seal {
 	);
 }
 
-/** A home's answer to `status`. `sealed` is there only for a home that holds a sealed store. */
-export type HomeStatus = { readonly state: HomeState; readonly epoch: number | null; readonly sealed?: Seal };
+/**
+ * A home's answer to `status`. `sealed` is there only for a home that holds a sealed store; `session` names the session
+ * the note it keeps on disk is for, when the note names one.
+ */
+export type HomeStatus = {
+	readonly state: HomeState;
+	readonly epoch: number | null;
+	readonly sealed?: Seal;
+	readonly session?: string;
+};
 
 function isStatus(value: unknown): value is HomeStatus {
-	const status = value as { state?: unknown; epoch?: unknown; sealed?: unknown } | null;
+	const status = value as { state?: unknown; epoch?: unknown; sealed?: unknown; session?: unknown } | null;
 	return (
 		typeof status === "object" &&
 		status !== null &&
 		HOME_STATES.has(status.state) &&
 		(status.epoch === null || Number.isSafeInteger(status.epoch)) &&
-		(status.sealed === undefined || isSeal(status.sealed))
+		(status.sealed === undefined || isSeal(status.sealed)) &&
+		(status.session === undefined || typeof status.session === "string")
 	);
 }
 
