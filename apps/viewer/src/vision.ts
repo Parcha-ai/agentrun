@@ -75,7 +75,7 @@ export type VisionAccount = {
 };
 export const ACCOUNT_FORMAT = 'apollo11.account/1';
 
-/** The generic cited result any run may deliver (`agentrun.cited/1`, RECORDING.md section 5): rows of a label and a value,
+/** The generic cited result any run may deliver (`agentrun.cited/1`, RECORDING.md): rows of a label and a value,
  *  each citing what it was read from: a file in `blobs/`, a look by its key, and where in it. */
 export type VisionCitedRow = { label: string; value: string; note?: string; cites: { blob?: string; look?: string; fragment: string; note?: string }[] };
 export type VisionCitedResult = { title?: string; rows: VisionCitedRow[] };
