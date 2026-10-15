@@ -97,10 +97,13 @@ export type HomeOptions = {
 	readonly onHold?: () => void | Promise<void>;
 };
 
-/** What `wrapStore` gives the home. */
+/**
+ * What `wrapStore` gives the home. `opened` runs once the Harness has the store, before anything else commits through
+ * it; when it fails, the order fails and `closed` runs.
+ */
 export type WrappedStore = {
 	readonly storage: Storage;
-	readonly opened?: (harness: Harness) => void;
+	readonly opened?: (harness: Harness) => void | Promise<void>;
 	readonly closed?: () => Promise<void>;
 };
 
@@ -464,7 +467,7 @@ class SessionHome implements Home {
 		try {
 			// Before anything commits through it: the recorder, bringing the session here, the app's own opening, the
 			// move's notice.
-			wrapped?.opened?.(harness);
+			await wrapped?.opened?.(harness);
 			gate.attach(harness);
 			await bringHere(harness, workspace, context);
 			await onOpen?.(harness, context);

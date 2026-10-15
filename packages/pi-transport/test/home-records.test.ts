@@ -773,6 +773,7 @@ describe("the runner's end of the record stream", () => {
 				await openNodeSqliteStorage(made.options.store),
 				context,
 			);
+			await wrapped.opened?.({} as Harness);
 			const snapshots = (frames: readonly Frame[]) =>
 				frames.filter((frame) => frame.t === "lines" && frame.snapshot);
 			const first: Frame[] = [];
@@ -821,6 +822,106 @@ describe("the runner's end of the record stream", () => {
 			expect(sent).toEqual([]);
 			expect(await next.drained(2_000)).toBe(true);
 			await after.closed?.();
+		});
+	});
+
+	it("takes a process's snapshot once pi opened the store, after the commits pi made in opening it", async () => {
+		await withWorld(async (made) => {
+			let from: readonly RecordLine[] | undefined;
+			const shipper = createShipper({
+				admits: () => false,
+				recording: {
+					snapshotLines: async (_storage, { at }) => [{ commit: at, kind: "snapshot" } as RecordLine],
+					recordCommits: (_harness, options) => {
+						from = options.from;
+						return async () => {};
+					},
+				},
+			});
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const wrapped = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			// pi commits as it opens the store (what it recovers from a process that died) before the recorder starts.
+			const session = createSession(wrapped.storage);
+			await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await wrapped.opened?.({} as Harness);
+			const sent: Frame[] = [];
+			shipper.up((frame) => sent.push(frame) > 0);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			expect(sent.map((frame) => [frame.t, frame.commit, frame.snapshot === true])).toEqual([
+				["record", 1, false],
+				["lines", 1, true],
+			]);
+			expect(from).toEqual([{ commit: 1, kind: "snapshot" }]);
+			await session.close(context);
+			await wrapped.closed?.();
+		});
+	});
+
+	it("fails opening when a commit lands while the recorder takes its snapshot: that commit's lines would be lost", async () => {
+		await withWorld(async (made) => {
+			let during: () => Promise<void> = async () => {};
+			const shipper = createShipper({
+				admits: () => false,
+				recording: {
+					snapshotLines: async (_storage, { at }) => {
+						await during();
+						return [{ commit: at, kind: "snapshot" } as RecordLine];
+					},
+					recordCommits: () => async () => {},
+				},
+			});
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const wrapped = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			const session = createSession(wrapped.storage);
+			during = async () => {
+				await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			};
+			await expect(wrapped.opened?.({} as Harness)).rejects.toThrow(
+				"commit 1 landed while the recorder took its snapshot at 0",
+			);
+			await session.close(context);
+			await wrapped.closed?.();
+		});
+	});
+
+	it("sends the snapshot of a store opened again on the link that carried the last one", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({
+				admits: () => false,
+				recording: {
+					snapshotLines: async (_storage, { at }) => [{ commit: at, kind: "snapshot" } as RecordLine],
+					recordCommits: () => async () => {},
+				},
+			});
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const sent: Frame[] = [];
+			shipper.up((frame) => sent.push(frame) > 0);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			const first = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			await first.opened?.({} as Harness);
+			const session = createSession(first.storage);
+			await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await session.close(context);
+			await first.closed?.();
+			// The same process opens the store again, the link still up: the new state goes to the host too.
+			const again = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			await again.opened?.({} as Harness);
+			expect(sent.filter((frame) => frame.t === "lines" && frame.snapshot).map((frame) => frame.commit)).toEqual([
+				0, 1,
+			]);
+			await again.closed?.();
 		});
 	});
 

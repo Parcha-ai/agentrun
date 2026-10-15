@@ -416,8 +416,9 @@ runner's recorder made. Its hello says so, and the runner then:
   once acknowledged rows far outnumber pending ones, so its size follows the work in flight, not the session's length.
 - **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
   (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
-  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot lines go
-  after the commits it opened at, once on each link, until the host acknowledges them.
+  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot is the state
+  once pi has opened the store, after what pi commits in opening it (what it recovers from a process that died); its
+  lines go after those commits, once on each link, until the host acknowledges them.
 - **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
   `RunnerOptions.admits` adds an app's own) returns only once the host acknowledged it. Past `resumeWithinMs` the
   commit fails, pi stops the session, and the effect never ran.

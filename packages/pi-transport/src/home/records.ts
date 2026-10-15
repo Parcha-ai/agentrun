@@ -12,7 +12,8 @@ export type RecordLine = { readonly commit: number };
 /**
  * The recorder a runner runs in its process: the same functions as `@parcha/agentrun-pi/durable`'s, which the app's
  * bundle passes in (this package depends on no other). `snapshotLines` is the state at the store's latest commit, taken
- * after the store opens and before anything commits; `recordCommits` calls `write` with each commit's lines.
+ * once pi has opened the store, after what pi commits in opening it (what it recovers from a process that died) and
+ * before anything else commits; `recordCommits` calls `write` with each commit's lines from there.
  */
 export type Recording = {
 	snapshotLines?(
@@ -141,21 +142,10 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				next = head.value;
 				heldByHost(opened);
 				const recording = options.recording;
-				// Nothing has committed through pi yet, and this process holds the store alone: the state is exact.
-				let lines: readonly RecordLine[] | undefined;
-				try {
-					lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
-				} catch (cause) {
-					// The home gets no wrapper to close: the outbox is closed here.
-					opened.close();
-					if (outbox === opened) {
-						outbox = undefined;
-						next = undefined;
-					}
-					throw cause;
-				}
-				if (lines !== undefined && lines.length > 0) snapshot = { commit: head.value - 1, lines };
+				// What a process that died left goes first, from where the host is.
 				catchUp();
+				// The store's last commit: pi's own, as it opens the store, move it on before the recorder starts.
+				let landed = head.value - 1;
 				let stop: (() => Promise<void>) | undefined;
 				return {
 					storage: shippingStorage(storage, {
@@ -163,6 +153,7 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 						head: head.value,
 						ship: (shipped) => {
 							next = shipped.commit + 1;
+							landed = shipped.commit;
 							sendRecord(shipped.commit, shipped.writes);
 						},
 						admits:
@@ -171,7 +162,22 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 								: (writes) => admitsTool(writes) || options.admits?.(writes) === true,
 						acknowledged,
 					}),
-					opened(harness: Harness) {
+					async opened(harness: Harness) {
+						// pi has opened the store and committed what it recovers, and nothing commits again before the recorder
+						// starts: the state is exact at the last commit, and the recorder's lines follow from there.
+						const at = landed;
+						const lines = await recording?.snapshotLines?.(storage, { at, context });
+						if (landed !== at) {
+							throw new Error(
+								`commit ${landed} landed while the recorder took its snapshot at ${at}: its lines would be lost`,
+							);
+						}
+						if (lines !== undefined && lines.length > 0) {
+							snapshot = { commit: at, lines };
+							snapshotSentOn = undefined;
+							// After the commits it is at, which went out as they landed or go from the outbox at the next connect.
+							sendSnapshot();
+						}
 						stop = recording?.recordCommits(harness, {
 							...(lines === undefined ? {} : { from: lines }),
 							write(recorded) {
