@@ -25,6 +25,7 @@ import {
   WRITING_TOOLS,
 } from "../src/env.ts";
 import { registerEnvCases } from "./_env-conformance.ts";
+import { onPlatform } from "./_macos.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -371,6 +372,42 @@ describe("temporary files live under <root>/tmp", () => {
       const full = (await readFile(spill, "utf8")).trimEnd().split("\n");
       assert.equal(full.length, 100000);
       assert.equal(full.at(-1), "100000");
+    });
+  });
+});
+
+describe("on macOS, by default", () => {
+  const flagOf = (text: string) => /^NoNewPrivs:\s+(\d)/m.exec(text)?.[1];
+  const ownFlag = flagOf(readFileSync("/proc/self/status", "utf8"));
+  async function out(env: NodeExecutionEnv, command: string): Promise<string> {
+    let text = "";
+    getOrThrow(await env.exec(command, { onOutput: (chunk) => void (text += chunk) }, context));
+    return text;
+  }
+
+  it("commands keep the user's rights (no setpriv), and the file tools are confined by path", async () => {
+    await withRun(async ({ root, work }) => {
+      const env = await onPlatform("darwin", () => archilEnv({ root, work }, { setprivPath: "/nonexistent/setpriv" })({}));
+      assert.equal(flagOf(await out(env, "grep NoNewPrivs /proc/self/status")), ownFlag, "the command ran without setpriv");
+      await mkdir(join(root, "store"));
+      const outside = await env.writeFile(join(root, "store", "x.txt"), "no", context);
+      assert.ok(!outside.ok && outside.error instanceof PathOutsideWorkError && outside.error.reason === "outside_work", JSON.stringify(outside));
+      assert.equal(existsSync(join(root, "store", "x.txt")), false);
+      getOrThrow(await env.writeFile("inside.txt", "yes", context));
+      assert.equal(readFileSync(join(work, "inside.txt"), "utf8"), "yes");
+    });
+  });
+
+  it("an app's own choice stands: noNewPrivs and confineFiles asked for are kept, and need what they need on Linux", async () => {
+    await withRun(async ({ root, work }) => {
+      const env = await onPlatform("darwin", () => archilEnv({ root, work }, { noNewPrivs: true, confineFiles: true })({}));
+      assert.equal(flagOf(await out(env, "grep NoNewPrivs /proc/self/status")), "1");
+      const outside = await env.writeFile(join(root, "x.txt"), "no", context);
+      assert.ok(!outside.ok && outside.error instanceof PathOutsideWorkError);
+      await assert.rejects(
+        onPlatform("darwin", () => archilEnv({ root, work }, { noNewPrivs: true, setprivPath: "/nonexistent/setpriv" })),
+        (error: unknown) => error instanceof EnvError && error.code === "SETPRIV_UNAVAILABLE",
+      );
     });
   });
 });
