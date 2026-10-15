@@ -43,11 +43,13 @@ later:
 
 ```sh
 npm init -y && npm pkg set type=module
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
 mkdir audit-across-crashes && cd audit-across-crashes
 # copy the example's files in (main.ts and any helper beside it, not its README or its test), from a checkout or from GitHub
 node main.ts
 ```
+
+The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one.
 
 `npm pkg set type=module` is what lets Node read the example's `import` lines without reparsing every file and printing a
 warning on each start. Run it from the directory that holds `node_modules`, or from one inside it. An example whose Since is
