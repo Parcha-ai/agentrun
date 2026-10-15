@@ -44,7 +44,7 @@ import { packageCommitRecorder } from './record-store.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
-export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, unknown>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, unknown>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown> }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
@@ -215,7 +215,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // The vision lane, one seam: the entry keeps every look it is told of (`keepLooks`: each with the screenshot it was of, its item and the filing crossing); the demo's own lane (`fakes.vision` on fakes, the live parts' on --live)
   // adds to it, and may bring its own eyes and limits. A demo's `onLook` and `onMiss` run after the entry's and are never replaced by them.
   const vision: RunOptions['vision'] = (running) => {
-    const own: Partial<VisionAdapterOptions> = (live ? parts.vision?.(local.host, running) : options.fakes.vision?.(local.host, running)) ?? {};
+    const own: Partial<VisionAdapterOptions> = (live ? parts.vision?.(local.host, running, { input }) : options.fakes.vision?.(local.host, running, { input })) ?? {};
     const kept = keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl'), filed: filedRecords, ...(options.itemOf ? { itemOf: options.itemOf } : {}) });
     return {
       ...own,

@@ -224,7 +224,7 @@ A planned kill whose crossing the process never takes (a typo, or a demo that do
 
 ### What a demo hands the entry, besides its job
 
-`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running)` (the demo's vision lane on fakes: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
+`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running, { input })` (the demo's vision lane on fakes, handed the input the run was given, as `LiveParts.vision` is: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
 
 ### What a live child's environment holds
 

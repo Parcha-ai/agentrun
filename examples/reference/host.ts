@@ -89,8 +89,8 @@ export type Fakes = {
   lead?: { input: ('text' | 'image')[] };
   /** Pi extensions a no-key run installs beside the host's own (a demo's scripted tools that are extensions, its vision lane). */
   extensions?: readonly Extension[];
-  /** Vision options for a no-key run, built from the host and the running run (its harness is undefined until the run is open): the demo's own lane (an eyes object, limits, an evidence sink). */
-  vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>;
+  /** Vision options for a no-key run, built from the host and the running run (its harness is undefined until the run is open): the demo's own lane (an eyes object, limits, an evidence sink). `context.input` is the input the run was given (`--input`, else the mode's default), the same one `LiveParts.vision` is handed. */
+  vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown> }) => Partial<VisionAdapterOptions>;
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
