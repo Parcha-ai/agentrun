@@ -14,6 +14,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from '../reference/index.ts';
 import type { BrowserPlane, Delivery, LedgerRow, RunResult } from '../reference/index.ts';
 import { heroFakes, heroJob, readGrids, watchScreenshots } from './job.ts';
+import { keepLooks } from './looks.ts';
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -45,7 +46,7 @@ export async function deliverSnapshot(root: string, result: Delivery): Promise<v
 async function child() {
   const place = await placeAt(process.env.DIR);
   const grids = readGrids();
-  const { fakes, eyes } = heroFakes(grids, { eyesLedger: join(place.root, 'eyes.jsonl'), ...(process.env.BROKEN ? { broken: process.env.BROKEN } : {}) });
+  const { fakes, eyes } = heroFakes(grids, { eyesLedger: join(place.root, 'eyes.jsonl'), ...(process.env.EYES_PRICE ? { eyesPrice: Number(process.env.EYES_PRICE) } : {}), ...(process.env.BROKEN ? { broken: process.env.BROKEN } : {}) });
   const recorder = process.env.RECORD_DIR ? openRecorder({ dir: process.env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
   // The fake browser has no navigation of its own (a session opens on the backend's start page, and `run` hands back the code it was given),
   // so this plane turns the lead's `page.goto("<url>")` into the fake's `goto` action: each session then stands on its own grid's page.
@@ -81,7 +82,7 @@ async function child() {
   const record_ = local.host.deliver;
   local.host.deliver = async (result) => { await deliverSnapshot(place.root, result); await record_(result); };
   try {
-    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: () => ({ eyes }) });
+    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: (running) => ({ eyes, ...keepLooks(() => running.harness) }) });
     await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } satisfies Out }));
   } catch (error) {
@@ -123,7 +124,7 @@ export type HeroRun = {
 
 /** Runs the job in a directory of its own. With `kill1`, the first process is killed inside the paid call that is the `kill1`th to finish
  *  (alone in the tool), and a fresh process resumes. With `record`, the run is kept as a recording there. */
-export async function heroRun(options: { kill1?: number; record?: string; dir?: string; broken?: string; at?: string } = {}): Promise<HeroRun> {
+export async function heroRun(options: { kill1?: number; record?: string; dir?: string; broken?: string; at?: string; /** The scripted eyes' price, in dollars per million tokens in and out; default 0, so the run costs nothing. */ eyesPrice?: number } = {}): Promise<HeroRun> {
   if (options.record && (existsSync(join(options.record, '.spool')) || existsSync(join(options.record, 'manifest.json')))) throw new Error(`${options.record} already holds a recording or an unfinished one: record into a directory of its own`);
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-hero-'));
   const cleanup = () => rm(scratch, { recursive: true, force: true });
@@ -135,7 +136,7 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
     const backend = new FakeBackend({ start: fakes.start, pages: fakes.pages });
     watchScreenshots(backend, grids);
     const served = await backend.serve();
-    const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}) };
+    const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}), ...(options.eyesPrice ? { EYES_PRICE: String(options.eyesPrice) } : {}) };
     const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
     const processes: Process[] = [];
     let kills = 0;

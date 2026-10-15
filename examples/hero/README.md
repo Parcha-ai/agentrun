@@ -32,6 +32,12 @@ reference host documents.
 (`read the chart`), a `call` for the published figure, and a `code` check that files the reading with its gap to the published
 figure. A page that is not the dashboard is filed failed, with no screenshot cited. A last `code` step builds the snapshot.
 
+## The looks
+
+The vision guard answers a screenshot's image through the eyes and reports the look; nothing else keeps it. `looks.ts` keeps each
+reported look, the whole `LookRecord`, in a `vision.looks` document of the run's store (one per look key), so the recording's
+counters read `paid.vision` and the manifest's cost holds the eyes' price. A test fails if the strip understates it.
+
 ## The sources
 
 `sources.json` lists the nine operators and how each page was checked by hand: the dashboard, which chart, the two numbers, where

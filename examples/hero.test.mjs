@@ -98,3 +98,24 @@ test('killed inside a paid call, the resumed process settles it from the kept an
   assert.deepEqual(manifest.cost, cost(lines), 'the manifest cost is the example\'s own fold of the lines');
   assert.equal(manifest.cost.usd, 0);
 });
+
+test('the recording counts the guard\'s looks: paid.vision is nine and the cost holds the eyes\' price, so the strip cannot understate it', { timeout: 240_000 }, async (t) => {
+  const tmp = await scratch(t);
+  const recording = join(tmp, 'recording');
+  const run = await heroRun({ kill1: 3, record: recording, eyesPrice: 1 });
+  t.after(() => run.cleanup());
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  // What the eyes charged, from the package's own look reports (one live LookEvent per look), not from the fold under test.
+  const charged = lines.filter((line) => line.source === 'vision' && line.kind === 'LookEvent').map((line) => line.data.costUsd);
+  assert.equal(charged.length, 9);
+  assert.ok(charged.every((usd) => usd > 0), 'a priced look costs something');
+  const total = charged.reduce((sum, usd) => sum + usd, 0);
+  const counted = fold(lines);
+  assert.equal(counted.paid.vision, 9);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.ok(Math.abs(manifest.cost.parts.look - total) < 1e-9, `the manifest's look cost ${manifest.cost.parts.look} is what the eyes charged ${total}`);
+  assert.ok(manifest.cost.usd >= total);
+  assert.deepEqual(manifest.cost, cost(lines));
+  assert.deepEqual([counted.repeated, counted.unknown], [0, 0]);
+});

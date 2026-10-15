@@ -156,7 +156,7 @@ export function watchScreenshots(backend: FakeBackend, grids: readonly Grid[]): 
 
 /** The scripted job for `grids`: pages, the eyes' answers by operator, and the published figures. `broken` names a grid whose page is not
  *  its dashboard (the eyes say so, and the lead files it failed). */
-export function heroFakes(grids: readonly Grid[], options: { broken?: string; eyesLedger?: string } = {}): { fakes: Fakes; eyes: FakeEyes } {
+export function heroFakes(grids: readonly Grid[], options: { broken?: string; eyesLedger?: string; eyesPrice?: number } = {}): { fakes: Fakes; eyes: FakeEyes } {
   const at = (grid: Grid) => grids.indexOf(grid) % TRUTH.length;
   const pages = Object.fromEntries(grids.map((grid) => [grid.url, grid.id === options.broken
     ? fixturePage(grid.url, 'Page not found.', 'Not found')
@@ -164,7 +164,7 @@ export function heroFakes(grids: readonly Grid[], options: { broken?: string; ey
   const eyes = fakeEyes({
     model: 'scripted-eyes',
     // Scripted: it calls no model, so it costs 0.
-    price: { input: 0, output: 0 },
+    price: { input: options.eyesPrice ?? 0, output: options.eyesPrice ?? 0 },
     ...(options.eyesLedger ? { ledgerPath: options.eyesLedger } : {}),
     answers: [(request) => {
       // The fake browser's screenshots are blank, so the backend gives each grid's a width of its own (`watchScreenshots`), which says whose chart this is.
