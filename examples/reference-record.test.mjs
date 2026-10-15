@@ -252,7 +252,7 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a blob or t
 test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', () => {
   assert.equal(validator.credentialIn, scan.credentialIn);
   assert.equal(validator.credentialInValue, scan.credentialInValue);
-  // The gate imports the scanner itself, by the same module.
+  // The gate imports the scanner itself, by the same module, and scans each file as the recorder does.
   const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /^import \{ credentialInFile \} from '\.\.\/\.\.\/examples\/reference\/scan\.ts';$/m);
+  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/examples\/reference\/scan\.ts';$/m);
 });
