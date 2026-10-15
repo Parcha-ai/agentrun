@@ -12,35 +12,56 @@ export type Sources = { items: SourceItem[] };
 /** The file name of an item in `work/`: its id and the extension of its URL's path. */
 export const fileOf = (item: SourceItem): string => `${item.id}${extname(new URL(item.url).pathname)}`;
 
-export function readSources(path: string): Sources {
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { items?: unknown };
-  if (!Array.isArray(parsed.items)) throw new Error(`${path} has no items: it lists the checked files as { id, url, bytes, sha256 }`);
-  for (const item of parsed.items as SourceItem[]) {
-    if (!item || typeof item.id !== 'string' || !/^[\w.-]+$/.test(item.id)) throw new Error(`${path}: an item's id is a file name (letters, digits, dot, dash, underscore), not ${JSON.stringify(item?.id)}`);
-    if (typeof item.url !== 'string' || !/^https?:\/\//.test(item.url)) throw new Error(`${path}: ${item.id} has no http or https url`);
-    if (!Number.isInteger(item.bytes) || item.bytes < 0 || typeof item.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(item.sha256)) throw new Error(`${path}: ${item.id} needs its size in bytes and its SHA-256`);
+/** The checks every list of items passes, wherever it came from: ids that are file names, http(s) URLs, a size and a hash, and no two items that are the same file (the second would replace the first, and both checks would pass). */
+export function checkItems(items: unknown, label: string): SourceItem[] {
+  if (!Array.isArray(items)) throw new Error(`${label} has no items: it lists the checked files as { id, url, bytes, sha256 }`);
+  for (const item of items as SourceItem[]) {
+    if (!item || typeof item.id !== 'string' || !/^[\w.-]+$/.test(item.id)) throw new Error(`${label}: an item's id is a file name (letters, digits, dot, dash, underscore), not ${JSON.stringify(item?.id)}`);
+    if (typeof item.url !== 'string' || !/^https?:\/\//.test(item.url)) throw new Error(`${label}: ${item.id} has no http or https url`);
+    if (!Number.isInteger(item.bytes) || item.bytes < 0 || typeof item.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(item.sha256)) throw new Error(`${label}: ${item.id} needs its size in bytes and its SHA-256`);
   }
-  // Two items that would be the same file are refused before anything is fetched: the second would replace the first, and both checks would pass.
   const names = new Map<string, string>();
-  for (const item of parsed.items as SourceItem[]) {
+  for (const item of items as SourceItem[]) {
     const name = fileOf(item);
-    if (names.has(name)) throw new Error(`${path}: ${item.id} and ${names.get(name)} are both ${name}: an id and a URL extension make one file`);
+    if (names.has(name)) throw new Error(`${label}: ${item.id} and ${names.get(name)} are both ${name}: an id and a URL extension make one file`);
     names.set(name, item.id);
   }
-  return parsed as Sources;
+  return items as SourceItem[];
+}
+
+export function readSources(path: string): Sources {
+  return { items: checkItems((JSON.parse(readFileSync(path, 'utf8')) as { items?: unknown }).items, path) };
+}
+
+/** The files of `items` that are neither in the job's own files nor already in `work`: what a no-key run would lack. */
+export function missingCommitted(items: readonly SourceItem[], files: Record<string, Uint8Array> | undefined, work: string): string[] {
+  return items.map(fileOf).filter((name) => !(files && name in files) && !existsSync(join(work, name)));
 }
 
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 /** Fetches each item into `work` and verifies it; returns what was fetched and what was already there. */
 /** `timeoutMs` is each download's deadline, the request and the reading of its body together (default 60 s). */
-export async function fetchSources(sources: Sources, work: string, fetcher: typeof fetch = fetch, timeoutMs = 60_000): Promise<{ fetched: string[]; kept: string[] }> {
+export async function fetchSources(sources: Sources, work: string, fetcher: typeof fetch = fetch, timeoutMs = 60_000, cache?: string): Promise<{ fetched: string[]; kept: string[]; cached: string[] }> {
   const fetched: string[] = [];
   const kept: string[] = [];
+  const cached: string[] = [];
   for (const item of sources.items) {
     const name = fileOf(item);
     const at = join(work, name);
     if (existsSync(at) && sha(readFileSync(at)) === item.sha256) { kept.push(name); continue; }
+    // A copy in the download cache (by its hash) is used when it still has the checked bytes: a re-run does not fetch it again.
+    const copy = cache ? join(cache, item.sha256) : undefined;
+    if (copy && existsSync(copy)) {
+      const have = readFileSync(copy);
+      if (have.length === item.bytes && sha(have) === item.sha256) {
+        await mkdir(dirname(at), { recursive: true });
+        await writeFile(`${at}.${process.pid}.partial`, have);
+        await rename(`${at}.${process.pid}.partial`, at);
+        cached.push(name);
+        continue;
+      }
+    }
     const signal = AbortSignal.timeout(timeoutMs);
     let bytes: Uint8Array;
     try {
@@ -55,9 +76,14 @@ export async function fetchSources(sources: Sources, work: string, fetcher: type
     await mkdir(dirname(at), { recursive: true });
     await writeFile(`${at}.${process.pid}.partial`, bytes);
     await rename(`${at}.${process.pid}.partial`, at);
+    if (copy) {
+      await mkdir(dirname(copy), { recursive: true });
+      await writeFile(`${copy}.${process.pid}.partial`, bytes);
+      await rename(`${copy}.${process.pid}.partial`, copy);
+    }
     fetched.push(name);
   }
-  return { fetched, kept };
+  return { fetched, kept, cached };
 }
 
 /** The files a box is given: the job's own, and each fetched source (a Docker box shares nothing with `work/`, so it is uploaded). */

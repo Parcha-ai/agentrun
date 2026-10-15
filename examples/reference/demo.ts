@@ -31,7 +31,7 @@ import { capJudge } from './judge.ts';
 import { crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
-import { fetchSources, readSources, withSources } from './sources.ts';
+import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
@@ -46,6 +46,8 @@ export type DemoOptions = {
   job: Job;
   fakes: Fakes;
   live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' }) => LiveParts | Promise<LiveParts>;
+  /** The source items an input needs (`{ id, url, bytes, sha256 }`): only these are fetched, on --live or --fetch-sources; without either, a run that lacks one of their files (not in `job.files`) is refused in one line. */
+  sourcesFor?: (input: Record<string, unknown>) => Array<{ id: string; url: string; bytes: number; sha256: string }>;
   /** The arguments to read (default `process.argv.slice(2)`). */
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
@@ -67,7 +69,7 @@ export type DemoResult = {
   overBudget: boolean;
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, dir: { type: 'string' }, json: { type: 'boolean' } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' } } as const;
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 export async function demo(options: DemoOptions): Promise<DemoResult | undefined> {
@@ -156,18 +158,23 @@ async function child(options: DemoOptions) {
     // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
     // caps (Jev's), which a live judge is held to too.
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
-    // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits).
+    // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
+    // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
+    const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     let boxFiles = options.job.files;
-    if (options.spec.sources && (live || env.FETCH_SOURCES === '1')) {
-      const sourcesPath = resolve(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json');
-      await mkdir(place.work, { recursive: true });
-      const sources = readSources(sourcesPath);
-      const got = await fetchSources(sources, place.work);
-      // A Docker box shares nothing with work/: the verified files go in with the job's own.
-      if (boxes && options.spec.boxes?.kind === 'docker' && options.spec.boxes.runIn) boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept]);
+    if (options.sourcesFor || options.spec.sources) {
+      const items = options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(resolve(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json')).items;
+      if (live || env.FETCH_SOURCES === '1') {
+        await mkdir(place.work, { recursive: true });
+        const got = await fetchSources({ items }, place.work, fetch, 60_000, env.CACHE_DIR);
+        // A Docker box shares nothing with work/: the verified files go in with the job's own.
+        if (boxes && options.spec.boxes?.kind === 'docker' && options.spec.boxes.runIn) boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept, ...got.cached]);
+      } else if (options.sourcesFor) {
+        const missing = missingCommitted(items, options.job.files, place.work);
+        if (missing.length) throw new Error(`this input needs ${missing.length} source file(s) a no-key run does not have (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', ...' : ''}): run with --fetch-sources, or --live`);
+      }
     }
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, boxFiles ?? {});
-    const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
     await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } }));
@@ -253,7 +260,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const supervisor = openSupervisor({ dir: recordDir });
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
-  const base: Record<string, string> = { RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  const base: Record<string, string> = { RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
   // A live child needs what the demo's live parts read from the environment, and nothing else of ours.
   // And any `DEMO_*` variable, the demo's own settings.
   for (const name of Object.keys(process.env)) if ((live && /^(BROWSERBASE_|BB_|CHROME_PATH|PI_BROWSER_|HERO_|OPENROUTER_|OPENAI_|ANTHROPIC_)/.test(name)) || name.startsWith('DEMO_')) base[name] = process.env[name]!;

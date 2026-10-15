@@ -31,5 +31,7 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
 } : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 const scripted = { ...fakes, ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
-export const options = { self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: scripted };
+// And `sourcesFor`: the items an input needs, from a JSON list whose ids start `a-` for the default company and `o-` for another.
+const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
+export const options = { self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: scripted, ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

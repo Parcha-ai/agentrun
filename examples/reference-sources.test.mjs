@@ -104,3 +104,22 @@ test('the files a box is given hold the job\'s own and each fetched source (a Do
   assert.equal(new TextDecoder().decode(files['scan-1.png']), 'verified bytes');
   assert.deepEqual(Object.keys(withSources(undefined, join(tmp, 'work'), [])), []);
 });
+
+test('the download cache: a fetched file is kept by its hash, a re-run is served from it, and a damaged copy is fetched again', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { base, served } = await serve(t, { '/big.bin': 'the big file' });
+  const sources = { items: [{ id: 'big', url: `${base}/big.bin`, bytes: 'the big file'.length, sha256: sha('the big file') }] };
+  const cache = join(tmp, 'cache');
+  const first = await fetchSources(sources, join(tmp, 'run-1'), fetch, 60_000, cache);
+  assert.deepEqual([first.fetched, first.cached], [['big.bin'], []]);
+  assert.equal(readFileSync(join(cache, sha('the big file')), 'utf8'), 'the big file');
+  const second = await fetchSources(sources, join(tmp, 'run-2'), fetch, 60_000, cache);
+  assert.deepEqual([second.fetched, second.cached], [[], ['big.bin']]);
+  assert.equal(readFileSync(join(tmp, 'run-2', 'big.bin'), 'utf8'), 'the big file');
+  assert.equal(served.length, 1, 'the second run did not fetch it');
+  writeFileSync(join(cache, sha('the big file')), 'damaged');
+  const third = await fetchSources(sources, join(tmp, 'run-3'), fetch, 60_000, cache);
+  assert.deepEqual([third.fetched, third.cached], [['big.bin'], []], 'a copy that no longer has the checked bytes is fetched again');
+  assert.equal(served.length, 2);
+});
