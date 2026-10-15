@@ -73,49 +73,54 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
-rmSync(base, { recursive: true, force: true });
-console.log(`the runs live under ${base}`);
+// Anything that throws (a copy that runs out of disk, an open that is refused) is a failed example with its message, not a stack trace.
+try {
+  rmSync(base, { recursive: true, force: true });
+  console.log(`the runs live under ${base}`);
 
-// 1. A run taken to a checkpoint, and released: sealed.
-const run = await open("release-note", source);
-const root = await run.harness.root(ctx, { agent });
-await (await root.submit({ type: "input", content: "Write the release note in work/note.txt." }, ctx)).wait(ctx);
-await run.setStatus("paused", { checkpoint: "the note is drafted" });
-await run.release();
-console.log(`checkpoint: generation ${run.generation} wrote note.txt and released the run, sealed`);
-const sealed = digest(source);
+  // 1. A run taken to a checkpoint, and released: sealed.
+  const run = await open("release-note", source);
+  const root = await run.harness.root(ctx, { agent });
+  await (await root.submit({ type: "input", content: "Write the release note in work/note.txt." }, ctx)).wait(ctx);
+  await run.setStatus("paused", { checkpoint: "the note is drafted" });
+  await run.release();
+  console.log(`checkpoint: generation ${run.generation} wrote note.txt and released the run, sealed`);
+  const sealed = digest(source);
 
-// 2. Three forks, each its own run directory.
-const results = await forkLocal(source, AUDIENCES.map((audience) => ({ id: `note-for-${audience}`, root: join(base, audience) })));
-for (const r of results) console.log(`forked ${r.from} into ${r.run}: ${r.files} files, ${r.bytes} bytes, sealed at ${r.sealedSeq}`);
-if (JSON.stringify([...digest(source)]) !== JSON.stringify([...sealed])) fail("the source changed while it was forked");
+  // 2. Three forks, each its own run directory.
+  const results = await forkLocal(source, AUDIENCES.map((audience) => ({ id: `note-for-${audience}`, root: join(base, audience) })));
+  for (const r of results) console.log(`forked ${r.from} into ${r.run}: ${r.files} files, ${r.bytes} bytes, sealed at ${r.sealedSeq}`);
+  if (JSON.stringify([...digest(source)]) !== JSON.stringify([...sealed])) fail("the source changed while it was forked");
 
-// 3. Each fork opens as generation 1, holds the checkpoint's conversation, and goes on with an instruction of its own.
-const problems: string[] = [];
-for (const [i, audience] of AUDIENCES.entries()) {
-  const fork = await open(`note-for-${audience}`, join(base, audience));
-  const conversation = await fork.harness.root(ctx, { agent });
-  const before = (await conversation.entries({}, 100, undefined, ctx)).items.length;
-  const inherited = read(join(base, audience, "work", "note.txt")); // the checkpoint's file, copied into the fork's own work/
-  await (await conversation.submit({ type: "input", content: `Rewrite work/note.txt for ${audience}.` }, ctx)).wait(ctx);
-  const after = (await conversation.entries({}, 100, undefined, ctx)).items.length;
-  await fork.setStatus("done", { audience });
-  await fork.release();
-  const note = read(join(base, audience, "work", "note.txt"));
-  console.log(`generation ${fork.generation} of ${results[i]!.run}: ${before} entries inherited, ${after - before} added; note.txt: ${note}`);
-  if (fork.generation !== 1) problems.push(`${audience} opened generation ${fork.generation}`);
-  if (inherited !== NOTE) problems.push(`${audience} did not inherit the checkpoint's note.txt (${JSON.stringify(inherited)})`);
-  if (before === 0) problems.push(`${audience} did not inherit the checkpoint's conversation`);
-  if (note !== `[${audience}] ${NOTE}`) problems.push(`${audience}'s note is ${JSON.stringify(note)}`);
+  // 3. Each fork opens as generation 1, holds the checkpoint's conversation, and goes on with an instruction of its own.
+  const problems: string[] = [];
+  for (const [i, audience] of AUDIENCES.entries()) {
+    const fork = await open(`note-for-${audience}`, join(base, audience));
+    const conversation = await fork.harness.root(ctx, { agent });
+    const before = (await conversation.entries({}, 100, undefined, ctx)).items.length;
+    const inherited = read(join(base, audience, "work", "note.txt")); // the checkpoint's file, copied into the fork's own work/
+    await (await conversation.submit({ type: "input", content: `Rewrite work/note.txt for ${audience}.` }, ctx)).wait(ctx);
+    const after = (await conversation.entries({}, 100, undefined, ctx)).items.length;
+    await fork.setStatus("done", { audience });
+    await fork.release();
+    const note = read(join(base, audience, "work", "note.txt"));
+    console.log(`generation ${fork.generation} of ${results[i]!.run}: ${before} entries inherited, ${after - before} added; note.txt: ${note}`);
+    if (fork.generation !== 1) problems.push(`${audience} opened generation ${fork.generation}`);
+    if (inherited !== NOTE) problems.push(`${audience} did not inherit the checkpoint's note.txt (${JSON.stringify(inherited)})`);
+    if (before === 0) problems.push(`${audience} did not inherit the checkpoint's conversation`);
+    if (note !== `[${audience}] ${NOTE}`) problems.push(`${audience}'s note is ${JSON.stringify(note)}`);
+  }
+
+  // 4. The source is as it was released, and the forks did not touch each other.
+  if (JSON.stringify([...digest(source)]) !== JSON.stringify([...sealed])) problems.push("the source changed after the forks ran");
+  if (read(join(source, "work", "note.txt")) !== NOTE) problems.push("the source's note.txt changed");
+  for (const audience of AUDIENCES) {
+    const others = AUDIENCES.filter((other) => other !== audience);
+    const text = read(join(base, audience, "work", "note.txt")) ?? "";
+    if (others.some((other) => text.includes(`[${other}]`))) problems.push(`${audience}'s run holds another fork's note`);
+  }
+  if (problems.length > 0) fail(problems.join("; "));
+  console.log(`ok: one sealed run forked three ways, each fork continued on its own from the checkpoint, and the source stayed byte for byte`);
+} catch (error) {
+  fail(`${(error as Error).message ?? error}`);
 }
-
-// 4. The source is as it was released, and the forks did not touch each other.
-if (JSON.stringify([...digest(source)]) !== JSON.stringify([...sealed])) problems.push("the source changed after the forks ran");
-if (read(join(source, "work", "note.txt")) !== NOTE) problems.push("the source's note.txt changed");
-for (const audience of AUDIENCES) {
-  const others = AUDIENCES.filter((other) => other !== audience);
-  const text = read(join(base, audience, "work", "note.txt")) ?? "";
-  if (others.some((other) => text.includes(`[${other}]`))) problems.push(`${audience}'s run holds another fork's note`);
-}
-if (problems.length > 0) fail(problems.join("; "));
-console.log(`ok: one sealed run forked three ways, each fork continued on its own from the checkpoint, and the source stayed byte for byte`);
