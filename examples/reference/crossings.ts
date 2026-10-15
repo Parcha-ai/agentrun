@@ -1,7 +1,7 @@
 // Crossings: the named points a process takes as it runs, and the kill that ends it at one. The child counts its crossings as it takes them, writes each
 // to `CROSS_LOG` so a process that dies leaves them behind, and ends itself with SIGKILL at the planned one. A crossing is never a clock: where a kill lands
 // is a fact of the run. A package adds its own crossings through the same `cross` function (`vision.filing`), so `kills[].point` can name them.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { Fakes, Host, StatusEvent, ToolContext } from './host.ts';
 import type { ChildPlan } from './demo-spec.ts';
 
@@ -9,8 +9,24 @@ import type { ChildPlan } from './demo-spec.ts';
 export type Cross = (point: string, options?: { cut?: boolean }) => boolean;
 export type Crossing = { point: string; n: number; pid: number };
 
+/** What a process does when its planned kill is due at a crossing. Default: it ends itself with SIGKILL. A process under a supervisor asks it instead (`askToBeKilled`): the supervisor writes the kill line first and kills it through the place. */
+export type Kill = (crossing: Crossing) => void;
+const selfKill: Kill = () => { process.kill(process.pid, 'SIGKILL'); };
+
+/** Asks the supervisor to kill this process at the crossing, and waits: the request is a file (whole, by rename), the wait blocks this thread, and the supervisor's kill ends it.
+ *  If nobody answers in a minute it kills itself, so a lost supervisor leaves no process parked for good. */
+export function askToBeKilled(file: string): Kill {
+  return (crossing) => {
+    const whole = `${file}.${process.pid}`;
+    writeFileSync(whole, JSON.stringify(crossing));
+    renameSync(whole, file);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
+    process.kill(process.pid, 'SIGKILL');
+  };
+}
+
 /** The child's crossing function for the kills planned for this process (none: it only logs). */
-export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now(), window: EffectWindow = { open: 0 }): Cross {
+export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now(), kill: Kill = selfKill, window: EffectWindow = { open: 0 }): Cross {
   let n = 0;
   // A storm takes no crossing before the process has opened the journal and begun its first node: a kill earlier than that leaves a generation the journal never recorded.
   let begun = false;
@@ -35,7 +51,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // A named point is taken as named; a storm waits for the first node to have begun.
     const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && timesEligible === run.n;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) process.kill(process.pid, 'SIGKILL');
+    if (due) kill({ point, n, pid: process.pid });
     return false;
   };
 }
