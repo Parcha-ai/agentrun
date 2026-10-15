@@ -1,0 +1,7 @@
+---
+packages: @parcha/pi-transport
+kind: fix
+---
+`boxEnv`'s abort and timeout no longer leave a command running when the call that kills it fails. The kill call's result used to be dropped, so a kill exec that failed fast or timed out on a loaded provider API left the command's process group running in the box after `exec` had answered `aborted` or `timeout`, and nothing ended it later. The kill now reads back that no live process of the group is left (a zombie is not counted: `kill -0` succeeds on one, and in a container whose first process does not reap, a killed group would have stayed "alive" for ever), and the call is sent again at 1, 2 and 4 seconds when it fails, times out or finds the group alive, within 10 seconds of wall time, a call in flight included. A stop whose kill call worked answers as fast as before; one that needed a retry answers later, by at most 10 seconds.
+- A new optional property on that error: when no kill call could confirm the group gone within the bound, the `aborted` or `timeout` error is a `StoppedCommandError` (new type, exported from `@parcha/pi-transport/hands`) with `killUnconfirmed: true`, and the command stays tracked so `cleanup()` ends it with the rest. It is absent when the group was confirmed gone.
+- The live and local tests of "the whole process group is killed on an abort and on a timeout" now poll for "not running" with a bound that fails, instead of reading absence once right after `exec` returns.
