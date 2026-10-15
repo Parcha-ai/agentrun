@@ -66,7 +66,7 @@ export function startedAt(dir: string): string {
 }
 
 /** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. */
-function keepBlob(dir: string, buffer: Buffer, extension: string): string {
+export function keepBlob(dir: string, buffer: Buffer, extension: string): string {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const hash = createHash('sha256').update(buffer).digest('hex');
   const at = join(dir, 'blobs', `${hash}.${extension}`);

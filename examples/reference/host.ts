@@ -94,6 +94,8 @@ export type Fakes = {
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** Called once with the backend the supervisor serves the pages from, before it serves: a demo shapes what its fake browser answers (a screenshot's size, a page's behavior). */
+  backend?: (backend: FakeBackend) => void;
   /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */
   tokensPerSecond?: number;
   /** How many model turns one process can take before the faux provider has none queued; default 64. A job with many branches needs more. */

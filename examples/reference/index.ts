@@ -18,6 +18,7 @@ export { openSupervisor } from './record.ts';
 export { finishRecording } from './record.ts';
 /** The code a recording was cut from: repository, commit, and each package's version. */
 export { codeOf } from './record.ts';
+export { keepBlob } from './record.ts';
 /** The store export the recorder reads the run's commits through; it throws if this build of the package lacks it. */
 export { packageCommitRecorder } from './record-store.ts';
 

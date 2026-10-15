@@ -260,6 +260,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   mkdirSync(recordDir, { recursive: true });
   // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
+  options.fakes.backend?.(backend);
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir });
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
