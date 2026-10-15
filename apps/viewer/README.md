@@ -56,9 +56,10 @@ The buttons deploy this replay viewer only: it plays recorded runs, never runs a
 A test (`test/deploy.test.ts`) holds both configs and both buttons to that: no variable, secret or binding.
 
 The hosted gallery is published by `.github/workflows/pages.yml` on each push to `main` that touches `apps/viewer/`.
-It builds the page, refuses to publish unless every bundled recording passes `scripts/recording/validate.mjs` (the
-format, and its scan for credentials and machine paths), and deploys with the job's own token, scoped to Pages; it
-names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that and runs its gate.
+It builds the page, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
+in it valid (`scripts/recording/validate.mjs`), holding only its manifest, its lines and its blobs; every text file
+free of credential shapes and machine paths; the gallery embedding exactly the recordings beside it. It deploys with the
+job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that.
 
 ## Recordings
 

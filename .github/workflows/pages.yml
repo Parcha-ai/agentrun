@@ -36,10 +36,11 @@ jobs:
           node-version-file: .nvmrc
       - name: Build the viewer and its gallery
         run: node apps/viewer/build.mjs
-      # Nothing is published unless every bundled recording obeys agentrun.recording/1 and holds no credential-shaped
-      # value or machine path (the validator's scan); an empty gallery fails too.
-      - name: Gate on the bundled recordings
-        run: node scripts/recording/validate.mjs apps/viewer/recordings/*/
+      # Nothing is published unless what was built passes: every recording in it valid (agentrun.recording/1), holding
+      # only its manifest, its lines and its blobs; every text file free of credential shapes and machine paths; the
+      # gallery embedding exactly the recordings beside it. An empty gallery fails too.
+      - name: Gate on what would be published
+        run: node scripts/recording/gate.mjs apps/viewer/dist
       - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/viewer/dist

@@ -3,7 +3,7 @@
 // invariants, the blobs the lines name (present, and named by their own SHA-256), and that nothing in it looks like a
 // credential. It reports the first problem with its line number.
 //
-// `node scripts/recording/validate.mjs <recording-dir>...`: each directory checked; any problem exits 1.
+// `node scripts/recording/validate.mjs <recording-dir>`
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -270,16 +270,13 @@ export function validateRecording(dir) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const dirs = process.argv.slice(2);
-  if (dirs.length === 0) { console.error('usage: node scripts/recording/validate.mjs <recording-dir>...'); process.exit(2); }
-  // Each directory is checked and reported; one with a problem fails the whole call.
-  for (const dir of dirs) {
-    const problems = validateRecording(dir);
-    if (problems.length === 0) console.log(`${dir}: a valid ${FORMAT} recording`);
-    else {
-      const [first] = problems;
-      console.error(`${dir}: ${first.where}${first.line === undefined ? '' : `:${first.line}`} ${first.message}${problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''}`);
-      process.exitCode = 1;
-    }
+  const dir = process.argv[2];
+  if (!dir) { console.error('usage: node scripts/recording/validate.mjs <recording-dir>'); process.exit(2); }
+  const problems = validateRecording(dir);
+  if (problems.length === 0) console.log(`${dir}: a valid ${FORMAT} recording`);
+  else {
+    const [first] = problems;
+    console.error(`${dir}: ${first.where}${first.line === undefined ? '' : `:${first.line}`} ${first.message}${problems.length > 1 ? ` (and ${problems.length - 1} more)` : ''}`);
+    process.exitCode = 1;
   }
 }
