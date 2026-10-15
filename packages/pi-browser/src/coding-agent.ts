@@ -9,7 +9,7 @@ import {
   BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, sessionSpec,
   type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput,
 } from "./core/custody.js";
-import { classifyBrowserError, type BrowserFailure } from "./core/failures.js";
+import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
 import type { BrowserConfig, BrowserPolicy, BrowserProvider, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
@@ -41,7 +41,7 @@ export type CodingAgentOptions = {
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
 
 const refused = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
-  new BrowserFailureError({ ok: false, code, retryable: false, effect: "none", message });
+  new BrowserFailureError(browserFailure(code, message));
 
 type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null };
 type Deps = {
@@ -54,9 +54,13 @@ type Deps = {
 };
 
 const now = () => new Date().toISOString();
+/** The provider released the browser and could not remove a directory it left (`ProfileNotRemovedError`'s code, read without importing the provider). */
+const directoryLeft = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === "profile_not_removed";
 
 export class LocalCustody implements CustodyPort<PageDriver> {
   private live: Live | null = null;
+  /** Browsers that are gone whose directories are not: each is released again as cleanup, never kept as the live session. */
+  private leftovers: Live[] = [];
   private seq = 0;
   private notice: string | null = null;
   private readonly queue = keyedSerializer();
@@ -111,7 +115,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const provider = await this.d.provider();
     const tag = leaseTag("pib", this.d.config.run, randomUUID().slice(0, 8), ++this.seq);
     const spec = sessionSpec(this.d.config, tag, overrides);
-    const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now() });
+    const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS)]);
     let live: Live | null = null;
@@ -137,15 +141,39 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     }
   }
 
-  /** A release the provider fails leaves the session held, so a later release, the shutdown or the next start can retry
-   *  it. */
+  /** A release the provider fails leaves the session held, so a later release, the shutdown or the next start can retry it. The exception is a
+   *  release that says the browser is gone and only a directory is left (`profile_not_removed`): that session is over (it is never the live
+   *  one again), its record stays open for the directory, which is released again by the next release, the shutdown or the next start; the
+   *  caller is still told what is left. */
   private async finish(live: Live, reason: ReleaseReason): Promise<void> {
+    await this.sweepLeftovers();
     // A close that never comes back (Stagehand after a reconnect) never holds up the provider's release.
     if (live.driver) await closeDriver(live.driver);
-    try { await (await this.d.provider()).release(live.ref); } catch (error) { throw this.failure(error); }
+    try { await (await this.d.provider()).release(live.ref); } catch (error) {
+      if (!directoryLeft(error)) throw this.failure(error);
+      if (this.live === live) this.live = null;
+      live.driver = null;
+      Object.assign(live.record, { state: "releasing", releaseReason: reason });
+      this.save(live.record);
+      this.leftovers.push(live);
+      throw this.failure(error);
+    }
     if (this.live === live) this.live = null;
     Object.assign(live.record, { state: "released", releaseReason: reason });
     this.save(live.record);
+  }
+
+  /** Releases again each browser that is gone and whose directory was left; one that still cannot be removed stays for the next time, and the
+   *  last such failure is returned for a caller that was asked to release. */
+  private async sweepLeftovers(): Promise<unknown> {
+    let stillLeft: unknown = null;
+    const pending = this.leftovers.splice(0);
+    for (const live of pending) {
+      try { await (await this.d.provider()).release(live.ref); } catch (error) { this.leftovers.push(live); stillLeft = error; continue; }
+      Object.assign(live.record, { state: "released" });
+      this.save(live.record);
+    }
+    return stillLeft;
   }
 
   private async retireEnded(): Promise<boolean> {
@@ -165,7 +193,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
 
   relaunch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
     return this.serial(async () => {
-      if (this.live) await this.finish(this.live, "relaunch");
+      // A browser that is gone with only its directory left is over: the new one opens, and the directory is retried later.
+      if (this.live) await this.finish(this.live, "relaunch").catch((error) => { if (this.live) throw error; });
       return this.launch(overrides);
     });
   }
@@ -174,6 +203,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     return this.serial(async () => {
       const live = this.live;
       if (live) await this.finish(live, "tool");
+      else { const stillLeft = await this.sweepLeftovers(); if (stillLeft) throw this.failure(stillLeft); } // no browser, but a directory an earlier release left
       return { released: !!live, sessionId: live?.ref.id ?? null };
     });
   }
@@ -183,11 +213,13 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     return this.serial(async () => {
       this.idle.cancel(this.d.config.label);
       if (this.live) await this.finish(this.live, reason).catch(() => undefined);
+      await this.sweepLeftovers();
     });
   }
 
   async dispatching(): Promise<void> {}
   async journal(): Promise<void> {}
+  async mark(): Promise<void> {}
   async settle(): Promise<void> {}
 
   async navigated(url: string): Promise<void> { if (this.live) this.live.record.lastUrl = scrubPageUrl(url, this.d.redact); }
@@ -220,7 +252,7 @@ type Runtime = {
   close(): Promise<void>;
 };
 
-type Settings = { options: CodingAgentOptions; env: NodeJS.ProcessEnv; policy: BrowserPolicy; impls: Record<string, ToolImpl<PageDriver> | undefined> };
+type Settings = { options: CodingAgentOptions; env: NodeJS.ProcessEnv; policy: BrowserPolicy; impls: Partial<Record<string, ToolImpl<PageDriver>>> };
 
 const flagOf = (pi: ExtensionAPI, name: string, fallback?: string): string | undefined => {
   const value = pi.getFlag(name);
@@ -322,7 +354,8 @@ function registerTool(pi: ExtensionAPI, contract: ToolContract, runtimeOf: (ctx:
 export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: ExtensionAPI) => void {
   const env = options.env ?? process.env;
   const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, ...(env.PI_BROWSER_PROXIES === "1" ? { proxies: true } : {}), ...options.policy };
-  const impls = { ...custodyTools, ...pageTools() } as unknown as Record<string, ToolImpl<PageDriver> | undefined>;
+  // pi checks a call's arguments against the tool's schema before execute, so each implementation receives its own shape.
+  const impls = { ...custodyTools, ...pageTools() } as Partial<Record<string, ToolImpl<PageDriver>>>;
 
   return function piBrowser(pi: ExtensionAPI): void {
     let runtime: Runtime | null = null;

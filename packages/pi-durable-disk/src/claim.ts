@@ -42,7 +42,7 @@ export interface ArchilHost {
   proc?: string;
   /** `staleGrace`: how long a daemon left on an unmounted mountpoint may take to exit by itself before it is killed. */
   timeoutMs?: { mount?: number; sync?: number; unmount?: number; cli?: number; staleGrace?: number };
-  /** File access on the mount; replaceable so tests can inject a dead mount (ENOTCONN) or a fence (EIO). */
+  /** File access on the mount; replaceable so tests can inject a dead mount (ENOTCONN, ECONNABORTED) or a fence (EIO). */
   fs?: { stat?(path: string): Promise<unknown>; persist?(path: string, data: string): Promise<void> };
 }
 
@@ -72,6 +72,12 @@ export interface Claim {
   readonly fenced: boolean;
   /** Mark the claim lost (the store's facade calls this on an I/O-class error); later barriers throw at once. */
   markFenced(cause?: unknown): void;
+  /**
+   * Where the run's environment records the commands it starts, so that the next open of this claim ends what a killed
+   * incarnation left running (`reapCommands`, before the Harness opens). Set by a claim that nothing else cleans up after,
+   * as a local run's; a mount's host ends them with its unit's cgroup or its container.
+   */
+  readonly commands?: string;
   /** `archil sync`: every pending write on the mount is durable when it resolves. A failure fences the claim. */
   barrier(): Promise<{ ms: number }>;
   /**
@@ -460,13 +466,24 @@ function isOurs(entry: { source: string; fstype: string }, ref: RunRef): boolean
   return entry.fstype === "fuse.archil" && (entry.source === base || entry.source === `${base}[${ref.region}]`);
 }
 
-/** A FUSE mount whose daemon is gone answers stat with ENOTCONN; `archil` refuses it as "not running". */
+/**
+ * The errno codes of a stat on a FUSE mount whose daemon is gone: ENOTCONN once its connection is torn down, ECONNABORTED
+ * for a stat already in flight while it is torn down. Codes, never messages: a message is translated by the locale.
+ */
+export const DEAD_CONNECTION: ReadonlySet<string> = new Set(["ENOTCONN", "ECONNABORTED"]);
+
+/**
+ * Whether the FUSE daemon behind a mount is gone, which `archil` reports as "not running". Its connection is torn down,
+ * so a stat fails with ENOTCONN; a stat already in flight while the dying daemon's connection is torn down (right after a
+ * kill -9, while its threads exit) fails with ECONNABORTED instead. Both are the connection's own end: a live daemon,
+ * however slow, answers, and a stopped one keeps the stat waiting.
+ */
 async function isDead(host: Host, mountpoint: string): Promise<boolean> {
   try {
     await host.stat(mountpoint);
     return false;
   } catch (err) {
-    return (err as { code?: unknown }).code === "ENOTCONN";
+    return DEAD_CONNECTION.has(String((err as { code?: unknown }).code));
   }
 }
 

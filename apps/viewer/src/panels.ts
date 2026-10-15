@@ -8,24 +8,32 @@ import type { Fold } from './replay.ts';
 import type { Counters } from './counters.ts';
 import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
 
+/** A region in percent of the element that holds it: left, top, width, height. */
+export type Box = { x: number; y: number; w: number; h: number };
+/** An element's props. `cite`: a click selects that citation in every panel (`ViewContext.cite`). `box`: the element is
+ *  placed over its parent at that region. */
+/** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
+export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box; vars?: Record<string, number> };
+
 /** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
 export type Node =
   | string
-  | { tag: string; class?: string; path?: string; title?: string; vars?: Record<string, number>; children?: Node[] }
+  | ({ tag: string; children?: Node[] } & Props)
   | { tag: 'img'; blob: string; alt: string; class?: string }
   | { tag: 'a'; blob: string; text: string; class?: string }
   | { tag: 'frame'; session: string; class?: string };
 
-/** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
-export const h = (tag: string, props: { class?: string; path?: string; title?: string; vars?: Record<string, number> } = {}, ...children: (Node | false | undefined)[]): Node =>
+export const h = (tag: string, props: Props = {}, ...children: (Node | false | undefined)[]): Node =>
   ({ tag, ...props, children: children.filter((child): child is Node => child !== false && child !== undefined) });
 
 /** The recording the manifest's `baseline` names, folded by the shell as it folds the one on screen: its label, its
  *  counters at its end, and how long it ran (ms, null when its manifest's times do not parse). */
 export type BaselineView = { label: string; counters: Counters; ms: number | null; providers?: 'real' | 'scripted' };
 /** What the shell hands a view: the time of the point, the focused path (a view input: no line is dropped for it), and
- *  the baseline when the manifest names one (a real recording, never typed-in numbers). */
-export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted' };
+ *  the baseline when the manifest names one (a real recording, never typed-in numbers). `cite` is the selected
+ *  citation, a view input like the focus. `json` is a JSON blob the recording's result names, parsed, by its SHA-256:
+ *  undefined until the shell has read it, and for any other blob. */
+export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');

@@ -31,11 +31,14 @@ in `test/core.test.ts` checks this for every registered panel at every stop of t
 
 Plain nodes, not DOM. The viewer draws them.
 
-- `h(tag, props, ...children)`: an element. `props.class`, `props.title`, and `props.path`.
+- `h(tag, props, ...children)`: an element. `props.class`, `props.title`, `props.path`, `props.cite` (a click selects
+  that citation, below) and `props.box` (`{ x, y, w, h }` in percent: the element is placed over its parent, which the
+  panel's CSS positions).
 - A string: text.
 - `{ tag: 'img', blob, alt }`: an image from the recording's `blobs/`, by its SHA-256.
 - `{ tag: 'a', blob, text }`: a link to any file in `blobs/` (an evidence record, the result), opened beside the page.
-  A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws.
+  A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
+  result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
 
 Any node with a `path` is clickable: a click focuses that execution path in every panel, and the viewer shows the
@@ -68,16 +71,22 @@ focus and a way to clear it. Give a node the `path` of the workflow position it 
 
 A `{ tag: 'frame', session }` node shows the session's `frame.track` (a WebM) at the current time when the recording
 has one, else its latest `frame` JPEG, and a `frame.gap` as a gap with its reason (`process_killed`,
-`credential_on_page`, `session_released`), never as a frozen picture. The browser panel decides which sessions to show
+`credential_on_page`, `session_released`), never as a frozen picture. A `credential_on_page` gap's `detail` (`field`,
+`typed`, `too_deep`, `unreadable_frame` or `host`) is its tooltip. The browser panel decides which sessions to show
 and lays out the tiles; the viewer draws the picture.
 
 ## Focus and the shell
 
-The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one; and
-`baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one;
+`cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
+moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
+or a `result` line names, undefined until the shell has read it; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
+
+A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
+by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
 
 Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line for it: every panel reduces the whole
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch

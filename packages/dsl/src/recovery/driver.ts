@@ -12,9 +12,9 @@ import { canonicalHash as hash } from "./canonical-hash.js";
 import { RecoveryError } from "./errors.js";
 import { gatewayIntentOf } from "./handoff-receipts.js";
 import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
-  frozenStepSessionId, frozenStepId, frozenEffectId, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
+  frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot as Snapshot, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
-import type { RecoveryBinding, RecoveryJournal, RecoveryStore } from "./store.js";
+import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryStore } from "./store.js";
 
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
@@ -142,6 +142,20 @@ export type RecoveryOptions = {
   /** Closes the session of an LLM step's attempt that ended without a submission. It runs on the driver's commit
    *  chain, before the commit that records the attempt as closed; its failure is the run's. */
   closeStepSession?: (sessionId: string) => Promise<unknown>;
+  /** Settles effects a killed process left unknown, through the driver's own open of the run (one generation per process).
+   *  `openRecovery` calls it once, after the open and before anything resumes, when the journal holds an effect that was
+   *  admitted and never completed; `unknown` is those effects, with their `intent` and the `args` the call was admitted with (what the host's door is sent; absent on a record written before args were kept). `complete(id, value, receipt)`
+   *  records `value` as the effect's result, as `journal.complete` does with `{ value, files }`, hashing the files the effect declares (a missing one refuses the settlement); `receipt.intent` names
+   *  the call the host's door answered, as a handoff reads it. `receipt.calls` are the outside calls the host MADE or FOUND APPLIED
+   *  while settling it, records of the shape `{ outcome: "applied" | "failed" | "unknown", ... }`, so that the effect's `calls` lists
+   *  every applied call exactly once. They are kept on the effect before it completes, after the calls an earlier process kept, as a
+   *  dispatch keeps its own. A re-send is a call of this process. A settle from evidence that the call applied (a provider's own
+   *  lookup, an answer the host kept) reports `{ outcome: "applied" }` when the calls the effect holds include no applied entry,
+   *  and adds none when its applied call is already there. A settle that made no call and found none applied reports none. The
+   *  effect is then answered from that result and not
+   *  dispatched again. One it leaves unknown is refused at resume (`FROZEN_EFFECT_UNKNOWN`). A throw fails the open with
+   *  `RECOVERY_RECONCILE_FAILED`, keeping the cause, before any effect is dispatched. */
+  reconcile?: (unknown: RecoveryEffect[], complete: (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>) => Promise<void>;
 };
 
 /** What a host's effect adapter receives under the driver: the interpreter's parameters, `call`, which keeps each
@@ -235,6 +249,28 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // answer whole: the branch taken, the choice and the flag are derived from it by the
     // interpreter's rule, and the commit below stores them.
     completeRouteDecisions(snapshot.pin, view);
+    const left = journal.effects().filter((effect) => effect.status === "unknown");
+    if (options.reconcile && left.length > 0) {
+      let reconciling = true;
+      try {
+        await options.reconcile(structuredClone(left), async (id, value, receipt) => {
+          if (!reconciling) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id} after reconcile returned`);
+          if (!left.some((effect) => effect.id === id)) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id}: not an unknown effect of this run`);
+          // The files the effect declares are hashed now, as a normal completion records them: a missing output refuses the
+          // settlement, and a later resume refuses an output that changed.
+          const at = frozenEffectPath(id)?.path;
+          const declared = at === undefined ? undefined : nodeAt(view, at);
+          const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
+          Object.assign(snapshot.files, files);
+          // The calls an earlier process kept stay: the host's re-send is added after them, so a call that applied before the kill is still on record.
+          if (receipt?.calls?.length) await journal.called(id, [...(journal.effect(id)?.calls ?? []), ...receipt.calls]);
+          await journal.complete(id, { value, files, ...(receipt?.intent ? { intent: receipt.intent } : {}) });
+        });
+      } catch (error) {
+        throw error instanceof RecoveryError && error.code === "RECOVERY_RECONCILE_FAILED" ? error
+          : new RecoveryError(`Reconcile failed: ${error instanceof Error ? error.message : String(error)}`, "RECOVERY_RECONCILE_FAILED", { cause: error });
+      } finally { reconciling = false; }
+    }
     await journal.save(serial());
   } catch (error) { await journal.close(); throw error; }
   const ordinals = new Map<string, number>();
@@ -645,7 +681,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         inFlight += 1;
         try {
           // The driver's state and the admission are one transaction.
-          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external));
+          const admitted = await persist(() => journal.admit(id, String((params.node as any).label), argsHash, serial(), driver, external, params.input ?? null));
           if (admitted !== "new") throw failure("FROZEN_EFFECT_UNKNOWN", `Reconcile ${id} before dispatch`);
           // What landed while the admission was being committed still counts: after a cancel, the caller's own
           // cancellation or the effect's deadline, the effect stays admitted and unknown and the adapter is never called.

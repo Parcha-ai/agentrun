@@ -13,6 +13,7 @@ import { Harness } from "@earendil-works/pi-durable";
 import type { HarnessOptions, Seq, Storage, StorageWrite, ToolRegistration } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
+import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
 import { EXIT_FENCED, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
@@ -99,7 +100,7 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "commands" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
@@ -175,7 +176,15 @@ export interface BeforeResume {
   readonly harness: Harness;
   readonly context: Context;
   readonly generation: number;
+  /** This incarnation's `run.json`, which the open has already written (`running`, this holder, `detail` null). */
   readonly record: RunRecord;
+  /**
+   * `run.json` as it was before this open wrote over it: how the run was left. After a park it is `sleeping` with its
+   * `wakeAt` and `detail` and the seal its release wrote; after a planned stop, `paused` or `done` with the `detail` it
+   * set; after a crash, `running` with the dead holder and no new seal. On a fork's first open it is the record `fork`
+   * wrote: `paused`, generation 0, `detail.forkedFrom`. Null only when there was no `run.json` (a new run's first open).
+   */
+  readonly previous: RunRecord | null;
   readonly claim: RunClaim;
   /** The store the Harness was opened over, read-only: four reads on an object of their own, and no way to a write. */
   readonly storage: StoreReads;
@@ -232,6 +241,8 @@ export interface RunLease {
   readonly record: RunRecord;
   /** The seal the previous incarnation's clean release wrote; null on a first run and after a crash. */
   readonly sealedSeq: number | null;
+  /** `run.json` as the open found it, before it wrote this incarnation's: null when there was none (a new run's first open). */
+  readonly previous: RunRecord | null;
   readonly fenced: boolean;
   /**
    * The seal check on the app's store, before anything commits: the store's head (`storeHead`) below
@@ -527,6 +538,10 @@ class Lease implements RunLease {
 
   get sealedSeq(): number | null {
     return this.#previous?.sealedSeq ?? null;
+  }
+
+  get previous(): RunRecord | null {
+    return this.#previous ?? null;
   }
 
   get fenced(): boolean {
@@ -957,7 +972,7 @@ class Run implements DurableRun {
       // between the open and the hook, since the Harness has not resumed.
       await step("before-resume", async () => {
         const head = (await storeHead(this.#store!)) as Seq;
-        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, claim: lease.claim, storage: storeReads(storage), head });
+        await before({ harness: this.#harness!, context: this.#context, generation: lease.generation, record: lease.record, previous: lease.previous, claim: lease.claim, storage: storeReads(storage), head });
       });
     }
     await step("resume", () => this.#harness!.resume());
@@ -1017,6 +1032,12 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
   let env: RunEnv | undefined;
   const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step);
   try {
+    // A claim that records its commands (a local run's): end what a killed incarnation left running, now that the owner
+    // lock is held and before the Harness opens, so no command of it still writes in work/ once the run resumes.
+    const commands = lease.rawClaim.commands;
+    // A process of a killed incarnation that outlives its SIGKILL refuses the open (HeldError, 76): the run never resumes
+    // beside it, and its record stays for the next open.
+    if (commands !== undefined) await step("commands", () => reapOrRefuse(commands));
     env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
   } catch (error) {
     await lease.abandon(error);

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import { getDisk, type Disk } from "disk";
-import { KEY_ENV, LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
+import { KEY_ENV, LIVE, REGION, RUN_OWNER, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { ledger, LEDGER } from "./_p8-ledger.ts";
 import { createRunDir, findDelegations, removeMountToken, revokeBestEffort, unmountClaim, type RunRef } from "../../src/claim.ts";
 import { localHost } from "../../src/hosts/local-host.ts";
@@ -51,7 +51,7 @@ const sh = (cmd: string, args: string[]) => spawnSync(cmd, args, { encoding: "ut
 
 async function newRun(name: string): Promise<RunRef> {
   const id = `p8-${STAMP}-${name}`;
-  await createRunDir(disk, id, { uid: 1000, gid: 1000 });
+  await createRunDir(disk, id, RUN_OWNER);
   ledger.subdir(`runs/${id}/`, `live ${name}`);
   runIds.push(id);
   return { disk: disk.id, region: REGION, id };
@@ -216,7 +216,7 @@ before(async () => {
   assert.deepEqual(archilMounts(), [], "no P8 mounts left from an earlier run");
   assert.equal(sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p8-*"]).stdout.trim(), "", "no pda-p8 units left from an earlier run");
   sh("sudo", ["-n", "mkdir", "-p", BASE]);
-  sh("sudo", ["-n", "chown", "ubuntu:ubuntu", BASE]);
+  sh("sudo", ["-n", "chown", `${RUN_OWNER.uid}:${RUN_OWNER.gid}`, BASE]);
   for (const d of [A, B, F, OUT]) mkdirSync(d, { recursive: true, mode: 0o755 });
   sh("chmod", ["755", OUT]);
   writeFileSync(SERVE_TOKEN_FILE, `${SERVE_TOKEN}\n`, { mode: 0o600 });

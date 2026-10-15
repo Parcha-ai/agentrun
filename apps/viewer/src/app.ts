@@ -1,15 +1,17 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
-import { FORMAT, parseLines, processOf, under, validate, type Line, type Manifest, type Recording } from './format.ts';
+import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { animatedPanels, featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
-import { frameFold, pictureAt, type FrameState } from './frames.ts';
+import { animatedPanels, featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
+import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
+import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { transportPanel } from './transport.ts';
+import { visionPanel } from './vision.ts';
 
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
@@ -101,6 +103,7 @@ type Player = {
   lanes: Lanes;
   p: number;
   focus?: string;
+  cite?: string;
   playing: boolean;
   speed: number;
   clock: number;
@@ -130,7 +133,9 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
     : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
   return el('div', { class: 'counters' },
-    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}.`),
+    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
+    stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
     stored('repeated', repeatedLabel(counters), counters.repeatedNotMeasured > 0 ? `An applied call in a later process than an earlier applied one. ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : 'An applied call in a later process than an earlier applied one.', counters.repeated > 0 ? ' alarm' : ''),
     stored('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
     stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
@@ -144,7 +149,8 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `$${counters.cost.toFixed(4)}`, 'Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.'),
+    item('cost', counters.cost === null ? 'unknown' : `${counters.costLowerBound ? 'at least ' : ''}$${counters.cost.toFixed(4)}`,
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
@@ -235,7 +241,7 @@ export function applyVars(target: { style: { setProperty(name: string, value: st
   for (const [name, value] of Object.entries(vars ?? {})) if (/^[a-z][a-z0-9-]*$/i.test(name) && typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
 }
 
-function renderNode(node: Node, player: Player, frames: FrameState, t: number, onFocus: (path: string) => void): globalThis.Node {
+function renderNode(node: Node, player: Player, frames: FrameState, t: number, onFocus: (path: string) => void, onCite: (cite: string) => void): globalThis.Node {
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
     const url = player.recording.blobUrl(node.blob);
@@ -256,10 +262,13 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
       const url = player.recording.blobUrl(picture.blob);
       return Object.assign(el('img', { class: 'frame' }), { src: url ?? '', alt: `session ${node.session}` });
     }
-    if (picture.kind === 'gap') return el('div', { class: 'frame gap', text: `no picture: ${picture.reason.replaceAll('_', ' ')}` });
+    if (picture.kind === 'gap') {
+      const title = gapTitle(picture.detail);
+      return el('div', { class: 'frame gap', text: `no picture: ${picture.reason.replaceAll('_', ' ')}`, ...(title ? { title } : {}) });
+    }
     return el('div', { class: 'frame none', text: 'no picture yet' });
   }
-  const props = node as { tag: string; class?: string; path?: string; title?: string; vars?: Record<string, number>; children?: Node[] };
+  const props = node as { tag: string; children?: Node[] } & Props;
   const out = document.createElement(props.tag);
   if (props.class) out.className = props.class;
   if (props.title) out.title = props.title;
@@ -267,10 +276,70 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   if (props.path) {
     out.classList.add('has-path');
     if (player.focus && under(props.path, player.focus)) out.classList.add('focused');
-    out.addEventListener('click', (event) => { event.stopPropagation(); onFocus(props.path!); });
   }
-  for (const child of props.children ?? []) out.append(renderNode(child, player, frames, t, onFocus));
+  // A click on a node that names a citation selects it; one that names only a path focuses it.
+  if (props.cite !== undefined) {
+    const cite = props.cite;
+    Object.assign(out, { tabIndex: 0 });
+    out.setAttribute('role', 'button');
+    out.classList.add('has-cite');
+    out.addEventListener('click', (event) => { event.stopPropagation(); onCite(cite); });
+    out.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onCite(cite); } });
+  } else if (props.path) out.addEventListener('click', (event) => { event.stopPropagation(); onFocus(props.path!); });
+  if (props.box) {
+    // Only numbers reach the style: a recording's strings never do.
+    const percent = (value: number) => `${Math.min(100, Math.max(0, Number(value) || 0))}%`;
+    Object.assign(out.style, { position: 'absolute', left: percent(props.box.x), top: percent(props.box.y), width: percent(props.box.w), height: percent(props.box.h) });
+  }
+  for (const child of props.children ?? []) out.append(renderNode(child, player, frames, t, onFocus, onCite));
   return out;
+}
+
+/** An element's place under `root`, as each step's tag, first class and rank among its siblings of both: the same place
+ *  in the next draw of the same view. */
+function placeKey(node: Element, root: Element): string {
+  const steps: string[] = [];
+  for (let at: Element | null = node; at && at !== root; at = at.parentElement) {
+    const kind = `${at.tagName}.${at.classList[0] ?? ''}`;
+    steps.push(`${kind}:${at.parentElement ? [...at.parentElement.children].filter((sibling) => `${sibling.tagName}.${sibling.classList[0] ?? ''}` === kind).indexOf(at) : 0}`);
+  }
+  return steps.reverse().join('/');
+}
+
+/** Where the reader is in the panels, by place only: each scrolled element's offsets, and the element with the keyboard
+ *  focus. */
+function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; focus?: string } {
+  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+  const active = document.activeElement;
+  return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
+}
+
+/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was, without
+ *  scrolling it into view. */
+function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
+  if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
+    if (node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth) continue;
+    const offsets = place.scrolls.get(placeKey(node, root));
+    if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+  }
+  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
+}
+
+/** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
+ *  or parse is left out, and the views say they cannot read it. */
+async function resultJson(recording: Recording): Promise<Map<string, Json>> {
+  const named = new Set<string>(recording.manifest.result ? [recording.manifest.result.blob] : []);
+  for (const line of recording.lines) {
+    const blob = line.source === 'host' && line.kind === 'result' ? (line.data as { blob?: unknown } | null)?.blob : undefined;
+    if (typeof blob === 'string') named.add(blob);
+  }
+  const parsed = new Map<string, Json>();
+  await Promise.all([...named].map(async (sha) => {
+    const url = recording.blobUrl(sha);
+    if (!url || recording.blobType(sha)?.split(';')[0] !== 'application/json') return;
+    try { parsed.set(sha, await (await fetch(url)).json() as Json); } catch { /* not readable here */ }
+  }));
+  return parsed;
 }
 
 // ---- the page --------------------------------------------------------------------------------------------------
@@ -293,10 +362,13 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
     ...(other.manifest.providers ? { providers: other.manifest.providers } : {}) };
 }
 
-/** What the shell hands a panel's view at a stop: the time, the focus when there is one, the baseline when the manifest names one, and the
- *  run's own providers (`real` or `scripted`) when its manifest says. */
-export function viewContext(t: number, focus: string | undefined, baseline: BaselineView | undefined, manifest: Manifest, now: number = t): ViewContext {
-  return { t, now, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}) };
+/** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
+ *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
+ *  playback clock (`now`, the time of the point at a stop). */
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number } = {}): ViewContext {
+  const { focus, baseline, cite, json, now } = inputs;
+  return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
+    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
@@ -325,6 +397,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const opened = timeParam(params.get('t'));
   if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
+  player.cite = citeParam ?? undefined;
+  let json: Map<string, Json> | undefined;
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end.
   const chapters: { title: string; p: number; focus?: string }[] = recording.manifest.chapters
@@ -342,7 +416,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} processes · ${recording.manifest.kills} kills · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
+    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
@@ -367,6 +441,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
+  // Selecting a citation is a view input: it moves no stop, so the account it was clicked in stays on screen.
+  const setCite = (cite: string | undefined) => { player.cite = cite; draw(); };
   const scrubTo = (p: number) => { player.p = head.seek(p); draw(); };
 
   function draw() {
@@ -383,17 +459,19 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
       return button;
     }));
-    focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []));
+    focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []),
+      ...(player.cite !== undefined ? [el('span', { text: `Citation ${player.cite.length > 16 ? `${player.cite.slice(0, 12)}…` : player.cite}` }), Object.assign(el('button', { text: 'clear citation' }), { onclick: () => setCite(undefined) })] : []));
     drawPanels(t);
     syncUrl();
   }
 
-  /** The address names where the screen is: the commit, the focus, and (only while the clock is still where a `?t=` link opened it) the time. */
+  /** The address names where the screen is: the commit, the selected citation, the focus, and (only while the clock is still where a `?t=` link opened it) the time. */
   function syncUrl() {
     const line = lines[player.p - 1];
     const url = new URL(location.href);
     if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
-    url.searchParams.delete('cite');
+    // ?cite= names the selected citation; opened without ?at=, it lands at the commit that first wrote it.
+    if (player.cite !== undefined) url.searchParams.set('cite', player.cite); else url.searchParams.delete('cite');
     // A link that opened at a time keeps it only while the screen is still at that time: a scrub or a play would otherwise be undone by a reload.
     const linked = linkedTime(opened, head.clock);
     if (linked !== undefined) url.searchParams.set('t', linked); else url.searchParams.delete('t');
@@ -410,7 +488,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, player.focus, baseline, recording.manifest, head.clock)), player, frames, t, setFocus));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -423,7 +501,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return;
     }
     if (featured) featuredBox.replaceChildren(drawn(featured));
+    const place = placeIn(panels);
     panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
+    restorePlace(panels, place);
   }
 
   range.addEventListener('input', () => scrubTo(Number(range.value)));
@@ -447,6 +527,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); } else syncUrl();
   });
   draw();
+  void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
   if (recording.manifest.baseline) {
     baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline: ${recording.manifest.baseline.label} (loading)` }));
     baselineOf(recording, base).then((loaded) => {
@@ -463,7 +544,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
   const entries = window.AGENTRUN_GALLERY ?? [];
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} processes, ${entry.manifest.kills} kills, ${entry.manifest.model}` }));
+    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');

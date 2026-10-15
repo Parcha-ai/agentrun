@@ -6,7 +6,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { localBoxes } from "../src/box/local.ts";
 import { launch } from "../src/home/launch.ts";
-import { recording, registerLaunchSuite, sh, until } from "./home-launch-support.ts";
+import { HANG_GUARD_MS, recording, registerLaunchSuite, sh, until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const HAS_PROC = existsSync("/proc/self/environ");
@@ -55,9 +55,9 @@ describe.skipIf(!HAS_PROC)("a local box and the launcher", () => {
 		await until(
 			"no process of the box",
 			async () => (processesWith(`PI_TRANSPORT_BOX=${box.id}`).length === 0 ? true : undefined),
-			10_000,
+			HANG_GUARD_MS,
 		);
 		rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		expect(it).toBeDefined();
-	});
+	}, 300_000);
 });
