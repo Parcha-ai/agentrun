@@ -54,7 +54,7 @@ export type EvidenceSink = {
  *  usage, `record.args.native` true). */
 export type LookEvent = {
   readonly conversationId: string;
-  /** `read` or `look`, or the tool whose result held the image (`CallContext.tool`). */
+  /** `read` or `vision.see`, or the tool whose result held the image (`CallContext.tool`). */
   readonly tool: string;
   readonly source: string;
   readonly ask?: string;

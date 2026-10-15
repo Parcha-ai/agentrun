@@ -24,6 +24,7 @@ import {
   type SandboxInfo,
 } from "../src/hosts/daytona.ts";
 import { launchStatus, readState, serve, stop as stopLaunch, type LaunchSpec, type LaunchState } from "../src/hosts/daytona-launch.ts";
+import { procStartTicks } from "../src/hosts/local-host.ts";
 import type { HostHandle } from "../src/supervise.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -503,6 +504,51 @@ test("launcher: never root; another user only as root; nothing runs on a refusal
   assert.throws(() => launchStatus(box, "../escape"), /safe path segment/);
 });
 
+test("launchStatus: once the launcher recorded its exit, that is the status, even while the launcher is still exiting", () => {
+  // The interleaving the terminal-exit test lost under load: the launcher saved phase "exited" and its instance is gone,
+  // but its own process has not ended yet. This test process stands in for that launcher (alive, its real start ticks).
+  const box = mkdtempSync(join(tmpdir(), "daytona-status-"));
+  const me = { launcher: process.pid, launcherTicks: procStartTicks(process.pid) };
+  const save = (over: Partial<LaunchState>) =>
+    writeFileSync(join(box, "r.state"), JSON.stringify({ ...me, phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString(), ...over }));
+  try {
+    save({});
+    const s = launchStatus(box, "r");
+    assert.equal(s.launcherAlive, true, "the stand-in launcher is alive");
+    assert.equal(s.status, "failed");
+    save({ exit: 0, reason: "clean exit" });
+    assert.equal(launchStatus(box, "r").status, "stopped");
+    for (const phase of ["running", "restarting", "stopping"] as const) {
+      save({ phase, exit: null, reason: null });
+      assert.equal(launchStatus(box, "r").status, "running", `a live launcher before its exit is running (${phase})`);
+    }
+    save({ phase: "exited", instance: process.pid, instanceTicks: procStartTicks(process.pid) });
+    assert.equal(launchStatus(box, "r").status, "running", "a live instance is running, even under an exited record");
+  } finally {
+    rmSync(box, { recursive: true, force: true });
+  }
+});
+
+test("stop: a launcher that recorded its exit and outstays its record is sent away, and the call returns at once with the recorded outcome", async () => {
+  const box = scratch("pda-dt-stopexited-");
+  // A separate process stands in for the launcher: alive, with its real start ticks, state saying exited (terminal exit 75).
+  const proc = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  await new Promise((r) => proc.once("spawn", r));
+  try {
+    const pid = proc.pid!;
+    const state: LaunchState = { launcher: pid, launcherTicks: procStartTicks(pid), phase: "exited", instance: null, instanceTicks: null, spawned: 1, restarts: 0, exit: 75, signal: null, reason: "terminal exit 75", at: new Date().toISOString() };
+    writeFileSync(join(box, "x.state"), JSON.stringify(state));
+    const exited = new Promise<unknown>((r) => proc.once("exit", (code, signal) => r({ code, signal })));
+    const t0 = Date.now();
+    const status = await stopLaunch(box, "x", 10_000);
+    assert.equal(status.status, "failed", "the record is the answer");
+    assert.ok(Date.now() - t0 < 2_000, "stop did not wait for a drain: the launch had ended");
+    assert.deepEqual(await exited, { code: null, signal: "SIGTERM" }, "the launcher that outstayed its record got SIGTERM");
+  } finally {
+    proc.kill("SIGKILL");
+  }
+});
+
 // ---- status ------------------------------------------------------------------------------------------------------------
 
 test("sandboxStatus: every Daytona state", () => {
@@ -689,9 +735,22 @@ test("options: the instance never runs as root; box paths are plain; the fleet i
   bad({ mountRoot: "relative/path" });
   bad({ boxDir: "/run/pda; rm -rf /" });
   bad({ node: "/usr/bin/node $(id)" });
+  bad({ packageDir: "/opt/app/node_modules/@scope/pkg$(id)" });
+  bad({ packageDir: "/opt/app/node_modules/@scope/pkg;id" });
+  bad({ packageDir: "/opt/app/../../etc" });
+  bad({ mountRoot: "/mnt/archil/.." });
   bad({ fleet: "Upper" });
   bad({ snapshot: "" });
   assert.equal(daytonaHost({ client, snapshot: "s" }).mountRoot, "/mnt/archil");
+});
+
+test("a package installed with npm is a plain box path: a scoped directory is accepted, a climbing one is not", () => {
+  const client = fakeDaytona().client;
+  assert.doesNotThrow(() => daytonaHost({ client, snapshot: "s", packageDir: "/opt/app/node_modules/@scope/pkg" }));
+  assert.doesNotThrow(() => daytonaHost({ client, snapshot: "s", packageDir: "/opt/app/node_modules/@parcha/pi-durable-disk", launcher: "/opt/app/node_modules/@parcha/pi-durable-disk/dist/hosts/daytona-launch.js" }));
+  for (const packageDir of ["/opt/app/../x", "/opt/app/node_modules/@scope/pkg/..", "/opt/..", "/opt/@scope/../../etc"]) {
+    assert.throws(() => daytonaHost({ client, snapshot: "s", packageDir }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", packageDir);
+  }
 });
 
 test("sandboxName: lowercase, at most 63 characters, safe for any run id", () => {

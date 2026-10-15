@@ -804,6 +804,41 @@ test("release cleans a dead mount with fusermount after archil unmount refuses i
   assert.equal(r2.read().mounts[r2.root], undefined, "and is cleaned anyway");
 });
 
+// The race after kill -9 of a run's FUSE daemon: `archil unmount` already finds it "not running" while the kernel is still
+// tearing its connection down, and the stat that decides "dead" is in flight at that moment. The kernel ends a request in
+// flight at the abort with ECONNABORTED; only a stat issued after it gets ENOTCONN. Forced: the mount is dead, and the
+// first stat is the one in flight.
+test("a stat in flight when the dead daemon's connection aborts (ECONNABORTED) is a dead mount: fusermount cleans it", async () => {
+  const r = disposeAfter(rig());
+  await acquire(r.opts);
+  r.set((s) => void (s.mounts[r.root].alive = false));
+  const seen: string[] = [];
+  const stat = async (p: string) => {
+    const code = seen.length === 0 ? "ECONNABORTED" : "ENOTCONN";
+    seen.push(code);
+    throw Object.assign(new Error(`${code}: stat '${p}'`), { code });
+  };
+  assert.equal(await unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat } }), "fusermount", "read as live, this was UNMOUNT_FAILED");
+  assert.deepEqual(seen, ["ECONNABORTED"], "the stat in flight at the abort decided it");
+  assert.equal(r.calls("archil", "unmount").length, 1);
+  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.read().mounts[r.root], undefined);
+});
+
+test("only the connection's own codes read as dead: a mount whose stat fails otherwise is live and never fusermounted", async () => {
+  for (const code of ["EIO", "EACCES", "ETIMEDOUT"]) {
+    const r = disposeAfter(rig());
+    await acquire(r.opts);
+    r.set((s) => void (s.behave.unmountFail = true));
+    const stat = async () => {
+      throw Object.assign(new Error(code), { code });
+    };
+    await assert.rejects(unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat } }), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED", code);
+    assert.equal(r.calls("fusermount").length, 0, code);
+    assert.ok(r.read().mounts[r.root], code);
+  }
+});
+
 test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermounted", async () => {
   const r = disposeAfter(rig());
   const claim = await acquire(r.opts);

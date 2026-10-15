@@ -11,12 +11,11 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | no |
 | [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux, Node 22.19 or later | yes |
 | [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux, Node 22.19 or later | yes |
+| [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux, Node 22.19 or later | yes |
 | [planned-move](planned-move/) | A run moves from this machine to a Daytona sandbox at a step boundary by hand-over: released and sealed, opened at the next generation, the agent told, nothing revoked or interrupted | Linux host with the archil client and systemd, an Archil disk and API key, a Daytona key (Tier 3 or 4) | no |
 | [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | yes |
 | [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | no |
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | no |
-
-Coming: `kill-9` (a coding agent that survives `kill -9`).
 
 ## Run one
 

@@ -3,6 +3,9 @@
 A static page that replays one agentrun run recorded as `agentrun.recording/1` (`RECORDING.md`): every process of
 the run, every kill, every commit of its store. No key, no server: it opens from `file://` or any static host.
 
+The hosted gallery is at https://parcha-ai.github.io/agentrun/. It is this replay viewer with the recordings in
+`recordings/`: it plays recorded runs, and never runs an agent or calls a model.
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Parcha-ai/agentrun/tree/main/apps/viewer)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FParcha-ai%2Fagentrun&root-directory=apps%2Fviewer)
 
@@ -51,6 +54,12 @@ Both buttons above build the page with `node build.mjs` and serve `dist/` as sta
 Cloudflare (static assets, no Worker code) and `vercel.json` for Vercel.
 The buttons deploy this replay viewer only: it plays recorded runs, never runs an agent or calls a model, and asks for no key.
 A test (`test/deploy.test.ts`) holds both configs and both buttons to that: no variable, secret or binding.
+
+The hosted gallery is published by `.github/workflows/pages.yml` on each push to `main` that touches `apps/viewer/`.
+It builds the page, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
+in it valid (`scripts/recording/validate.mjs`), holding only its manifest, its lines and its blobs; every text file
+free of credential shapes and machine paths; the gallery embedding exactly the recordings beside it. It deploys with the
+job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that.
 
 ## Recordings
 

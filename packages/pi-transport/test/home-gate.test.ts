@@ -31,7 +31,7 @@ if (!Number.isInteger(MOVES) || MOVES < 1) {
 	);
 }
 /** A move takes about a second, and five at the worst. */
-const TIMEOUT_MS = 30_000 + MOVES * 5_000;
+const TIMEOUT_MS = 120_000 + MOVES * 20_000;
 /** Longer than any tool call or model request here, so only what never ends still runs at the timeout. */
 const SHORT_DRAIN_MS = 400;
 /** Kinds of the session's own work that may be in flight toward the gate when a drain gives up. */

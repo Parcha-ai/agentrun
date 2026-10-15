@@ -202,7 +202,7 @@ Two live checks. Both run from the repository root at the head, after `npm ci --
   fail, not a skip.
 - **Needs:** ffmpeg and ffprobe, poppler-utils, optionally LibreOffice (`soffice`) on PATH. No key. Cost: $0.
 
-**2. Real eyes** (one paid look through pi-ai, the path no fake covers). Pending: `test/live/eyes.mjs` lands in a follow-up pull request; until it is on `main`, this check is not run and the batch line says so.
+**2. Real eyes** (one paid look through pi-ai, the path no fake covers).
 
 - **When:** the diff touches `packages/pi-vision/src/eyes/**`, `src/core/guard.ts`, `src/core/evidence.ts`,
   `src/core/limits.ts`, `src/core/look.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or dev ranges in

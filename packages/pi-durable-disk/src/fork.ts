@@ -3,8 +3,9 @@
 // root of their own, never where an instance mounts. The source is only read (its claim probe aside, which every mount
 // writes). The new run's run.json starts at generation 0 and carries the source's seal: its first open is generation 1
 // and refuses a copy that lost a committed sequence (STORE_BEHIND_SEAL). Supervisor side: it needs the API key.
-import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, rm, rmdir, symlink, utimes } from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, realpath, rename, rm, rmdir, symlink, utimes } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { acquire, createRunDir, type AcquireOptions, findDelegations, mintMountToken, removeMountToken, runPath, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { persistRecord, readRunRecord, RUN_JSON, RUN_JSON_TEMP, type RunRecord } from "./status.ts";
@@ -17,7 +18,7 @@ const RELEASED: readonly RunRecord["status"][] = ["paused", "sleeping", "done", 
  * Not copied: the run's own lifecycle files (the fork writes its own run.json), the supervisor's start mark (copied, it
  * would hold the new run in a start grace for a start that never happened), and the scratch directory.
  */
-const SKIP = new Set([RUN_JSON, RUN_JSON_TEMP, OWNER_LOCK, `${OWNER_LOCK}-journal`, ".claim", START_MARK, "tmp"]);
+const SKIP = new Set([RUN_JSON, RUN_JSON_TEMP, OWNER_LOCK, `${OWNER_LOCK}-journal`, ".claim", START_MARK, "tmp", "commands"]);
 
 export type ForkErrorCode = "INVALID_ARGUMENT" | "SOURCE_NOT_RELEASED" | "SOURCE_HELD" | "TARGET_EXISTS" | "COPY_FAILED";
 
@@ -196,5 +197,105 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
       for (const dir of [join(base, side, "runs"), join(base, side)]) await rmdir(dir).catch(() => {});
     }
     await rmdir(base).catch(() => {});
+  }
+}
+
+export interface ForkLocalResult {
+  /** The new run's id, and the directory it lives in. */
+  readonly run: string;
+  readonly root: string;
+  readonly from: string;
+  readonly sealedSeq: number;
+  readonly sourceGeneration: number;
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/**
+ * Fork a run on a local directory (`localRun`) into one new run directory per entry of `into`: the same copy as `fork`, for
+ * one machine and without a disk. `from` must hold a released, sealed run (run.json paused, sleeping, done or failed with a
+ * `sealedSeq`); anything else is `SOURCE_NOT_RELEASED`, and no target may exist (`TARGET_EXISTS`). The source is only read.
+ * Every copy is made beside its target under a temporary name and none is published until all are complete, so a failed
+ * batch leaves nothing behind and never takes back a run another process opened; each opens as
+ * generation 1 of a run of its own, refusing a copy that lost a committed sequence like any fork. Nothing guards a source
+ * that another process is opening at the same moment: a local directory has no mount to take it exclusively.
+ */
+export async function forkLocal(from: string, into: readonly { readonly id: string; readonly root: string }[]): Promise<ForkLocalResult[]> {
+  for (const t of into) runPath(t.id); // a run id the disk would refuse is refused here too
+  const source = await realpath(resolve(from)).catch(() => resolve(from));
+  const targets = await Promise.all(into.map(async (t) => ({ id: t.id, root: await resolvedPath(t.root) })));
+  if (targets.length === 0) throw new ForkError("INVALID_ARGUMENT", "forkLocal needs at least one target");
+  // Two targets the same, or one beneath another (`/runs/a` and `/runs/a/b`): staging the inner one would make the outer one's directory.
+  if (targets.some((t, i) => targets.some((u, j) => i !== j && (t.root === u.root || t.root.startsWith(`${u.root}${sep}`))))) {
+    throw new ForkError("INVALID_ARGUMENT", "two targets are the same directory, or one is inside another");
+  }
+  // A target inside the source (by a symlink too) would be copied into itself and would write into a source that is only read.
+  if (targets.some((t) => t.root === source || t.root.startsWith(`${source}${sep}`))) throw new ForkError("INVALID_ARGUMENT", "a fork needs a directory of its own, outside the source");
+  const record = await readRunRecord(source).catch((cause: unknown) => {
+    throw new ForkError("SOURCE_NOT_RELEASED", `${source} holds no readable run.json`, { cause });
+  });
+  if (!record || !RELEASED.includes(record.status) || record.sealedSeq === null) {
+    throw new ForkError("SOURCE_NOT_RELEASED", `the run in ${source} is not released and sealed (${record ? `${record.status}, sealedSeq ${record.sealedSeq}` : "no run.json"})`);
+  }
+  if (targets.some((t) => t.id === record.run)) throw new ForkError("INVALID_ARGUMENT", "a fork needs a new run id");
+  for (const t of targets) {
+    if (await lstat(t.root).then(() => true, () => false)) throw new ForkError("TARGET_EXISTS", `${t.root} already exists`);
+  }
+  const asRoot = process.getuid?.() === 0;
+  const st = await lstat(source);
+  // Every copy is made beside its target under a temporary name and none is published until all are complete: a failed
+  // batch removes only temporary directories, never a run another process could already have opened.
+  const staged: { id: string; root: string; temp: string; files: number; bytes: number }[] = [];
+  const published: string[] = [];
+  try {
+    for (const t of targets) {
+      const temp = `${t.root}.fork-${randomUUID()}`; // unique per call: two forks of one target never share a temporary directory
+      const entry = { ...t, temp, files: 0, bytes: 0 };
+      await mkdir(dirname(t.root), { recursive: true });
+      await mkdir(temp);
+      staged.push(entry); // tracked for cleanup only once this call made it
+      const count = { files: 0, bytes: 0 };
+      await copyTree(source, temp, true, asRoot, count);
+      Object.assign(entry, count);
+      const forked: RunRecord = {
+        run: t.id,
+        status: "paused",
+        generation: 0,
+        sealedSeq: record.sealedSeq,
+        wakeAt: null,
+        holder: null,
+        heartbeatAt: null,
+        updatedAt: new Date().toISOString(),
+        detail: { forkedFrom: { run: record.run, generation: record.generation, sealedSeq: record.sealedSeq } },
+      };
+      await persistRecord(temp, `${JSON.stringify(forked, null, 2)}\n`);
+      // The run's directory is the source's: its owner and mode, so whoever owned the source can open the fork.
+      if (asRoot) await lchown(temp, st.uid, st.gid);
+      await chmod(temp, st.mode & 0o7777);
+    }
+    for (const entry of staged) {
+      await rename(entry.temp, entry.root);
+      published.push(entry.root);
+    }
+  } catch (error) {
+    for (const entry of staged) await rm(entry.temp, { recursive: true, force: true }).catch(() => undefined);
+    // Only a copy no one has opened is taken back: an owner lock means a process already runs it.
+    for (const root of published) if (!(await lstat(join(root, OWNER_LOCK)).then(() => true, () => false))) await rm(root, { recursive: true, force: true }).catch(() => undefined);
+    throw error instanceof ForkError ? error : new ForkError("COPY_FAILED", `forking ${source} failed: ${(error as Error).message}`, { cause: error });
+  }
+  return staged.map((t) => ({ run: t.id, root: t.root, from: record.run, sealedSeq: record.sealedSeq!, sourceGeneration: record.generation, files: t.files, bytes: t.bytes }));
+}
+
+/** `path` made absolute with every symlink of its existing part resolved, so two spellings of one place compare equal. */
+async function resolvedPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  const missing: string[] = [];
+  for (let at = absolute; ; at = dirname(at)) {
+    try {
+      return join(await realpath(at), ...missing.reverse());
+    } catch {
+      if (dirname(at) === at) return absolute;
+      missing.push(basename(at));
+    }
   }
 }

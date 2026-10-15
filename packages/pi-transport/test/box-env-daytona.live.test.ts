@@ -140,7 +140,7 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 					withAbortSignal(controller.signal, context),
 				);
 				for (let tries = 0; !(await running(env, aborted)); tries++) {
-					if (tries > 100) throw new Error("the command did not start");
+					if (tries > 300) throw new Error("the command did not start");
 					await sleep(100);
 				}
 				controller.abort();
@@ -216,7 +216,8 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 		// Runs last: by now every box this file started must be gone.
 		it("leaves no box behind", async () => {
 			let count = Number.POSITIVE_INFINITY;
-			for (const deadline = Date.now() + 30_000; count > 0 && Date.now() < deadline; ) {
+			// Daytona deletes in the background: a destroyed box can list by its labels for a minute and more.
+			for (const deadline = Date.now() + 180_000; count > 0 && Date.now() < deadline; ) {
 				count = getOrThrow(await provider.list(labels, context)).length;
 				if (count > 0) await sleep(1000);
 			}

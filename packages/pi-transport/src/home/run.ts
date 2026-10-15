@@ -92,6 +92,8 @@ export type HomeOptions = {
  */
 export interface Home {
 	readonly state: HomeState;
+	/** The epoch of the lease this home last ran at, or `undefined` for a home that never ran. */
+	readonly epoch: number | undefined;
 	/** The open Harness: for submissions, aborts and events. `undefined` unless `open`. */
 	readonly harness: Harness | undefined;
 	/**
@@ -157,6 +159,10 @@ class SessionHome implements Home {
 		if (this.#marker?.retired === true) return "retired";
 		if (this.#harness !== undefined) return "open";
 		return this.#marker?.sealed === undefined ? "closed" : "sealed";
+	}
+
+	get epoch(): number | undefined {
+		return this.#marker?.epoch;
 	}
 
 	get harness(): Harness | undefined {

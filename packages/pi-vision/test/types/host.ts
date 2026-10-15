@@ -41,6 +41,8 @@ const fake: Eyes = fakeEyes();
 
 // A host's route limits as it writes them: a gateway cap and native video, nothing else.
 const route: LimitsOverride = { requestBytes: 20 * 1024 * 1024, video: { native: true } };
-const options: VisionOptions = { evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `evidence/${id}/media` }), limits: () => route, install: { read: "off", look: true, guard: false } };
+const options: VisionOptions = { evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `evidence/${id}/media` }), limits: () => route, install: { read: "off", guard: false } };
+// @ts-expect-error there is no look tool to install.
+const look: VisionOptions = { ...options, install: { look: true } };
 
-void [node, any, reader, partial, fromPi, toPi, prepared, preparedBack, usage, blocks, result, eyes, fake, options];
+void [node, any, reader, partial, fromPi, toPi, prepared, preparedBack, usage, blocks, result, eyes, fake, options, look];

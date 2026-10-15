@@ -13,7 +13,7 @@ import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-a
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, packRequests, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, see, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
 import { callContext, createVisionExtension, modelsEyes, modelsOf, packageProviders, piResult } from "@parcha/pi-vision/durable";
 import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
 import { childEnvOf, inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -230,9 +230,19 @@ const CASES = [
   { id: ".#withReadMedia", run: ({ out }) => out("tool", withReadMedia({ name: "read", label: "Read", description: "Read a file.", parameters: { type: "object", properties: { path: { type: "string" } } } })) },
   { id: ".#visionSection", run: ({ out }) => out("section", visionSection("Recordings are read by handle.")) },
   { id: ".#plan", run: ({ out }) => out("plan", plan({ kind: "image", bytes: 2_000_000, sha256: "ab".repeat(32), mimeType: "image/png", width: 4000, height: 3000 }, {}, DEFAULT_LIMITS, "show")) },
+  { id: ".#packRequests", run: ({ out }) => out("requests", packRequests([png(10, 10), png(20, 20), png(30, 30)], (b) => b.data.length, () => 2, DEFAULT_LIMITS.requestBytes)) },
+  {
+    // Each request to eyes whose errors carry the key and links: the miss `vision.see` throws, its receipt and its event.
+    id: ".#see",
+    run: async (sink) => {
+      const eyes = fakeEyes({ answers: failing(FIRST_LINES) });
+      for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await see({ ask: "what is it?", images: [png(40, 30 + i)] }, undefined, CALL, guardSetup(sink, LIMITS, eyes)).catch((error) => error));
+    },
+  },
+  { id: ".#SeeMiss", exempt: "an error class" },
   { id: ".#NotBuiltError", exempt: "an error class" },
   { id: ".#notBuilt", exempt: "names a part chosen in source" },
-  { id: "./durable#createVisionExtension", run: async (sink) => sink.out("tools", (await handle(sink)).tools) },
+  { id: "./durable#createVisionExtension", run: async (sink) => sink.out("extension", (await handle(sink)).extension) },
   {
     id: "./durable#VisionHandle.fit",
     run: async (sink) => {
@@ -248,6 +258,17 @@ const CASES = [
       sink.echoes.push(path, basename(path));
       await writeFile(path, pngBytes(3000, 1000));
       sink.result("read", await (await handle(sink)).read(nodeVisionEnv({ cwd: sink.workDir }), { path, ask: "what is the total?" }, CALL), LIMITS);
+    },
+  },
+  {
+    id: "./durable#VisionHandle.see",
+    run: async (sink) => {
+      const path = `${sink.workDir}/shot.png?${SENTINEL_LINK_QUERY}`;
+      sink.echoes.push(path, basename(path));
+      await writeFile(path, pngBytes(3000, 1000));
+      const global = (await handle(sink)).see(nodeVisionEnv({ cwd: sink.workDir }), CALL);
+      sink.out("thrown", await global.execute({ ask: "what is the total?", paths: [path] }).catch((error) => error));
+      sink.out("answer", await global.execute({ ask: "what is the total?", paths: [path] }));
     },
   },
   { id: "./node#nodeVisionEnv", run: ({ out, workDir }) => { const node = nodeVisionEnv({ cwd: workDir }); out("env", { id: node.id, cwd: node.cwd }); } },
@@ -399,8 +420,8 @@ const CASES = [
 /** What is built today; the sweep must run these to the end, never skip them. */
 const BUILT = [
   ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#readMedia", ".#visionContext", ".#parseFragment",
-  ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan",
-  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read",
+  ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan", ".#packRequests", ".#see",
+  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read", "./durable#VisionHandle.see",
   "./durable#callContext", "./durable#piResult", "./durable#modelsEyes", "./durable#modelsOf", "./durable#packageProviders",
   "./node#nodeVisionEnv", "./node#nodeVisionEnv.env", "./node#inheritedEnv", "./node#childEnvOf", "./eyes/pi-ai#piAiEyes",
   "./providers/unpdf#unpdfProvider", "./providers/pdfium#pdfiumProvider", "./providers/office-js#officeJsProvider", "./providers/photon#photonImages",
