@@ -246,6 +246,30 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
     }
   });
 
+  it("the README quotes the refusal exactly as an open writes it", async () => {
+    const dir = scratchRoot("commands-readme");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "run", "commands");
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4242"));
+      writeFileSync(join(proc, "4242", "stat"), `4242 (tar) ${["D", "1", "4242", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+      writeFileSync(join(proc, "4242", "cmdline"), "tar\0-xf\0/mnt/slow/archive.tar\0");
+      mkdirSync(records, { recursive: true });
+      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      const refusal = await reapOrRefuse(records, { proc, kill: () => {}, timeoutMs: 50 }).then(
+        () => assert.fail("the open was not refused"),
+        (error: unknown) => (error as Error).message,
+      );
+      const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+      const quoted = refusal.replaceAll(records, "<root>/commands");
+      assert.ok(readme.includes(`\n${quoted}\n`), `the README's refusal is not the one the open writes:\n${quoted}`);
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("records only children that lead their own group", async () => {
     const dir = scratchRoot("commands-not-commands");
     const records = join(dir.root, "commands");

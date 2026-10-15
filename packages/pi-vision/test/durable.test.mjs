@@ -26,10 +26,10 @@ const workspace = (files = {}) => {
 };
 const piRead = CodingTools.tools.find((tool) => tool.name === "read");
 
-test("the extension wraps read with the media arguments and declares it replay-safe, guards every tool, and offers no tool yet", () => {
-  const { extension, tools } = createVisionExtension({ evidence, scope });
+test("the extension wraps read with the media arguments and declares it replay-safe, guards every tool, and offers no tool", () => {
+  const { extension, ...handle } = createVisionExtension({ evidence, scope });
   assert.equal(extension.name, "vision");
-  assert.deepEqual([extension.tools, tools], [[], []]);
+  assert.deepEqual([extension.tools, Object.keys(handle).sort()], [[], ["fit", "pdfText", "read", "see"]]);
   assert.deepEqual(extension.wraps.map((wrap) => wrap.tool), ["read"]);
   const wrapped = extension.wraps[0].wrap(piRead);
   assert.equal(wrapped.name, "read");

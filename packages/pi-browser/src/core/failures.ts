@@ -17,6 +17,9 @@ export type BrowserFailure = {
   detail?: string;
 };
 
+export const browserFailure = (code: FailureCode, message: string, options: { retryable?: boolean; effect?: BrowserFailure["effect"]; detail?: string } = {}): BrowserFailure =>
+  ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });
+
 /** `timedOut`: the call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
 export type FailureFacts = { sessionEnded?: boolean; aborted?: boolean; timedOut?: boolean };
 
@@ -27,6 +30,15 @@ export const STALE_SNAPSHOT_ID_ERROR = 'Snapshot ID "${id}" is stale or not acti
 const [STALE_ID_HEAD, STALE_ID_TAIL] = STALE_SNAPSHOT_ID_ERROR.split("${id}");
 const isStaleSnapshot = (message: string): boolean => message === NO_HYDRATED_SNAPSHOT_ERROR || message === NAVIGATED_SNAPSHOT_ERROR
   || (message.startsWith(STALE_ID_HEAD) && message.endsWith(STALE_ID_TAIL) && message.length > STALE_ID_HEAD.length + STALE_ID_TAIL.length);
+
+/** Stagehand's extension lost its own CDP connection to the browser (a refusal constant of Stagehand's, matched by identity): its
+ *  host rethrows it with the extension's JSON-RPC internal error (-32603) as the cause. The driver is gone, not the session. */
+export const STAGEHAND_LOOPBACK_DISCONNECTED = "Stagehand loopback CDP is disconnected";
+const JSONRPC_INTERNAL_ERROR = -32603;
+const lostLoopback = (error: unknown): boolean => {
+  const cause = (error as any)?.cause;
+  return !!cause && typeof cause === "object" && cause.code === JSONRPC_INTERNAL_ERROR && cause.message === STAGEHAND_LOOPBACK_DISCONNECTED;
+};
 
 const UNREACHABLE_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 const UNREACHABLE_NAMES = new Set(["CDPConnectionClosedError"]);
@@ -58,12 +70,12 @@ export function classifyBrowserError(error: unknown, effectful: boolean, facts: 
   const status = fact.status ?? Number((error as any)?.statusCode ?? cause?.statusCode ?? NaN);
   const effect = effectful ? "possibly_effected" : "none";
   const detail = message.slice(0, 2_000);
-  if (facts.aborted || fact.errorName === "AbortError") return { ok: false, code: "aborted", retryable: false, effect, message: "The browser call was cancelled by the run.", detail };
-  if (status === 401) return { ok: false, code: "auth", retryable: false, effect: "none", message: "Browserbase refused the credential (401). The browser plane is unavailable for this run; use fetch (executor tools).", detail };
-  if (status === 403) return { ok: false, code: "auth", retryable: false, effect: "none", message: "Browserbase refused this session type (403). Retry without `verified`, or use web_fetch.", detail };
-  if (facts.sessionEnded) return { ok: false, code: "session_ended", retryable: true, effect, message: "The browser session ended (Browserbase closes a session at its timeout, or the browser died). Your next browser call opens a fresh session automatically; the old tabs, page state and cookies are gone — navigate to the page again with run, then continue from there.", detail };
-  if (facts.timedOut || fact.errorName === "TimeoutError") return { ok: false, code: "timeout", retryable: true, effect, message: "The browser call timed out. Take a fresh snapshot before acting again; split a long `run` into smaller batches; if the page never loads, use web_fetch or another source.", detail };
-  if (isStaleSnapshot(own)) return { ok: false, code: "stale_snapshot", retryable: true, effect: "none", message, detail };
-  if ((fact.causeCode && UNREACHABLE_CAUSES.has(fact.causeCode)) || (fact.errorName && UNREACHABLE_NAMES.has(fact.errorName))) return { ok: false, code: "browser_unavailable", retryable: false, effect, message: "The browser could not be reached on this lane. The browser plane is unavailable for this run; use web_fetch or executor tools.", detail };
-  return { ok: false, code: effectful ? "code_error" : "command_failed", retryable: true, effect, message: effectful ? `Your browser code threw: ${message.slice(0, 600)}` : `The browser call failed: ${message.slice(0, 600)}`, detail };
+  if (facts.aborted || fact.errorName === "AbortError") return browserFailure("aborted", "The browser call was cancelled by the run.", { effect, detail });
+  if (status === 401) return browserFailure("auth", "The browser provider refused the credential (401). The browser plane is unavailable for this run; use fetch (executor tools).", { detail });
+  if (status === 403) return browserFailure("auth", "The browser provider refused this session type (403). Retry without `verified`, or use web_fetch.", { detail });
+  if (facts.sessionEnded) return browserFailure("session_ended", "The browser session ended (the provider closed it at its timeout, or the browser died). Your next browser call opens a fresh session automatically; the old tabs, page state and cookies are gone — navigate to the page again with run, then continue from there.", { retryable: true, effect, detail });
+  if (facts.timedOut || fact.errorName === "TimeoutError") return browserFailure("timeout", "The browser call timed out. Take a fresh snapshot before acting again; split a long `run` into smaller batches; if the page never loads, use web_fetch or another source.", { retryable: true, effect, detail });
+  if (isStaleSnapshot(own)) return browserFailure("stale_snapshot", message, { retryable: true, detail });
+  if ((fact.causeCode && UNREACHABLE_CAUSES.has(fact.causeCode)) || (fact.errorName && UNREACHABLE_NAMES.has(fact.errorName)) || lostLoopback(error)) return browserFailure("browser_unavailable", "The browser could not be reached on this lane. The browser plane is unavailable for this run; use web_fetch or executor tools.", { effect, detail });
+  return browserFailure(effectful ? "code_error" : "command_failed", effectful ? `Your browser code threw: ${message.slice(0, 600)}` : `The browser call failed: ${message.slice(0, 600)}`, { retryable: true, effect, detail });
 }

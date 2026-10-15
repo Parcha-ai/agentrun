@@ -7,7 +7,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readF
 import { join, relative } from "node:path";
 import { fork, ForkError } from "../src/fork.ts";
 import { StoreBehindSealError } from "../src/run.ts";
-import { parseRunRecord, RUN_JSON } from "../src/status.ts";
+import { parseRunRecord, RUN_JSON, type RunRecord } from "../src/status.ts";
 import { lifecycleApp, LocalDisk, newCounters, openOn } from "./_lifecycle.ts";
 import type { FakeClaim } from "./_run-support.ts";
 import { ctx } from "./_run-support.ts";
@@ -80,8 +80,10 @@ describe("fork", () => {
       assert.equal(readlinkSync(join(copy, "work", "link")), "notes/a.txt");
       assert.equal(readFileSync(join(copy, "store", "run.sqlite")).equals(readFileSync(join(root, "store", "run.sqlite"))), true);
 
-      const opened = await openOn(disk, { ...SRC, id: "fork-new" }, app);
+      let previous: RunRecord | null | undefined;
+      const opened = await openOn(disk, { ...SRC, id: "fork-new" }, app, { beforeResume: (run) => void (previous = run.previous) });
       assert.equal(opened.generation, 1);
+      assert.deepEqual(previous, record, "a fork's first open sees the record fork wrote: paused, generation 0, forkedFrom");
       const page = await (await opened.harness.root(ctx)).entries({}, 100, undefined, ctx);
       assert.ok(page.items.some((e) => e.model?.some((m) => m.role === "user" && m.content === "hello")), "the fork has the source's transcript");
       await opened.release();

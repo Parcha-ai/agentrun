@@ -322,8 +322,8 @@ function epochAfter(step: MoveStep, who: "host" | "source" | "target"): number {
 }
 
 /**
- * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, a take another host
- * won (to another place: the shipped copy goes; to the same place: it stays and the session finishes there), a kill of the host, the
+ * The handoff on a pair of places of one provider: a move with nothing cut, a move given up, a move there and back
+ * (the place it left keeps a file the session no longer has), a take another host won (to another place: the shipped copy goes; to the same place: it stays and the session finishes there), a kill of the host, the
  * source or the target just before each of the seven steps, and a kill of the target inside its own resume (its
  * marker written and the store not open; the conversations pointed at it and the notice not admitted; between a
  * tool's effect and its result), each followed by a host that recovers the session from the lease. Every case ends
@@ -468,6 +468,138 @@ export function registerMoveConformance(
 						equal(await run.effects(pair.a), every, "the rounds in the home that stayed");
 						equal(await run.held(), { epoch: 1, environment: pair.a.environment }, "the lease");
 						equal(run.notices(), 0, "the notices the model saw");
+					}),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
+			"takes a session back to the place it left, with nothing cut and a notice for each move",
+			() =>
+				withPair((pair) =>
+					withRun(records, pair, async (run) => {
+						await sleep(150);
+						const there = getOrThrow(
+							await moveHome(
+								{
+									session: SESSION,
+									host: "host-1",
+									ownership: run.lease,
+									from: { place: pair.a, home: run.home, epoch: 1 },
+									to: pair.b,
+									start: run.start,
+									notice: NOTICE,
+									onStep: (step) => {
+										if (step === "drain") run.drainCame();
+									},
+								},
+								context,
+							),
+						);
+						equal([there.epoch, there.retired], [2, true], "the receipt of the move there");
+						// The place it left keeps the workspace it had then, with a file the session no longer has.
+						const left = await read(pair.a, [
+							"sh",
+							"-c",
+							'printf old > "$1/left-behind.txt"',
+							"sh",
+							pair.a.workspace,
+						]);
+						if (left === undefined) throw new Error(`could not leave a file in ${pair.a.environment}`);
+						// And a file beside the workspace, which no move touches.
+						const beside = await read(pair.a, [
+							"sh",
+							"-c",
+							'printf kept > "$(dirname "$1")/beside-the-workspace.txt"',
+							"sh",
+							pair.a.workspace,
+						]);
+						if (beside === undefined)
+							throw new Error(`could not leave a file beside ${pair.a.environment}'s workspace`);
+						// Back to the place it left, which holds the note of its retirement and that workspace.
+						const back = getOrThrow(
+							await moveHome(
+								{
+									session: SESSION,
+									host: "host-1",
+									ownership: run.lease,
+									from: { place: pair.b, home: there.home, epoch: 2 },
+									to: pair.a,
+									start: run.start,
+									notice: NOTICE,
+								},
+								context,
+							),
+						);
+						equal([back.epoch, back.retired], [3, true], "the receipt of the move back");
+						getOrThrow(await back.home.idle(context));
+						// A notice is written for the model's next request: one more input, so the model sees what the session holds.
+						getOrThrow(await back.home.submit("go on", undefined, context));
+						getOrThrow(await back.home.idle(context));
+						equal(await run.effects(pair.a), every, "the rounds in the home it came back to");
+						const gone = await read(pair.a, [
+							"sh",
+							"-c",
+							'test ! -e "$1/left-behind.txt"',
+							"sh",
+							pair.a.workspace,
+						]);
+						equal(gone !== undefined, true, "the old workspace's file is gone");
+						const kept = await read(pair.a, [
+							"sh",
+							"-c",
+							'test "$(cat "$(dirname "$1")/beside-the-workspace.txt")" = kept',
+							"sh",
+							pair.a.workspace,
+						]);
+						equal(kept !== undefined, true, "the file beside the workspace is kept");
+						equal(await run.held(), { epoch: 3, environment: pair.a.environment }, "the lease");
+						equal(run.notices(), 2, "the notices the model saw");
+					}),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
+			"recovers a session that moved and ran on at its own epoch, with no new take",
+			() =>
+				withPair((pair) =>
+					withRun(records, pair, async (run) => {
+						await sleep(150);
+						const moved = getOrThrow(
+							await moveHome(
+								{
+									session: SESSION,
+									host: "host-1",
+									ownership: run.lease,
+									from: { place: pair.a, home: run.home, epoch: 1 },
+									to: pair.b,
+									start: run.start,
+									notice: NOTICE,
+									onStep: (step) => {
+										if (step === "drain") run.drainCame();
+									},
+								},
+								context,
+							),
+						);
+						// The new home runs and writes; then its runner dies and the host goes with it.
+						getOrThrow(await moved.home.idle(context));
+						const ran = getOrThrow(await moved.home.status(context));
+						equal([ran.state, ran.sealed], ["open", undefined], "the new home as it ran");
+						await run.kill(pair.b);
+						run.dropAll();
+						const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
+						const recovered = getOrThrow(
+							await recoverHome(
+								{ session: SESSION, ownership: run.lease, places, start: run.start, notice: NOTICE },
+								context,
+							),
+						);
+						equal(recovered.lease.epoch, 2, "the lease recovery ran at");
+						getOrThrow(await recovered.home.idle(context));
+						equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
+						equal(await run.effects(pair.b), every, "the rounds in the new home");
 					}),
 				),
 			timeoutMs,

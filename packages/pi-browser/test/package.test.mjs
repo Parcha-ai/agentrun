@@ -30,6 +30,7 @@ test("the core and its entry import only Node builtins, their own files and the 
 test("both entry points resolve by the package's name from its build", async () => {
   const core = await import("@parcha/pi-browser");
   assert.equal(typeof core.classifyBrowserError, "function");
+  assert.equal(typeof core.BrowserFailureError, "function", "a host tool can throw a typed failure");
   await import("@parcha/pi-browser/durable");
 });
 

@@ -3,13 +3,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { cdpProvider } from "../dist/providers/cdp.js";
-import { CREDENTIAL_PROBE, frameRecorder, jpegSize } from "../dist/recorder/index.js";
+import { CREDENTIAL_PROBE, exportFrameTracks, frameRecorder, jpegSize } from "../dist/recorder/index.js";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cdpCall } from "../dist/providers/cdp-call.js";
 import { CHROME, NO_CHROME } from "./fixtures/local-chrome.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check, ms = 20_000) => { for (const end = Date.now() + ms; !check(); await sleep(25)) if (Date.now() > end) throw new Error("timed out"); };
@@ -23,8 +24,7 @@ test("a real Chrome's page is recorded as JPEG frames within the rate and width 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
-  const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "frame-recorder-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const root = await scratch(t, "frame-recorder-"); // removed last, after the Chrome is released and anything still naming it is killed
 
   const started = Date.now();
   const lines = [];
@@ -73,12 +73,30 @@ test("a real Chrome's page is recorded as JPEG frames within the rate and width 
   released = true;
   const last = lines.at(-1);
   assert.deepEqual([last.kind, last.data.reason, last.data.session], ["frame.gap", "session_released", ref.id]);
+
+  // The same recording, exported: one WebM for the session, a slate where the password was, and the index naming every frame and gap.
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0 || spawnSync("ffprobe", ["-version"]).status !== 0) return;
+  const endAt = Date.now() - started;
+  const [track] = await exportFrameTracks({ lines, readBlob: (hash) => blobs.get(hash), endAt, fps: 10 });
+  assert.equal(track.skipped.length, 0, JSON.stringify(track.skipped));
+  assert.deepEqual([track.line.kind, track.line.conv, track.line.data.session, track.line.data.fps, track.line.data.to], ["frame.track", 5, ref.id, 10, endAt]);
+  assert.equal(track.line.data.from, first[0].t, "the track starts at the session's first frame");
+  const file = path.join(root, "track.webm");
+  fs.writeFileSync(file, track.blobs[track.files.webm]);
+  const info = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,nb_read_frames:format=duration", "-of", "json", file], { encoding: "utf8" }));
+  assert.equal(info.streams[0].codec_name, "vp9");
+  const wanted = (endAt - track.line.data.from) / 1000;
+  assert.ok(Math.abs(Number(info.format.duration) - wanted) < 0.3, `${info.format.duration} s of video for ${wanted} s of recording`);
+  assert.ok(track.index.gaps.some((g) => g.reason === "credential_on_page" && g.detail), "the password's gap is in the index");
+  assert.equal(track.index.gaps.at(-1).reason, "session_released");
+  assert.equal(JSON.stringify(track.index).includes(PASSWORD), false);
+  const kept = lines.filter((l) => l.kind === "frame").map((l) => l.t);
+  assert.deepEqual(track.index.frames.map((f) => f.t), kept, "every frame of the recording is in the index");
 });
 
 /** The credential probe in a real page: which fields it calls a credential. */
 test("the credential probe calls a field a credential when it holds a value and is a password, a one-time code or named as one, in the page, a shadow root or a frame", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
-  const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "frame-probe-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const root = await scratch(t, "frame-probe-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, headless: true, ...(process.env.CI || /nosandbox/.test(CHROME) ? { sandbox: false } : {}) } });
   const signal = new AbortController().signal;
   const ref = await provider.create({ tag: "ar-probe-1-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, signal);
@@ -96,7 +114,12 @@ test("the credential probe calls a field a credential when it holds a value and 
   const probe = async (html) => {
     await call("Page.enable", {}, sessionId);
     await call("Page.navigate", { url: `data:text/html,${encodeURIComponent(html)}` }, sessionId);
-    await sleep(300);
+    // The page is read once it has loaded (its frames too) and been laid out, not after a fixed time: a loaded box can take far longer than any sleep.
+    for (const end = Date.now() + 30_000; ; await sleep(25)) {
+      const ready = (await call("Runtime.evaluate", { expression: `document.readyState === "complete" ? new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))) : false`, returnByValue: true, awaitPromise: true }, sessionId)).result?.result?.value;
+      if (ready === true) break;
+      if (Date.now() > end) throw new Error("the page never finished loading");
+    }
     return (await call("Runtime.evaluate", { expression: CREDENTIAL_PROBE, returnByValue: true }, sessionId)).result.result.value;
   };
   const F = { hold: false, why: null };

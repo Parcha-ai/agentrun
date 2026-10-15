@@ -160,7 +160,15 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				return { ok: true as const, value: null };
 			}
 			case "status":
-				return { ok: true as const, value: { state: home.state, epoch: home.epoch ?? null } };
+				return {
+					ok: true as const,
+					value: {
+						state: home.state,
+						epoch: home.epoch ?? null,
+						...(home.sealed === undefined ? {} : { sealed: home.sealed }),
+						...(home.noteSession === undefined ? {} : { session: home.noteSession }),
+					},
+				};
 			default:
 				return { ok: false as const, error: new Error(`no such order: ${order}`) };
 		}
