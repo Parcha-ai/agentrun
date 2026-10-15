@@ -1,5 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -1071,10 +1081,12 @@ describe("boxEnv: directories and watching", () => {
 
 describe("boxEnv: a stop whose kill call fails", () => {
 	/** The kill call of a stop: `KILL_SCRIPT`, the program that starts with the zombie-aware liveness check. */
-	const isKill = (command: readonly string[]) => command[0] === "sh" && command[1] === "-c" && String(command[2]).includes("live() {");
+	const isKill = (command: readonly string[]) =>
+		command[0] === "sh" && command[1] === "-c" && String(command[2]).includes("live() {");
 	/** A kill call that does not come back: the box API stops answering it. */
 	const never = (): Promise<Result<BoxProcess, BoxError>> => new Promise(() => {});
-	const failing = async (): Promise<Result<BoxProcess, BoxError>> => err(new BoxError("unknown", "the box API failed the kill call"));
+	const failing = async (): Promise<Result<BoxProcess, BoxError>> =>
+		err(new BoxError("unknown", "the box API failed the kill call"));
 
 	for (const [label, how] of [
 		["fails at once, once", "fast"],
@@ -1093,7 +1105,11 @@ describe("boxEnv: a stop whose kill call fails", () => {
 				});
 				const tag = uniqueTag(`killfail-${how}`);
 				const controller = new AbortController();
-				const pending = env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+				const pending = env.exec(
+					`sleep 3600 & sleep 3600 # ${tag}\nwait`,
+					undefined,
+					withAbortSignal(controller.signal, context),
+				);
 				await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
 				controller.abort();
 				const result = await pending;
@@ -1101,7 +1117,10 @@ describe("boxEnv: a stop whose kill call fails", () => {
 				expect(failures, "the first kill call was the one that failed").toBe(1);
 				// The kill call is sent again, so the group is gone by the time the stop answers, within the bound.
 				await waitFor(() => !running(tag), 5_000, "an aborted command's group to end after a failed kill call");
-				expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false, "confirmed gone: no flag").toBe(false);
+				expect(
+					(result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false,
+					"confirmed gone: no flag",
+				).toBe(false);
 			});
 		});
 	}
@@ -1152,14 +1171,21 @@ describe("boxEnv: a stop whose kill call fails", () => {
 				});
 				const tag = uniqueTag("killnever");
 				const controller = new AbortController();
-				const pending = env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+				const pending = env.exec(
+					`sleep 3600 & sleep 3600 # ${tag}\nwait`,
+					undefined,
+					withAbortSignal(controller.signal, context),
+				);
 				await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
 				const began = Date.now();
 				controller.abort();
 				const result = await pending;
 				const took = Date.now() - began;
 				expect(result.ok ? "" : result.error.code).toBe("aborted");
-				expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false, "the group could not be confirmed gone").toBe(true);
+				expect(
+					(result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false,
+					"the group could not be confirmed gone",
+				).toBe(true);
 				// The bound is wall time and includes a call in flight: never 10 s plus up to 5 s for each call.
 				// A call that was allowed its own 5 s would end this at about 11 s (calls at 0 and 6 s); wall time ends it at 10 s.
 				expect(took, `the stop took ${took} ms over ${calls} kill calls`).toBeLessThan(10_700);
@@ -1182,17 +1208,30 @@ describe("boxEnv: a stop whose kill call fails", () => {
 			});
 			const probe = uniqueTag("probe");
 			const controller = new AbortController();
-			const pending = env.exec(`sleep 3600 # ${probe}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			const pending = env.exec(
+				`sleep 3600 # ${probe}\nwait`,
+				undefined,
+				withAbortSignal(controller.signal, context),
+			);
 			await waitFor(() => running(probe), HANG_GUARD_MS, "the command to start");
 			controller.abort();
 			await pending;
 			expect(script).toContain("live() {");
 			// A zombie that nothing reaps: a child that exited, alone in its own process group, under a parent that never waits. In a container whose
 			// first process does not reap, this is what a killed group looks like for ever, and `kill -0` on it still succeeds.
-			const parent = spawn("sh", ["-c", "setsid sh -c 'exit 0' & echo $!; exec sleep 3600"], { stdio: ["ignore", "pipe", "ignore"] });
+			const parent = spawn("sh", ["-c", "setsid sh -c 'exit 0' & echo $!; exec sleep 3600"], {
+				stdio: ["ignore", "pipe", "ignore"],
+			});
 			try {
-				const group = await new Promise<string>((resolve) => parent.stdout.once("data", (chunk) => resolve(String(chunk).trim())));
-				const state = () => (existsSync(`/proc/${group}/stat`) ? readFileSync(`/proc/${group}/stat`, "utf8").replace(/^[0-9]+ \(.*\) /, "").split(" ")[0] : "gone");
+				const group = await new Promise<string>((resolve) =>
+					parent.stdout.once("data", (chunk) => resolve(String(chunk).trim())),
+				);
+				const state = () =>
+					existsSync(`/proc/${group}/stat`)
+						? readFileSync(`/proc/${group}/stat`, "utf8")
+								.replace(/^[0-9]+ \(.*\) /, "")
+								.split(" ")[0]
+						: "gone";
 				await waitFor(() => state() === "Z", 5_000, "the child to be a zombie");
 				const id = `zombie-${process.pid}-${Date.now()}`;
 				const stateDir = join(root, box.id, "tmp", ".pi-transport");

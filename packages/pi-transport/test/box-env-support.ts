@@ -340,7 +340,12 @@ export const GONE_BOUND_MS = 15_000;
  * has returned, best effort and short by design, so a check for absence made at once can see the command still running on a loaded box. This is the check made
  * right: the poll ends the moment the group is gone, and "best effort" can become slow but never "never", because the poll fails after the bound.
  */
-export async function waitNotRunning(isRunning: () => Promise<boolean> | boolean, what: string, boundMs = GONE_BOUND_MS, pollMs = 250): Promise<void> {
+export async function waitNotRunning(
+	isRunning: () => Promise<boolean> | boolean,
+	what: string,
+	boundMs = GONE_BOUND_MS,
+	pollMs = 250,
+): Promise<void> {
 	const deadline = Date.now() + boundMs;
 	for (;;) {
 		if (!(await isRunning())) return;

@@ -23,9 +23,9 @@ describe("waitNotRunning, the check for a command that was stopped", () => {
 
 	it("fails after its bound, naming the command, when it never goes (best effort is never 'never')", async () => {
 		const began = Date.now();
-		await expect(waitNotRunning(async () => true, "the aborted command pi-transport-abort-1", 200, 20)).rejects.toThrow(
-			/the aborted command pi-transport-abort-1 was still running 200 ms after exec returned/,
-		);
+		await expect(
+			waitNotRunning(async () => true, "the aborted command pi-transport-abort-1", 200, 20),
+		).rejects.toThrow(/the aborted command pi-transport-abort-1 was still running 200 ms after exec returned/);
 		expect(Date.now() - began).toBeGreaterThanOrEqual(200);
 		expect(Date.now() - began).toBeLessThan(5_000);
 	});

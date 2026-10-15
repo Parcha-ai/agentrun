@@ -16,6 +16,7 @@ import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
 import { HandsDoc, SessionBoxesDoc, TransportError } from "../src/transport.ts";
+import { waitNotRunning } from "./box-env-support.ts";
 import {
 	bash,
 	openSession,
@@ -24,7 +25,6 @@ import {
 	watchdogsUnder,
 	watched,
 } from "./hands-support.ts";
-import { waitNotRunning } from "./box-env-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Every directory of this file lies under one root, so what a test leaves behind can be counted after the file.

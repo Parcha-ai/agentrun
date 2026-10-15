@@ -258,7 +258,8 @@ const CLEANUP_SCRIPT = [
  * confirmed gone, which is the normal case.
  */
 export type StoppedCommandError = ExecutionError & { readonly killUnconfirmed?: true };
-const unconfirmed = <E extends ExecutionError>(error: E, confirmed: boolean): E => (confirmed ? error : Object.assign(error, { killUnconfirmed: true as const }));
+const unconfirmed = <E extends ExecutionError>(error: E, confirmed: boolean): E =>
+	confirmed ? error : Object.assign(error, { killUnconfirmed: true as const });
 
 /** How `boxEnv` talks to its box. Every field has a default. */
 export type BoxEnvOptions = {
@@ -984,7 +985,12 @@ class BoxEnv implements ExecutionEnv {
 				if (this.#lost !== undefined) return err(this.#goneError());
 				if (started.error.code === "timeout") {
 					const confirmed = await kill();
-					return err(unconfirmed(new ExecutionError("timeout", `the box ${this.#box.id} did not start the command in time`), confirmed));
+					return err(
+						unconfirmed(
+							new ExecutionError("timeout", `the box ${this.#box.id} did not start the command in time`),
+							confirmed,
+						),
+					);
 				}
 				return err(
 					new ExecutionError(
@@ -1123,10 +1129,18 @@ class BoxEnv implements ExecutionEnv {
 		for (let attempt = 0; ; attempt++) {
 			const left = deadline - Date.now();
 			if (left <= 0) return false;
-			const answer = await this.#call(["sh", "-c", KILL_SCRIPT, "sh", id], undefined, Math.min(KILL_TIMEOUT_MS, left), stopped);
+			const answer = await this.#call(
+				["sh", "-c", KILL_SCRIPT, "sh", id],
+				undefined,
+				Math.min(KILL_TIMEOUT_MS, left),
+				stopped,
+			);
 			if (answer.ok && new TextDecoder().decode(answer.value.stdout).trim().endsWith("gone")) return true;
 			if (this.#lost !== undefined) return true;
-			const pause = Math.min(KILL_RETRY_MS[Math.min(attempt, KILL_RETRY_MS.length - 1)] ?? 0, Math.max(deadline - Date.now(), 0));
+			const pause = Math.min(
+				KILL_RETRY_MS[Math.min(attempt, KILL_RETRY_MS.length - 1)] ?? 0,
+				Math.max(deadline - Date.now(), 0),
+			);
 			if (pause <= 0) return false;
 			await new Promise((resolve) => setTimeout(resolve, pause));
 		}
