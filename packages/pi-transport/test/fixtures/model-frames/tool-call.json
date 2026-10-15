@@ -1,523 +1,487 @@
 {
- "events": [
-  {
-   "type": "start",
-   "partial": {
-    "role": "assistant",
-    "content": [],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "thinking_start",
-   "contentIndex": 0,
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "thinking_delta",
-   "contentIndex": 0,
-   "delta": "Need a lookup.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "thinking_end",
-   "contentIndex": 0,
-   "content": "Need a lookup.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "toolcall_start",
-   "contentIndex": 1,
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "toolcall_delta",
-   "contentIndex": 1,
-   "delta": "{\"q\":\"cost\",\"limit\":",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "toolcall_delta",
-   "contentIndex": 1,
-   "delta": "3,\"nested\":{\"a\":[1,2",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "toolcall_delta",
-   "contentIndex": 1,
-   "delta": ",3]}}",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "toolcall_end",
-   "contentIndex": 1,
-   "toolCall": {
-    "type": "toolCall",
-    "id": "call-1",
-    "name": "lookup",
-    "arguments": {
-     "q": "cost",
-     "limit": 3,
-     "nested": {
-      "a": [
-       1,
-       2,
-       3
-      ]
-     }
-    }
-   },
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "done",
-   "reason": "toolUse",
-   "message": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Need a lookup."
-     },
-     {
-      "type": "toolCall",
-      "id": "call-1",
-      "name": "lookup",
-      "arguments": {
-       "q": "cost",
-       "limit": 3,
-       "nested": {
-        "a": [
-         1,
-         2,
-         3
-        ]
-       }
-      }
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "toolUse",
-    "timestamp": 1792095148211,
-    "durationMs": 1
-   }
-  }
- ],
- "frames": [
-  {
-   "type": "start",
-   "partial": {
-    "role": "assistant",
-    "content": [],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 17,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 19,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148211
-   }
-  },
-  {
-   "type": "thinking_start",
-   "contentIndex": 0,
-   "content": {
-    "type": "thinking",
-    "thinking": "Need a lookup."
-   }
-  },
-  null,
-  {
-   "type": "thinking_end",
-   "contentIndex": 0,
-   "content": "Need a lookup."
-  },
-  {
-   "type": "toolcall_start",
-   "contentIndex": 1,
-   "toolCall": {
-    "type": "toolCall",
-    "id": "call-1",
-    "name": "lookup",
-    "arguments": {
-     "q": "cost",
-     "limit": 3,
-     "nested": {
-      "a": [
-       1,
-       2,
-       3
-      ]
-     }
-    }
-   }
-  },
-  null,
-  null,
-  {
-   "type": "toolcall_checkpoint",
-   "contentIndex": 1,
-   "json": "{\"q\":\"cost\",\"limit\":3,\"nested\":{\"a\":[1,2,3]}}"
-  },
-  {
-   "type": "toolcall_end",
-   "contentIndex": 1,
-   "id": "call-1",
-   "name": "lookup",
-   "arguments": {
-    "q": "cost",
-    "limit": 3,
-    "nested": {
-     "a": [
-      1,
-      2,
-      3
-     ]
-    }
-   }
-  },
-  null
- ]
+	"events": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "thinking_start",
+			"contentIndex": 0,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "thinking_delta",
+			"contentIndex": 0,
+			"delta": "Need a lookup.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "thinking_end",
+			"contentIndex": 0,
+			"content": "Need a lookup.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "toolcall_start",
+			"contentIndex": 1,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "toolcall_delta",
+			"contentIndex": 1,
+			"delta": "{\"q\":\"cost\",\"limit\":",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "toolcall_delta",
+			"contentIndex": 1,
+			"delta": "3,\"nested\":{\"a\":[1,2",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "toolcall_delta",
+			"contentIndex": 1,
+			"delta": ",3]}}",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "toolcall_end",
+			"contentIndex": 1,
+			"toolCall": {
+				"type": "toolCall",
+				"id": "call-1",
+				"name": "lookup",
+				"arguments": {
+					"q": "cost",
+					"limit": 3,
+					"nested": {
+						"a": [1, 2, 3]
+					}
+				}
+			},
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "done",
+			"reason": "toolUse",
+			"message": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Need a lookup."
+					},
+					{
+						"type": "toolCall",
+						"id": "call-1",
+						"name": "lookup",
+						"arguments": {
+							"q": "cost",
+							"limit": 3,
+							"nested": {
+								"a": [1, 2, 3]
+							}
+						}
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "toolUse",
+				"timestamp": 1792095148211,
+				"durationMs": 1
+			}
+		}
+	],
+	"frames": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 17,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 19,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148211
+			}
+		},
+		{
+			"type": "thinking_start",
+			"contentIndex": 0,
+			"content": {
+				"type": "thinking",
+				"thinking": "Need a lookup."
+			}
+		},
+		null,
+		{
+			"type": "thinking_end",
+			"contentIndex": 0,
+			"content": "Need a lookup."
+		},
+		{
+			"type": "toolcall_start",
+			"contentIndex": 1,
+			"toolCall": {
+				"type": "toolCall",
+				"id": "call-1",
+				"name": "lookup",
+				"arguments": {
+					"q": "cost",
+					"limit": 3,
+					"nested": {
+						"a": [1, 2, 3]
+					}
+				}
+			}
+		},
+		null,
+		null,
+		{
+			"type": "toolcall_checkpoint",
+			"contentIndex": 1,
+			"json": "{\"q\":\"cost\",\"limit\":3,\"nested\":{\"a\":[1,2,3]}}"
+		},
+		{
+			"type": "toolcall_end",
+			"contentIndex": 1,
+			"id": "call-1",
+			"name": "lookup",
+			"arguments": {
+				"q": "cost",
+				"limit": 3,
+				"nested": {
+					"a": [1, 2, 3]
+				}
+			}
+		},
+		null
+	]
 }

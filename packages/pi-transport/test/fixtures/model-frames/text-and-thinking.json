@@ -1,370 +1,370 @@
 {
- "events": [
-  {
-   "type": "start",
-   "partial": {
-    "role": "assistant",
-    "content": [],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "thinking_start",
-   "contentIndex": 0,
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "thinking_delta",
-   "contentIndex": 0,
-   "delta": "Look it up first.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "thinking_end",
-   "contentIndex": 0,
-   "content": "Look it up first.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "text_start",
-   "contentIndex": 1,
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     },
-     {
-      "type": "text",
-      "text": "The answer is 42."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "text_delta",
-   "contentIndex": 1,
-   "delta": "The answer i",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     },
-     {
-      "type": "text",
-      "text": "The answer is 42."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "text_delta",
-   "contentIndex": 1,
-   "delta": "s 42.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     },
-     {
-      "type": "text",
-      "text": "The answer is 42."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "text_end",
-   "contentIndex": 1,
-   "content": "The answer is 42.",
-   "partial": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     },
-     {
-      "type": "text",
-      "text": "The answer is 42."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "done",
-   "reason": "stop",
-   "message": {
-    "role": "assistant",
-    "content": [
-     {
-      "type": "thinking",
-      "thinking": "Look it up first."
-     },
-     {
-      "type": "text",
-      "text": "The answer is 42."
-     }
-    ],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "stop",
-    "timestamp": 1792095148208,
-    "durationMs": 2
-   }
-  }
- ],
- "frames": [
-  {
-   "type": "start",
-   "partial": {
-    "role": "assistant",
-    "content": [],
-    "api": "faux",
-    "provider": "faux",
-    "model": "faux-1",
-    "usage": {
-     "input": 2,
-     "output": 9,
-     "cacheRead": 0,
-     "cacheWrite": 0,
-     "totalTokens": 11,
-     "cost": {
-      "input": 0,
-      "output": 0,
-      "cacheRead": 0,
-      "cacheWrite": 0,
-      "total": 0
-     }
-    },
-    "stopReason": "pending",
-    "timestamp": 1792095148208
-   }
-  },
-  {
-   "type": "thinking_start",
-   "contentIndex": 0,
-   "content": {
-    "type": "thinking",
-    "thinking": "Look it up first."
-   }
-  },
-  null,
-  {
-   "type": "thinking_end",
-   "contentIndex": 0,
-   "content": "Look it up first."
-  },
-  {
-   "type": "text_start",
-   "contentIndex": 1,
-   "content": {
-    "type": "text",
-    "text": "The answer is 42."
-   }
-  },
-  null,
-  null,
-  {
-   "type": "text_end",
-   "contentIndex": 1,
-   "content": "The answer is 42."
-  },
-  null
- ]
+	"events": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "thinking_start",
+			"contentIndex": 0,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "thinking_delta",
+			"contentIndex": 0,
+			"delta": "Look it up first.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "thinking_end",
+			"contentIndex": 0,
+			"content": "Look it up first.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 1,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					},
+					{
+						"type": "text",
+						"text": "The answer is 42."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "text_delta",
+			"contentIndex": 1,
+			"delta": "The answer i",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					},
+					{
+						"type": "text",
+						"text": "The answer is 42."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "text_delta",
+			"contentIndex": 1,
+			"delta": "s 42.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					},
+					{
+						"type": "text",
+						"text": "The answer is 42."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "text_end",
+			"contentIndex": 1,
+			"content": "The answer is 42.",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					},
+					{
+						"type": "text",
+						"text": "The answer is 42."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "done",
+			"reason": "stop",
+			"message": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "thinking",
+						"thinking": "Look it up first."
+					},
+					{
+						"type": "text",
+						"text": "The answer is 42."
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "stop",
+				"timestamp": 1792095148208,
+				"durationMs": 2
+			}
+		}
+	],
+	"frames": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 9,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 11,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148208
+			}
+		},
+		{
+			"type": "thinking_start",
+			"contentIndex": 0,
+			"content": {
+				"type": "thinking",
+				"thinking": "Look it up first."
+			}
+		},
+		null,
+		{
+			"type": "thinking_end",
+			"contentIndex": 0,
+			"content": "Look it up first."
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 1,
+			"content": {
+				"type": "text",
+				"text": "The answer is 42."
+			}
+		},
+		null,
+		null,
+		{
+			"type": "text_end",
+			"contentIndex": 1,
+			"content": "The answer is 42."
+		},
+		null
+	]
 }

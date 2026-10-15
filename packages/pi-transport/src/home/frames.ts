@@ -93,7 +93,7 @@ type Open =
 
 const json = (value: unknown): string => {
 	const text = JSON.stringify(value);
-	if (text === undefined) throw new Error("Tool-call arguments are not JSON-serializable");
+	if (text === undefined) throw new Error("a tool call's arguments cannot be written as JSON");
 	return text;
 };
 const EMPTY_ARGUMENTS = json(parseStreamingJson(""));
@@ -124,21 +124,21 @@ export class FrameEncoder {
 	readonly #open = new Map<number, Open>();
 
 	encode(event: AssistantMessageEvent): ModelFrame | undefined {
-		if (this.#terminal) throw new Error(`Assistant message event ${event.type} follows a terminal event`);
+		if (this.#terminal) throw new Error(`the stream already ended: a ${event.type} event came after it`);
 		if (event.type === "start") {
-			if (this.#started) throw new Error("Assistant message stream contains more than one start event");
+			if (this.#started) throw new Error("the stream began twice");
 			this.#started = true;
 			return { type: "start", partial: startOf(event.partial) };
 		}
 		if (event.type === "done" || event.type === "error") {
-			if (event.type === "done" && !this.#started)
-				throw new Error("Assistant message done event appears before start");
+			if (event.type === "done" && !this.#started) throw new Error("the stream ended before it began");
 			this.#terminal = true;
 			return undefined;
 		}
-		if (!this.#started) throw new Error(`Assistant message ${event.type} event appears before start`);
+		if (!this.#started) throw new Error(`a ${event.type} event came before the stream began`);
 		const at = event.contentIndex;
-		if (!Number.isSafeInteger(at) || at < 0) throw new Error(`Invalid assistant message frame contentIndex: ${at}`);
+		if (!Number.isSafeInteger(at) || at < 0)
+			throw new Error(`a content index must be a whole number from 0, not ${at}`);
 		switch (event.type) {
 			case "text_start": {
 				const block = blockOf(event, "text");
@@ -184,7 +184,8 @@ export class FrameEncoder {
 			}
 			case "toolcall_delta": {
 				const state = this.#state(at, "toolCall");
-				if (state.kind !== "toolCall") throw new Error("Unreachable tool-call encoder state");
+				if (state.kind !== "toolCall")
+					throw new Error("the encoder holds a text block where a tool call was expected");
 				if (state.caughtUp) {
 					return event.delta.length === 0
 						? undefined
@@ -192,7 +193,7 @@ export class FrameEncoder {
 				}
 				state.pending += event.delta;
 				const now = parseStreamingJson(state.pending);
-				// The deltas always begin from empty input, also when the start held some arguments: they may build more than it held.
+				// Deltas are counted from an empty string even if the start already had arguments, so they can add up to more.
 				if (json(now) !== state.snapshot && !grew(parseStreamingJson(state.snapshot), now)) return undefined;
 				const received = state.pending;
 				state.caughtUp = true;
@@ -205,7 +206,7 @@ export class FrameEncoder {
 			case "toolcall_end": {
 				blockOf(event, "toolCall");
 				if (event.toolCall.type !== "toolCall")
-					throw new Error(`toolcall_end event has invalid tool call at index ${at}`);
+					throw new Error(`the toolcall_end event at ${at} carries something that is not a tool call`);
 				this.#finish(at, "toolCall");
 				const call = event.toolCall;
 				return {
@@ -224,14 +225,14 @@ export class FrameEncoder {
 	}
 
 	#begin(at: number, state: Open): void {
-		if (this.#open.has(at)) throw new Error(`Assistant message block ${at} starts more than once`);
+		if (this.#open.has(at)) throw new Error(`block ${at} was started twice`);
 		this.#open.set(at, state);
 	}
 
 	#state(at: number, kind: Open["kind"]): Open {
 		const state = this.#open.get(at);
-		if (state === undefined) throw new Error(`Assistant message ${kind} block ${at} has not started`);
-		if (state.kind !== kind) throw new Error(`Assistant message block ${at} is ${state.kind}, not ${kind}`);
+		if (state === undefined) throw new Error(`there is no ${kind} block ${at} open`);
+		if (state.kind !== kind) throw new Error(`block ${at} is open as ${state.kind}, and the event is for ${kind}`);
 		return state;
 	}
 
@@ -243,7 +244,7 @@ export class FrameEncoder {
 	/** A text or thinking delta, less what the block's start already held. */
 	#words(at: number, delta: string, kind: "text" | "thinking"): ModelFrame | undefined {
 		const state = this.#state(at, kind);
-		if (state.kind === "toolCall") throw new Error("Unreachable text encoder state");
+		if (state.kind === "toolCall") throw new Error("the encoder holds a tool call where text was expected");
 		const from = state.seen;
 		state.seen += delta.length;
 		const held = Math.max(0, state.covered - from);
@@ -261,9 +262,10 @@ function blockOf<T extends Block["type"]>(
 	type: T,
 ): Extract<Block, { type: T }> {
 	const block = event.partial.content[event.contentIndex];
-	if (!block) throw new Error(`${event.type} event has no content block at index ${event.contentIndex}`);
+	if (!block)
+		throw new Error(`the ${event.type} event names block ${event.contentIndex}, which its partial does not have`);
 	if (block.type !== type) {
-		throw new Error(`${event.type} event points to ${block.type} block at index ${event.contentIndex}`);
+		throw new Error(`the ${event.type} event names block ${event.contentIndex}, which is ${block.type}`);
 	}
 	return block as Extract<Block, { type: T }>;
 }
