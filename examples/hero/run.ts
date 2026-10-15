@@ -2,7 +2,8 @@
 // reference entry: nine grids read by vision from their charts, then `snapshot.html`. `--kill1` runs it in a child process that
 // is killed with SIGKILL inside a paid call (the operator's published figure, after the host kept the answer and before the
 // driver committed it), and a fresh process resumes the run on the same directory: the paid call is settled from the kept
-// answer and is not sent again. `--record <dir>` keeps the run as an agentrun.recording/1 directory.
+// answer and is not sent again. `--record <dir>` keeps the run as an agentrun.recording/1 directory. `--chrome` runs it in a local Chrome on the job's own
+// pages (no network, eyes and lead scripted); `--live` takes the real dashboards, CHROME_PATH and the broker's models, and is run only on the TL's ask.
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,7 +15,9 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, run } from '../reference/index.ts';
 import type { BrowserPlane, Delivery, LedgerRow, RunResult } from '../reference/index.ts';
 import { heroFakes, heroJob, readGrids, watchScreenshots } from './job.ts';
+import { addFrameTracks, liveBrowser, liveConfig, liveEyes, liveFrames, liveModels } from './live.ts';
 import { keepLooks, shownShots } from './looks.ts';
+import { fakeEyes } from '@parcha/pi-vision/testing';
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -61,12 +64,20 @@ export async function deliverSnapshot(root: string, result: Delivery): Promise<v
 async function child() {
   const place = await placeAt(process.env.DIR);
   const grids = readGrids();
-  const { fakes, eyes } = heroFakes(grids, { eyesLedger: join(place.root, 'eyes.jsonl'), ...(process.env.EYES_PRICE ? { eyesPrice: Number(process.env.EYES_PRICE) } : {}), ...(process.env.BROKEN ? { broken: process.env.BROKEN } : {}) });
+  const mode = (process.env.MODE ?? 'fake') as 'fake' | 'chrome' | 'live';
+  if (process.env.SEE) throw new Error('--see is not available yet: vision.see from code mode is agentrun #506, which has not landed.');
+  const config = mode === 'fake' ? undefined : liveConfig();
+  const { fakes, eyes: scripted } = heroFakes(grids, { eyesLedger: join(place.root, 'eyes.jsonl'), ...(process.env.EYES_PRICE ? { eyesPrice: Number(process.env.EYES_PRICE) } : {}), ...(process.env.BROKEN ? { broken: process.env.BROKEN } : {}) });
   const recorder = process.env.RECORD_DIR ? openRecorder({ dir: process.env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
+  // `--chrome`: no network, a local Chrome that reaches the job's own pages, the lead and eyes scripted (its eyes answer one fixed reading for any chart: this checks the
+  // wiring, not the numbers). `--live`: local Chrome on the real dashboards, the eyes and the lead on the broker.
+  const eyes = mode === 'live' ? liveEyes(config!) : mode === 'chrome' ? fakeEyes({ model: 'scripted-eyes', price: { input: 0, output: 0 }, ...(process.env.DIR ? { ledgerPath: join(place.root, 'eyes.jsonl') } : {}), answers: ['A fuel-mix chart. Renewable share now: 50.0%. Peak: 1000 MW.'] }) : scripted;
+  const frames = config && recorder ? liveFrames(recorder, Date.now(), process.env.RECORD_DIR!) : undefined;
+  const chrome = config ? await liveBrowser(place, config, { ...(mode === 'chrome' ? { pages: fakes.pages } : {}), ...(frames ? { frames } : {}) }) : undefined;
   // The fake browser has no navigation of its own (a session opens on the backend's start page, and `run` hands back the code it was given),
   // so this plane turns the lead's `page.goto("<url>")` into the fake's `goto` action: each session then stands on its own grid's page.
   const remote = remoteDriver(process.env.BACKEND!);
-  const browser: BrowserPlane = {
+  const browser: BrowserPlane = chrome?.browser ?? {
     provider: () => remoteProvider(process.env.BACKEND!), createDeadlineMs: 3_000,
     driver: async (target) => {
       const page = await remote(target);
@@ -77,6 +88,7 @@ async function child() {
     },
   };
   const local = localHost(place, fakes, { browser, ...(recorder ? { recorder } : {}) });
+  if (mode === 'live') local.host.models = liveModels(config!);
   const { runEffect } = local.host.tools;
   // The kill: after the host has kept a paid call's answer and before the driver commits it. It waits for the paid call to be the only
   // one in the tool (a call between its dispatch and the kept answer cannot be settled, and a kill there is the operator's to resolve).
@@ -99,8 +111,10 @@ async function child() {
   const record_ = local.host.deliver;
   local.host.deliver = async (result) => { await deliverSnapshot(place.root, result); await record_(result); };
   try {
-    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: (running) => ({ eyes, ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl') }) }) });
+    const result: RunResult = await run(place, local.host, heroJob(grids, process.env.AT ?? AT), { vision: (running) => ({ eyes, ...(mode === 'live' ? { limits: () => ({ image: { native: false } }) } : {}), ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl') }) }) });
     await recorder?.detach();
+    await frames?.close();
+    chrome?.close();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } satisfies Out }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } satisfies Out }));
@@ -126,6 +140,9 @@ function spawnChild(env: Record<string, string>, onSpawn: (pid: number) => void)
 
 const rows = <T,>(file: string): T[] => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as T); } catch { return []; } };
 
+/** What a child needs of this process's environment for a Chrome or live run, and nothing else. */
+const passed = (mode?: string): Record<string, string> => (mode ? Object.fromEntries(['CHROME_PATH', 'PI_BROWSER_NO_SANDBOX', 'HERO_BROKER_URL', 'HERO_EYES', 'HERO_LEAD'].flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : []))) : {});
+
 export type HeroRun = {
   dir: string;
   processes: Process[];
@@ -143,7 +160,7 @@ export type HeroRun = {
 
 /** Runs the job in a directory of its own. With `kill1`, the first process is killed inside the paid call that is the `kill1`th to finish
  *  (alone in the tool), and a fresh process resumes. With `record`, the run is kept as a recording there. */
-export async function heroRun(options: { kill1?: number; record?: string; dir?: string; broken?: string; at?: string; /** The scripted eyes' price, in dollars per million tokens in and out; default 0, so the run costs nothing. */ eyesPrice?: number } = {}): Promise<HeroRun> {
+export async function heroRun(options: { kill1?: number; record?: string; dir?: string; broken?: string; at?: string; /** The scripted eyes' price, in dollars per million tokens in and out; default 0, so the run costs nothing. */ eyesPrice?: number; /** `chrome`: a local Chrome on the job's own pages, no network; `live`: local Chrome on the real dashboards and the broker's models. Default: the fake browser. */ mode?: 'chrome' | 'live'; /** `vision.see` from code mode, once agentrun #506 has landed: not yet. */ see?: boolean } = {}): Promise<HeroRun> {
   if (options.record && (existsSync(join(options.record, '.spool')) || existsSync(join(options.record, 'manifest.json')))) throw new Error(`${options.record} already holds a recording or an unfinished one: record into a directory of its own`);
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-hero-'));
   const cleanup = () => rm(scratch, { recursive: true, force: true });
@@ -157,7 +174,7 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
     const served = await backend.serve();
     // Closed on every way out: a listening server keeps the caller's process alive.
     try {
-      const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}), ...(options.eyesPrice ? { EYES_PRICE: String(options.eyesPrice) } : {}) };
+      const base = { BACKEND: served.url, HOME: scratch, TMPDIR: scratch, DIR: dir, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(options.broken ? { BROKEN: options.broken } : {}), ...(options.at ? { AT: options.at } : {}), ...(options.eyesPrice ? { EYES_PRICE: String(options.eyesPrice) } : {}), ...(options.mode ? { MODE: options.mode } : {}), ...(options.see ? { SEE: '1' } : {}), ...passed(options.mode) };
       const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
       const processes: Process[] = [];
       let kills = 0;
@@ -178,7 +195,10 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
         finishRecording(options.record, {
           title: 'Nine grids, read from the chart', task: 'hero-grid-snapshot', model: 'faux/faux-1', generations: processes.length, kills,
           code: codeOf(ROOT), cost, source: { run: 'hero', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'Nine grids, read from the chart' },
+          ...(options.mode === 'live' ? { providers: 'real' as const } : {}),
         });
+        // A browser session's frames become one video each, written at export, after the last frame.
+        if (options.mode) await addFrameTracks(options.record);
       }
       return { dir, processes, record, cited, ledger: rows<LedgerRow>(join(dir, 'ledger.jsonl')), eyesRequests: rows(join(dir, 'eyes.jsonl')).length, ...(options.record ? { recording: options.record } : {}), cleanup };
     } finally { await served.close(); }
@@ -186,9 +206,9 @@ export async function heroRun(options: { kill1?: number; record?: string; dir?: 
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { child: { type: 'boolean' }, json: { type: 'boolean' }, dir: { type: 'string' }, record: { type: 'string' }, kill1: { type: 'boolean' } } });
+  const { values } = parseArgs({ options: { child: { type: 'boolean' }, json: { type: 'boolean' }, dir: { type: 'string' }, record: { type: 'string' }, kill1: { type: 'boolean' }, chrome: { type: 'boolean' }, live: { type: 'boolean' }, see: { type: 'boolean' } } });
   if (values.child) return child();
-  const result = await heroRun({ ...(values.dir ? { dir: values.dir } : {}), ...(values.record ? { record: values.record } : {}), ...(values.kill1 ? { kill1: 3 } : {}) });
+  const result = await heroRun({ ...(values.dir ? { dir: values.dir } : {}), ...(values.record ? { record: values.record } : {}), ...(values.kill1 ? { kill1: 3 } : {}), ...(values.live ? { mode: 'live' as const } : values.chrome ? { mode: 'chrome' as const } : {}), ...(values.see ? { see: true } : {}) });
   const tally = (names: string[]) => names.reduce<Record<string, number>>((counts, name) => ({ ...counts, [name]: (counts[name] ?? 0) + 1 }), {});
   const view = {
     processes: result.processes.map((process) => ({ exit: process.exit, outcome: process.outcome?.status ?? null })),

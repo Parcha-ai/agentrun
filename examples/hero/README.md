@@ -26,6 +26,19 @@ The resumed process settles the call from the kept answer: the figure is fetched
 kill, and the recording's own fold reads repeated 0. The model requests the kill cut are asked again, once each, as the
 reference host documents.
 
+## Chrome and live
+
+| Flag | What it does |
+|---|---|
+| `--chrome` | a local Chrome (`CHROME_PATH`) on the job's own pages: no network, the lead and the eyes scripted. It checks the wiring: each browser session is screencast into the recording and leaves a video |
+| `--live` | the same Chrome on the real dashboards, the eyes and the lead on the machine's broker, the manifest's `providers` `real`. It spends money: run it only when asked |
+| `--see` | `vision.see` from code mode, for the chart beat. It waits on agentrun #506 and refuses until then |
+
+`--live` takes `CHROME_PATH`; `HERO_BROKER_URL` (default `http://127.0.0.1:9421/v1`); `HERO_EYES` and `HERO_LEAD`, each `<provider>/<model id>` of pi-ai's catalog (default the OpenRouter entry
+`openrouter/google/gemini-3.7-flash`, which the broker's OpenAI API reaches). The broker swaps in its own credential: the example holds a placeholder and never a provider key. Where Chrome's
+sandbox cannot start, set `PI_BROWSER_NO_SANDBOX=1`. The frame recorder (`@parcha/pi-browser/recorder`) hands its lines to the recorder's own live write, and `exportFrameTracks` makes one WebM and
+its index per session at the end of the recording. Until the browser's screenshot clip lands, each branch frames its chart by scrolling.
+
 ## The workflow
 
 `job.ts`. A `map` over the grids with nine at a time; each branch is an `agent` that opens its dashboard and takes one screenshot
