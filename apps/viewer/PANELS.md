@@ -85,6 +85,10 @@ and how long it ran in ms, or null; another real recording, opened beside this o
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
 
+A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
+generic cited result `agentrun.cited/1` (RECORDING.md section 5: rows of a label and a value, each citing a blob, a
+look or both). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
+
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
 

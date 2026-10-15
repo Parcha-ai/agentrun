@@ -4,7 +4,7 @@
 // (`apollo11.account/1`) with its photo sort and a weaker eyes model's reading. Every picture is a PNG this file draws,
 // and every name and number in it is made up.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { counterFold, countersOf } from '../src/counters.ts';
@@ -94,6 +94,27 @@ export const ACCOUNT = {
   weak_eyes: { model: WEAK, source: 'vision-hand-weak', photos: { right: 1, total: 2 }, times: { pages: 1, times: 2, in_typed: 0, unreadable: 0, not_in_typed: [{ page: 1, read: '00 00 0 05', truth: '00 00 00 05', receipt: K.weak1 }, { page: 1, read: '00 00 00 2', truth: '00 00 00 12', receipt: K.weak1 }] } },
 };
 export const RESULT = keep(Buffer.from(JSON.stringify(ACCOUNT)), 'json');
+
+/** The same run delivering the generic cited result (`agentrun.cited/1`): rows citing a look and where in it, a file,
+ *  both, or nothing. */
+export const CITED = {
+  format: 'agentrun.cited/1', title: 'Three pages and three photographs, read',
+  rows: [
+    { label: 'The alarm', value: 'number 9', note: 'read off page 2', cites: [{ look: K.page2, fragment: '#page=2&xywh=percent:6,8,80,6', note: 'the line it stands on' }] },
+    { label: 'The first photograph', value: 'ground', cites: [{ look: K.photo1 }, { blob: PHOTOS[0]! }] },
+    { label: 'A share read from a picture', value: 41, note: 'published 41.5, gap 0.5', cites: [{ blob: FILM[0]!, note: 'the picture it was read from' }] },
+    { label: 'A page that was not the dashboard', value: 'failed', cites: [] },
+  ],
+};
+
+/** A recording written by `writeRecording`, made to deliver `value` as its result instead. */
+export function deliverInstead(dir: string, value: Json): string {
+  const bytes = Buffer.from(JSON.stringify(value));
+  const sha = sha256(bytes);
+  writeFileSync(join(dir, 'blobs', `${sha}.json`), bytes);
+  for (const file of ['manifest.json', 'events.jsonl']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll(RESULT, sha));
+  return sha;
+}
 
 let t = 0;
 let seq = 0;
