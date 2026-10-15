@@ -31,5 +31,13 @@
     "exitCode": 0,
     "pattern": "^ok: 6 messages answered once each, by generations 1 and 2, from the store in "
   },
-  "timeoutMs": 120000
+  "timeoutMs": 120000,
+  "examples": {
+    "readme": "packages/pi-durable-disk/examples/README.md",
+    "heading": "Run one from an install",
+    "fence": "sh",
+    "index": 0,
+    "dir": "packages/pi-durable-disk/examples",
+    "timeoutMs": 120000
+  }
 }
