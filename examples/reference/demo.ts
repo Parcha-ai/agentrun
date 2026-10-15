@@ -15,7 +15,7 @@
 // The supervisor serves the fake browser's backend on loopback so its sessions outlive a killed child, and writes the host lines (`process.started`, `kill`
 // with its `kind`, `result`) from outside every process.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -241,7 +241,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   const input = values.input === undefined ? undefined : parseInput(values.input, (path) => readFileSync(path, 'utf8'));
-  if (!live) checkInputCapture(spec, input, job.input, dirname(fileURLToPath(options.self)), existsSync);
+  if (!live) checkInputCapture(spec, input, job.input, dirname(fileURLToPath(options.self)), (path) => { try { const stat = statSync(path); return stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : undefined; } catch { return undefined; } });
   if (values.record && (existsSync(join(values.record, '.spool')) || existsSync(join(values.record, 'manifest.json')))) throw new Error(`${values.record} already holds a recording or an unfinished one: record into a directory of its own`);
 
   const scratch = await mkdtemp(join(tmpdir(), `agentrun-${spec.name}-`));

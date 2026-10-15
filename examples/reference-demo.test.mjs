@@ -433,6 +433,8 @@ test('--input naming another project on fakes is refused unless its capture exis
   const fixtures = new URL('./reference/fixtures/', import.meta.url);
   const capture = new URL('./Other Ltd.json', fixtures);
   await assert.rejects(() => run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']), (error) => /--input names company "Other Ltd"/.test(error.message) && error.message.includes('fixtures/Other Ltd.json') && /--live/.test(error.message));
+  // A value is a name, never a path: one that escapes fixtures/ is refused even though the file it names exists (the demo\'s own job.ts).
+  for (const value of ['../job.ts', '..', 'a/b', 'x\\\\y']) await assert.rejects(() => run(t, spec, ['--json', '--input', JSON.stringify({ company: value })]), /not a name a capture can have/, value);
   // The job's own project needs no capture.
   const own = await run(t, spec, ['--json', '--input', '{"company":"Acme Ltd"}']);
   assert.equal(own.result.processes.at(-1).outcome.status, 'complete');
@@ -462,4 +464,14 @@ test('a live child gets exactly the environment names demo.json declares (keys, 
   for (const name of ['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'PATH']) assert.ok(seen.includes(name), `${name} reaches the child`);
   for (const name of ['GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY', 'DEMO_SPEC_NOTE']) assert.ok(!seen.includes(name), `${name} was not declared and does not reach a live child`);
   assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'live-vision.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true }, 'live vision gets (host, running) like fakes.vision');
+});
+
+test('fakes.extensions are for a no-key run: a live host does not install them', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-ext-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const scripted = { name: 'scripted', tools: [] };
+  const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [scripted] };
+  assert.deepEqual(localHost(await placeAt(join(tmp, 'a')), fakes, { live: false }).host.tools.extensions, [scripted]);
+  assert.deepEqual(localHost(await placeAt(join(tmp, 'b')), fakes, { live: true }).host.tools.extensions, []);
 });

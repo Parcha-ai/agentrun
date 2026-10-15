@@ -156,7 +156,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     ...(recorder ? { record: recorder } : {}),
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
-      extensions: [...(fakes.extensions ?? [])],
+      // The demo's scripted extensions are for a no-key run: a live run exposes the live parts' tools and not these.
+      extensions: options.live ? [] : [...(fakes.extensions ?? [])],
       runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];

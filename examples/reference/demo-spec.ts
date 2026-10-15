@@ -125,13 +125,15 @@ export function effectiveBoxes(spec: DemoSpec, live: boolean): BoxSpec | undefin
   return spec.boxes.kind === 'docker' && !live ? { ...spec.boxes, kind: 'local' } : spec.boxes;
 }
 
-/** `--input` on fakes: another project than the job's default needs its capture, and the refusal says where it goes. `dir` is the demo's directory. */
-export function checkInputCapture(spec: DemoSpec, input: Record<string, unknown> | undefined, defaults: Record<string, unknown>, dir: string, exists: (path: string) => boolean): void {
+/** `--input` on fakes: another project than the job's default needs its capture, and the refusal says where it goes. `dir` is the demo's directory. A value is a name, not a path: one that escapes `fixtures/`
+ *  (a separator or `..`) is refused, and the capture is accepted only as the file `fixtures/<value>.json` or the directory `fixtures/<value>/`. `kind` says what is at a path. */
+export function checkInputCapture(spec: DemoSpec, input: Record<string, unknown> | undefined, defaults: Record<string, unknown>, dir: string, kind: (path: string) => 'file' | 'directory' | undefined): void {
   const key = spec.input?.fixtures?.key;
   if (!key || !input || input[key] === undefined || input[key] === defaults[key]) return;
   const value = String(input[key]);
   const as = `${dir}/fixtures/${value}`;
-  if (exists(as) || exists(`${as}.json`)) return;
+  if (!value || value === '.' || value === '..' || /[\\/]/.test(value) || value.includes('\0')) throw new Error(`--input names ${key} ${JSON.stringify(value)}, which is not a name a capture can have (no path separators). A capture is fixtures/<name>.json or fixtures/<name>/ beside the demo.`);
+  if (kind(`${as}.json`) === 'file' || kind(as) === 'directory') return;
   throw new Error(`--input names ${key} "${value}", and a run on fakes replays a capture of it, which does not exist. Put it at ${as}.json (or ${as}/), or run with --live to read the real thing.`);
 }
 
