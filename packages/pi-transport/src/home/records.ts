@@ -96,14 +96,21 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	const sendLines = (commit: number, lines: readonly unknown[], isSnapshot: boolean) => {
 		if (streaming) send?.({ t: "lines", commit, lines, ...(isSnapshot ? { snapshot: true } : {}) });
 	};
+	/** What the host says its log holds lets the outbox go, whether or not the acknowledgements arrived. */
+	const heldByHost = (box: Outbox | undefined) => {
+		if (box === undefined || hostAt === undefined) return;
+		if (hostAt.after > 0) box.ack(hostAt.after);
+		if (hostAt.linesAfter > 0) box.ackLines(hostAt.linesAfter);
+	};
 	/**
 	 * What the outbox holds from where the host is, in commit order, and the snapshot after the commits before it. Runs
 	 * when the host says where it is and again when the store opens: the outbox of a process that died is read only
-	 * then, after the host's word.
+	 * then, after the host's word. Only commits the store has: one that is still committing goes when it lands.
 	 */
 	const catchUp = () => {
 		if (!streaming || hostAt === undefined) return;
 		for (const entry of outbox?.pending(hostAt.after, hostAt.linesAfter) ?? []) {
+			if (next !== undefined && entry.commit >= next) continue;
 			if (snapshot !== undefined && entry.commit > snapshot.commit) {
 				sendLines(snapshot.commit, snapshot.lines, true);
 				snapshot = undefined;
@@ -126,6 +133,7 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				});
 				outbox = opened;
 				next = head.value;
+				heldByHost(opened);
 				const recording = options.recording;
 				// Nothing has committed through pi yet, and this process holds the store alone: the state is exact.
 				const lines = await recording?.snapshotLines?.(storage, { at: head.value - 1, context });
@@ -183,6 +191,7 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 				streaming = true;
 				hostAt = { after, linesAfter };
 				hold(after);
+				heldByHost(outbox);
 				catchUp();
 			} else {
 				return false;

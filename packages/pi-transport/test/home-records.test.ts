@@ -630,7 +630,8 @@ describe("the record stream", () => {
 describe("the runner's end of the record stream", () => {
 	it("lets an admission go when the host says its log holds it, though its acknowledgement was lost", async () => {
 		await withWorld(async (made) => {
-			const shipper = createShipper({ admits: () => true, acknowledgeWithinMs: 2_000 });
+			// Longer than any case runs: only the host's word can let the commit go.
+			const shipper = createShipper({ admits: () => true, acknowledgeWithinMs: 600_000 });
 			mkdirSync(join(made.directory, "store"), { recursive: true });
 			const wrapped = await shipper.wrapStore(made.options.store)(
 				await openNodeSqliteStorage(made.options.store),
@@ -640,7 +641,6 @@ describe("the runner's end of the record stream", () => {
 			shipper.up((frame) => sent.push(frame) > 0);
 			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
 			const session = createSession(wrapped.storage);
-			const started = performance.now();
 			const committed = session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
 			await sleep(100);
 			// The host logged it and acknowledged it, and the acknowledgement went with the link.
@@ -650,7 +650,68 @@ describe("the runner's end of the record stream", () => {
 			shipper.up((frame) => sent.push(frame) > 0);
 			shipper.receive({ t: "resend-after", after: 1, linesAfter: 0 });
 			await committed;
-			expect(performance.now() - started).toBeLessThan(1_000);
+			await session.close(context);
+			await wrapped.closed?.();
+		});
+	});
+
+	it("lets the outbox go when the host says its log holds the commits, though their acknowledgements were lost", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({ admits: () => false });
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const wrapped = await shipper.wrapStore(made.options.store)(
+				await openNodeSqliteStorage(made.options.store),
+				context,
+			);
+			shipper.up(() => true);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			const session = createSession(wrapped.storage);
+			for (let n = 0; n < 2; n += 1)
+				await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			// The host logged both; their acknowledgements went with the link.
+			expect(await shipper.drained(100)).toBe(false);
+			shipper.down();
+			shipper.up(() => true);
+			shipper.receive({ t: "resend-after", after: 2, linesAfter: 2 });
+			expect(await shipper.drained(2_000)).toBe(true);
+			await session.close(context);
+			await wrapped.closed?.();
+		});
+	});
+
+	it("sends a commit's writes only once the store has them, also on a link that comes up while it is pending", async () => {
+		await withWorld(async (made) => {
+			const shipper = createShipper({ admits: () => false });
+			mkdirSync(join(made.directory, "store"), { recursive: true });
+			const real = await openNodeSqliteStorage(made.options.store);
+			let release: () => void = () => {};
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			// A store whose commit waits: its writes are in the outbox and not yet in the store.
+			const slow = new Proxy(real, {
+				get(target, key) {
+					if (key === "commit") {
+						return async (...args: Parameters<typeof real.commit>) => {
+							await gate;
+							return target.commit(...args);
+						};
+					}
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const wrapped = await shipper.wrapStore(made.options.store)(slow, context);
+			const session = createSession(wrapped.storage);
+			const committed = session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+			await sleep(50);
+			const sent: Frame[] = [];
+			shipper.up((frame) => sent.push(frame) > 0);
+			shipper.receive({ t: "resend-after", after: 0, linesAfter: 0 });
+			expect(sent.filter((frame) => frame.t === "record")).toEqual([]);
+			release();
+			await committed;
+			expect(sent.filter((frame) => frame.t === "record").map((frame) => frame.commit)).toEqual([1]);
 			await session.close(context);
 			await wrapped.closed?.();
 		});
