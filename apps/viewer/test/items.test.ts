@@ -8,7 +8,7 @@ import { createContext, Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { bundle, checkModule, DSL_ITEM_STATE } from '../build.mjs';
 import { canonicalJson, stateDelta } from '../../../packages/dsl/src/recovery/item-state.ts';
-import { itemStateOf, resultOf, resultsOf, statesBySha } from '../src/items.ts';
+import { itemStateOf, partialResultsOf, statesBySha } from '../src/items.ts';
 import { sha256Hex } from '../src/sha256.ts';
 
 const nodeSha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -39,42 +39,34 @@ test('a v4 item\'s state rebuilds through the DSL\'s itemState with the page\'s 
   assert.match((itemStateOf(item, states, '/root/steps/9') as { unreadable: string }).unreadable, /keeps no state at \/root\/steps\/9/);
 });
 
-// A failed map's finished results, each any JSON value kept once in agentrun.states by its digest (the driver's canonicalHash).
+// A failed map's pin.partial: v3 keeps its results inline; v4 keeps one digest, of an agentrun.states list of each
+// result's digest (null for an item that never finished), each result any JSON value (the driver's canonicalHash).
 const RESULTS: unknown[] = [state, 'a string', 0, false, ['a', { b: 1 }]];
 const resultDocs = RESULTS.map((result) => ({ driver: 'd', sha256: nodeSha(canonicalJson(result)), state: result }));
-
-test('a failed map\'s result is read by its digest, any JSON value, or says why it cannot be', () => {
-  const held = statesBySha(resultDocs);
-  for (const [index, result] of RESULTS.entries()) assert.deepEqual(resultOf(resultDocs[index]!.sha256, held), { result }, JSON.stringify(result));
-  assert.deepEqual(resultOf(resultDocs[1]!.sha256, Object.fromEntries(held)), { result: 'a string' }, 'states as a record too');
-  assert.match((resultOf(resultDocs[0]!.sha256, new Map()) as { unreadable: string }).unreadable, /its document [0-9a-f]{64} is missing/);
-  assert.match((resultOf(resultDocs[1]!.sha256, statesBySha([{ sha256: resultDocs[1]!.sha256, state: 'another string' }])) as { unreadable: string }).unreadable, /does not match its SHA-256/);
-  for (const slot of [null, 'abc', 7, resultDocs[0]!.sha256.toUpperCase()]) assert.deepEqual(resultOf(slot, held), { unreadable: 'not a digest' }, String(slot));
-});
-
-// A failed map's pin.partial: v3 keeps its results inline; v4 keeps one digest, of the list of each result's digest.
-const slots = [resultDocs[0]!.sha256, null, resultDocs[1]!.sha256, resultDocs[4]!.sha256];
+const slots = [resultDocs[0]!.sha256, null, ...resultDocs.slice(1).map((doc) => doc.sha256)];
 const listDoc = { driver: 'd', sha256: nodeSha(canonicalJson(slots)), state: slots };
 const v4 = { path: '/root/steps/0/map', as: 'found', results: listDoc.sha256 };
+const read = [{ result: RESULTS[0] }, null, ...RESULTS.slice(1).map((result) => ({ result }))];
 const unreadable = (slot: unknown) => (slot as { unreadable: string }).unreadable;
 
-test('a failed map\'s results: inline in v3; in v4 a list of digests read by its digest, then each slot, every digest checked', () => {
+test('a failed map\'s results, through the DSL\'s partialResults: inline in v3; in v4 a list read by its digest, then each slot', () => {
   const held = statesBySha([...resultDocs, listDoc]);
-  assert.deepEqual(resultsOf(v4, held), { results: [{ result: RESULTS[0] }, null, { result: RESULTS[1] }, { result: RESULTS[4] }] });
-  assert.deepEqual(resultsOf({ ...v4, results: [RESULTS[0], null, 'x'] }, new Map()), { results: [{ result: RESULTS[0] }, null, { result: 'x' }] }, 'v3: inline, nothing looked up');
+  assert.deepEqual(partialResultsOf(v4, held), { slots: read });
+  assert.deepEqual(partialResultsOf(v4, Object.fromEntries(held)), { slots: read }, 'states as a record too');
+  assert.deepEqual(partialResultsOf({ ...v4, results: [RESULTS[0], null, 'x'] }, new Map()), { slots: [{ result: RESULTS[0] }, null, { result: 'x' }] }, 'v3: inline, nothing looked up');
   // The list missing, mismatched (its slots swapped under the same digest), or not a list of digests: none of it reads.
-  assert.match(unreadable(resultsOf(v4, statesBySha(resultDocs))), /^its list of results: its document [0-9a-f]{64} is missing$/);
-  const swapped = { ...listDoc, state: [slots[2], null, slots[0], slots[3]] };
-  assert.match(unreadable(resultsOf(v4, statesBySha([...resultDocs, swapped]))), /^its list of results: its document does not match its SHA-256/);
+  assert.match(unreadable(partialResultsOf(v4, statesBySha(resultDocs))), /^the list of results [0-9a-f]{64} is missing$/);
+  const swapped = { ...listDoc, state: [slots[2], null, slots[0], ...slots.slice(3)] };
+  assert.match(unreadable(partialResultsOf(v4, statesBySha([...resultDocs, swapped]))), /^the list of results [0-9a-f]{64} does not match its SHA-256$/);
   const notList = { driver: 'd', sha256: nodeSha(canonicalJson({ a: 1 })), state: { a: 1 } };
-  assert.deepEqual(resultsOf({ ...v4, results: notList.sha256 }, statesBySha([notList])), { unreadable: 'its list of results is not a list of digests' });
-  assert.deepEqual(resultsOf({ path: v4.path, as: v4.as }, held), { unreadable: 'its list of results: not a digest' });
+  assert.deepEqual(partialResultsOf({ ...v4, results: notList.sha256 }, statesBySha([notList])), { unreadable: 'the list of results is not a list of digests' });
+  assert.deepEqual(partialResultsOf({ path: v4.path, as: v4.as }, held), { unreadable: 'not a failed map\'s results' });
   // A slot whose document is missing or changed is unreadable alone; the others still read.
-  const some = resultsOf(v4, statesBySha([listDoc, resultDocs[1], { ...resultDocs[4], state: 'changed' }])) as { results: unknown[] };
-  assert.match(unreadable(some.results[0]), /its document [0-9a-f]{64} is missing/);
-  assert.equal(some.results[1], null);
-  assert.deepEqual(some.results[2], { result: RESULTS[1] });
-  assert.match(unreadable(some.results[3]), /does not match its SHA-256/);
+  const some = partialResultsOf(v4, statesBySha([listDoc, resultDocs[1], { ...resultDocs[4], state: 'changed' }])) as { slots: unknown[] };
+  assert.match(unreadable(some.slots[0]), /^the result [0-9a-f]{64} is missing$/);
+  assert.equal(some.slots[1], null);
+  assert.deepEqual(some.slots[2], { result: RESULTS[1] });
+  assert.match(unreadable(some.slots[5]), /^the result [0-9a-f]{64} does not match its SHA-256$/);
 });
 
 test('the build inlines the DSL\'s module from its source, and refuses it once it imports anything', () => {
@@ -90,10 +82,10 @@ test('the build inlines the DSL\'s module from its source, and refuses it once i
 
 test('the bundled code, as the page runs it, rebuilds the same state and reads the same results', () => {
   const context = createContext({ TextEncoder });
-  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, resultOf, resultsOf, statesBySha };`).runInContext(context);
-  const got = (context as { got: { itemStateOf: typeof itemStateOf; resultOf: typeof resultOf; resultsOf: typeof resultsOf; statesBySha: typeof statesBySha } }).got;
+  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, partialResultsOf, statesBySha };`).runInContext(context);
+  const got = (context as { got: { itemStateOf: typeof itemStateOf; partialResultsOf: typeof partialResultsOf; statesBySha: typeof statesBySha } }).got;
   assert.equal(JSON.stringify(got.itemStateOf(item, got.statesBySha([{ sha256: baseSha, state: base }]), PATH)), JSON.stringify({ state }));
   assert.match(JSON.stringify(got.itemStateOf(item, new Map(), PATH)), /is missing/);
-  assert.equal(JSON.stringify(got.resultOf(resultDocs[4]!.sha256, got.statesBySha(resultDocs))), JSON.stringify({ result: RESULTS[4] }));
-  assert.equal(JSON.stringify(got.resultsOf(v4, got.statesBySha([...resultDocs, listDoc]))), JSON.stringify({ results: [{ result: RESULTS[0] }, null, { result: RESULTS[1] }, { result: RESULTS[4] }] }));
+  assert.equal(JSON.stringify(got.partialResultsOf(v4, got.statesBySha([...resultDocs, listDoc]))), JSON.stringify({ slots: read }));
+  assert.match(JSON.stringify(got.partialResultsOf(v4, got.statesBySha(resultDocs))), /the list of results [0-9a-f]{64} is missing/);
 });
