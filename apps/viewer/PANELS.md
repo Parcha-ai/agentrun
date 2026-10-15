@@ -17,6 +17,7 @@ const myPanel: Panel<MyState> = {
   accepts: (line) => line.source === 'browser',   // which lines it reduces
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
+  shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -26,6 +27,13 @@ its state and its context. RECORDING.md writes the contract as `view(state, blob
 the context, and blobs are resolved by the shell from the nodes a view returns. That is what makes a scrub a replay: the viewer may compute a panel's state at any point
 with a fresh reduce of the lines before it, or by stepping from a state it kept, and both give the same screen. A test
 in `test/core.test.ts` checks this for every registered panel at every stop of the test fixture.
+
+A panel is drawn only for a recording that has a line it is for: one its `shows` says yes to, or, without `shows`, one
+it `accepts`. With none in the whole recording, the shell draws nothing for it, not even its title. The shell judges
+this once over every line of the recording, never up to the stop, so a panel never appears or vanishes mid-scrub: at a
+stop before its first line it is drawn with its state before any line. Give a panel `shows` when its `accepts` takes
+lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
+a recording with `transport` lines.
 
 ## What `view` returns
 
@@ -158,5 +166,5 @@ One panel for every demo that runs on a disk place. It reads the supervisor's `h
 with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the events between them
 in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once,
 repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
-(`appliedIn`), so the panel and the counters strip agree. A recording with no disk line draws "No claim on a disk is in
-this recording". Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
+(`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
+panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.

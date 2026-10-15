@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { diskPanel, type DiskState } from '../src/disk.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
-import { type Node, panelsShown } from '../src/panels.ts';
+import { type Node, panelsFor, panelsShown } from '../src/panels.ts';
 import { reduceTo, stopsOf } from '../src/replay.ts';
 
 const at = (path: string) => new URL(`fixtures/disk-takeover/${path}`, import.meta.url);
@@ -188,4 +188,13 @@ test('a fence or a kill that arrives after the next generation wrote cuts only t
     assert.match(text, /first .* cut in generation 1/, what);
     assert.match(text, /second .* in flight in generation 2/, what);
   }
+});
+
+test('the shell draws the panel only for a recording with a disk claim line: the counters\' lines alone do not make it appear', () => {
+  const reference = parseLines(readFileSync(new URL('fixtures/reference-killed/events.jsonl', import.meta.url), 'utf8'));
+  assert.ok(reference.some((line) => diskPanel.accepts(line)), 'it reduces the counters\' lines');
+  assert.ok(!panelsFor(reference).some((panel) => panel.id === 'disk'), 'no run.json, delegation, revoke or fenced line: no disk panel, its title included');
+  assert.ok(panelsFor(lines).some((panel) => panel.id === 'disk'));
+  // Judged over the whole recording: a claim line that comes last is drawn for every stop.
+  assert.ok(panelsFor([...reference, lines.find((line) => line.kind === 'run.json')!]).some((panel) => panel.id === 'disk'));
 });

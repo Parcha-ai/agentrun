@@ -253,6 +253,8 @@ export const diskPanel: Panel<DiskState> = {
   title: 'The disk: who holds the run',
   init: diskInit,
   accepts: (line) => diskKnown(line) || counterFold.accepts(line),
+  // Drawn only for a recording with a disk claim line: the counters' lines it reduces for the paid calls must not make it appear everywhere.
+  shows: (line) => isSupervisor(line) && DISK_KINDS.has(line.kind),
   reduce: diskReduce,
   view: diskView,
 };

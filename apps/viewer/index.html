@@ -9,11 +9,13 @@
     --bg: #fbfaf7; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --rule: #dedbd3;
     --band-0: #cfe3d9; --band-1: #d7dcf0; --band-2: #f0e2c9; --band-3: #e6d4ec;
     --kill: #c8322a; --done: #3b7d5c; --open: #c79a2b; --failed: #c8322a; --focus: #2f5fd0;
+    --token: #e8a317; --token-ink: #2a1c00; --glow: rgba(232, 163, 23, 0.45);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a19a; --rule: #3a3935;
       --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
+      --token: #f2b73a; --glow: rgba(242, 183, 58, 0.4);
     }
   }
   * { box-sizing: border-box; }
@@ -118,11 +120,12 @@
   .frame { width: 100%; aspect-ratio: 16 / 10; background: #000; display: block; }
   .frame.gap { background: repeating-linear-gradient(45deg, var(--rule) 0 6px, transparent 6px 12px); color: var(--ink); display: flex; align-items: center; justify-content: center; }
   .frame.none { background: var(--rule); color: var(--muted); display: flex; align-items: center; justify-content: center; }
-  .transport > .token { padding: 6px 8px; border-left: 3px solid var(--focus); margin-bottom: 6px; }
   .transport .why { font-size: 12px; color: var(--muted); }
   .transport h4 { margin: 10px 0 4px; font-size: 13px; }
-  .tcounters { list-style: none; padding: 0; margin: 6px 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; }
-  .tcounters .k { color: var(--muted); margin-right: 4px; }
+  .tcounters { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+  .tcounters li { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 4px 10px; display: flex; flex-direction: column; min-width: 96px; max-width: 100%; overflow-wrap: anywhere; }
+  .tcounters .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .tcounters b { font-size: 15px; font-variant-numeric: tabular-nums; }
   .transport .lanes { font-size: 12px; }
   .transport .lane { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
   .transport .lname { width: 108px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -160,6 +163,97 @@
   .dk-call.dim { opacity: 0.4; } .dk-label { font-family: ui-monospace, monospace; font-size: 12px; }
   .dk-verdict.once { color: var(--done); } .dk-verdict.repeated, .dk-verdict.twice { color: var(--kill); font-weight: 600; }
   .dk-verdict.cut, .dk-verdict.in-flight { color: var(--open); } .dk-verdict.not-measured, .dk-verdict.unproven { color: var(--muted); }
+  /* The transport stage (src/transport-view.ts). Motion is a function of the playback clock: a view sets --row (where the token is) and --age
+     (seconds since an event), and a paused animation with a negative delay draws that frame, so a scrub and a replay show the same screen. */
+  .transport { --rowh: 46px; }
+  .tstory { padding: 6px 12px; margin-bottom: 6px; border-radius: 8px; border: 1px solid var(--rule); background: var(--panel); font-size: 15px; }
+  .tstory .why { font-size: 11px; color: var(--muted); }
+  .tstory.dead { border-color: var(--kill); }
+  .tstory.dead b { color: var(--kill); }
+  .tstory.flying { border-color: var(--token); }
+  .phases { list-style: none; display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 2px; padding: 0; font-size: 12px; }
+  .phase { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--muted); }
+  .phase.done { color: var(--ink); background: var(--band-0); }
+  .phase.now { background: var(--token); color: var(--token-ink); border-color: var(--token); font-weight: 600; }
+  .stage { position: relative; padding-bottom: 18px; }
+  .stage .rail { position: absolute; left: 21px; top: calc(var(--rowh) / 2); height: calc((var(--rows) - 1) * var(--rowh)); width: 2px; background: var(--rule); }
+  .stage .beam { position: absolute; left: 19px; width: 6px; border-radius: 3px; top: calc((var(--a) + 0.5) * var(--rowh)); height: calc((var(--b) - var(--a)) * var(--rowh)); background: var(--token); opacity: 0.45; }
+  .tlane { height: var(--rowh); display: grid; grid-template-rows: var(--rowh); grid-template-columns: 44px 1fr 176px; align-items: center; gap: 0 8px; border-radius: 8px; position: relative; }
+  .tlane .tdot { width: 10px; height: 10px; border-radius: 50%; background: var(--rule); border: 2px solid var(--bg); justify-self: center; z-index: 1; }
+  .tlane.has-token .tdot, .tlane.arriving .tdot { background: var(--token); }
+  .tcard { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 3px 10px 0; min-width: 0; height: calc(var(--rowh) - 6px); overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; }
+  .tlane.has-token .tcard { border-color: var(--token); box-shadow: 0 0 0 2px var(--glow); }
+  .tlane.arriving .tcard { border-color: var(--token); border-style: dashed; }
+  .tlane.dead .tcard { border-color: var(--kill); }
+  .tlane.dead .lname { text-decoration: line-through; text-decoration-color: var(--kill); }
+  .thead { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; overflow: hidden; font-size: 13px; }
+  .thead .lname { font-size: 15px; }
+  .tfacts, .tstatus { color: var(--muted); font-size: 12px; }
+  .tnote { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+  .tnote.kill { color: var(--kill); }
+  .tnote.proc { color: var(--open); }
+  .tnote.mark { color: var(--ink); font-weight: 600; margin-left: auto; }
+  .tnote.mark.leaving, .tnote.mark.arriving { color: var(--token); }
+  .skipband { font-size: 12px; padding: 0 6px; border-radius: 4px; background: repeating-linear-gradient(45deg, var(--rule) 0 4px, transparent 4px 8px); animation: slidein 0.6s ease-out both paused; animation-delay: calc(var(--age) * -1s); }
+  .tcells { display: flex; height: 7px; margin-bottom: 2px; }
+  .tcells .cell { flex: 1; border-bottom: 1px solid var(--rule); }
+  .tcells .cell.alive { background: var(--band-0); }
+  .tcells .cell.token { background: var(--token); }
+  .tcells .cell.wait { background: repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 4px); }
+  .tcells .cell.kill-box, .tcells .cell.kill-process { background: var(--kill); }
+  .tcells .cell.kill-process { opacity: 0.55; }
+  .ttile { align-self: start; height: calc(var(--rowh) * 2.6); border-radius: 8px; overflow: hidden; z-index: 2; }
+  .ttile.none { display: none; }
+  .ttile .frame { width: 100%; height: 100%; object-fit: cover; object-position: top left; border: 1px solid var(--rule); border-radius: 8px; display: block; }
+  .ttile .frame.gap, .ttile .frame.none { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); padding: 6px; text-align: center; background: var(--panel); }
+  .tlane.flash::after { content: ""; position: absolute; inset: 0; border-radius: 8px; background: var(--kill); pointer-events: none; animation: flash 2.4s ease-out both paused; animation-delay: calc(var(--flash-age) * -1s); }
+  .tok { position: absolute; left: 0; width: 44px; top: calc((var(--row) + 0.5) * var(--rowh) - 14px); display: flex; flex-direction: column; align-items: center; z-index: 3; pointer-events: none; }
+  .tbadge { min-width: 28px; height: 28px; padding: 0 5px; border-radius: 14px; background: var(--token); color: var(--token-ink); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 3px var(--glow), 0 2px 6px rgba(0, 0, 0, 0.3); }
+  .tcap { margin-top: 2px; font-size: 10px; line-height: 1.1; text-align: center; color: var(--ink); background: var(--bg); border-radius: 4px; padding: 1px 3px; max-width: 84px; }
+  .tok.look-drain .tbadge { animation: breathe 0.9s ease-in-out infinite paused; animation-delay: calc(var(--age) * -1s); }
+  .tok.look-seal .tbadge, .tok.look-ship .tbadge, .tok.look-take .tbadge { border-radius: 7px; background: repeating-linear-gradient(135deg, var(--token) 0 6px, color-mix(in srgb, var(--token) 70%, black) 6px 12px); }
+  .tok.look-ship .tbadge { animation: shake 0.5s linear infinite paused; animation-delay: calc(var(--age) * -1s); }
+  .tok.look-resume .tbadge { animation: unpack 0.8s ease-out both paused; animation-delay: calc(var(--age) * -1s); }
+  .tok.look-ghost .tbadge { background: var(--bg); color: var(--kill); border: 2px dashed var(--kill); box-shadow: none; }
+  .tok.look-ghost .tcap { color: var(--kill); }
+  .tok.blink .tbadge { animation: blink 1.2s steps(1, end) both paused; animation-delay: calc(var(--age) * -1s); }
+  .tok.pop .tbadge { animation: pop 1.3s cubic-bezier(.2, 1.4, .4, 1) both paused; animation-delay: calc(var(--age) * -1s); }
+  .tok.pop.reborn .tbadge { box-shadow: 0 0 0 5px var(--glow), 0 0 18px 5px var(--done); }
+  .tcounters b.bump { display: inline-block; animation: bump 1.2s ease-out both paused; animation-delay: calc(var(--age) * -1s); }
+  .filmcard { margin: 8px 0; padding: 12px; border-radius: 12px; border: 2px solid var(--done); background: var(--panel); text-align: center; }
+  .filmcard .ftitle { font-size: 20px; font-weight: 700; }
+  .filmcard .fsub { color: var(--muted); margin: 4px 0 8px; }
+  .filmcard .fbutton { display: inline-block; padding: 8px 18px; border-radius: 999px; background: var(--done); color: #fff; text-decoration: none; font-weight: 600; }
+  .tdetails { margin-top: 8px; font-size: 13px; }
+  .tdetails summary { cursor: pointer; color: var(--muted); }
+  .legend { margin: 4px 0; }
+  @keyframes flash { 0% { opacity: 0.7; } 25% { opacity: 0.45; } 100% { opacity: 0; } }
+  @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(0.72); } }
+  @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+  @keyframes unpack { 0% { transform: scale(0.6); border-radius: 7px; } 100% { transform: scale(1); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 15%, 45%, 75% { opacity: 0.08; } 30%, 60% { opacity: 1; } }
+  @keyframes pop { 0% { transform: scale(0.1); opacity: 0; } 60% { transform: scale(1.25); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  @keyframes bump { 0% { transform: translateY(8px); color: var(--token); } 40% { transform: translateY(-2px); color: var(--token); } 100% { transform: none; } }
+  @keyframes slidein { 0% { opacity: 0; transform: translateX(-12px); } 100% { opacity: 1; transform: none; } }
+  @media (max-width: 640px) {
+    .transport { --rowh: 54px; }
+    .tlane { grid-template-columns: 44px 1fr 72px; }
+    .tfacts { display: none; }
+    .tstatus { display: none; }
+    /* The lane's words get a row of their own and wrap there: nothing is clipped at 390 px. */
+    .thead { flex-wrap: wrap; gap: 0 8px; white-space: normal; }
+    .thead .lname { flex: 1 0 100%; }
+    .tnote, .skipband { white-space: normal; margin-left: 0; font-size: 11px; line-height: 1.2; }
+    .tcounters { gap: 4px 6px; }
+    .tcounters li { min-width: 0; padding: 4px 8px; }
+  }
+  /* No motion: nothing animates and nothing is hidden by an animation; every state is told by a class and a word (the lane marks, the token's look and
+     caption, the dead lane's red border and struck name), so a reader who asks for no motion sees the same states. */
+  @media (prefers-reduced-motion: reduce) {
+    .tok .tbadge, .skipband, .tcounters b.bump { animation: none !important; }
+    .tlane.flash::after { animation: none !important; opacity: 0; }
+  }
+
   .gallery { padding-left: 20px; }
   .drop { margin-top: 16px; padding: 24px; border: 2px dashed var(--rule); border-radius: 8px; color: var(--muted); }
   .panel:has(.wm) { grid-column: 1 / -1; max-height: none; }

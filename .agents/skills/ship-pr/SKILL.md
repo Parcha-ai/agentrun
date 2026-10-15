@@ -202,11 +202,11 @@ Two live checks. Both run from the repository root at the head, after `npm ci --
   fail, not a skip.
 - **Needs:** ffmpeg and ffprobe, poppler-utils, optionally LibreOffice (`soffice`) on PATH. No key. Cost: $0.
 
-**2. Real eyes** (one paid look through pi-ai, the path no fake covers).
+**2. Real eyes** (a few paid looks through pi-ai, the path no fake covers).
 
 - **When:** the diff touches `packages/pi-vision/src/eyes/**`, `src/core/guard.ts`, `src/core/evidence.ts`,
-  `src/core/limits.ts`, `src/core/look.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or dev ranges in
-  `packages/pi-vision/package.json`.
+  `src/core/limits.ts`, `src/core/see.ts`, `src/core/plan.ts`, `src/durable.ts`, or the `@earendil-works/*` peer or
+  dev ranges in `packages/pi-vision/package.json`.
 - **Command:**
 
   ```bash
@@ -215,10 +215,11 @@ Two live checks. Both run from the repository root at the head, after `npm ci --
 
   It reads `PI_VISION_LIVE_EYES` (`<provider>/<model id>`, the public id pi-ai's catalog uses) and that provider's
   key from the variable pi-ai itself reads; `PI_VISION_LIVE_BASE_URL` points it at a gateway when the machine has one
-  (a machine fact: it goes in `local.md`). It refuses to run without them. It makes three checks: a synthetic scanned
-  letter (built by `./testing`) whose identifier the eyes must read exactly; a two-page PDF through `read` with `page`;
-  and the receipts, where the paid look has `cost_usd` as a number and tokens above 0, and a forced no-eyes miss has
-  `cost_usd: 0`.
+  (a machine fact: it goes in `local.md`). It refuses to run without them. It makes four checks, each printed as a
+  numbered line: `scanned letter` (a synthetic scan built by `./testing`, whose identifier the eyes must read exactly);
+  `page 2` (a two-page PDF through `read` with `page`); `vision.see` (the same letter asked by path through the
+  code-mode global: exact identifier, one look filed, a price above 0); and `receipts` (every paid look has `cost_usd`
+  as a number and tokens above 0, and a forced no-eyes miss has `cost_usd: 0`).
 - **Pass:** exit code 0 and a last stdout line that starts with `ok: pi-vision live eyes passed`. Anything else
   blocks: a non-zero exit, a last line `not ok: <step>: <reason>`, or no last line. Put the summary it prints (model,
   read rate, tokens, dollars) in the pull request body.
