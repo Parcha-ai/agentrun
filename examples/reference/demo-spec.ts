@@ -35,6 +35,9 @@ export type DemoSpec = {
   expectedCost?: number;
   /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures.key` names the input property that picks a project: on fakes, `--input` with another project's value is refused unless its capture is at `fixtures/<value>` (a directory) or `fixtures/<value>.json` beside the demo. */
   input?: { shape?: string; fixtures?: { key: string } };
+  /** The keys and programs the demo needs (the DSL's DemoSpec): each `{ env, ... }` or a `oneOf` group of them. A live child's environment is exactly these names. */
+  keys?: unknown[];
+  programs?: unknown[];
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   [other: string]: unknown;
@@ -130,4 +133,19 @@ export function checkInputCapture(spec: DemoSpec, input: Record<string, unknown>
   const as = `${dir}/fixtures/${value}`;
   if (exists(as) || exists(`${as}.json`)) return;
   throw new Error(`--input names ${key} "${value}", and a run on fakes replays a capture of it, which does not exist. Put it at ${as}.json (or ${as}/), or run with --live to read the real thing.`);
+}
+
+/** The environment names a demo declares in demo.json: every `env` of its `keys` (a `oneOf` group's members included, however deep a member's own group nests) and of its `programs`. A live child is given these and nothing else. */
+export function declaredEnv(spec: DemoSpec): Set<string> {
+  const names = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) { for (const member of value) walk(member); return; }
+    if (value === null || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (typeof record.env === 'string' && record.env) names.add(record.env);
+    walk(record.oneOf);
+  };
+  walk(spec.keys);
+  walk(spec.programs);
+  return names;
 }

@@ -444,3 +444,22 @@ test('--input naming another project on fakes is refused unless its capture exis
   const other = await run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']);
   assert.equal(other.result.record.company, 'Other Ltd');
 });
+
+test('a live child gets exactly the environment names demo.json declares (keys, oneOf members, programs) and nothing undeclared; its live vision is built from the host and the running run like the fakes\'', { timeout: 300_000 }, async (t) => {
+  const { declaredEnv } = await import('./reference/demo-spec.ts');
+  const keys = [
+    { oneOf: [{ env: 'OPENAI_API_KEY', required: true }, { env: 'GEMINI_API_KEY' }] },
+    { env: 'TYPESAFE_API_KEY', required: true },
+    { oneOf: [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }], { env: 'CHROME_PATH' }] },
+  ];
+  assert.deepEqual([...declaredEnv({ name: 'x', keys, programs: [{ name: 'chrome', env: 'CHROME_BIN' }] })].sort(), ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'CHROME_BIN', 'CHROME_PATH', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'TYPESAFE_API_KEY']);
+  const secrets = { OPENAI_API_KEY: 'sk-declared', TYPESAFE_API_KEY: 'ts-declared', BROWSERBASE_API_KEY: 'bb-declared', BROWSERBASE_PROJECT_ID: 'proj', GITHUB_TOKEN: 'ghp-NOT-declared', UNDECLARED_SECRET: 'nope', ANTHROPIC_API_KEY: 'sk-ant-not-declared' };
+  // The test fixture's own settings are declared like any other name the child may see (`programs`), so the rule is exact.
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const { result } = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_SPEC_NOTE: 'also not declared', ...secrets });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const seen = JSON.parse(readFileSync(join(result.dir, 'env-seen.json'), 'utf8'));
+  for (const name of ['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'PATH']) assert.ok(seen.includes(name), `${name} reaches the child`);
+  for (const name of ['GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY', 'DEMO_SPEC_NOTE']) assert.ok(!seen.includes(name), `${name} was not declared and does not reach a live child`);
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'live-vision.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true }, 'live vision gets (host, running) like fakes.vision');
+});

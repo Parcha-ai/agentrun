@@ -35,5 +35,10 @@ const scripted = { ...fakes, ...(lingering ? { tools: { ...fakes.tools, ...linge
 // And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
 const probe = process.env.DEMO_VISION_PROBE ? (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'vision-called.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } : undefined;
 const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company), cites: [{ blob: context.keep('a cited file', 'txt') }] }] }, title: 'A cited result' }) : undefined;
-export const options = { self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : {}) }, ...(result ? { result } : {}) };
+// And live parts that write what the child saw: its environment's names and what its live vision was called with.
+const live = process.env.DEMO_LIVE_PROBE ? (context: { env: NodeJS.ProcessEnv }) => {
+  writeFileSync(join(process.env.DIR!, 'env-seen.json'), JSON.stringify(Object.keys(context.env).sort()));
+  return { vision: (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'live-vision.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } };
+} : undefined;
+export const options = { self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}) };
 if (process.argv.includes('--child')) await demo(options);
