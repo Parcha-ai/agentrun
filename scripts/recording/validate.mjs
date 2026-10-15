@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { TEXT_FILE, credentialIn, credentialInValue } from '../../examples/reference/scan.ts';
+import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../examples/reference/scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
@@ -126,7 +126,7 @@ export function validateRecording(dir) {
     const text = readFileSync(manifestPath, 'utf8');
     try { manifest = JSON.parse(text); } catch (error) { add('manifest.json', `is not JSON: ${error.message}`); }
     if (manifest !== undefined) for (const message of manifestProblems(manifest)) add('manifest.json', message);
-    const found = credentialIn(text) ?? (manifest === undefined ? undefined : credentialInValue(manifest));
+    const found = credentialInFile('manifest.json', text);
     if (found) add('manifest.json', `contains a ${found}`);
   }
   const blobs = blobFiles(dir);
@@ -140,9 +140,7 @@ export function validateRecording(dir) {
     if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
     // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON.
     if (TEXT_FILE.test(file)) {
-      const text = bytes.toString('utf8');
-      let found = credentialIn(text);
-      if (!found) { try { found = credentialInValue(JSON.parse(text)); } catch { /* not one JSON value */ } }
+      const found = credentialInFile(file, bytes.toString('utf8'));
       if (found) add(where, `blob ${hash} contains a ${found}`, line);
     }
   };

@@ -190,6 +190,8 @@ test('the recorder scans before it finishes: a credential or a machine path in a
   const cases = [
     ['a line', (recorder) => recorder.live('workflow', 'node.start', { header: secret }), {}, /holds a provider secret in events\.jsonl/],
     ['a blob', (recorder) => recorder.blob(`token ${secret}`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
+    // A JSON string in a text blob can hide the shape behind an escape; the scan decodes it, as the validator does.
+    ['an escaped key in a text blob', (recorder) => recorder.blob(`"\\u0073k-${'a1'.repeat(20)}"`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
     ['a machine path', (recorder) => recorder.live('pi', 'message_end', { cwd: machinePath }), {}, /holds a machine path in events\.jsonl/],
     ['the manifest', () => undefined, { title: secret }, /holds a provider secret in manifest\.json/],
   ];
@@ -205,9 +207,17 @@ test('the recorder scans before it finishes: a credential or a machine path in a
   openRecorder({ dir: clean }).host('process.started', { pid: 1 });
   finishRecording(clean, header());
   assert.deepEqual(validateRecording(clean), []);
+  // A finished recording is refused before anything in it changes: its events stay the ones its manifest describes.
+  const events = readFileSync(join(clean, 'events.jsonl'), 'utf8');
+  openRecorder({ dir: clean }).live('workflow', 'node.start', { header: secret });
+  assert.throws(() => finishRecording(clean, header()), /already holds a finished recording/);
+  assert.equal(readFileSync(join(clean, 'events.jsonl'), 'utf8'), events);
 });
 
-test('one scanner: the validator, and so the gallery\'s gate, use the recorder\'s own', () => {
+test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', () => {
   assert.equal(validator.credentialIn, scan.credentialIn);
   assert.equal(validator.credentialInValue, scan.credentialInValue);
+  // The gate imports the scanner itself, by the same module.
+  const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
+  assert.match(gate, /^import \{ credentialIn \} from '\.\.\/\.\.\/examples\/reference\/scan\.ts';$/m);
 });

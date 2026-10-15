@@ -32,14 +32,15 @@ export function credentialInValue(value: unknown): string | undefined {
 /** The files a scan reads as text, by extension; the others (images, video) are kept whole and not read. */
 export const TEXT_FILE = /\.(?:json|jsonl|txt|md|html|csv|svg|xml|yaml|yml|log)$/i;
 
-/** The credential shape in a file's text, raw and, for JSON and each line of JSON lines, decoded. */
+/** The credential shape in a file's text: raw, then decoded when it is JSON, whatever its extension (an escape hides one
+ *  in any text, `\u0073k-`); JSON lines line by line. The validator checks every text file this same way. */
 export function credentialInFile(name: string, text: string): string | undefined {
   const decoded = (part: string) => { try { return credentialInValue(JSON.parse(part)); } catch { return undefined; } };
   if (/\.jsonl$/i.test(name)) {
     for (const line of text.split('\n')) { const found = line ? credentialIn(line) ?? decoded(line) : undefined; if (found) return found; }
     return undefined;
   }
-  return credentialIn(text) ?? (/\.json$/i.test(name) ? decoded(text) : undefined);
+  return credentialIn(text) ?? decoded(text);
 }
 
 /** Every credential shape in the text files of a recording directory, each `{ file, found }` with `file` relative to it.

@@ -193,8 +193,11 @@ const readLines = (path: string): Record<string, unknown>[] => {
 
 /** Merges the spools into `events.jsonl` (by `t`, a tie by (commit, order), then seq), writes `manifest.json`, and removes
  *  the spool. Before the manifest it scans the recording (its lines, its blobs and the manifest's own text): a credential's
- *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording. */
+ *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording.
+ *  A directory that already holds a finished recording is refused before anything in it changes. */
 export function finishRecording(dir: string, header: Header): { lines: number } {
+  // A finished recording is never written over: its events would change beside a manifest that no longer describes them.
+  if (existsSync(join(dir, 'manifest.json'))) throw new Error(`${dir} already holds a finished recording; record into an empty directory.`);
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
   // One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
