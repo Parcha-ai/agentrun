@@ -165,6 +165,8 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
+| `--provider <p>`, `--model <m>`, `--eyes-model <m>` | with `--live`: the models to use, handed to the demo's `live({ env, models })` as `{ provider, model, eyesModel }` (each absent when not given; the demo's sign-in plan decides what they mean). `--provider` needs `--model`; without `--live` they are refused |
+| `--see-also <recording>` | links a finished recording of the same demo (a weak-eyes pass) in the manifest's `see_also`, by its directory's name and its manifest's title; repeat for more |
 | `--local-chrome` | with `--live` and no Browserbase key pair: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used only when `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` are both set, decided before anything starts (a half pair is named, never used); a local Chrome is never chosen for you |
 | `--dir <path>` | keeps the run's directory |
 | `--json` | the result as one JSON object |
@@ -210,3 +212,7 @@ Every demo's typed questions pass through one seam that carries Jev's limits and
 ### What a live child's environment holds
 
 On `--live` the child is given exactly the environment names `demo.json` declares (every `env` in `keys`, the members of a `oneOf` group included, and in `programs`), plus the process basics (`PATH`, `HOME`, `TMPDIR`), and nothing else: an undeclared variable in the parent's environment never reaches it, so the spec and the child's environment cannot drift. A no-key run passes the demo's own `DEMO_*` settings (no secret). `LiveParts.vision(host, running)` is built the way `fakes.vision(host, running)` is: one seam for both.
+
+### `manifest(context)` and `source.run`
+
+A demo may pass `manifest({ dir, record, input, live })`: it returns fields the entry adds to the manifest (a demo's own sources, slice or models). A name the entry writes itself (`format`, `source`, `result`, `providers`, `see_also`, `job`, `store`, ...) is refused. `source.run` is the demo's name, plus the input file's name when `--input` named a file (`apollo-apollo-11`); a demo's `run.ts` reads `demo()`'s result for its own summary lines.
