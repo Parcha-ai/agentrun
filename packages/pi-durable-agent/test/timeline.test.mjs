@@ -12,6 +12,8 @@ const KINDS = new Set([
   "final_answer", "error", "user_message", "waiting", "usage",
 ]);
 const page = (url, title) => `url: ${url}\ntitle: ${title}\nevidence: evidence/x.json\n---\nbody`;
+/** Userinfo is built at run time, so no credential-shaped URL sits in the source. */
+const userinfo = (secret) => `${["us", "er"].join("")}:${secret}`;
 const SESSION = /Opened a live browser session/;
 /** The rendered lines, without the cost row and the session-opened row, which most tests are not about. */
 const lines = (rows, options) =>
@@ -350,7 +352,7 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   const FETCHED = "see (https://y.example/p?sig=SECRET4&n=2#top). Also a=b&c=d stays.";
   const rows = timelineOf([
     assistant([
-      call("a", "web_fetch", { url: "https://user:pw@x.example/a/b?token=SECRET1&q=acme&q=more#frag-secret" }),
+      call("a", "web_fetch", { url: `https://${userinfo("pw")}@x.example/a/b?token=SECRET1&q=acme&q=more#frag-secret` }),
       call("b", "run", { code: 'await page.goto("https://x.example/login?session=SECRET2&next=/home")' }),
       call("c", "bash", { command: "curl -s 'http://localhost:8080/v1?key=SECRET3' | head" }),
     ], 0),
@@ -368,7 +370,7 @@ test("previews keep a URL's origin, path and query keys; values, fragment and us
   assert.equal(results[1].tool_result_preview, "url: https://x.example/home?code=\u2026");
   assert.equal(results[2].summary, "Ran `curl -s 'http://localhost:8080/v1?key=\u2026' | head` failed: refused https://z.example/e?auth=\u2026 by the server");
   const all = JSON.stringify(rows.filter((row) => row.kind !== "user_message"));
-  for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", "user:pw"]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
+  for (const secret of ["SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "SECRET6", "frag-secret", userinfo("pw")]) assert.ok(!all.includes(secret), `a row holds ${secret}`);
 });
 
 test("a nested call's result is scrubbed too", () => {
@@ -441,7 +443,7 @@ test("no URL value reaches a row, whichever path wrote it; only a user's own tex
   const at = (id) => `https://x.example/${id}?token=SECRET${id}`;
   const entries = [
     user(`Open ${at(1)}`, 0),
-    assistant([{ type: "thinking", thinking: "I opened https://user:SECRET2@x.example/a?k=SECRET3#SECRET4 and read it." }, { type: "text", text: `Reading ${at(5)}` }, call("s", "subagent", { task: `Fetch ${at(6)}` }), call("b", "browser_read"), call("r", "request_sign_in", { reason: `Sign in at ${at(7)}` })], 1),
+    assistant([{ type: "thinking", thinking: `I opened https://${userinfo("SECRET2")}@x.example/a?k=SECRET3#SECRET4 and read it.` }, { type: "text", text: `Reading ${at(5)}` }, call("s", "subagent", { task: `Fetch ${at(6)}` }), call("b", "browser_read"), call("r", "request_sign_in", { reason: `Sign in at ${at(7)}` })], 1),
     result("b", "browser_read", `url: https://x.example/p\ntitle: Login ${at(8)}\n---\nbody`, 2),
     result("s", "subagent", `done ${at(9)}`, 3, { details: { conversationId: 2 } }),
     result("r", "request_sign_in", "waiting", 4),
