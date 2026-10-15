@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fetchSources, fileOf, readSources } from './reference/sources.ts';
+import { fetchSources, fileOf, readSources, withSources } from './reference/sources.ts';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 
@@ -67,4 +67,40 @@ test('sources.json is checked when it is read', async (t) => {
   assert.throws(() => readSources(write({ items: [{ id: 'a', url: 'ftp://e.x/a.png', bytes: 1, sha256: sha('x') }] })), /no http or https url/);
   assert.throws(() => readSources(write({ items: [{ id: 'a', url: 'https://e.x/a.png', bytes: 1, sha256: 'abc' }] })), /size in bytes and its SHA-256/);
   assert.equal(readSources(write({ items: [{ id: 'a', url: 'https://e.x/a.png', bytes: 1, sha256: sha('x') }] })).items.length, 1);
+});
+
+test('two items that would be the same file are refused before anything is fetched', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 's.json');
+  writeFileSync(file, JSON.stringify({ items: [
+    { id: 'page', url: 'https://e.x/one/scan.png', bytes: 1, sha256: sha('a') },
+    { id: 'page', url: 'https://e.x/two/other.png', bytes: 1, sha256: sha('b') },
+  ] }));
+  assert.throws(() => readSources(file), /page and page are both page\.png/);
+});
+
+test('a download has a deadline that covers its body: a server that never finishes its response is cut off, naming the file', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const sockets = new Set();
+  const server = createServer((request, response) => { response.writeHead(200, { 'content-length': '1000' }); response.write('x'); /* the rest never comes */ });
+  server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  const sources = { items: [{ id: 'slow', url: `http://127.0.0.1:${server.address().port}/slow.bin`, bytes: 1000, sha256: sha('x') }] };
+  const started = Date.now();
+  await assert.rejects(() => fetchSources(sources, join(tmp, 'work'), fetch, 300), /slow\.bin: .* did not finish within 300 ms/);
+  assert.ok(Date.now() - started < 5000);
+});
+
+test('the files a box is given hold the job\'s own and each fetched source (a Docker box shares nothing with work/)', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  mkdirSync(join(tmp, 'work'), { recursive: true });
+  writeFileSync(join(tmp, 'work', 'scan-1.png'), 'verified bytes');
+  const files = withSources({ 'committed.txt': new TextEncoder().encode('committed') }, join(tmp, 'work'), ['scan-1.png']);
+  assert.deepEqual(Object.keys(files).sort(), ['committed.txt', 'scan-1.png']);
+  assert.equal(new TextDecoder().decode(files['scan-1.png']), 'verified bytes');
+  assert.deepEqual(Object.keys(withSources(undefined, join(tmp, 'work'), [])), []);
 });

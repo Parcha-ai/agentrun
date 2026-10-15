@@ -31,7 +31,7 @@ import { capJudge } from './judge.ts';
 import { crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
-import { fetchSources, readSources } from './sources.ts';
+import { fetchSources, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
@@ -156,13 +156,17 @@ async function child(options: DemoOptions) {
     // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
     // caps (Jev's), which a live judge is held to too.
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
-    if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits).
+    let boxFiles = options.job.files;
     if (options.spec.sources && (live || env.FETCH_SOURCES === '1')) {
       const sourcesPath = resolve(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json');
       await mkdir(place.work, { recursive: true });
-      await fetchSources(readSources(sourcesPath), place.work);
+      const sources = readSources(sourcesPath);
+      const got = await fetchSources(sources, place.work);
+      // A Docker box shares nothing with work/: the verified files go in with the job's own.
+      boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept]);
     }
+    if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, boxFiles ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
     await recorder?.detach();

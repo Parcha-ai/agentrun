@@ -20,22 +20,37 @@ export function readSources(path: string): Sources {
     if (typeof item.url !== 'string' || !/^https?:\/\//.test(item.url)) throw new Error(`${path}: ${item.id} has no http or https url`);
     if (!Number.isInteger(item.bytes) || item.bytes < 0 || typeof item.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(item.sha256)) throw new Error(`${path}: ${item.id} needs its size in bytes and its SHA-256`);
   }
+  // Two items that would be the same file are refused before anything is fetched: the second would replace the first, and both checks would pass.
+  const names = new Map<string, string>();
+  for (const item of parsed.items as SourceItem[]) {
+    const name = fileOf(item);
+    if (names.has(name)) throw new Error(`${path}: ${item.id} and ${names.get(name)} are both ${name}: an id and a URL extension make one file`);
+    names.set(name, item.id);
+  }
   return parsed as Sources;
 }
 
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 /** Fetches each item into `work` and verifies it; returns what was fetched and what was already there. */
-export async function fetchSources(sources: Sources, work: string, fetcher: typeof fetch = fetch): Promise<{ fetched: string[]; kept: string[] }> {
+/** `timeoutMs` is each download's deadline, the request and the reading of its body together (default 60 s). */
+export async function fetchSources(sources: Sources, work: string, fetcher: typeof fetch = fetch, timeoutMs = 60_000): Promise<{ fetched: string[]; kept: string[] }> {
   const fetched: string[] = [];
   const kept: string[] = [];
   for (const item of sources.items) {
     const name = fileOf(item);
     const at = join(work, name);
     if (existsSync(at) && sha(readFileSync(at)) === item.sha256) { kept.push(name); continue; }
-    const response = await fetcher(item.url);
-    if (!response.ok) throw new Error(`${name}: ${item.url} answered ${response.status}`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const signal = AbortSignal.timeout(timeoutMs);
+    let bytes: Uint8Array;
+    try {
+      const response = await fetcher(item.url, { signal });
+      if (!response.ok) throw new Error(`${name}: ${item.url} answered ${response.status}`);
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (signal.aborted) throw new Error(`${name}: ${item.url} did not finish within ${timeoutMs} ms`, { cause: error });
+      throw error;
+    }
     if (bytes.length !== item.bytes || sha(bytes) !== item.sha256) throw new Error(`${name}: not the checked file: expected ${item.bytes} bytes with SHA-256 ${item.sha256}, got ${bytes.length} bytes with ${sha(bytes)}`);
     await mkdir(dirname(at), { recursive: true });
     await writeFile(`${at}.${process.pid}.partial`, bytes);
@@ -43,4 +58,9 @@ export async function fetchSources(sources: Sources, work: string, fetcher: type
     fetched.push(name);
   }
   return { fetched, kept };
+}
+
+/** The files a box is given: the job's own, and each fetched source (a Docker box shares nothing with `work/`, so it is uploaded). */
+export function withSources(files: Record<string, Uint8Array> | undefined, work: string, names: readonly string[]): Record<string, Uint8Array> {
+  return { ...(files ?? {}), ...Object.fromEntries(names.map((name) => [name, new Uint8Array(readFileSync(join(work, name)))])) };
 }
