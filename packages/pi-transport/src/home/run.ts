@@ -469,7 +469,11 @@ class SessionHome implements Home {
 		return ok(this.#marker);
 	}
 
-	/** Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. */
+	/**
+	 * Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. The note
+	 * never travels with the store: a move ships the store and the workspace only, and a target writes its own note on
+	 * its first resume.
+	 */
 	async #writeMarker(marker: Marker): Promise<Result<void, HomeError>> {
 		const temp = `${this.#markerPath}.tmp`;
 		try {
