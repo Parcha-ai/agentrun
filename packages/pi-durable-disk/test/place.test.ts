@@ -3,7 +3,7 @@
 // No Archil, no network.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -50,6 +50,7 @@ describe("localPlace", () => {
     assert.equal(place.name, "local");
     assert.deepEqual(place.kills, ["process"], "no box to lose without destroyBoxes");
     assert.equal(place.token, undefined, "a plain directory has no claim, so no token");
+    assert.equal(place.signals, undefined, "no request file named, no signals");
 
     const first = await place.start({ gen: 1, env: { PLACE_ORDER: "one" } });
     const sleeper = Number(await waitFor("the first runner's sleeper", () => existsSync(join(root, "work", "sleeper.pid")) && readFileSync(join(root, "work", "sleeper.pid"), "utf8")));
@@ -90,6 +91,35 @@ describe("localPlace", () => {
     await waitFor("the runner", () => existsSync(join(root2, "work", "sleeper.pid")));
     await other.release();
     assert.equal((await held.exited).signal, "SIGKILL");
+  });
+});
+
+describe("localPlace signals", () => {
+  it("the attempt's kill request, once written whole, is one kill-request signal; return() ends a pending next() at once", async () => {
+    const dir = scratch();
+    mkdirSync(dir, { recursive: true });
+    const requestFile = (attempt: number) => join(dir, `kill-${attempt}.json`);
+    const place = localPlace({ app: APP })({ paths: pathsAt(dir), requestFile });
+    const it1 = place.signals!(1)[Symbol.asyncIterator]();
+    const first = it1.next();
+    writeFileSync(requestFile(1), '{"point":"paid-call.ackno');
+    await sleep(100);
+    let settled = false;
+    void first.then(() => (settled = true));
+    await sleep(0);
+    assert.equal(settled, false, "half a request is not one");
+    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7 }));
+    renameSync(`${requestFile(1)}.tmp`, requestFile(1));
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 } } });
+    assert.deepEqual(await it1.next(), { done: true, value: undefined }, "one request per attempt");
+
+    const it2 = place.signals!(2)[Symbol.asyncIterator]();
+    const pending = it2.next();
+    await sleep(50);
+    await it2.return!();
+    // Settled before any timer or immediate can run: the return woke it, not its next poll.
+    const first2 = await Promise.race([pending, new Promise((r) => setImmediate(() => r("late")))]);
+    assert.deepEqual(first2, { done: true, value: undefined }, "the pending next() ended with the return");
   });
 });
 

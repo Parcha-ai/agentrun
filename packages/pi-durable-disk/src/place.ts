@@ -5,6 +5,7 @@
 // place seam (examples/reference/place.ts) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -45,8 +46,13 @@ export type PlaceRecovery = {
   revoked?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned">[];
   ms?: number;
 };
-/** What the supervisor hands a place factory: the run's paths as it computed them, and how to take the boxes the run made. */
-export type PlaceContext = { paths: PlacePaths; self?: string; destroyBoxes?: () => void | Promise<void> };
+/** What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (it parks there until the kill). */
+export type PlaceSignal = { kind: "crossing" | "kill-request"; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } };
+/**
+ * What the supervisor hands a place factory: the run's paths as it computed them, how to take the boxes the run made,
+ * and where attempt n's runner writes its kill request (a file of the supervisor's machine).
+ */
+export type PlaceContext = { paths: PlacePaths; self?: string; destroyBoxes?: () => void | Promise<void>; requestFile?: (attempt: number) => string };
 
 export interface Place {
   /** `local` or `archil`, for the recording's lines. */
@@ -57,6 +63,11 @@ export interface Place {
   /** What this place can lose. */
   readonly kills: ReadonlyArray<PlaceKill>;
   start(order: RunnerOrder): Promise<PlaceRunner>;
+  /**
+   * The kill requests (and crossings) attempt `attempt`'s runner announces. The supervisor stops reading with `return()`
+   * once the runner has exited, and `return()` ends a pending `next()`.
+   */
+  signals?(attempt: number): AsyncIterable<PlaceSignal>;
   /** Takes the runner away abruptly, as a crash would. Safe on a runner that is already gone. */
   kill(runner: PlaceRunner, kind: PlaceKill): Promise<void>;
   status?(): Promise<PlaceStatus>;
@@ -203,6 +214,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       paths,
       kills: ctx.destroyBoxes ? ["process", "box"] : ["process"],
       start,
+      // The runner is a child of this machine, so its kill request is the supervisor's own file.
+      ...(ctx.requestFile ? { signals: (attempt: number) => requestSignals(ctx.requestFile!(attempt)) } : {}),
       kill,
       status: async () => ({ record: (await readRunRecord(root)) ?? null }),
       recover: async (last, kind, order) => {
@@ -214,6 +227,53 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       },
     };
   };
+}
+
+const SIGNAL_POLL_MS = 20;
+
+/**
+ * The kill request a runner writes whole (by rename) into `file` when it parks at its planned crossing, as one signal.
+ * A custom iterator, not a generator: `return()` must end a pending `next()`, which a generator would queue behind the
+ * poll.
+ */
+function requestSignals(file: string): AsyncIterable<PlaceSignal> {
+  return {
+    [Symbol.asyncIterator]() {
+      let closed = false;
+      let wake: (() => void) | undefined;
+      return {
+        async next(): Promise<IteratorResult<PlaceSignal>> {
+          for (;;) {
+            if (closed) return { done: true, value: undefined };
+            const crossing = existsSync(file) ? requestIn(file) : undefined;
+            if (crossing) {
+              closed = true;
+              return { done: false, value: { kind: "kill-request", crossing } };
+            }
+            await new Promise<void>((r) => {
+              const timer = setTimeout(r, SIGNAL_POLL_MS);
+              wake = () => (clearTimeout(timer), r());
+            });
+          }
+        },
+        async return(): Promise<IteratorResult<PlaceSignal>> {
+          closed = true;
+          wake?.();
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+}
+
+/** The crossing a request file names: `point` and `n` at least; anything else (a half write, another file) is not one yet. */
+function requestIn(file: string): PlaceSignal["crossing"] | undefined {
+  try {
+    const v = JSON.parse(readFileSync(file, "utf8")) as Partial<PlaceSignal["crossing"]>;
+    return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as PlaceSignal["crossing"]) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The `outcome` of a `{"outcome":{...}}` line with at least a status; undefined for any other line. */

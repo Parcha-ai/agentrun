@@ -717,7 +717,8 @@ id and directory as the supervisor computed them.
 - `localPlace({ app, root? })` runs `pi-durable-disk run --dir <root> --id <id> --app <app>` as a child in its own
   process group, with `{ PATH, ...order.env }` and nothing else of the caller's environment. It needs no disk, no key and
   no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory. A box kill
-  also calls `ctx.destroyBoxes`.
+  also calls `ctx.destroyBoxes`. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
+  there when it parks at its planned crossing. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
@@ -725,6 +726,8 @@ id and directory as the supervisor computed them.
   - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
     instance starts. It reports `revoked` and `ms`.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
+  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
+    waits for the channel over the run's disk.
   - `release()` stops every instance the place started and removes every token it minted. The run's directory stays
     (`deleteRunTree`).
 
