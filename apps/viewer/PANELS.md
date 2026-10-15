@@ -128,8 +128,12 @@ ended in exactly one place: in the keyed layout, the item's `agentrun.items` rec
 item of a map that committed before the run moved to it (such an item has no record). A panel reads it with
 `itemFailureOf(path, item, pin)` from `./items.ts`, passing the item's record when the run keeps one: it returns
 `{ failed, from }` (`from` is `"item"` or `"pin"`), `undefined` when the item did not fail, or `{ unreadable }` when
-that place holds no `{ code, label, message }` or the item is kept in both. A panel shows a failed item as failed, with
-its outcome, and has nothing to rebuild for it.
+that place holds no `{ code, label, message }` (three strings, nothing else, as the DSL commits one) or the item is kept
+in both. A panel shows a failed item as failed, with its outcome, and has nothing to rebuild for it. The failed-items
+panel (`./failed-items.ts`) draws them: every failed item the run keeps at the stop, in map order, with its code, the
+label of the node that failed, its message and where it was read from, and an unreadable one as unreadable. It keeps
+each item's latest record and the driver's latest `pin`, starts over at each open's snapshot (a restore rolls back an
+item that failed later), and is drawn only for a recording with a failed item.
 
 The DSL's module, `itemState` and `partialResults` both, is read from `packages/dsl/src/recovery/item-state.ts` each time
 the viewer is built, never copied here: it is the one file outside `apps/viewer` a viewer module may import, the build

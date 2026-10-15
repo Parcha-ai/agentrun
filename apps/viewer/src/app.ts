@@ -12,6 +12,7 @@ import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
+import { failedItemsPanel } from './failed-items.ts';
 
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };

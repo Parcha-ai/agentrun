@@ -21,8 +21,10 @@ export const partialResultsOf = (partial: unknown, states: Readonly<Record<strin
 /** How a map item that failed ended, in a map that collects failed items (`onItemFailure: "collect"`, draft 28). */
 export type ItemFailure = { code: string; label: string; message: string };
 
+/** An item's outcome as the DSL commits one: three strings, and nothing else. */
 const failureIn = (value: unknown): ItemFailure | undefined => {
-  const { code, label, message } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.keys(value).length !== 3) return undefined;
+  const { code, label, message } = value as Record<string, unknown>;
   return typeof code === 'string' && typeof label === 'string' && typeof message === 'string' ? { code, label, message } : undefined;
 };
 

@@ -97,6 +97,7 @@ test('a failed map item, read from its one place: pin.failures in v3; its item r
   const reason = (got: unknown) => (got as { unreadable: string }).unreadable;
   assert.match(reason(itemFailureOf(at(1), record(1, 'failed'), v4pin)), /record is failed with no outcome/);
   assert.match(reason(itemFailureOf(at(1), record(1, 'failed', { outcome: { code: 'NODE_FAILED' } }), v4pin)), /record is failed with no outcome/);
+  assert.match(reason(itemFailureOf(at(1), record(1, 'failed', { outcome: { ...outcome, extra: 'x' } }), v4pin)), /record is failed with no outcome/, 'three strings and nothing else');
   assert.match(reason(itemFailureOf(at(1), undefined, { failures: { [at(1)]: 'failed' } })), /row in pin.failures is not/);
   assert.match(reason(itemFailureOf(at(1), null, v4pin)), /is not a map item's record/);
   assert.match(reason(itemFailureOf(at(1), record(1, 'failed', { outcome }), v3pin)), /kept both in its item record and in pin.failures/);
