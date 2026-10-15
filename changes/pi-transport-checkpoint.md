@@ -20,3 +20,8 @@ no usable checkpoint it fails with `no_checkpoint` and changes nothing.
 - New in `./home`: `pullCheckpoint`, `localVault`, `recordSink`, `checkpointStats`, `restoreNotice`, `replayCommits`,
   `manifestSince`, `moveChanged`, `excludedOf`. New in `./testing`: `registerRestoreConformance`, which kills the whole box
   of the source or the target before each step of a move and recovers.
+- Crossings: named moments a place announces, awaited, so the host can act exactly there (a supervisor kills a box or a
+  process). `pullCheckpoint({ crossing })` announces `transport.checkpoint.taken` once the checkpoint is the latest and the
+  session is let go (never for a skipped pull); `connectHome` / `boxRunner({ crossing })` announce `transport.tool.started`
+  with the tool's name when a tool begins, and the runner holds the tool until the handler returns, `info.release()` is
+  called, or `crossingMs` (10 s) passes. `crossingCounter()` keeps `n` across restarts. Nothing is killed by this package.
