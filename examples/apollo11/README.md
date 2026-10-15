@@ -10,21 +10,20 @@ Watch the recorded run: https://parcha-ai.github.io/agentrun/?r=apollo11
 
 ## What you will see
 
-1. The job: one workflow reads the landing three ways at once (by default the committed slice: three 6 s windows of the descent
-   film, the three scanned transcript pages that end in "The Eagle has landed", one photograph of each class), each item a short
-   agent asking the eyes one question, and you keep an `agentrun.cited/1` account of the landing in which every minute cites the
+1. The job: one workflow reads the landing three ways at once (live, the landing hour: 26 windows of the descent film, 40 scanned
+   transcript pages, 60 photographs; on fakes, the committed slice: three 6 s film windows, the three pages that end in "The
+   Eagle has landed", one photograph of each class), each item a short agent asking the eyes one question, and you keep an `agentrun.cited/1` account of the landing in which every minute cites the
    page (`#page=`) or film window (`#t=`) it was read from, with the photo sort's accuracy against NASA's captions.
 2. A kill and resume: `--kill` ends the process inside the evidence sink at its fifth filing (`vision.filing`), with three answered
    looks held unfiled, and the next process reads those answers back from the run's store instead of asking again: repeated 0.
 3. Receipts with cost: every look is filed with its source's SHA-256, question, answer, model and price, and kept with the images the
    eyes were shown; the recording's cost is a number, or unknown where a failed request may have been billed, never an unearned 0.
 
-Other inputs, one job, each reading NASA's own files (`--live` downloads them once and checks them by SHA-256; on fakes, add
-`--fetch-sources`): `--input examples/apollo11/inputs/landing.json` (the landing hour: 26 film windows, 40 pages, 60 photos, about
-$0.55), `inputs/gallery.json` (the recorded run: 8 film windows, 10 pages, 12 photos, about $0.15), `inputs/full.json` (all 626
-pages, about $3.50), and `inputs/weak-eyes.json` with `--eyes-model openai/gpt-6-luna` (the landing's pages and photos through
-weaker eyes; `--weak-from <dir>` puts that run's account into the main result, `--see-also` links its recording). Pass `--max-usd`
-above the input's cost.
+A live run reads NASA's own files, downloaded once and checked by SHA-256; on fakes, `--fetch-sources` reads them too (the landing
+hour is `--input examples/apollo11/inputs/landing.json`). Other inputs, one job: `inputs/gallery.json` (the recorded run: 8 film
+windows, 10 pages, 12 photos, about $0.15), `inputs/full.json` (all 626 pages, about $3.50; pass `--max-usd 5`), and
+`inputs/weak-eyes.json` with `--eyes-model openai/gpt-6-luna` (the landing's pages and photos through weaker eyes; `--weak-from
+<dir>` puts that run's account into the main result, `--see-also` links its recording).
 
 ## Keys and programs
 
@@ -36,8 +35,8 @@ _From `demo.json`; `SETUP-PROMPT.md` does the setup for you._
 | `ffmpeg`, `ffprobe` | | cut the film's windows into frames |
 | `pdftoppm` (optional) | | renders the scanned pages; without it PDFium renders them |
 
-A `--live` run of the default input costs about $0.06 at the providers' list prices (estimated from the landing hour's looks);
-`--max-usd` defaults to twice that.
+A `--live` run of the default input, the landing hour, costs about $0.55 at the providers' list prices; `--max-usd` defaults to
+twice that.
 
 ## How it is built
 

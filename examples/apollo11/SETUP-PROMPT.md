@@ -8,8 +8,8 @@ anything.
 
 An agent that is never shown an image reads NASA's Apollo 11 archive through `@parcha/pi-vision`'s eyes (the mission's film,
 the scanned 1969 air-to-ground transcript, sixty Hasselblad photographs) and writes the landing minute by minute, every sentence
-citing what was read. It can be killed inside the evidence sink and resumes without paying for a look twice. Its default reads a
-small slice of NASA's files that comes with the repository; the larger inputs download NASA's own files once and check them by
+citing what was read. It can be killed inside the evidence sink and resumes without paying for a look twice. A run with no key
+reads a small slice of NASA's files that comes with the repository; a live run downloads NASA's own files once and checks them by
 SHA-256.
 
 ## What the machine needs
@@ -18,7 +18,7 @@ SHA-256.
 - `ffmpeg` and `ffprobe` on `PATH`, for the film's frames (`brew install ffmpeg`, `sudo apt-get install ffmpeg`, or your
   system's package).
 - `pdftoppm` (poppler) is optional: without it the scanned pages are rendered by PDFium, which installs with the repository.
-- For the larger inputs only: about 400 MB of free disk for NASA's files, and network access to `www.nasa.gov` and
+- For a live run only: about 400 MB of free disk for NASA's files, and network access to `www.nasa.gov` and
   `images-assets.nasa.gov`.
 
 ## Keys (only for a live run; the first run needs none)
@@ -61,7 +61,8 @@ Instead of provider keys, an OpenAI-compatible gateway that serves the models un
    It ends with the landing's entries and cites resolved, the photo sort against NASA's captions, and a `looks:` line with
    `repeated 0`. Its answers are scripted; nothing a model said.
 
-3. The live run, with a key above, about $0.06 and a minute; it stops for good if it passes $0.12 (`--max-usd` changes that):
+3. The live run, with a key above: the landing hour, about $0.55 and five minutes after NASA's files are downloaded and checked
+   the first time; it stops for good if it passes $1.10 (`--max-usd` changes that):
 
    ```sh
    npm run demo:apollo11 -- --live
@@ -71,18 +72,15 @@ Instead of provider keys, an OpenAI-compatible gateway that serves the models un
    typed transcript, and the looks line. The result is `result.json` in the run directory the first line names.
 
 4. Optional: the same run killed inside the evidence sink at its fifth filing; it resumes, and the looks held there come back
-   kept, not paid again (about $0.06):
+   kept, not paid again (about $0.55):
 
    ```sh
    npm run demo:apollo11 -- --live --kill
    ```
 
-5. Optional: the landing hour (26 film windows, 40 pages, 60 photos; about $0.55 and five minutes), then the whole archive, every
-   one of the transcript's 626 pages (about $3.50 and 40 minutes). Each downloads and checks the NASA files it reads, the first
-   time:
+5. Optional: the whole archive, every one of the transcript's 626 pages (about $3.50 and 40 minutes):
 
    ```sh
-   npm run demo:apollo11 -- --live --input examples/apollo11/inputs/landing.json --max-usd 1.10
    npm run demo:apollo11 -- --live --input examples/apollo11/inputs/full.json --max-usd 5
    ```
 

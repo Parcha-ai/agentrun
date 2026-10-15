@@ -24,8 +24,8 @@ const { dataset: REAL } = loadDataset();
 const COLOURS = { earth: [40, 60, 220], astronaut: [220, 220, 220], lunar_surface: [120, 110, 100] };
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const FFMPEG = (() => { try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); execFileSync('ffprobe', ['-version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
-/** The job's default input, the committed slice: three film windows, three pages, five photos. Without ffmpeg it reads no film window. */
-const DEFAULT = FFMPEG ? undefined : { ...options.job.input, film_to_s: options.job.input.film_from_s };
+/** What a run on fakes reads with no --input, the committed slice: three film windows, three pages, five photos. Without ffmpeg it reads no film window. */
+const DEFAULT = FFMPEG ? undefined : { ...options.fakesInput, film_to_s: options.fakesInput.film_from_s };
 const LOOKS = FFMPEG ? 11 : 8;
 
 /** Three pages of invented air-to-ground lines inside the account's span, the same lines in the typed reference's markup, and six

@@ -4,10 +4,10 @@
 // files fetched into the workspace. Until the entry has them, this file is that platform for Apollo 11 alone, with the template's
 // flags and `demo()`'s shape, so moving onto the entry changes run.ts's import and deletes this file.
 //
-//   (none)              fakes, $0, no key, no network: the default input reads the committed slice; what CI runs
+//   (none)              fakes, $0, no key, no network: the committed slice (`fakesInput`); what CI runs
 //   --fetch-sources     an input that reads sources.json's own files downloads them once and checks them (--live does too)
-//   --live              real models (your keys, or a gateway: models.ts); --model (or --provider with --model) and --eyes-model name
-//                       the lead and the eyes as provider/id
+//   --live              real models on the job's input (your keys, or a gateway: models.ts); --model (or --provider with --model)
+//                       and --eyes-model name the lead and the eyes as provider/id
 //   --kill              the spec's kills: here `vision.filing`, the Nth filing held with those reaching the sink after it
 //   --record <dir>      an agentrun.recording/1 directory, through the reference recorder
 //   --input <path|json> the job's input (the job's own is the default)
@@ -34,7 +34,8 @@ const REPO = join(import.meta.dirname, '..', '..');
 
 /** The parts of demo.json this platform acts on. */
 export type DemoSpec = { name: string; title?: string; expectedCost?: number; kills?: Array<{ point: string; why: string; n?: number; hold?: number }>; [other: string]: unknown };
-export type ApolloDemo = { self: string; spec: DemoSpec; job: Job; fakes: Fakes };
+/** `fakesInput`: what a run on fakes reads when no --input is given (the job's own input is what --live reads). */
+export type ApolloDemo = { self: string; spec: DemoSpec; job: Job; fakes: Fakes; fakesInput?: Record<string, unknown> };
 
 /** `--input <path|json>`: a JSON object, from a file or inline. */
 function parseInput(argument: string): Record<string, unknown> {
@@ -184,22 +185,23 @@ export async function supervise(options: ApolloDemo, flags: Flags, knobs: Knobs 
   const shaFile = join(dir, 'sources.sha256');
   if (!existsSync(inputFile)) {
     writeFileSync(shaFile, fixed);
-    writeFileSync(inputFile, JSON.stringify(flags.input ? parseInput(flags.input) : options.job.input));
+    writeFileSync(inputFile, JSON.stringify(flags.input ? parseInput(flags.input) : flags.live ? options.job.input : options.fakesInput ?? options.job.input));
   }
   const started = existsSync(shaFile) ? readFileSync(shaFile, 'utf8') : '';
   if (started !== fixed) throw Object.assign(new Error(`${dir} started on the sources with SHA-256 ${started || 'unknown'}, and these sources' are ${fixed}. Resume it with those files, or start a new directory.`), { code: 'DATASET_CHANGED' });
   const input = JSON.parse(readFileSync(inputFile, 'utf8')) as Reads;
   const reads = itemsFor(dataset, input).map((item) => (held.has(item.id) ? { ...item, url: held.get(item.id)! } : item));
   const live = flags.live === true;
+  // The models are chosen before anything is fetched, so a missing key is refused before NASA's files are downloaded.
+  const lead = flags.model && flags.provider ? `${flags.provider}/${flags.model}` : flags.model;
+  const chosen = live ? chooseModels(process.env, { ...(lead ? { lead } : {}), ...(flags['eyes-model'] ? { eyes: flags['eyes-model'] } : {}) }) : undefined;
+  const models = { lead: chosen ? publicName(chosen.lead) : 'scripted lead (pi-ai faux)', eyes: chosen ? publicName(chosen.eyes) : 'scripted-eyes' };
   // With no flag a run touches no network: the slice's files and a test's are copied from `file:` URLs, and NASA's are downloaded only when asked.
   const remote = reads.filter((item) => !item.url.startsWith('file:'));
   if (remote.length && !live && !flags['fetch-sources']) throw Object.assign(new Error(`This input reads ${remote.length} of NASA's files the committed slice does not hold (${remote.slice(0, 3).map((item) => item.id).join(', ')}${remote.length > 3 ? ', ...' : ''}): add --fetch-sources, or --live, and they are downloaded once and checked by SHA-256.`), { code: 'SOURCES_NOT_FETCHED' });
   const paths = await fetchItems(reads, cache, knobs.log);
   await placeFiles(paths, reads, join(dir, 'work'));
 
-  const lead = flags.model && flags.provider ? `${flags.provider}/${flags.model}` : flags.model;
-  const chosen = live ? chooseModels(process.env, { ...(lead ? { lead } : {}), ...(flags['eyes-model'] ? { eyes: flags['eyes-model'] } : {}) }) : undefined;
-  const models = { lead: chosen ? publicName(chosen.lead) : 'scripted lead (pi-ai faux)', eyes: chosen ? publicName(chosen.eyes) : 'scripted-eyes' };
   const sink = flags.kill ? (spec.kills as Array<{ point: string; n?: number; hold?: number }> | undefined)?.find((kill) => kill.point === 'vision.filing') : undefined;
   const maxUsd = flags['max-usd'] !== undefined ? Number(flags['max-usd']) : typeof spec.expectedCost === 'number' ? spec.expectedCost * 2 : null;
   const supervisor = openSupervisor({ dir: record });

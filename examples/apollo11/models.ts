@@ -28,7 +28,7 @@ export const PROVIDERS: Record<string, { make: () => Provider; key: string; lead
 
 const parse = (name: string): PublicModel => {
   const [provider, ...id] = name.split('/');
-  if (!provider || !id.length || !PROVIDERS[provider]) throw new Error(`a model is named provider/id with a provider of ${Object.keys(PROVIDERS).join(', ')}; ${name} is not`);
+  if (!provider || !id.length || !PROVIDERS[provider]) throw Object.assign(new Error(`a model is named provider/id with a provider of ${Object.keys(PROVIDERS).join(', ')}; ${name} is not`), { code: 'MODEL_NAME' });
   return { provider, modelId: id.join('/') };
 };
 
@@ -41,7 +41,7 @@ export function chooseModels(env: NodeJS.ProcessEnv, named: { lead?: string; eye
     if (name) return parse(name);
     if (has(recorded.provider)) return recorded;
     const provider = order.find((id) => keyed.includes(id));
-    if (!provider) throw new Error(`--live needs a model key in the environment: ${Object.values(PROVIDERS).map((each) => each.key).join(', ')}, or a gateway (APOLLO_MODEL_BASE_URL and APOLLO_MODEL_API_KEY).`);
+    if (!provider) throw Object.assign(new Error(`--live needs a model key in the environment: ${Object.values(PROVIDERS).map((each) => each.key).join(', ')}, or a gateway (APOLLO_MODEL_BASE_URL and APOLLO_MODEL_API_KEY). SETUP-PROMPT.md says where to get one.`), { code: 'KEYS_MISSING' });
     return { provider, modelId: PROVIDERS[provider]![role] };
   };
   return { lead: pick(named.lead, LEAD, 'lead', ['openai', 'anthropic', 'google']), eyes: pick(named.eyes, EYES, 'eyes', ['google', 'openai', 'anthropic']) };
