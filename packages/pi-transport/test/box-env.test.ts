@@ -1198,6 +1198,72 @@ describe("boxEnv: a stop whose kill call fails", () => {
 		}, 60_000);
 	}
 
+	it("keeps a group's file while the group is alive, so a retry and cleanup still find it", async () => {
+		await withEnv(async ({ env, box, root }) => {
+			let script = "";
+			box.intercept((inner) => async (command, options, execContext) => {
+				if (isKill(command)) script = String(command[2]);
+				return inner(command, options, execContext);
+			});
+			const probe = uniqueTag("probe");
+			const controller = new AbortController();
+			const pending = env.exec(
+				`sleep 3600 # ${probe}\nwait`,
+				undefined,
+				withAbortSignal(controller.signal, context),
+			);
+			await waitFor(() => running(probe), HANG_GUARD_MS, "the command to start");
+			controller.abort();
+			await pending;
+			// A group no signal ends (a process stuck in the kernel): the same script with its kills turned into no-ops.
+			const stuck = script.replaceAll("kill -TERM", "true").replaceAll("kill -KILL", "true");
+			expect(stuck).not.toBe(script);
+			const id = `alive-${process.pid}-${Date.now()}`;
+			const holder = spawn("sh", ["-c", "setsid sh -c 'echo $$; exec sleep 3600'"], {
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			try {
+				const group = await new Promise<string>((resolve) =>
+					holder.stdout.once("data", (chunk) => resolve(String(chunk).trim())),
+				);
+				const stateDir = join(root, box.id, "tmp", ".pi-transport");
+				mkdirSync(stateDir, { recursive: true });
+				writeFileSync(join(stateDir, `${id}.pid`), group);
+				const started = getOrThrow(await box.exec(["sh", "-c", stuck, "sh", id], undefined, context));
+				const answer = new TextDecoder().decode(getOrThrow(await finish(started)).stdout).trim();
+				expect(answer).toBe("alive");
+				expect(existsSync(join(stateDir, `${id}.pid`)), "the file stays while the group lives").toBe(true);
+			} finally {
+				holder.kill("SIGKILL");
+				rmSync(join(root, box.id, "tmp", ".pi-transport", `${id}.pid`), { force: true });
+			}
+		});
+	}, 60_000);
+
+	it("does not call an unreachable box stopped: its commands may still run", async () => {
+		await withEnv(async ({ env, box, root }) => {
+			const tag = uniqueTag("unreachable");
+			const controller = new AbortController();
+			const pending = env.exec(`sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
+			box.hang();
+			const began = Date.now();
+			controller.abort();
+			const result = await pending;
+			expect(result.ok ? "" : result.error.code).toBe("aborted");
+			expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false).toBe(true);
+			expect(Date.now() - began, "kill calls and status checks together stay inside the bound").toBeLessThan(10_700);
+			// The box no longer answers, so cleanup cannot end the command: do it by hand, from the group files.
+			const stateDir = join(root, box.id, "tmp", ".pi-transport");
+			for (const name of groupFiles(root, box)) {
+				try {
+					process.kill(-Number(readFileSync(join(stateDir, name), "utf8").trim()), "SIGKILL");
+				} catch {}
+				rmSync(join(stateDir, name), { force: true });
+			}
+		});
+	}, 60_000);
+
 	it("reads a group that holds nothing but a zombie as gone", async () => {
 		await withEnv(async ({ env, box, root }) => {
 			// The kill script, as a real stop sends it.

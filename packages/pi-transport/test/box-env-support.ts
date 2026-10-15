@@ -348,8 +348,22 @@ export async function waitNotRunning(
 ): Promise<void> {
 	const deadline = Date.now() + boundMs;
 	for (;;) {
-		if (!(await isRunning())) return;
-		if (Date.now() > deadline) throw new Error(`${what} was still running ${boundMs} ms after exec returned`);
+		const left = deadline - Date.now();
+		const still = new Error(`${what} was still running ${boundMs} ms after exec returned`);
+		if (left <= 0) throw still;
+		// A check that hangs is cut at the deadline, and one that answers late does not count as success.
+		let timer: NodeJS.Timeout | undefined;
+		const limit = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(still), left);
+		});
+		try {
+			if (!(await Promise.race([Promise.resolve(isRunning()), limit]))) {
+				if (Date.now() > deadline) throw still;
+				return;
+			}
+		} finally {
+			clearTimeout(timer);
+		}
 		await new Promise((resolve) => setTimeout(resolve, pollMs));
 	}
 }

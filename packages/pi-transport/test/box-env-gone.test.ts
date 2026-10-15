@@ -30,6 +30,22 @@ describe("waitNotRunning, the check for a command that was stopped", () => {
 		expect(Date.now() - began).toBeLessThan(5_000);
 	});
 
+	it("cuts a check that hangs at the deadline, and a late 'gone' is not success", async () => {
+		const began = Date.now();
+		await expect(waitNotRunning(() => new Promise<boolean>(() => {}), "a hung check", 200, 20)).rejects.toThrow(
+			/a hung check was still running 200 ms/,
+		);
+		expect(Date.now() - began).toBeLessThan(2_000);
+		await expect(
+			waitNotRunning(
+				() => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+				"a late check",
+				200,
+				20,
+			),
+		).rejects.toThrow(/a late check was still running/);
+	});
+
 	it("takes an async check, and its bound is long enough for a loaded box", () => {
 		expect(GONE_BOUND_MS).toBeGreaterThanOrEqual(15_000);
 	});

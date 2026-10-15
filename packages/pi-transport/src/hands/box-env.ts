@@ -239,8 +239,8 @@ const KILL_SCRIPT = [
 	// with thousands of them pays two forks, not one for each.
 	`live() { if [ ! -r /proc/self/stat ]; then kill -0 "-$1" 2>/dev/null; return; fi; cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $3 == g) n++ } END { exit n > 0 ? 0 : 1 }'; }`,
 	// dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`. What it prints is the answer: `gone` once no live process
-	// of the group is left, `alive` when one is.
-	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; i=0; while [ $i -lt 20 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; rm -f "$f"; if live "$g"; then echo alive; else echo gone; fi; }',
+	// of the group is left, `alive` when one is. The group's file stays until then, so a retry (and `cleanup`) still finds the group.
+	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; i=0; while [ $i -lt 20 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; if live "$g"; then echo alive; else rm -f "$f"; echo gone; fi; }',
 	'stop && exit 0; touch "$s/$1.cancel"; stop || echo gone; true',
 ].join("; ");
 /**
@@ -461,6 +461,8 @@ class BoxEnv implements ExecutionEnv {
 	readonly #unconfirmed = new Set<string>();
 	readonly #watchers = new Set<FileWatcher>();
 	#lost: string | undefined;
+	/** True when the box was seen to have ended: its processes are gone with it. An unreachable box is lost but not known to be empty. */
+	#ended = false;
 	#home: string | undefined;
 
 	constructor(box: Box, options: BoxEnvOptions) {
@@ -1106,6 +1108,7 @@ class BoxEnv implements ExecutionEnv {
 		} else if (status.value.state === "ended") {
 			const { exitCode } = status.value;
 			reason = exitCode === null ? "it ended" : `it ended with exit code ${exitCode}`;
+			this.#ended = true;
 		} else if (cause.code === "gone") {
 			reason = cause.message;
 		}
@@ -1129,14 +1132,14 @@ class BoxEnv implements ExecutionEnv {
 		for (let attempt = 0; ; attempt++) {
 			const left = deadline - Date.now();
 			if (left <= 0) return false;
-			const answer = await this.#call(
-				["sh", "-c", KILL_SCRIPT, "sh", id],
-				undefined,
-				Math.min(KILL_TIMEOUT_MS, left),
+			// The deadline covers everything the call awaits, its status check after a timeout included.
+			const answer = await bounded(
+				this.#call(["sh", "-c", KILL_SCRIPT, "sh", id], undefined, Math.min(KILL_TIMEOUT_MS, left), stopped),
+				left,
 				stopped,
 			);
 			if (answer.ok && new TextDecoder().decode(answer.value.stdout).trim().endsWith("gone")) return true;
-			if (this.#lost !== undefined) return true;
+			if (this.#ended) return true;
 			const pause = Math.min(
 				KILL_RETRY_MS[Math.min(attempt, KILL_RETRY_MS.length - 1)] ?? 0,
 				Math.max(deadline - Date.now(), 0),
