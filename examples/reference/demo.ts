@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:f
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
@@ -159,7 +159,7 @@ async function child(options: DemoOptions) {
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits).
     if (options.spec.sources && (live || env.FETCH_SOURCES === '1')) {
-      const sourcesPath = join(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json');
+      const sourcesPath = resolve(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json');
       await mkdir(place.work, { recursive: true });
       await fetchSources(readSources(sourcesPath), place.work);
     }
