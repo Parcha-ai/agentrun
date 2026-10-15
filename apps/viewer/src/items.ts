@@ -3,7 +3,7 @@
 // read from its source each time the viewer is built (build.mjs inlines it; it imports nothing), run with the page's
 // SHA-256. A panel imports this module and never rebuilds an item's state, or reads a failed map's results, itself.
 import { itemState, partialResults } from '../../../packages/dsl/src/recovery/item-state.ts';
-import { sha256Hex } from './sha256.ts';
+import { sha256Hex } from './receipt-key.ts';
 
 /** A map item's state at `path`, rebuilt as the driver rebuilds it: `{ state }`, or `{ unreadable }` saying why (its base
  *  is missing, a digest differs, it keeps no state there); it never guesses. `item` is an `agentrun.items` value;

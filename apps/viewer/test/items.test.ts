@@ -3,13 +3,15 @@
 // that inlines the DSL's module from its source, only while it imports nothing.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 import { createContext, Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { bundle, checkModule, DSL_ITEM_STATE } from '../build.mjs';
 import { canonicalJson, stateDelta } from '../../../packages/dsl/src/recovery/item-state.ts';
 import { itemFailureOf, itemStateOf, partialResultsOf, statesBySha } from '../src/items.ts';
-import { sha256Hex } from '../src/sha256.ts';
+import { sha256Hex } from '../src/receipt-key.ts';
 
 const nodeSha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 const STATES: Record<string, unknown>[] = [
@@ -102,13 +104,26 @@ test('a failed map item, read from its one place: pin.failures in v3; its item r
 
 test('the build inlines the DSL\'s module from its source, and refuses it once it imports anything', () => {
   const built = bundle('items.ts') as { body: string; modules: string[] };
-  assert.deepEqual(built.modules, [DSL_ITEM_STATE, 'sha256.ts', 'items.ts']);
+  assert.deepEqual(built.modules, [DSL_ITEM_STATE, 'receipt-key.ts', 'items.ts']);
   assert.doesNotMatch(built.body, /^\s*import\s/m, 'no import is left in the classic script');
   for (const code of ["import { x } from 'y';\nexport const a = 1;", "export { a } from './b.ts';", 'export const a = () => import("node:crypto");', "const { a } = require('b');"]) {
     assert.throws(() => checkModule(DSL_ITEM_STATE, code), /imports something; the viewer inlines it only while it imports nothing/, code);
   }
   assert.throws(() => checkModule('panel.ts', "import { x } from '../../../packages/dsl/src/workflow.ts';"), /imports a package/, 'no other file outside the viewer');
   assert.doesNotThrow(() => checkModule('panel.ts', `import { itemStateOf } from './items.ts';`));
+});
+
+test('every viewer module shares the page\'s one scope: no two declare one top-level name, so a panel may import any of them', () => {
+  // The build joins the modules a page needs into one classic script; ./items.ts once brought a second sha256Hex.
+  const src = new URL('../src/', import.meta.url);
+  const owner = new Map<string, string>();
+  for (const file of readdirSync(src).filter((name) => name.endsWith('.ts')).sort()) {
+    const code = stripTypeScriptTypes(readFileSync(new URL(file, src), 'utf8'));
+    for (const [, name] of code.matchAll(/^(?:export )?(?:async )?(?:function|const|let|class) ([A-Za-z_$][\w$]*)/gm)) {
+      assert.ok(!owner.has(name!), `${file} and ${owner.get(name!)} both declare ${name}`);
+      owner.set(name!, file);
+    }
+  }
 });
 
 test('the bundled code, as the page runs it, rebuilds the same state and reads the same results and failures', () => {
