@@ -1,15 +1,15 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, fdatasyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, fdatasyncSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOutbox } from "../src/home/outbox.ts";
 
-// Every sync the outbox makes, counted: what a power cut would lose is what was not synced.
+// Every sync the outbox makes, counted: what a power cut would lose is what was not synced. A rename can be made to fail.
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, fdatasyncSync: vi.fn(actual.fdatasyncSync) };
+	return { ...actual, fdatasyncSync: vi.fn(actual.fdatasyncSync), renameSync: vi.fn(actual.renameSync) };
 });
 
 const directories: string[] = [];
@@ -24,6 +24,63 @@ function place(): string {
 const writes = (n: number): StorageWrite[] => [{ type: "submission", value: { id: String(n) } as never }];
 
 describe("a runner's outbox", () => {
+	// 3,000 commits, the host's acknowledgements 10 commits behind for writes and 5 for lines: entries are pending at every
+	// moment the file is cleared out, and the last of them stay.
+	const longSession = (outbox: ReturnType<typeof openOutbox>, onAck: (ack: () => void) => void = (ack) => ack()) => {
+		for (let commit = 1; commit <= 3_000; commit += 1) {
+			outbox.entry(commit, writes(commit));
+			outbox.lines(commit, [`line of ${commit}`]);
+			if (commit > 10) onAck(() => outbox.ack(commit - 10));
+			if (commit > 5) onAck(() => outbox.ackLines(commit - 5));
+		}
+		outbox.entry(3_001, writes(3_001));
+	};
+	const keptOfLongSession = [
+		...[2_991, 2_992, 2_993, 2_994, 2_995].map((commit) => ({ commit, writes: writes(commit) })),
+		...[2_996, 2_997, 2_998, 2_999, 3_000].map((commit) => ({
+			commit,
+			writes: writes(commit),
+			lines: [`line of ${commit}`],
+		})),
+		{ commit: 3_001, writes: writes(3_001) },
+	];
+	const rowsIn = (path: string) => readFileSync(path, "utf8").trim().split("\n").length;
+
+	it("keeps its file to what is pending while it runs: acknowledged entries leave the disk too", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		longSession(outbox);
+		// 12,001 rows with no cleanup: bounded by the threshold, not by the session's history.
+		expect(rowsIn(path)).toBeLessThan(2_048);
+		expect(outbox.pending()).toEqual(keptOfLongSession);
+		outbox.close();
+		const again = openOutbox(path, { head: 3_002 });
+		expect(again.pending()).toEqual(keptOfLongSession);
+		again.close();
+	});
+
+	it("keeps appending to a whole file when clearing it out fails, and clears it out later", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		vi.mocked(renameSync).mockImplementationOnce(() => {
+			throw new Error("the disk refused the rename");
+		});
+		const failed: unknown[] = [];
+		longSession(outbox, (ack) => {
+			try {
+				ack();
+			} catch (cause) {
+				failed.push(cause);
+			}
+		});
+		expect(failed).toEqual([new Error("the disk refused the rename")]);
+		expect(rowsIn(path)).toBeLessThan(2_048);
+		outbox.close();
+		const again = openOutbox(path, { head: 3_002 });
+		expect(again.pending()).toEqual(keptOfLongSession);
+		again.close();
+	});
+
 	it("keeps what the host has not acknowledged across a reopen, lines with their commit, in commit order", () => {
 		const path = place();
 		const outbox = openOutbox(path, { head: 1 });

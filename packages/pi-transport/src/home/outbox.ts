@@ -1,4 +1,4 @@
-import { closeSync, fdatasyncSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, constants, fdatasyncSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 
@@ -18,6 +18,9 @@ export type OutboxEntry = {
  * at `flush()`; a machine that stops loses at most the newest commit's lines, which the next open's snapshot covers.
  */
 export type LinesSync = "each" | "next";
+
+/** The fewest rows an outbox file holds before acknowledged ones are cleared out while it runs. */
+const COMPACT_AT_ROWS = 1_024;
 
 export type OutboxOptions = {
 	/** The sequence the store's next commit takes: an entry at or above it never committed and is dropped. */
@@ -124,35 +127,72 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	for (const from of [writes, lines])
 		for (const commit of from.keys()) if (commit >= options.head) from.delete(commit);
 
-	const temp = `${path}.tmp`;
-	const fresh = openSync(temp, "w");
-	try {
-		for (const entry of pendingOf(writes, lines, -1, -1)) {
-			if (entry.writes !== undefined)
-				writeSync(fresh, `${JSON.stringify({ commit: entry.commit, writes: entry.writes })}\n`);
-			if (entry.lines !== undefined)
-				writeSync(fresh, `${JSON.stringify({ commit: entry.commit, lines: entry.lines })}\n`);
+	/**
+	 * The file again with only what is pending, whole, renamed into place, and kept open to append to: there is no moment
+	 * when the path holds the new file and the outbox writes to the old one. Before the rename, a failure leaves the old
+	 * file as it was. The caller syncs the directory once it writes to the new file.
+	 */
+	const rewrite = (): { readonly file: number; readonly rows: number } => {
+		const temp = `${path}.tmp`;
+		const fresh = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND);
+		let rows = 0;
+		try {
+			for (const entry of pendingOf(writes, lines, -1, -1)) {
+				if (entry.writes !== undefined) {
+					writeSync(fresh, `${JSON.stringify({ commit: entry.commit, writes: entry.writes })}\n`);
+					rows += 1;
+				}
+				if (entry.lines !== undefined) {
+					writeSync(fresh, `${JSON.stringify({ commit: entry.commit, lines: entry.lines })}\n`);
+					rows += 1;
+				}
+			}
+			fdatasyncSync(fresh);
+			renameSync(temp, path);
+		} catch (cause) {
+			closeSync(fresh);
+			throw cause;
 		}
-		fdatasyncSync(fresh);
-	} finally {
-		closeSync(fresh);
+		return { file: fresh, rows };
+	};
+	const opened = rewrite();
+	let file = opened.file;
+	// Rows in the file now: acknowledgements add rows and remove none, until the file is written again.
+	let rows = opened.rows;
+	try {
+		syncDirectory(path);
+	} catch (cause) {
+		closeSync(file);
+		throw cause;
 	}
-	renameSync(temp, path);
-	syncDirectory(path);
-
-	const file = openSync(path, "a");
 	let dirty = false;
 	let idle: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	const append = (line: Line) => {
 		if (closed) throw new Error("the outbox is closed");
 		writeSync(file, `${JSON.stringify(line)}\n`);
+		rows += 1;
 	};
 	const sync = () => {
 		clearTimeout(idle);
 		idle = undefined;
 		fdatasyncSync(file);
 		dirty = false;
+	};
+
+	/**
+	 * The file follows what is pending, not the session's history: once acknowledged rows far outnumber what is left,
+	 * it is written again with only that.
+	 */
+	const compact = () => {
+		if (rows < COMPACT_AT_ROWS || rows <= 4 * (writes.size + lines.size)) return;
+		if (dirty) sync();
+		const fresh = rewrite();
+		const old = file;
+		file = fresh.file;
+		rows = fresh.rows;
+		closeSync(old);
+		syncDirectory(path);
 	};
 
 	return {
@@ -182,10 +222,12 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 			// Not synced: an ack lost with the machine only sends those commits again, and the host has them.
 			append({ ack: commit });
 			drop(writes, commit);
+			compact();
 		},
 		ackLines(commit) {
 			append({ ackLines: commit });
 			drop(lines, commit);
+			compact();
 		},
 		flush() {
 			if (dirty) sync();

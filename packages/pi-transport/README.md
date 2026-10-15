@@ -412,7 +412,8 @@ runner's recorder made. Its hello says so, and the runner then:
 - **Puts each commit in an outbox before the store has it.** The writes go to `<store>.outbox.jsonl` beside the store,
   synced, then to the store, then to the host (`record`); the recorder's lines for the commit follow (`lines`), on the
   disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
-  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox.
+  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox. The file is written again
+  once acknowledged rows far outnumber pending ones, so its size follows the work in flight, not the session's length.
 - **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
   (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
   left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot lines go
