@@ -506,7 +506,7 @@ function visionCitedView(cited: VisionCitedResult, cite: string | undefined): No
     const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : 'file';
     return [
       ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: each.note ?? 'the look that read it' }, words)] : []),
-      ...(each.blob ? [{ tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite' } as Node] : []),
+      ...(each.blob ? [h('span', { ...(each.note ? { title: each.note } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite' })] : []),
     ];
   };
   return h('div', { class: 'vz-account' },
@@ -550,12 +550,13 @@ function visionMetersView(state: VisionState, meters: VisionMeters): Node {
 
 function visionView(state: VisionState, context: ViewContext): Node {
   const meters = visionMeters(state);
-  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
-  if (!looked) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const resultValue = state.result ? context.json?.(state.result.blob) : undefined;
   const parsed = state.result && resultValue !== undefined ? visionAccountOf(resultValue) : undefined;
   const account = typeof parsed === 'object' ? parsed : undefined;
   const cited = account ? undefined : visionCitedOf(resultValue);
+  // A cited result shows with no look at all: its rows may cite only files, or nothing.
+  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
+  if (!looked && !cited) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const kept = meters.kept;
   // A look's pictures: those its filing names, else those its read showed.
   const pictured = (look: VisionLook): VisionLook => (look.images.length ? look : { ...look, images: state.shown[visionShownKey(look.conv, look.source, look.page, look.fromS, look.toS)] ?? [] });
@@ -564,7 +565,8 @@ function visionView(state: VisionState, context: ViewContext): Node {
   // A box is where a cite of the chosen look says the line stands: the account's or a cited result's fragments.
   const fragments = [...(account?.entries.flatMap((entry) => entry.cites).map((each) => ({ look: each.receipt, fragment: each.fragment })) ?? []),
     ...(cited?.rows.flatMap((row) => row.cites).map((each) => ({ look: each.look, fragment: each.fragment })) ?? [])];
-  const boxes = chosen ? fragments.filter((each) => each.look === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
+  // Only the pages lane draws boxes, so only a chosen page has them.
+  const boxes = chosen && visionLane(chosen) === 'pages' ? fragments.filter((each) => each.look === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
   const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);

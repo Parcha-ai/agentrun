@@ -3,16 +3,16 @@
 // opens the file, and a row that cites nothing was not read.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import type { Json } from '../src/format.ts';
+import { parseLines, validate, type Json } from '../src/format.ts';
 import type { Node, ViewContext } from '../src/panels.ts';
-import { reduceTo } from '../src/replay.ts';
+import { reduceTo, stopsOf } from '../src/replay.ts';
 import { visionAccountOf, visionCitedOf, visionPanel } from '../src/vision.ts';
 import { CITED, deliverInstead, FILM, K, lines, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
 
@@ -60,6 +60,19 @@ test('a look chip opens the receipt, moves the pages lane to the page and draws 
   assert.equal(find(shown, cls('cited')).filter(cls('vz-entry')).length, 1, 'and its row marked');
 });
 
+test('a cited result shows with no look at all, a box is drawn only over the page it names, and a file chip keeps its note', () => {
+  const bare = [lines[0]!, lines.find((line) => line.kind === 'result')!];
+  const shown = visionPanel.view(reduceTo(visionPanel, bare, bare.length), { t: 0, json });
+  assert.equal(find(shown, cls('vz-entry')).length, 4, 'the rows of a run whose eyes filed nothing');
+  assert.doesNotMatch(text(shown), /The eyes have not looked at anything yet/);
+  const photoBox = { format: 'agentrun.cited/1', rows: [{ label: 'a photo', value: 'ground', cites: [{ look: K.photo1, fragment: '#xywh=percent:10,10,20,20' }] }] };
+  const photo = visionPanel.view(reduceTo(visionPanel, lines, lines.length), { t: 0, json: (sha) => (sha === RESULT ? photoBox as unknown as Json : undefined), cite: K.photo1 });
+  assert.equal(find(photo, cls('vz-box')).length, 0, 'a photo\'s region is not drawn over a page');
+  const noted = find(view(), (each) => 'title' in each && each.title === 'the picture it was read from');
+  assert.equal(noted.length, 1, 'the note of a file-only cite');
+  assert.ok(find(noted[0]!, (each) => each.tag === 'a').length === 1, 'is the title of its link');
+});
+
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 test('the page from file:// reads a cited result from the result blob', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-cited-'));
@@ -75,4 +88,28 @@ test('the page from file:// reads a cited result from the result blob', { skip: 
   assert.doesNotMatch(page, /breaks the format/);
   assert.ok((ran.stdout.match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? []).every((chip) => /role="button"/.test(chip)), 'a look chip is a button');
   assert.match(ran.stdout, /<a [^>]*class="vz-cite"[^>]*>file<\/a>/, 'a file chip is a link to the blob');
+});
+
+const recorded = process.env.CITED_RECORDING;
+test('a recording whose result is a cited result: the format holds, every look a row cites is filed, every file it cites is in blobs/, and a scrub equals a fresh reduce', { skip: recorded && existsSync(recorded) ? false : 'CITED_RECORDING names no recording' }, () => {
+  const dir = recorded!;
+  const run = parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  const blobs = new Set(readdirSync(join(dir, 'blobs')).map((name) => name.split('.')[0]!));
+  assert.deepEqual(validate(manifest, run, blobs), []);
+  const result = JSON.parse(readFileSync(join(dir, 'blobs', readdirSync(join(dir, 'blobs')).find((name) => name.startsWith(manifest.result.blob))!), 'utf8')) as Json;
+  const cited = visionCitedOf(result);
+  assert.ok(cited && cited.rows.length > 0, 'the result is a cited result with rows');
+  const state = reduceTo(visionPanel, run, run.length);
+  const keys = new Set(state.looks.map((look) => look.key));
+  for (const cite of cited.rows.flatMap((row) => row.cites)) {
+    if (cite.look) assert.ok(keys.has(cite.look), `the look ${cite.look.slice(0, 12)} is filed`);
+    if (cite.blob) assert.ok(blobs.has(cite.blob), `the file ${cite.blob.slice(0, 12)} is in blobs/`);
+  }
+  const stops = stopsOf(run);
+  let folded = visionPanel.init();
+  for (let p = 0; p <= run.length; p += 1) {
+    if (stops[p] && p % 25 === 0) assert.deepEqual(folded, reduceTo(visionPanel, run, p), `vision at stop ${p}`);
+    if (p < run.length && visionPanel.accepts(run[p]!)) folded = visionPanel.reduce(folded, run[p]!);
+  }
 });
