@@ -3,4 +3,4 @@
 // to the root entry when something outside this repository needs it.
 export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
 export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
-export { isLeaseFresh } from "./status.ts";
+export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";

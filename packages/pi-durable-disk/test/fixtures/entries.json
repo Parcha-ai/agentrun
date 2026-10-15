@@ -210,10 +210,12 @@
     "values": [
       "LABEL_FLEET",
       "LABEL_RUN",
+      "RUN_JSON",
       "createRunDir",
       "findDelegations",
       "isLeaseFresh",
       "mintMountToken",
+      "parseRunRecord",
       "pathlessResolver",
       "removeMountToken",
       "runPath",
