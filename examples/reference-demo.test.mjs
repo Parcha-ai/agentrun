@@ -1,14 +1,14 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { capJudge, chooseBrowser, crossings, demo, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
+import { BOX_CROSSINGS, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
 
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
@@ -221,4 +221,145 @@ test('a scripted tool is handed the run\'s place, so it can read the run\'s evid
   const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: { look: (_args, context) => { seen = context; return {}; } }, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' });
   await local.host.tools.runEffect({ node: { tool: 'look' }, input: {}, effect: { id: 'e', argsHash: 'h' } });
   assert.deepEqual(seen.place, { root: place.root, work: place.work });
+});
+
+// ---- the review of #518: one test for each thread ---------------------------------------------------------------------------------------------
+
+const { composeHost, destroyBoxes, meterKnown } = await import('./reference/demo.ts');
+const { RUN_LABEL } = await import('./reference/boxes.ts');
+const { localBoxes } = await import('@parcha/pi-transport/box/local');
+const { BACKGROUND_CONTEXT: ctx } = await import('@earendil-works/chord/context');
+const { finish } = await import('@parcha/pi-transport');
+
+test('judge cap: a request is counted before it is sent, so concurrent questions cannot pass the check together, and the count is on disk before the answer', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-judge-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'judge.jsonl');
+  writeFileSync(file, `${JSON.stringify({ requests: 49, tokens: 10 })}\n`);
+  let sent = 0;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const judge = capJudge(async () => { sent += 1; await held; return { answers: {}, usage: { input_tokens: 5, output_tokens: 0 } }; }, file);
+  const five = [0, 1, 2, 3, 4].map(() => judge({ label: 'q' }).then(() => 'answered', (error) => error.code));
+  // The first request is in flight and already counted: the file says 50 before any answer.
+  assert.equal(readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line).requests).reduce((a, b) => a + b, 0), 50);
+  release();
+  assert.deepEqual((await Promise.all(five)).sort(), ['JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'JEV_CAP_REACHED', 'answered']);
+  assert.equal(sent, 1, 'only one of five concurrent questions was sent');
+});
+
+test('live parts: merged member by member FIRST, then the crossings and the judge caps wrap the final host: a live judge is capped, a live status keeps its crossings, tools and decisions keep what the host had', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-compose-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const host = localHost(place, { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' }).host;
+  const probe = { name: 'probe', tools: [] };
+  host.tools = { ...host.tools, extensions: [probe], answered: async () => undefined };
+  const crossed = [];
+  const statuses = [];
+  const liveJudge = async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } });
+  composeHost(host, { tools: { runEffect: async () => 'live' }, decisions: { runJudge: liveJudge }, status: (event) => { statuses.push(event); } }, (point) => { crossed.push(point); return false; }, { open: 0 }, join(tmp, 'spent.jsonl'));
+  assert.deepEqual(host.tools.extensions, [probe], 'the host\'s extensions stay');
+  assert.equal(typeof host.tools.answered, 'function', 'and its answered');
+  await host.status({ source: 'workflow', event: { type: 'node.start' } });
+  assert.deepEqual(statuses.length, 1, 'the live status still ran');
+  assert.ok(crossed.includes('event workflow.node.start'), 'and it has its crossing');
+  for (let index = 0; index < 50; index += 1) await host.decisions.runJudge({ label: 'q' });
+  await assert.rejects(() => host.decisions.runJudge({ label: 'q' }), (error) => error.code === 'JEV_CAP_REACHED', 'the live judge is held to the cap');
+});
+
+test('box cleanup: a run\'s boxes carry its label, tool-made ones too, and cleanup destroys those and no other run\'s, through the provider, so a detached command stops', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-boxes-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const spec = { name: 'x', boxes: { kind: 'local' } };
+  const raw = localBoxes({ root: join(tmp, 'boxes') });
+  const mine = tapBox(raw, { cross: () => false, window: { open: 0 }, runLabel: 'run-A' });
+  const theirs = tapBox(raw, { cross: () => false, window: { open: 0 }, runLabel: 'run-B' });
+  const pidFile = join(tmp, 'pid');
+  const [a1, a2, b1] = await Promise.all([mine.create({ maxLifetimeMs: 60_000, labels: {} }, ctx), mine.create({ maxLifetimeMs: 60_000, labels: { 'a-tool': 'made it' } }, ctx), theirs.create({ maxLifetimeMs: 60_000, labels: {} }, ctx)]);
+  for (const made of [a1, a2, b1]) assert.ok(made.ok);
+  // A detached command in a box of this run: removing the directory would not stop it; destroying the box does.
+  const started = await a1.value.exec([process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000)`], undefined, ctx);
+  assert.ok(started.ok);
+  for (let waited = 0; !existsSync(pidFile) && waited < 5000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  assert.doesNotThrow(() => process.kill(pid, 0));
+  await destroyBoxes(spec, 'run-A', tmp);
+  for (let waited = 0; waited < 5000; waited += 50) { try { process.kill(pid, 0); } catch { break; } await new Promise((resolve) => setTimeout(resolve, 50)); }
+  assert.throws(() => process.kill(pid, 0), 'the command in the run\'s box was stopped with it');
+  const survivors = (await raw.list({}, ctx)).value.map((ref) => ref.id);
+  assert.deepEqual(survivors, [b1.value.id], 'the other run\'s box is alive');
+  assert.equal(RUN_LABEL, 'agentrun-run');
+  await b1.value.destroy(ctx);
+});
+
+test('a crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, at any seam', (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const window = { open: 1 };
+  const cross = crossings({ run: { point: 'judge.asked verdict', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined, Date.now(), window);
+  cross('judge.asked verdict');
+  assert.deepEqual(kills, [], 'a parallel branch\'s tool is open: no kill');
+  window.open = 0;
+  cross('judge.asked verdict');
+  assert.deepEqual(kills, ['SIGKILL'], 'closed: the next crossing of the point kills');
+});
+
+const lines = () => { const kept = []; return { kept, recorder: { live: (source, kind, data) => kept.push([source, kind, data.crossing ?? data.killed ?? null]) } }; };
+const planFor = (point) => crossings({ run: undefined, tools: [{ point, kind: 'box', why: 'x', target: 'tool', n: 1 }] }, undefined, Date.now(), { open: 0 });
+
+test('a tool-box kill is honored at each advertised crossing, and recorded as a loss at each', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-crossing-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  assert.deepEqual([...BOX_CROSSINGS], ['transport.box.create', 'transport.box.created', 'transport.box.exec', 'transport.box.destroy']);
+  for (const point of ['transport.box.create', 'transport.box.created', 'transport.box.exec', 'transport.box.destroy']) {
+    const { kept, recorder } = lines();
+    const provider = tapBox(localBoxes({ root: join(tmp, point) }), { cross: planFor(point), window: { open: 0 }, recorder });
+    const made = await provider.create({ maxLifetimeMs: 60_000, labels: {} }, ctx);
+    assert.ok(made.ok, point);
+    if (point === 'transport.box.exec') await made.value.exec([process.execPath, '-e', '0'], undefined, ctx);
+    if (point === 'transport.box.destroy') await made.value.destroy(ctx);
+    assert.deepEqual(kept.filter(([, kind]) => kind === 'box.killed').map(([, , at]) => at), [point], `${point}: one loss, recorded with its crossing`);
+    assert.ok(kept.some(([, kind]) => kind === 'box.ended'), `${point}: and the box ended`);
+    assert.equal((await made.value.status(ctx)).value.state === 'running', false, `${point}: the box is gone`);
+  }
+});
+
+test('attach: a box a tool reconnects to has its crossings and its transport lines too', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-attach-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const crossed = [];
+  const { kept, recorder } = lines();
+  const provider = tapBox(localBoxes({ root: join(tmp, 'boxes') }), { cross: (point) => { crossed.push(point); return false; }, window: { open: 0 }, recorder });
+  const made = await provider.create({ maxLifetimeMs: 60_000, labels: {} }, ctx);
+  const found = await provider.attach(made.value.id, ctx);
+  await found.value.exec([process.execPath, '-e', '0'], undefined, ctx);
+  await found.value.destroy(ctx);
+  assert.ok(crossed.includes('transport.box.exec') && crossed.includes('transport.box.destroy'));
+  assert.ok(kept.some(([, kind]) => kind === 'box.ended'));
+});
+
+test('a box that will not be destroyed is not recorded as ended, and the failure comes back to the caller', async () => {
+  const kept = [];
+  const stuck = { id: 'b1', facts: () => ({}), exec: async () => ({ ok: true, value: {} }), upload: async () => ({ ok: true }), download: async () => ({ ok: true }), status: async () => ({ ok: true, value: { state: 'running' } }), destroy: async () => ({ ok: false, error: { code: 'unavailable' } }) };
+  const provider = tapBox({ name: 'stuck', create: async () => ({ ok: true, value: stuck }), attach: async () => ({ ok: true, value: stuck }), list: async () => ({ ok: true, value: [] }) }, { cross: () => false, window: { open: 0 }, recorder: { live: (source, kind) => kept.push(kind) } });
+  const made = await provider.create({ maxLifetimeMs: 1, labels: {} }, ctx);
+  const result = await made.value.destroy(ctx);
+  assert.equal(result.ok, false, 'the failure is returned');
+  assert.ok(!kept.includes('box.ended'), 'and the box is not recorded as gone');
+});
+
+test('--max-usd compares what is known: an unknown price elsewhere does not switch the cap off', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-meter-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  mkdirSync(join(tmp, '.spool'), { recursive: true });
+  const durable = (data) => JSON.stringify({ channel: 'durable', source: 'pi', kind: 'x', gen: 1, t: 1, commit: 1, order: 0, data });
+  writeFileSync(join(tmp, '.spool', 'durable-1.jsonl'), [
+    durable({ doc: 'agentrun.decisions', value: { receipts: [{ decision_id: 'd1', run_key: 'r', cost_usd: 0.5 }] } }),
+    durable({ model: [{ role: 'assistant', usage: { cost: {} } }] }),
+  ].join('\n') + '\n');
+  assert.equal(meterKnown(tmp), 0.5, 'the priced decision counts, though the model\'s cost is unknown');
 });

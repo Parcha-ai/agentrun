@@ -18,17 +18,27 @@ import type { Recorder } from './record.ts';
 
 export const BOX_CROSSINGS = ['transport.box.create', 'transport.box.created', 'transport.box.exec', 'transport.box.destroy'] as const;
 
-export function tapBox(provider: BoxProvider, options: { cross: Cross; window: EffectWindow; recorder?: Recorder }): BoxProvider {
+/** The label every box of a run carries, so one run's cleanup finds its own boxes and no other run's. */
+export const RUN_LABEL = 'agentrun-run';
+
+export function tapBox(provider: BoxProvider, options: { cross: Cross; window: EffectWindow; recorder?: Recorder; /** The run's unique label value: put on every box the run makes, tool-made ones too. */ runLabel?: string }): BoxProvider {
   const { cross, recorder } = options;
   const line = (kind: 'box.created' | 'box.killed' | 'box.ended', data: Record<string, unknown>) => { try { recorder?.live('transport', kind, data); } catch { /* a recording line never fails a call */ } };
-  // A crossing in a tool call cannot end the run's process: it is logged, and it may still end the box.
-  const taken = (point: string) => cross(point, { cut: options.window.open === 0 });
-  const wrap = (box: Box): Box => {
+  // A crossing in a tool call cannot end the run's process: it is logged, and it may still end the box (the crossing function says so when a tool-box kill is due).
+  const taken = (point: string) => cross(point);
+  const wrap = (box: Box): { box: Box; lose(point: string): Promise<{ ok: boolean }> } => {
     let ended = false;
     let killed = false;
     const end = () => { if (!ended) { ended = true; line('box.ended', { box: box.id, provider: provider.name, killed }); } };
-    const lose = async (point: string) => { killed = true; line('box.killed', { box: box.id, crossing: point }); await box.destroy(ctx); end(); };
-    return new Proxy(box, { get(target, name) {
+    /** The planned loss of this box at a crossing: recorded first, then destroyed. A failed destroy is not an end: the failure is returned and the box is not recorded as gone. */
+    const lose = async (point: string) => {
+      killed = true;
+      line('box.killed', { box: box.id, crossing: point });
+      const result = await box.destroy(ctx);
+      if (result.ok) end();
+      return result;
+    };
+    const proxy = new Proxy(box, { get(target, name) {
       const member = Reflect.get(target, name, target);
       if (name === 'exec') {
         return async (...args: unknown[]) => {
@@ -39,27 +49,36 @@ export function tapBox(provider: BoxProvider, options: { cross: Cross; window: E
       }
       if (name === 'destroy') {
         return async (...args: unknown[]) => {
-          if (taken('transport.box.destroy')) killed = true;
+          // A planned loss at the destroy crossing: the box is lost, not ended normally.
+          if (!killed && taken('transport.box.destroy')) { killed = true; line('box.killed', { box: box.id, crossing: 'transport.box.destroy' }); }
           const result = await (member as Box['destroy']).apply(target, args as Parameters<Box['destroy']>);
-          end();
+          if (result.ok) end();
           return result;
         };
       }
       return typeof member === 'function' ? member.bind(target) : member;
     } });
+    return { box: proxy, lose };
   };
+  const labelled = <S extends { labels?: Readonly<Record<string, string>> }>(spec: S): S => (options.runLabel ? { ...spec, labels: { ...spec.labels, [RUN_LABEL]: options.runLabel } } : spec);
   return {
     name: provider.name,
-    attach: (id, context) => provider.attach(id, context),
     list: (labels, context) => provider.list(labels, context),
+    // A box a tool reconnects to is the run's too: it is wrapped, so its commands are crossings and its life is on the recording.
+    attach: async (id, context) => {
+      const found = await provider.attach(id, context);
+      return found.ok && found.value ? { ok: true, value: wrap(found.value).box } as typeof found : found;
+    },
     create: async (spec, context) => {
-      taken('transport.box.create');
-      const made = await provider.create(spec, context);
+      const lostAtCreate = taken('transport.box.create');
+      const made = await provider.create(labelled(spec), context);
       if (!made.ok) return made;
       line('box.created', { box: made.value.id, provider: provider.name });
-      const box = wrap(made.value);
-      if (taken('transport.box.created')) await (box.destroy as Box['destroy'])(context);
-      return { ok: true, value: box } as typeof made;
+      const wrapped = wrap(made.value);
+      // The box a planned loss at the create crossing was about to make is made and lost at once; `created` is the next crossing. Each is recorded as a loss.
+      if (lostAtCreate) await wrapped.lose('transport.box.create');
+      else if (taken('transport.box.created')) await wrapped.lose('transport.box.created');
+      return { ok: true, value: wrapped.box } as typeof made;
     },
   };
 }

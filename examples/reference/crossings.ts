@@ -10,17 +10,22 @@ export type Cross = (point: string, options?: { cut?: boolean }) => boolean;
 export type Crossing = { point: string; n: number; pid: number };
 
 /** The child's crossing function for the kills planned for this process (none: it only logs). */
-export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now()): Cross {
+export function crossings(plan: ChildPlan | undefined, log: string | undefined, started = Date.now(), window: EffectWindow = { open: 0 }): Cross {
   let n = 0;
   // A storm takes no crossing before the process has opened the journal and begun its first node: a kill earlier than that leaves a generation the journal never recorded.
   let begun = false;
   const seen = new Map<string, number>();
+  const eligible = new Map<string, number>();
   const done = new Set<number>();
   return (point, options = {}) => {
-    const cut = options.cut !== false;
+    // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
+    const cut = options.cut !== false && window.open === 0;
     if (cut) n += 1;
     const times = (seen.get(point) ?? 0) + 1;
     seen.set(point, times);
+    // A run kill's `n` counts the crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all.
+    const timesEligible = cut ? (eligible.get(point) ?? 0) + 1 : eligible.get(point) ?? 0;
+    eligible.set(point, timesEligible);
     if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid } satisfies Crossing)}\n`);
     // A tool box destroyed at its crossing: once, at the nth time (a crossing that is not a kill point can be one: the box is the caller's to end).
     const tool = plan?.tools.findIndex((entry, index) => !done.has(index) && 'point' in entry && entry.point === point && times === entry.n) ?? -1;
@@ -28,7 +33,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const run = plan?.run;
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && times === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && timesEligible === run.n;
     if (point === 'event workflow.node.start') begun = true;
     if (due) process.kill(process.pid, 'SIGKILL');
     return false;

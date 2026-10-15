@@ -16,6 +16,7 @@
 // with its `kind`, `result`) from outside every process.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,9 +26,9 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
 import type { BoxProvider } from '@parcha/pi-transport';
 import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { tapBox } from './boxes.ts';
+import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
-import { crossings, tapFakes, tapHost, type Crossing, type EffectWindow } from './crossings.ts';
+import { crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
@@ -97,6 +98,24 @@ function fakeBrowser(url: string): BrowserPlane {
   };
 }
 
+/** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's caps. */
+export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, spentFile: string): void {
+  mergeParts(host, parts);
+  tapHost(host, cross, window);
+  host.decisions = { ...host.decisions, runJudge: capJudge(host.decisions.runJudge, spentFile) };
+}
+
+/** The live parts merged into the host member by member: a part's `tools` or `decisions` adds to the host's, never replaces it wholesale (its extensions, `answered`, `rerun` and browser
+ *  decisions stay). */
+export function mergeParts(host: Host, parts: Partial<Host> | undefined): void {
+  if (!parts) return;
+  const { tools, decisions, credentials, ...rest } = parts;
+  Object.assign(host, rest);
+  if (tools) host.tools = { ...host.tools, ...tools, extensions: [...host.tools.extensions, ...(tools.extensions ?? [])] } as Host['tools'];
+  if (decisions) host.decisions = { ...host.decisions, ...decisions } as Host['decisions'];
+  if (credentials) host.credentials = { ...host.credentials, ...credentials };
+}
+
 /** The demo's box provider: its `boxes` declaration, a directory of this machine (`local`) or Docker. */
 async function boxProvider(spec: DemoSpec, place: { root: string }) {
   if (!spec.boxes) return undefined;
@@ -107,7 +126,7 @@ async function boxProvider(spec: DemoSpec, place: { root: string }) {
  *  job's files are uploaded to. It comes from the tapped provider, so its commands are crossings and its life is on the recording. */
 async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { id: string; work: string }, files: Record<string, Uint8Array>) {
   const { boxEnv } = await import('@parcha/pi-transport/hands');
-  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
+  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: {}, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
   if (!created.ok) throw created.error;
   const box = created.value;
   if (kind === 'docker') {
@@ -122,8 +141,8 @@ async function child(options: DemoOptions) {
   const env = process.env;
   const place = await placeAt(env.DIR);
   const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
-  const cross = crossings(plan, env.CROSS_LOG);
   const window: EffectWindow = { open: 0 };
+  const cross = crossings(plan, env.CROSS_LOG, Date.now(), window);
   const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
@@ -131,12 +150,11 @@ async function child(options: DemoOptions) {
   try {
     const parts = live ? await options.live!({ env, browser: browserKind }) : {};
     const provider = await boxProvider(options.spec, place);
-    const boxes = provider ? tapBox(provider, { cross, window, ...(recorder ? { recorder } : {}) }) : undefined;
+    const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
     const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
-    tapHost(local.host, cross, window);
-    // The judge seam: Jev's caps and list price for every demo's typed questions, the count kept in the run's directory.
-    local.host.decisions = { ...local.host.decisions, runJudge: capJudge(local.host.decisions.runJudge, join(place.root, 'judge-spent.jsonl')) };
-    if (parts.host) Object.assign(local.host, parts.host);
+    // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
+    // caps (Jev's), which a live judge is held to too.
+    composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
@@ -171,20 +189,35 @@ function spawnChild(self: string, env: Record<string, string>, onSpawn: (pid: nu
 
 const rows = <T,>(file: string): T[] => { try { return readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line) as T]; } catch { return []; } }); } catch { return []; } };
 
+const spoolLines = (recordDir: string) => {
+  const spool = join(recordDir, '.spool');
+  if (!existsSync(spool)) return [];
+  return readdirSync(spool).filter((name) => name.endsWith('.jsonl')).flatMap((name) => rows<Record<string, unknown>>(join(spool, name)));
+};
+
 /** The cost of a recording still being written: its spools folded as they stand. Null while any part is unknown. */
 export function meter(recordDir: string): number | null {
-  const spool = join(recordDir, '.spool');
-  if (!existsSync(spool)) return null;
-  const lines = readdirSync(spool).filter((name) => name.endsWith('.jsonl')).flatMap((name) => rows<Record<string, unknown>>(join(spool, name)));
-  return cost(lines).usd;
+  return cost(spoolLines(recordDir)).usd;
 }
 
-/** A box taken away with its machine: its containers (by the label the run put on them) and its directory. */
-function destroyBoxes(spec: DemoSpec, runId: string, root: string): void {
-  if (spec.boxes?.kind === 'docker') {
-    const ids = spawnSync('docker', ['ps', '-aq', '--filter', `label=agentrun-reference=${runId}`], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
-    if (ids.length) spawnSync('docker', ['rm', '-f', ...ids], { stdio: 'ignore' });
-  } else if (spec.boxes?.kind === 'local') rmSync(join(root, 'boxes'), { recursive: true, force: true });
+/** What is known to have been spent so far: the priced parts summed, whether or not another part is unknown. The spend cap compares this, so an unknown price never switches it off. */
+export function meterKnown(recordDir: string): number {
+  return Object.values(cost(spoolLines(recordDir)).parts).reduce<number>((sum, part) => sum + (part ?? 0), 0);
+}
+
+/** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error. */
+export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: string): Promise<void> {
+  const provider = await boxProvider(spec, { root });
+  if (!provider) return;
+  const listed = await provider.list({ [RUN_LABEL]: runLabel }, ctx);
+  if (!listed.ok) throw listed.error;
+  const failed: string[] = [];
+  for (const ref of listed.value) {
+    const found = await provider.attach(ref.id, ctx);
+    const gone = found.ok && found.value ? await found.value.destroy(ctx) : found;
+    if (!gone.ok) failed.push(ref.id);
+  }
+  if (failed.length) throw new Error(`the run's boxes could not be destroyed: ${failed.join(', ')}`);
 }
 
 async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
@@ -205,7 +238,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir });
-  const base: Record<string, string> = { HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  // A label no other run shares, on every box this run makes: cleanup finds these and no others.
+  const runLabel = randomUUID();
+  const base: Record<string, string> = { RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
   // A live child needs what the demo's live parts read from the environment, and nothing else of ours.
   // And any `DEMO_*` variable, the demo's own settings.
   for (const name of Object.keys(process.env)) if ((live && /^(BROWSERBASE_|BB_|CHROME_PATH|PI_BROWSER_|HERO_|OPENROUTER_|OPENAI_|ANTHROPIC_)/.test(name)) || name.startsWith('DEMO_')) base[name] = process.env[name]!;
@@ -214,7 +249,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let overBudget = false;
   const stopper = new AbortController();
   // Metering: the recording's lines as they stand, folded; past the cap the run is stopped.
-  const meterTimer = maxUsd === null ? undefined : setInterval(() => { const usd = meter(recordDir); if (usd !== null && usd > maxUsd) { overBudget = true; stopper.abort(); } }, 250);
+  const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) { overBudget = true; stopper.abort(); } }, 250);
   try {
     const remaining = childPlansOf(plans);
     for (;;) {
@@ -229,14 +264,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const kind = plan.run?.kind ?? 'process';
         supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
         kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
-        if (kind === 'box') destroyBoxes(spec, 'reference', dir);
+        if (kind === 'box') await destroyBoxes(spec, runLabel, dir);
         continue;
       }
       break;
     }
     const delivered = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')) as { record: unknown }; } catch { return null; } })();
-    const finalUsd = meter(recordDir);
-    if (maxUsd !== null && finalUsd !== null && finalUsd > maxUsd) overBudget = true;
+    if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
     const blob = delivered ? openRecorder({ dir: recordDir }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json') : undefined;
     if (blob) supervisor.host('result', { gen: processesStarted, blob, title: 'The record' }, { blobs: [blob] });

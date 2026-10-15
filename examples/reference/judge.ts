@@ -28,7 +28,9 @@ const read = (file: string): Spent => {
   return total;
 };
 
-/** `runJudge` held to the caps and priced at the list price when its answer reports usage but no price of its own. `file` keeps the run's count. */
+/** `runJudge` held to the caps and priced at the list price when its answer reports usage but no price of its own. `file` keeps the run's count. A request is counted BEFORE it is
+ *  sent (checked and saved in one synchronous step, so concurrent questions cannot all pass the check, and a kill after the answer does not lose the count); its tokens are added
+ *  when the answer arrives. */
 export function capJudge(runJudge: RunJudge, file: string, caps: { requests: number; tokens: number } = JEV_CAPS): RunJudge {
   mkdirSync(dirname(file), { recursive: true });
   return async (request) => {
@@ -36,13 +38,10 @@ export function capJudge(runJudge: RunJudge, file: string, caps: { requests: num
     if (spent.requests >= caps.requests || spent.tokens >= caps.tokens) {
       throw Object.assign(new Error(`The judge's cap is reached (${spent.requests} of ${caps.requests} requests, ${spent.tokens} of ${caps.tokens} tokens): this request was not sent.`), { code: 'JEV_CAP_REACHED', retryable: false });
     }
-    let answer: Awaited<ReturnType<RunJudge>>;
-    try { answer = await runJudge(request); } catch (error) {
-      appendFileSync(file, `${JSON.stringify({ requests: 1, tokens: 0 })}\n`);
-      throw error;
-    }
+    appendFileSync(file, `${JSON.stringify({ requests: 1, tokens: 0 })}\n`);
+    const answer = await runJudge(request);
     const usage = answer.usage ?? { input_tokens: 0, output_tokens: 0 };
-    appendFileSync(file, `${JSON.stringify({ requests: 1, tokens: usage.input_tokens + usage.output_tokens })}\n`);
+    appendFileSync(file, `${JSON.stringify({ requests: 0, tokens: usage.input_tokens + usage.output_tokens })}\n`);
     return typeof answer.cost_usd === 'number' ? answer : { ...answer, cost_usd: jevCost(usage) };
   };
 }
