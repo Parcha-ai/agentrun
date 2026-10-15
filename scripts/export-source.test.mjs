@@ -142,6 +142,16 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a PDF is exported only from the Apollo 11 example\'s slice', async t => {
+  const f = await fixture(t);
+  await f.write('examples/apollo11/slice/pages.pdf', '%PDF-1.4\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.equal(receipt.files.find(file => file.path === 'examples/apollo11/slice/pages.pdf')?.kind, 'binary');
+  await f.write('examples/other/pages.pdf', '%PDF-1.4\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: examples\/other\/pages\.pdf/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
