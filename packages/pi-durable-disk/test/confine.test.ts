@@ -863,6 +863,23 @@ describe("through a pi Harness with a scripted model", () => {
   });
 });
 
+describe("a run reached through a symlink", () => {
+  it("names paths as the caller does, whatever characters the link's name holds ($& and $$ included)", async () => {
+    const base = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "pda-confine-named-"));
+    const named = join(base, "a$&b$$c");
+    try {
+      await mkdir(join(base, "real", "work"), { recursive: true });
+      await symlink(join(base, "real"), named);
+      const env = archilEnv({ root: named, work: join(named, "work") }, { noNewPrivs: false })({});
+      getOrThrow(await env.writeFile("x.txt", "x", context));
+      assert.equal(getOrThrow(await env.fileInfo("x.txt", context)).path, join(named, "work", "x.txt"));
+      assert.deepEqual(getOrThrow(await env.listDir(".", context)).map((entry) => entry.path), [join(named, "work", "x.txt")]);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("by path, the walk's last check", () => {
   it("knows a directory's path from the directory held once the path was swapped, and back", async () => {
     const base = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "pda-confine-held-"));

@@ -191,7 +191,8 @@ export class Pin {
   /** `text` with the held paths replaced by the real ones, and a root named as the caller names it. */
   translate(text: string): string {
     let real = text.split(this.entry).join(this.canonical).split(this.dir).join(this.#real);
-    for (const { canonical, named } of this.#names) real = real.replace(canonical, named);
+    // A function, so `$&` or `$$` in the name is kept as written rather than expanded.
+    for (const { canonical, named } of this.#names) real = real.replace(canonical, () => named);
     return real;
   }
 
