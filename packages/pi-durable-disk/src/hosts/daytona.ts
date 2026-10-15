@@ -15,7 +15,8 @@
 // in it, the commands a crashed incarnation detached included. The supervisor holds the API key; boxes never do.
 import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { PdaError } from "../errors.ts";
-import type { HostDriver, HostHandle, HostStatus } from "../supervise.ts";
+import type { HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
+import { attemptEnv } from "./attempt-env.ts";
 import { LAUNCH_DIR, type LaunchSpec, type LaunchState, type LaunchStatus } from "./daytona-launch.ts";
 import { TERMINAL_EXITS } from "./local-host.ts";
 
@@ -368,9 +369,10 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
     mountRoot,
     kills: "box",
 
-    async start(ref: RunRef, mountToken: string): Promise<HostHandle> {
+    async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       runPath(ref.id);
       if (!mountToken) throw new DaytonaHostError("INVALID_ARGUMENT", "no mount token");
+      const extra = attemptEnv(attempt, (m) => new DaytonaHostError("INVALID_ARGUMENT", m));
       const t0 = now();
       const name = sandboxName(prefix, ref.id, t0);
       const body: CreateSandboxBody = {
@@ -393,7 +395,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
         const handle: HostHandle = { driver: "daytona", fleet, target: box.target ?? opts.target ?? null, sandboxId: box.id, name, mountpoint: `${mountRoot}/${runPath(ref.id)}` };
         const spec: LaunchSpec = {
           argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, ...(opts.runArgs ?? []), "--token-stdin"],
-          env: { ...opts.env, PDA_HOLDER: JSON.stringify(handle) },
+          env: { ...opts.env, ...extra, PDA_HOLDER: JSON.stringify(handle) },
           user,
           group,
           restart: opts.restart !== false,

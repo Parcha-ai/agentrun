@@ -20,7 +20,8 @@ import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
-import type { HostDriver, HostHandle, HostStatus, Json } from "../supervise.ts";
+import type { HostDriver, HostHandle, HostStatus, Json, StartAttempt } from "../supervise.ts";
+import { attemptEnv } from "./attempt-env.ts";
 
 export type Ran = { code: number | null; timedOut: boolean; stdout: string; stderr: string };
 /** Runs one command; replaceable so tests can record argv without systemd. */
@@ -213,12 +214,12 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     await root(["/bin/rm", "-f", path]);
   }
 
-  async function startUnit(ref: RunRef, token: string): Promise<HostHandle> {
+  async function startUnit(ref: RunRef, token: string, extra: Record<string, string>): Promise<HostHandle> {
     const unit = `${prefix}${ref.id}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`;
     if (!UNIT_SAFE.test(unit)) throw new LocalHostError("INVALID_ARGUMENT", `unit name ${unit} is not safe`);
     const mountpoint = mountpointOf(ref);
     const handle: HostHandle = { driver: "local", mode: "systemd", host: hostName, bootId, unit, mountpoint };
-    const env: Record<string, string> = { ...opts.env, PATH: SAFE_PATH, PDA_HOLDER: holderEnv(handle) };
+    const env: Record<string, string> = { ...opts.env, ...extra, PATH: SAFE_PATH, PDA_HOLDER: holderEnv(handle) };
     const path = tokenFile(unit);
     await writeTokenFile(path, token);
     let started = false;
@@ -252,7 +253,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     }
   }
 
-  async function startChild(ref: RunRef, token: string): Promise<HostHandle> {
+  async function startChild(ref: RunRef, token: string, extra: Record<string, string>): Promise<HostHandle> {
     const tag = `${prefix}${ref.id}-${Date.now().toString(36)}`;
     const mountpoint = mountpointOf(ref);
     const base: HostHandle = { driver: "local", mode: "child", host: hostName, bootId, mountpoint, tag };
@@ -261,7 +262,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
       const { openSync } = await import("node:fs");
       out = openSync(join(opts.logDir, `${tag}.log`), "a", 0o600);
     }
-    const env = { ...opts.env, PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: process.env.HOME ?? "/", PDA_HOLDER: holderEnv(base) };
+    const env = { ...opts.env, ...extra, PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: process.env.HOME ?? "/", PDA_HOLDER: holderEnv(base) };
     const child = spawn(command[0], [...command.slice(1), ...runFlags(ref), "--token-stdin"], { detached: true, stdio: ["pipe", out, out], env });
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
@@ -338,9 +339,10 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     hostName,
     mountRoot,
     kills: "process",
-    start(ref, token) {
+    async start(ref, token, attempt?: StartAttempt) {
       runPath(ref.id);
-      return mode === "systemd" ? startUnit(ref, token) : startChild(ref, token);
+      const extra = attemptEnv(attempt, (m) => new LocalHostError("INVALID_ARGUMENT", m));
+      return mode === "systemd" ? startUnit(ref, token, extra) : startChild(ref, token, extra);
     },
 
     async status(h) {

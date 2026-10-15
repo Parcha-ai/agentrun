@@ -362,6 +362,20 @@ test("a launcher that starts nothing and gives no reason: the error carries its 
   });
 });
 
+test("a start's own environment reaches the instance over the driver's; PDA_HOLDER stays the driver's; a bad name is refused before a box is made", async () => {
+  const w = world();
+  const h = await w.host.start(REF, TOKEN, { attempt: 2, env: { PLAN: "p2", PDA_HOLDER: "{}" } });
+  const spec = JSON.parse(readFileSync(join(w.box, `${h.name}.json`), "utf8")) as LaunchSpec;
+  assert.equal(spec.env.PLAN, "p2");
+  assert.deepEqual(JSON.parse(spec.env.PDA_HOLDER), h);
+  const [first] = await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  assert.ok(first.envKeys.includes("PLAN"));
+  await w.host.stop(h);
+  const creates = w.creates.length;
+  await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: { "A=B": "x" } }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT");
+  assert.equal(w.creates.length, creates);
+});
+
 test("kill: the box is deleted at once, with no launcher stop and no drain; another fleet's box and a gone one are no-ops; a refused delete powers the box off first; a box kill", async () => {
   const live = (w: ReturnType<typeof world>) => [...w.boxes.values()].filter((b) => !b.deleted).length;
   const w = world();

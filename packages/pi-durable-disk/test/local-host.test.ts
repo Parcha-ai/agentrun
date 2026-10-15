@@ -159,6 +159,18 @@ test("stop: the unit, then nothing else when the instance released its own mount
   assert.equal(calls.length, 0, "a handle this driver cannot reach is a no-op");
 });
 
+test("a start's own environment goes over the driver's; PATH and PDA_HOLDER stay the driver's; a name that is not a variable is refused", async () => {
+  const w = world();
+  const { calls, exec } = recorder();
+  const host = localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], env: { A: "1", PLAN: "driver's" } });
+  const h = await host.start(REF, TOKEN, { attempt: 2, env: { PLAN: '{"tools":["x y"]}', PATH: "/elsewhere", PDA_HOLDER: "{}" } });
+  const set = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.filter((x) => x.startsWith("--setenv="));
+  assert.deepEqual(set, ["--setenv=A=1", '--setenv=PLAN={"tools":["x y"]}', "--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", `--setenv=PDA_HOLDER=${JSON.stringify(h)}`]);
+  calls.length = 0;
+  await assert.rejects(host.start(REF, TOKEN, { attempt: 3, env: { "NOT-A-NAME": "x" } }), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT");
+  assert.equal(calls.length, 0, "refused before anything ran");
+});
+
 test("kill: SIGKILL of the unit's whole control group and nothing else; a handle it cannot reach is a no-op; a process kill", async () => {
   const w = world();
   const { calls, exec } = recorder();
