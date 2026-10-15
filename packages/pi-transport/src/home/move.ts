@@ -331,14 +331,20 @@ export function workspaceNotEmptiable(place: Pick<Place, "workspace" | "store">)
 
 /**
  * Empties a workspace in the box and keeps the directory: its entries go, links as links, and nothing above it or
- * outside it. Exit 9, and nothing removed, for a workspace that is the box's home, a directory above it, or a link, or
- * when the box has no home to compare with.
+ * outside it. `$1` is the workspace, `$2` the store. Every check is on the paths as the box resolves them, so no link
+ * on the way changes what is removed. Exit 9, and nothing removed, for a workspace whose path holds a link anywhere
+ * (the resolved path must be the written one), that is the box's home or a directory above it, or that holds the
+ * store's directory; and for a box with no home to compare with. A workspace that is not there is nothing to empty.
  */
 export const EMPTY_WORKSPACE_SH = [
-	'w=$1; [ -n "$HOME" ] || exit 9',
-	'case "$HOME/" in "$w"/*) exit 9;; esac',
-	'[ -L "$w" ] && exit 9',
-	'mkdir -p -- "$w" && find "$w" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+	'w=$1; s=$2; [ -n "$HOME" ] || exit 9',
+	'[ -e "$w" ] || [ -L "$w" ] || exit 0',
+	'p=$(cd -P -- "$w" 2>/dev/null && pwd -P) || exit 9',
+	'[ "$p" = "$w" ] || exit 9',
+	'h=$(cd -P -- "$HOME" 2>/dev/null && pwd -P) || h=$HOME',
+	'case "$h/" in "$w"/*) exit 9;; esac',
+	'd=$(cd -P -- "$(dirname -- "$s")" 2>/dev/null && pwd -P) && case "$d/" in "$w"/*) exit 9;; esac',
+	'find "$w" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
 ].join("\n");
 
 /**
@@ -358,13 +364,19 @@ async function ship(
 	if (returning) {
 		const refused = workspaceNotEmptiable(to);
 		if (refused !== undefined) return err(new Error(`the old workspace may not be emptied: ${refused}`));
-		const started = await to.box.exec(["sh", "-c", EMPTY_WORKSPACE_SH, "sh", to.workspace], undefined, context);
+		const started = await to.box.exec(
+			["sh", "-c", EMPTY_WORKSPACE_SH, "sh", to.workspace, to.store],
+			undefined,
+			context,
+		);
 		if (!started.ok) return err(new Error(`could not empty the old workspace: ${started.error.message}`));
 		const emptied = await finish(started.value);
 		if (!emptied.ok) return err(new Error(`could not empty the old workspace: ${emptied.error.message}`));
 		if (emptied.value.exitCode === 9) {
 			return err(
-				new Error(`the old workspace may not be emptied: ${to.workspace} is the box's home, above it, or a link`),
+				new Error(
+					`the old workspace may not be emptied: ${to.workspace} has a link in its path, is the box's home or above it, or holds the store`,
+				),
 			);
 		}
 		if (emptied.value.exitCode !== 0) {

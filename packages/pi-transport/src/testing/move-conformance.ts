@@ -511,6 +511,51 @@ export function registerMoveConformance(
 		);
 
 		runner.it(
+			"recovers a session that moved and ran on at its own epoch, with no new take",
+			() =>
+				withPair((pair) =>
+					withRun(pair, async (run) => {
+						await sleep(150);
+						const moved = getOrThrow(
+							await moveHome(
+								{
+									session: SESSION,
+									host: "host-1",
+									ownership: run.lease,
+									from: { place: pair.a, home: run.home, epoch: 1 },
+									to: pair.b,
+									start: run.start,
+									notice: NOTICE,
+									onStep: (step) => {
+										if (step === "drain") run.drainCame();
+									},
+								},
+								context,
+							),
+						);
+						// The new home runs and writes; then its runner dies and the host goes with it.
+						getOrThrow(await moved.home.idle(context));
+						const ran = getOrThrow(await moved.home.status(context));
+						equal([ran.state, ran.sealed], ["open", undefined], "the new home as it ran");
+						await run.kill(pair.b);
+						run.dropAll();
+						const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
+						const recovered = getOrThrow(
+							await recoverHome(
+								{ session: SESSION, ownership: run.lease, places, start: run.start, notice: NOTICE },
+								context,
+							),
+						);
+						equal(recovered.lease.epoch, 2, "the lease recovery ran at");
+						getOrThrow(await recovered.home.idle(context));
+						equal(await run.held(), { epoch: 2, environment: pair.b.environment }, "the lease");
+						equal(await run.effects(pair.b), every, "the rounds in the new home");
+					}),
+				),
+			timeoutMs,
+		);
+
+		runner.it(
 			"completes a move whose take was written and whose answer was lost",
 			() =>
 				withPair((pair) =>
