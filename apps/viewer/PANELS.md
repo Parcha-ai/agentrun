@@ -36,7 +36,8 @@ Plain nodes, not DOM. The viewer draws them.
   panel's CSS positions).
 - A string: text.
 - `{ tag: 'img', blob, alt }`: an image from the recording's `blobs/`, by its SHA-256.
-- `{ tag: 'a', blob, text }`: a link to any file in `blobs/` (an evidence record, the result), opened beside the page.
+- `{ tag: 'a', blob, text, fragment? }`: a link to any file in `blobs/` (an evidence record, the result), opened beside
+  the page, at `fragment` when it has one (`page=2`, `t=30`).
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).

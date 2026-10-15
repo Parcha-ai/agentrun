@@ -506,7 +506,7 @@ function visionCitedView(cited: VisionCitedResult, cite: string | undefined): No
     const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : 'file';
     return [
       ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: each.note ?? 'the look that read it' }, words)] : []),
-      ...(each.blob ? [h('span', { ...(each.note ? { title: each.note } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite' })] : []),
+      ...(each.blob ? [h('span', { ...(each.note ? { title: each.note } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
     ];
   };
   return h('div', { class: 'vz-account' },

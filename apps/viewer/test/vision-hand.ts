@@ -102,7 +102,7 @@ export const CITED = {
   rows: [
     { label: 'The alarm', value: 'number 9', note: 'read off page 2', cites: [{ look: K.page2, fragment: '#page=2&xywh=percent:6,8,80,6', note: 'the line it stands on' }] },
     { label: 'The first photograph', value: 'ground', cites: [{ look: K.photo1 }, { blob: PHOTOS[0]! }] },
-    { label: 'A share read from a picture', value: 41, note: 'published 41.5, gap 0.5', cites: [{ blob: FILM[0]!, note: 'the picture it was read from' }] },
+    { label: 'A share read from a picture', value: 41, note: 'published 41.5, gap 0.5', cites: [{ blob: FILM[0]!, fragment: '#t=3.75', note: 'the picture it was read from' }] },
     { label: 'A page that was not the dashboard', value: 'failed', cites: [] },
   ],
 };

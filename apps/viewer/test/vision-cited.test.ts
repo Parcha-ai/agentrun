@@ -48,7 +48,8 @@ test('the panel draws a row a line: a look\'s chip selects its look, a file\'s c
   const lookChips = find(shown, cls('vz-cite')).filter((each) => 'cite' in each);
   assert.deepEqual(lookChips.map((chip) => ('cite' in chip ? chip.cite : undefined)), [K.page2, K.photo1]);
   const fileChips = find(shown, (each) => each.tag === 'a' && 'blob' in each);
-  assert.deepEqual(fileChips.map((chip) => ('text' in chip && 'blob' in chip ? [chip.blob, chip.text] : [])), [[PHOTOS[0], 'file'], [FILM[0], 'file']], 'a file beside a look reads "file", and so does a file alone with no fragment');
+  assert.deepEqual(fileChips.map((chip) => ('text' in chip && 'blob' in chip ? [chip.blob, chip.text, 'fragment' in chip ? chip.fragment : undefined] : [])),
+    [[PHOTOS[0], 'file', undefined], [FILM[0], '#t=3.75', '#t=3.75']], 'a file beside a look reads "file"; a file alone reads where in it, and its link opens there');
 });
 
 test('a look chip opens the receipt, moves the pages lane to the page and draws the row\'s box over it', () => {
@@ -88,6 +89,7 @@ test('the page from file:// reads a cited result from the result blob', { skip: 
   assert.doesNotMatch(page, /breaks the format/);
   assert.ok((ran.stdout.match(/<span[^>]*class="vz-cite[^"]*"[^>]*>/g) ?? []).every((chip) => /role="button"/.test(chip)), 'a look chip is a button');
   assert.match(ran.stdout, /<a [^>]*class="vz-cite"[^>]*>file<\/a>/, 'a file chip is a link to the blob');
+  assert.match(ran.stdout, /<a [^>]*href="[^"]*#t=3\.75"[^>]*>#t=3\.75<\/a>/, 'and a cite\'s fragment is where its link opens');
 });
 
 const recorded = process.env.CITED_RECORDING;
