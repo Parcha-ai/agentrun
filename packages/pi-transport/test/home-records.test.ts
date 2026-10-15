@@ -414,6 +414,25 @@ describe("the record stream", () => {
 		});
 	}, 30_000);
 
+	it("still runs a tool call only once the host holds its admission when the app adds admissions of its own", async () => {
+		await withWorld(async (made) => {
+			const kept = memorySink({ appendMs: 60 });
+			// The app's own predicate admits none of the batches here: pi's tool intent must still wait for the host.
+			const runner = createRunner({ ...made.options, admits: () => false });
+			const host = await hold(made, runner, 1, kept.sink, serveModels(made.models));
+			getOrThrow(await host.resume({ epoch: 1 }, context));
+			getOrThrow(await host.submit("go", undefined, context));
+			getOrThrow(await host.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			expect(kept.admitted).toHaveLength(ROUNDS);
+			for (const [n, started] of made.starts.entries()) {
+				expect(started, `call ${n}`).toBeGreaterThanOrEqual(kept.admitted[n] ?? Number.POSITIVE_INFINITY);
+			}
+			host.close("done");
+			await runner.home?.close(context);
+		});
+	}, 30_000);
+
 	it("never runs a tool call whose admission the host does not hold in time, and the session stops", async () => {
 		await withWorld(async (made) => {
 			const kept = memorySink();

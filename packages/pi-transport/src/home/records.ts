@@ -43,7 +43,10 @@ export interface Shipper {
 export type ShipperOptions = {
 	readonly recording?: Recording;
 	readonly linesSync?: LinesSync;
-	/** Batches that admit an effect: their commit waits for the host's acknowledgement. Default: pi's tool intent. */
+	/**
+	 * Batches that admit an effect of the app's own: their commit waits for the host's acknowledgement, as pi's tool
+	 * intent's always does (`admitsTool`).
+	 */
 	readonly admits?: (writes: readonly StorageWrite[]) => boolean;
 	/** How long an admitting commit waits for the host. Default 30 s. */
 	readonly acknowledgeWithinMs?: number;
@@ -148,7 +151,10 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 							next = shipped.commit + 1;
 							sendRecord(shipped.commit, shipped.writes);
 						},
-						admits: options.admits ?? admitsTool,
+						admits:
+							options.admits === undefined
+								? admitsTool
+								: (writes) => admitsTool(writes) || options.admits?.(writes) === true,
 						acknowledged,
 					}),
 					opened(harness: Harness) {
@@ -240,8 +246,8 @@ export interface RecordSink {
 const sinkWork = new WeakMap<RecordSink, Promise<unknown>>();
 
 /**
- * Runs `work` on `sink` after everything begun on it before, from any link: two links to one log never append one commit
- * twice, and what `held()` says is read after every append begun before it settled.
+ * Runs `work` on `sink` after everything begun on it before, from any link: two links to one log never append one
+ * commit twice, and what `held()` says is read after every append begun before it settled.
  */
 export function inSinkOrder<T>(sink: RecordSink, work: () => Promise<T>): Promise<T> {
 	const before = sinkWork.get(sink) ?? Promise.resolve();
