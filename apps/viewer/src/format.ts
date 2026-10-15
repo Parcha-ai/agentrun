@@ -113,8 +113,12 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const parts = Object.values(m?.cost?.parts ?? {});
   if (m?.cost && parts.some((part) => part === null) && m.cost.usd !== null) note('manifest.cost.usd is a number though a part is unknown');
   if (m?.result && blobs && !blobs.has(m.result.blob)) note(`manifest.result.blob ${m.result.blob} is not in blobs/`);
+  const sha256 = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  const count = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  if (m?.job !== undefined && !(sha256(m.job?.blob) && sha256(m.job?.sha256))) note('manifest.job is not { blob, sha256 }');
+  if (m?.store !== undefined && !(sha256(m.store?.blob) && count(m.store?.at?.gen) && count(m.store?.at?.commit))) note('manifest.store is not { blob, at: { gen, commit } }');
   for (const [field, named] of [['job', m?.job], ['store', m?.store]] as const) {
-    if (named && blobs && !blobs.has(named.blob)) note(`manifest.${field}.blob ${named.blob} is not in blobs/`);
+    if (named && sha256(named.blob) && blobs && !blobs.has(named.blob)) note(`manifest.${field}.blob ${named.blob} is not in blobs/`);
   }
   if (m?.chapters !== undefined && !(Array.isArray(m.chapters) && m.chapters.every((chapter) => typeof chapter?.title === 'string'
     && isInt(chapter.at?.gen, 1) && isInt(chapter.at?.commit) && (chapter.focus === undefined || typeof chapter.focus === 'string')))) note('manifest.chapters needs a title and at { gen, commit } in each');

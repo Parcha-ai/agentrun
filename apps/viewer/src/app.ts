@@ -405,9 +405,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   }
   // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
   // a tab; the store is a SQLite file and downloads.
+  // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
   const { job, store } = recording.manifest;
-  const jobLink = job ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
-  const storeLink = store ? blobLink(recording, store.blob, `The store at commit ${store.at.commit} of generation ${store.at.gen}`, 'store') : undefined;
+  const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
+  const at = store?.at;
+  const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
+    ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
   for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
