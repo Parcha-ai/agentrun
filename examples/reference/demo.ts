@@ -171,11 +171,13 @@ async function child(options: DemoOptions) {
 
 type Spawned = DemoResult['processes'][number];
 
-function spawnChild(self: string, env: Record<string, string>, onSpawn: (pid: number) => void, stop?: { signal?: AbortSignal }): Promise<Spawned> {
+export function spawnChild(self: string, env: Record<string, string>, onSpawn: (pid: number) => void, stop?: { signal?: AbortSignal }): Promise<Spawned> {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', fileURLToPath(self), '--child'], { env: { PATH: process.env.PATH!, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     onSpawn(proc.pid!);
-    stop?.signal?.addEventListener('abort', () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, { once: true });
+    // A signal already aborted (the cap was passed while the previous process's boxes were being destroyed) ends this child at once: it would otherwise run on and make more paid calls.
+    const end = () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } };
+    if (stop?.signal?.aborted) end(); else stop?.signal?.addEventListener('abort', end, { once: true });
     let stdout = ''; let stderr = '';
     proc.stdout.on('data', (chunk) => { stdout += chunk; });
     proc.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -253,6 +255,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   try {
     const remaining = childPlansOf(plans);
     for (;;) {
+      // Past the cap, no further process is started: the budget is checked before every restart.
+      if (overBudget && processes.length > 0) break;
       const plan = remaining.shift() ?? { tools: [] };
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);

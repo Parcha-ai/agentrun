@@ -363,3 +363,14 @@ test('--max-usd compares what is known: an unknown price elsewhere does not swit
   ].join('\n') + '\n');
   assert.equal(meterKnown(tmp), 0.5, 'the priced decision counts, though the model\'s cost is unknown');
 });
+
+test('a child started with the spend cap already passed is ended at once, and no process is started past the cap', { timeout: 60_000 }, async () => {
+  const { spawnChild } = await import('./reference/demo.ts');
+  const stop = new AbortController();
+  stop.abort();
+  // The abort came before the spawn: the child would run its whole job and spend; it is killed instead.
+  const started = Date.now();
+  const result = await spawnChild(new URL('./reference/demo-fixture.ts', import.meta.url).href, { DIR: '/tmp/never', BACKEND: 'http://127.0.0.1:1', DEMO_SPEC: '/no/such/spec.json' }, () => {}, stop);
+  assert.equal(result.signal, 'SIGKILL');
+  assert.ok(Date.now() - started < 10_000);
+});
