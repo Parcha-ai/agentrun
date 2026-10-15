@@ -54,6 +54,11 @@ warning on each start. Run it from the directory that holds `node_modules`, or f
 `checkout` imports files outside its own directory and runs only from a checkout of the repository.
 The `ExperimentalWarning` about SQLite on stderr is Node's own and harmless.
 
+The Since cells are checked, not just written: the `stranger` CI job (`scripts/stranger.mjs pi-durable-disk`, spec
+`scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says, runs it
+and expects its `ok:` line. An example whose Since is above the registry's `beta` tag is skipped, with the reason printed;
+`node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
+
 ## Writing an example
 
 Examples 01 and 02 predate these conventions and run on an Archil disk. A new example follows them, and
