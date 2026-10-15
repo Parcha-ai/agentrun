@@ -1,0 +1,233 @@
+{
+  "description": "A map with onItemFailure \"collect\": of four items, one's code node throws (WorkflowCodeError) and one's agent fails with a failure its host declares an item failure. The map ends with the other two items' results, null in the two failed slots, and the two rows in item order under failedAs.",
+  "workflow": {
+    "v": 2,
+    "name": "map-collect",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "Verdict": {
+        "type": "object",
+        "required": [
+          "verdict"
+        ],
+        "properties": {
+          "verdict": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "resultPath": "verdict",
+      "onItemFailure": "collect",
+      "failedAs": "failed",
+      "body": {
+        "node": "chain",
+        "steps": [
+          {
+            "node": "code",
+            "label": "price",
+            "as": "quote",
+            "code": "s => { if (s.item.price < 0) throw new Error('no price for ' + s.item.id); return { total: s.item.price * 2 }; }"
+          },
+          {
+            "node": "agent",
+            "label": "judge",
+            "instructions": "Judge the quote.",
+            "out": "Verdict",
+            "as": "verdict"
+          }
+        ]
+      }
+    }
+  },
+  "input": {
+    "items": [
+      {
+        "id": "a",
+        "price": 1
+      },
+      {
+        "id": "b",
+        "price": -1
+      },
+      {
+        "id": "c",
+        "price": 3
+      },
+      {
+        "id": "d",
+        "price": 4
+      }
+    ]
+  },
+  "script": {
+    "code": {
+      "/root/items/1/body/steps/0": {
+        "throw": "no price for b"
+      },
+      "/root/items/0/body/steps/0": {
+        "return": {
+          "total": 2
+        }
+      },
+      "/root/items/2/body/steps/0": {
+        "return": {
+          "total": 6
+        }
+      },
+      "/root/items/3/body/steps/0": {
+        "return": {
+          "total": 8
+        }
+      }
+    },
+    "gen": {
+      "/root/items/0/body/steps/1": {
+        "submission": {
+          "verdict": "buy"
+        }
+      },
+      "/root/items/2/body/steps/1": {
+        "submission": {
+          "verdict": "pass"
+        }
+      },
+      "/root/items/3/body/steps/1": {
+        "throw": "blocked by the content filter",
+        "itemFailure": "CONTENT_FILTER"
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "items": [
+        {
+          "id": "a",
+          "price": 1
+        },
+        {
+          "id": "b",
+          "price": -1
+        },
+        {
+          "id": "c",
+          "price": 3
+        },
+        {
+          "id": "d",
+          "price": 4
+        }
+      ],
+      "results": [
+        {
+          "verdict": "buy"
+        },
+        null,
+        {
+          "verdict": "pass"
+        },
+        null
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "price",
+          "code": "code_transform_failed",
+          "message": "code node \"price\" failed: no price for b; check its state paths, synchronous function body and supported globals"
+        },
+        {
+          "item_index": 3,
+          "label": "judge",
+          "code": "CONTENT_FILTER",
+          "message": "blocked by the content filter"
+        }
+      ]
+    },
+    "output": {
+      "items": [
+        {
+          "id": "a",
+          "price": 1
+        },
+        {
+          "id": "b",
+          "price": -1
+        },
+        {
+          "id": "c",
+          "price": 3
+        },
+        {
+          "id": "d",
+          "price": 4
+        }
+      ],
+      "results": [
+        {
+          "verdict": "buy"
+        },
+        null,
+        {
+          "verdict": "pass"
+        },
+        null
+      ],
+      "failed": [
+        {
+          "item_index": 1,
+          "label": "price",
+          "code": "code_transform_failed",
+          "message": "code node \"price\" failed: no price for b; check its state paths, synchronous function body and supported globals"
+        },
+        {
+          "item_index": 3,
+          "label": "judge",
+          "code": "CONTENT_FILTER",
+          "message": "blocked by the content filter"
+        }
+      ]
+    },
+    "events": {
+      "/root/items/0/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/1/body/steps/0": [
+        "node.start:price",
+        "node.end:price:failed"
+      ],
+      "/root/items/2/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/3/body/steps/0": [
+        "node.start:price",
+        "node.end:price:ok"
+      ],
+      "/root/items/0/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:ok"
+      ],
+      "/root/items/2/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:ok"
+      ],
+      "/root/items/3/body/steps/1": [
+        "node.start:judge",
+        "node.end:judge:failed"
+      ]
+    }
+  }
+}

@@ -25,7 +25,7 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
 - `artifact`: `label`, `state`, `type`, `path`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
-- `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`
+- `map`: `label`, `itemsPath`, `body`, `as`, `resultPath`, `maxConcurrency`, `onItemFailure`, `failedAs`
 - `parallel`: `label`, `branches`
 - `loop`: `label`, `body`, `until`, `maxIters`, `expect_iters`
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
@@ -76,7 +76,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ### Control nodes
 
 - `chain`: non-empty `steps`, run in order.
-- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state. Without `resultPath`, and with no `as` in the body, each item's result is its whole state, the mapped list included: set `resultPath` (or an `as` in the body) for a large map; the validator warns.
+- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state. Without `resultPath`, and with no `as` in the body, each item's result is its whole state, the mapped list included: set `resultPath` (or an `as` in the body) for a large map; the validator warns. `onItemFailure` is `stop` (default: the first failing item stops the map and the run) or `collect`. With `collect`, an item whose node fails (a call that failed after its retries, an agent that delivered no record, output that does not match its schema, a failed check) ends as {item_index, label, code, message} in the list at `failedAs`, the other items finish, and `as` stays aligned with the items: `as[i]` is item i's result, or `null` when item i failed. Filter the nulls explicitly if only successes are wanted. Gate on `failedAs` with `escalate` or a code node; never let failures pass silently. A crash, a cancel, an `escalate` inside the item or an effect whose outcome is unknown is never collected.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
 - `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (no maximum), optionally an integer `expect_iters` of at least 1 (priced passes). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
 - `escalate`: `when` (a predicate), and non-empty `kind`, `stage` and `summary`. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.

@@ -71,8 +71,10 @@ inductive Err where
   key of the path was present in the state. The TypeScript error carries neither. -/
   | required (label : String) (addr : Addr) (path : Path) (headPresent : Bool)
   | state (reason : StateReason) (label : String) (path : Path)
-  /-- An oracle failed: provider, schema, verification or code error. -/
+  /-- An oracle failed: provider, schema or verification error. -/
   | adapter (label : String) (message : String)
+  /-- `WorkflowCodeError`: a code node's transform threw. -/
+  | transform (label : String) (message : String)
   /-- An engine check outside the state contract (bad choice, capacity, question guard). -/
   | engine (label : String) (message : String)
   | outputInvalid (label : String)
@@ -135,6 +137,11 @@ structure Oracle where
   render : String → State → String
   /-- `deps.maxQuestionsPerRequest` (default 256). -/
   questionLimit : Nat
+  /-- Whether the host declared a failure its adapter raised an item failure (a string `code` and
+  `itemFailure: true`, or the interpreter's own verification failure), and its code. -/
+  declared : Err → Option String
+  /-- A collected failure's message, as the interpreter renders the error (at most 300 characters). -/
+  message : Err → String
   /-- Which of several concurrent failures (map items, parallel branches) is reported. -/
   choose : List Outcome → Outcome
   choose_mem : ∀ l, l ≠ [] → choose l ∈ l
@@ -431,6 +438,46 @@ def mapSelect (label : String) (bodyAs : Option String) (resultPath : Option Pat
       | none => (.ok s', some (.obj s'))
   | o => (o, none)
 
+/-- The label a failure names: the node that raised it. -/
+def Err.label : Err → String
+  | .required l _ _ _ | .state _ l _ | .adapter l _ | .transform l _ | .engine l _ | .outputInvalid l | .inputInvalid l => l
+  | .invalid => ""
+
+/-- The code of an item failure (`isItemFailure`): the interpreter's own typed node failures, and an
+adapter's failure the host declared one; `none` for every other failure, which a map never collects. -/
+def itemCode (O : Oracle) : Err → Option String
+  | .required .. | .state .. => some "state_invalid"
+  | .outputInvalid _ => some "output_invalid"
+  | .transform .. => some "code_transform_failed"
+  | e@(.adapter ..) => O.declared e
+  | .engine .. | .inputInvalid _ | .invalid => none
+
+/-- Whether an item's outcome stops a map that collects its items' failures: an escalation, or a failure
+that is not an item failure. -/
+def stops (O : Oracle) : Outcome → Bool
+  | .ok _ => false
+  | .escalated _ => true
+  | .failed e => (itemCode O e).isNone
+
+/-- The rows of the items that ended on an item failure, `{item_index, label, code, message}`, in item order. -/
+def failureRows (O : Oracle) : Nat → List (Outcome × Option Value) → List Value
+  | _, [] => []
+  | i, (o, _) :: rest => (match o with
+      | .failed e => (match itemCode O e with
+        | some c => [Value.obj [("item_index", .num i), ("label", .str e.label), ("code", .str c), ("message", .str (O.message e))]]
+        | none => [])
+      | _ => []) ++ failureRows O (i + 1) rest
+
+/-- A collecting map's outcome. A failure it cannot collect stops it, and the scheduler reports one of
+them; otherwise every item ends, `as` holds one slot per item (its result, or `null` for a failed item),
+and `key` holds the failed items' rows. -/
+def collectItems (O : Oracle) (as key : String) (s : State) (sel : List (Outcome × Option Value)) : Outcome :=
+  let halted := (sel.map (·.1)).filter (stops O)
+  if halted.isEmpty then
+    .ok ((s.set as (.arr (sel.map fun x => if x.1.isOk then x.2.getD .null else .null))).set key
+      (.arr (failureRows O 0 sel)))
+  else O.choose halted
+
 def runItems (f : Nat → Value → Run) : Nat → List Value → List Run
   | _, [] => []
   | i, x :: xs => f i x :: runItems f (i + 1) xs
@@ -484,7 +531,7 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
     let ctx : Ctx := ⟨path, lp ++ label⟩
     stepWrap O true ctx <|
       match O.code ctx s with
-      | .error m => (.failed (.adapter ctx.label m), [])
+      | .error m => (.failed (.transform ctx.label m), [])
       | .ok out =>
         let patch := codePatch label as out
         if (lookup hostKey patch).isSome then
@@ -513,7 +560,7 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
       match checkRequires label addr s requires with
       | .error e => (.failed e, [])
       | .ok () => (.ok (s.set "artifact" (artifactRecord type fpath)), [])
-  | .map label itemsPath body as resultPath, path, addr, lp, s =>
+  | .map label itemsPath body as resultPath oif fa, path, addr, lp, s =>
     match getPathS s itemsPath with
     | some (.arr items) =>
       let runs := runItems (fun i item =>
@@ -521,9 +568,12 @@ def eval (O : Oracle) : Node → ExecPath → Addr → String → State → Run
           ((s.set "item" item).set "item_index" (.num i))) 0 items
       let selected := runs.map fun r => mapSelect label body.asField resultPath r.1
       let ev := (runs.map (·.2)).flatten
-      match gather O (selected.map (·.1)) with
-      | .error o => (o, ev)
-      | .ok _ => (.ok (s.set as (.arr (selected.map fun x => x.2.getD .null))), ev)
+      match collectKey oif fa with
+      | some key => (collectItems O as key s selected, ev)
+      | none =>
+        match gather O (selected.map (·.1)) with
+        | .error o => (o, ev)
+        | .ok _ => (.ok (s.set as (.arr (selected.map fun x => x.2.getD .null))), ev)
     | _ => (.failed (.state .expectedList label itemsPath), [])
   | .parallel label branches, path, addr, lp, s =>
     let runs := evalBranches O branches 0 path addr lp s

@@ -121,7 +121,7 @@ export function workflowShapeIssues(value: unknown, complete = false): ShapeIssu
   const node = (entry: unknown, loc: Loc): void => {
     if (entry === undefined) return; // missing bodies already receive semantic diagnostics
     if (!record(entry, loc)) return;
-    strings(entry, loc, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier", "valuePath", "otherwise"]);
+    strings(entry, loc, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier", "valuePath", "otherwise", "onItemFailure", "failedAs"]);
     numeric(entry, loc, ["maxConcurrency", "maxIters", "expect_iters", "deadline_s"]);
     for (const key of ["requires", "tools", "produces"]) stringList(entry[key], at(loc, key));
     if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, at(loc, "sopSection"));
