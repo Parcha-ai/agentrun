@@ -188,7 +188,7 @@ test("a session nobody calls for its idle window is released by the task", async
   assert.equal(result.sessions.sessions[0].releaseReason, "idle");
 });
 
-async function inProcess(t, extra = {}, policy = {}) {
+async function inProcess(t, extra = {}, policy = {}, script = ["browser_read", "browser_release"]) {
   const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
     import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
     import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
@@ -198,11 +198,11 @@ async function inProcess(t, extra = {}, policy = {}) {
     provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null }, ...(typeof extra === "function" ? extra(backend, fakeDriver) : extra),
     tools: { browser_read: async (_args, port) => { const s = await port.session(); await s.driver.page(); return { content: [{ type: "text", text: "read" }] }; } },
   });
-  const script = ["browser_read", "browser_release"];
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: 10 }, () => (context) => {
     const done = context.messages.filter((m) => m.role === "toolResult").length;
-    return script[done] ? faux.fauxAssistantMessage([faux.fauxToolCall(script[done], {})], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+    const [tool, args = {}] = [script[done]].flat();
+    return tool ? faux.fauxAssistantMessage([faux.fauxToolCall(tool, args)], { stopReason: "toolUse" }) : faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
   }));
   const models = createModels();
   models.setProvider(model.provider);
@@ -237,6 +237,64 @@ test("an aborted release task releases once in its abort handler", async (t) => 
   assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 1, 0]);
   assert.deepEqual((await releaseTasks()).map((task) => task.state.outcome?.status), ["aborted"]);
   assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].state, "released");
+});
+
+test("a host that releases, waits for idle, drains and closes: the provider sees the release and no lease is left open", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, {}, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  backend.delay("release", 1_000);
+  await browser.release(root, "close", ctx);
+  await harness.waitForIdle(ctx);
+  assert.equal(backend.tally().releases, 0, "waitForIdle returns before the release reaches the provider");
+  await browser.drain(harness, ctx);
+  assert.deepEqual([backend.tally().releases, backend.liveCount()], [1, 0]);
+  assert.deepEqual((await harness.snapshot(browser.docs.Inventory, ctx)).rows, {});
+  await harness.close(ctx);
+});
+
+test("an idle release in flight at shutdown: the drain waits for it before the host closes", async (t) => {
+  const { backend, browser, harness, root, ctx, releaseTasks } = await inProcess(t, {}, { idleReleaseS: 0.05 }, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  backend.delay("release", 1_000);
+  for (let i = 0; i < 200 && (await releaseTasks()).length === 0; i += 1) await new Promise((r) => setTimeout(r, 25));
+  await harness.waitForIdle(ctx);
+  assert.equal(backend.tally().releases, 0, "waitForIdle returns before the release reaches the provider");
+  await browser.drain(harness, ctx);
+  assert.deepEqual([backend.tally().releases, backend.liveCount()], [1, 0]);
+  assert.equal((await harness.snapshot(browser.docs.Sessions, root.id, ctx)).sessions[0].releaseReason, "idle");
+  await harness.close(ctx);
+});
+
+test("a drain bounded by the host's signal gives up when it aborts, and leaves the release to the next run", async (t) => {
+  const { backend, browser, harness, root, ctx } = await inProcess(t, {}, {}, ["browser_read"]);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  backend.delay("release", 10_000);
+  await browser.release(root, "close", ctx);
+  const started = Date.now();
+  const outcome = await browser.drain(harness, ctx, AbortSignal.timeout(100)).then(() => "drained", (error) => error.name);
+  assert.equal(outcome, "TimeoutError");
+  assert.ok(Date.now() - started < 5_000, "it stopped at the host's bound, not the release's");
+  assert.equal(Object.values((await harness.snapshot(browser.docs.Inventory, ctx)).rows)[0]?.state, "releasing");
+});
+
+test("a host signal that fires while the drain is still inspecting rejects at once and leaves no rejection unhandled", async (t) => {
+  const { browser, harness, ctx } = await inProcess(t, {}, {}, ["browser_read"]);
+  const unhandled = [];
+  const record = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  t.after(() => process.off("unhandledRejection", record));
+  let inspected;
+  const gate = new Promise((resolve) => { inspected = resolve; });
+  const slow = { inspect: async (context) => { await gate; return harness.inspect(context); }, waitForTask: (id, context) => harness.waitForTask(id, context) };
+  const controller = new AbortController();
+  const outcome = browser.drain(slow, ctx, controller.signal).then(() => "drained", (error) => error.name);
+  controller.abort(new DOMException("the host's shutdown bound", "TimeoutError"));
+  const early = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still inspecting"), 1_000))]);
+  inspected();
+  await outcome;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(early, "TimeoutError", "the drain answers the host's signal while the harness is still being inspected");
+  assert.deepEqual(unhandled.map(String), [], "no rejection went unhandled");
 });
 
 test("an abort handler whose release fails hands it to a successor task, which releases", async (t) => {
@@ -293,15 +351,162 @@ test("an abort while a failed create's delayed lookup waits keeps the lookup: a 
   assert.deepEqual((await releaseTasks()).map((task) => task.state.outcome?.status).sort(), ["aborted", "completed"]);
 });
 
-test("the real run tool cut mid-dispatch: interrupted, the identical code refused once with effect_unknown, then let through", async (t) => {
+test("the real run tool cut mid-dispatch: interrupted, the identical code refused with effect_unknown until the model looks at the page", async (t) => {
   const submit = ["run", { code: "await page.click('#submit')" }];
-  const { tally, seen } = await scenario(t, { script: [submit, submit, submit, "browser_release"], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
+  const { tally, seen } = await scenario(t, { script: [submit, submit, submit, "screenshot", submit, "snapshot", submit, "browser_release"], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
   assert.equal(seen[0].isError, true, "pi reports the cut run interrupted and never reruns it");
   const refused = failure(seen[1]);
   assert.equal(refused.code, "effect_unknown");
   assert.match(refused.message, /Your run call call-0 .*was interrupted and may have taken effect/);
-  assert.equal(seen[2].isError, false, "the identical code runs when asked again");
+  assert.equal(failure(seen[2])?.code, "effect_unknown", "asked again without looking, it is refused again");
+  assert.equal(seen[3].isError, false, "the screenshot runs");
+  assert.equal(failure(seen[4])?.code, "effect_unknown", "a screenshot is not the look that clears a refusal: snapshot or browser_read is");
+  assert.equal(seen[6].isError, false, "after a snapshot, the identical code runs");
   assert.deepEqual([tally.dispatches, tally.creates, tally.liveAtEnd], [2, 1, 0]);
+});
+
+test("a run applied and answered, killed before pi committed its answer: the identical run is refused until the model looks after the refusal", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  for (const cutAt of ["session-updated", "run-answered"]) {
+    const { tally, seen } = await scenario(t, { script: [submit, "snapshot", submit, "browser_read", submit, "browser_release"], cutAt, env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
+    assert.equal(seen[0].isError, true, `${cutAt}: pi answers the cut run interrupted`);
+    assert.equal(seen[1].isError, false, `${cutAt}: the snapshot runs`);
+    assert.match(seen[1].text, /Your run call call-0/, `${cutAt}: the snapshot tells the cut`);
+    const facts = { callId: "call-0", urlAtDispatch: null, urlNow: START, observed: false, sent: null };
+    assert.deepEqual(seen[1].details?.pendingEffect, facts, `${cutAt}: the notice's facts are data, and sent is null with no observer`);
+    const refused = failure(seen[2]);
+    assert.equal(refused?.code, "effect_unknown", `${cutAt}: a look before the refusal does not clear it`);
+    assert.deepEqual(seen[2].details?.pendingEffect, facts, `${cutAt}: the refusal carries the same facts`);
+    assert.equal(seen[3].details?.pendingEffect, undefined, `${cutAt}: a told cut is not told again`);
+    assert.equal(seen[3].isError, false, `${cutAt}: the read runs`);
+    assert.equal(seen[4].isError, false, `${cutAt}: after a read, the identical run runs`);
+    assert.equal(tally.dispatches, 2, `${cutAt}: the run reached the page once before the cut and once after the look`);
+  }
+});
+
+test("a cut run's facts list, as data, the requests its observer saw leave the browser", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const env = { REAL_TOOLS: "1", STUB_OBSERVER: "1", ACTIONS: "allow" };
+  const { seen } = await scenario(t, { script: [submit, submit, "browser_release"], hold: "driver.run", env, env2: env });
+  assert.equal(failure(seen[1])?.code, "effect_unknown");
+  const facts = seen[1].details?.pendingEffect;
+  assert.equal(facts?.observed, true);
+  assert.deepEqual(facts?.sent, [{ method: "POST", url: "https://example.test/submit", held: null }], "sent is an array when an observer ran");
+});
+
+test("a run whose answer pi committed before the process died is no cut: the identical run runs after the restart", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const { tally, seen } = await scenario(t, { script: [submit, "browser_read", submit, "browser_release"], hold: "driver.page", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
+  assert.equal(seen[0].isError, false, "the first run's answer was committed");
+  assert.ok(!/was interrupted/.test(seen[1].text), "the read after the restart tells no cut");
+  assert.equal(seen[2].isError, false, "the identical run runs");
+  assert.equal(tally.dispatches, 2);
+});
+
+test("a run in flight is no cut: a snapshot beside it in a parallel round tells nothing, and the same run asked after its answer runs", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
+    import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
+  ]);
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  // The run reaches the page only once the snapshot beside it has run, so the snapshot sees the run's journal entry.
+  let looked;
+  const snapshotted = new Promise((resolve) => { looked = resolve; });
+  const driver = async (target, signal, options) => {
+    const real = await fakeDriver(backend)(target, signal, options);
+    return { ...real, snapshot: async (input) => { const out = await real.snapshot(input); looked(); return out; }, run: async (input) => { await Promise.race([snapshotted, new Promise((resolve) => setTimeout(resolve, 5_000))]); return real.run(input); } };
+  };
+  const browser = createBrowserExtension({ provider: () => backend.provider, driver, evidence: { file: async () => null } });
+  const submit = { code: "await page.click('#submit')" };
+  const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+  model.setResponses([
+    faux.fauxAssistantMessage([faux.fauxToolCall("run", submit, { id: "call-a" }), faux.fauxToolCall("snapshot", {}, { id: "call-b" })], { stopReason: "toolUse" }),
+    faux.fauxAssistantMessage([faux.fauxToolCall("run", submit, { id: "call-c" })], { stopReason: "toolUse" }),
+    faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" }),
+  ]);
+  const models = createModels();
+  models.setProvider(model.provider);
+  const registry = durable.createRegistry();
+  // A host that wraps the tools may run them in parallel; then run shares its round with the snapshot.
+  registry.install({ ...browser.extension, tools: browser.extension.tools.map((tool) => (tool.name === "run" || tool.name === "snapshot" ? { ...tool, executionMode: "parallel" } : tool)) });
+  const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  const config = { label: "node-a", run: "run-parallel", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+  await browser.reconcile(harness, () => true, ctx);
+  await (await root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const results = Object.fromEntries([...(await root.entries({}, 50, undefined, ctx)).items].filter((entry) => durable.ToolResultEntry.is(entry)).map((entry) => [entry.model[0].toolCallId, entry.model[0]]));
+  const said = (id) => results[id].content.filter((part) => part.type === "text").map((part) => part.text).join(" ");
+  assert.ok(!/was interrupted/.test(said("call-b")), `the snapshot told a cut that is only in flight: ${said("call-b")}`);
+  assert.equal(results["call-a"].isError, false);
+  assert.equal(results["call-c"].isError, false, `the same run asked again after its answer was refused: ${said("call-c")}`);
+  assert.equal(backend.tally().dispatches, 2);
+  await browser.release(root, "close", ctx);
+});
+
+test("a resumed run looks for a journaled action's answer only in its conversation, from where it was journaled on", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, { createModels }, faux, durable, { createBrowserExtension }, { fakeDriver }] = await Promise.all([
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/providers/faux"),
+    import("@earendil-works/pi-durable"), import("@parcha/pi-browser/durable"), import("@parcha/pi-browser/testing"),
+  ]);
+  const backend = new FakeBackend({ start: START, pages: { [START]: fixturePage(START, "The start page.") } });
+  const storage = new durable.MemoryStorage();
+  const scans = [];
+  // Each process sees the storage through its own view; a process that ends leaves the storage open, as a file would be.
+  const view = (lasts) => new Proxy(storage, { get: (target, prop) => (prop === "scanEntries" ? (query, ...rest) => { scans.push(query); return target.scanEntries(query, ...rest); } : prop === "close" && !lasts ? async () => {} : typeof target[prop] === "function" ? target[prop].bind(target) : target[prop]) });
+  const config = { label: "node-a", run: "run-bounded", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
+  const submit = { code: "await page.click('#submit')" };
+  const call = (name, args, id) => faux.fauxAssistantMessage([faux.fauxToolCall(name, args, { id })], { stopReason: "toolUse" });
+  const stop = faux.fauxAssistantMessage([faux.fauxText("done")], { stopReason: "stop" });
+  // One process's custody: a new extension, so a new incarnation, over the same storage.
+  const open = async (responses, lasts) => {
+    const browser = createBrowserExtension({ provider: () => backend.provider, driver: fakeDriver(backend), evidence: { file: async () => null } });
+    const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
+    model.setResponses(responses);
+    const models = createModels();
+    models.setProvider(model.provider);
+    const registry = durable.createRegistry();
+    registry.install(browser.extension);
+    const harness = await durable.Harness.open(view(lasts), { models, registry, onReport: () => {} }, ctx);
+    const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
+    await browser.reconcile(harness, () => true, ctx);
+    return { browser, harness, root };
+  };
+  const first = await open([call("snapshot", {}, "s1"), call("snapshot", {}, "s2"), call("snapshot", {}, "s3"), call("run", submit, "r1"), stop], false);
+  await (await first.root.submit({ type: "input", content: "go" }, ctx)).wait(ctx);
+  const journaled = (await first.harness.snapshot(first.browser.docs.Sessions, first.root.id, ctx)).sessions[0].pendingEffect;
+  await first.browser.close();
+  await first.harness.close(ctx);
+  scans.length = 0;
+  const second = await open([call("run", submit, "r2"), stop], true);
+  t.after(async () => { await second.browser.release(second.root, "close", ctx); await second.browser.close(); await second.harness.close(ctx); });
+  await (await second.root.submit({ type: "input", content: "again" }, ctx)).wait(ctx);
+  assert.ok(journaled.after > 1, `the journal entry records where the conversation stood: ${journaled.after}`);
+  const lookups = scans.filter((query) => query.minEntryId !== undefined && query.maxEntryId === undefined);
+  assert.deepEqual(lookups.map((query) => [query.conversationId, query.minEntryId, query.order]), [[first.root.id, journaled.after, "ascending"]], "one bounded scan, from the journal entry on");
+  assert.equal(backend.tally().dispatches, 2, "the answered run is no cut: the same run runs again");
+});
+
+test("a look that settles a refused cut leaves alone a run journaled beside it in a parallel round", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const other = ["run", { code: "await page.click('#other')" }];
+  const env2 = { REAL_TOOLS: "1", PARALLEL: "1", GATE_CODE: other[1].code };
+  const { result, seen } = await scenario(t, { script: [submit], script2: [submit, submit, { round: ["snapshot", other] }], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2 });
+  assert.equal(failure(seen[1])?.code, "effect_unknown", "the identical run is refused");
+  const round = Object.fromEntries(seen.filter((row) => row.callId.startsWith("call-2-")).map((row) => [row.callId, row]));
+  assert.deepEqual([round["call-2-0"]?.isError, round["call-2-1"]?.isError], [false, false], "the snapshot and the other run both answer");
+  const journal = result.sessions.sessions.map((record) => record.pendingEffect).filter(Boolean).map((entry) => [entry.callId, entry.finished === true]);
+  assert.deepEqual(journal, [["call-2-1", true]], "the look settled only the refused cut; the run beside it keeps its finished entry");
+});
+
+test("a different run after a cut runs and replaces it", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const other = ["run", { code: "await page.click('#other')" }];
+  const { tally, seen } = await scenario(t, { script: [submit, other, submit, "browser_release"], hold: "driver.run", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
+  assert.equal(seen[1].isError, false, "a different run is not refused");
+  assert.match(seen[1].text, /Your run call call-0 .*was interrupted/, "and it tells the cut");
+  assert.equal(seen[2].isError, false, "the cut run's code runs once another run replaced it");
+  assert.equal(tally.dispatches, 3);
 });
 
 test("the interruption notice names the page the browser is on now without a credential in its fragment, userinfo or query", async (t) => {

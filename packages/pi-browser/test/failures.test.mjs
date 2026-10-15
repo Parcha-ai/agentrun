@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import * as failures from "../dist/index.js";
 import { classifyBrowserError, FAILURE_CODES, NAVIGATED_SNAPSHOT_ERROR, NO_HYDRATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR, transportFactOf } from "../dist/index.js";
 
 const named = (name, message = "boom", extra = {}) => Object.assign(new Error(message), { name }, extra);
@@ -65,6 +69,22 @@ test("an unreachable browser is known by its cause code or class name anywhere d
   }
   assert.equal(code(named("CDPConnectionClosedError")), "browser_unavailable");
   assert.equal(code(Object.assign(new Error("x"), { code: "ERR_SOMETHING_ELSE" })), "command_failed");
+});
+
+test("Stagehand's extension losing its own CDP connection is a dropped browser, known by its JSON-RPC internal error and Stagehand's exact text", () => {
+  const LOOPBACK = "Stagehand loopback CDP is disconnected";
+  // What Stagehand's host throws for an error its extension answered: the JSON-RPC error object is the cause.
+  const answered = (message, rpcCode = -32603) => new Error(message, { cause: { code: rpcCode, message, data: { name: "Error" } } });
+  assert.equal(failures.STAGEHAND_LOOPBACK_DISCONNECTED, LOOPBACK);
+  const failure = classifyBrowserError(answered(LOOPBACK), true);
+  assert.deepEqual([failure.code, failure.retryable, failure.effect], ["browser_unavailable", false, "possibly_effected"]);
+  assert.equal(code(answered(LOOPBACK)), "browser_unavailable");
+  assert.equal(code(answered("Stagehand loopback CDP is not configured"), true), "code_error", "another extension error stays the call's own");
+  assert.equal(code(answered(LOOPBACK, -32602)), "command_failed", "only the extension's internal error");
+  assert.equal(code(new Error(LOOPBACK), true), "code_error", "the words alone, as the model's code could throw them, stay the code's");
+  // The text is Stagehand's: if its extension stops throwing exactly this, the classification above would never match.
+  const stagehand = path.dirname(fileURLToPath(import.meta.resolve("@browserbasehq/stagehand")));
+  assert.ok(fs.readFileSync(path.join(stagehand, "extension", "service-worker.js"), "utf8").includes(`throw new Error(${JSON.stringify(LOOPBACK)})`), "Stagehand's extension throws this exact text");
 });
 
 test("the message and detail carry the error and its cause, bounded", () => {
