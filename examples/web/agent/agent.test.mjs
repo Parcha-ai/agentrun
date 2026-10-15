@@ -171,6 +171,8 @@ setInterval(() => {}, 1000);
   const args = JSON.parse(await readFile(join(first.dir, 'args.json'), 'utf8'));
   for (const flag of ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${first.dir}`]) assert.ok(args.includes(flag), flag);
   assert.deepEqual(args, chromeArgs(first.dir));
+  const prefs = JSON.parse(await readFile(join(first.dir, 'Default', 'Preferences'), 'utf8'));
+  assert.equal(prefs.session.restore_on_startup, 1, 'the profile keeps a site\'s session cookies across runs');
   await chrome.stop();
   assert.throws(() => process.kill(chrome.pid, 0), { code: 'ESRCH' }, 'stopped by its pid');
 });

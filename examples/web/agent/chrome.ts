@@ -5,7 +5,7 @@
 // (or the first run, when the agent has no such profile yet) opens it; any other run gets a profile of its own beside
 // the run, signed out, and removed with the Chrome.
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type BrowserKind = "browserbase" | "chrome";
@@ -48,10 +48,31 @@ export type RunChrome = { pid: number; endpoint: string; stop(): Promise<void> }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The profile restores its last session, so Chrome keeps a site's session cookies (a sign-in that ends "when the
+ *  browser closes") across the runs that open it. Chrome rewrites Preferences; only this one setting is changed. */
+async function keepSessionCookies(userDataDir: string): Promise<void> {
+  const file = join(userDataDir, "Default", "Preferences");
+  await mkdir(join(userDataDir, "Default"), { recursive: true, mode: 0o700 });
+  const prefs = JSON.parse(await readFile(file, "utf8").catch(() => "{}")) as { session?: Record<string, unknown> };
+  if (prefs.session?.restore_on_startup === 1) return;
+  await writeFile(file, JSON.stringify({ ...prefs, session: { ...prefs.session, restore_on_startup: 1 } }), { mode: 0o600 });
+}
+
+/** Ask the browser to close itself over its debugging socket: Chrome writes its cookies to disk only on a clean close. */
+async function closeGracefully(endpoint: string): Promise<void> {
+  const { webSocketDebuggerUrl } = (await (await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(2_000) })).json()) as { webSocketDebuggerUrl?: string };
+  if (!webSocketDebuggerUrl) return;
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  await new Promise<void>((resolve, reject) => ((socket.onopen = () => resolve()), (socket.onerror = () => reject(new Error("the browser's socket did not open")))));
+  socket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+}
+
 /** Start Chrome on `userDataDir` (created 0700) and wait for its debugging port, read from the profile's own
- *  `DevToolsActivePort`. `stop` ends that process, by its pid, and no other. */
+ *  `DevToolsActivePort`. `stop` closes that browser cleanly, then ends that process by its pid if it is still there,
+ *  and no other. */
 export async function startChrome(executablePath: string, userDataDir: string, options: { sandbox?: boolean; readyMs?: number } = {}): Promise<RunChrome> {
   await mkdir(userDataDir, { recursive: true, mode: 0o700 });
+  await keepSessionCookies(userDataDir);
   const portFile = join(userDataDir, "DevToolsActivePort");
   // A file left by an earlier Chrome names a browser that is not this one.
   await rm(portFile, { force: true });
@@ -59,17 +80,25 @@ export async function startChrome(executablePath: string, userDataDir: string, o
   let exited: string | null = null;
   child.once("error", (error) => void (exited = error.message));
   child.once("exit", (code, signal) => void (exited ??= `Chrome exited (${signal ?? code})`));
+  let endpoint = "";
   const stop = async () => {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    child.kill("SIGTERM");
     const gone = new Promise((resolve) => child.once("exit", resolve));
-    if (!(await Promise.race([gone.then(() => true), sleep(5_000).then(() => false)]))) child.kill("SIGKILL");
+    const within = (ms: number) => Promise.race([gone.then(() => true), sleep(ms).then(() => false)]);
+    const asked = endpoint ? await closeGracefully(endpoint).then(() => true, () => false) : false;
+    if (!asked || !(await within(5_000))) {
+      child.kill("SIGTERM");
+      if (!(await within(5_000))) child.kill("SIGKILL");
+    }
     await gone;
   };
   for (const deadline = Date.now() + (options.readyMs ?? 20_000); ; await sleep(100)) {
     if (exited) throw new Error(`Chrome did not start: ${exited}`);
     const port = Number((await readFile(portFile, "utf8").catch(() => "")).split("\n")[0]);
-    if (Number.isInteger(port) && port > 0) return { pid: child.pid!, endpoint: `http://127.0.0.1:${port}`, stop };
+    if (Number.isInteger(port) && port > 0) {
+      endpoint = `http://127.0.0.1:${port}`;
+      return { pid: child.pid!, endpoint, stop };
+    }
     if (Date.now() > deadline) {
       await stop();
       throw new Error("Chrome did not open its debugging port");

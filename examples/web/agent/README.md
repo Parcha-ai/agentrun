@@ -78,7 +78,9 @@ With `AGENT_BROWSER=chrome`, start-run.mjs starts one headless Chrome for the ru
 `<home>/chrome/local-chrome`, owner-only and outside every run's `work/`. The run that holds the profile's save lease
 (or the first run, before the agent has the profile) opens it and records it, so `carryBack` gives the home the profile
 and its lease; any other run gets a signed-out profile of its own beside the run, removed with its Chrome. A release
-leaves Chrome running; start-run.mjs stops it, by its pid, once the run has exited.
+leaves Chrome running; start-run.mjs stops it once the run has exited: it asks the browser to close over its debugging
+socket, so Chrome writes its cookies, then ends the process by its pid if it is still there. The profile restores its
+last session, so a site's session cookie (a sign-in that ends "when the browser closes") is still there next run.
 
 pi-browser's live view shows that Chrome to the person. The run mounts the viewer on a loopback port of its own, named
 in `<run>/live-host.json` (0600), and the server reaches it at `/live/<run id>/` on the page's own origin; the viewer's
