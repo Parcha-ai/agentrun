@@ -2,7 +2,7 @@
 // `animated` and `featured` panel flags.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyVars, carryState, viewContext } from '../src/app.ts';
+import { applyVars, placeIn, restorePlace, viewContext } from '../src/app.ts';
 import type { Manifest } from '../src/format.ts';
 import { animatedPanels, featuredPanel, h, registry, type Panel } from '../src/panels.ts';
 import { linkedTime, playback, stopsOf, timeParam } from '../src/replay.ts';
@@ -39,7 +39,7 @@ test('a seek to a time lands on the last stop that had happened, never inside a 
   for (const ms of [0, 1, Math.floor(last / 3), Math.floor(last / 2), last - 1, last, last + 5_000]) {
     const p = head.seekTime(ms);
     assert.equal(stops[p], true, `a stop at ${ms}`);
-    assert.equal(head.clock, ms, 'the clock is the time asked for, between commits too');
+    assert.equal(head.clock, Math.min(ms, last), 'the clock is the time asked for, between commits too, and never past the end of the run');
     if (p > 0) assert.ok(lines[p - 1]!.t <= ms, 'every line before the stop had happened');
   }
   // A time between two lines keeps the clock between them, where seek() would have set it to the earlier line's time.
@@ -88,23 +88,79 @@ test('a link keeps its time only while the screen is still at that time', () => 
   assert.equal(linkedTime(0, 0), '0');
 });
 
-test('a panel redrawn in place keeps its opened details and the focused element', () => {
-  type Fake = { tagName: string; open?: boolean; focused?: boolean; kids: Fake[]; querySelectorAll(selector: string): Fake[]; contains(other: unknown): boolean; focus(): void };
-  const make = (open: boolean): Fake => {
-    const summary: Fake = { tagName: 'SUMMARY', kids: [], querySelectorAll: () => [], contains: (other) => other === summary, focus() { summary.focused = true; } };
-    const details: Fake = { tagName: 'DETAILS', open, kids: [summary], querySelectorAll: () => [summary], contains: (other) => other === details || other === summary, focus() { details.focused = true; } };
-    const root: Fake = { tagName: 'SECTION', kids: [details, summary], querySelectorAll: () => [details, summary], contains: (other) => other === root || other === details || other === summary, focus() {} };
-    return Object.assign(root, { parts: { details, summary } }) as Fake;
-  };
-  const before = make(true) as Fake & { parts: { details: Fake; summary: Fake } };
-  const after = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
-  (globalThis as { document?: unknown }).document = { activeElement: before.parts.summary };
-  carryState(before as never, after as never);
-  assert.equal(after.parts.details.open, true, 'an opened details stays open');
-  assert.equal(after.parts.summary.focused, true, 'and the focused element has focus again');
-  const closed = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
-  const fresh = make(false) as Fake & { parts: { details: Fake; summary: Fake } };
+/** The little of a DOM that the place helpers read: a tree with tags, classes, `open`, scroll sizes and a focus that records its options. */
+class Fake {
+  parentElement: Fake | null = null;
+  children: Fake[] = [];
+  scrollTop = 0;
+  scrollLeft = 0;
+  scrollHeight = 0;
+  clientHeight = 0;
+  scrollWidth = 0;
+  clientWidth = 0;
+  open = false;
+  focusedWith: unknown;
+  tagName: string;
+  classList: string[];
+  constructor(tagName: string, classList: string[] = []) {
+    this.tagName = tagName;
+    this.classList = classList;
+  }
+  add(...kids: Fake[]): this { for (const kid of kids) { kid.parentElement = this; this.children.push(kid); } return this; }
+  insertFirst(kid: Fake): this { kid.parentElement = this; this.children.unshift(kid); return this; }
+  querySelectorAll(_selector: string): Fake[] { return this.children.flatMap((kid) => [kid, ...kid.querySelectorAll('*')]); }
+  contains(other: unknown): boolean { return other === this || this.children.some((kid) => kid.contains(other)); }
+  focus(options?: unknown) { this.focusedWith = options ?? 'no options'; (globalThis as { document?: { activeElement: unknown } }).document = { activeElement: this }; }
+}
+
+/** A panel's section: a list, a `details` with a `summary`, and a scrolled body. */
+function section(opts: { open: boolean; before?: boolean }) {
+  const summary = new Fake('SUMMARY');
+  const details = new Fake('DETAILS', ['tdetails']).add(summary, new Fake('UL'));
+  details.open = opts.open;
+  const body = new Fake('DIV', ['body']);
+  body.scrollHeight = 500;
+  body.clientHeight = 100;
+  const root = new Fake('SECTION', ['panel']).add(new Fake('H3'), new Fake('DIV', ['transport']).add(details, body));
+  if (opts.before) (root.children[1] as Fake).insertFirst(new Fake('P', ['new']));
+  return { root, details, summary, body };
+}
+
+test('a details the reader opened stays open, with focus and scroll, across a redraw, even with an element added before it', () => {
+  for (const redraw of ['a full redraw at a stop', 'an in-place redraw between stops']) {
+    const had = section({ open: true });
+    had.body.scrollTop = 120;
+    (globalThis as { document?: unknown }).document = { activeElement: had.summary };
+    const kept = placeIn(had.root as never);
+    assert.equal(kept.opened.size, 1, `${redraw}: the opened details is noted`);
+    // The redrawn section: the same view of the next moment, closed again by the redraw, with a new element in front of it.
+    const next = section({ open: false, before: true });
+    next.body.scrollTop = 0;
+    restorePlace(next.root as never, kept);
+    assert.equal(next.details.open, true, `${redraw}: stays open`);
+    assert.equal(next.body.scrollTop, 120, `${redraw}: keeps the scroll`);
+    assert.deepEqual(next.summary.focusedWith, { preventScroll: true }, `${redraw}: focus comes back without scrolling`);
+  }
+  const closed = section({ open: false });
   (globalThis as { document?: unknown }).document = { activeElement: null };
-  carryState(closed as never, fresh as never);
-  assert.equal(fresh.parts.details.open, false, 'a closed one stays closed');
+  const kept = placeIn(closed.root as never);
+  const fresh = section({ open: false, before: true });
+  restorePlace(fresh.root as never, kept);
+  assert.equal(fresh.details.open, false, 'a closed one stays closed');
+  assert.equal(fresh.summary.focusedWith, undefined, 'and nothing is focused that was not');
+});
+
+test('a time far past the end of the run opens at the end of the run, not at that time', () => {
+  const stops = stopsOf(lines);
+  const head = playback(lines, stops);
+  const last = lines.at(-1)!.t;
+  assert.equal(timeParam('1e300'), 1e303, 'finite, so it is not refused here');
+  for (const huge of [1e303, 1e308, last + 1]) {
+    const p = head.seekTime(huge);
+    assert.ok(head.clock <= last, `the clock is clamped to the end (${head.clock} <= ${last})`);
+    assert.equal(head.clock, last);
+    assert.equal(p, head.seek(lines.length), 'and the point is the end');
+  }
+  head.seekTime(-5);
+  assert.equal(head.clock, 0, 'and a negative time opens at the start');
 });

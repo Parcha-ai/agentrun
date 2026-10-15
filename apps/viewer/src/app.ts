@@ -217,25 +217,6 @@ function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (pa
   return svg;
 }
 
-/**
- * A section redrawn in place keeps what the reader did in it: a `details` they opened stays open, and the element that had keyboard focus has it again. The
- * new section has the same structure (the same view of the next moment), so an element is found by its place among the section's elements.
- */
-export function carryState(before: HTMLElement, after: HTMLElement): void {
-  const was = [...before.querySelectorAll('*')];
-  const now = [...after.querySelectorAll('*')];
-  was.forEach((element, index) => {
-    const next = now[index];
-    if (next === undefined || next.tagName !== element.tagName) return;
-    if (element.tagName === 'DETAILS' && (element as HTMLDetailsElement).open) (next as HTMLDetailsElement).open = true;
-  });
-  const focused = document.activeElement;
-  if (focused !== null && before.contains(focused)) {
-    const next = now[was.indexOf(focused)];
-    if (next !== undefined && next.tagName === focused.tagName) (next as HTMLElement).focus();
-  }
-}
-
 /** A node's `vars` as CSS custom properties: numbers only, a name never a style string. */
 export function applyVars(target: { style: { setProperty(name: string, value: string): void } }, vars: Record<string, number> | undefined): void {
   for (const [name, value] of Object.entries(vars ?? {})) if (/^[a-z][a-z0-9-]*$/i.test(name) && typeof value === 'number' && Number.isFinite(value)) target.style.setProperty(`--${name}`, String(value));
@@ -297,7 +278,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
 
 /** An element's place under `root`, as each step's tag, first class and rank among its siblings of both: the same place
  *  in the next draw of the same view. */
-function placeKey(node: Element, root: Element): string {
+export function placeKey(node: Element, root: Element): string {
   const steps: string[] = [];
   for (let at: Element | null = node; at && at !== root; at = at.parentElement) {
     const kind = `${at.tagName}.${at.classList[0] ?? ''}`;
@@ -306,23 +287,28 @@ function placeKey(node: Element, root: Element): string {
   return steps.reverse().join('/');
 }
 
-/** Where the reader is in the panels, by place only: each scrolled element's offsets, and the element with the keyboard
- *  focus. */
-function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; focus?: string } {
-  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+/** Where the reader is in the panels, by place only: each scrolled element's offsets, the `details` they opened, and the element with the keyboard
+ *  focus. A place is `placeKey`: the element's tag and class among its siblings, so an element added elsewhere does not move it. */
+export function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; opened: Set<string>; focus?: string } {
+  const all = [...root.querySelectorAll('*')];
+  const scrolls = new Map(all.filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+  const opened = new Set(all.filter((node) => node.tagName === 'DETAILS' && (node as HTMLDetailsElement).open).map((node) => placeKey(node, root)));
   const active = document.activeElement;
-  return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
+  return { scrolls, opened, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
 }
 
-/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was, without
- *  scrolling it into view. */
-function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
-  if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
-    if (node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth) continue;
-    const offsets = place.scrolls.get(placeKey(node, root));
-    if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+/** A redraw keeps the reader's place: the scroll offsets, the `details` they opened, and the focus on the element at the place it was, without
+ *  scrolling it into view. Used for the full redraw at a stop and for the in-place redraw between stops. */
+export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
+  const all = [...root.querySelectorAll('*')];
+  for (const node of all) {
+    if (node.tagName === 'DETAILS' && place.opened.has(placeKey(node, root))) (node as HTMLDetailsElement).open = true;
+    if (place.scrolls.size && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) {
+      const offsets = place.scrolls.get(placeKey(node, root));
+      if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+    }
   }
-  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
+  if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
@@ -496,11 +482,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       for (const panel of animatedPanels(panelsShown())) {
         const before = sections.get(panel.id);
         const after = drawn(panel);
-        if (before !== undefined) { carryState(before, after); before.replaceWith(after); }
+        if (before !== undefined) { const place = placeIn(before); before.replaceWith(after); restorePlace(after, place); }
       }
       return;
     }
-    if (featured) featuredBox.replaceChildren(drawn(featured));
+    if (featured) { const kept = placeIn(featuredBox); featuredBox.replaceChildren(drawn(featured)); restorePlace(featuredBox, kept); }
     const place = placeIn(panels);
     panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
     restorePlace(panels, place);
