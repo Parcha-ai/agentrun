@@ -164,8 +164,11 @@ export type RecoveryOptions = {
    *  digest, so a commit writes what it changed: a run stored whole moves to it at its first commit. Only a store that
    *  keeps parts (its opened journal has `items` and `stateOf`) can hold it; on any other the driver keeps `"v3"` and says
    *  why once per open, in a `layout` note. A run stored in the keyed layout stays in it whatever this says, and a driver
-   *  that knows only `"v3"` refuses to open it (`FROZEN_CHECKPOINT_INVALID`): opt in only once no process of an older
-   *  build opens the host's runs. */
+   *  that knows only `"v3"` refuses to open it (`FROZEN_CHECKPOINT_INVALID`). Release 0.1.0-beta.13 and earlier fail their
+   *  own task on a run in the keyed layout and report it refused; a host that treats refused as final will tell its user
+   *  the run failed; a later start on this release resumes it with no call repeated. So opt in only when every process
+   *  that can open the run is on this release or later. A build from this release on leaves a run stored in a schema
+   *  newer than it knows pending (`RECOVERY_SCHEMA_NEWER`), for a build that knows it. */
   layout?: "v3" | "v4";
 };
 
@@ -466,6 +469,14 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // checkpoint when the journal holds nothing else of it: it never started, and it starts now. One with effects and
     // no checkpoint needs reconciliation.
     const stored = journal.state as Snapshot | FrozenSnapshotV4 | null;
+    // A run a later build stored in a schema this build does not know: refused with its own code, so a host leaves the
+    // run for a build that knows it rather than ending it.
+    const known = [FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4];
+    const found = (stored as { schema?: unknown } | null)?.schema;
+    const version = typeof found === "string" ? /^agentrun\.frozen_run\.v(\d+)$/.exec(found)?.[1] : undefined;
+    if (version !== undefined && !known.includes(found as string) && Number(version) > 4) {
+      throw Object.assign(new RecoveryError(`This run is stored as ${found as string}, newer than this build knows (${known.join(", ")}); open it with a build that knows it`, "RECOVERY_SCHEMA_NEWER"), { found, known });
+    }
     // The keyed layout is sticky: a run stored in it stays in it. A run stored whole, or a new one, takes it when the
     // host asks for it and the store keeps parts.
     if (stored?.schema === FROZEN_SNAPSHOT_SCHEMA_V4) {

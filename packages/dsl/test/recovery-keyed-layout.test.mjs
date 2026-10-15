@@ -231,3 +231,20 @@ test('a map inside a map item keeps its own items in records of their own, and a
   assert.deepEqual(output, await uncutOutput(4, nested));
   onceEach(calls, settled, itemsOf(4).flatMap((item) => [1, 2, 3].map((n) => `${item.id}-${n}`)));
 });
+
+test('a run stored in a schema newer than this build knows is refused with its own code, naming both; a schema that is no version stays invalid', async () => {
+  const kept = inspectable();
+  const input = { items: itemsOf(3) };
+  await assert.rejects(run(kept.store, workflowOf(), { input, cut: 'tally' }));
+  const record = kept.record();
+  kept.set({ ...record, state: { ...record.state, schema: 'agentrun.frozen_run.v99' } });
+  await assert.rejects(run(kept.store, workflowOf(), { input, layout: 'v4' }), (error) => {
+    assert.equal(error.code, 'RECOVERY_SCHEMA_NEWER');
+    assert.equal(error.found, 'agentrun.frozen_run.v99');
+    assert.deepEqual(error.known, [FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4]);
+    return true;
+  });
+  assert.equal(kept.record().state.schema, 'agentrun.frozen_run.v99', 'the refusal writes no state');
+  kept.set({ ...record, state: { ...record.state, schema: 'agentrun.frozen_run.later' } });
+  await assert.rejects(run(kept.store, workflowOf(), { input }), (error) => error.code === 'FROZEN_CHECKPOINT_INVALID');
+});
