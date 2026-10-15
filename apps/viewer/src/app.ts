@@ -127,7 +127,15 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-function drawCounters(counters: Counters, measured = counters.measured): HTMLElement {
+/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`) says so, and its zero is "$0",
+ *  never "$0.0000", since what fakes and scripts report is not a provider's bill; a real run's in dollars to four places. */
+export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
+  if (cost === null) return 'unknown';
+  const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
+  return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
+};
+
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted'): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
@@ -149,8 +157,8 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `${counters.costLowerBound ? 'at least ' : ''}$${counters.cost.toFixed(4)}`,
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}`),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: the run\'s priced parts were served by fakes, cassettes or scripts, so this is what they report, not a provider\'s bill.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
@@ -397,7 +405,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
+    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
@@ -432,7 +440,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured, recording.manifest.providers));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
@@ -512,7 +520,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
