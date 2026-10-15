@@ -24,6 +24,7 @@ import {
 	watchdogsUnder,
 	watched,
 } from "./hands-support.ts";
+import { waitNotRunning } from "./box-env-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Every directory of this file lies under one root, so what a test leaves behind can be counted after the file.
@@ -666,7 +667,7 @@ describe("transport(): where tools run", () => {
 			}
 			await session.hands.release(context);
 			expect(getOrThrow(await pending).exitCode).toBeGreaterThan(128);
-			expect(running()).toBe(false);
+			await waitNotRunning(running, `the released command ${tag}`);
 			const box = provider.created[0];
 			if (box === undefined) throw new Error("no box was created");
 			expect(getOrThrow(await box.status(context)).state).toBe("running");

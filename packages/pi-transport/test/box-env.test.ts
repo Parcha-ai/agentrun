@@ -1,5 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Context } from "@earendil-works/chord";
@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type Box, BoxError, type BoxExecOptions, type BoxProcess, type BoxStatus } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
-import { type BoxEnvOptions, boxEnv } from "../src/hands/box-env.ts";
+import { type BoxEnvOptions, boxEnv, type StoppedCommandError } from "../src/hands/box-env.ts";
 
 const context = BACKGROUND_CONTEXT;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -592,7 +592,7 @@ describe("boxEnv: stopping a command", () => {
 			await waitFor(() => ended, HANG_GUARD_MS, "the late start to end");
 			// Stopped before its first step: the tombstone was there when the command's session began.
 			expect(existsSync(join(workspace, "ran-anyway"))).toBe(false);
-			expect(running(tag)).toBe(false);
+			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 		});
 	});
 
@@ -619,7 +619,7 @@ describe("boxEnv: stopping a command", () => {
 			const result = await pending;
 			expect(result.ok ? "" : result.error.code).toBe("aborted");
 			await waitFor(() => waited, HANG_GUARD_MS, "the late start to be read to its end");
-			expect(running(tag)).toBe(false);
+			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 		});
 	});
 
@@ -694,7 +694,7 @@ describe("boxEnv: stopping a command", () => {
 			// Stopped before its first step: the tombstone was there when the command's session began.
 			expect(getOrThrow(await pending).exitCode).toBe(130);
 			expect(existsSync(join(workspace, "ran-anyway"))).toBe(false);
-			expect(running(tag)).toBe(false);
+			await waitFor(() => !running(tag), HANG_GUARD_MS, "every process of the command to end");
 			expect(readdirSync(join(root, box.id, "tmp", ".pi-transport"))).toEqual([]);
 		});
 	});
@@ -1066,5 +1066,148 @@ describe("boxEnv: directories and watching", () => {
 			},
 			{ watchIntervalMs: 100 },
 		);
+	});
+});
+
+describe("boxEnv: a stop whose kill call fails", () => {
+	/** The kill call of a stop: `KILL_SCRIPT`, the program that starts with the zombie-aware liveness check. */
+	const isKill = (command: readonly string[]) => command[0] === "sh" && command[1] === "-c" && String(command[2]).includes("live() {");
+	/** A kill call that does not come back: the box API stops answering it. */
+	const never = (): Promise<Result<BoxProcess, BoxError>> => new Promise(() => {});
+	const failing = async (): Promise<Result<BoxProcess, BoxError>> => err(new BoxError("unknown", "the box API failed the kill call"));
+
+	for (const [label, how] of [
+		["fails at once, once", "fast"],
+		["answers after its own deadline, once, and is then answered properly", "slow"],
+	] as const) {
+		it(`still ends an aborted command's whole group when the kill call ${label}`, async () => {
+			await withEnv(async ({ env, box }) => {
+				let failures = 0;
+				box.intercept((inner) => async (command, options, execContext) => {
+					if (isKill(command) && failures === 0) {
+						failures += 1;
+						if (how === "slow") await new Promise((resolve) => setTimeout(resolve, 6_000));
+						return err(new BoxError("unknown", "the box API failed the kill call"));
+					}
+					return inner(command, options, execContext);
+				});
+				const tag = uniqueTag(`killfail-${how}`);
+				const controller = new AbortController();
+				const pending = env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+				await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
+				controller.abort();
+				const result = await pending;
+				expect(result.ok ? "" : result.error.code).toBe("aborted");
+				expect(failures, "the first kill call was the one that failed").toBe(1);
+				// The kill call is sent again, so the group is gone by the time the stop answers, within the bound.
+				await waitFor(() => !running(tag), 5_000, "an aborted command's group to end after a failed kill call");
+				expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false, "confirmed gone: no flag").toBe(false);
+			});
+		});
+	}
+
+	it("still ends a timed-out command's whole group when the kill call fails once", async () => {
+		await withEnv(async ({ env, box }) => {
+			let failures = 0;
+			box.intercept((inner) => async (command, options, execContext) => {
+				if (isKill(command) && failures === 0) {
+					failures += 1;
+					return err(new BoxError("unknown", "the box API failed the kill call"));
+				}
+				return inner(command, options, execContext);
+			});
+			const tag = uniqueTag("killfail-timeout");
+			const result = await env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, { timeout: 0.5 }, context);
+			expect(result.ok ? "" : result.error.code).toBe("timeout");
+			expect(failures).toBe(1);
+			await waitFor(() => !running(tag), 5_000, "a timed-out command's group to end after a failed kill call");
+		});
+	});
+
+	it("a stop with a working kill call is as fast as before and carries no flag", async () => {
+		await withEnv(async ({ env }) => {
+			const tag = uniqueTag("killok");
+			const began = Date.now();
+			const result = await env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, { timeout: 0.5 }, context);
+			expect(result.ok ? "" : result.error.code).toBe("timeout");
+			expect(Date.now() - began).toBeLessThan(8_000);
+			expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false).toBe(false);
+			await waitFor(() => !running(tag), HANG_GUARD_MS, "the command to end");
+		});
+	});
+
+	for (const [label, answer] of [
+		["fails every time", failing],
+		["never comes back", never],
+	] as const) {
+		it(`says so on the error, within 10 s of wall time, and cleanup ends the command, when the kill call ${label}`, async () => {
+			await withEnv(async ({ env, box }) => {
+				let calls = 0;
+				box.intercept((inner) => async (command, options, execContext) => {
+					if (isKill(command)) {
+						calls += 1;
+						return answer();
+					}
+					return inner(command, options, execContext);
+				});
+				const tag = uniqueTag("killnever");
+				const controller = new AbortController();
+				const pending = env.exec(`sleep 3600 & sleep 3600 # ${tag}\nwait`, undefined, withAbortSignal(controller.signal, context));
+				await waitFor(() => running(tag), HANG_GUARD_MS, "the command to start");
+				const began = Date.now();
+				controller.abort();
+				const result = await pending;
+				const took = Date.now() - began;
+				expect(result.ok ? "" : result.error.code).toBe("aborted");
+				expect((result.ok ? undefined : (result.error as StoppedCommandError).killUnconfirmed) ?? false, "the group could not be confirmed gone").toBe(true);
+				// The bound is wall time and includes a call in flight: never 10 s plus up to 5 s for each call.
+				// A call that was allowed its own 5 s would end this at about 11 s (calls at 0 and 6 s); wall time ends it at 10 s.
+				expect(took, `the stop took ${took} ms over ${calls} kill calls`).toBeLessThan(10_700);
+				expect(took).toBeGreaterThanOrEqual(9_000);
+				expect(calls).toBeGreaterThanOrEqual(2);
+				expect(running(tag), "an unconfirmed kill leaves the command running, as far as the stop knows").toBe(true);
+				await env.cleanup(context);
+				await waitFor(() => !running(tag), 5_000, "cleanup to end a command whose kill was never confirmed");
+			});
+		}, 60_000);
+	}
+
+	it("reads a group that holds nothing but a zombie as gone", async () => {
+		await withEnv(async ({ env, box, root }) => {
+			// The kill script, as a real stop sends it.
+			let script = "";
+			box.intercept((inner) => async (command, options, execContext) => {
+				if (isKill(command)) script = String(command[2]);
+				return inner(command, options, execContext);
+			});
+			const probe = uniqueTag("probe");
+			const controller = new AbortController();
+			const pending = env.exec(`sleep 3600 # ${probe}\nwait`, undefined, withAbortSignal(controller.signal, context));
+			await waitFor(() => running(probe), HANG_GUARD_MS, "the command to start");
+			controller.abort();
+			await pending;
+			expect(script).toContain("live() {");
+			// A zombie that nothing reaps: a child that exited, alone in its own process group, under a parent that never waits. In a container whose
+			// first process does not reap, this is what a killed group looks like for ever, and `kill -0` on it still succeeds.
+			const parent = spawn("sh", ["-c", "setsid sh -c 'exit 0' & echo $!; exec sleep 3600"], { stdio: ["ignore", "pipe", "ignore"] });
+			try {
+				const group = await new Promise<string>((resolve) => parent.stdout.once("data", (chunk) => resolve(String(chunk).trim())));
+				const state = () => (existsSync(`/proc/${group}/stat`) ? readFileSync(`/proc/${group}/stat`, "utf8").replace(/^[0-9]+ \(.*\) /, "").split(" ")[0] : "gone");
+				await waitFor(() => state() === "Z", 5_000, "the child to be a zombie");
+				const id = `zombie-${process.pid}-${Date.now()}`;
+				const stateDir = join(root, box.id, "tmp", ".pi-transport");
+				mkdirSync(stateDir, { recursive: true });
+				writeFileSync(join(stateDir, `${id}.pid`), group);
+				const began = Date.now();
+				const started = getOrThrow(await box.exec(["sh", "-c", script, "sh", id], undefined, context));
+				const done = await finish(started);
+				const answer = new TextDecoder().decode(getOrThrow(done).stdout).trim();
+				expect(answer, "a zombie is not a live process").toBe("gone");
+				expect(Date.now() - began, "and the script does not wait out its loops for it").toBeLessThan(2_000);
+				expect(state(), "the zombie is still there: it was read, not removed").toBe("Z");
+			} finally {
+				parent.kill("SIGKILL");
+			}
+		});
 	});
 });
