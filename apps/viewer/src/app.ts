@@ -312,7 +312,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
 
 /** An element's place under `root`, as each step's tag, first class and rank among its siblings of both: the same place
  *  in the next draw of the same view. */
-function placeKey(node: Element, root: Element): string {
+export function placeKey(node: Element, root: Element): string {
   const steps: string[] = [];
   for (let at: Element | null = node; at && at !== root; at = at.parentElement) {
     const kind = `${at.tagName}.${at.classList[0] ?? ''}`;
@@ -321,23 +321,28 @@ function placeKey(node: Element, root: Element): string {
   return steps.reverse().join('/');
 }
 
-/** Where the reader is in the panels, by place only: each scrolled element's offsets, and the element with the keyboard
- *  focus. */
-function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; focus?: string } {
-  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+/** Where the reader is in the panels, by place only: each scrolled element's offsets, the `details` they opened, and the element with the keyboard
+ *  focus. A place is `placeKey`: the element's tag and class among its siblings, so an element added elsewhere does not move it. */
+export function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; opened: Set<string>; focus?: string } {
+  const all = [...root.querySelectorAll('*')];
+  const scrolls = new Map(all.filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+  const opened = new Set(all.filter((node) => node.tagName === 'DETAILS' && (node as HTMLDetailsElement).open).map((node) => placeKey(node, root)));
   const active = document.activeElement;
-  return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
+  return { scrolls, opened, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
 }
 
-/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was, without
- *  scrolling it into view. */
-function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
-  if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
-    if (node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth) continue;
-    const offsets = place.scrolls.get(placeKey(node, root));
-    if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+/** A redraw keeps the reader's place: the scroll offsets, the `details` they opened, and the focus on the element at the place it was, without
+ *  scrolling it into view. Used for the full redraw at a stop and for the in-place redraw between stops. */
+export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
+  const all = [...root.querySelectorAll('*')];
+  for (const node of all) {
+    if (node.tagName === 'DETAILS' && place.opened.has(placeKey(node, root))) (node as HTMLDetailsElement).open = true;
+    if (place.scrolls.size && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) {
+      const offsets = place.scrolls.get(placeKey(node, root));
+      if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+    }
   }
-  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
+  if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
@@ -519,10 +524,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return section;
     };
     if (onlyAnimated) {
-      for (const panel of animatedPanels(shown)) sections.get(panel.id)?.replaceWith(drawn(panel));
+      for (const panel of animatedPanels(shown)) {
+        const before = sections.get(panel.id);
+        const after = drawn(panel);
+        if (before !== undefined) { const place = placeIn(before); before.replaceWith(after); restorePlace(after, place); }
+      }
       return;
     }
-    if (featured) featuredBox.replaceChildren(drawn(featured));
+    if (featured) { const kept = placeIn(featuredBox); featuredBox.replaceChildren(drawn(featured)); restorePlace(featuredBox, kept); }
     const place = placeIn(panels);
     panels.replaceChildren(...shown.filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
     restorePlace(panels, place);
@@ -539,14 +548,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(shown).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); lastPanels = now; }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(shown).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); syncUrl(); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };
   playButton.addEventListener('click', () => {
     player.playing = !player.playing;
     playButton.textContent = player.playing ? 'pause' : 'play';
-    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
+    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); } else syncUrl();
   });
   draw();
   void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
