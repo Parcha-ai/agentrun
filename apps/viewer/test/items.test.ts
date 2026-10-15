@@ -8,7 +8,7 @@ import { createContext, Script } from 'node:vm';
 // @ts-expect-error: the build script is plain JavaScript
 import { bundle, checkModule, DSL_ITEM_STATE } from '../build.mjs';
 import { canonicalJson, stateDelta } from '../../../packages/dsl/src/recovery/item-state.ts';
-import { itemStateOf, partialResultsOf, statesBySha } from '../src/items.ts';
+import { itemFailureOf, itemStateOf, partialResultsOf, statesBySha } from '../src/items.ts';
 import { sha256Hex } from '../src/sha256.ts';
 
 const nodeSha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -69,6 +69,37 @@ test('a failed map\'s results, through the DSL\'s partialResults: inline in v3; 
   assert.match(unreadable(some.slots[5]), /^the result [0-9a-f]{64} does not match its SHA-256$/);
 });
 
+// A collecting map's failed items (onItemFailure: "collect", draft 28): each kept in exactly one place, its agentrun.items
+// record in the keyed layout, else the driver state's pin.failures, keyed by the item's path.
+const MAP = '/root/steps/0/map';
+const at = (index: number) => `${MAP}/items/${index}`;
+const outcome = { code: 'NODE_FAILED', label: 'fetch', message: 'the registry answered 503' };
+const record = (index: number, status: string, extra: object = {}) =>
+  ({ driver: 'd', map: MAP, index, base: baseSha, revision: 2, status, frame: { done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {} }, ...extra });
+
+test('a failed map item, read from its one place: pin.failures in v3; its item record in v4; pin.failures for a pre-move item', () => {
+  // v3: a run stored whole keeps every failed item in pin.failures, and no item records.
+  const v3pin = { done: [at(0)], failures: { [at(1)]: outcome } };
+  assert.deepEqual(itemFailureOf(at(1), undefined, v3pin), { failed: outcome, from: 'pin' });
+  assert.equal(itemFailureOf(at(0), undefined, v3pin), undefined, 'an item that did not fail');
+  // v4: the item's record, status "failed" with its outcome; pin.failures holds nothing for it.
+  const v4pin = { done: [], states: {} };
+  assert.deepEqual(itemFailureOf(at(1), record(1, 'failed', { outcome }), v4pin), { failed: outcome, from: 'item' });
+  for (const status of ['committed', 'running']) assert.equal(itemFailureOf(at(0), record(0, status), v4pin), undefined, status);
+  // v4 with a map that committed before the run moved to the keyed layout: its failed item has no record, only its row.
+  const premove = { failures: { '/root/steps/1/map/items/2': outcome } };
+  assert.deepEqual(itemFailureOf('/root/steps/1/map/items/2', undefined, premove), { failed: outcome, from: 'pin' });
+  assert.deepEqual(itemFailureOf(at(1), record(1, 'failed', { outcome }), premove), { failed: outcome, from: 'item' }, 'an item of a later map still reads from its record');
+  assert.equal(itemFailureOf(at(3), undefined, premove), undefined);
+  // Never guessed: a place that holds no { code, label, message }, a record that is none, an item kept in both.
+  const reason = (got: unknown) => (got as { unreadable: string }).unreadable;
+  assert.match(reason(itemFailureOf(at(1), record(1, 'failed'), v4pin)), /record is failed with no outcome/);
+  assert.match(reason(itemFailureOf(at(1), record(1, 'failed', { outcome: { code: 'NODE_FAILED' } }), v4pin)), /record is failed with no outcome/);
+  assert.match(reason(itemFailureOf(at(1), undefined, { failures: { [at(1)]: 'failed' } })), /row in pin.failures is not/);
+  assert.match(reason(itemFailureOf(at(1), null, v4pin)), /is not a map item's record/);
+  assert.match(reason(itemFailureOf(at(1), record(1, 'failed', { outcome }), v3pin)), /kept both in its item record and in pin.failures/);
+});
+
 test('the build inlines the DSL\'s module from its source, and refuses it once it imports anything', () => {
   const built = bundle('items.ts') as { body: string; modules: string[] };
   assert.deepEqual(built.modules, [DSL_ITEM_STATE, 'sha256.ts', 'items.ts']);
@@ -80,12 +111,13 @@ test('the build inlines the DSL\'s module from its source, and refuses it once i
   assert.doesNotThrow(() => checkModule('panel.ts', `import { itemStateOf } from './items.ts';`));
 });
 
-test('the bundled code, as the page runs it, rebuilds the same state and reads the same results', () => {
+test('the bundled code, as the page runs it, rebuilds the same state and reads the same results and failures', () => {
   const context = createContext({ TextEncoder });
-  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemStateOf, partialResultsOf, statesBySha };`).runInContext(context);
-  const got = (context as { got: { itemStateOf: typeof itemStateOf; partialResultsOf: typeof partialResultsOf; statesBySha: typeof statesBySha } }).got;
+  new Script(`${(bundle('items.ts') as { body: string }).body}\nthis.got = { itemFailureOf, itemStateOf, partialResultsOf, statesBySha };`).runInContext(context);
+  const got = (context as { got: { itemFailureOf: typeof itemFailureOf; itemStateOf: typeof itemStateOf; partialResultsOf: typeof partialResultsOf; statesBySha: typeof statesBySha } }).got;
   assert.equal(JSON.stringify(got.itemStateOf(item, got.statesBySha([{ sha256: baseSha, state: base }]), PATH)), JSON.stringify({ state }));
   assert.match(JSON.stringify(got.itemStateOf(item, new Map(), PATH)), /is missing/);
   assert.equal(JSON.stringify(got.partialResultsOf(v4, got.statesBySha([...resultDocs, listDoc]))), JSON.stringify({ slots: read }));
   assert.match(JSON.stringify(got.partialResultsOf(v4, got.statesBySha(resultDocs))), /the list of results [0-9a-f]{64} is missing/);
+  assert.equal(JSON.stringify(got.itemFailureOf(at(1), record(1, 'failed', { outcome }), {})), JSON.stringify({ failed: outcome, from: 'item' }));
 });
