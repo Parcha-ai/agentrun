@@ -47,6 +47,10 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((done, fai
 /** node:sqlite, loaded on the first write: Node 22 marks it experimental and warns once when it loads. */
 let sqlite: typeof import("node:sqlite") | undefined;
 const SQLITE_BUSY = 5;
+/** Every lock connection this process holds, until its writer releases it. A connection nothing references is closed
+ *  by the garbage collector, and closing it frees the lock: a writer whose own code no longer references its wait would
+ *  otherwise lose the lock while still inside. */
+const held = new Set<DatabaseSync>();
 
 export class FileCredentialStore implements CredentialStore {
   readonly file: string;
@@ -108,6 +112,7 @@ export class FileCredentialStore implements CredentialStore {
       try {
         return await fn(this.load());
       } finally {
+        held.delete(lock);
         lock.close();
       }
     });
@@ -182,6 +187,7 @@ export class FileCredentialStore implements CredentialStore {
         signal?.throwIfAborted();
         try {
           db.exec("BEGIN EXCLUSIVE");
+          held.add(db);
           return db;
         } catch (error) {
           if ((error as { errcode?: number }).errcode !== SQLITE_BUSY) throw error;

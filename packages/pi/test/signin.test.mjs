@@ -140,9 +140,10 @@ test('a writer killed while it holds the lock: the lock is free at once, and of 
   t.after(server.close);
   const home = newHome();
   seed(home, oauth({ expires: Date.now() - 1000 }));
-  const holder = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/signin-lock-holder.mjs', import.meta.url)), home], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const holder = spawn(process.execPath, ['--expose-gc', fileURLToPath(new URL('./fixtures/signin-lock-holder.mjs', import.meta.url)), home], { stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => holder.kill('SIGKILL'));
   await new Promise((done, fail) => { holder.stdout.on('data', (chunk) => String(chunk).includes('held') && done()); holder.on('exit', (code) => fail(new Error(`the holder exited ${code}`))); });
+  await new Promise((done) => setTimeout(done, 200)); // garbage collections run in the holder meanwhile
   await assert.rejects(fileCredentialStore(home, { lockTimeoutMs: 300 }).hostId(), (error) => error instanceof AuthStoreError && error.code === 'LOCK_TIMEOUT', 'held: a writer waits');
   holder.kill('SIGKILL');
   await once(holder, 'exit');
