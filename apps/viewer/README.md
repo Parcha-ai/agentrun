@@ -49,12 +49,16 @@ static host), or a recording folder dropped on the page or chosen with its picke
 
 Both buttons above build the page with `node build.mjs` and serve `dist/` as static files: `wrangler.json` for
 Cloudflare (static assets, no Worker code) and `vercel.json` for Vercel.
+The buttons deploy this replay viewer only: it plays recorded runs, never runs an agent or calls a model, and asks for no key.
+A test (`test/deploy.test.ts`) holds both configs and both buttons to that: no variable, secret or binding.
 
 ## Recordings
 
-`recordings/<id>/` holds the recordings of real runs bundled with the build, each a `manifest.json`, an
-`events.jsonl` and its `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and
-copies them beside the page. There are none yet, and the gallery says so. The tests play a fixture cut by hand from a
+`recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
+`blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and copies them beside the page.
+Two are bundled: the reference example's job with scripted providers, once uncut and once killed ten times and resumed
+(`recordings/README.md` says how each was recorded). A test holds each to the format and its manifest's cost to the
+counters' fold. The tests play a fixture cut by hand from a
 real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut). A
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
 down to the lines their fold reads (`test/fixtures/spacedeck-asks`).
