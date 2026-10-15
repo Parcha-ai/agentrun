@@ -7,6 +7,8 @@ the others. The source stays sealed, byte for byte.
 
 ## Run it
 
+From an install of the package instead of a checkout: this needs `@parcha/pi-durable-disk` **0.1.0-beta.14 or later**. `forkLocal` is not in 0.1.0-beta.13, where the example stops at its import with `The requested module '@parcha/pi-durable-disk' does not provide an export named 'forkLocal'`; [Run one from an install](../README.md#run-one-from-an-install).
+
 You need Linux and Node 22.19 or later. No disk, no key, no network: the runs are directories of this machine (`localRun`)
 and the agent is pi-ai's faux model, scripted.
 
