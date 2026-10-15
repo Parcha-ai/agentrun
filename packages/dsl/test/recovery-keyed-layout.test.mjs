@@ -222,6 +222,36 @@ test('the module that defines itemState imports nothing, and with a caller\'s SH
   assert.throws(() => pure.itemState(pairs[0][0], states, pairs[0][1], {}), TypeError);
 });
 
+test('a map that fails in the keyed layout keeps its finished results by digest, and the next process reads the same ones', async () => {
+  const kept = inspectable();
+  const input = { items: itemsOf(8) };
+  // One process: an item's call fails, the map ends on it, and the process ends with it.
+  const driver = await openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' });
+  const wrapped = withRecovery(driver, { runEffect: async ({ input: args }) => { if (args.id === 'item-0005') throw new Error('item-0005 failed'); return answerOf(args.id); } });
+  await assert.rejects(runWorkflow(workflowOf(), input, wrapped), /item-0005 failed/);
+  const failed = JSON.parse(JSON.stringify(driver.lastState()));
+  await driver.close();
+  assert.ok(failed.found.some((result) => result !== null), 'some items finished before the map failed');
+  const record = kept.record();
+  assert.equal(record.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
+  const { partial } = record.state.pin;
+  assert.deepEqual([partial.path, partial.as, partial.results.length], [MAP, 'found', 8]);
+  for (const slot of partial.results) {
+    assert.ok(slot === null || (typeof slot === 'string' && /^[a-f0-9]{64}$/.test(slot)), `a result kept inline in the driver record: ${JSON.stringify(slot).slice(0, 80)}`);
+    if (slot !== null) assert.equal(canonicalHash(record.states[slot]), slot, 'each result is kept once, under its digest');
+  }
+  assert.deepEqual(partial.results.map((slot) => slot === null), failed.found.map((result) => result === null), 'a slot with no result stays null');
+  // The next process rebuilds the same results from their digests.
+  const next = await openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' });
+  try { assert.deepEqual(JSON.parse(JSON.stringify(next.lastState())), failed); } finally { await next.close(); }
+  // A result that does not match its digest refuses the open.
+  const forged = kept.record();
+  const at = forged.state.pin.partial.results.find((slot) => slot !== null);
+  forged.states[at] = { ...forged.states[at], forged: true };
+  kept.set(forged);
+  await assert.rejects(openRecovery(kept.store, workflowOf(), { key: KEY, layout: 'v4' }), (error) => error.code === 'FROZEN_CHECKPOINT_INVALID');
+});
+
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {
   const kept = inspectable();
   const input = { items: itemsOf(6) };

@@ -161,7 +161,10 @@ export type RecoveryOptions = {
   /** How a new run, or one stored whole, is kept. `"v3"` (the default in this release) keeps the driver's whole state in
    *  one record, rewritten at every commit, so a map's commits grow with the square of its items. `"v4"`, the keyed
    *  layout, keeps what lies in each map item in that item's record and each state the driver references once by its
-   *  digest, so a commit writes what it changed: a run stored whole moves to it at its first commit. Only a store that
+   *  digest (a failed map's finished results too), so a commit writes what it changed: a run stored whole moves to it at
+   *  its first commit. After that move, the checkpoint bases of the driver's record keep the ids of the effects admitted
+   *  before it: a cost bounded by the work done before the move, which later commits do not grow; each commit after the
+   *  move costs the same however many items the map has. Only a store that
    *  keeps parts (its opened journal has `items` and `stateOf`) can hold it; on any other the driver keeps `"v3"` and says
    *  why once per open, in a `layout` note. A run stored in the keyed layout stays in it whatever this says, and a driver
    *  that knows only `"v3"` refuses to open it (`FROZEN_CHECKPOINT_INVALID`). Release 0.1.0-beta.13 and earlier fail their
@@ -259,6 +262,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     digests.set(state, sha256);
     return state as State;
   };
+  /** A value the run references by digest (a failed map's result, which may be any JSON value), read back and checked. */
+  const valueBy = async (sha256: string): Promise<unknown> => {
+    const value = await journal.stateOf!(sha256);
+    if (value === undefined || hash(value) !== sha256) throw invalid(`The value ${sha256} the run references is missing or changed`);
+    writtenStates.add(sha256);
+    return value;
+  };
   const SHA = /^[a-f0-9]{64}$/;
   const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const validEntry = (entry: unknown): entry is MapEntry => isRecord(entry) && Number.isSafeInteger(entry.length) && (entry.length as number) >= 0
@@ -321,6 +331,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const states: Record<string, State> = {};
     for (const [at, sha256] of Object.entries(pin.states)) states[at] = await stateBy(sha256);
     const restored = { ...rest, schema: FROZEN_SNAPSHOT_SCHEMA, pin: { ...pin, done: [...pin.done], states }, clocks: { ...rest.clocks }, files: { ...rest.files } } as Snapshot;
+    // A failed map's finished results, each kept once by its digest; a slot with no result stays null.
+    if (pin.partial !== undefined) {
+      const partial = pin.partial as unknown;
+      if (!isRecord(partial) || typeof partial.path !== "string" || typeof partial.as !== "string" || !Array.isArray(partial.results)
+        || !partial.results.every((slot) => slot === null || (typeof slot === "string" && SHA.test(slot)))) throw invalid("A failed map's results are not kept by digest");
+      restored.pin.partial = { path: partial.path, as: partial.as, results: await Promise.all(partial.results.map((slot) => (slot === null ? null : valueBy(slot as string)))) };
+    }
     await restoreMaps(table, restored);
     return restored;
   };
@@ -381,6 +398,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       if (!writtenStates.has(digest)) { writtenStates.add(digest); states[digest] = state; }
       return digest;
     };
+    /** A failed map's result, which may be any JSON value, kept once by its digest. */
+    const keptValue = (value: unknown): string => {
+      if (isRecord(value)) return kept(value as State);
+      const digest = hash(value);
+      if (!writtenStates.has(digest)) { writtenStates.add(digest); states[digest] = value; }
+      return digest;
+    };
     const deltaOf = (map: string, state: State): StateDelta => {
       const known = deltas.get(state);
       if (known) return known;
@@ -390,7 +414,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       deltas.set(state, delta);
       return delta;
     };
-    const pin: FrozenSnapshotV4["pin"] = { input: frame.input, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {}, ...(frame.partial ? { partial: frame.partial } : {}) };
+    const pin: FrozenSnapshotV4["pin"] = { input: frame.input, done: [], states: {}, chains: {}, loops: {}, routes: {}, inputs: {}, steps: {},
+      ...(frame.partial ? { partial: { path: frame.partial.path, as: frame.partial.as, results: frame.partial.results.map((result) => (result === null || result === undefined ? null : keptValue(result))) } } : {}) };
     for (const at of frame.done) { const build = own(at); if (build === undefined) pin.done.push(at); else if (build) build.record.frame.done.push(at); }
     for (const [at, state] of Object.entries(frame.states)) {
       const build = own(at);

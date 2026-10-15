@@ -51,7 +51,7 @@ export type ItemRecord = {
  *  digest, and the maps the run started. */
 export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
   schema: typeof FROZEN_SNAPSHOT_SCHEMA_V4;
-  pin: Omit<PathFrame, "states"> & { states: Record<string, string> };
+  pin: Omit<PathFrame, "states" | "partial"> & { states: Record<string, string>; partial?: { path: string; as: string; results: Array<string | null> } };
   maps: Record<string, MapEntry>;
 };
 
