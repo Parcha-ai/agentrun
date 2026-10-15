@@ -1,16 +1,18 @@
-// The agent app of the web example: `pi-durable-disk run --dir <runs>/<id> --app examples/web/agent/app.ts --serve 0`
-// loads it (start-run.mjs does that). It reads the agent's definition (agent.json) and skills from this directory and
-// returns pi-durable's Harness options: the model the host picks, the workspace's file tools, a Browserbase browser
-// whose context is the agent's, so a sign-in made in one run is still there in the next, and `request_sign_in`, which
+// The agent app of the web example: `pi-durable-disk run --dir <home>/runs/<id> --app examples/web/agent/app.ts --serve 0`
+// loads it (start-run.mjs does that) on a run that `startRun` of @parcha/pi-durable-agent created in the agent home. It
+// reads the agent's definition and skills from the home and returns pi-durable's Harness options: the model the host
+// picks, the workspace's file tools, a Browserbase browser on the agent's saved sign-in, and `request_sign_in`, which
 // ends the agent's turn while the person signs in.
 //
-// The serve door creates the root conversation on the first request, with the definition's prompt and tools and the
-// browser's configuration in the commit that creates it. Two host files sit beside the run and outside `work/`, the only
-// place the model's file tools reach: `live.json`, the browser's live view for the page to show the person, and the
-// agent home's `browser.json`, the context id. Neither ever enters a model-visible string.
+// The sign-in is the run store's `browser.profiles` entry, which `startRun` seeded from the home and `carryBack` returns
+// to it: the Browserbase context id, resolved before the run serves anything. The serve door creates the root
+// conversation on the first request, with the definition's prompt and tools and the browser's configuration in the
+// commit that creates it. `live.json` beside the run, outside `work/` (the only place the model's file tools reach),
+// holds the browser's live view for the person's page. Neither the context id nor the live view enters a model-visible
+// string.
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
@@ -21,78 +23,32 @@ import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type EvidenceRecord, type S
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
+import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, recordWake, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
 
-/** The agent definition's fields. The host picks the model; the definition never names one. */
-export type AgentDefinition = {
-  id: string;
-  version: number;
-  name: string;
-  description: string;
-  instructions: string;
-  skills: string[];
-  tools: string[];
-  input_schema: Record<string, unknown> | null;
-  output_schema: Record<string, unknown> | null;
-  workflow: Record<string, unknown> | null;
-  max_cost_usd: number | null;
-};
-
-/** A sign-in the agent keeps between runs. Tonight it is the Browserbase context id alone. */
-export type SignIn = { contextId: string };
-
-const AGENT_DIR = import.meta.dirname;
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 /** Long enough for a person to sign in in the live view while the agent's turn has ended. */
 const IDLE_RELEASE_S = 900;
 const MODEL_PROVIDER = "agent-model";
+/** The agent's one browser profile: a Browserbase context holds the sign-ins of every site. */
+export const PROFILE = "default";
 
-export async function loadDefinition(dir = AGENT_DIR): Promise<AgentDefinition> {
-  const raw = JSON.parse(await readFile(join(dir, "agent.json"), "utf8")) as Record<string, unknown>;
-  const text = (name: string) => {
-    if (typeof raw[name] !== "string" || !raw[name]) throw new Error(`agent.json: ${name} must be a non-empty string`);
-    return raw[name] as string;
-  };
-  const names = (name: string) => {
-    const value = raw[name];
-    if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(item))) {
-      throw new Error(`agent.json: ${name} must be a list of lower-case names`);
-    }
-    return value as string[];
-  };
-  const schema = (name: string) => {
-    const value = raw[name] ?? null;
-    if (value !== null && (typeof value !== "object" || Array.isArray(value))) throw new Error(`agent.json: ${name} must be an object or null`);
-    return value as Record<string, unknown> | null;
-  };
-  if ("model" in raw) throw new Error("agent.json: a definition names no model; the host picks it");
-  if (!Number.isSafeInteger(raw.version) || (raw.version as number) < 1) throw new Error("agent.json: version must be a positive integer");
-  const cost = raw.max_cost_usd ?? null;
-  if (cost !== null && (typeof cost !== "number" || !(cost > 0))) throw new Error("agent.json: max_cost_usd must be a positive number or null");
-  return {
-    id: text("id"), version: raw.version as number, name: text("name"), description: text("description"), instructions: text("instructions"),
-    skills: names("skills"), tools: names("tools"), input_schema: schema("input_schema"), output_schema: schema("output_schema"), workflow: schema("workflow"),
-    max_cost_usd: cost as number | null,
-  };
-}
-
-/** The definition's instructions, then each skill it names, in order. */
-export async function promptOf(definition: AgentDefinition, dir = AGENT_DIR): Promise<string> {
-  const skills = await Promise.all(definition.skills.map(async (name) => {
-    const body = await readFile(join(dir, "skills", `${name}.md`), "utf8").catch(() => {
-      throw new Error(`agent.json names the skill ${name}, and skills/${name}.md is missing`);
-    });
-    return `<skill name="${name}">\n${body.trim()}\n</skill>`;
-  }));
-  return [definition.instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
+/** The definition's instructions, then each skill it names (`<name>/SKILL.md` in the home), in order. */
+export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): string {
+  const skills = state.definition.skills.map((name) => {
+    const file = state.skills[`${name}/SKILL.md`];
+    if (!file) throw new Error(`the definition names the skill ${name}, and the agent home has no ${name}/SKILL.md`);
+    return `<skill name="${name}">\n${file.content.trim()}\n</skill>`;
+  });
+  return [state.definition.instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
 /** Each tool name is a tool or a whole extension; every name must resolve. */
-export function toolsOf(definition: AgentDefinition, available: Record<string, readonly ToolRegistration[]>): ToolRegistration[] {
+export function toolsOf(definition: Pick<AgentDefinition, "tools">, available: Record<string, readonly ToolRegistration[]>): ToolRegistration[] {
   const byName = new Map(Object.values(available).flat().map((tool) => [tool.name, tool]));
   const picked = definition.tools.flatMap((name) => {
     const found = available[name] ?? (byName.has(name) ? [byName.get(name)!] : undefined);
-    if (!found) throw new Error(`agent.json names the tool ${name}, which this host does not have (it has ${[...Object.keys(available), ...byName.keys()].join(", ")})`);
+    if (!found) throw new Error(`the definition names the tool ${name}, which this host does not have (it has ${[...Object.keys(available), ...byName.keys()].join(", ")})`);
     return found;
   });
   return [...new Map(picked.map((tool) => [tool.name, tool])).values()];
@@ -128,45 +84,21 @@ export const requestSignIn = defineTool({
 
 const SignInHandover = defineExtension({ name: "sign-in", tools: [requestSignIn] });
 
-// ---- sign-ins: a private file in the agent home. The seam pi-durable-agent's sign-ins replace. -------------------------
-
-const signInFile = (home: string) => join(home, "browser.json");
-
-export async function loadSignIn(home: string): Promise<SignIn | null> {
-  try {
-    const saved = JSON.parse(await readFile(signInFile(home), "utf8")) as Partial<SignIn>;
-    return typeof saved.contextId === "string" && saved.contextId ? { contextId: saved.contextId } : null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-/** Written once: a second run that raced this one keeps the sign-in that landed first. */
-export async function saveSignIn(home: string, signIn: SignIn): Promise<SignIn> {
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  try {
-    await writeFile(signInFile(home), `${JSON.stringify(signIn)}\n`, { mode: 0o600, flag: "wx" });
-    return signIn;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return (await loadSignIn(home)) ?? signIn;
-  }
-}
+// ---- the browser profile -----------------------------------------------------------------------------------------------
 
 /** A new Browserbase context, the browser profile a sign-in is saved in. */
-async function createContext(env: NodeJS.ProcessEnv): Promise<SignIn> {
+async function createContext(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<string> {
   const base = (env.BROWSERBASE_BASE_URL || "https://api.browserbase.com").replace(/\/+$/, "");
   const response = await fetch(`${base}/v1/contexts`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-bb-api-key": env.BROWSERBASE_API_KEY ?? "" },
     body: JSON.stringify(env.BROWSERBASE_PROJECT_ID ? { projectId: env.BROWSERBASE_PROJECT_ID } : {}),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
   });
   if (!response.ok) throw new Error(`Browserbase refused to create a context: HTTP ${response.status}`);
   const { id } = (await response.json()) as { id?: unknown };
   if (typeof id !== "string" || !id) throw new Error("Browserbase created a context without an id");
-  return { contextId: id };
+  return id;
 }
 
 // ---- host files ----------------------------------------------------------------------------------------------------------
@@ -215,15 +147,19 @@ function modelsOf(env: NodeJS.ProcessEnv) {
 
 // ---- the app -------------------------------------------------------------------------------------------------------------
 
-/** The run's Harness options, and the browser extension they install (its documents name what the run holds). */
-export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, dir = AGENT_DIR) {
+/**
+ * The run's Harness options, and the browser extension they install (its documents name what the run holds). The run is
+ * `<home>/runs/<id>`; `AGENT_HOME` names the home when it is elsewhere. `makeContext` makes a new browser profile, a
+ * Browserbase context by default.
+ */
+export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal) } = {}) {
   if (!env.BROWSERBASE_API_KEY) throw new Error("set BROWSERBASE_API_KEY");
-  const definition = await loadDefinition(dir);
-  const instructions = await promptOf(definition, dir);
+  const state = await readAgentHome(await openAgentHome(resolve(env.AGENT_HOME || join(where.root, "..", ".."))));
+  const { definition } = state;
+  const instructions = promptOf(state);
   const { models, model, thinking } = modelsOf(env);
-  // The agent home holds what outlives a run; by default it sits beside the runs directory.
-  const home = resolve(env.AGENT_HOME || join(dirname(where.root), "..", "agent-home"));
-  const signIn = (await loadSignIn(home)) ?? (await saveSignIn(home, await createContext(env)));
+  // Resolved before the run serves: the root conversation's creating commit carries it.
+  let contextId: string | undefined;
   const live = join(where.root, "live.json");
   let liveWrites = Promise.resolve();
   const provider = browserbaseProvider({ env });
@@ -243,11 +179,10 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
         return { path };
       },
     },
-    redact: { values: () => [signIn.contextId] },
+    redact: { values: () => (contextId ? [contextId] : []) },
     // In the order the changes came: a release written before a late launch would show a dead view.
     onSession: (row, change) => void (liveWrites = liveWrites.then(() => writePrivate(live, liveOf(row, change))).catch(() => undefined)),
   });
-  const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId: signIn.contextId, idleReleaseS: IDLE_RELEASE_S };
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, browser.extension, SignInHandover]) registry.install(extension);
   const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, [SignInHandover.name]: [requestSignIn] });
@@ -266,11 +201,18 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   const options: AppOptions = {
     models,
     registry,
-    // A run that a killed process left with a live session finds it again, or learns that it ended.
-    beforeResume: async ({ harness, context }) => void (await browser.reconcile(harness, () => true, context)),
+    // Before anything is served: the agent's browser profile from the run store (`startRun` seeded it from the home), or a
+    // new one committed there for `carryBack` to return to the home. Then a run that a killed process left with a live
+    // session finds it again, or learns that it ended.
+    beforeResume: async ({ harness, context }) => {
+      contextId = await durableProfileStore(harness).resolve(PROFILE, makeContext);
+      await browser.reconcile(harness, () => true, context);
+    },
     root: {
       agent: { model, thinkingLevel: thinking, instructions, tools },
       init: async (tx, id) => {
+        if (!contextId) throw new Error("the browser profile is resolved before the root conversation is created");
+        const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId, idleReleaseS: IDLE_RELEASE_S };
         Object.assign(await tx.doc(browser.docs.Config, id), { label: definition.id, run: where.ref.id, policy });
       },
     },

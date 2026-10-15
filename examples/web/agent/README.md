@@ -11,30 +11,37 @@ page code can still read what the person types into the page, so a real password
 
 | File | What |
 | --- | --- |
-| `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `workflow`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
-| `skills/*.md` | The skills `agent.json` names, added to the prompt in that order. |
-| `app.ts` | The app `pi-durable-disk run --app` loads: the definition to Harness options, the model from the environment, the file tools and the browser. |
-| `start-run.mjs` | Starts one run on a local directory, with its door on loopback. |
+| `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
+| `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
+| `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
+| `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in, and `request_sign_in`. |
+| `start-run.mjs` | Runs one started run, with its door on loopback. |
 | `agent.test.mjs` | Offline tests: no network, no key, no model call. |
 
 ## Run one
 
-Build the two packages the app uses, then start a run on a directory of its own:
+The server in [`examples/web`](../README.md) makes the agent home and starts each run in it; that is the way to run the
+agent. By hand, build the packages the app uses, start a run in a home with `startRun`, then run it:
 
 ```sh
 npm ci --ignore-scripts
-npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser
+npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser -w @parcha/pi-durable-agent
 export BROWSERBASE_API_KEY=...                       # your Browserbase key
 export AGENT_MODEL_BASE_URL=https://api.openai.com/v1 AGENT_MODEL=<model id> AGENT_MODEL_API_KEY=...
-node examples/web/agent/start-run.mjs examples/web/.data/runs/run-1
+node --input-type=module -e '
+import { startRun } from "@parcha/pi-durable-agent";
+import { ensureAgentHome } from "./examples/web/agent/home.mjs";
+const run = await startRun(await ensureAgentHome("examples/web/.data/agent-home"), { runId: "run-1", host: "by-hand" });
+console.log(run.dir);'
+node examples/web/agent/start-run.mjs examples/web/.data/agent-home/runs/run-1
 ```
 
-The run is `pi-durable-disk run --dir <runs>/<id> --app examples/web/agent/app.ts --serve 0`. Its directory holds
+The run is `pi-durable-disk run --dir <home>/runs/<id> --app examples/web/agent/app.ts --serve 0`. Its directory holds
 `run.json`, `store/run.sqlite` and `work/`, the workspace and the only place the model's file tools reach. While
 `run.json` says `running`, its `holder.serve` is the run's door on loopback:
 
 ```sh
-door=$(node -p "require('./examples/web/.data/runs/run-1/run.json').holder.serve")
+door=$(node -p "require('./examples/web/.data/agent-home/runs/run-1/run.json').holder.serve")
 curl -s "$door/submit" -H 'content-type: application/json' \
   -d '{"requestId":"ask-1","content":"Log in to https://the-internet.herokuapp.com/login and read the secure area page. Write report.md and pages.csv.","wait":true}'
 curl -sN "$door/events"
@@ -52,18 +59,25 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | `AGENT_MODEL_API_KEY` | no | Its key, when it needs one. |
 | `AGENT_MODEL_PRICE` | no | `input,output,cacheRead[,cacheWrite]` in USD per million tokens, so the run's usage has a price. Unset, it is $0. |
 | `AGENT_THINKING` | no | `minimal`, `low`, `medium` (default), `high` or `xhigh`. Thinking is never off. |
-| `AGENT_HOME` | no | Where the agent keeps what outlives a run. Default: `agent-home` beside the runs directory. |
+| `AGENT_HOME` | no | The agent home. Default: the run directory's `../..`, the home `startRun` made it in. |
 
 SIGTERM stops a run. It releases its Browserbase session first, so the sign-in is saved and nothing paid stays open, then
-lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it.
+lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
+`carryBack(home, { runId }, { outcome })` returns the run's sign-in to the home; the server does this once a run has
+answered.
 
 ## Sign-in
 
 - `request_sign_in({ site, reason })` answers `Asked the person to sign in to <site> in the live view; waiting for them
   to reply done.` and ends the run: no model request and no tool call follow until the person's next message, so nothing
   touches the browser while the person signs in. An idle run whose newest entry is that result is waiting for the person.
-- The first run creates a Browserbase context and saves its id in `<agent home>/browser.json` (mode 0600). Every run of
-  the agent opens its browser on that context, and Browserbase saves the context when the session ends.
+- The sign-in is the agent's browser profile `default`: a Browserbase context. `startRun` copies the home's
+  `browser.profiles` into the run store. Before the run serves anything, the app resolves the profile there with
+  `durableProfileStore(harness).resolve("default", make)`: a saved context, or a new one `make` creates in Browserbase and
+  commits to the run store. The browser opens on it, and Browserbase saves the context when the session ends.
+  `carryBack` returns it to the home, so the next run opens the same context, signed in.
+- The home and the run stores hold the context id, which opens a signed-in session: the home is created owner-only, and
+  the model's file tools reach only `work/`.
 - When a session opens, and each time its page changes, the app writes `<run>/live.json` (mode 0600):
   `{ liveViewUrl, sessionId, change, updatedAt }`. `liveViewUrl` is Browserbase's interactive live view and carries a
   token, so it goes only to the person's page: never to the model, a log or a transcript. It is null once the session is
@@ -71,13 +85,11 @@ lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same d
 - The context id never reaches the model: the browser's redactor scrubs it from every tool result. It is in the run's
   store, in the browser's configuration document, which the model does not read.
 - No recorder runs: the app installs no frame or trace recorder, and the agent has no screenshot tool.
-- `loadSignIn` and `saveSignIn` in `app.ts` are the one place sign-ins are kept. A sign-in store shared by every host
-  replaces them later.
 
 ## Limits
 
 - `max_cost_usd` is in the definition for the host to enforce; this example does not stop a run at it yet.
-- Two runs of one agent at the same time share one context, and the session that ends last is what Browserbase keeps.
+- Two runs of one agent at the same time: only the run that holds the profile's save lease carries its sign-in back.
   Run them one after the other.
 - A sign-in lasts as long as the site keeps it. When a site has ended it by the next run, the agent finds the sign-in
   page and asks the person again.

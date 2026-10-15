@@ -1,21 +1,29 @@
-// The runs app: a small web server over a directory of durable runs (`<runs>/<id>/{run.json, store/run.sqlite, work/}`).
-// It lists the runs, serves one run's page (timeline proxied from the run's own door, chat, files, live browser), and
-// starts runs with a command you give it. A live run is only ever read through its door; a released run's transcript is
-// read from its store, read-only. Node's http and nothing else. Binds to loopback unless you pass --host.
+// The runs app: a small web server over an agent home of @parcha/pi-durable-agent (`<home>/agent.sqlite`, and each run
+// at `<home>/runs/<id>/{run.json, store/run.sqlite, work/}`). It lists the home's runs, serves one run's page (timeline
+// proxied from the run's own door, chat, files, live browser), starts runs (`startRun`, then a command you give it),
+// releases a run once it has answered, and carries its sign-ins back to the home (`carryBack`). A live run is only ever
+// read through its door; a released run's transcript is read from its store, read-only. Binds to loopback unless you
+// pass --host.
 // Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
 // GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=.
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { timelineOf, timelineReducer } from "./timeline/index.js";
+import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+import { ensureAgentHome } from "./agent/home.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** The page imports the timeline from /timeline/: the package's own built modules, found where Node resolves them. */
+const TIMELINE = dirname(fileURLToPath(import.meta.resolve("@parcha/pi-durable-agent/timeline")));
+/** The name this server records as a run's host in the agent home. */
+const HOST = "examples-web";
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const LEASE_MS = 90_000;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
@@ -48,6 +56,11 @@ function stateOf(rows, working, live = false) {
   return live && last?.kind === "tool_result" && last.tool_status === "success" ? "waiting" : "idle";
 }
 const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
+/** The agent's answer when the run's newest row (as `stateOf` counts them) is the agent's text; a wait is not one. */
+const answerOf = (rows) => {
+  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+  return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
+};
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -111,20 +124,37 @@ function doorOf(record) {
   return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
 }
 
-export async function startServer({ runs, host = "127.0.0.1", port = 0, start = [], allowHosts = [], agentName = "" }) {
-  const root = runs;
+/** `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer. */
+export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000 }) {
+  const root = join(home.dir, "runs");
   const children = new Map();
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
+  const answers = new Map();
+  const settling = new Set();
+
+  // ---- the agent home ----------------------------------------------------------------------------------------------
+  // Read in one pass (it takes the home's lock for a moment), and again only when agent.sqlite has changed: the history
+  // asks often. Every write closes the store, so the change is in the file itself.
+  let homeRead = null;
+  async function homeState() {
+    const st = await stat(join(home.dir, AGENT_STORE_FILE));
+    const sig = `${st.mtimeMs}:${st.size}`;
+    if (homeRead?.sig !== sig) homeRead = { sig, state: readAgentHome(home) };
+    return homeRead.state.catch((error) => ((homeRead = null), Promise.reject(error)));
+  }
+  const reread = () => void (homeRead = null);
 
   // ---- runs --------------------------------------------------------------------------------------------------------
+  /** A run of the agent: its entry in the home's runs index, its directory and its run.json. */
   async function loadRun(id) {
     if (!ID.test(id)) return null;
+    const index = Object.hasOwn((await homeState()).runs, id) ? (await homeState()).runs[id] : null;
     const dir = join(root, id);
-    if (!(await lstat(dir).catch(() => null))?.isDirectory()) return null;
+    if (!index || !(await lstat(dir).catch(() => null))?.isDirectory()) return null;
     const record = await readJson(join(dir, "run.json"));
-    return { id, dir, work: join(dir, "work"), record: typeof record?.status === "string" ? record : null, meta: (await readJson(join(dir, "web.json"))) ?? {} };
+    return { id, dir, index, work: join(dir, "work"), record: typeof record?.status === "string" ? record : null, meta: (await readJson(join(dir, "web.json"))) ?? {} };
   }
 
   const statusOf = (run) => (run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
@@ -167,25 +197,52 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     return url && ["https:", "http:"].includes(url.protocol) ? { url: url.href, key: createHash("sha256").update(url.href).digest("hex").slice(0, 12) } : null;
   }
 
+  /** A live run's rows from its door: the `snapshot` event of `GET /events`, through the same reducer as the page's stream. */
+  async function doorRows(door) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 2_000);
+    try {
+      const up = await fetch(new URL("/events", door), { signal: abort.signal, headers: { accept: "text/event-stream" } });
+      for await (const { event, data } of frames(up.body)) {
+        if (event !== "snapshot") continue;
+        const reducer = timelineReducer();
+        reducer.apply([data]);
+        return { rows: reducer.rows(), working: Boolean(data.run) };
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+      abort.abort();
+    }
+  }
+
+  /** What a live run is doing, the way its page shows it: working, waiting for the person, or idle. */
+  async function doorState(door) {
+    const busy = await fetch(new URL("/status", door), { signal: AbortSignal.timeout(800) }).then((r) => r.json()).then((s) => s.busy?.kind ?? null, () => null);
+    if (busy !== "idle") return { busy, state: busy === "busy" ? "working" : null, rows: null };
+    const live = await doorRows(door).catch(() => null);
+    return { busy, state: live ? stateOf(live.rows, live.working, true) : null, rows: live?.rows ?? null };
+  }
+
   async function summary(run) {
     const status = statusOf(run);
     const store = RELEASED.has(run.record?.status) ? await readStore(run).catch(() => null) : null;
-    const dir = await stat(run.dir);
     const view = await liveView(run);
     const door = doorOf(run.record);
-    const busy = door ? await fetch(new URL("/status", door), { signal: AbortSignal.timeout(800) }).then((r) => r.json()).then((s) => s.busy?.kind ?? null, () => null) : null;
+    const live = door ? await doorState(door) : null;
     return {
       id: run.id,
       title: run.meta.title || store?.title || run.id,
-      agent: run.meta.agent ?? null,
+      agent: (await homeState()).definition.name,
       status,
-      state: store?.state ?? null,
+      state: live ? live.state : (store?.state ?? null),
       live: door !== undefined,
-      busy,
+      busy: live?.busy ?? null,
       generation: run.record?.generation ?? 0,
-      startedAt: run.meta.createdAt ?? new Date(dir.birthtimeMs || dir.mtimeMs).toISOString(),
-      endedAt: RELEASED.has(run.record?.status) ? run.record.updatedAt : null,
-      costUsd: store ? store.costUsd : null,
+      startedAt: run.meta.createdAt ?? run.index.startedAt,
+      endedAt: run.index.endedAt ?? (RELEASED.has(run.record?.status) ? run.record.updatedAt : null),
+      outcome: run.index.outcome ?? null,
+      costUsd: store ? store.costUsd : (run.index.cost ?? null),
       wakeAt: run.record?.wakeAt ?? null,
       liveView: view ? { key: view.key } : null,
       error: startErrors.get(run.id) ?? null,
@@ -193,7 +250,7 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
   }
 
   async function listRuns() {
-    const names = await readdir(root).catch(() => []);
+    const names = Object.keys((await homeState()).runs);
     const all = await Promise.all(
       names.map(async (id) => {
         const run = await loadRun(id).catch(() => null);
@@ -214,8 +271,47 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       if (children.get(id) === child) children.delete(id);
       exits.set(id, code ?? "signal");
     };
-    child.once("exit", ended);
+    child.once("exit", (code) => (ended(code), track(settle(id))));
     child.once("error", () => ended("error"));
+    void watch(id, child);
+  }
+
+  // ---- a run's end: released once it answered, its sign-ins carried back to the home ------------------------------------
+  const track = (work) => {
+    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.delete(done));
+    settling.add(done);
+  };
+
+  /**
+   * A run this server started, not yet carried back, is released once it has answered: idle, its newest row the agent's
+   * text (a request_sign_in wait is not an answer). SIGTERM lets its instance release the browser, so Browserbase saves
+   * the sign-in, then the run; `settle` carries it back when the process has exited.
+   */
+  async function watch(id, child) {
+    while (children.get(id) === child) {
+      await sleep(watchMs);
+      const run = await loadRun(id).catch(() => null);
+      if (!run || run.index.endedAt) return;
+      const door = doorOf(run.record);
+      const live = door ? await doorState(door).catch(() => null) : null;
+      if (live?.state !== "idle" || !answerOf(live.rows)) continue;
+      answers.set(id, live.rows);
+      if (children.get(id) === child) child.kill("SIGTERM");
+      return;
+    }
+  }
+
+  /** Carry a released run that answered back to the home, once: its sign-ins, its outcome, its answer and its cost. */
+  async function settle(id) {
+    const run = await loadRun(id);
+    if (!run || run.index.endedAt || !RELEASED.has(run.record?.status)) return;
+    const rows = answers.get(id) ?? (await readStore(run)).rows;
+    const answer = answerOf(rows);
+    if (!answer) return;
+    const cost = costOf(rows);
+    await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    answers.delete(id);
+    reread();
   }
 
   /** The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. */
@@ -265,8 +361,9 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
-    await mkdir(join(root, id), { recursive: true, mode: 0o700 });
-    await writeFile(join(root, id, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), ...(agentName ? { agent: agentName } : {}) }));
+    const run = await startRun(home, { runId: id, host: HOST });
+    reread();
+    await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString() }));
     launch(id);
     submit(id, content).then(
       (r) => r.status >= 400 && startErrors.set(id, r.body?.message ?? r.body?.error ?? "the first message was refused"),
@@ -407,7 +504,11 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
       const [file, type] = PAGE[path];
       return send(res, 200, await readFile(join(HERE, "page", file), "utf8"), { "content-type": type, ...(path === "/" ? { "content-security-policy": APP_CSP } : {}) });
     }
-    if (req.method === "GET" && MODULE.test(path)) return send(res, 200, await readFile(join(HERE, path), "utf8"), { "content-type": "text/javascript; charset=utf-8" });
+    if (req.method === "GET" && MODULE.test(path)) {
+      const code = await readFile(join(TIMELINE, basename(path)), "utf8").catch(() => null);
+      if (code === null) throw new HttpError(404, "no such module");
+      return send(res, 200, code, { "content-type": "text/javascript; charset=utf-8" });
+    }
     if (req.method === "GET" && path === "/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
     if (req.method === "POST" && path === "/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
     if (req.method === "GET" && path === "/search") {
@@ -475,6 +576,8 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
   await new Promise((resolve, reject) => (server.once("error", reject), server.listen(port, host, resolve)));
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
+  // A run released before this server last stopped, and never carried back, is carried back now.
+  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(settle(id));
 
   return {
     url: `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`,
@@ -488,6 +591,8 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
         setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 45_000).unref();
       }
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
+      await sleep(0);
+      await Promise.all(settling);
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
     },
   };
@@ -496,21 +601,19 @@ export async function startServer({ runs, host = "127.0.0.1", port = 0, start = 
 async function main() {
   const { values } = parseArgs({
     options: {
-      runs: { type: "string", default: join(HERE, ".data", "runs") },
+      home: { type: "string", default: join(HERE, ".data", "agent-home") },
       host: { type: "string", default: "127.0.0.1" },
       port: { type: "string", default: "8787" },
       start: { type: "string", default: process.env.AGENT_RUN_LAUNCHER ?? "" },
       "allow-host": { type: "string", multiple: true, default: [] },
     },
   });
-  const runs = resolve(values.runs);
-  await mkdir(runs, { recursive: true });
+  const home = await ensureAgentHome(values.home);
   const launcher = join(HERE, "agent", "start-run.mjs");
   const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
-  const agentName = process.env.AGENT_NAME ?? (await readJson(join(HERE, "agent", "agent.json")))?.name ?? "";
-  const server = await startServer({ runs, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], agentName });
+  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"] });
   if (!isLoopback(values.host)) console.error(`warning: ${values.host} is not loopback. This server has no sign-in: anyone who can reach it can read the runs' files and start agents.`);
-  console.log(`runs app on ${server.url}/ (runs in ${runs})`);
+  console.log(`runs app on ${server.url}/ (agent home ${home.dir})`);
   const stop = () => server.close().then(() => process.exit(0));
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);

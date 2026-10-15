@@ -138,8 +138,8 @@ function foldLine(fold) {
 }
 
 /** A saved file links to the Files tab when the run's file list has it (the model may have written an absolute path). */
-function savedLink(summary) {
-  const path = /^Saved (.+)$/.exec(summary)?.[1];
+function savedLink(row) {
+  const path = row.path;
   const known = path && [...ui.files].filter((f) => path === f || path.endsWith(`/${f}`)).sort((a, b) => b.length - a.length)[0];
   return known ? el("div", { class: "row file" }, "Saved ", el("a", { href: fileHref(known) }, known)) : null;
 }
@@ -160,7 +160,7 @@ function rowNode(r) {
     case "usage":
       return null;
     default:
-      return (r.kind === "phase" && savedLink(r.summary ?? "")) || el("div", { class: "row phase" }, r.summary);
+      return (r.kind === "phase" && savedLink(r)) || el("div", { class: "row phase" }, r.summary);
   }
 }
 

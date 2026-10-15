@@ -1,73 +1,100 @@
-// The web example's agent app, offline: no network, no key, no model call. A run's Harness is opened on a temporary
-// store with the options the app returns, and its root conversation is created the way the serve door creates it.
+// The web example's agent app, offline: no network, no key, no model call. Runs are started in a real agent home with
+// @parcha/pi-durable-agent, a run's Harness is opened on its store with the options the app returns, and its root
+// conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { createAgent, liveOf, loadDefinition, loadSignIn, promptOf, saveSignIn, signInAsked, toolsOf } from './app.ts';
+import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
+import { createAgent, liveOf, PROFILE, promptOf, signInAsked, toolsOf } from './app.ts';
+import { ensureAgentHome } from './home.mjs';
 
-const CONTEXT_ID = 'ctx-saved-by-run-1';
+const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
 
-async function place(t) {
+async function agentHome(t) {
   const tmp = await mkdtemp(join(tmpdir(), 'web-agent-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const root = join(tmp, 'runs', 'run-1');
-  await mkdir(join(root, 'work'), { recursive: true });
-  const env = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model', AGENT_HOME: join(tmp, 'home') };
-  return { tmp, env, where: { ref: { disk: 'local', region: 'local', id: 'run-1' }, root, work: join(root, 'work'), store: join(root, 'store') } };
+  return { tmp, home: await ensureAgentHome(join(tmp, 'home')) };
 }
 
-test('the definition carries the v2 names and no model, and every skill and tool it names exists', async () => {
-  const definition = await loadDefinition();
-  assert.deepEqual(Object.keys(definition).sort(), ['description', 'id', 'input_schema', 'instructions', 'max_cost_usd', 'name', 'output_schema', 'skills', 'tools', 'version', 'workflow']);
-  const prompt = await promptOf(definition);
-  for (const skill of definition.skills) assert.match(prompt, new RegExp(`<skill name="${skill}">`));
+/** Run `runId` started in `home`, as pi-durable-disk hands it to the app. */
+async function started(home, runId) {
+  const run = await startRun(home, { runId, host: 'test' });
+  return { run, where: { ref: { disk: 'local', region: 'local', id: runId }, root: run.dir, work: run.workspace, store: dirname(run.storePath) } };
+}
+
+/** The app's options on the run's own store, `beforeResume` included, as pi-durable-disk opens a run. */
+async function open(t, run, options) {
+  const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx).catch(() => {}));
+  await options.beforeResume({ harness, context: ctx });
+  return harness;
+}
+
+test('the home is made from agent.json and the skills: the definition names no model, and the prompt carries each skill in order', async (t) => {
+  const { tmp, home } = await agentHome(t);
+  const state = await readAgentHome(home);
+  assert.equal(state.identity.id, 'site-reporter');
+  assert.deepEqual(Object.keys(state.skills).sort(), ['sign-in/SKILL.md', 'site-report/SKILL.md']);
+  const prompt = promptOf(state);
   assert.ok(prompt.indexOf('<skill name="sign-in">') < prompt.indexOf('<skill name="site-report">'), 'skills follow the definition order');
+  assert.equal((await stat(home.dir)).mode & 0o777, 0o700, 'the home holds sign-ins: owner only');
+
+  const agentDir = join(tmp, 'agent');
+  await cp(import.meta.dirname, agentDir, { recursive: true, filter: (from) => !from.endsWith('.test.mjs') });
+  const good = JSON.parse(await readFile(join(agentDir, 'agent.json'), 'utf8'));
+  await writeFile(join(agentDir, 'agent.json'), JSON.stringify({ ...good, model: 'any' }));
+  await assert.rejects(ensureAgentHome(join(tmp, 'other'), agentDir), /fields it does not keep: model/);
+  assert.throws(() => toolsOf({ tools: ['read', 'bash'] }, { coding: [{ name: 'read' }] }), /names the tool bash/);
+  assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
 });
 
-test('a definition that names a model, or a tool the host does not have, is refused', async (t) => {
-  const { tmp } = await place(t);
-  const dir = join(tmp, 'agent');
-  await cp(import.meta.dirname, dir, { recursive: true, filter: (from) => !from.endsWith('.test.mjs') });
-  const good = JSON.parse(await readFile(join(dir, 'agent.json'), 'utf8'));
-  await writeFile(join(dir, 'agent.json'), JSON.stringify({ ...good, model: 'any' }));
-  await assert.rejects(loadDefinition(dir), /names no model/);
-  await writeFile(join(dir, 'agent.json'), JSON.stringify({ ...good, tools: ['read', 'bash'] }));
-  assert.throws(() => toolsOf({ ...good, tools: ['read', 'bash'] }, { coding: [{ name: 'read' }] }), /names the tool bash/);
-  await writeFile(join(dir, 'agent.json'), JSON.stringify({ ...good, skills: ['sign-in', 'missing'] }));
-  await assert.rejects(promptOf(await loadDefinition(dir), dir), /skills\/missing\.md is missing/);
-});
+test('run 1 makes the browser profile once, the root conversation carries it, and carryBack gives it to run 2, which makes none', async (t) => {
+  const { home } = await agentHome(t);
+  let made = 0;
+  const makeContext = async () => (made++, 'ctx-made-by-run-1');
 
-test('the root conversation is created with the prompt, the tools and the saved sign-in in its creating commit', async (t) => {
-  const { tmp, env, where } = await place(t);
-  await saveSignIn(env.AGENT_HOME, { contextId: CONTEXT_ID });
-  const { options, browser } = await createAgent(where, env);
-  const harness = await Harness.open(await openNodeSqliteStorage(join(tmp, 'run.sqlite')), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
-  t.after(() => harness.close(ctx));
+  const one = await started(home, 'run-1');
+  const { options, browser } = await createAgent(one.where, ENV, { makeContext });
+  const harness = await open(t, one.run, options);
   const root = await harness.root(ctx, options.root);
-
   const config = await harness.snapshot(browser.docs.Config, root.id, ctx);
-  assert.equal(config.run, 'run-1');
-  assert.equal(config.policy.contextId, CONTEXT_ID);
-  assert.equal(config.policy.idleReleaseS, 900, 'a person has time to sign in while the turn has ended');
-
+  assert.deepEqual([made, config.run, config.policy.contextId, config.policy.idleReleaseS], [1, 'run-1', 'ctx-made-by-run-1', 900]);
   const agent = await root.agent(ctx);
   assert.deepEqual(agent.tools.map((tool) => tool.name), ['read', 'write', 'edit', 'snapshot', 'run', 'browser_read', 'browser_release', 'request_sign_in']);
-  assert.deepEqual(agent.model, { provider: 'agent-model', modelId: 'test-model' });
-  assert.equal(agent.thinkingLevel, 'medium');
-  assert.match(agent.instructions, /<skill name="sign-in">/);
-  assert.doesNotMatch(agent.instructions, new RegExp(CONTEXT_ID), 'the context id never reaches the model');
+  assert.deepEqual([agent.model, agent.thinkingLevel], [{ provider: 'agent-model', modelId: 'test-model' }, 'medium']);
+  assert.doesNotMatch(agent.instructions, /ctx-made-by-run-1/, 'the context id never reaches the model');
+  await harness.close(ctx);
+  assert.deepEqual((await carryBack(home, one.run, { outcome: 'completed' })).profiles, [PROFILE]);
+  assert.equal((await readAgentHome(home)).profiles[PROFILE].ref, 'ctx-made-by-run-1');
+
+  const two = await started(home, 'run-2');
+  assert.deepEqual(two.run.leases, [PROFILE], 'run 2 holds the save lease');
+  const second = await createAgent(two.where, ENV, { makeContext: async () => assert.fail('run 2 starts signed in: it makes no profile') });
+  const harness2 = await open(t, two.run, second.options);
+  const root2 = await harness2.root(ctx, second.options.root);
+  assert.equal((await harness2.snapshot(second.browser.docs.Config, root2.id, ctx)).policy.contextId, 'ctx-made-by-run-1');
+  assert.equal(made, 1);
+});
+
+test('the root conversation is never created before the profile is resolved', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const { options } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
+  const harness = await Harness.open(await openNodeSqliteStorage(one.run.storePath), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx).catch(() => {}));
+  await assert.rejects(harness.root(ctx, options.root), /resolved before the root conversation/);
 });
 
 test('request_sign_in ends the turn: no model request and no tool runs until the person replies', async (t) => {
-  const { tmp, env, where } = await place(t);
-  await saveSignIn(env.AGENT_HOME, { contextId: CONTEXT_ID });
-  const { options } = await createAgent(where, env);
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const { options } = await createAgent(one.where, ENV, { makeContext: async () => 'ctx-1' });
   let asked = 0;
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
   faux.setResponses([
@@ -75,8 +102,7 @@ test('request_sign_in ends the turn: no model request and no tool runs until the
     () => (asked++, fauxAssistantMessage([fauxText('this answer must never be asked for')], { stopReason: 'stop' })),
   ]);
   options.models.setProvider(faux.provider);
-  const harness = await Harness.open(await openNodeSqliteStorage(join(tmp, 'run.sqlite')), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
-  t.after(() => harness.close(ctx));
+  const harness = await open(t, one.run, options);
   const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
   const settled = await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx);
 
@@ -87,20 +113,12 @@ test('request_sign_in ends the turn: no model request and no tool runs until the
   assert.deepEqual(newest.model[0].content, [{ type: 'text', text: signInAsked('the practice site') }]);
 });
 
-test('thinking is never off, and the model comes from the host', async (t) => {
-  const { env, where } = await place(t);
-  await saveSignIn(env.AGENT_HOME, { contextId: CONTEXT_ID });
-  await assert.rejects(createAgent(where, { ...env, AGENT_THINKING: 'off' }), /thinking is never off/);
-  await assert.rejects(createAgent(where, { ...env, AGENT_MODEL: '' }), /AGENT_MODEL/);
-  await assert.rejects(createAgent(where, { ...env, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
-});
-
-test('a sign-in is saved once, readable by its owner only', async (t) => {
-  const { env } = await place(t);
-  assert.equal(await loadSignIn(env.AGENT_HOME), null);
-  assert.deepEqual(await saveSignIn(env.AGENT_HOME, { contextId: 'first' }), { contextId: 'first' });
-  assert.deepEqual(await saveSignIn(env.AGENT_HOME, { contextId: 'second' }), { contextId: 'first' }, 'a racing run keeps the sign-in that landed first');
-  assert.equal((await stat(join(env.AGENT_HOME, 'browser.json'))).mode & 0o777, 0o600);
+test('thinking is never off, and the model and the key come from the host', async (t) => {
+  const { home } = await agentHome(t);
+  const { where } = await started(home, 'run-1');
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_THINKING: 'off' }), /thinking is never off/);
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL: '' }), /AGENT_MODEL/);
+  await assert.rejects(createAgent(where, { ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
 });
 
 test('live.json shows the live view while the session is open and nothing once it is released', () => {

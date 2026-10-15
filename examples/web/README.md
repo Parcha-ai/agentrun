@@ -1,19 +1,22 @@
 # The runs app
 
-A small web server over a directory of durable runs. It looks like a job history and a job page: list every run, click one,
+A small web server over one agent and its runs. It looks like a job history and a job page: list every run, click one,
 watch its timeline live, talk to it, open its files, and see the browser it is driving. It is one file of Node's `http`, one
 HTML page and no framework. The agent it starts is [agent/](agent/README.md).
 
-It reads the layout that [`@parcha/pi-durable-disk`](../../packages/pi-durable-disk/README.md) writes for a run on a
-directory of this machine:
+The agent lives in an agent home of [`@parcha/pi-durable-agent`](../../packages/pi-durable-agent/README.md): its definition,
+its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and each run in a directory that
+[`@parcha/pi-durable-disk`](../../packages/pi-durable-disk/README.md) runs:
 
 ```
-<runs>/<id>/
-  run.json          status, generation, heartbeat, the address of the run's door (holder.serve)
-  store/run.sqlite  pi's store
-  work/             the files the agent wrote
-  live.json         host file: the agent's live browser view (never inside work/)
-  web.json          written by this server for a run it starts: the title, the agent's name, the start time
+<home>/
+  agent.sqlite        the agent store: definition, skills, sign-ins, the runs index
+  runs/<id>/
+    run.json          status, generation, heartbeat, the address of the run's door (holder.serve)
+    store/run.sqlite  pi's store for the run, with the sign-in startRun gave it
+    work/             the files the agent wrote (its skills under .agents/skills/, hidden here)
+    live.json         host file: the agent's live browser view (never inside work/)
+    web.json          written by this server for a run it starts: the title and the start time
 ```
 
 ## Run it
@@ -26,21 +29,33 @@ npm ci --ignore-scripts && npm run build
 node --no-warnings=ExperimentalWarning examples/web/server.mjs
 ```
 
-Open `http://127.0.0.1:8787/`, type what the agent should do and press Start run. Runs live in `examples/web/.data/runs`
-(and the agent's saved sign-in in `examples/web/.data/agent-home`), both ignored by git.
+Open `http://127.0.0.1:8787/`, type what the agent should do and press Start run. The agent home is
+`examples/web/.data/agent-home`, ignored by git. The server makes it from `agent/agent.json` and `agent/skills/` the first
+time, owner-only, and opens it as it is after that: to change the agent, start a new home.
 
-Pointed at another start command, or with none, the server also shows any run directory of `pi-durable-disk run --dir`, live
-or finished. Without a start command it cannot start or wake a run.
+Without a start command the server only shows the home's runs: it cannot start or wake one.
 
 | Flag | Default | What |
 | --- | --- | --- |
-| `--runs DIR` | `examples/web/.data/runs` | The runs directory. |
-| `--start "CMD ARGS"` | `$AGENT_RUN_LAUNCHER`, else `agent/start-run.mjs` | Starts or wakes a run: the server runs `CMD ARGS <runs>/<id>` and keeps the child process. The command stays in the foreground as the run's instance and exits when the run ends or parks. The string is split on spaces, with no shell. The server passes its environment through untouched, so use a launcher script when a key must not sit in it. |
+| `--home DIR` | `examples/web/.data/agent-home` | The agent home. |
+| `--start "CMD ARGS"` | `$AGENT_RUN_LAUNCHER`, else `agent/start-run.mjs` | Starts or wakes a run: the server runs `CMD ARGS <home>/runs/<id>` and keeps the child process. The command stays in the foreground as the run's instance and exits when the run ends or parks. The string is split on spaces, with no shell. The server passes its environment through untouched, so use a launcher script when a key must not sit in it. |
 | `--host ADDR` | `127.0.0.1` | The address to bind. Anything but loopback prints a warning: the server has no sign-in. |
 | `--port N` | `8787` | The port. |
 | `--allow-host NAME` | none | An extra `Host` name to accept on a loopback bind. Repeat it. |
 
-`AGENT_NAME` sets the agent name shown in the history; by default it is the name in `agent/agent.json`.
+## A run's life
+
+1. `POST /runs` starts the run in the home with `startRun` (host `examples-web`): its directory, its store with the agent's
+   saved sign-in, and the save lease for that sign-in when no other live run holds it. Then the start command runs it.
+2. The agent works, and when a site needs a sign-in it asks the person and its turn ends. The run stays up with its browser
+   open, so the person can sign in in the live view and answer "done".
+3. Once the run is idle and its newest row is the agent's answer, the server sends its process SIGTERM. The instance
+   releases the browser (Browserbase saves the sign-in into the agent's context), then the run.
+4. When the process has exited, the server calls `carryBack`: the run's sign-in goes back to the home, and the run's index
+   entry gets its outcome, answer and cost. A run carried back is never carried back again, and a later message wakes it
+   as before. A server that stopped before a carry back does it when it starts again.
+
+The next run starts signed in.
 
 ## Routes
 
@@ -48,7 +63,7 @@ The page is at `/`. The data follows Grep's job routes.
 
 | Route | What |
 | --- | --- |
-| `GET /runs` | The history: id, agent, status, title (the first message), start time, cost, and whether the run is working. |
+| `GET /runs` | The history, from the home's runs index: id, agent, status, state (working, waiting for you, or idle), title (the first message), start and end time, outcome, cost. |
 | `POST /runs {content}` | Start a run with a first message. Answers `202 {id}`. |
 | `GET /runs/{id}` | One run's summary. |
 | `GET /runs/{id}/timeline` | Server-sent events while the run is live (`Accept: text/event-stream`); JSON rows for a released run. |
@@ -60,22 +75,23 @@ The page is at `/`. The data follows Grep's job routes.
 
 ## What the page shows
 
-- **Job history.** Every `<runs>/*/run.json`, newest first: input, status, agent, start time, cost.
-- **Timeline.** For a live run the server proxies the run's own `GET /events` and turns pi's events into rows with the
-  [timeline module](timeline/) (Grep's `TimelineEvent`: user message, thinking, text, tool calls and results, phases, waits,
-  errors, the final answer). Tool calls pair with their results by call id, and calls of one kind fold into one line.
+- **Job history.** Every run in the home's index, newest first: input, status, agent, start time, cost. A live run shows the
+  state its page shows, so one that asked the person to sign in says **Waiting for you**.
+- **Timeline.** For a live run the server proxies the run's own `GET /events` and turns pi's events into rows with
+  `@parcha/pi-durable-agent/timeline` (Grep's `TimelineEvent`: user message, thinking, text, tool calls and results,
+  phases, waits, errors, the final answer). Tool calls pair with their results by call id, and calls of one kind fold into one line.
   A banner says **Waiting for you** when the newest thing in the run is a request for the person (the agent's
   `request_sign_in`), and opens the Browser tab.
 - **After the run.** A run whose claim is released (sleeping, paused, done, failed) is read from its `store/run.sqlite`,
   opened read-only, with the same module. A live store is never opened: it is read only through its door.
-- **Files.** The tree under `work/`, dotfiles hidden. Markdown is rendered with HTML escaped, CSV as a table, text as text,
+- **Files.** The tree under `work/`, dotfiles hidden. A "Saved" row links to the file it names, by the row's `path`. Markdown is rendered with HTML escaped, CSV as a table, text as text,
   images inline. Agent-written HTML is shown in a sandboxed frame with no scripts. Other types are downloads.
 - **Browser.** The run's live view in one frame, kept while the run sleeps so a person can sign in after the agent's turn
   ended. The frame reloads only when the view's address changes.
 - **Chat.** One message box under every tab, so a person can sign in on the Browser tab and answer "done" without leaving it.
 
-`timeline/` is a standalone module with no dependencies that runs in Node and in the browser. It is copied here whole, so it
-can be replaced by the shared copy.
+The page imports the same timeline module from `/timeline/`, which the server serves from the package's built files, found
+where Node resolves `@parcha/pi-durable-agent/timeline`. It has no dependencies and runs in Node and in the browser.
 
 ## Safety
 
@@ -95,7 +111,9 @@ can be replaced by the shared copy.
 ## Test
 
 ```sh
-node --test examples/web/server.test.mjs
+npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser -w @parcha/pi-durable-agent
+node --test examples/web/server.test.mjs examples/web/agent/agent.test.mjs
 ```
 
-The tests use a fake door that emits canned events, and a runs directory built in the test, with no network and no key.
+The tests use a fake door that emits canned events, a fake run instance, and an agent home made in the test, with no
+network and no key.

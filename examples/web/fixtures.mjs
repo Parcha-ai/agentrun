@@ -1,9 +1,10 @@
 // Fakes for the runs app's tests: pi-shaped entries, a fake door (a local HTTP server that answers like a run's
-// `serveRun`: SSE events, status, submit, abort), and a runs directory with run.json, a tiny store and work files.
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+// `serveRun`: SSE events, status, submit, abort), and runs of a real agent home with run.json, a tiny store and work files.
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { startRun } from "@parcha/pi-durable-agent";
 
 const cost = (total) => ({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total } });
 export const user = (id, text) => ({ id, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: text, timestamp: id }] });
@@ -28,14 +29,14 @@ export const call = (id, name, args) => ({ type: "toolCall", id, name, arguments
  * after "done", saves a note and answers (entries 9 to 12).
  */
 export const transcript = [
-  user(1, "Log in to the practice site and write what the secure page says to notes.md"),
-  assistant(2, [thinking("Open the secure page first."), text("Opening the page."), call("c1", "run", { code: 'await page.goto("https://example.test/secure")' })]),
-  result(3, "c1", "run", "Navigated to https://example.test/login"),
+  user(1, "Log in to https://the-internet.herokuapp.com/login and write what the secure page says to notes.md"),
+  assistant(2, [thinking("Open the secure page first."), text("Opening the page."), call("c1", "run", { code: 'await page.goto("https://the-internet.herokuapp.com/secure")' })]),
+  result(3, "c1", "run", "Navigated to https://the-internet.herokuapp.com/login"),
   assistant(4, [thinking("It sent me to a sign-in form."), call("c2", "snapshot", {}), call("c3", "screenshot", {})]),
   result(5, "c2", "snapshot", "[1-4] textbox username"),
   result(6, "c3", "screenshot", "[image]"),
-  assistant(7, [text("The site needs a sign-in."), call("c4", "request_sign_in", { site: "example.test", reason: "Sign in to the demo site" })]),
-  result(8, "c4", "request_sign_in", "Asked the person to sign in to example.test in the live view; waiting for them to reply done."),
+  assistant(7, [text("The site needs a sign-in."), call("c4", "request_sign_in", { site: "the-internet.herokuapp.com", reason: "Sign in to the practice site to read its secure area" })]),
+  result(8, "c4", "request_sign_in", "Asked the person to sign in to the-internet.herokuapp.com in the live view; waiting for them to reply done."),
   user(9, "done"),
   assistant(10, [thinking("Signed in. Save the page text."), call("c5", "write", { path: "notes.md", content: "# Notes\n\nSigned in." })]),
   result(11, "c5", "write", "Wrote notes.md"),
@@ -83,10 +84,12 @@ export async function fakeDoor({ snapshot = [], batches = [], gapMs = 20, hold =
   });
 }
 
-/** Write `<root>/<id>` with a run.json, an optional store of `entries`, files under work/, and optional web.json/live.json. */
-export function makeRun(root, id, { status = "done", door, entries, files = {}, meta, live, generation = 1, updatedAt = new Date().toISOString(), wakeAt = null } = {}) {
-  const dir = join(root, id);
-  mkdirSync(join(dir, "work"), { recursive: true });
+/**
+ * Start run `id` of the agent home (`startRun`: the runs index, the run directory, its store and work/), then write its
+ * run.json, optionally a tiny store of `entries` in place of pi's, files under work/, and web.json/live.json.
+ */
+export async function makeRun(home, id, { status = "done", door, entries, files = {}, meta, live, generation = 1, updatedAt = new Date().toISOString(), wakeAt = null } = {}) {
+  const { dir } = await startRun(home, { runId: id, host: "test", ...(meta?.createdAt ? { now: Date.parse(meta.createdAt) } : {}) });
   const now = new Date().toISOString();
   const record = {
     run: id,
@@ -101,6 +104,7 @@ export function makeRun(root, id, { status = "done", door, entries, files = {}, 
   };
   writeFileSync(join(dir, "run.json"), JSON.stringify(record));
   if (entries) {
+    rmSync(join(dir, "store"), { recursive: true });
     mkdirSync(join(dir, "store"));
     const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
     db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL CHECK (json_valid(record))) STRICT");
