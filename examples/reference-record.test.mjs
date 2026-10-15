@@ -6,11 +6,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import * as validator from '../scripts/recording/validate.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { placeAt, run } from './reference/assemble.ts';
 import { localHost } from './reference/host.ts';
 import { fakes, job } from './reference/job.ts';
 import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from './reference/record.ts';
+import * as scan from './reference/scan.ts';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
@@ -177,4 +179,35 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   writeFileSync(join(circle, '.spool', 'live-2.jsonl'), JSON.stringify({ channel: 'live', source: 'workflow', kind: 'node.start', gen: 2, t: 4, seq: 0, data: {} }) + '\n');
   finishRecording(circle, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
+});
+
+test('the recorder scans before it finishes: a credential or a machine path in a line, a blob or the manifest writes no manifest', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const header = (over = {}) => ({ title: 't', task: 't', model: 'm', generations: 1, kills: 0, code: { repo: 'r', commit: 'c', packages: { '@earendil-works/pi-durable': '1.1.0', '@earendil-works/pi-ai': '1.1.0' } }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') }, ...over });
+  const secret = `sk-${'a1'.repeat(20)}`;
+  const machinePath = ['', 'home', 'someone', 'work', ''].join('/');
+  const cases = [
+    ['a line', (recorder) => recorder.live('workflow', 'node.start', { header: secret }), {}, /holds a provider secret in events\.jsonl/],
+    ['a blob', (recorder) => recorder.blob(`token ${secret}`, 'txt'), {}, /holds a provider secret in blobs\/[0-9a-f]{64}\.txt/],
+    ['a machine path', (recorder) => recorder.live('pi', 'message_end', { cwd: machinePath }), {}, /holds a machine path in events\.jsonl/],
+    ['the manifest', () => undefined, { title: secret }, /holds a provider secret in manifest\.json/],
+  ];
+  for (const [where, act, over, message] of cases) {
+    const dir = join(tmp, where.replaceAll(' ', '-'));
+    const recorder = openRecorder({ dir });
+    recorder.host('process.started', { pid: 1 });
+    act(recorder);
+    assert.throws(() => finishRecording(dir, header(over)), message, where);
+    assert.ok(!existsSync(join(dir, 'manifest.json')), `${where}: not a finished recording`);
+  }
+  const clean = join(tmp, 'clean');
+  openRecorder({ dir: clean }).host('process.started', { pid: 1 });
+  finishRecording(clean, header());
+  assert.deepEqual(validateRecording(clean), []);
+});
+
+test('one scanner: the validator, and so the gallery\'s gate, use the recorder\'s own', () => {
+  assert.equal(validator.credentialIn, scan.credentialIn);
+  assert.equal(validator.credentialInValue, scan.credentialInValue);
 });
