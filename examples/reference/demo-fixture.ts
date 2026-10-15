@@ -1,6 +1,8 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fakeEyes } from '@parcha/pi-vision/testing';
 import { demo } from './demo.ts';
 import type { ToolContext } from './host.ts';
 import { fakes, job } from './job.ts';
@@ -49,6 +51,29 @@ const sitesLead = (messages: readonly { role: string; content: unknown }[]) => {
   return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: path ? [path] : [] });
 };
 const withSites = process.env.DEMO_SITES ? { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 1), { ...((job.workflow.root as { steps: unknown[] }).steps[1] as object), instructions: 'Hand the registry check to the registry site with use_website, then cite its receipt.' }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(2)] } } } as unknown as typeof job : undefined;
+// And scripted eyes for the lead's images: with them the lead takes text only, so the read of the filing scan goes to the eyes (a paid look).
+const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: { input: 1, output: 4 }, ...(process.env.DIR ? { ledgerPath: join(process.env.DIR, 'eyes.jsonl') } : {}), answers: [process.env.DEMO_EYES_FAIL ? { fail: 'the eyes are unavailable' } : 'A scanned certificate of incorporation. Incorporated on 2019-03-04.'] }) : undefined;
 const scripted = { ...fakes, ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
-export const options = { self: import.meta.url, spec, job: withBox ?? withSites ?? lingering?.job ?? job, fakes: scripted };
+// And `sourcesFor`: the items an input needs, from a JSON list whose ids start `a-` for the default company and `o-` for another.
+const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
+// And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
+const probe = process.env.DEMO_VISION_PROBE ? (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'vision-called.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } : undefined;
+const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company), cites: [{ blob: context.keep('a cited file', 'txt') }] }] }, title: 'A cited result' }) : undefined;
+// And live parts that write what the child saw: its environment's names and what its live vision was called with.
+const live = process.env.DEMO_LIVE_PROBE ? (context: { env: NodeJS.ProcessEnv; models: unknown }) => {
+  writeFileSync(join(process.env.DIR!, 'models-seen.json'), JSON.stringify(context.models));
+  writeFileSync(join(process.env.DIR!, 'env-seen.json'), JSON.stringify(Object.keys(context.env).sort()));
+  return { vision: (host: { deliver?: unknown }, running: { harness: unknown }) => { writeFileSync(join(process.env.DIR!, 'live-vision.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined })); return {}; } };
+} : undefined;
+// And a manifest hook: extras, or a name the entry owns when DEMO_MANIFEST is `reserved`.
+const manifest = process.env.DEMO_MANIFEST ? () => (process.env.DEMO_MANIFEST === 'reserved' ? { source: 'mine' } : { sources: [{ file: 'a.pdf', sha256: 'ab' }], models: { lead: 'x' } }) : undefined;
+// The demo's own vision lane: its eyes, and (DEMO_OWN_HOOKS) an `onLook` and an `onMiss` of its own, which the entry's must call and never replace.
+const ownLane = () => ({
+  eyes: eyes!,
+  ...(process.env.DEMO_OWN_HOOKS ? {
+    onLook: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'look\n'); },
+    onMiss: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'miss\n'); },
+  } : {}),
+});
+export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

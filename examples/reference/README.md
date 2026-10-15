@@ -165,7 +165,11 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
+| `--provider <p>`, `--model <m>`, `--eyes-model <m>` | with `--live`: the models to use, handed to the demo's `live({ env, models })` as `{ provider, model, eyesModel }` (each absent when not given; the demo's sign-in plan decides what they mean). `--provider` needs `--model`; without `--live` they are refused |
+| `--see-also <recording>` | links a finished recording of the same demo (a weak-eyes pass) in the manifest's `see_also`, by its directory's name and its manifest's title; repeat for more |
 | `--local-chrome` | with `--live` and no Browserbase key pair: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used only when `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` are both set, decided before anything starts (a half pair is named, never used); a local Chrome is never chosen for you |
+| `--fetch-sources` | fetches the demo's `sources.json` into the run's `work/` before the job runs (always with `--live`) |
+| `--cache <dir>` | where fetched sources are kept by hash, so a re-run does not fetch them again (default `agentrun-sources` in the OS temp dir) |
 | `--dir <path>` | keeps the run's directory |
 | `--json` | the result as one JSON object |
 
@@ -173,10 +177,12 @@ await demo({ self: import.meta.url, spec, job, fakes });
 
 The parts of `demo.json` the entry acts on:
 
-- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
+- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) `n` (the nth time the crossing is taken, default 1) and `where` (`{ field: value }`: only a crossing announced with those info fields counts, and `n` is the nth matching one; `transport.tool.started` fires for every tool, so `{ point: "transport.tool.started", where: { tool: "install" } }` is the install step; a package or fake announces info with `cross(point, { info })`, and the crossing log records it). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
 - `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
 - `sites`: `{ <name>: { title, description, startUrl } }`. The agent gets `use_website`: a task for a site runs a child agent in a browser of its own, starting at `startUrl`, and a short report comes back. A request id runs once: a kill while the child works leaves the child recorded under `<site>:<request id>`, and the resumed run finds it instead of starting a second. A child has the browser and web tools only, never `use_website`.
-- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+- `sources`: `true` (the demo's `sources.json`), or a path (relative to the demo's directory, to the repository when it starts with `examples/`, or absolute): `sources.json` has two kinds of entry. `pages` are visited live by the agent (each with its URL, what it shows and its hand-check date): the entry passes them through untouched, never fetching or refusing them. `files` (or `items`) are the checked files `{ id, url, bytes, sha256, license }` the job reads. They are fetched into `work/` as `<id><extension of the URL's path>`, verified by size and hash (a file already there with the right hash is kept; one that is not the checked bytes is refused, naming what was checked and what came), on `--live` and with `--fetch-sources`. A no-key run uses the files the demo commits (`job.files`). A demo whose files depend on the input gives `sourcesFor(input)` instead (the same item shape, without `license`): only those items are fetched, and a no-key run that lacks their files is refused in one line naming `--fetch-sources`.
+- `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
+- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
 
 ### Crossings
 
@@ -189,6 +195,7 @@ A crossing is a named point the child takes; `kills[].point` names one, and the 
 | `tool.dispatch <tool>` / `tool.returned <tool>` | a scripted tool is called and returns. Never a kill point: between the dispatch and the host keeping the answer nothing records what the tool did, and a kill there leaves the call unknown |
 | `effect.kept <tool>` | the host has kept the tool's answer and the driver has not yet committed it. A kill point only when no other call is in that window. The resumed process settles the call from the kept answer: it is not sent again |
 | `receipt.filing <tool>` / `receipt.filed <tool>` | an evidence receipt is about to be filed, and has been |
+| `vision.filing` / `vision.filed` | a look is about to be filed, and has been. The eyes have answered by then and the answer is kept: a kill at `vision.filing` makes the next process file the kept answer and not ask the eyes again (the first of the packages' own crossings) |
 | `event <source>.<type>` | each row of events the run reports (`event workflow.node.start`, `event browser.launched`, `event vision.look`) |
 | `deliver.writing` / `deliver.written` | the delivery |
 | `transport.box.create` / `transport.box.created` | a box is about to be made, and exists |
@@ -202,3 +209,27 @@ The transport box lines are live lines of source `transport`: `box.created` `{ b
 ### The judge seam
 
 Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+
+### The vision option
+
+The entry files every look the vision guard or a read reports into the run's store: one `vision.looks` document per look key, each entry the whole `LookRecord` (`facts.key`, `kept`, `cost_usd`, `status`, `model`), the evidence path of the screenshot it was of as its receipt, and the image the eyes were shown as a blob in the recording. The recording's counters then read `paid.vision` and the eyes' cost. An entry also carries the data set's `item` it belongs to (`DemoOptions.itemOf(path)`), the `miss` { code, reason } when the look failed, and each image's frame second `at`; every read leaves one live `vision`/`shown` line (its arguments, the media facts and the captions with the images). A demo passes only its eyes: `fakes.vision(host, running)` returns `{ eyes }` on fakes (with a lead that takes only text, every image a read or a screenshot makes goes to them), and the live parts' `vision(host, running)` returns the real eyes. Both are `Partial<VisionAdapterOptions>`, one seam; the entry's own filing is always on, and it calls a demo's own `onLook` and `onMiss` after its own and never replaces them.
+
+### Holding the kill at `vision.filing`
+
+A kill entry may carry `hold` (and `waitMs`, default 3000): the filing that is the nth, and those that reach `vision.filing` after it, are parked, never completed, until `hold` of them are parked or `waitMs` has passed, and then the process is killed. Several answers are by then kept in the journal and none is filed, so the resume files each kept answer: "6 kept, nothing paid twice". Without `hold` the kill is at the first crossing.
+
+### Kills that never land
+
+A planned kill whose crossing the process never takes (a typo, or a demo that does not reach it) is not hidden: the result's `unlanded` lists it, the summary says so, and the command exits 1.
+
+### What a demo hands the entry, besides its job
+
+`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running)` (the demo's vision lane on fakes: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
+
+### What a live child's environment holds
+
+On `--live` the child is given exactly the environment names `demo.json` declares (every `env` in `keys`, the members of a `oneOf` group included, and in `programs`), plus the process basics (`PATH`, `HOME`, `TMPDIR`), and nothing else: an undeclared variable in the parent's environment never reaches it, so the spec and the child's environment cannot drift. A no-key run passes the demo's own `DEMO_*` settings (no secret). `LiveParts.vision(host, running)` is built the way `fakes.vision(host, running)` is: one seam for both.
+
+### `manifest(context)` and `source.run`
+
+A demo may pass `manifest({ dir, record, input, live })`: it returns fields the entry adds to the manifest (a demo's own sources, slice or models). A name the entry writes itself (`format`, `source`, `result`, `providers`, `see_also`, `job`, `store`, ...) is refused. `source.run` is the demo's name, plus the input file's name when `--input` named a file (`apollo-apollo-11`); a demo's `run.ts` reads `demo()`'s result for its own summary lines.
