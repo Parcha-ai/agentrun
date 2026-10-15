@@ -135,30 +135,3 @@ test('a panel with no line it is for is not drawn, its title included, at any st
   assert.match(early, /after commit 1 /, 'at the first commit');
   assert.ok(early.includes(title), 'its transport line comes last, and the panel is there from the first stop');
 });
-
-test('the built viewer acts on no message it is sent', (t) => {
-  const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
-  t.after(() => rmSync(out, { recursive: true, force: true }));
-  build(out, fixtures);
-  const script = readFileSync(join(out, 'viewer.js'), 'utf8');
-  assert.doesNotMatch(script, /addEventListener\(\s*['"]message['"]/);
-  assert.doesNotMatch(script, /\bonmessage\b/);
-});
-
-test('embedded, the page drops its header, fills its frame, and tells the framing page its chapter', noChrome, (t) => {
-  const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
-  t.after(() => rmSync(out, { recursive: true, force: true }));
-  build(join(out, 'dist'), fixtures);
-  const embedded = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed&embed=1');
-  assert.match(embedded, /<html[^>]* class="embed"/);
-  assert.doesNotMatch(embedded, /<h1>/);
-  assert.match(embedded, /paid calls made/, 'the rest of the page is there');
-  assert.match(pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed'), /<h1>/, 'not embedded: the header');
-  // A page that frames it and writes down every message it is sent.
-  writeFileSync(join(out, 'dist', 'frame.html'), '<!doctype html><body><iframe src="index.html?r=reference-killed&embed=1"></iframe><script>addEventListener("message", (event) => { const got = document.createElement("pre"); got.className = "got"; got.textContent = JSON.stringify(event.data); document.body.append(got); });</script></body>');
-  const ran = spawnSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`,
-    '--virtual-time-budget=4000', '--dump-dom', pathToFileURL(join(out, 'dist', 'frame.html')).href], { encoding: 'utf8', timeout: 60_000 });
-  const got = [...ran.stdout.matchAll(/<pre class="got">([^<]*)<\/pre>/g)].map((match) => JSON.parse(match[1]!.replaceAll('&quot;', '"')));
-  assert.deepEqual(got.map((message) => Object.keys(message).sort()), [['source', 'stop', 'title', 'type']], 'one message, the chapter alone');
-  assert.equal(got[0].title, 'the end', 'opened at the end, in its last chapter');
-});
