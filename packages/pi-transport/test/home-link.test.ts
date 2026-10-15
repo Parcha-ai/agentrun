@@ -19,6 +19,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { App } from "../src/home/app.ts";
+import type { Crossing } from "../src/home/crossing.ts";
 import { connectHome, type HomeHandle } from "../src/home/host.ts";
 import { type Frame, linkPair } from "../src/home/link.ts";
 import { serveModels } from "../src/home/models.ts";
@@ -447,4 +448,108 @@ describe("a home over a link", () => {
 			await runner.home?.close(context);
 		});
 	});
+});
+
+describe("transport.tool.started: the runner holds a tool until the host's crossing returns", () => {
+	/** A host with `crossing`, over a runner that holds tools for at most `crossingMs`. */
+	async function crossed(made: World, crossing: Crossing | undefined, crossingMs?: number) {
+		const [runnerEnd, hostEnd] = linkPair();
+		const runner = createRunner({ ...made.place("a"), ...(crossingMs === undefined ? {} : { crossingMs }) });
+		runner.attach(runnerEnd);
+		const seen: Frame[] = [];
+		hostEnd.onFrame((frame) => seen.push(frame));
+		const handle = connectHome(hostEnd, {
+			models: made.models,
+			epoch: 1,
+			...(crossing === undefined ? {} : { crossing, crossingFor: { session: "session-1", box: "box-a" } }),
+		});
+		getOrThrow(await handle.ready);
+		return { handle, runner, seen };
+	}
+
+	it("announces each tool start once with its name, the session, the epoch and the box, counting from 1, and the session goes on", async () => {
+		await withWorld(async (made) => {
+			const told: { tool?: string; n: number; epoch: number; box: string; session: string; effectsThen: number }[] =
+				[];
+			const { handle } = await crossed(made, async (point, info) => {
+				expect(point).toBe("transport.tool.started");
+				told.push({ ...info, effectsThen: made.effects().length } as never);
+			});
+			getOrThrow(await handle.resume({ epoch: 1 }, context));
+			getOrThrow(await handle.submit("go", undefined, context));
+			getOrThrow(await handle.idle(context));
+			expect(told.map((one) => one.n)).toEqual(everyRound.map((_, at) => at + 1));
+			expect(
+				told.every(
+					(one) => one.tool === "work" && one.epoch === 1 && one.box === "box-a" && one.session === "session-1",
+				),
+			).toBe(true);
+			// The tool had not run when it was announced: round n starts with n effects done.
+			expect(told.map((one) => one.effectsThen)).toEqual(everyRound.map((_, at) => at));
+			expect(made.effects()).toEqual(everyRound);
+			handle.close("done");
+		});
+	}, 30_000);
+
+	it("holds the tool while the handler runs, so a handler that never lets it run leaves its effect absent, until crossingMs", async () => {
+		await withWorld(async (made) => {
+			const { handle } = await crossed(made, () => new Promise<void>(() => {}), 400);
+			getOrThrow(await handle.resume({ epoch: 1 }, context));
+			getOrThrow(await handle.submit("go", undefined, context));
+			await sleep(250);
+			// Held: nothing has run yet.
+			expect(made.effects()).toEqual([]);
+			// Past crossingMs the tool runs: a handler that hangs cannot hang the session.
+			await sleep(1_200);
+			expect(made.effects().length).toBeGreaterThan(0);
+			handle.close("done");
+		});
+	}, 30_000);
+
+	it("lets the tool run at once when the handler calls release, and the handler goes on after it", async () => {
+		await withWorld(async (made) => {
+			let afterRelease: number | undefined;
+			const { handle } = await crossed(
+				made,
+				async (_point, info) => {
+					if (info.n !== 1) return;
+					info.release?.();
+					await sleep(150);
+					afterRelease = made.effects().length;
+					await new Promise<void>(() => {});
+				},
+				10_000,
+			);
+			getOrThrow(await handle.resume({ epoch: 1 }, context));
+			getOrThrow(await handle.submit("go", undefined, context));
+			await sleep(400);
+			expect(afterRelease).toBeGreaterThan(0);
+			handle.close("done");
+		});
+	}, 30_000);
+
+	it("treats a handler that throws as returned: the tool runs", async () => {
+		await withWorld(async (made) => {
+			const { handle } = await crossed(made, () => {
+				throw new Error("the handler failed");
+			});
+			getOrThrow(await handle.resume({ epoch: 1 }, context));
+			getOrThrow(await handle.submit("go", undefined, context));
+			getOrThrow(await handle.idle(context));
+			expect(made.effects()).toEqual(everyRound);
+			handle.close("done");
+		});
+	}, 30_000);
+
+	it("sends no hold and no acknowledgement when the host names no crossing", async () => {
+		await withWorld(async (made) => {
+			const { handle, seen } = await crossed(made, undefined);
+			getOrThrow(await handle.resume({ epoch: 1 }, context));
+			getOrThrow(await handle.submit("go", undefined, context));
+			getOrThrow(await handle.idle(context));
+			expect(seen.some((frame) => frame.t === "call-ack")).toBe(false);
+			expect(made.effects()).toEqual(everyRound);
+			handle.close("done");
+		});
+	}, 30_000);
 });

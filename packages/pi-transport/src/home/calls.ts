@@ -19,7 +19,7 @@ export type CallEvent = {
  * The extension that tells `report` when a tool call begins and ends. It changes nothing about the call. Install it
  * after the gate's extension, so that a call is reported only once the gate let it through.
  */
-export function callsExtension(registry: Registry, report: (event: CallEvent) => void) {
+export function callsExtension(registry: Registry, report: (event: CallEvent) => void | Promise<void>) {
 	const replayOf = (name: string): "safe" | "unsafe" =>
 		registry
 			.snapshot()
@@ -31,8 +31,8 @@ export function callsExtension(registry: Registry, report: (event: CallEvent) =>
 		name: CALLS_EXTENSION,
 		hooks: [
 			hook(ToolTask, {
-				beforeTool: (call) => {
-					report({ phase: "start", id: String(call.id), tool: call.name, replay: replayOf(call.name) });
+				beforeTool: async (call) => {
+					await report({ phase: "start", id: String(call.id), tool: call.name, replay: replayOf(call.name) });
 					return undefined;
 				},
 				afterTool: (call) => {

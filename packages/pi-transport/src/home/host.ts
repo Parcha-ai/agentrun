@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
+import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
@@ -91,6 +92,15 @@ export type ConnectOptions = {
 	 * and a seal waits until they are all here.
 	 */
 	readonly records?: RecordSink;
+	/**
+	 * Announced when a tool call of this home starts (`transport.tool.started`, with the tool's name). The runner holds the
+	 * tool until this returns (or `info.release()`), so a handler that kills the runner leaves the tool not started.
+	 */
+	readonly crossing?: Crossing;
+	/** What `crossing` is told about this home: the session and its box. */
+	readonly crossingFor?: { readonly session: string; readonly box: string };
+	/** The place's counter, so that `n` counts across handles. Default: this handle's own. */
+	readonly crossingCount?: CrossingCounter;
 };
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
@@ -155,11 +165,36 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	const ledger: CallRecord[] = [];
 
 	const { records } = options;
+	const count = options.crossingCount ?? crossingCounter();
 	const handle = async (frame: Frame): Promise<void> => {
 		if (frame.t === "call") {
 			// A report from another epoch is a home the lease left behind: its calls are ignored.
 			if (frame.epoch !== epoch || typeof frame.id !== "string" || typeof frame.tool !== "string") return;
 			const at = Date.now();
+			if (frame.phase === "start" && options.crossing !== undefined) {
+				// Detached: a handler that sleeps must not hold up this link's other frames (the record stream's acknowledgements).
+				const id = String(frame.id);
+				let released = false;
+				const release = () => {
+					if (released) return;
+					released = true;
+					link.send({ t: "call-ack", id });
+				};
+				const where = options.crossingFor;
+				void Promise.resolve()
+					.then(() =>
+						options.crossing?.("transport.tool.started", {
+							session: where?.session ?? "",
+							epoch,
+							box: where?.box ?? "",
+							tool: frame.tool as string,
+							n: count("transport.tool.started"),
+							release,
+						}),
+					)
+					.catch(() => {})
+					.finally(release);
+			}
 			if (frame.phase === "start") {
 				ledger.push({
 					id: frame.id,
@@ -228,6 +263,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		v: LINK_VERSION,
 		catalog: catalogOf(options.models),
 		...(records === undefined ? {} : { records: true }),
+		...(options.crossing === undefined ? {} : { crossing: true }),
 	});
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>

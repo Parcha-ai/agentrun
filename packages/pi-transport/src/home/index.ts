@@ -16,6 +16,13 @@ export {
 	VaultError,
 } from "./checkpoint.ts";
 export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits } from "./commit-log.ts";
+export {
+	type Crossing,
+	type CrossingCounter,
+	type CrossingInfo,
+	type CrossingPoint,
+	crossingCounter,
+} from "./crossing.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,

@@ -19,6 +19,7 @@ import { type Box, BoxError, type BoxExecOptions, type BoxFacts, type BoxProcess
 import { adaptChild } from "../box/child.ts";
 import { downloadByExec, uploadByExec } from "../box/files.ts";
 import type { LogEntry } from "./commit-log.ts";
+import type { Crossing, CrossingCounter } from "./crossing.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Place } from "./move.ts";
@@ -435,6 +436,15 @@ export type PullOptions = {
 	 * let go: a restore never asks for them again, even when it falls back to that generation.
 	 */
 	readonly answers?: { covered(head: number): void };
+	/**
+	 * Announced, awaited, once the checkpoint is committed, the session is let go and the stats are updated:
+	 * `transport.checkpoint.taken`. A caller that kills the box does it here; the checkpoint is then the latest. A pull that
+	 * is skipped announces nothing. A handler that throws makes the pull return `failed` with the error, and the
+	 * checkpoint stays taken.
+	 */
+	readonly crossing?: Crossing;
+	/** The place's counter. Default: the number of checkpoints these stats count as taken (1 without stats). */
+	readonly crossingCount?: CrossingCounter;
 };
 
 const DEFAULT_PULL_DRAIN_MS = 10_000;
@@ -600,6 +610,23 @@ export async function pullCheckpoint(
 	if (options.stats !== undefined) {
 		options.stats.taken += 1;
 		options.stats.last = { n: committed.value.n, at, ms: Math.round(performance.now() - started), bytes, heldMs };
+	}
+	if (options.crossing !== undefined) {
+		try {
+			await options.crossing("transport.checkpoint.taken", {
+				session,
+				epoch: options.epoch,
+				box: place.box.id,
+				n: options.crossingCount?.("transport.checkpoint.taken") ?? options.stats?.taken ?? 1,
+			});
+		} catch (cause) {
+			return skip(
+				"failed",
+				`the crossing handler failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				[],
+				cause,
+			);
+		}
 	}
 	return ok(committed.value);
 }

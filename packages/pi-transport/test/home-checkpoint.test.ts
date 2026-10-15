@@ -11,6 +11,7 @@ import { type Box, BoxError } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { checkpointStats, localVault, pullCheckpoint, recordSink, restoreNotice } from "../src/home/checkpoint.ts";
 import type { LogEntry } from "../src/home/commit-log.ts";
+import { crossingCounter } from "../src/home/crossing.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import { connectHome, type HomeHandle, RemoteError } from "../src/home/host.ts";
 import { linkPair } from "../src/home/link.ts";
@@ -369,6 +370,85 @@ describe("pulling a checkpoint", () => {
 			noContext,
 		);
 		expect(inside.ok).toBe(true);
+	});
+
+	it("announces transport.checkpoint.taken once per taken checkpoint, after it is the latest and the session is let go, and never for a skipped pull", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const told: {
+			n: number;
+			box: string;
+			epoch: number;
+			session: string;
+			latest: number | undefined;
+			held: boolean;
+		}[] = [];
+		const crossing = async (point: string, info: { n: number; box: string; epoch: number; session: string }) => {
+			expect(point).toBe("transport.checkpoint.taken");
+			told.push({ ...info, latest: getOrThrow(await vault.latest("s", context))?.n, held: fx.state().held });
+		};
+		const pull = (extra: object = {}) =>
+			pullCheckpoint(
+				{ session: "s", place: fx.place, home: fx.home, epoch: 4, vault, stats, crossing, ...extra } as never,
+				noContext,
+			);
+		getOrThrow(await pull());
+		getOrThrow(await pull());
+		// A pull the home refuses announces nothing.
+		fx.failWith = new RemoteError("timeout", "still running", "DrainError", []);
+		const skipped = await pull();
+		expect(skipped.ok).toBe(false);
+		expect(told.map((one) => one.n)).toEqual([1, 2]);
+		expect(told.every((one) => one.box === fx.place.box.id && one.epoch === 4 && one.session === "s")).toBe(true);
+		expect(told.map((one) => one.latest)).toEqual([1, 2]);
+		expect(told.every((one) => !one.held)).toBe(true);
+	});
+
+	it("keeps the checkpoint when the crossing handler fails, and says so", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const failed = await pullCheckpoint(
+			{
+				session: "s",
+				place: fx.place,
+				home: fx.home,
+				epoch: 1,
+				vault,
+				crossing: () => {
+					throw new Error("the kill failed");
+				},
+			},
+			noContext,
+		);
+		expect(failed.ok ? "" : failed.error.reason).toBe("failed");
+		expect(failed.ok ? "" : failed.error.message).toMatch(/crossing handler failed: the kill failed/);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(1);
+	});
+
+	it("counts with the place's counter when it gives one", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const count = crossingCounter();
+		count("transport.tool.started");
+		const seen: number[] = [];
+		for (let round = 0; round < 2; round++) {
+			getOrThrow(
+				await pullCheckpoint(
+					{
+						session: "s",
+						place: fx.place,
+						home: fx.home,
+						epoch: 1,
+						vault,
+						crossingCount: count,
+						crossing: (_point, info) => void seen.push(info.n),
+					},
+					noContext,
+				),
+			);
+		}
+		expect(seen).toEqual([1, 2]);
 	});
 
 	it("does not call a generation latest before its record is written", async () => {

@@ -96,7 +96,7 @@ export type HomeOptions = {
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
 	readonly env?: HarnessOptions["env"];
 	/** Told when a tool call begins and ends (name and replay flag only). */
-	readonly onCall?: (event: CallEvent) => void;
+	readonly onCall?: (event: CallEvent) => void | Promise<void>;
 	/**
 	 * Called with the store each time the home opens it, before pi does: the Harness runs over the storage it returns.
 	 * `opened` runs with the Harness before anything commits through it; `closed` after the Harness closed. A runner
