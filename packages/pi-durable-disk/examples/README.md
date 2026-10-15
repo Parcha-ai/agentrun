@@ -79,7 +79,7 @@ Examples 01 and 02 predate these conventions and run on an Archil disk. A new ex
    first, and print its path. The model is pi-ai's faux provider, scripted so the run is the same every time. A real model
    is an optional flag (`--model <provider>/<modelId>`, its key from the provider's usual environment variable), never
    needed by the test, and only where the property does not depend on what the model chooses. Two things keep a scripted
-   run the same on every pi version the peers accept (1.0.4 to 1.2): the faux script reads the last message that is not
+   run the same on every pi version the peers accept (1.0.4 to 1.3): the faux script reads the last message that is not
    the system's (pi 1.0.4 puts its system message after the user's), and a tool gives the model its text with
    `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi 1.2 drops
    a returned `content`), and reads a result's text as `output ?? content`.

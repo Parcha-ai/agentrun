@@ -12,7 +12,7 @@ import { memoryStore, openRecovery, runStoppedError, withRecovery } from '@parch
 import { hostScope, NodeIndex } from '../dist/durable/node.js';
 import { NodeDoc, NodeFailure, nodeRunner } from '../dist/durable/node-runner.js';
 import { RecordDoc } from '../dist/durable/record-tool.js';
-import { resultOf } from './fixtures/pi-version.mjs';
+import { atLeast, resultOf } from './fixtures/pi-version.mjs';
 
 const MODEL = { provider: 'faux', modelId: 'faux-1' };
 const VERDICT = { type: 'object', additionalProperties: false, required: ['verdict'], properties: { verdict: { type: 'string', description: 'buy or pass' } } };
@@ -256,3 +256,27 @@ test('under the recovery driver a failed attempt is closed and the second is a n
   assert.deepEqual({ ...(await harness.snapshot(NodeIndex, closed[0], ctx)), startedMs: 0, digest: '' }, { conversation: opened[0].conversation, digest: '', startedMs: 0, closed: true });
   await harness.close(ctx);
 });
+
+// pi-ai 1.3 parses a finished tool call's arguments whole: text that is not a JSON object arrives as `arguments: {}` with
+// an `argumentsError` holding the parse error and the text, and pi-durable's validation refuses the call before the tool
+// runs. Before 1.3 the field is not read, the tool runs with `{}`, and submit's own schema check refuses it.
+const malformedSubmit = (raw) => fauxAssistantMessage([{ ...fauxToolCall('submit', {}), argumentsError: `Unexpected end of JSON input\n\nReceived arguments:\n${raw}` }], { stopReason: 'toolUse' });
+
+for (const kind of ['decide', 'agent']) {
+  test(`${kind === 'agent' ? 'an' : 'a'} ${kind} node's submit with malformed arguments is refused with a tool error, never delivered, and the next valid submit delivers`, async () => {
+    const { harness, runNode, requests } = await rig([malformedSubmit('{"verdict": "buy"'), submit({ verdict: 'buy' }), say('never asked')]);
+    assert.deepEqual(await runNode(verdict({ kind })), { verdict: 'buy' });
+    assert.equal(requests.length, 2, 'one request more, for the refusal');
+    const refusal = requests[1].filter((message) => message.role === 'toolResult');
+    assert.equal(refusal.length, 1);
+    assert.equal(refusal[0].isError, true);
+    const [text] = toolResults(requests[1]);
+    if (atLeast('@earendil-works/pi-ai', 3)) {
+      assert.match(text, /Invalid arguments for tool "submit": Unexpected end of JSON input[\s\S]*Received arguments:\n\{"verdict": "buy"/, 'the model sees the text it sent');
+      assert.doesNotMatch(text, /REJECTED/, 'submit never ran: the call spent none of its submissions');
+    } else {
+      assert.match(text, /^REJECTED \(1\/\d+\) .* must have required properties verdict/, 'submit ran with {} and its schema check answered');
+    }
+    await harness.close(ctx);
+  });
+}
