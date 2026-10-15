@@ -192,6 +192,10 @@ class FakeControl implements SupervisorControl {
   ops: string[] = [];
   /** getObject of a key under this prefix never answers. */
   hangUnder: string | null = null;
+  /** The inode each run directory has, as the disk's `find -inum` reports it; and how many execs ran, and how many next fail. */
+  inodes = new Map<string, number>();
+  execs = 0;
+  execFails = 0;
   /** The next this many removeUser calls fail. */
   removeFails = 0;
   #n = 0;
@@ -233,8 +237,11 @@ class FakeControl implements SupervisorControl {
     this.ops.push(`revoke ${d.clientId}`);
     this.delegations = this.delegations.filter((x) => x.clientId !== d.clientId);
   }
-  async exec() {
-    return { exitCode: 0, stdout: "" };
+  async exec(command: string) {
+    this.execs++;
+    if (this.execFails > 0 && this.execFails--) throw new Error("exec unreachable");
+    const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
+    return { exitCode: 0, stdout: [...this.inodes].filter(([, inode]) => asked.has(inode)).map(([run, inode]) => `${inode} ${run}\n`).join("") };
   }
 }
 
@@ -450,6 +457,23 @@ describe("archilPlace", () => {
     ]);
     assert.equal((ended as { code?: string }).code, "CONTROL_API_FAILED", String(ended));
     control.hangUnder = null;
+  });
+
+  it("status keeps one resolver: a delegation Archil lists with no path costs one exec over many calls, and a failed exec does not fail the next call", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    control.inodes.set(ID, 7);
+    control.delegations = [{ clientId: "c-1", inodeId: 7, isPending: false, isOrphaned: false } as Delegation];
+    for (let i = 0; i < 5; i++) assert.deepEqual((await at.status!()).delegations?.map((d) => d.clientId), ["c-1"]);
+    assert.equal(control.execs, 1, "the inode was attributed once");
+
+    const other = makePlace({ ...REF, control, host });
+    control.execs = 0;
+    control.execFails = 1;
+    await assert.rejects(other.status!(), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
+    assert.deepEqual((await other.status!()).delegations?.map((d) => d.clientId), ["c-1"], "the next call resolved it with a new resolver");
+    assert.equal(control.execs, 2);
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {
