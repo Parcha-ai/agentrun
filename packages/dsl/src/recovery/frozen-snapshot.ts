@@ -7,8 +7,76 @@ import { RecoveryError } from "./errors.js";
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 export const FROZEN_SNAPSHOT_SCHEMA = "agentrun.frozen_run.v3";
+/** The keyed layout: what lies in a map item is kept in that item's record beside the state, and a state the driver
+ *  references is kept once by its digest, so no record rewritten at a commit grows with a map's items. */
+export const FROZEN_SNAPSHOT_SCHEMA_V4 = "agentrun.frozen_run.v4";
 
 type State = Record<string, unknown>;
+
+/** A committed state inside a map item, against its map's base (the state the map started from): the keys it sets
+ *  (new, or holding another value than the base's), the base's keys it lacks, and the digest of the whole state, which
+ *  a rebuild must reach. */
+export type StateDelta = { set: State; unset: string[]; sha256: string };
+
+/** A map the run started: how many items it has, how many item records were written (always the first ones: items
+ *  start in order, and an item has a record from its start), and the digest of its base. */
+export type MapEntry = { length: number; items: number; base: string };
+
+/** One map item's share of the driver's state (`agentrun.items`), keyed by the item's path. Every path in it lies in
+ *  this item and in no item nested in it. */
+export type ItemRecord = {
+  driver: string;
+  map: string;
+  index: number;
+  base: string;
+  /** The journal revision of the commit that wrote this value. */
+  revision: number;
+  status: "running" | "committed" | "failed";
+  frame: {
+    done: string[];
+    states: Record<string, StateDelta>;
+    chains: PathFrame["chains"];
+    loops: PathFrame["loops"];
+    routes: PathFrame["routes"];
+    inputs: PathFrame["inputs"];
+    steps: PathFrame["steps"];
+  };
+  effects: string[];
+  clocks: Record<string, number>;
+  files: Record<string, string>;
+  unknownResponses: Record<string, unknown>;
+  /** Maps started inside this item. */
+  maps: Record<string, MapEntry>;
+};
+
+/** The driver's own record in the keyed layout: the v3 snapshot without what lies in map items, its frame's states by
+ *  digest, and the maps the run started. */
+export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
+  schema: typeof FROZEN_SNAPSHOT_SCHEMA_V4;
+  pin: Omit<PathFrame, "states"> & { states: Record<string, string> };
+  maps: Record<string, MapEntry>;
+};
+
+/** Two values a state holds under one key are the same value. A key an item copied from its base holds the base's own
+ *  object, or one with the same JSON. */
+const sameValue = (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b);
+
+/** `state` against `base`, as a map item keeps it. */
+export function stateDelta(base: State, state: State, sha256: string): StateDelta {
+  const set: State = {};
+  for (const [key, value] of Object.entries(state)) if (!Object.hasOwn(base, key) || !sameValue(base[key], value)) set[key] = value;
+  return { set, unset: Object.keys(base).filter((key) => !Object.hasOwn(state, key)), sha256 };
+}
+
+/** The state a delta was taken from, in its own key order: the base's keys first (a map item starts from a copy of its
+ *  base), then the keys it added. */
+export function applyStateDelta(base: State, delta: StateDelta): State {
+  const unset = new Set(delta.unset);
+  const state: State = {};
+  for (const key of Object.keys(base)) if (!unset.has(key)) state[key] = Object.hasOwn(delta.set, key) ? delta.set[key] : base[key];
+  for (const [key, value] of Object.entries(delta.set)) if (!Object.hasOwn(base, key)) state[key] = value;
+  return state;
+}
 
 /** What a question's receipts need beyond its answer: the request's producer invocation, its size and its
  *  latency. */
