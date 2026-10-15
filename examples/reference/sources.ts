@@ -29,8 +29,14 @@ export function checkItems(items: unknown, label: string): SourceItem[] {
   return items as SourceItem[];
 }
 
+/** A demo's `sources.json` has two kinds of entry: `files` (or `items`), fetched and checked by size and SHA-256, and `pages`, which the agent visits live (each with its URL, what it shows and its hand-check date). Pages are passed through untouched: never fetched, never refused. */
 export function readSources(path: string): Sources {
-  return { items: checkItems((JSON.parse(readFileSync(path, 'utf8')) as { items?: unknown }).items, path) };
+  const file = JSON.parse(readFileSync(path, 'utf8')) as { files?: unknown; items?: unknown; pages?: unknown };
+  if (file.files === undefined && file.items === undefined) {
+    if (Array.isArray(file.pages)) return { items: [] };
+    throw new Error(`${path} lists neither files (checked by size and SHA-256) nor pages (visited live)`);
+  }
+  return { items: checkItems(file.files ?? file.items, path) };
 }
 
 /** The files of `items` that are neither in the job's own files nor already in `work`: what a no-key run would lack. */

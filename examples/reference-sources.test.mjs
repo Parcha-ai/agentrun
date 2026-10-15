@@ -62,7 +62,10 @@ test('sources.json is checked when it is read', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const write = (value) => { const file = join(tmp, 's.json'); writeFileSync(file, JSON.stringify(value)); return file; };
-  assert.throws(() => readSources(write({})), /has no items/);
+  assert.throws(() => readSources(write({})), /lists neither files .* nor pages/);
+  // Pages (visited live by the agent) are passed through untouched: never fetched, never refused, whatever they hold.
+  assert.deepEqual(readSources(write({ pages: [{ id: 'caiso', dashboardUrl: 'https://e.x/dash', checked: { date: '2026-10-14' } }] })).items, []);
+  assert.equal(readSources(write({ files: [{ id: 'a', url: 'https://e.x/a.png', bytes: 1, sha256: sha('x') }], pages: [{ id: 'p' }] })).items.length, 1, 'files and pages in one file');
   assert.throws(() => readSources(write({ items: [{ id: '../x', url: 'https://e.x/a.png', bytes: 1, sha256: sha('x') }] })), /id is a file name/);
   assert.throws(() => readSources(write({ items: [{ id: 'a', url: 'ftp://e.x/a.png', bytes: 1, sha256: sha('x') }] })), /no http or https url/);
   assert.throws(() => readSources(write({ items: [{ id: 'a', url: 'https://e.x/a.png', bytes: 1, sha256: 'abc' }] })), /size in bytes and its SHA-256/);

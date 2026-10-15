@@ -163,7 +163,7 @@ async function child(options: DemoOptions) {
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     let boxFiles = options.job.files;
     if (options.sourcesFor || options.spec.sources) {
-      const items = options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(resolve(dirname(fileURLToPath(options.self)), typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json')).items;
+      const items = options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(sourcesPath(options)).items;
       if (live || env.FETCH_SOURCES === '1') {
         await mkdir(place.work, { recursive: true });
         const got = await fetchSources({ items }, place.work, fetch, 60_000, env.CACHE_DIR);
@@ -317,4 +317,10 @@ function summarize(options: DemoOptions, result: DemoResult) {
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
+}
+
+/** The demo's `sources.json`: `true` is the one beside `run.ts`; a path is relative to the demo's directory, or to the repository when it starts with `examples/` (as demo.json's schema writes it). */
+function sourcesPath(options: DemoOptions): string {
+  const named = typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json';
+  return named.startsWith('examples/') ? resolve(options.root ?? ROOT, named) : resolve(dirname(fileURLToPath(options.self)), named);
 }
