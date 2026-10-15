@@ -661,7 +661,7 @@ test('Fakes.extensions are installed on a no-key run, and Fakes.vision is called
   assert.deepEqual(local.host.tools.extensions, [probeExtension]);
   const { result } = await run(t, {}, ['--json'], { DEMO_VISION_PROBE: '1' });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'vision-called.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true, input: { company: 'Acme Ltd' } }, 'the third argument is the run\'s input: the job\'s own by default');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'vision-called.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true, input: { company: 'Acme Ltd' }, place: { root: result.dir, work: join(result.dir, 'work') } }, 'the third argument is the run\'s input (the job\'s own by default) and its place, as a tool sees it');
   // And the one the run was given: --input, on fakes and live alike (one seam).
   const given = await run(t, {}, ['--json', '--input', '{"company":"Gamma Ltd"}'], { DEMO_VISION_PROBE: '1' });
   assert.deepEqual(JSON.parse(readFileSync(join(given.result.dir, 'vision-called.json'), 'utf8')).input, { company: 'Gamma Ltd' });
@@ -744,7 +744,7 @@ test('a live child gets exactly the environment names demo.json declares (keys, 
   const seen = JSON.parse(readFileSync(join(result.dir, 'env-seen.json'), 'utf8'));
   for (const name of ['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'PATH']) assert.ok(seen.includes(name), `${name} reaches the child`);
   for (const name of ['GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY', 'DEMO_SPEC_NOTE']) assert.ok(!seen.includes(name), `${name} was not declared and does not reach a live child`);
-  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'live-vision.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true, input: { company: 'Acme Ltd' } }, 'live vision gets (host, running, { input }) like fakes.vision');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'live-vision.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true, input: { company: 'Acme Ltd' }, place: { root: result.dir, work: join(result.dir, 'work') } }, 'live vision gets (host, running, { input, place }) like fakes.vision');
   const givenLive = await run(t, { keys, programs }, ['--json', '--live', '--input', '{"company":"Gamma Ltd"}'], { DEMO_LIVE_PROBE: '1', ...secrets });
   assert.deepEqual(JSON.parse(readFileSync(join(givenLive.result.dir, 'live-vision.json'), 'utf8')).input, { company: 'Gamma Ltd' }, 'live sees --input too');
 });
