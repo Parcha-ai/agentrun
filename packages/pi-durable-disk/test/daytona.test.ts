@@ -671,6 +671,14 @@ test("a box that fails, never starts, or refuses an upload is deleted, and the e
   assert.deepEqual(upload.calls.filter((c) => c.op === "remove").map((c) => c.arg), ["sb-1"]);
 });
 
+test("a box that is deleted while it starts (a host lost mid-start) fails the start, typed, and is removed all the same", async () => {
+  const lost = world();
+  lost.client.get = async () => null; // Daytona no longer knows the box
+  await assert.rejects(lost.host.start(REF, TOKEN), (e: unknown) => e instanceof DaytonaHostError && e.code === "START_FAILED" && /went to deleted while starting/.test(e.message));
+  assert.deepEqual(lost.calls.filter((c) => c.op === "remove").map((c) => c.arg), ["sb-1"], "the remove is still sent: a box only lost to this view is not left behind");
+  assert.equal(lost.uploads.length, 0, "no token left for a box that never started");
+});
+
 // ---- stop ----------------------------------------------------------------------------------------------------------------
 
 test("stop: another fleet's handle and a gone box are no-ops; a refused delete powers the box off and deletes again; a second refusal is typed", async () => {

@@ -5,7 +5,8 @@ import { daytonaBoxes } from "../src/box/daytona.ts";
 import { registerBoxConformance } from "../src/testing/index.ts";
 
 const CANARY = "PI_TRANSPORT_HOST_CANARY";
-const GONE_WAIT_MS = 30_000;
+/** How long a destroyed box may still list by its labels: Daytona deletes in the background, often a minute and more. */
+const GONE_WAIT_MS = 180_000;
 const LIFETIME_MS = 60_000;
 /** A create allows two minutes to start and a listing to settle; a case that makes a box must not give up before that. */
 const CASE_TIMEOUT_MS = 300_000;
