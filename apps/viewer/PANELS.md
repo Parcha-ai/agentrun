@@ -103,6 +103,19 @@ checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/f
 the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
 focus.
 
+## Rebuild a v4 item's state
+
+A v4 run (RECORDING.md section 5, draft 26: the keyed layout) keeps each map item in an `agentrun.items` document, its
+states as deltas against its map's base, and each base in an `agentrun.states` document. A panel never rebuilds an
+item's state itself: it imports `itemStateOf(item, states, path)` from `./items.ts`, which runs the DSL's own `itemState`
+with the page's SHA-256 (`./sha256.ts`). It returns `{ state }`, or `{ unreadable }` saying why (the base is missing, a
+digest differs, the item keeps no state at that path), and a panel shows such an item as unreadable, never a guess.
+`statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup `itemStateOf` takes.
+
+The DSL's module is read from `packages/dsl/src/recovery/item-state.ts` each time the viewer is built, never copied
+here: it is the one file outside `apps/viewer` a viewer module may import, the build inlines it in a scope of its own,
+and it refuses to build if that module ever imports anything.
+
 ## A panel in full
 
 ```ts
