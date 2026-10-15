@@ -374,7 +374,7 @@ function recordingPlace(calls, recordDir, options = {}) {
       } catch { return 0; }
     };
     return {
-      ...inner, name: 'fake', kills: options.kills ?? ['process', 'box'], ...(options.token ? { token: true } : {}),
+      ...inner, name: 'fake', kills: options.kills ?? ['process', 'box'], ...(options.token ? { token: (attempt) => `mount-token-${attempt}` } : {}),
       start: async (order) => { calls.push({ call: 'start', gen: order.gen, stdin: order.stdin, secretInEnv: Object.values(order.env).includes(order.stdin) }); return inner.start(order); },
       kill: async (runner, kind) => { calls.push({ call: 'kill', kind, killLines: killLinesNow() }); return inner.kill(runner, kind); },
       recover: async (last, kind, order) => { calls.push({ call: 'recover', kind, gen: order.gen, stdin: order.stdin }); return inner.recover(last, kind, order); },
@@ -383,7 +383,7 @@ function recordingPlace(calls, recordDir, options = {}) {
   };
 }
 
-test('the place seam: the supervisor starts, kills and recovers through the place, writes the kill line BEFORE the place kills, and hands a claim-opening place a fresh mount token on stdin each attempt', { timeout: 300_000 }, async (t) => {
+test('the place seam: the supervisor starts, kills and recovers through the place, writes the kill line BEFORE the place kills, and passes the token the place mints for each attempt on stdin', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
@@ -400,11 +400,16 @@ test('the place seam: the supervisor starts, kills and recovers through the plac
   assert.ok(kills.every((call) => call.killLines >= 1), 'the kill line was on the recording when the place was asked to kill');
   assert.deepEqual(kills.map((call) => call.killLines), [1, 2], 'one more kill line before each kill');
   const starts = calls.filter((call) => call.call === 'start' || call.call === 'recover');
-  assert.equal(new Set(starts.map((call) => call.stdin)).size, 3, 'a fresh token for each attempt');
-  assert.ok(starts.every((call) => typeof call.stdin === 'string' && call.stdin.length > 0));
+  assert.deepEqual(starts.map((call) => call.stdin), ['mount-token-1', 'mount-token-2', 'mount-token-3'], 'the place mints each attempt\'s token and the supervisor passes it on stdin as it is');
   assert.ok(!calls.some((call) => call.secretInEnv), 'the token is never in the environment');
   assert.deepEqual(validateRecording(recording), []);
   assert.deepEqual(readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'kill').map((line) => line.data.kind), ['process', 'box']);
+  // The supervisor read nothing under the run's directory: the result blob is the record the last runner reported, and the store's hash came from its report too.
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8')).record.company, 'Acme Ltd');
+  assert.match(manifest.source.store_sha256, /^[0-9a-f]{64}$/);
+  assert.notEqual(manifest.source.store_sha256, '0'.repeat(64));
+  assert.equal(localPlace({ self: FIXTURE, paths: { id: 'r', root: '/x', work: '/x/work', store: '/x/store' } }).token, undefined, 'the local place mints no token');
 });
 
 test('a place that cannot lose its machine refuses a box kill, and says which place', { timeout: 300_000 }, async (t) => {

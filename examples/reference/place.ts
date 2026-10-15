@@ -6,8 +6,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { RunPlace } from './host.ts';
 
-/** How a runner ended. `outcome` is what the child printed: how the run ended, when it got that far. */
-export type Exit = { exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string }; stderr: string };
+/** How a runner ended. `outcome` is what the child reported on its way out: how the run ended, the record it delivered and the hash of its store (the supervisor reads nothing under the run's directory). */
+export type Exit = { exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; storeSha256?: string }; stderr: string };
 /** One process of the session in a place. `epoch` is the place's lease epoch (1 for a place with no lease; a box restore raises it). */
 export type Runner = { epoch: number; pid?: number; exited: Promise<Exit> };
 /** What a runner is handed: its number in the run, its environment (the run's directory, the kill plan, the mode), and, for a place whose runner opens a claim, the per-attempt
@@ -20,8 +20,8 @@ export type Place = {
   name: string;
   /** The session's paths in the place: id, root, work, store. */
   paths: RunPlace;
-  /** A place whose runner opens a claim (Archil) needs a mount token for each attempt: the supervisor mints one and hands it on the runner's standard input. */
-  token?: boolean;
+  /** A place whose runner opens a claim (Archil) mints the mount token of each attempt itself: the supervisor passes what this returns on the runner's standard input, never in argv or env. The local place has none. */
+  token?(attempt: number): string | undefined | Promise<string | undefined>;
   /** What this place can lose: `process` always, `box` when it is a machine of its own. */
   kills: ReadonlyArray<'process' | 'box'>;
   start(order: RunnerOrder): Promise<Runner>;

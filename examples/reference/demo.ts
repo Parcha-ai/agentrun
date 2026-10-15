@@ -16,7 +16,7 @@
 // with its `kind`, `result`) from outside every process.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +25,7 @@ import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
 import type { BoxProvider } from '@parcha/pi-transport';
-import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
+import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -162,7 +162,9 @@ async function child(options: DemoOptions) {
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
     await recorder?.detach();
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } }));
+    const storeFile = join(place.store, 'run.sqlite');
+    const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}) } }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
@@ -232,7 +234,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
   let overBudget = false;
-  const paths = await placeAt(dir);
+  // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
+  const paths = pathsAt(dir);
   const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) }) : localPlace({ self: options.self, paths, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) } : {}) });
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
@@ -247,8 +250,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       const request = join(scratch, `kill-${gen}.json`);
-      // A place whose runner opens a claim gets a fresh mount token for this attempt, on its standard input.
-      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, PLAN: JSON.stringify(plan) }, ...(place.token ? { stdin: randomUUID() } : {}) };
+      // A place that mints a token for each attempt (a claim's mount token) has it passed on the runner's standard input, never in argv or env.
+      const token = place.token ? await place.token(gen) : undefined;
+      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
@@ -282,15 +286,17 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       }
       break;
     }
-    const delivered = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')) as { record: unknown }; } catch { return null; } })();
+    // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
+    const last = processes.at(-1)?.outcome;
+    const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
-    const blob = delivered ? openRecorder({ dir: recordDir }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json') : undefined;
+    const blob = delivered ? openRecorder({ dir: recordDir }).blob(JSON.stringify({ record: delivered.record }, null, 2), 'json') : undefined;
     if (blob) supervisor.host('result', { gen: processesStarted, blob, title: 'The record' }, { blobs: [blob] });
     const resultBlob = blob ? { blob, title: 'The record' } : undefined;
     finishRecording(recordDir, {
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
-      code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
+      code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     const usd = cost(readEventsOf(recordDir)).usd;
     return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget };
