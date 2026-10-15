@@ -264,7 +264,7 @@ const malformedSubmit = (raw) => fauxAssistantMessage([{ ...fauxToolCall('submit
 
 for (const kind of ['decide', 'agent']) {
   test(`${kind === 'agent' ? 'an' : 'a'} ${kind} node's submit with malformed arguments is refused with a tool error, never delivered, and the next valid submit delivers`, async () => {
-    const { harness, runNode, requests } = await rig([malformedSubmit('{"verdict": "buy"'), submit({ verdict: 'buy' }), say('never asked')]);
+    const { harness, runNode, requests, opened } = await rig([malformedSubmit('{"verdict": "buy"'), submit({ verdict: 'buy' }), say('never asked')]);
     assert.deepEqual(await runNode(verdict({ kind })), { verdict: 'buy' });
     assert.equal(requests.length, 2, 'one request more, for the refusal');
     const refusal = requests[1].filter((message) => message.role === 'toolResult');
@@ -273,10 +273,13 @@ for (const kind of ['decide', 'agent']) {
     const [text] = toolResults(requests[1]);
     if (atLeast('@earendil-works/pi-ai', 3)) {
       assert.match(text, /Invalid arguments for tool "submit": Unexpected end of JSON input[\s\S]*Received arguments:\n\{"verdict": "buy"/, 'the model sees the text it sent');
-      assert.doesNotMatch(text, /REJECTED/, 'submit never ran: the call spent none of its submissions');
+      assert.doesNotMatch(text, /REJECTED/, 'submit never ran');
     } else {
       assert.match(text, /^REJECTED \(1\/\d+\) .* must have required properties verdict/, 'submit ran with {} and its schema check answered');
     }
+    const { record, attempts } = await harness.snapshot(RecordDoc, opened[0].conversation, ctx);
+    assert.deepEqual(record, { verdict: 'buy' });
+    assert.equal(attempts, atLeast('@earendil-works/pi-ai', 3) ? 1 : 2, 'from 1.3 the malformed call spends none of the node\'s submissions');
     await harness.close(ctx);
   });
 }
