@@ -10,7 +10,8 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { lstat, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -128,14 +129,20 @@ function doorOf(record) {
   return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
 }
 
-/** `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer. */
-export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000 }) {
+/**
+ * `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer.
+ * `origin` is the address people open the page at (default: the address it binds), which a local Chrome's live view
+ * allows to frame it and checks its WebSockets against.
+ */
+export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin }) {
   const root = join(home.dir, "runs");
   const children = new Map();
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
   const settling = new Set();
+  const tunnels = new Set();
+  let pageOrigin = origin ?? "";
 
   // ---- the agent home ----------------------------------------------------------------------------------------------
   // Read in one pass (it takes the home's lock for a moment), and again only when agent.sqlite has changed: the history
@@ -201,6 +208,52 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     return url && ["https:", "http:"].includes(url.protocol) ? { url: url.href, key: createHash("sha256").update(url.href).digest("hex").slice(0, 12) } : null;
   }
 
+  /** Which browser the run drives, and why it shows no live view when it cannot (live.json's `browser` and `note`). */
+  async function browserOf(run) {
+    const live = await readJson(join(run.dir, "live.json"));
+    return { browser: typeof live?.browser === "string" ? live.browser : null, note: typeof live?.note === "string" ? live.note : null };
+  }
+
+  // ---- a local Chrome's live view: pi-browser's viewer, served by the run on loopback, reached here ---------------------
+  /** The loopback port run `id` serves its live view on (`live-host.json`), or null. */
+  async function liveHostOf(id) {
+    const run = await loadRun(id).catch(() => null);
+    const port = run && !["done", "failed"].includes(run.record?.status) ? (await readJson(join(run.dir, "live-host.json")))?.port : undefined;
+    return Number.isInteger(port) && port > 0 && port < 65_536 ? port : null;
+  }
+
+  /** The viewer's page and files, passed through as they are: the viewer sets its own headers (CSP, no-referrer). */
+  async function proxyLive(req, res, id) {
+    const port = await liveHostOf(id);
+    if (!port) throw new HttpError(404, "no live view");
+    await new Promise((resolve) => {
+      const up = httpRequest({ host: "127.0.0.1", port, method: req.method, path: req.url, headers: req.headers }, (answer) => {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(res).once("finish", resolve);
+      });
+      up.once("error", () => (res.headersSent ? res.end() : send(res, 502, { error: "FAILED", message: "the run's live view did not answer" }), resolve()));
+      req.pipe(up);
+    });
+  }
+
+  /** The viewer's WebSocket: its upgrade request goes to the run as it came (its Origin included, which the viewer checks),
+   *  then the bytes flow both ways untouched. The token is in the first message, never in the request. */
+  async function upgradeLive(req, socket, head, id) {
+    const port = await liveHostOf(id);
+    if (!port) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    const up = connect(port, "127.0.0.1", () => {
+      const lines = [`${req.method} ${req.url} HTTP/1.1`];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+      up.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (head?.length) up.write(head);
+      socket.pipe(up).pipe(socket);
+    });
+    tunnels.add(socket);
+    // Either side ending ends both: a viewer's tab closed, or the run's viewer let it go.
+    const end = () => (tunnels.delete(socket), socket.destroy(), up.destroy());
+    for (const side of [up, socket]) side.once("error", end).once("end", end).once("close", end);
+  }
+
   /** A live run's rows from its door: the `snapshot` event of `GET /events`, through the same reducer as the page's stream. */
   async function doorRows(door) {
     const abort = new AbortController();
@@ -232,6 +285,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const status = statusOf(run);
     const store = RELEASED.has(run.record?.status) ? await readStore(run).catch(() => null) : null;
     const view = await liveView(run);
+    const { browser, note } = await browserOf(run);
     const door = doorOf(run.record);
     const live = door ? await doorState(door) : null;
     return {
@@ -249,6 +303,8 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       costUsd: store ? store.costUsd : (run.index.cost ?? null),
       wakeAt: run.record?.wakeAt ?? null,
       liveView: view ? { key: view.key } : null,
+      browser,
+      liveNote: view ? null : note,
       error: startErrors.get(run.id) ?? null,
     };
   }
@@ -268,7 +324,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   function launch(id) {
     if (children.has(id)) return;
     const [command, ...args] = start;
-    const child = spawn(command, [...args, join(root, id)], { stdio: ["ignore", "inherit", "inherit"], env: process.env });
+    const child = spawn(command, [...args, join(root, id)], { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, AGENT_PAGE_ORIGIN: pageOrigin } });
     children.set(id, child);
     exits.delete(id);
     const ended = (code) => {
@@ -516,6 +572,8 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (code === null) throw new HttpError(404, "no such module");
       return send(res, 200, code, { "content-type": "text/javascript; charset=utf-8" });
     }
+    const viewer = /^\/live\/([^/]+)\//.exec(path);
+    if (viewer && (req.method === "GET" || req.method === "HEAD")) return proxyLive(req, res, viewer[1]);
     if (req.method === "GET" && path === "/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
     if (req.method === "POST" && path === "/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
     if (req.method === "GET" && path === "/search") {
@@ -586,14 +644,22 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       send(res, status, { error: error.code ?? (status === 500 ? "FAILED" : "REFUSED"), message: error.message });
     });
   });
+  server.on("upgrade", (req, socket, head) => {
+    // A target no URL parser takes is refused like any other that names no run's viewer.
+    const id = /^\/live\/([^/]+)\//.exec(URL.parse(req.url ?? "/", "http://app")?.pathname ?? "")?.[1];
+    if (!id || (names && !names.has((req.headers.host ?? "").toLowerCase()))) return void socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    upgradeLive(req, socket, head, id).catch(() => socket.destroy());
+  });
   await new Promise((resolve, reject) => (server.once("error", reject), server.listen(port, host, resolve)));
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
   // A run released before this server last stopped, and never carried back, is carried back now.
   for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(settle(id));
 
+  const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
+  pageOrigin = origin ?? url;
   return {
-    url: `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`,
+    url,
     port: address.port,
     children,
     async close() {
@@ -606,6 +672,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
       await sleep(0);
       await Promise.all(settling);
+      for (const socket of tunnels) socket.destroy();
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
     },
   };
@@ -619,12 +686,13 @@ async function main() {
       port: { type: "string", default: "8787" },
       start: { type: "string", default: process.env.AGENT_RUN_LAUNCHER ?? "" },
       "allow-host": { type: "string", multiple: true, default: [] },
+      origin: { type: "string" },
     },
   });
   const home = await ensureAgentHome(values.home);
   const launcher = join(HERE, "agent", "start-run.mjs");
   const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
-  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"] });
+  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], ...(values.origin ? { origin: values.origin } : {}) });
   if (!isLoopback(values.host)) console.error(`warning: ${values.host} is not loopback. This server has no sign-in: anyone who can reach it can read the runs' files and start agents.`);
   console.log(`runs app on ${server.url}/ (agent home ${home.dir})`);
   const stop = () => server.close().then(() => process.exit(0));

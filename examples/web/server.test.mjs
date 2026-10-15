@@ -3,9 +3,9 @@
 // by hand from the fixtures, not read back from the code.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -417,6 +417,7 @@ const commit = () => {
   for (const entry of JSON.parse(readFileSync(process.env.FAKE_ENTRIES, "utf8"))) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
   db.close();
 };
+writeFileSync(join(dir, "origin.txt"), process.env.AGENT_PAGE_ORIGIN ?? "");
 const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 1, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 write("running");
 process.on("SIGTERM", () => { commit(); write("sleeping"); process.exit(0); });
@@ -453,6 +454,7 @@ test("a run that answered is released and carried back once, with the sign-in it
   let state = await readAgentHome(home);
   for (let i = 0; i < 100 && !state.runs[id].endedAt; i++) await new Promise((r) => setTimeout(r, 50)), (state = await readAgentHome(home));
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
+  assert.equal(readFileSync(join(home.dir, run.path, "origin.txt"), "utf8"), server.url, "the run is told the page's origin, for a local Chrome's viewer");
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
 
   // Carried back, the run is finished: a message is refused with a code, and the run is never woken.
@@ -471,16 +473,61 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.equal((await readAgentHome(home)).runs[second.id].endedAt, undefined);
 });
 
-test("a request target that is not a URL is answered 400, and the server goes on", async (t) => {
+test("a request target that is not a URL is refused, as a request or as a WebSocket upgrade, and the server goes on", async (t) => {
   const { server, json } = await app(t);
   const url = new URL(server.url);
-  const answer = await new Promise((resolve, reject) => {
-    const socket = connect(Number(url.port), url.hostname, () => socket.write(`GET http://[ HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`));
+  const raw = (extra) => new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => socket.write(`GET http://[ HTTP/1.1\r\nHost: ${url.host}\r\n${extra}Connection: close\r\n\r\n`));
     let data = "";
     socket.on("data", (chunk) => (data += chunk)).on("end", () => resolve(data)).on("error", reject);
   });
-  assert.match(answer, /^HTTP\/1\.1 400 /);
+  assert.match(await raw(""), /^HTTP\/1\.1 400 /);
+  assert.match(await raw("Upgrade: websocket\r\nConnection: Upgrade\r\n"), /^HTTP\/1\.1 403 /);
   assert.deepEqual((await json("/runs")).runs, [], "the server still answers");
+});
+
+test("a local Chrome's live view is reached on the page's origin: the viewer's files and its WebSocket go to the run's loopback port, Origin untouched", async (t) => {
+  const { home, root, server, get, json } = await app(t);
+  const seen = { origins: [], paths: [] };
+  const viewer = createServer((req, res) => (seen.paths.push(req.url), res.writeHead(200, { "content-type": "text/html", "content-security-policy": "frame-ancestors x" }).end("viewer page")));
+  const sockets = new Set();
+  viewer.on("upgrade", (req, socket) => {
+    seen.origins.push(req.headers.origin);
+    seen.paths.push(req.url);
+    sockets.add(socket);
+    socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    socket.on("data", (data) => socket.write(data)).on("end", () => socket.end());
+  });
+  await new Promise((resolve) => viewer.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (viewer.close(resolve), viewer.closeAllConnections(), sockets.forEach((socket) => socket.destroy()))));
+  const dir = await makeRun(home, "local", { status: "sleeping" });
+  writeFileSync(join(dir, "live-host.json"), JSON.stringify({ port: viewer.address().port }));
+  await makeRun(home, "plain", { status: "sleeping" });
+
+  const page = await get("/live/local/v/abc");
+  assert.deepEqual([page.status, await page.text(), page.headers.get("content-security-policy")], [200, "viewer page", "frame-ancestors x"], "the viewer's own headers pass through");
+  assert.equal((await get("/live/plain/v/abc")).status, 404, "a run with no viewer");
+  assert.equal((await get("/live/nobody/v/abc")).status, 404);
+
+  const url = new URL(server.url);
+  const upgrade = (host) => new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: url.hostname, port: url.port, path: "/live/local/v/abc/ws", headers: { host, connection: "Upgrade", upgrade: "websocket", origin: server.url } });
+    req.once("upgrade", (res, socket) => {
+      socket.once("data", (data) => (socket.destroy(), resolve(String(data))));
+      socket.write("hello");
+    });
+    req.once("response", (res) => resolve(res.statusCode));
+    req.once("error", reject);
+    req.end();
+  });
+  assert.equal(await upgrade(url.host), "hello", "bytes flow both ways");
+  assert.deepEqual(seen.origins, [server.url], "the viewer sees the page's Origin and checks it");
+  assert.ok(seen.paths.every((p) => p.startsWith("/live/local/")) && !seen.paths.some((p) => p.includes("?")), "no token in any path or query");
+  assert.equal(await upgrade(`evil.example:${url.port}`), 403, "another Host is refused");
+
+  writeFileSync(join(root, "plain", "live.json"), JSON.stringify({ liveViewUrl: null, sessionId: null, change: "none", browser: "chrome", note: "live view not available for local Chrome yet" }));
+  const summary = await json("/runs/plain");
+  assert.deepEqual([summary.liveView, summary.browser, summary.liveNote], [null, "chrome", "live view not available for local Chrome yet"]);
 });
 
 test("a door address in run.json that is not loopback http is never contacted", async (t) => {

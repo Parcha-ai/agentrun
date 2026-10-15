@@ -12,6 +12,9 @@
 // string.
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 import { join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -19,12 +22,14 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, type ConversationId, type Harness, type ToolRegistration } from "@earendil-works/pi-durable";
-import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
+import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
+import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
 import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, recordWake, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
+import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 /** Long enough for a person to sign in in the live view while the agent's turn has ended. */
@@ -116,6 +121,62 @@ export function liveOf(row: SessionRow, change: SessionChange, at = new Date()) 
   return { liveViewUrl: view?.fullscreen ?? view?.framed ?? null, sessionId: row.session.resourceId, change, updatedAt: at.toISOString() };
 }
 
+// ---- the browser: Browserbase, or the run's own Chrome -------------------------------------------------------------------
+
+export const NO_LOCAL_VIEW = "live view not available for local Chrome yet";
+
+/** Which browser the run drives (`AGENT_BROWSER`), and the provider options for it: a local Chrome is the one
+ *  start-run.mjs started for this run, attached by its endpoint, so a release leaves it running for start-run to stop. */
+export function browserOptions(env: NodeJS.ProcessEnv): { kind: "browserbase"; options: { env: NodeJS.ProcessEnv } } | { kind: "chrome"; options: { endpoint: string } } {
+  const kind: BrowserKind = browserOf(env);
+  if (kind === "browserbase") {
+    if (!env.BROWSERBASE_API_KEY) throw new Error("set BROWSERBASE_API_KEY");
+    return { kind, options: { env } };
+  }
+  const endpoint = env.AGENT_CHROME_ENDPOINT;
+  if (!endpoint || !/^http:\/\/127\.0\.0\.1:\d+$/.test(endpoint)) throw new Error("set AGENT_CHROME_ENDPOINT to the run's Chrome on 127.0.0.1 (start-run.mjs starts it and sets it)");
+  return { kind, options: { endpoint } };
+}
+
+/** pi-browser's live view, by shape: the viewer's host, and the provider wrapper that hands its URL to `onSession`. */
+type LiveViewHost = {
+  handle(req: IncomingMessage, res: ServerResponse): boolean;
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
+  close(): Promise<void>;
+};
+type LiveViewModule = {
+  createLiveView(options: { hostOrigin: string | null; baseUrl?: string }): LiveViewHost;
+  liveViewProvider(provider: BrowserProvider, host: LiveViewHost): BrowserProvider;
+};
+
+/**
+ * A local Chrome's live view, when this pi-browser has one (`./live-view`; `AGENT_LIVE_VIEW_MODULE` names another
+ * module) and the page's origin is known (`AGENT_PAGE_ORIGIN`). The viewer is mounted on a loopback server of this run,
+ * whose port goes into `live-host.json` (0600) beside the run; the example's server reaches it at `/live/<run id>/`, on
+ * the page's own origin, which the viewer checks every WebSocket against. Null otherwise: the page says so.
+ */
+async function localLiveView(where: AppContext, env: NodeJS.ProcessEnv): Promise<{ wrap(provider: BrowserProvider): BrowserProvider; close(): Promise<void> } | null> {
+  const origin = env.AGENT_PAGE_ORIGIN;
+  if (!origin) return null;
+  const specifier: string = env.AGENT_LIVE_VIEW_MODULE || "@parcha/pi-browser/live-view";
+  const mod = (await import(specifier).catch(() => null)) as Partial<LiveViewModule> | null;
+  if (typeof mod?.createLiveView !== "function" || typeof mod.liveViewProvider !== "function") return null;
+  const host = mod.createLiveView({ hostOrigin: origin, baseUrl: `${origin}/live/${where.ref.id}` });
+  const server = createServer((req, res) => void (host.handle(req, res) || res.writeHead(404).end()));
+  server.on("upgrade", (req, socket, head) => void (host.upgrade(req, socket, head) || socket.destroy()));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await writePrivate(join(where.root, "live-host.json"), { port: (server.address() as AddressInfo).port });
+  const wrap = mod.liveViewProvider;
+  return {
+    wrap: (provider) => wrap(provider, host),
+    close: async () => {
+      await host.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
 // ---- the model -----------------------------------------------------------------------------------------------------------
 
 /** An OpenAI Responses endpoint the host names in its environment. */
@@ -153,16 +214,22 @@ function modelsOf(env: NodeJS.ProcessEnv) {
  * Browserbase context by default.
  */
 export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal) } = {}) {
-  if (!env.BROWSERBASE_API_KEY) throw new Error("set BROWSERBASE_API_KEY");
+  const chosen = browserOptions(env);
   const state = await readAgentHome(await openAgentHome(resolve(env.AGENT_HOME || join(where.root, "..", ".."))));
   const { definition } = state;
   const instructions = promptOf(state);
   const { models, model, thinking } = modelsOf(env);
   // Resolved before the run serves: the root conversation's creating commit carries it.
   let contextId: string | undefined;
+  let resolved = false;
   const live = join(where.root, "live.json");
+  const viewer = chosen.kind === "chrome" ? await localLiveView(where, env) : null;
+  const note = chosen.kind === "chrome" && !viewer ? { note: NO_LOCAL_VIEW } : {};
+  const page = { browser: chosen.kind, ...note };
+  if (chosen.kind === "chrome") await writePrivate(live, { liveViewUrl: null, sessionId: null, change: "none", updatedAt: new Date().toISOString(), ...page });
   let liveWrites = Promise.resolve();
-  const provider = browserbaseProvider({ env });
+  const base = chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options);
+  const provider = viewer ? viewer.wrap(base) : base;
 
   const browser = createBrowserExtension({
     provider: () => provider,
@@ -181,7 +248,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     },
     redact: { values: () => (contextId ? [contextId] : []) },
     // In the order the changes came: a release written before a late launch would show a dead view.
-    onSession: (row, change) => void (liveWrites = liveWrites.then(() => writePrivate(live, liveOf(row, change))).catch(() => undefined)),
+    onSession: (row, change) => void (liveWrites = liveWrites.then(() => writePrivate(live, { ...liveOf(row, change), ...page })).catch(() => undefined)),
   });
   const registry = createRegistry();
   for (const extension of [ArchilCodingTools, browser.extension, SignInHandover]) registry.install(extension);
@@ -196,6 +263,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     }
     await browser.drain(harness, context, AbortSignal.timeout(25_000));
     await browser.close();
+    await viewer?.close();
   }
 
   const options: AppOptions = {
@@ -204,15 +272,19 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // Before anything is served: the agent's browser profile from the run store (`startRun` seeded it from the home), or a
     // new one committed there for `carryBack` to return to the home. Then a run that a killed process left with a live
     // session finds it again, or learns that it ended.
+    // A local Chrome's profile is a directory of the home: the run that opened it records it, so `carryBack` gives the
+    // home the profile and its save lease decides the next run that may open it.
     beforeResume: async ({ harness, context }) => {
-      contextId = await durableProfileStore(harness).resolve(PROFILE, makeContext);
+      if (chosen.kind === "browserbase") contextId = await durableProfileStore(harness).resolve(PROFILE, makeContext);
+      else if (env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, async () => `chrome/${CHROME_PROFILE}`);
+      resolved = true;
       await browser.reconcile(harness, () => true, context);
     },
     root: {
       agent: { model, thinkingLevel: thinking, instructions, tools },
       init: async (tx, id) => {
-        if (!contextId) throw new Error("the browser profile is resolved before the root conversation is created");
-        const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId, idleReleaseS: IDLE_RELEASE_S };
+        if (!resolved) throw new Error("the browser profile is resolved before the root conversation is created");
+        const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId: contextId ?? null, idleReleaseS: IDLE_RELEASE_S };
         Object.assign(await tx.doc(browser.docs.Config, id), { label: definition.id, run: where.ref.id, policy });
       },
     },

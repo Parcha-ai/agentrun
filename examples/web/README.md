@@ -42,6 +42,7 @@ Without a start command the server only shows the home's runs: it cannot start o
 | `--host ADDR` | `127.0.0.1` | The address to bind. Anything but loopback prints a warning: the server has no sign-in. |
 | `--port N` | `8787` | The port. |
 | `--allow-host NAME` | none | An extra `Host` name to accept on a loopback bind. Repeat it. |
+| `--origin URL` | the address it binds | The origin people open the page at, passed to each run as `AGENT_PAGE_ORIGIN`: a local Chrome's live view lets only that page frame it. |
 
 ## A run's life
 
@@ -73,6 +74,7 @@ The page is at `/`. The data follows Grep's job routes.
 | `POST /runs/{id}/messages {content}` | Send a message to the run's door: it steers while the agent is busy and follows up otherwise. A parked run is started again first. |
 | `POST /runs/{id}/stop` | Abort the run's current turn. |
 | `GET /runs/{id}/live` | A redirect to the live browser view, read from `live.json`. |
+| `GET /live/{id}/...` and its WebSocket | A local Chrome's live view, which the run serves on a loopback port (`live-host.json`): passed through as it is, its Origin included. |
 | `GET /search?q=` | A substring in every run's files, file names, titles and finished transcripts. |
 
 ## What the page shows

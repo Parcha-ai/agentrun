@@ -320,10 +320,15 @@ async function send() {
 /** One frame per run, reloaded only when the live view's address changes (its key), never on a rewrite of live.json. */
 function paintBrowser() {
   const view = ui.info?.liveView;
-  const key = view ? `${ui.id}:${view.key}` : "none";
+  const note = ui.info?.liveNote;
+  const local = ui.info?.browser === "chrome";
+  const key = view ? `${ui.id}:${view.key}:${local}` : `none:${note ?? ""}`;
   if (key === ui.browserKey) return;
   ui.browserKey = key;
-  $("#browser").replaceChildren(view ? el("iframe", { src: `/runs/${enc(ui.id)}/live?v=${view.key}`, sandbox: "allow-scripts allow-same-origin allow-forms allow-popups", referrerpolicy: "no-referrer", allow: "clipboard-read; clipboard-write" }) : el("div", { class: "note" }, "This run has no live browser right now."));
+  const frame = view && el("iframe", { src: `/runs/${enc(ui.id)}/live?v=${view.key}`, sandbox: "allow-scripts allow-same-origin allow-forms allow-popups", referrerpolicy: "no-referrer", allow: "clipboard-read; clipboard-write" });
+  // On a local Chrome, input that arrives while the agent's browser call runs is dropped, not queued: the viewer says so.
+  const caption = local && el("div", { class: "note" }, "This is the agent's own Chrome. While the agent is using it, what you click or type is dropped, not queued, and the viewer says so: try again when it is done.");
+  $("#browser").replaceChildren(...(view ? [caption, frame].filter(Boolean) : [el("div", { class: "note" }, note ? `This run's browser: ${note}.` : "This run has no live browser right now.")]));
 }
 
 async function loadFiles() {

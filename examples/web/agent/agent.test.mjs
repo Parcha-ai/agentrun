@@ -2,16 +2,18 @@
 // @parcha/pi-durable-agent, a run's Harness is opened on its store with the options the app returns, and its root
 // conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
-import { createAgent, liveOf, PROFILE, promptOf, signInAsked, toolsOf } from './app.ts';
+import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, toolsOf } from './app.ts';
+import { CHROME_PROFILE, chromeArgs, chromeProfileFor, startChrome } from './chrome.ts';
 import { ensureAgentHome } from './home.mjs';
 
 const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
@@ -127,4 +129,91 @@ test('live.json shows the live view while the session is open and nothing once i
   assert.deepEqual(liveOf(row, 'launched', at), { liveViewUrl: 'https://live.example/full?t=x', sessionId: 'session-1', change: 'launched', updatedAt: '2026-10-15T21:00:00.000Z' });
   assert.deepEqual(liveOf(row, 'released', at), { liveViewUrl: null, sessionId: 'session-1', change: 'released', updatedAt: '2026-10-15T21:00:00.000Z' });
   assert.equal(liveOf({ ...row, liveView: null }, 'updated', at).liveViewUrl, null);
+});
+
+const CHROME_ENV = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:9', AGENT_PAGE_ORIGIN: 'http://127.0.0.1:8787' };
+
+test('the browser switch: Browserbase by default, the run\'s own Chrome by its loopback endpoint, anything else refused', () => {
+  assert.equal(browserOptions(ENV).kind, 'browserbase');
+  assert.deepEqual(browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:41233' }), { kind: 'chrome', options: { endpoint: 'http://127.0.0.1:41233' } });
+  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: 'http://10.0.0.5:41233' }), /127\.0\.0\.1/);
+  assert.throws(() => browserOptions({ ...CHROME_ENV, AGENT_CHROME_ENDPOINT: '' }), /AGENT_CHROME_ENDPOINT/);
+  assert.throws(() => browserOptions({ ...ENV, AGENT_BROWSER: 'firefox' }), /browserbase or chrome/);
+  assert.throws(() => browserOptions({ ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
+});
+
+test('the agent\'s Chrome profile is owner-only, in the home and outside every run\'s work/; only the lease holder, or the first run, opens it', async (t) => {
+  const { tmp, home } = await agentHome(t);
+  const { run } = await started(home, 'run-1');
+  const first = chromeProfileFor(home.dir, { runId: 'run-1', dir: run.dir }, { profiles: {}, leases: {} });
+  assert.deepEqual(first, { dir: join(home.dir, 'chrome', CHROME_PROFILE), shared: true });
+  assert.ok(relative(run.workspace, first.dir).startsWith('..'), 'the profile is not under work/');
+  const known = { profiles: { [CHROME_PROFILE]: {} } };
+  assert.equal(chromeProfileFor(home.dir, { runId: 'run-1', dir: run.dir }, { ...known, leases: { [CHROME_PROFILE]: { runId: 'run-1' } } }).shared, true);
+  const other = chromeProfileFor(home.dir, { runId: 'run-1', dir: run.dir }, { ...known, leases: { [CHROME_PROFILE]: { runId: 'run-0' } } });
+  assert.deepEqual(other, { dir: join(run.dir, 'chrome-profile'), shared: false }, 'another run holds the lease: a signed-out profile of the run\'s own');
+  assert.ok(relative(run.workspace, other.dir).startsWith('..'));
+
+  // A stand-in Chrome: it writes the port it "opened" into the profile, as Chrome does, and runs until it is stopped.
+  const fake = join(tmp, 'fake-chrome.mjs');
+  await writeFile(fake, `import { writeFileSync } from "node:fs";
+const dir = process.argv.find((a) => a.startsWith("--user-data-dir=")).slice(16);
+writeFileSync(dir + "/args.json", JSON.stringify(process.argv.slice(2)));
+writeFileSync(dir + "/DevToolsActivePort", "45123\\n/devtools/browser/fake\\n");
+setInterval(() => {}, 1000);
+`);
+  const exe = join(tmp, 'chrome');
+  await writeFile(exe, `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`);
+  await chmod(exe, 0o755);
+  const chrome = await startChrome(exe, first.dir);
+  assert.equal(chrome.endpoint, 'http://127.0.0.1:45123');
+  assert.equal((await stat(first.dir)).mode & 0o777, 0o700);
+  const args = JSON.parse(await readFile(join(first.dir, 'args.json'), 'utf8'));
+  for (const flag of ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', `--user-data-dir=${first.dir}`]) assert.ok(args.includes(flag), flag);
+  assert.deepEqual(args, chromeArgs(first.dir));
+  await chrome.stop();
+  assert.throws(() => process.kill(chrome.pid, 0), { code: 'ESRCH' }, 'stopped by its pid');
+});
+
+test('on a local Chrome without a live view: live.json says so, the root has no context id, and the shared profile goes back to the home', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const env = { ...CHROME_ENV, AGENT_CHROME_PROFILE: 'shared', AGENT_LIVE_VIEW_MODULE: pathToFileURL(join(one.run.dir, 'none.mjs')).href };
+  const { options, browser } = await createAgent(one.where, env, { makeContext: async () => assert.fail('a local Chrome makes no Browserbase context') });
+  const live = JSON.parse(await readFile(join(one.run.dir, 'live.json'), 'utf8'));
+  assert.deepEqual([live.liveViewUrl, live.browser, live.note], [null, 'chrome', NO_LOCAL_VIEW]);
+  assert.equal((await stat(join(one.run.dir, 'live.json'))).mode & 0o777, 0o600);
+  const harness = await open(t, one.run, options);
+  const root = await harness.root(ctx, options.root);
+  assert.equal((await harness.snapshot(browser.docs.Config, root.id, ctx)).policy.contextId, null);
+  await harness.close(ctx);
+  await carryBack(home, one.run, { outcome: 'completed' });
+  assert.deepEqual((await readAgentHome(home)).profiles[CHROME_PROFILE], { provider: 'chrome', ref: `chrome/${CHROME_PROFILE}`, state: 'ready' });
+});
+
+test('on a local Chrome with a live view: its viewer is mounted on a loopback port of the run, named in live-host.json, at /live/<run id> on the page\'s origin', async (t) => {
+  const { home } = await agentHome(t);
+  const one = await started(home, 'run-1');
+  const module = join(one.run.dir, 'live-view.mjs');
+  await writeFile(module, `export const made = [];
+export function createLiveView(options) {
+  made.push(options);
+  const prefix = new URL(options.baseUrl).pathname + "/";
+  return { handle(req, res) { if (!req.url.startsWith(prefix)) return false; res.end("viewer"); return true; }, upgrade() { return false; }, async close() { made.push("closed"); } };
+}
+export function liveViewProvider(provider) { return provider; }
+`);
+  const env = { ...CHROME_ENV, AGENT_LIVE_VIEW_MODULE: pathToFileURL(module).href };
+  const { options } = await createAgent(one.where, env, { makeContext: async () => 'unused' });
+  const { made } = await import(pathToFileURL(module).href);
+  assert.deepEqual(made, [{ hostOrigin: 'http://127.0.0.1:8787', baseUrl: 'http://127.0.0.1:8787/live/run-1' }]);
+  const { port } = JSON.parse(await readFile(join(one.run.dir, 'live-host.json'), 'utf8'));
+  assert.equal((await stat(join(one.run.dir, 'live-host.json'))).mode & 0o777, 0o600);
+  assert.equal(await (await fetch(`http://127.0.0.1:${port}/live/run-1/v/abc`)).text(), 'viewer');
+  assert.equal((await fetch(`http://127.0.0.1:${port}/elsewhere`)).status, 404);
+  assert.equal(JSON.parse(await readFile(join(one.run.dir, 'live.json'), 'utf8')).note, undefined, 'a live view is coming: no note');
+  const harness = await open(t, one.run, options);
+  await options.wake({ harness, setStatus: async () => {} }, null);
+  assert.equal(made.at(-1), 'closed', 'the viewer goes with the run');
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/live/run-1/v/abc`));
 });

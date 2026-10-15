@@ -13,6 +13,7 @@ page code can still read what the person types into the page, so a real password
 | --- | --- |
 | `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
 | `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
+| `chrome.ts` | The run's own Chrome for `AGENT_BROWSER=chrome`: its profile directory in the home and the save lease that decides who opens it, its arguments, and its start and stop by pid. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in, and `request_sign_in`. |
 | `start-run.mjs` | Runs one started run, with its door on loopback. |
@@ -53,7 +54,11 @@ the definition's prompt and tools and the browser's configuration in the commit 
 
 | Variable | Needed | What |
 | --- | --- | --- |
-| `BROWSERBASE_API_KEY` | yes | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. |
+| `AGENT_BROWSER` | no | `browserbase` (default) or `chrome`: the run's own Chrome on this machine, so nothing leaves it but the model. |
+| `BROWSERBASE_API_KEY` | with Browserbase | Browserbase key. `BROWSERBASE_PROJECT_ID` is optional; Browserbase infers the project from the key. |
+| `CHROME_PATH` | with `chrome` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
+| `AGENT_PAGE_ORIGIN` | no | The origin people open the server's page at; the server sets it. A local Chrome's live view allows only that page to frame it. |
+| `AGENT_LIVE_VIEW_MODULE` | no | Where the local Chrome's live view comes from. Default: pi-browser's `./live-view`, when this pi-browser has it. |
 | `AGENT_MODEL_BASE_URL` | yes | An OpenAI Responses endpoint. |
 | `AGENT_MODEL` | yes | The model id at that endpoint. |
 | `AGENT_MODEL_API_KEY` | no | Its key, when it needs one. |
@@ -65,6 +70,21 @@ SIGTERM stops a run. It releases its Browserbase session first, so the sign-in i
 lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
 `carryBack(home, { runId }, { outcome })` returns the run's sign-in to the home; the server does this once a run has
 answered.
+
+## A local Chrome
+
+With `AGENT_BROWSER=chrome`, start-run.mjs starts one headless Chrome for the run, on a debugging port Chrome picks on
+127.0.0.1, and pi-browser attaches to it by endpoint (`AGENT_CHROME_ENDPOINT`). Its profile directory is the sign-in:
+`<home>/chrome/local-chrome`, owner-only and outside every run's `work/`. The run that holds the profile's save lease
+(or the first run, before the agent has the profile) opens it and records it, so `carryBack` gives the home the profile
+and its lease; any other run gets a signed-out profile of its own beside the run, removed with its Chrome. A release
+leaves Chrome running; start-run.mjs stops it, by its pid, once the run has exited.
+
+pi-browser's live view shows that Chrome to the person. The run mounts the viewer on a loopback port of its own, named
+in `<run>/live-host.json` (0600), and the server reaches it at `/live/<run id>/` on the page's own origin; the viewer's
+token is in the URL's fragment, sent as the WebSocket's first message. While the agent is using the browser, what the
+person clicks or types is dropped, not queued, and the viewer says so. A pi-browser without `./live-view` has no viewer
+yet: live.json then says `live view not available for local Chrome yet`, and the Browser tab shows that.
 
 ## Sign-in
 
