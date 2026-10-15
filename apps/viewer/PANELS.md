@@ -103,6 +103,32 @@ checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/f
 the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
 focus.
 
+## Embedding
+
+A page may frame the viewer with `&embed=1`: no header (a recording that breaks the format still says so), the frame's
+full width. Framed, it speaks a small protocol with `postMessage`, and steers only when its URL names the framing
+page's origin with `&parent=<origin>` (an http or https origin, written as one, such as `https://example.org`).
+
+The viewer posts, each `{ source: "agentrun-viewer", type, ... }`, to the origin `&parent=` names, else to the framing
+page's when the browser gives it (an http or https page), else to any:
+
+| `type` | when | fields |
+| --- | --- | --- |
+| `ready` | once, before the first draw | `stops` (the last stop), `chapters` (`[{ title, stop }]`) |
+| `position` | at every stop it moves to, the first draw included | `stop`, `gen` and `commit` (the last durable line's, or `null`), `t` (ms), `chapter` (`{ title, stop }` or `null`) |
+| `focus` | when the focused path changes, and once at the start | `path` (a workflow path, or `null`) |
+
+It obeys only these, and only from the framing page itself (`event.source` is its parent) at the origin `&parent=`
+names; any other message, origin or field is ignored, and no message carries code to run:
+
+| `type` | fields | what it does |
+| --- | --- | --- |
+| `seek` | exactly one of `stop` (a whole number up to the last stop), `commit` with an optional `gen` (whole numbers), or `t` (seconds, finite, not negative) | moves the point there, as the scrubber does |
+| `focus` | `path`: a workflow path (`/` then letters, digits and `_ . / : # -`, at most 512 characters), or `null` | focuses that branch, or clears the focus |
+| `theme` | `theme`: `light`, `dark` or `auto` | sets the page's colours; `auto` follows the system |
+
+Without `&parent=`, the viewer still posts, and listens to nothing.
+
 ## A panel in full
 
 ```ts

@@ -389,16 +389,54 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
 /** The chapter a point is in: the last one whose stop is at or before it, or -1 before the first. */
 export const chapterAt = (chapters: readonly { p: number }[], p: number): number => chapters.reduce((at, chapter, index) => (chapter.p <= p ? index : at), -1);
 
-/** What an embedded viewer (`?embed=1`) posts to the page that frames it when the point enters a chapter: that chapter
- *  only, its title and its stop. The viewer listens to no message. */
-export const chapterMessage = (chapter: { title: string; p: number }) => ({ source: 'agentrun-viewer', type: 'chapter', title: chapter.title, stop: chapter.p });
+/** The embed protocol (PANELS.md, "Embedding"): what a framed viewer posts to the page that frames it. */
+export const embedMessage = (type: 'ready' | 'position' | 'focus', body: Record<string, Json>) => ({ source: 'agentrun-viewer', type, ...body });
 
 /** The origin of the page that frames this one, when the browser says what it is (an http or https page); else `*`, as
- *  for a page opened from a file. A message carries only a chapter's title and stop. */
+ *  for a page opened from a file. */
 export const parentOrigin = (ancestor: string | undefined, referrer: string): string => {
   const known = ancestor ?? (referrer ? new URL(referrer).origin : undefined);
   return known !== undefined && /^https?:\/\//.test(known) ? known : '*';
 };
+
+/** The origin a framing page names with `&parent=`: an http or https origin, written as one. Only it may steer the viewer. */
+export const parentParam = (value: string | null): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && url.origin === value ? url.origin : undefined;
+  } catch { return undefined; }
+};
+
+/** A command a framing page may send: seek (to a stop, a commit of a generation, or a time in seconds), focus (a workflow
+ *  path, or none), or theme. */
+export type Steer = { type: 'seek'; stop: number } | { type: 'seek'; commit: number; gen?: number } | { type: 'seek'; t: number }
+  | { type: 'focus'; path: string | null } | { type: 'theme'; theme: 'light' | 'dark' | 'auto' };
+
+/** A message as a command the viewer obeys, each field checked; anything else (another type, a field of the wrong kind,
+ *  a stop past the end, a path that is not a workflow path) is nothing. A message never carries code to run. */
+export function steerOf(data: unknown, last: number): Steer | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const message = data as Record<string, unknown>;
+  const whole = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const only = (...keys: string[]) => Object.keys(message).every((key) => key === 'type' || key === 'source' || keys.includes(key));
+  if (message.type === 'seek') {
+    if (only('stop') && whole(message.stop) && message.stop <= last) return { type: 'seek', stop: message.stop };
+    if (only('commit', 'gen') && whole(message.commit) && (message.gen === undefined || whole(message.gen))) return { type: 'seek', commit: message.commit, ...(message.gen === undefined ? {} : { gen: message.gen as number }) };
+    if (only('t') && typeof message.t === 'number' && Number.isFinite(message.t) && message.t >= 0) return { type: 'seek', t: message.t };
+    return undefined;
+  }
+  if (message.type === 'focus' && only('path')) {
+    if (message.path === null) return { type: 'focus', path: null };
+    if (typeof message.path === 'string' && message.path.length <= 512 && /^\/[\w./:#-]*$/.test(message.path)) return { type: 'focus', path: message.path };
+    return undefined;
+  }
+  if (message.type === 'theme' && only('theme') && (message.theme === 'light' || message.theme === 'dark' || message.theme === 'auto')) return { type: 'theme', theme: message.theme };
+  return undefined;
+}
+
+/** A message may steer the viewer only when it comes from the framing page itself, at the origin its URL named. */
+export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
   const problems = validate(recording.manifest, recording.lines);
@@ -483,7 +521,25 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (embedded) document.documentElement.classList.add('embed');
   if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
   else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
-  let postedChapter: number | undefined;
+  // Framed, the viewer tells the framing page where the point is and what is focused, and obeys it (seek, focus, theme)
+  // only when its URL names that page's origin (`&parent=`): PANELS.md, "Embedding".
+  const framed = embedded && window.parent !== window;
+  const steeredBy = parentParam(params.get('parent'));
+  const target = steeredBy ?? parentOrigin(location.ancestorOrigins?.item(0) ?? undefined, document.referrer);
+  const post = (message: ReturnType<typeof embedMessage>) => window.parent.postMessage(message, target);
+  let postedStop: number | undefined;
+  let postedFocus: string | null | undefined;
+  const tellParent = () => {
+    if (player.p !== postedStop) {
+      postedStop = player.p;
+      const index = chapterAt(chapters, player.p);
+      const durable = lines.slice(0, player.p).findLast((line) => line.channel === 'durable');
+      post(embedMessage('position', { stop: player.p, gen: durable?.gen ?? null, commit: durable?.commit ?? null, t: player.p > 0 ? lines[player.p - 1]!.t : 0,
+        chapter: index < 0 ? null : { title: chapters[index]!.title, stop: chapters[index]!.p } }));
+    }
+    const focus = player.focus ?? null;
+    if (focus !== postedFocus) { postedFocus = focus; post(embedMessage('focus', { path: focus })); }
+  };
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -500,14 +556,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
-    // Framed, tell the parent page when the point enters another chapter (the first draw included).
-    if (embedded && window.parent !== window) {
-      const index = chapterAt(chapters, player.p);
-      if (index >= 0 && index !== postedChapter) {
-        postedChapter = index;
-        window.parent.postMessage(chapterMessage(chapters[index]!), parentOrigin(location.ancestorOrigins?.item(0) ?? undefined, document.referrer));
-      }
-    }
+    if (framed) tellParent();
     chapterList.replaceChildren(...chapters.map((chapter) => {
       const button = el('button', { class: chapter.p === player.p ? 'current' : '', text: chapter.title });
       button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
@@ -576,6 +625,24 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     playButton.textContent = player.playing ? 'pause' : 'play';
     if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
   });
+  if (framed) {
+    post(embedMessage('ready', { stops: last, chapters: chapters.map((chapter) => ({ title: chapter.title, stop: chapter.p })) }));
+    if (steeredBy) {
+      window.addEventListener('message', (event) => {
+        if (!fromParent(event.origin, event.source === window.parent, steeredBy)) return;
+        const steer = steerOf(event.data, last);
+        if (steer?.type === 'seek') {
+          if ('stop' in steer) scrubTo(steer.stop);
+          else if ('commit' in steer) scrubTo(afterCommit(steer.commit, steer.gen));
+          else { player.p = head.seekTime(steer.t * 1000); draw(); }
+        } else if (steer?.type === 'focus') setFocus(steer.path ?? undefined);
+        else if (steer?.type === 'theme') {
+          if (steer.theme === 'auto') delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = steer.theme;
+        }
+      });
+    }
+  }
   draw();
   void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
   if (recording.manifest.baseline) {
