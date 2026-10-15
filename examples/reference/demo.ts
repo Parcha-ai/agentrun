@@ -162,7 +162,7 @@ async function child(options: DemoOptions) {
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
     await recorder?.detach();
     const storeFile = join(place.store, 'run.sqlite');
     const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;

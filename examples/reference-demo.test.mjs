@@ -470,3 +470,26 @@ test('the place\'s signals carry the kill request: a place with its own signals(
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
 });
+
+const SITES = { registry: { title: 'The company registry', description: 'Company records: number, incorporation date, status.', startUrl: 'http://registry.example/companies/01234567' } };
+
+test('sites: use_website hands the registry check to a child agent in a browser of its own, its report comes back, and the parent cites its receipt', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { sites: SITES }, ['--json'], { DEMO_SITES: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  assert.equal(result.record.answer, 'Acme Ltd was incorporated on 2019-03-04.');
+  assert.match(result.record.citations[0], /^evidence\/.+browser_read-\w+\.json$/, 'the parent cites the receipt the child filed');
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  const sessions = new Set(lines.filter((line) => line.source === 'browser' && line.kind === 'launched').map((line) => line.data.tag ?? line.data.sessionId ?? JSON.stringify(line.data)));
+  assert.equal(sessions.size, 1, 'the parent opened no browser: the one session is the child\'s own');
+});
+
+test('a kill while the child works: the resumed run finds the site task by its request id and does not start a second child', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { sites: SITES, kills: [{ point: 'model.request turn 1', why: 'the child is asked for its report', n: 1 }] }, ['--kill', '--json'], { DEMO_SITES: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  assert.deepEqual(result.unlanded ?? [], []);
+  assert.equal(result.record.answer, 'Acme Ltd was incorporated on 2019-03-04.');
+  assert.deepEqual(validateRecording(recording), []);
+  const children = readEvents(recording).filter((line) => line.channel === 'durable' && line.data?.doc?.endsWith('.children')).flatMap((line) => Object.keys(line.data.value.byRequest ?? {}));
+  assert.deepEqual([...new Set(children)], ['registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d'], 'one child, kept under its site and request id');
+});
