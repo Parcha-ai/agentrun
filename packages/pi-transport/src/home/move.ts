@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
+import { finish } from "../box/files.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { HomeHandle } from "./host.ts";
 import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
@@ -30,8 +31,9 @@ export type MoveStep = "prepare" | "drain" | "seal" | "ship" | "take" | "resume"
  * Why a move did not happen. `no_runtime`: the target's box has no Node, or one below 22.19. `prepare`: the target could
  * not be made ready. Nothing changed after either. `drain`: the session did
  * not come to rest in time (`holdouts` names what ran on); it works on where it was. `seal`, `ship`: the source was
- * told to open its store again. `target`: the target's runner went away before the take; the source was told to open
- * its store again. `lost`: another host took the session first; this host does nothing more with it.
+ * told to run again, and the message says whether it did. `target`: the target's runner went away before the take; the
+ * source was told to run again. `lost`: another host took the session first (a move's take, or a recovery's); `lease`
+ * says where the session is now, when it could be read, and this host does nothing more with it.
  * `take`: the lease could not be written and could not be read back; the source stays sealed until a host recovers
  * the session; the copy shipped to the target is deleted, unless the lease names the target's own place. `resume`:
  * after the take, the target did not resume; the session is the target's, and a host recovers
@@ -52,12 +54,15 @@ export type MoveErrorCode =
 export class MoveError extends Error {
 	public code: MoveErrorCode;
 	public holdouts: readonly { readonly kind: string; readonly count: number }[];
+	/** For `lost`: the lease the other host wrote, where the session is now, when it could be read. */
+	public lease: LeaseRecord | undefined;
 
-	constructor(code: MoveErrorCode, message: string, holdouts: MoveError["holdouts"] = []) {
+	constructor(code: MoveErrorCode, message: string, holdouts: MoveError["holdouts"] = [], lease?: LeaseRecord) {
 		super(message);
 		this.name = "MoveError";
 		this.code = code;
 		this.holdouts = holdouts;
+		this.lease = lease;
 	}
 }
 
@@ -107,6 +112,9 @@ function holderOf(place: Place, host: string): Holder {
  * Invariants: nothing is cut (a drain that does not complete gives the move up and the session works on); before the
  * take, a failure leaves the session where it was; the take is the one step that changes who holds the session, and
  * after it nothing makes the source run again.
+ *
+ * A place the session left (retired at an earlier epoch) takes it back: its workspace, the copy the session left
+ * behind, is emptied before the ship, and the shipped store comes with its seal like any other.
  */
 export async function moveHome(options: MoveOptions, context: Context): Promise<Result<MoveReceipt, MoveError>> {
 	const { session, host, ownership, from, to, start } = options;
@@ -120,6 +128,23 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		target?.close(`the move ${id} was given up`);
 		return err<MoveReceipt, MoveError>(error);
 	};
+	/**
+	 * Make the source run again after a failure before the take, and say whether it does. A source that sealed opens its
+	 * store again; one whose seal failed after it closed the store holds it unsealed, and resumes at the same epoch.
+	 */
+	const rollBack = async (): Promise<string> => {
+		const status = await from.home.status(cleanup);
+		if (!status.ok)
+			return `the source did not say its state (${status.error.message}); a host recovers it from the lease`;
+		if (status.value.state === "open") return "the source runs on";
+		const back =
+			status.value.state === "closed"
+				? await from.home.resume({ epoch }, cleanup)
+				: await from.home.reopen(epoch, cleanup);
+		return back.ok
+			? "the source runs again"
+			: `the source did not run again (${back.error.message}); a host recovers it from the lease`;
+	};
 
 	await step("prepare");
 	const prepared = await start(to, epoch, context);
@@ -127,7 +152,23 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	const target = prepared.value;
 	const ready = await target.ready;
 	if (!ready.ok) return giveUp(target, new MoveError("prepare", `the target did not answer: ${ready.error.message}`));
-	if (ready.value.state !== "closed") {
+	// A place the session left takes it back at a later epoch: its note refuses only orders at its epoch or before.
+	const returning = ready.value.state === "retired";
+	if (returning) {
+		const status = await target.status(context);
+		if (!status.ok) {
+			return giveUp(target, new MoveError("prepare", `the target did not say its epoch: ${status.error.message}`));
+		}
+		if (status.value.epoch !== null && status.value.epoch > epoch) {
+			return giveUp(
+				target,
+				new MoveError(
+					"prepare",
+					`the target retired at epoch ${status.value.epoch}; this move would bring the session back at ${epoch + 1}`,
+				),
+			);
+		}
+	} else if (ready.value.state !== "closed") {
 		return giveUp(
 			target,
 			new MoveError("prepare", `the target already holds a session that is ${ready.value.state}`),
@@ -147,8 +188,11 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	await step("seal");
 	const sealed = await from.home.seal(context);
 	if (!sealed.ok) {
-		await from.home.reopen(epoch, cleanup);
-		return giveUp(target, new MoveError("seal", `the source could not seal its store: ${sealed.error.message}`));
+		const back = await rollBack();
+		return giveUp(
+			target,
+			new MoveError("seal", `the source could not seal its store: ${sealed.error.message}; ${back}`),
+		);
 	}
 	const seal: Seal = sealed.value;
 
@@ -156,10 +200,13 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	const shipStarted = performance.now();
 	let shipped: Result<{ bytes: number }, Error> = err(new Error("not tried"));
 	for (let attempt = 0; attempt < 2 && !shipped.ok; attempt += 1)
-		shipped = await ship(from.place, to, seal, options, context);
+		shipped = await ship(from.place, to, seal, returning, options, context);
 	if (!shipped.ok) {
-		await from.home.reopen(epoch, cleanup);
-		return giveUp(target, new MoveError("ship", `the store and workspace did not move: ${shipped.error.message}`));
+		const back = await rollBack();
+		return giveUp(
+			target,
+			new MoveError("ship", `the store and workspace did not move: ${shipped.error.message}; ${back}`),
+		);
 	}
 	const shipMs = Math.round(performance.now() - shipStarted);
 
@@ -167,8 +214,11 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	// The point of no return: only with a target that still answers.
 	const alive = await target.status(context);
 	if (!alive.ok) {
-		await from.home.reopen(epoch, cleanup);
-		return giveUp(target, new MoveError("target", `the target went away before the take: ${alive.error.message}`));
+		const back = await rollBack();
+		return giveUp(
+			target,
+			new MoveError("target", `the target went away before the take: ${alive.error.message}; ${back}`),
+		);
 	}
 	const taken = await ownership.take(session, holderOf(to, host), epoch, { move: id, seal }, context);
 	if (!taken.ok) {
@@ -183,11 +233,19 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 				if (holder !== undefined && (holder.environment !== to.environment || holder.box !== to.box.id)) {
 					await target.retire(epoch + 1, cleanup);
 				}
-				return giveUp(target, new MoveError("lost", `another host took the session first: ${taken.error.message}`));
+				return giveUp(
+					target,
+					new MoveError(
+						"lost",
+						`another host took the session first: ${taken.error.message}`,
+						[],
+						now.ok ? now.value : undefined,
+					),
+				);
 			}
 			if (now.ok && now.value?.epoch === epoch) {
-				await from.home.reopen(epoch, cleanup);
-				return giveUp(target, new MoveError("take", `the lease was not written: ${taken.error.message}`));
+				const back = await rollBack();
+				return giveUp(target, new MoveError("take", `the lease was not written: ${taken.error.message}; ${back}`));
 			}
 			// Neither written for sure nor not: the source stays sealed and a host recovers the session from the lease.
 			return giveUp(target, new MoveError("take", `the lease cannot be read back: ${taken.error.message}`));
@@ -218,16 +276,32 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	});
 }
 
-/** The store, then the workspace, from one place to the other, each checked on the target. */
+/** Empties a directory and keeps it: what is in it goes, whatever it is. */
+const EMPTY_DIR_SCRIPT = 'mkdir -p -- "$1" && find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +';
+
+/**
+ * The store, then the workspace, from one place to the other, each checked on the target. A place the session comes
+ * back to has its old workspace emptied first: the copy it holds is the one the session left, not the one it brings.
+ */
 async function ship(
 	from: Place,
 	to: Place,
 	seal: Seal,
+	returning: boolean,
 	options: MoveOptions,
 	context: Context,
 ): Promise<Result<{ bytes: number }, Error>> {
 	const file = await moveFile(from.box, from.store, to.box, to.store, seal, undefined, context);
 	if (!file.ok) return file;
+	if (returning) {
+		const started = await to.box.exec(["sh", "-c", EMPTY_DIR_SCRIPT, "sh", to.workspace], undefined, context);
+		if (!started.ok) return err(new Error(`could not empty the old workspace: ${started.error.message}`));
+		const emptied = await finish(started.value);
+		if (!emptied.ok) return err(new Error(`could not empty the old workspace: ${emptied.error.message}`));
+		if (emptied.value.exitCode !== 0) {
+			return err(new Error(`could not empty the old workspace: exit ${emptied.value.exitCode}`));
+		}
+	}
 	const tree = await moveWorkspace(
 		from.box,
 		to.box,
@@ -258,17 +332,21 @@ export type RecoverOptions = {
 
 /**
  * What a host that starts again does: read the lease, stop a runner that still runs where it says, start one there,
- * and make that home run. A home that sealed at the lease's epoch is told to open its store again; a target that took
- * the session and never resumed is told to resume with the lease's seal and move, and its store says which workspace
- * its conversations pointed at. Safe to repeat.
+ * and make that home run. A target that took the session and never resumed is told to resume with the lease's seal and
+ * move, and its store says which workspace its conversations pointed at. Safe to repeat.
+ *
+ * A home sealed at the lease's epoch may be the source of a move that is about to take the next epoch for another
+ * place. The lease decides, never a second read: recovery takes that next epoch for this same place, with the home's
+ * own seal, and resumes the home there. When the move took it first, the take is `lost`: recovery opens nothing and
+ * says where the lease puts the session. So recovering a sealed home moves the epoch.
  */
 export async function recoverHome(
 	options: RecoverOptions,
 	context: Context,
 ): Promise<Result<{ readonly lease: LeaseRecord; readonly home: HomeHandle }, MoveError>> {
-	const lease = await options.ownership.current(options.session, context);
-	if (!lease.ok) return err(new MoveError("take", `the lease cannot be read: ${lease.error.message}`));
-	const record = lease.value;
+	const found = await options.ownership.current(options.session, context);
+	if (!found.ok) return err(new MoveError("take", `the lease cannot be read: ${found.error.message}`));
+	const record = found.value;
 	if (record === undefined) return err(new MoveError("take", `the session ${options.session} has no lease`));
 	const place = Object.hasOwn(options.places, record.holder.environment)
 		? options.places[record.holder.environment]
@@ -293,24 +371,48 @@ export async function recoverHome(
 	const home = started.value;
 	const ready = await home.ready;
 	if (!ready.ok) return err(new MoveError("resume", `the home did not answer: ${ready.error.message}`));
-	// A sealed home reopens only at the epoch it sealed at. Named by the lease at a later one, it resumes with the
-	// lease's seal, which vouches for the store it holds.
-	let reopen = false;
+	let lease = record;
 	if (ready.value.state === "sealed") {
 		const status = await home.status(context);
 		if (!status.ok) return err(new MoveError("resume", `the home did not say its epoch: ${status.error.message}`));
-		reopen = status.value.epoch === record.epoch;
-	}
-	const resumed = reopen
-		? await home.reopen(record.epoch, context)
-		: await home.resume(
-				{
-					epoch: record.epoch,
-					...(record.seal === undefined ? {} : { seal: record.seal }),
-					...(record.move === undefined ? {} : { move: { id: record.move, notice: options.notice } }),
-				},
+		// Sealed at the lease's epoch: take the next one for this place, with the home's own seal, before it runs again.
+		// Named by the lease at a later epoch, it resumes with the lease's seal, which vouches for the store it holds.
+		if (status.value.epoch === record.epoch) {
+			const sealed = status.value.sealed;
+			if (sealed === undefined) {
+				home.close("the home did not say its seal");
+				return err(new MoveError("resume", "the home sealed its store and did not say its seal"));
+			}
+			const taken = await options.ownership.take(
+				options.session,
+				record.holder,
+				record.epoch,
+				{ seal: sealed },
 				context,
 			);
+			if (!taken.ok) {
+				home.close("the session is not this place's");
+				if (taken.error.code !== "lost") {
+					return err(new MoveError("take", `the lease could not be taken forward: ${taken.error.message}`));
+				}
+				const now = await options.ownership.current(options.session, withoutAbortSignal(context));
+				const where = now.ok ? now.value : undefined;
+				const named =
+					where === undefined ? "" : `: the lease names ${where.holder.environment} at epoch ${where.epoch}`;
+				return err(new MoveError("lost", `another host took the session first${named}`, [], where));
+			}
+			lease = taken.value;
+			home.setEpoch(lease.epoch);
+		}
+	}
+	const resumed = await home.resume(
+		{
+			epoch: lease.epoch,
+			...(lease.seal === undefined ? {} : { seal: lease.seal }),
+			...(lease.move === undefined ? {} : { move: { id: lease.move, notice: options.notice } }),
+		},
+		context,
+	);
 	if (!resumed.ok) return err(new MoveError("resume", `the home did not run again: ${resumed.error.message}`));
-	return ok({ lease: record, home });
+	return ok({ lease, home });
 }

@@ -442,6 +442,31 @@ describe("a home: what it refuses", () => {
 		});
 	});
 
+	it("resumes at its own epoch after a seal that failed once its store was closed, and goes on with nothing cut", async () => {
+		await withWorld(async (made) => {
+			const home = await opened(made.home("a"));
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			await start(home);
+			await sleep(70);
+			getOrThrow(await home.drain({ timeoutMs: 5_000 }, context));
+			// The seal closes the store first; an abort then stops it before its marker is written.
+			const controller = new AbortController();
+			controller.abort();
+			const failed = await home.seal(withAbortSignal(controller.signal, context));
+			expect(failed.ok).toBe(false);
+			expect(home.state).toBe("closed");
+			const reopened = await home.reopen({ epoch: 1 }, context);
+			expect(reopened.ok ? "" : reopened.error.code).toBe("wrong_state");
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			expect(home.state).toBe("open");
+			const root = getOrThrow(await home.root(context));
+			await root.waitForIdle(context);
+			expect(await transcript(root)).toMatchObject({ interrupted: 0, blocked: 0, answered: true });
+			expect(made.effects().sort()).toEqual(everyRoundOnce);
+			await home.close(context);
+		});
+	});
+
 	it("takes no order for an epoch it has left behind, and seals only after a drain", async () => {
 		await withWorld(async (made) => {
 			const options = made.home("a");

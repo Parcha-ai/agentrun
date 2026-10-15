@@ -2,16 +2,21 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import type { Place } from "../src/home/move.ts";
+import { boxRunner } from "../src/home/start.ts";
 import { ALIVE_SH, stopRunner } from "../src/home/stop.ts";
 
 const context = BACKGROUND_CONTEXT;
+/** The runner a box runs from this repository's source, as an image that holds it would. */
+const RUNNER = join(dirname(fileURLToPath(import.meta.url)), "home-move-runner.fixture.ts");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A program's exit code in the box. */
@@ -92,6 +97,104 @@ describe("stopping the runner that still runs at a place", () => {
 			expect(left, `the runner (${left ? await said(place) : "gone"})`).toBe(false);
 			// Nothing left to stop is not a failure.
 			getOrThrow(await stopRunner(place, context));
+		} finally {
+			await box.destroy(context);
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
+	it("names the runner that takes the store, over a process that is not this store's runner and one that went away", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-stop-names-"));
+		const box = getOrThrow(
+			await localBoxes({ root, path: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin` }).create(
+				{ maxLifetimeMs: 10 * 60_000 },
+				context,
+			),
+		);
+		try {
+			const workspace = box.facts().workspace;
+			const place: Place = {
+				environment: "a",
+				provider: "local",
+				box,
+				workspace,
+				store: join(dirname(workspace), "session", "run.sqlite"),
+			};
+			const start = boxRunner({
+				program: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", RUNNER] },
+				session: "s",
+				models: createModels(),
+			});
+			// Whether the pid file names a live process whose arguments hold this store: a runner of it.
+			const NAMES_RUNNER =
+				'p=$(cat "$1") && kill -0 "$p" 2>/dev/null && tr "\\000" "\\n" < "/proc/$p/cmdline" | grep -qxF -- "$2"';
+			const namesRunner = async () =>
+				(await code(box, ["sh", "-c", NAMES_RUNNER, "sh", `${place.store}.pid`, place.store])) === 0;
+			// A live process that is not this store's runner holds the file: the first runner names itself over it.
+			await startWithPid(place, ["sleep", "60"]);
+			const first = getOrThrow(await start(place, 1, context));
+			getOrThrow(await first.ready);
+			expect(await namesRunner(), `the first runner (${await said(place)})`).toBe(true);
+			// A second runner starts while the first runs: it leaves the file to the first.
+			const second = getOrThrow(await start(place, 1, context));
+			getOrThrow(await second.ready);
+			first.close("gone");
+			for (let i = 0; i < 100 && (await namesRunner()); i += 1) await sleep(100);
+			expect(await namesRunner(), "the first runner went away").toBe(false);
+			// The second takes the store into its hold and names itself then.
+			getOrThrow(await second.resume({ epoch: 1 }, context));
+			expect(await namesRunner(), `the holder (${await said(place)})`).toBe(true);
+			getOrThrow(await stopRunner(place, context));
+			expect(await alive(place), "the holder after the stop").toBe(false);
+			second.close("stopped");
+		} finally {
+			await box.destroy(context);
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
+	it("stops the runner that holds the store, though a second runner was started there and refused", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-stop-owner-"));
+		const box = getOrThrow(
+			await localBoxes({ root, path: `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin` }).create(
+				{ maxLifetimeMs: 10 * 60_000 },
+				context,
+			),
+		);
+		try {
+			const workspace = box.facts().workspace;
+			const place: Place = {
+				environment: "a",
+				provider: "local",
+				box,
+				workspace,
+				store: join(dirname(workspace), "session", "run.sqlite"),
+			};
+			const start = boxRunner({
+				program: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", RUNNER] },
+				session: "s",
+				models: createModels(),
+			});
+			const owner = getOrThrow(await start(place, 1, context));
+			getOrThrow(await owner.ready);
+			getOrThrow(await owner.resume({ epoch: 1 }, context));
+			const pidFile = async () => {
+				const read = await finish(getOrThrow(await box.exec(["cat", `${place.store}.pid`], {}, context)));
+				return read.ok ? new TextDecoder().decode(read.value.stdout).trim() : "";
+			};
+			const owners = await pidFile();
+			expect(owners).toMatch(/^\d+$/);
+			// A second runner at the same place: the store is held, so it is refused, and it must not hide the owner.
+			const second = getOrThrow(await start(place, 1, context));
+			getOrThrow(await second.ready);
+			const refused = await second.resume({ epoch: 1 }, context);
+			expect(refused.ok ? "" : refused.error.code).toBe("busy");
+			second.close("refused");
+			expect(await pidFile()).toBe(owners);
+			getOrThrow(await stopRunner(place, context));
+			const left = await alive(place);
+			expect(left, `the owner (${left ? await said(place) : "gone"})`).toBe(false);
+			owner.close("stopped");
 		} finally {
 			await box.destroy(context);
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
