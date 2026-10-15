@@ -6,7 +6,10 @@ import type { Fakes, Host, StatusEvent, ToolContext } from './host.ts';
 import type { ChildPlan } from './demo-spec.ts';
 
 /** `cut: false` logs a crossing that is never a kill point. A crossing returns true when a tool-box kill is due at it: the caller destroys the box it is taking the crossing in. */
-export type Cross = (point: string, options?: { cut?: boolean }) => boolean;
+export type Cross = ((point: string, options?: { cut?: boolean }) => boolean) & {
+  /** A crossing that parks (`vision.filing`): when a kill with `hold` is planned for this point, the nth filing and those after it are parked, forever, and the process is killed once `hold` are parked or `waitMs` has passed. The caller awaits what this returns. */
+  park?(point: string): Promise<never> | undefined;
+};
 export type Crossing = { point: string; n: number; pid: number };
 
 /** What a process does when its planned kill is due at a crossing. Default: it ends itself with SIGKILL. A process under a supervisor asks it instead (`askToBeKilled`): the supervisor writes the kill line first and kills it through the place. */
@@ -33,7 +36,9 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const seen = new Map<string, number>();
   const eligible = new Map<string, number>();
   const done = new Set<number>();
-  return (point, options = {}) => {
+  let parkedCount = 0;
+  let killAsked = false;
+  const cross = ((point: string, options: { cut?: boolean } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
     const cut = options.cut !== false && window.open === 0;
     if (cut) n += 1;
@@ -48,12 +53,26 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     if (tool >= 0) { done.add(tool); return true; }
     const run = plan?.run;
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
+    // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
+    if (!('storm' in run) && run.hold !== undefined) return false;
     // A named point is taken as named; a storm waits for the first node to have begun.
     const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && timesEligible === run.n;
     if (point === 'event workflow.node.start') begun = true;
     if (due) kill({ point, n, pid: process.pid });
     return false;
+  }) as Cross;
+  (cross as { park: NonNullable<Cross['park']> }).park = (point) => {
+    const run = plan?.run;
+    if (!run || 'storm' in run || run.hold === undefined || run.point !== point || window.open > 0) return undefined;
+    // The nth time the point is reached, counting the crossings that could have been kill points (the call that follows this one in `cross` has already counted this one).
+    if ((eligible.get(point) ?? 0) < run.n) return undefined;
+    parkedCount += 1;
+    const ask = () => { if (killAsked) return; killAsked = true; kill({ point, n, pid: process.pid }); };
+    if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
+    if (parkedCount >= run.hold) ask();
+    return new Promise<never>(() => {});
   };
+  return cross;
 }
 
 /** The fakes with a crossing before and after each scripted answer: the model's request, a tool's dispatch and return, the judge's question. */
@@ -103,6 +122,9 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
   host.evidence = { file: async (label, record) => {
     const [filing, filed] = record.tool === 'look' ? ['vision.filing', 'vision.filed'] : [`receipt.filing ${record.tool}`, `receipt.filed ${record.tool}`];
     cross(filing);
+    // A planned kill that holds parks this filing (and the ones after it): the answers are kept, none is filed.
+    const parked = cross.park?.(filing);
+    if (parked) await parked;
     const done = await evidence.file(label, record);
     cross(filed);
     return done;

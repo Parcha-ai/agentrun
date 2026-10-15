@@ -30,6 +30,7 @@ import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
+import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
 import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
@@ -49,6 +50,8 @@ export type DemoOptions = {
   job: Job;
   fakes: Fakes;
   live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' }) => LiveParts | Promise<LiveParts>;
+  /** The data set's item a look belongs to, from the record's path (Apollo 11: the page, photo or film window). Kept with the look. */
+  itemOf?: (path: string) => string | null;
   /** The arguments to read (default `process.argv.slice(2)`). */
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
@@ -165,10 +168,14 @@ async function child(options: DemoOptions) {
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     // The vision option: every look is kept in a `vision.looks` document with the screenshot it was of, and the demo passes only its eyes.
-    const shown = shownShots(recorder ? { keep: (bytes, extension) => recorder.blob(bytes, extension) } : {});
+    const shown = shownShots({ ...(recorder ? { keep: (bytes: Buffer, extension: string) => recorder.blob(bytes, extension) } : {}), ...(recorder ? { onShown: (read) => recorder.live('vision', 'shown', read) } : {}) });
+    // Each record filed, by its receipt path: a look that failed is told only the receipt.
+    const filedRecords = new Map<string, LookRecord>();
+    const filing = local.host.evidence.file;
+    local.host.evidence = { file: async (label, record) => { const at = await filing(label, record); if (at && 'facts' in record) filedRecords.set(at.path, record as LookRecord); return at; } };
     local.host.tools = { ...local.host.tools, extensions: [...local.host.tools.extensions, shown.extension] };
     const eyes = live ? undefined : options.fakes.eyes;
-    const vision: RunOptions['vision'] = (running) => ({ ...(eyes ? { eyes } : {}), ...(parts.vision?.(running) ?? {}), ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl') }) });
+    const vision: RunOptions['vision'] = (running) => ({ ...(eyes ? { eyes } : {}), ...(parts.vision?.(running) ?? {}), ...keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl'), filed: filedRecords, ...(options.itemOf ? { itemOf: options.itemOf } : {}) }) });
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision });
     await recorder?.detach();

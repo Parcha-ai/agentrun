@@ -205,7 +205,11 @@ Every demo's typed questions pass through one seam that carries Jev's limits and
 
 ### The vision option
 
-The entry files every look the vision guard or a read reports into the run's store: one `vision.looks` document per look key, each entry the whole `LookRecord` (`facts.key`, `kept`, `cost_usd`, `status`, `model`), the evidence path of the screenshot it was of as its receipt, and the image the eyes were shown as a blob in the recording. The recording's counters then read `paid.vision` and the eyes' cost. A demo passes only its eyes: `fakes.eyes` on fakes (with a lead that takes only text, every image a read or a screenshot makes goes to them), and `live` supplies `vision` options for real eyes.
+The entry files every look the vision guard or a read reports into the run's store: one `vision.looks` document per look key, each entry the whole `LookRecord` (`facts.key`, `kept`, `cost_usd`, `status`, `model`), the evidence path of the screenshot it was of as its receipt, and the image the eyes were shown as a blob in the recording. The recording's counters then read `paid.vision` and the eyes' cost. An entry also carries the data set's `item` it belongs to (`DemoOptions.itemOf(path)`), the `miss` { code, reason } when the look failed, and each image's frame second `at`; every read leaves one live `vision`/`shown` line (its arguments, the media facts and the captions with the images). A demo passes only its eyes: `fakes.eyes` on fakes (with a lead that takes only text, every image a read or a screenshot makes goes to them), and `live` supplies `vision` options for real eyes.
+
+### Holding the kill at `vision.filing`
+
+A kill entry may carry `hold` (and `waitMs`, default 3000): the filing that is the nth, and those that reach `vision.filing` after it, are parked, never completed, until `hold` of them are parked or `waitMs` has passed, and then the process is killed. Several answers are by then kept in the journal and none is filed, so the resume files each kept answer: "6 kept, nothing paid twice". Without `hold` the kill is at the first crossing.
 
 ### Kills that never land
 

@@ -232,7 +232,7 @@ test('the vision option: each look is filed, whole, in a vision.looks document w
 });
 
 test('a kill at vision.filing (the eyes answered, the look not yet filed): the next process files the kept answer and the eyes are asked once in all', { timeout: 300_000 }, async (t) => {
-  const { result, recording, tmp } = await run(t, { kills: [{ point: 'vision.filing', why: 'the answer is paid and kept, the look is not filed' }] }, ['--kill', '--json'], { DEMO_EYES: '1' });
+  const { result, recording, tmp } = await run(t, { kills: [{ point: 'vision.filing', why: 'the answer is paid and kept, the look is not filed', hold: 1 }] }, ['--kill', '--json'], { DEMO_EYES: '1' });
   assert.deepEqual(result.processes.map((process) => process.signal), ['SIGKILL', null]);
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(result.unlanded, []);
@@ -507,4 +507,55 @@ test('the place\'s signals carry the kill request: a place with its own signals(
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
+});
+
+test('hold: the nth filing and those after it are parked until `hold` are parked or waitMs has passed, then the kill; without a hold the kill is at the crossing', (t) => {
+  const kills = [];
+  const make = (plan) => crossings({ run: plan, tools: [] }, undefined, Date.now(), (crossing) => kills.push(crossing.point));
+  const plan = (extra) => ({ point: 'vision.filing', kind: 'process', target: 'run', why: 'x', n: 1, ...extra });
+  // hold 3: three filings are parked, and the kill comes with the third.
+  const held = make(plan({ hold: 3, waitMs: 60_000 }));
+  for (let index = 0; index < 3; index += 1) { held('vision.filing'); assert.ok(held.park('vision.filing') instanceof Promise, `filing ${index + 1} is parked`); }
+  assert.deepEqual(kills, ['vision.filing'], 'one kill, once the third is parked');
+  // The point alone does not kill a plan that holds: the kill is the park\'s.
+  kills.length = 0;
+  const alone = make(plan({ hold: 2, waitMs: 60_000 }));
+  alone('vision.filing');
+  assert.deepEqual(kills, []);
+  assert.equal(alone.park('vision.other'), undefined, 'another point is never parked');
+  // n: the filings before the nth go through.
+  const later = make(plan({ hold: 1, n: 2, waitMs: 60_000 }));
+  later('vision.filing'); assert.equal(later.park('vision.filing'), undefined, 'the first filing is not parked');
+  later('vision.filing'); assert.ok(later.park('vision.filing') instanceof Promise, 'the second is');
+  assert.deepEqual(kills, ['vision.filing']);
+  // waitMs: fewer than hold are parked, and the kill comes when the wait is over.
+  kills.length = 0;
+  const waiting = make(plan({ hold: 5, waitMs: 30 }));
+  waiting('vision.filing'); waiting.park('vision.filing');
+  assert.deepEqual(kills, []);
+  return new Promise((resolve) => setTimeout(() => { assert.deepEqual(kills, ['vision.filing']); resolve(); }, 120));
+});
+
+test('a kill spec checks hold and waitMs, and the plan carries them (waitMs defaults to 3000)', () => {
+  assert.deepEqual(plansOf(killsOf({ name: 'x', kills: [{ point: 'vision.filing', why: 'y', hold: 6 }] })).map((plan) => [plan.hold, plan.waitMs]), [[6, 3000]]);
+  assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'a', why: 'b', hold: 0 }] }), /hold is a positive integer/);
+  assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'a', why: 'b', hold: 2, waitMs: -1 }] }), /waitMs is 0 or more/);
+  assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'a', why: 'b', hold: 2, target: 'tool' }] }), /does not go with target "tool"/);
+});
+
+test('looks carry their data set item, and every read leaves one live vision/shown line; a look that failed is kept with its miss', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_EYES: '1', DEMO_ITEM: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  const lines = readEvents(recording);
+  const filed = lines.filter((line) => line.channel === 'durable' && line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks);
+  assert.deepEqual(filed.map((entry) => [entry.item, entry.miss]), [['scan filing.png', null]]);
+  const shown = lines.filter((line) => line.source === 'vision' && line.kind === 'shown');
+  assert.equal(shown.length, 1, 'one live line for the one read');
+  assert.equal(shown[0].data.args.path, 'filing.png');
+  assert.ok(shown[0].data.content.some((block) => block.type === 'image'));
+  // Eyes that fail: the miss is kept with the look it belongs to.
+  const failing = await run(t, {}, ['--json'], { DEMO_EYES: '1', DEMO_EYES_FAIL: '1' });
+  const misses = readEvents(failing.recording).filter((line) => line.channel === 'durable' && line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((entry) => entry.miss !== null);
+  assert.ok(misses.length >= 1, 'a miss was kept');
+  assert.ok(misses.every((entry) => entry.miss.code && entry.miss.reason && entry.record.facts.key));
 });
