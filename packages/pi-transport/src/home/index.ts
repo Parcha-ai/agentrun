@@ -14,6 +14,7 @@ export {
 	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
+	type HomeStatus,
 	type Ready,
 	RemoteError,
 } from "./host.ts";
@@ -49,6 +50,18 @@ export {
 	serveModels,
 } from "./models.ts";
 export {
+	MoveError,
+	type MoveErrorCode,
+	type MoveOptions,
+	type MoveReceipt,
+	type MoveStep,
+	moveHome,
+	type Place,
+	type RecoverOptions,
+	recoverHome,
+	type StartRunner,
+} from "./move.ts";
+export {
 	type ConditionalStore,
 	type Holder,
 	KeyStoreError,
@@ -79,6 +92,8 @@ export {
 	type RunnerOptions,
 	type WireError,
 } from "./runner.ts";
+export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
+export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,
