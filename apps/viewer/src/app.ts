@@ -13,8 +13,11 @@ import { readAllEntries } from './folder.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 
+/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
+ *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
+type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
+declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
 const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
@@ -45,6 +48,28 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
 }
 
 // ---- loading ---------------------------------------------------------------------------------------------------
+
+/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
+async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
+  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
+  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
+}
+
+/** The bundled recordings: embedded in gallery.js, or listed in the index a files build ships beside them, read once and
+ *  only when something needs them (a gallery, a `?r=`, a bundled baseline). */
+let bundled: Promise<(GalleryEntry | IndexEntry)[]> | undefined;
+const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Promise.resolve(window.AGENTRUN_GALLERY)
+  : window.AGENTRUN_GALLERY_INDEX ? fetch(window.AGENTRUN_GALLERY_INDEX).then((response) => {
+    if (!response.ok) throw new Error(`${window.AGENTRUN_GALLERY_INDEX} answered ${response.status}`);
+    return response.json() as Promise<IndexEntry[]>;
+  }) : Promise.resolve([]));
+const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
+/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
+async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
+  const dir = new URL(`recordings/${entry.id}/`, location.href).href;
+  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
+}
 
 function fromGallery(entry: GalleryEntry): Recording {
   return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
@@ -339,8 +364,8 @@ async function baselineOf(recording: Recording, base: string | undefined): Promi
   const named = recording.manifest.baseline;
   if (!named) return undefined;
   const id = named.recording.replace(/\/$/, '').split('/').at(-1)!;
-  const entry = (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id || each.id === named.recording);
-  const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
+  const entry = (await bundledRecordings().catch(() => [])).find((each) => each.id === id || each.id === named.recording);
+  const other = entry ? (await openBundled(entry)).recording : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
   if (!other) return undefined;
   return baselineViewOf(named.label, other);
 }
@@ -528,8 +553,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   }
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
-  const entries = window.AGENTRUN_GALLERY ?? [];
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
@@ -558,7 +582,8 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
     onOpen(await fromFiles(files));
   });
   root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
-    el('h2', { text: 'Recordings' }), entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
+    el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
+      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 
 async function main() {
@@ -568,10 +593,17 @@ async function main() {
   try {
     const id = params.get('r');
     const src = params.get('src');
-    const entry = id ? (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id) : undefined;
-    if (entry) open(fromGallery(entry), new URL(`recordings/${entry.id}/`, location.href).href);
+    // The bundled recordings are read only when they are needed: a recording at a URL (`?src=`) opens without them, and
+    // a gallery whose index cannot be read still offers the folder picker.
+    let entries: (GalleryEntry | IndexEntry)[] = [];
+    let unread: string | undefined;
+    if (id || !src) {
+      try { entries = await bundledRecordings(); } catch (error) { unread = error instanceof Error ? error.message : String(error); }
+    }
+    const entry = id ? entries.find((each) => each.id === id) : undefined;
+    if (entry) { const { recording, dir } = await openBundled(entry); open(recording, dir); }
     else if (src) open(await fromUrl(src), new URL(src.endsWith('/') ? src : `${src}/`, location.href).href);
-    else gallery(root, open);
+    else gallery(root, open, entries, unread);
   } catch (error) {
     root.replaceChildren(el('p', { class: 'problems', text: `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}` }));
   }

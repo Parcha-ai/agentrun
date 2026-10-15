@@ -72,6 +72,11 @@ real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/READ
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
 down to the lines their fold reads (`test/fixtures/spacedeck-asks`).
 
+`node apps/viewer/build.mjs --files` (off by default) ships the recordings as files instead: `recordings/index.json` lists
+each one's manifest and blob paths, `gallery.js` embeds nothing, and the page fetches a recording only when it is
+opened, so a gallery of large runs stays a small page. It needs a static host: a page opened from `file://` cannot
+fetch.
+
 ## Develop
 
 ```sh
