@@ -161,7 +161,7 @@
   .dk-calls { list-style: none; padding: 0; margin: 0; }
   .dk-call { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0; border-bottom: 1px solid var(--rule); }
   .dk-call.dim { opacity: 0.4; } .dk-label { font-family: ui-monospace, monospace; font-size: 12px; }
-  .dk-verdict.once { color: var(--done); } .dk-verdict.repeated, .dk-verdict.twice { color: var(--kill); font-weight: 600; }
+  .dk-verdict.once, .dk-verdict.kept { color: var(--done); } .dk-verdict.repeated, .dk-verdict.twice { color: var(--kill); font-weight: 600; }
   .dk-verdict.cut, .dk-verdict.in-flight { color: var(--open); } .dk-verdict.not-measured, .dk-verdict.unproven { color: var(--muted); }
   /* The transport stage (src/transport-view.ts). Motion is a function of the playback clock: a view sets --row (where the token is) and --age
      (seconds since an event), and a paused animation with a negative delay draws that frame, so a scrub and a replay show the same screen. */

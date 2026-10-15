@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { countersOf } from '../src/counters.ts';
 import { diskPanel, type DiskState } from '../src/disk.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { type Node, panelsFor, panelsShown } from '../src/panels.ts';
@@ -108,8 +109,8 @@ test('what it does not know it skips: unknown kinds, a run.json with no generati
 
 let nextSeq = 100;
 const host = (t: number, kind: string, data: Line['data']): Line => ({ channel: 'live', source: 'host', kind, t, seq: (nextSeq += 1), data });
-const record = (t: number, generation: number, status: string, sealedSeq: number | null) =>
-  host(t, 'run.json', { gen: generation, run: 'r', status, generation, sealedSeq, wakeAt: null, holder: { driver: 'local', host: 'box', bootId: null, pid: 10 + generation, since: 'x' }, heartbeatAt: null, updatedAt: 'x', detail: null });
+const record = (t: number, generation: number, status: string, sealedSeq: number | null, label = 'box') =>
+  host(t, 'run.json', { gen: generation, run: 'r', status, generation, sealedSeq, wakeAt: null, holder: { driver: 'local', host: label, bootId: label === 'box' ? null : 'boot-1', pid: 10 + generation, since: 'x' }, heartbeatAt: null, updatedAt: 'x', detail: null });
 const effectLine = (t: number, commit: number, gen: number, status: 'unknown' | 'completed', calls: Json[]): Line => ({
   channel: 'durable', source: 'workflow', kind: 'agentrun.effects', gen, t, commit, order: 0, path: '/root/steps/0',
   data: { doc: 'agentrun.effects', key: 'r\u0000step:/root/steps/0#call:0', value: { driver: 'r', name: 'charge', argsHash: 'a', status, session: 'r', result: null, intent: { tool: 'charge', argsHash: 'b' }, ...(calls.length ? { calls } : {}) }, version: 1 },
@@ -197,4 +198,43 @@ test('the shell draws the panel only for a recording with a disk claim line: the
   assert.ok(panelsFor(lines).some((panel) => panel.id === 'disk'));
   // Judged over the whole recording: a claim line that comes last is drawn for every stop.
   assert.ok(panelsFor([...reference, lines.find((line) => line.kind === 'run.json')!]).some((panel) => panel.id === 'disk'));
+});
+
+// The disk demo's recording, cut to the supervisor's lines and the store's effects (see fixtures/README.md): ten charges, the
+// fifth paid by generation 1, killed at `effect.kept charge` before the store recorded the call, and settled by generation 2
+// from the answer generation 1 kept in evidence, without calling again.
+const kept = parseLines(readFileSync(new URL('fixtures/disk-kept/events.jsonl', import.meta.url), 'utf8'));
+
+test('a call whose paid answer was kept before a kill is credited to the generation that made it, and the generation that settled it from the kept answer is named', () => {
+  const text = screen(kept);
+  assert.match(text, /10 paid calls: 10 made once/);
+  assert.match(text, /charge step:\/root\/steps\/0\/items\/4\/body#call:0 made once in generation 1, kept, settled by generation 2 \(not repeated\)/);
+  assert.doesNotMatch(text, /items\/4\/body#call:0 made once, in generation 2/, 'credited to the settling generation, it hides that generation 1 paid it');
+  // The others are credited to the generation that made them: four in generation 1, five in generation 2.
+  for (const [item, gen] of [[0, 1], [3, 1], [5, 2], [9, 2]] as const) assert.match(text, new RegExp(`items/${item}/body#call:0 made once, in generation ${gen}`));
+  assert.equal(countersOf(state(kept).counters, true).repeated, 0, 'the shell\'s own strip agrees: nothing repeated');
+});
+
+test('a kept answer settled by a later generation is a settlement, not a second payment: with a second applied call it is a repeat', () => {
+  const doubled = kept.map((line): Line => {
+    const doc = line.data as { key?: string; value?: { calls?: Json[] } };
+    if (line.kind === 'agentrun.effects' && doc.key?.includes('items/4/body') && line.gen === 2 && line.snapshot !== true && doc.value?.calls) {
+      return { ...line, data: { ...doc, value: { ...doc.value, calls: [...doc.value.calls, { outcome: 'applied', tool: 'charge', argsHash: 'again' }] } } as Line['data'] };
+    }
+    return line;
+  });
+  assert.match(screen(doubled), /items\/4\/body#call:0 made 2 times/);
+});
+
+test('a holder is shown by the label the recording gives it, verbatim, and two generations on the same label are still two claims', () => {
+  const same = [host(0, 'process.started', { gen: 1 }), record(10, 1, 'running', null, 'host-1'), host(50, 'process.started', { gen: 2 }), record(60, 2, 'running', null, 'host-1')];
+  const s = state(same);
+  assert.deepEqual(s.incarnations.map((each) => [each.gen, each.holder?.host]), [[1, 'host-1'], [2, 'host-1']]);
+  const text = screen(same);
+  assert.match(text, /generation 1 claims the run: local host-1 pid 11/);
+  assert.match(text, /generation 2 claims the run: local host-1 pid 12/);
+  assert.doesNotMatch(text, /boot-1/, 'the boot id is a label of the recording, never shown or compared');
+  // The disk demo's recording is labelled the same way: one machine, host-1, and two claims on it.
+  assert.deepEqual(state(kept).incarnations.map((each) => each.holder?.host), ['host-1', 'host-1']);
+  assert.match(screen(kept), /local host-1 pid/);
 });

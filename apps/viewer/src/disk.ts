@@ -20,7 +20,7 @@
 // Pure: `accepts`, `reduce` and `view` read only their arguments. Kinds and fields it does not know are skipped; a `run.json`
 // line without a run and an integer generation is refused, never misread.
 import { counterFold, type CounterState } from './counters.ts';
-import { docIdOf, docOf, effectIdOf, effectOf } from './durable.ts';
+import { applied, callsOf, docIdOf, docOf, effectIdOf, effectOf } from './durable.ts';
 import { isSupervisor, under, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel, type ViewContext } from './panels.ts';
 
@@ -48,6 +48,8 @@ export type DiskState = {
   delegations: Record<string, { t: number; orphaned: boolean }>;
   /** The effect's label and workflow path, by the shell's document identity (the key the counter fold uses). */
   effects: Record<string, { label: string; path?: string }>;
+  /** Calls settled from an answer an earlier process kept in evidence (`via: "evidence"`): the generation that recorded the settlement, by effect. The payment was made by the generation that admitted the effect. */
+  settled: Record<string, number>;
   /** Each process the supervisor started and the claim generation it came to hold (run.json carries no process; the claim a process holds is the next one polled after it started). */
   owners: { process: number; claim?: number }[];
   /** The durable generations each claim wrote under (the non-snapshot durable lines seen while it was the newest claim; a poll that lags can credit a generation to the claim before). */
@@ -60,7 +62,7 @@ export type DiskState = {
 };
 
 const diskKnown = (line: Line): boolean => isSupervisor(line) && (DISK_KINDS.has(line.kind) || line.kind === 'process.started' || line.kind === 'kill' || line.kind === 'result');
-const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, owners: [], durable: {}, cuts: [], ended: false, lastT: 0, counters: counterFold.init() });
+const diskInit = (): DiskState => ({ seen: false, record: undefined, incarnations: [], events: [], delegations: {}, effects: {}, settled: {}, owners: [], durable: {}, cuts: [], ended: false, lastT: 0, counters: counterFold.init() });
 
 const diskTime = (t: number) => `${(t / 1000).toFixed(1)} s`;
 const diskHolderOf = (value: Json | undefined): DiskHolder | undefined => {
@@ -90,6 +92,9 @@ function diskReduce(state: DiskState, line: Line): DiskState {
   if (doc && effect && doc.key !== undefined) {
     const id = docIdOf(line, doc);
     if (next.effects[id] === undefined) next = { ...next, effects: { ...next.effects, [id]: { label: `${effect.name} ${effectIdOf(doc.key)}`, ...(line.path ? { path: line.path } : {}) } } };
+    // A snapshot's generation is the earlier process's, so only a line a process wrote itself says who settled it.
+    const settledByEvidence = (callsOf(effect) ?? []).some((call) => applied(call) && typeof call === 'object' && call !== null && !Array.isArray(call) && call.via === 'evidence');
+    if (settledByEvidence && line.snapshot !== true && line.gen !== undefined && next.settled[id] === undefined) next = { ...next, settled: { ...next.settled, [id]: line.gen } };
     return next;
   }
   if (!isSupervisor(line)) return next;
@@ -176,7 +181,7 @@ function diskReduce(state: DiskState, line: Line): DiskState {
 }
 
 /** A paid call (an `agentrun.effects` entry) as the counter fold sees it, in words. */
-type DiskCall = { id: string; label: string; path?: string; admitted: number | undefined; verdict: 'once' | 'repeated' | 'twice' | 'in-flight' | 'cut' | 'not-measured' | 'unproven'; applied: number[]; text: string };
+type DiskCall = { id: string; label: string; path?: string; admitted: number | undefined; verdict: 'once' | 'kept' | 'repeated' | 'twice' | 'in-flight' | 'cut' | 'not-measured' | 'unproven'; applied: number[]; text: string };
 
 function diskCalls(state: DiskState): DiskCall[] {
   return Object.entries(state.counters.effects).map(([id, effect]): DiskCall => {
@@ -193,6 +198,11 @@ function diskCalls(state: DiskState): DiskCall[] {
         : { ...base, verdict: 'repeated', text: `made ${applied.length} times (generations ${applied.join(', ')})${tail}` };
     }
     if (effect.status === 'completed') {
+      const settler = state.settled[id];
+      // The call was paid by the generation that admitted the effect and killed before the store recorded it; the next process settled it from the kept answer without calling again.
+      if (applied.length === 1 && settler !== undefined && effect.admitted !== undefined && effect.admitted < settler) {
+        return { ...base, verdict: 'kept', text: `made once in generation ${effect.admitted}, kept, settled by generation ${settler} (not repeated)` };
+      }
       if (applied.length === 1) return { ...base, verdict: 'once', text: `made once, in generation ${applied[0]}` };
       return state.counters.reported[id]
         ? { ...base, verdict: 'unproven', text: 'completed, but no applied call is recorded: no payment is proven' }
@@ -225,7 +235,8 @@ function diskView(state: DiskState, context: ViewContext): Node {
   const horizon = Math.max(state.lastT, 1);
   const holding = state.incarnations.at(-1);
   const calls = diskCalls(state);
-  const once = calls.filter((call) => call.verdict === 'once').length;
+  const once = calls.filter((call) => call.verdict === 'once' || call.verdict === 'kept').length;
+  const keptCalls = calls.filter((call) => call.verdict === 'kept').length;
   const repeated = calls.filter((call) => call.verdict === 'repeated' || call.verdict === 'twice').length;
   const cut = calls.filter((call) => call.verdict === 'cut').length;
   const unproven = calls.filter((call) => call.verdict === 'unproven').length;
@@ -243,7 +254,7 @@ function diskView(state: DiskState, context: ViewContext): Node {
     h('h5', {}, 'Paid calls'),
     calls.length === 0 ? h('p', { class: 'empty' }, 'No paid call is in the store yet.')
       : h('div', {},
-        h('p', { class: 'dk-sum' }, `${calls.length} paid call${calls.length === 1 ? '' : 's'}: ${once} made once${repeated > 0 ? `, ${repeated} repeated` : ''}${cut > 0 ? `, ${cut} cut by a kill` : ''}${unproven > 0 ? `, ${unproven} with no applied call` : ''}`),
+        h('p', { class: 'dk-sum' }, `${calls.length} paid call${calls.length === 1 ? '' : 's'}: ${once} made once${keptCalls > 0 ? ` (${keptCalls} kept and settled by the next generation)` : ''}${repeated > 0 ? `, ${repeated} repeated` : ''}${cut > 0 ? `, ${cut} cut by a kill` : ''}${unproven > 0 ? `, ${unproven} with no applied call` : ''}`),
         h('ul', { class: 'dk-calls' }, ...calls.map((call) => h('li', { class: `dk-call ${call.verdict}${diskDim(call.path, context.focus)}`, ...(call.path ? { path: call.path } : {}) },
           h('span', { class: 'dk-label' }, call.label), h('span', { class: `dk-verdict ${call.verdict}` }, call.text))))));
 }
