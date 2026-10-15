@@ -211,6 +211,7 @@ test('a storm takes no crossing before the process has begun its first node, and
   const named = crossings({ run: { point: 'event browser.reconciled', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined);
   named('event browser.reconciled');
   assert.deepEqual(kills, ['SIGKILL']);
+});
 
 test('the vision option: each look is filed, whole, in a vision.looks document with the image the eyes saw as a blob, and the counters read the look and its cost', { timeout: 300_000 }, async (t) => {
   const { result, recording } = await run(t, {}, ['--json'], { DEMO_EYES: '1' });
