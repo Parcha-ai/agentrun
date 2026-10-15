@@ -16,7 +16,7 @@
 // with its `kind`, `result`) from outside every process.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,7 +43,7 @@ export type DemoOptions = {
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
   self: string;
   /** Where the session lives and how its process starts, stops and restarts (the place seam). Default: the local place, a child process of this machine. A package supplies another (a box that moves the session). */
-  place?: (context: { paths: RunPlace; self: string; destroyBoxes: () => void }) => Place | Promise<Place>;
+  place?: (context: { paths: RunPlace; self: string; destroyBoxes: () => void | Promise<void>; requestFile: (attempt: number) => string }) => Place | Promise<Place>;
   spec: DemoSpec;
   job: Job;
   fakes: Fakes;
@@ -67,6 +67,8 @@ export type DemoResult = {
   maxUsd: number | null;
   /** The run was stopped past `--max-usd`, or finished past it. */
   overBudget: boolean;
+  /** Kills the place could not make: the attempt ended, and the run did not go on. Each has the place's error code. */
+  failedKills: Array<{ gen: number; code: string }>;
 };
 
 const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, dir: { type: 'string' }, json: { type: 'boolean' } } as const;
@@ -79,7 +81,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result);
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
-  if (options.argv === undefined && (result.overBudget || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -233,10 +235,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   for (const name of Object.keys(process.env)) if ((live && /^(BROWSERBASE_|BB_|CHROME_PATH|PI_BROWSER_|HERO_|OPENROUTER_|OPENAI_|ANTHROPIC_)/.test(name)) || name.startsWith('DEMO_')) base[name] = process.env[name]!;
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
+  const failedKills: DemoResult['failedKills'] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
   const paths = pathsAt(dir);
-  const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) }) : localPlace({ self: options.self, paths, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) } : {}) });
+  const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
+  const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root) } : {}) });
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
@@ -256,24 +260,37 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
-      // The supervisor decides when: a crossing asks to be killed, or the spend cap is passed. It writes the kill line, and only then does the place kill.
+      // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
+      // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
-      const watch = setInterval(() => {
+      let killFailed = false;
+      const decide = async (asked: { point: string; n: number } | undefined) => {
         if (killed) return;
-        const asked = existsSync(request) ? (JSON.parse(readFileSync(request, 'utf8')) as Crossing) : undefined;
-        if (asked) {
-          const kind = plan.run?.kind ?? 'process';
-          killed = { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind };
-        } else if (overBudget) killed = { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
-        else return;
+        const kind = plan.run?.kind ?? 'process';
+        killed = asked
+          ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
+          : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
-        void place.kill(runner!, killed.kind);
-      }, 20);
+        try { await place.kill(runner!, killed.kind); } catch (error) {
+          const code = String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED');
+          killFailed = true;
+          failedKills.push({ gen, code });
+          supervisor.host('kill.failed', { gen, code, message: String((error as Error | null)?.message ?? error).slice(0, 240), kind: killed.kind });
+        }
+      };
+      const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
+      const pump = (async () => {
+        if (!iterator) return;
+        for (let next = await iterator.next(); !next.done; next = await iterator.next()) if (next.value.kind === 'kill-request') await decide(next.value.crossing);
+      })();
+      const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
       const result = await runner.exited;
       clearInterval(watch);
+      await iterator?.return?.();
+      await pump;
       processes.push(result);
-      if (killed && killed.label === 'max-usd') break;
+      if (killFailed || (killed && killed.label === 'max-usd')) break;
       if (killed) { previous = { runner, kind: killed.kind }; continue; }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
@@ -299,7 +316,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget };
+    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
     await place.release();
@@ -313,6 +330,7 @@ const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'e
 function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
+  if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
 }
