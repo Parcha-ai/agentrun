@@ -270,7 +270,7 @@ test('a kill line with kind box is a box kill, one with kind process or none is 
   const state = at(lines);
   assert.deepEqual(state.kills.map((kill) => kill.kind), ['box', 'process', 'process', 'process']);
   const text = screen(lines);
-  assert.match(text, /1 of 4 \(1 box, 3 process\)|\d of 4 \(1 box, 3 process\)/, 'the strip follows the kinds');
+  assert.match(text, /\d of 4 · 1 box, 3 process|\d of 4 \(1 box, 3 process\)/, 'the strip follows the kinds');
   assert.doesNotMatch(text, /box \?/, 'a process that came back with no box named is not at "box ?"');
   assert.match(text, /✗ the whole box/);
   assert.match(text, /✗ a process/);
