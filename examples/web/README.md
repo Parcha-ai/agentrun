@@ -52,8 +52,10 @@ Without a start command the server only shows the home's runs: it cannot start o
 3. Once the run is idle and its newest row is the agent's answer, the server sends its process SIGTERM. The instance
    releases the browser (Browserbase saves the sign-in into the agent's context), then the run.
 4. When the process has exited, the server calls `carryBack`: the run's sign-in goes back to the home, and the run's index
-   entry gets its outcome, answer and cost. A run carried back is never carried back again, and a later message wakes it
-   as before. A server that stopped before a carry back does it when it starts again.
+   entry gets its outcome, and its answer and cost as its released store holds them (an answer given while the run
+   drained included). A server that stopped before a carry back does it when it starts again.
+5. A run carried back is finished. A message to it is refused (`409`, `RUN_FINISHED`) and never wakes it; the page says
+   so and offers a new run, which starts from the home, signed in.
 
 The next run starts signed in.
 

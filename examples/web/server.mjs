@@ -63,11 +63,15 @@ const answerOf = (rows) => {
 };
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
+
+/** A run carried back to the agent home is finished: a message to it is refused with this, never a wake. */
+const finishedRun = () => new HttpError(409, "This run is finished: its sign-in went back to the agent. Start a new run; it starts signed in.", "RUN_FINISHED");
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
@@ -131,7 +135,6 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
-  const answers = new Map();
   const settling = new Set();
 
   // ---- the agent home ----------------------------------------------------------------------------------------------
@@ -157,7 +160,8 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     return { id, dir, index, work: join(dir, "work"), record: typeof record?.status === "string" ? record : null, meta: (await readJson(join(dir, "web.json"))) ?? {} };
   }
 
-  const statusOf = (run) => (run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
+  // A run carried back is done, whatever run.json says of its last instance.
+  const statusOf = (run) => (run.index.endedAt ? "done" : run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
 
   /** The run's transcript from its store, opened read-only; only for a run whose claim is released. */
   async function readStore(run) {
@@ -295,22 +299,23 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
       if (live?.state !== "idle" || !answerOf(live.rows)) continue;
-      answers.set(id, live.rows);
       if (children.get(id) === child) child.kill("SIGTERM");
       return;
     }
   }
 
-  /** Carry a released run that answered back to the home, once: its sign-ins, its outcome, its answer and its cost. */
+  /**
+   * Carry a released run that answered back to the home, once: its sign-ins, its outcome, its answer and its cost, all
+   * read from its released store, so a message the run answered while it drained is the answer kept.
+   */
   async function settle(id) {
     const run = await loadRun(id);
     if (!run || run.index.endedAt || !RELEASED.has(run.record?.status)) return;
-    const rows = answers.get(id) ?? (await readStore(run)).rows;
+    const { rows } = await readStore(run);
     const answer = answerOf(rows);
     if (!answer) return;
     const cost = costOf(rows);
     await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
-    answers.delete(id);
     reread();
   }
 
@@ -322,6 +327,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (!run) throw new HttpError(404, "no such run");
       const door = doorOf(run.record);
       if (door) return door;
+      if (run.index.endedAt) throw finishedRun();
       if (["done", "failed"].includes(run.record?.status)) throw new HttpError(409, `the run is ${run.record.status}`);
       if (!children.has(id) && startable(run.record)) {
         if (launched && exits.has(id)) throw new HttpError(502, `the start command exited (${exits.get(id)})`);
@@ -352,6 +358,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   async function submit(id, content) {
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
+    if ((await loadRun(id))?.index.endedAt) throw finishedRun();
     const status = await toDoor(id, "/status");
     const whenBusy = status.body?.busy?.kind === "busy" ? "steer" : "followUp";
     return toDoor(id, "/submit", { requestId: randomUUID(), content, whenBusy });
@@ -561,7 +568,13 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   let names;
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://app");
+    // A request target no URL parser takes (`GET http://[`) is the client's error, never the server's end.
+    let url;
+    try {
+      url = new URL(req.url ?? "/", "http://app");
+    } catch {
+      return send(res, 400, { error: "BAD_REQUEST", message: "the request target is not a URL" });
+    }
     if (names && !names.has((req.headers.host ?? "").toLowerCase())) return send(res, 403, { error: "FORBIDDEN", message: "unexpected Host header" });
     if (req.method === "POST") {
       const origin = req.headers.origin;
@@ -570,7 +583,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     route(req, res, url).catch((error) => {
       if (res.headersSent) return void res.end();
       const status = error instanceof HttpError ? error.status : 500;
-      send(res, status, { error: status === 500 ? "FAILED" : "REFUSED", message: error.message });
+      send(res, status, { error: error.code ?? (status === 500 ? "FAILED" : "REFUSED"), message: error.message });
     });
   });
   await new Promise((resolve, reject) => (server.once("error", reject), server.listen(port, host, resolve)));

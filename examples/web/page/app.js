@@ -238,8 +238,12 @@ function paintHead() {
   $("#banner").hidden = !waiting;
   $("#banner-text").textContent = (ui.rows.findLast((r) => r.kind === "waiting")?.summary ?? "").replace(/^Waiting for you:?\s*/, "");
   $("#banner-btn").hidden = !info.liveView;
-  $("#text").disabled = $("#send").disabled = finished(info);
-  $("#text").placeholder = finished(info) ? `This run is ${info.status}` : ui.state === "working" ? "Steer the agent: it reads this at its next step" : "Message the agent";
+  // A finished run takes no more messages; the agent's next run starts from its home, signed in.
+  const done = finished(info);
+  $("#text").disabled = done;
+  $("#send").disabled = false;
+  $("#send").textContent = done ? "New run" : "Send";
+  $("#text").placeholder = done ? (info.outcome ? "This run is finished. A new run starts signed in." : `This run is ${info.status}.`) : ui.state === "working" ? "Steer the agent: it reads this at its next step" : "Message the agent";
   $("#err").textContent = info.error ?? "";
 }
 
@@ -295,6 +299,7 @@ async function tick(id) {
 }
 
 async function send() {
+  if (ui.info && finished(ui.info)) return void (location.hash = "#/");
   const content = $("#text").value.trim();
   if (!content || !ui.id) return;
   const id = ui.id;
@@ -396,11 +401,15 @@ function showNew() {
   $("#view").replaceChildren(el("div", { class: "top-row" }, el("h1", {}, "New run")), el("div", { class: "note" }, ui.canStart ? "Tell the agent what to do. It starts in its own folder and you watch it here." : "This server has no start command, so it cannot start runs. Pick a run from the history."), el("div", { class: "composer" }, text, go), err);
 }
 
+let searches = 0;
 async function showSearch(q) {
+  const asked = ++searches;
   leaveRun();
   $("#q").value = q;
   $("#view").replaceChildren(el("div", { class: "top-row" }, el("h1", {}, `Search: ${q}`)), el("div", { class: "hits" }, el("div", { class: "note" }, "Searching…")));
   const { results } = await api(`/search?q=${enc(q)}`).catch(() => ({ results: [] }));
+  // Only the newest search draws: an older answer that arrives late, or one for a page left since, is dropped.
+  if (asked !== searches || !$("#view .hits")) return;
   const link = (r) => (r.kind === "file" ? `#/run/${enc(r.runId)}/files/${r.path.split("/").map(enc).join("/")}` : `#/run/${enc(r.runId)}`);
   $("#view .hits").replaceChildren(...(results.length ? results.map((r) => el("a", { href: link(r) }, el("div", { class: "t" }, r.title), el("div", { class: "meta" }, `${r.kind}${r.path ? ` · ${r.path}` : ""}`), el("div", {}, r.snippet))) : [el("div", { class: "note" }, "Nothing found.")]));
 }
@@ -412,6 +421,7 @@ function show(pane, tab) {
 
 function route() {
   const [, kind, id, sub, ...path] = location.hash.split("/").map((p) => decodeURIComponent(p));
+  if (kind !== "search") searches++;
   if (kind === "run" && id) {
     const file = sub === "files" && path.length ? path.join("/") : null;
     if (id !== ui.id) {

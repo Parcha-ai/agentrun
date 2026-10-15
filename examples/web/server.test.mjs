@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -403,20 +404,29 @@ function fakeInstance(dir) {
   const script = join(dir, "start.mjs");
   writeFileSync(
     script,
-    `import { writeFileSync } from "node:fs";
+    `import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 const dir = process.argv[2];
 const door = process.env.FAKE_DOOR;
+// What the run's store holds when it is released: FAKE_ENTRIES names a file of entries, as pi would have committed them.
+const commit = () => {
+  if (!process.env.FAKE_ENTRIES) return;
+  const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
+  const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+  for (const entry of JSON.parse(readFileSync(process.env.FAKE_ENTRIES, "utf8"))) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  db.close();
+};
 const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 1, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 write("running");
-process.on("SIGTERM", () => { write("sleeping"); process.exit(0); });
+process.on("SIGTERM", () => { commit(); write("sleeping"); process.exit(0); });
 setInterval(() => {}, 1000);
 `,
   );
   return script;
 }
 
-test("a run that answered is released and carried back once, with the sign-in it made; a run waiting for the person is left running", async (t) => {
+test("a run that answered is released and carried back once, with the sign-in it made and the answer its store holds; then it is finished; a run waiting for the person is left running", async (t) => {
   const answered = await fakeDoor({ snapshot: transcript, hold: true, busy: true });
   const waiting = await fakeDoor({ snapshot: asking, hold: true });
   t.after(() => Promise.all([answered.close(), waiting.close()]));
@@ -424,7 +434,13 @@ test("a run that answered is released and carried back once, with the sign-in it
   t.after(() => rm(dir, { recursive: true, force: true }));
   const { home, server, post } = await app(t, { start: [process.execPath, fakeInstance(dir)], watchMs: 50 });
 
+  // The door showed the answer when the run was stopped; a follow-up was admitted and answered while it drained, so the
+  // released store holds a later answer, and that is the one kept.
+  const late = [...transcript, user(13, "And one more thing?"), assistant(14, [text("Here is the late answer.")])];
+  writeFileSync(join(dir, "late.json"), JSON.stringify(late));
   process.env.FAKE_DOOR = answered.url;
+  process.env.FAKE_ENTRIES = join(dir, "late.json");
+  t.after(() => void delete process.env.FAKE_ENTRIES);
   const { id } = await (await post("/runs", { content: "Log in to the practice site and save notes.md" })).json();
   // The run's own sign-in, as the agent app commits it while the run works: a Browserbase context in its store.
   const run = (await readAgentHome(home)).runs[id];
@@ -436,8 +452,15 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.ok(!server.children.has(id), "the run that answered was released");
   let state = await readAgentHome(home);
   for (let i = 0; i < 100 && !state.runs[id].endedAt; i++) await new Promise((r) => setTimeout(r, 50)), (state = await readAgentHome(home));
-  assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "I saved **notes.md**.", 0.05]);
+  assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
+
+  // Carried back, the run is finished: a message is refused with a code, and the run is never woken.
+  const refused = await post(`/runs/${id}/messages`, { content: "one more?" });
+  assert.deepEqual([refused.status, (await refused.json()).error], [409, "RUN_FINISHED"]);
+  assert.ok(!server.children.has(id), "a finished run is not started again");
+  assert.equal((await (await fetch(`${server.url}/runs/${id}`)).json()).status, "done");
+  delete process.env.FAKE_ENTRIES;
 
   process.env.FAKE_DOOR = waiting.url;
   const second = await (await post("/runs", { content: "Log in again" })).json();
@@ -446,6 +469,18 @@ test("a run that answered is released and carried back once, with the sign-in it
   await new Promise((r) => setTimeout(r, 500));
   assert.ok(server.children.has(second.id), "a run waiting for the person keeps its browser and its process");
   assert.equal((await readAgentHome(home)).runs[second.id].endedAt, undefined);
+});
+
+test("a request target that is not a URL is answered 400, and the server goes on", async (t) => {
+  const { server, json } = await app(t);
+  const url = new URL(server.url);
+  const answer = await new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => socket.write(`GET http://[ HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`));
+    let data = "";
+    socket.on("data", (chunk) => (data += chunk)).on("end", () => resolve(data)).on("error", reject);
+  });
+  assert.match(answer, /^HTTP\/1\.1 400 /);
+  assert.deepEqual((await json("/runs")).runs, [], "the server still answers");
 });
 
 test("a door address in run.json that is not loopback http is never contacted", async (t) => {
