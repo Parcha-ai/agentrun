@@ -111,15 +111,15 @@ describe("the model frames this package writes and reads", () => {
 		} as never;
 		expect(() =>
 			new FrameEncoder().encode({ type: "text_delta", contentIndex: 0, delta: "x", partial: {} } as never),
-		).toThrow(/before start/);
+		).toThrow(/before the stream began/);
 		const twice = new FrameEncoder();
 		twice.encode(start);
-		expect(() => twice.encode(start)).toThrow(/more than one start/);
+		expect(() => twice.encode(start)).toThrow(/began twice/);
 		const ended = new FrameEncoder();
 		ended.encode(start);
 		ended.encode({ type: "error", reason: "error", error: {} } as never);
 		expect(() => ended.encode({ type: "text_delta", contentIndex: 0, delta: "x", partial: {} } as never)).toThrow(
-			/follows a terminal/,
+			/already ended/,
 		);
 	});
 
