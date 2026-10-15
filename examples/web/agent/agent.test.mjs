@@ -8,7 +8,8 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { createAgent, liveOf, loadDefinition, promptOf, saveSignIn, loadSignIn, toolsOf } from './app.ts';
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+import { createAgent, liveOf, loadDefinition, loadSignIn, promptOf, saveSignIn, signInAsked, toolsOf } from './app.ts';
 
 const CONTEXT_ID = 'ctx-saved-by-run-1';
 
@@ -56,11 +57,34 @@ test('the root conversation is created with the prompt, the tools and the saved 
   assert.equal(config.policy.idleReleaseS, 900, 'a person has time to sign in while the turn has ended');
 
   const agent = await root.agent(ctx);
-  assert.deepEqual(agent.tools.map((tool) => tool.name), ['read', 'write', 'edit', 'snapshot', 'run', 'screenshot', 'browser_read', 'browser_release', 'browser_relaunch']);
+  assert.deepEqual(agent.tools.map((tool) => tool.name), ['read', 'write', 'edit', 'snapshot', 'run', 'browser_read', 'browser_release', 'request_sign_in']);
   assert.deepEqual(agent.model, { provider: 'agent-model', modelId: 'test-model' });
   assert.equal(agent.thinkingLevel, 'medium');
   assert.match(agent.instructions, /<skill name="sign-in">/);
   assert.doesNotMatch(agent.instructions, new RegExp(CONTEXT_ID), 'the context id never reaches the model');
+});
+
+test('request_sign_in ends the turn: no model request and no tool runs until the person replies', async (t) => {
+  const { tmp, env, where } = await place(t);
+  await saveSignIn(env.AGENT_HOME, { contextId: CONTEXT_ID });
+  const { options } = await createAgent(where, env);
+  let asked = 0;
+  const faux = fauxProvider({ models: [{ id: 'scripted' }] });
+  faux.setResponses([
+    () => (asked++, fauxAssistantMessage([fauxToolCall('request_sign_in', { site: 'the practice site', reason: 'The secure page needs a sign-in.' }, { id: 'call-1' })], { stopReason: 'toolUse' })),
+    () => (asked++, fauxAssistantMessage([fauxText('this answer must never be asked for')], { stopReason: 'stop' })),
+  ]);
+  options.models.setProvider(faux.provider);
+  const harness = await Harness.open(await openNodeSqliteStorage(join(tmp, 'run.sqlite')), { models: options.models, registry: options.registry, onReport: () => {} }, ctx);
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { ...options.root, agent: { ...options.root.agent, model: { provider: faux.provider.id, modelId: 'scripted' } } });
+  const settled = await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx);
+
+  assert.equal(settled.status, 'done');
+  assert.equal(asked, 1, 'the run ended on the tool result, without another model request');
+  const newest = (await root.entries({}, 1, undefined, ctx)).items[0];
+  assert.equal(newest.kind, 'pi.tool-result');
+  assert.deepEqual(newest.model[0].content, [{ type: 'text', text: signInAsked('the practice site') }]);
 });
 
 test('thinking is never off, and the model comes from the host', async (t) => {

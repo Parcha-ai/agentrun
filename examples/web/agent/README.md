@@ -1,14 +1,17 @@
 # The web example's agent
 
 An agent that signs in to a website through a person, then reads the pages behind the sign-in and writes what it found
-to files. A person asks it in a chat. It opens a real browser on Browserbase, asks the person to sign in in the browser's
-live view, and waits. The person signs in there (the model never sees the password) and replies "done". The agent goes
+to files. A person asks it in a chat. It opens a real browser on Browserbase, opens the site's sign-in page and calls
+`request_sign_in`, which ends its turn. The person signs in in the browser's live view and replies "done". The agent goes
 on, writes `report.md` and `pages.csv` in its workspace, and releases the browser. The next run of the same agent starts
 signed in, because both runs use the agent's Browserbase context.
 
+Use a test account on a practice site, such as https://the-internet.herokuapp.com/login. In this release the model's
+page code can still read what the person types into the page, so a real password must not go through the live view.
+
 | File | What |
 | --- | --- |
-| `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `workflow`, `max_cost_usd`. It names no model: the host picks it. |
+| `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `workflow`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
 | `skills/*.md` | The skills `agent.json` names, added to the prompt in that order. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition to Harness options, the model from the environment, the file tools and the browser. |
 | `start-run.mjs` | Starts one run on a local directory, with its door on loopback. |
@@ -56,6 +59,9 @@ lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same d
 
 ## Sign-in
 
+- `request_sign_in({ site, reason })` answers `Asked the person to sign in to <site> in the live view; waiting for them
+  to reply done.` and ends the run: no model request and no tool call follow until the person's next message, so nothing
+  touches the browser while the person signs in. An idle run whose newest entry is that result is waiting for the person.
 - The first run creates a Browserbase context and saves its id in `<agent home>/browser.json` (mode 0600). Every run of
   the agent opens its browser on that context, and Browserbase saves the context when the session ends.
 - When a session opens, and each time its page changes, the app writes `<run>/live.json` (mode 0600):
@@ -64,6 +70,7 @@ lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same d
   released.
 - The context id never reaches the model: the browser's redactor scrubs it from every tool result. It is in the run's
   store, in the browser's configuration document, which the model does not read.
+- No recorder runs: the app installs no frame or trace recorder, and the agent has no screenshot tool.
 - `loadSignIn` and `saveSignIn` in `app.ts` are the one place sign-ins are kept. A sign-in store shared by every host
   replaces them later.
 

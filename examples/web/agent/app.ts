@@ -1,7 +1,8 @@
 // The agent app of the web example: `pi-durable-disk run --dir <runs>/<id> --app examples/web/agent/app.ts --serve 0`
 // loads it (start-run.mjs does that). It reads the agent's definition (agent.json) and skills from this directory and
-// returns pi-durable's Harness options: the model the host picks, the workspace's file tools, and a Browserbase browser
-// whose context is the agent's, so a sign-in made in one run is still there in the next.
+// returns pi-durable's Harness options: the model the host picks, the workspace's file tools, a Browserbase browser
+// whose context is the agent's, so a sign-in made in one run is still there in the next, and `request_sign_in`, which
+// ends the agent's turn while the person signs in.
 //
 // The serve door creates the root conversation on the first request, with the definition's prompt and tools and the
 // browser's configuration in the commit that creates it. Two host files sit beside the run and outside `work/`, the only
@@ -14,8 +15,8 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { createRegistry, type ConversationId, type Harness, type ToolRegistration } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
+import { createRegistry, defineExtension, defineTool, type ConversationId, type Harness, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
@@ -96,6 +97,36 @@ export function toolsOf(definition: AgentDefinition, available: Record<string, r
   });
   return [...new Map(picked.map((tool) => [tool.name, tool])).values()];
 }
+
+// ---- the sign-in hand-over ------------------------------------------------------------------------------------------------
+
+/** What the person's page shows while the agent waits: the result of `request_sign_in`, the last item of an idle run. */
+export const signInAsked = (site: string) => `Asked the person to sign in to ${site.slice(0, 200)} in the live view; waiting for them to reply done.`;
+
+/**
+ * The agent asks for a sign-in and its turn ends: the result terminates the run, so no tool (and no browser call) runs
+ * while the person signs in, until their next message.
+ */
+export const requestSignIn = defineTool({
+  name: "request_sign_in",
+  description: "Ask the person to sign in to a site themselves, in the live view of your browser. Call it alone, once the site's sign-in page is open in your browser. It ends your turn; the person replies when they are done.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      site: { type: "string", minLength: 1, description: "The site's address or name." },
+      reason: { type: "string", minLength: 1, description: "One sentence: what the sign-in is for." },
+    },
+    required: ["site", "reason"],
+  } as unknown as TSchema,
+  replay: "safe",
+  execute: async (args) => {
+    const { site, reason } = args as { site: string; reason: string };
+    return { content: [{ type: "text", text: signInAsked(site) }], details: { site, reason }, control: { terminate: true } };
+  },
+});
+
+const SignInHandover = defineExtension({ name: "sign-in", tools: [requestSignIn] });
 
 // ---- sign-ins: a private file in the agent home. The seam pi-durable-agent's sign-ins replace. -------------------------
 
@@ -218,8 +249,8 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   });
   const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId: signIn.contextId, idleReleaseS: IDLE_RELEASE_S };
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, browser.extension]) registry.install(extension);
-  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools });
+  for (const extension of [ArchilCodingTools, browser.extension, SignInHandover]) registry.install(extension);
+  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, [SignInHandover.name]: [requestSignIn] });
 
   /** Every session the run still holds is released (Browserbase saves the context then), and the releases finish. */
   async function releaseBrowsers(harness: Harness, context: Context): Promise<void> {
