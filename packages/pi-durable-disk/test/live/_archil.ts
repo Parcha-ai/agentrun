@@ -19,6 +19,12 @@ const ARCHIL = "/usr/bin/archil";
 // A live run without a disk would otherwise skip every test and look green.
 if (LIVE && !process.env.PDA_LIVE_DISK) throw new Error("PDA_LIVE=1 needs PDA_LIVE_DISK: the id (dsk-...) of the scratch disk the suites may use");
 
+/**
+ * The owner the suites give a run directory and its files: this process's user, which is the user the local host driver
+ * runs instances as by default. Not a fixed uid: a machine's first user is not always 1000.
+ */
+export const RUN_OWNER = { uid: process.getuid!(), gid: process.getgid!() };
+
 export function scratchDiskId(): string {
   const id = process.env.PDA_LIVE_DISK;
   if (!id) throw new Error("PDA_LIVE_DISK names the scratch disk (dsk-...)");
