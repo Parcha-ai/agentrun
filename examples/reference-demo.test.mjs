@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
+import { effectiveBoxes } from './reference/demo-spec.ts';
 import { BOX_CROSSINGS, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
 
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
@@ -373,4 +374,73 @@ test('a child started with the spend cap already passed is ended at once, and no
   const result = await spawnChild(new URL('./reference/demo-fixture.ts', import.meta.url).href, { DIR: '/tmp/never', BACKEND: 'http://127.0.0.1:1', DEMO_SPEC: '/no/such/spec.json' }, () => {}, stop);
   assert.equal(result.signal, 'SIGKILL');
   assert.ok(Date.now() - started < 10_000);
+});
+
+// ---- the audit's five gaps (A2) -------------------------------------------------------------------------------------------------------------
+
+test('Fakes.extensions are installed on a no-key run, and Fakes.vision is called with the host and the running run (its harness undefined until the run is open)', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-a2-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const probeExtension = { name: 'probe', tools: [] };
+  const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [probeExtension] });
+  assert.deepEqual(local.host.tools.extensions, [probeExtension]);
+  const { result } = await run(t, {}, ['--json'], { DEMO_VISION_PROBE: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'vision-called.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true });
+});
+
+test('the result hook: the entry writes the result line and its blob from what the demo makes (agentrun.cited/1), not from the raw record', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_RESULT: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(validateRecording(recording), []);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.result.title, 'A cited result');
+  const cited = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
+  assert.equal(cited.format, 'agentrun.cited/1');
+  assert.equal(cited.rows[0].value, 'Acme Ltd');
+  assert.ok(readFileSync(join(recording, 'blobs', `${cited.rows[0].cites[0].blob}.txt`), 'utf8') === 'a cited file', 'keep() stored the file in the recording\'s blobs');
+  const line = readEvents(recording).find((entry) => entry.source === 'host' && entry.kind === 'result');
+  assert.equal(line.data.title, 'A cited result');
+});
+
+test('ToolContext.live: false on a no-key run, true when the host is live, so one set of tools reads live or replays a capture', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const seen = [];
+  for (const live of [false, true]) {
+    const place = await placeAt(join(tmp, String(live)));
+    const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: { look: (_args, context) => { seen.push(context.live); return {}; } }, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' }, { live });
+    await local.host.tools.runEffect({ node: { tool: 'look' }, input: {}, effect: { id: `e${live}`, argsHash: 'h' } });
+  }
+  assert.deepEqual(seen, [false, true]);
+});
+
+test('boxes on fakes are local, and Docker is used only with --live: a no-key run starts no container', async (t) => {
+  assert.deepEqual(effectiveBoxes({ name: 'x', boxes: { kind: 'docker', image: 'i', runIn: true } }, false), { kind: 'local', image: 'i', runIn: true });
+  assert.deepEqual(effectiveBoxes({ name: 'x', boxes: { kind: 'docker' } }, true), { kind: 'docker' });
+  assert.equal(effectiveBoxes({ name: 'x' }, false), undefined);
+  const { result, recording } = await run(t, { boxes: { kind: 'docker', runIn: true } }, ['--json']);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const created = readEvents(recording).filter((line) => line.source === 'transport' && line.kind === 'box.created').map((line) => line.data.provider);
+  assert.deepEqual(created, ['local'], 'the box was a local one');
+});
+
+test('--input naming another project on fakes is refused unless its capture exists under fixtures/ beside the demo, and the refusal says where', async (t) => {
+  const spec = { input: { fixtures: { key: 'company' } } };
+  const fixtures = new URL('./reference/fixtures/', import.meta.url);
+  const capture = new URL('./Other Ltd.json', fixtures);
+  await assert.rejects(() => run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']), (error) => /--input names company "Other Ltd"/.test(error.message) && error.message.includes('fixtures/Other Ltd.json') && /--live/.test(error.message));
+  // The job's own project needs no capture.
+  const own = await run(t, spec, ['--json', '--input', '{"company":"Acme Ltd"}']);
+  assert.equal(own.result.processes.at(-1).outcome.status, 'complete');
+  // With its capture in place, another project is accepted.
+  const { mkdirSync, writeFileSync: write, rmSync } = await import('node:fs');
+  mkdirSync(fixtures, { recursive: true });
+  write(capture, '{}');
+  t.after(() => { rmSync(capture, { force: true }); try { rmSync(fixtures); } catch { /* not empty or gone */ } });
+  const other = await run(t, spec, ['--json', '--input', '{"company":"Other Ltd"}']);
+  assert.equal(other.result.record.company, 'Other Ltd');
 });

@@ -33,8 +33,8 @@ export type DemoSpec = {
   kill?: { point: string; why: string };
   /** The dollars a live run is expected to cost. `--max-usd` defaults to twice this. */
   expectedCost?: number;
-  /** The job's input: where its default lives and what it looks like, for `--input`. The job's own `input` is the default. */
-  input?: { shape?: string };
+  /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures.key` names the input property that picks a project: on fakes, `--input` with another project's value is refused unless its capture is at `fixtures/<value>` (a directory) or `fixtures/<value>.json` beside the demo. */
+  input?: { shape?: string; fixtures?: { key: string } };
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   [other: string]: unknown;
@@ -114,4 +114,20 @@ export function maxUsdOf(flag: string | undefined, spec: DemoSpec): number | nul
     return value;
   }
   return typeof spec.expectedCost === 'number' ? spec.expectedCost * 2 : null;
+}
+
+/** The box a run uses: Docker is used only with `--live`; a no-key run uses a local box instead, so it starts no container. */
+export function effectiveBoxes(spec: DemoSpec, live: boolean): BoxSpec | undefined {
+  if (!spec.boxes) return undefined;
+  return spec.boxes.kind === 'docker' && !live ? { ...spec.boxes, kind: 'local' } : spec.boxes;
+}
+
+/** `--input` on fakes: another project than the job's default needs its capture, and the refusal says where it goes. `dir` is the demo's directory. */
+export function checkInputCapture(spec: DemoSpec, input: Record<string, unknown> | undefined, defaults: Record<string, unknown>, dir: string, exists: (path: string) => boolean): void {
+  const key = spec.input?.fixtures?.key;
+  if (!key || !input || input[key] === undefined || input[key] === defaults[key]) return;
+  const value = String(input[key]);
+  const as = `${dir}/fixtures/${value}`;
+  if (exists(as) || exists(`${as}.json`)) return;
+  throw new Error(`--input names ${key} "${value}", and a run on fakes replays a capture of it, which does not exist. Put it at ${as}.json (or ${as}/), or run with --live to read the real thing.`);
 }
