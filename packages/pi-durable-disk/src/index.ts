@@ -25,8 +25,8 @@ export { AppError } from "./app.ts";
 export type { AppContext, AppModule, AppOptions } from "./app.ts";
 
 // The supervisor and the host drivers.
-export { deleteRunTree, ensureRunning, readRunStatus, SuperviseError } from "./supervise.ts";
-export type { CheckControl, CheckOptions, EnsureOptions, EnsureResult, HostDriver, HostHandle, HostStatus, Json, StartAttempt, StartReason, StonithOutcome, SuperviseErrorCode, SupervisorControl } from "./supervise.ts";
+export { archilControl, deleteRunTree, ensureRunning, readRunStatus, SuperviseError } from "./supervise.ts";
+export type { ArchilControl, CheckControl, CheckOptions, DiskClient, EnsureOptions, EnsureResult, HostDriver, HostHandle, HostStatus, Json, StartAttempt, StartReason, StonithOutcome, SuperviseErrorCode, SupervisorControl, TokenUser } from "./supervise.ts";
 export { localHost, LocalHostError } from "./hosts/local-host.ts";
 export type { LocalHostOptions, Ran, Runner } from "./hosts/local-host.ts";
 export { dockerHost, DockerHostError } from "./hosts/docker.ts";
@@ -43,5 +43,5 @@ export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";
 export type { BusyState, DrainOptions, Parking, ParkOptions, ParkResult, ParkTarget } from "./park.ts";
 
 // Fork: a new run from a run's committed state.
-export { fork, ForkError } from "./fork.ts";
-export type { ForkErrorCode, ForkOptions, ForkResult } from "./fork.ts";
+export { fork, ForkError, forkLocal } from "./fork.ts";
+export type { ForkErrorCode, ForkLocalResult, ForkOptions, ForkResult } from "./fork.ts";
