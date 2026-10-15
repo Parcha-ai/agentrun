@@ -170,7 +170,8 @@ export const transportPanel: Panel<TransportState> = {
         return state.token === undefined || (state.token.awaiting !== undefined && state.token.box !== box) ? tokenTo(state, box, state.token?.epoch ?? null, line.t) : state;
       }
       if (line.kind === 'kill') {
-        // RECORDING.md: a host kill's kind is 'process' or 'box', and absent means process; a panel never infers a box.
+        // A host kill's kind is 'process' or 'box'; absent means process, and a reader never infers a box (the rule of format draft 22, which the
+        // reference lead's RECORDING.md carries when that draft lands: this panel does not edit the format document).
         const kind = data.kind === 'box' ? 'box' : 'process';
         return { ...state, kills: [...state.kills, { t: line.t, gen: processOf(line) ?? 0, kind, label: str(data.label) ?? 'killed', box: str(data.box) ?? null }] };
       }
