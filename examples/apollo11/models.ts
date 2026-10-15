@@ -5,6 +5,7 @@
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider, type Models, type Provider } from '@earendil-works/pi-ai/models';
+import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import type { ModelRef } from '@earendil-works/pi-durable';
@@ -13,15 +14,39 @@ import type { ModelRef } from '@earendil-works/pi-durable';
 export type PublicModel = { provider: string; modelId: string };
 export const publicName = (model: PublicModel) => `${model.provider}/${model.modelId}`;
 
-/** The lead writes; the eyes read; the weak eyes are the model the eyes bench measured dropping digits from identifiers. */
+/** The lead writes; the eyes read; the weak eyes are the model the eyes bench measured dropping digits from identifiers. These are
+ *  the models the recorded runs used. */
 export const LEAD: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
 export const EYES: PublicModel = { provider: 'google', modelId: 'gemini-3.7-flash' };
 export const WEAK_EYES: PublicModel = { provider: 'openai', modelId: 'gpt-6-luna' };
 
-const PROVIDERS: Record<string, { make: () => Provider; key: string }> = {
-  openai: { make: openaiProvider as () => Provider, key: 'OPENAI_API_KEY' },
-  google: { make: googleProvider as () => Provider, key: 'GEMINI_API_KEY' },
+/** Each provider's key, and the lead and the eyes it gives when it is the one a run has (every one takes images). */
+export const PROVIDERS: Record<string, { make: () => Provider; key: string; lead: string; eyes: string }> = {
+  openai: { make: openaiProvider as () => Provider, key: 'OPENAI_API_KEY', lead: 'gpt-6-luna', eyes: 'gpt-6-sol' },
+  google: { make: googleProvider as () => Provider, key: 'GEMINI_API_KEY', lead: 'gemini-3.7-flash', eyes: 'gemini-3.7-flash' },
+  anthropic: { make: anthropicProvider as () => Provider, key: 'ANTHROPIC_API_KEY', lead: 'claude-haiku-5-5', eyes: 'claude-haiku-5-5' },
 };
+
+const parse = (name: string): PublicModel => {
+  const [provider, ...id] = name.split('/');
+  if (!provider || !id.length || !PROVIDERS[provider]) throw new Error(`a model is named provider/id with a provider of ${Object.keys(PROVIDERS).join(', ')}; ${name} is not`);
+  return { provider, modelId: id.join('/') };
+};
+
+/** The lead and the eyes of a live run: those named (`provider/id`), else the recorded ones when a gateway serves them or their
+ *  providers' keys are set, else the defaults of the providers whose keys are set (the lead's first, the eyes' preferring Google). */
+export function chooseModels(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): { lead: PublicModel; eyes: PublicModel } {
+  const has = (provider: string) => Boolean(env.APOLLO_MODEL_BASE_URL || env[PROVIDERS[provider]!.key]);
+  const keyed = Object.keys(PROVIDERS).filter(has);
+  const pick = (name: string | undefined, recorded: PublicModel, role: 'lead' | 'eyes', order: readonly string[]) => {
+    if (name) return parse(name);
+    if (has(recorded.provider)) return recorded;
+    const provider = order.find((id) => keyed.includes(id));
+    if (!provider) throw new Error(`--live needs a model key in the environment: ${Object.values(PROVIDERS).map((each) => each.key).join(', ')}, or a gateway (APOLLO_MODEL_BASE_URL and APOLLO_MODEL_API_KEY).`);
+    return { provider, modelId: PROVIDERS[provider]![role] };
+  };
+  return { lead: pick(named.lead, LEAD, 'lead', ['openai', 'anthropic', 'google']), eyes: pick(named.eyes, EYES, 'eyes', ['google', 'openai', 'anthropic']) };
+}
 
 /** Each named model through the gateway: the catalog's entry, sent to the gateway's OpenAI Responses API when the model speaks it
  *  (a reasoning model with tools needs it), else to its chat completions. */
@@ -58,6 +83,10 @@ export function liveModels(env: NodeJS.ProcessEnv, models: readonly PublicModel[
       catalog.setProvider(provider.make() as never);
     }
   }
-  for (const model of models) if (!catalog.getModel(model.provider, model.modelId)) throw new Error(`no model ${publicName(model)} in the catalog`);
+  for (const model of models) {
+    const entry = catalog.getModel(model.provider, model.modelId);
+    if (!entry) throw new Error(`no model ${publicName(model)} in this build of pi-ai's catalog`);
+    if (!entry.input.includes('image') && model !== models[0]) throw new Error(`${publicName(model)} takes no images, so it cannot be the eyes`);
+  }
   return { catalog, lead: { provider: models[0]!.provider, modelId: models[0]!.modelId } };
 }

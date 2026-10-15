@@ -13,9 +13,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { pdfBytes, pngBytes } from '@parcha/pi-vision/testing';
-import { receiptAt } from './apollo11/account.ts';
+import { foldLooks, receiptAt } from './apollo11/account.ts';
 import { fetchItems, loadDataset, placeFiles } from './apollo11/dataset.ts';
-import { EYES, LEAD, liveModels } from './apollo11/models.ts';
+import { chooseModels, EYES, LEAD, liveModels } from './apollo11/models.ts';
 import { apollo } from './apollo11/run.ts';
 
 const CLASSES = { red: 'A red frame.', green: 'A green frame.', blue: 'A blue frame.' };
@@ -193,6 +193,20 @@ test('the weak eyes\' run goes in the main account as weak_eyes: its eyes, its r
   assert.deepEqual(main.account.weak_eyes, { model: 'scripted-eyes', source: 'weak-run', times: weak.account.transcript.times, photos: { right: 5, total: 6 } });
 });
 
+test('the look counters follow the recording format: a kept filing pays only as its key\'s first, and a later payment by another process is repeated', () => {
+  const look = (key, { kept = false, status = 'ok', cost = 0.01 } = {}) => ({ tool: 'look', args: { path: 'x', model: 'm', native: false }, status, facts: { sha256: 's', kind: 'image', fragment: '', key, ...(cost === null ? {} : { cost_usd: cost }), ...(kept ? { kept: true } : {}) }, body: '' });
+  const filing = (record, incarnation) => ({ receipt: null, record, incarnation });
+  // Kept first (a process paid and died before filing), then paid again by a later process after a restore: two payments.
+  assert.deepEqual(foldLooks([{ looks: [filing(look('a', { kept: true }), 'p2'), filing(look('a'), 'p3')] }]),
+    { looks: 2, paid: 2, kept: 1, repeated: 1, asked_twice: 0, failed: 0, cost_usd: 0.02, cost_unknown: 0 });
+  // A kept filing after its payment adds nothing; two payments by one process are asked twice.
+  assert.deepEqual(foldLooks([{ looks: [filing(look('b'), 'p1'), filing(look('b', { kept: true }), 'p2')] }, { looks: [filing(look('c'), 'p1'), filing(look('c'), 'p1')] }]),
+    { looks: 4, paid: 3, kept: 1, repeated: 0, asked_twice: 1, failed: 0, cost_usd: 0.03, cost_unknown: 0 });
+  // A failed look whose request threw has no price: the cost is unknown, never $0.
+  assert.deepEqual(foldLooks([{ looks: [filing(look('d', { status: 'failed', cost: null }), 'p1'), filing(look('e'), 'p1')] }]),
+    { looks: 2, paid: 1, kept: 0, repeated: 0, asked_twice: 0, failed: 1, cost_usd: null, cost_unknown: 1 });
+});
+
 test('a file whose bytes do not match the data set is removed and refused before anything runs', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'apollo11-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -258,6 +272,18 @@ test('through a gateway, the lead and the eyes are asked by their public model i
     ['/v1/chat/completions', 'gemini-3.7-flash', 'Bearer gw-key'],
   ]);
   assert.throws(() => liveModels({}, [LEAD, EYES]), /OPENAI_API_KEY/);
+});
+
+test('with no model named, a run takes the recorded lead and eyes when it can, else each keyed provider\'s own image-taking models', () => {
+  const name = ({ lead, eyes }) => [`${lead.provider}/${lead.modelId}`, `${eyes.provider}/${eyes.modelId}`];
+  assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.7-flash']);
+  assert.deepEqual(name(chooseModels({ APOLLO_MODEL_BASE_URL: 'http://gateway/v1', APOLLO_MODEL_API_KEY: 'k' })), ['openai/gpt-6-luna', 'google/gemini-3.7-flash']);
+  assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k' })), ['openai/gpt-6-luna', 'openai/gpt-6-sol']);
+  assert.deepEqual(name(chooseModels({ GEMINI_API_KEY: 'k' })), ['google/gemini-3.7-flash', 'google/gemini-3.7-flash']);
+  assert.deepEqual(name(chooseModels({ ANTHROPIC_API_KEY: 'k' })), ['anthropic/claude-haiku-5-5', 'anthropic/claude-haiku-5-5']);
+  assert.deepEqual(name(chooseModels({ OPENAI_API_KEY: 'k' }, { eyes: 'openai/gpt-6-luna' })), ['openai/gpt-6-luna', 'openai/gpt-6-luna']);
+  assert.throws(() => chooseModels({}), /OPENAI_API_KEY/);
+  assert.throws(() => chooseModels({ OPENAI_API_KEY: 'k' }, { eyes: 'acme/model' }), /provider\/id/);
 });
 
 test('a film window is read as frames and cited by #t=, when ffmpeg is on this machine', { timeout: 240_000, skip: (() => { try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg is not installed'; } })() }, async (t) => {

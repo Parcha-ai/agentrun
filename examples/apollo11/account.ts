@@ -81,45 +81,51 @@ export const fragmentOf = (record: LookRecord) => {
 
 export type Counters = { looks: number; paid: number; kept: number; repeated: number; asked_twice: number; failed: number; cost_usd: number | null; cost_unknown: number };
 
-/** The look counters, from the `vision.looks` documents of a store no process holds. A key's eyes were paid by each entry that is
- *  ok, not native and not `kept`; a key whose only entries are `kept` was paid in a process whose filing a kill cut, once. Repeated:
- *  a key paid by more than one process; asked twice: paid twice by one. Cost: what those payments and the failed looks cost; a
- *  failed look whose request threw may have been billed, so its price is unknown, and one unknown price makes the cost null. */
-export function lookCounters(store: string): Counters {
-  type Entry = { receipt: string | null; record: LookRecord; incarnation?: string };
-  const latest = new Map<string, { looks: Entry[] }>();
-  for (const line of recordingLines(store).lines) {
-    const data = line.data as { doc?: string; key?: string; value?: unknown };
-    if (line.channel === 'durable' && data?.doc === 'vision.looks' && data.value) latest.set(`${data.key}\u0001${line.conv ?? ''}`, data.value as never);
-  }
+/** A filing as the counters read it. */
+export type Filing = { receipt: string | null; record: LookRecord; incarnation?: string };
+
+/** The look counters over the `vision.looks` documents' latest values, each list in filing order (agentrun.recording/1 draft 21).
+ *  Per look key, over ok filings that are not native: every filing that is not `kept` is a payment, and a kept filing is one only
+ *  as the key's first (a process paid and died before filing it, so that payment belongs to an earlier process). A key's payments
+ *  after its first count once each: in repeated when made by another process than the payment before, in asked twice when by the
+ *  same. Cost is one `cost_usd` per payment, and a failed look's own price unless it is kept; a failed look whose request threw may
+ *  have been billed, so its price is unknown, and one unknown price makes the cost null. */
+export function foldLooks(documents: readonly { looks: readonly Filing[] }[]): Counters {
   const counters: Counters = { looks: 0, paid: 0, kept: 0, repeated: 0, asked_twice: 0, failed: 0, cost_usd: 0, cost_unknown: 0 };
   const add = (usd: number | null | undefined) => {
     if (typeof usd !== 'number') counters.cost_unknown += 1;
     counters.cost_usd = counters.cost_usd === null || typeof usd !== 'number' ? null : counters.cost_usd + usd;
   };
-  const byKey = new Map<string, Entry[]>();
-  for (const value of latest.values()) for (const look of value.looks) byKey.set(look.record.facts.key, [...(byKey.get(look.record.facts.key) ?? []), look]);
+  const byKey = new Map<string, Filing[]>();
+  for (const value of documents) for (const look of value.looks) byKey.set(look.record.facts.key, [...(byKey.get(look.record.facts.key) ?? []), look]);
   for (const looks of byKey.values()) {
     counters.looks += looks.length;
-    const failed = looks.filter((look) => look.record.status === 'failed');
-    counters.failed += failed.length;
-    for (const look of failed) add(look.record.facts.cost_usd);
-    const ok = looks.filter((look) => look.record.status === 'ok' && !look.record.args.native);
-    const kept = ok.filter((look) => look.record.facts.kept);
-    const paid = ok.filter((look) => !look.record.facts.kept);
-    counters.kept += kept.length;
-    if (paid.length) {
-      counters.paid += paid.length;
-      const processes = new Set(paid.map((look) => look.incarnation ?? 'unknown')).size;
-      counters.repeated += processes - 1;
-      counters.asked_twice += paid.length - processes;
-      for (const look of paid) add(look.record.facts.cost_usd);
-    } else if (kept.length) {
-      counters.paid += 1;
-      add(kept[0]!.record.facts.cost_usd);
+    for (const look of looks) {
+      if (look.record.status !== 'failed') continue;
+      counters.failed += 1;
+      if (!look.record.facts.kept) add(look.record.facts.cost_usd);
     }
+    const payments: string[] = [];
+    looks.filter((look) => look.record.status === 'ok' && !look.record.args.native).forEach((look, at) => {
+      if (look.record.facts.kept) counters.kept += 1;
+      if (look.record.facts.kept && at > 0) return;
+      payments.push(look.record.facts.kept ? `before ${look.incarnation ?? 'unknown'}` : look.incarnation ?? 'unknown');
+      add(look.record.facts.cost_usd);
+    });
+    counters.paid += payments.length;
+    payments.forEach((by, at) => { if (at > 0) { if (by === payments[at - 1]) counters.asked_twice += 1; else counters.repeated += 1; } });
   }
   return counters;
+}
+
+/** The look counters of a store no process holds: `foldLooks` over its `vision.looks` documents. */
+export function lookCounters(store: string): Counters {
+  const latest = new Map<string, { looks: Filing[] }>();
+  for (const line of recordingLines(store).lines) {
+    const data = line.data as { doc?: string; key?: string; value?: unknown };
+    if (line.channel === 'durable' && data?.doc === 'vision.looks' && data.value) latest.set(`${data.key}\u0001${line.conv ?? ''}`, data.value as never);
+  }
+  return foldLooks([...latest.values()]);
 }
 
 type Score = { right: number; total: number; rate: number };

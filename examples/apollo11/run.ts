@@ -1,5 +1,5 @@
 // node examples/apollo11/run.ts [--quick] [--live [--weak-eyes]] [--kill-in-sink N[:hold]] [--kill-after-look N] [--kill-at <ms>]
-//   [--storm <ms> --kills N] [--film-landing] [--record <dir>] [--name <run>] [--weak-from <run dir>] [--dir <run dir>] [--cache <dir>] [--limit N]
+//   [--storm <ms> --kills N] [--film-landing] [--lead <provider/id>] [--eyes <provider/id>] [--record <dir>] [--name <run>] [--weak-from <run dir>] [--dir <run dir>] [--cache <dir>] [--limit N]
 //   [--max-usd X] [--json]
 // Apollo 11, read whole: a lead that is never shown an image reads NASA's archive through pi-vision's eyes (the film in windows, the
 // scanned air-to-ground transcript page by page, the photos one by one) and writes the landing minute by minute, every sentence
@@ -24,7 +24,7 @@ import { cost as foldCost } from '../reference/fold.ts';
 import { buildAccount, landingOf, outputOf, weakEyesOf, type Account } from './account.ts';
 import { fetchItems, fileOf, itemOf, itemsOf, loadDataset, placeFiles, select, type Mode, type Selection } from './dataset.ts';
 import { requestKill, shownImages, visionOptions } from './looks.ts';
-import { EYES, LEAD, liveModels, publicName, WEAK_EYES } from './models.ts';
+import { chooseModels, liveModels, publicName, WEAK_EYES } from './models.ts';
 import { scriptedEyes, scriptedLead, typedLines, type PageStarts } from './scripted.ts';
 import { workflowOf } from './workflow.ts';
 
@@ -48,6 +48,8 @@ export type Options = {
   wrong?: string[]; fail?: string[]; scriptedPages?: string;
   /** Where the supervisor's progress lines go (a download); default nowhere. */
   log?: (line: string) => void;
+  /** Live: the lead and the eyes as `provider/id` (default: the recorded ones, else each provider's own; see models.ts). */
+  lead?: string; eyes?: string;
   /** The full archive's pages with only the film's landing cuts. */
   filmLanding?: boolean;
   /** At most this many of each lane's items: a trial before a whole run. */
@@ -96,9 +98,9 @@ async function child() {
   };
   let vision: Parameters<typeof visionOptions>[1];
   if (live) {
-    const eyes = process.env.WEAK_EYES === '1' ? WEAK_EYES : EYES;
-    local.host.models = liveModels(process.env, [LEAD, eyes]);
-    vision = { ...common, eyesModel: eyes };
+    const [lead, eyes] = [process.env.LEAD_MODEL!, process.env.EYES_MODEL!].map((name) => ({ provider: name.split('/')[0]!, modelId: name.split('/').slice(1).join('/') }));
+    local.host.models = liveModels(process.env, [lead!, eyes!]);
+    vision = { ...common, eyesModel: eyes! };
   } else {
     const typed = typedLines(readFileSync(process.env.TYPED_FILE!, 'utf8'));
     const pages = JSON.parse(readFileSync(process.env.SCRIPTED_PAGES || join(import.meta.dirname, 'scripted-pages.json'), 'utf8')) as PageStarts;
@@ -120,7 +122,7 @@ async function child() {
 type Outcome = { status: string; generation?: number; lead_usd?: number; code?: string; message?: string };
 
 /** The keys and settings a live run needs reach the run process; nothing else of this process's environment does. */
-const PASSED = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'APOLLO_MODEL_BASE_URL', 'APOLLO_MODEL_API_KEY', 'APOLLO_DEBUG'];
+const PASSED = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'APOLLO_MODEL_BASE_URL', 'APOLLO_MODEL_API_KEY', 'APOLLO_DEBUG'];
 const passed = () => Object.fromEntries(PASSED.flatMap((name) => (process.env[name] ? [[name, process.env[name]!]] : [])));
 
 function startChild(env: Record<string, string>) {
@@ -193,9 +195,10 @@ export async function apollo(options: Options) {
   await placeFiles(paths, reads, join(dir, 'work'));
 
   const supervisor = record ? openSupervisor({ dir: record }) : undefined;
+  const chosen = options.live ? chooseModels(process.env, { ...(options.lead ? { lead: options.lead } : {}), ...(options.weakEyes ? { eyes: publicName(WEAK_EYES) } : options.eyes ? { eyes: options.eyes } : {}) }) : undefined;
   const env = {
     DIR: dir, TYPED_FILE: paths.get(TYPED)!, ...(options.dataset ? { DATASET: resolve(options.dataset) } : {}), ...(record ? { RECORD: record } : {}),
-    ...(options.live ? { LIVE: '1' } : {}), ...(options.weakEyes ? { WEAK_EYES: '1' } : {}), ...(options.wrong?.length ? { WRONG: options.wrong.join(',') } : {}),
+    ...(chosen ? { LIVE: '1', LEAD_MODEL: publicName(chosen.lead), EYES_MODEL: publicName(chosen.eyes) } : {}), ...(options.weakEyes ? { WEAK_EYES: '1' } : {}), ...(options.wrong?.length ? { WRONG: options.wrong.join(',') } : {}),
     ...(options.fail?.length ? { FAIL: options.fail.join(',') } : {}), ...(options.scriptedPages ? { SCRIPTED_PAGES: resolve(options.scriptedPages) } : {}),
     ...(options.sinkKill ? { SINK_KILL: `${options.sinkKill.n}:${options.sinkKill.hold ?? 4}` } : {}),
   };
@@ -244,7 +247,7 @@ export async function apollo(options: Options) {
   }
   const outcome = last?.outcome;
   const output = outcome?.status === 'complete' ? outputOf(dir) : null;
-  const models = { lead: options.live ? publicName(LEAD) : 'scripted lead (pi-ai faux)', eyes: options.live ? publicName(options.weakEyes ? WEAK_EYES : EYES) : 'scripted-eyes', scripted: !options.live };
+  const models = { lead: chosen ? publicName(chosen.lead) : 'scripted lead (pi-ai faux)', eyes: chosen ? publicName(chosen.eyes) : 'scripted-eyes', scripted: !options.live };
   const typed = typedLines(readFileSync(paths.get(TYPED)!, 'utf8'));
   const store = join(dir, 'store', 'run.sqlite');
   const name = options.name ?? `apollo11-${options.live ? 'live' : 'scripted'}-${options.mode ?? 'full'}${options.weakEyes ? '-weak-eyes' : ''}`;
@@ -262,7 +265,7 @@ export async function apollo(options: Options) {
     }
     const title = options.title ?? `Apollo 11, read whole (${options.live ? 'live' : 'scripted'}${options.mode === 'quick' ? ', the landing' : ''}${options.weakEyes ? ', weak eyes' : ''}${kills ? `, killed ${kills} time${kills === 1 ? '' : 's'}` : ''})`;
     finishRecording(record, {
-      title, task: 'apollo11-read-whole', model: options.live ? publicName(LEAD) : 'scripted', generations: processes, kills, code: codeOf(REPO),
+      title, task: 'apollo11-read-whole', model: chosen ? publicName(chosen.lead) : 'scripted', generations: processes, kills, code: codeOf(REPO),
       cost: (lines) => {
         const folded = foldCost(lines as never);
         // A look read back after a kill is not a second payment: the look part is the store's own fold, not one charge per filing.
@@ -287,14 +290,14 @@ if (import.meta.main) {
   else {
     const { values } = parseArgs({ options: {
       quick: { type: 'boolean' }, live: { type: 'boolean' }, 'weak-eyes': { type: 'boolean' }, dataset: { type: 'string' }, dir: { type: 'string' }, cache: { type: 'string' }, record: { type: 'string' }, title: { type: 'string' },
-      'film-landing': { type: 'boolean' }, 'kill-in-sink': { type: 'string' }, name: { type: 'string' }, 'weak-from': { type: 'string' }, 'kill-after-look': { type: 'string' }, 'kill-at': { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, 'max-usd': { type: 'string' }, wrong: { type: 'string' }, limit: { type: 'string' }, json: { type: 'boolean' },
+      'film-landing': { type: 'boolean' }, lead: { type: 'string' }, eyes: { type: 'string' }, 'kill-in-sink': { type: 'string' }, name: { type: 'string' }, 'weak-from': { type: 'string' }, 'kill-after-look': { type: 'string' }, 'kill-at': { type: 'string' }, storm: { type: 'string' }, kills: { type: 'string' }, seed: { type: 'string' }, 'max-usd': { type: 'string' }, wrong: { type: 'string' }, limit: { type: 'string' }, json: { type: 'boolean' },
     } });
     const number = (value: string | undefined) => (value === undefined ? undefined : Number(value));
     const result = await apollo({
       log: (line) => console.error(line), mode: values.quick ? 'quick' : 'full', ...(values.live ? { live: true } : {}), ...(values['weak-eyes'] ? { weakEyes: true } : {}),
       ...(values.dataset ? { dataset: values.dataset } : {}), ...(values.dir ? { dir: values.dir } : {}), ...(values.cache ? { cache: values.cache } : {}), ...(values.record ? { record: values.record } : {}), ...(values.title ? { title: values.title } : {}),
       ...(values['kill-in-sink'] ? { sinkKill: { n: Number(values['kill-in-sink'].split(':')[0]), ...(values['kill-in-sink'].includes(':') ? { hold: Number(values['kill-in-sink'].split(':')[1]) } : {}) } } : {}),
-      ...(values.name ? { name: values.name } : {}), ...(values['film-landing'] ? { filmLanding: true } : {}), ...(values['weak-from'] ? { weakFrom: values['weak-from'] } : {}),
+      ...(values.name ? { name: values.name } : {}), ...(values.lead ? { lead: values.lead } : {}), ...(values.eyes ? { eyes: values.eyes } : {}), ...(values['film-landing'] ? { filmLanding: true } : {}), ...(values['weak-from'] ? { weakFrom: values['weak-from'] } : {}),
       ...(values['kill-after-look'] ? { killAfterLook: number(values['kill-after-look'])! } : {}), ...(values['kill-at'] ? { killAtMs: number(values['kill-at'])! } : {}),
       ...(values.storm ? { stormMs: number(values.storm)! } : {}), ...(values.kills ? { kills: number(values.kills)! } : {}), ...(values.seed ? { seed: number(values.seed)! } : {}),
       ...(values['max-usd'] ? { maxUsd: number(values['max-usd'])! } : {}), ...(values.wrong ? { wrong: values.wrong.split(',') } : {}), ...(values.limit ? { limit: number(values.limit)! } : {}),

@@ -18,7 +18,7 @@ node examples/apollo11/run.ts --quick
 # kept, so the next process reads them back and pays for none of them again. Kept as a recording.
 node examples/apollo11/run.ts --quick --kill-in-sink 40:6 --record ./apollo11-recording
 
-# Real models with your own keys (OPENAI_API_KEY for the lead, GEMINI_API_KEY for the eyes).
+# Real models with your own keys (OPENAI_API_KEY for the lead, GEMINI_API_KEY for the eyes; see below for others).
 node examples/apollo11/run.ts --quick --live --max-usd 1
 
 # The same pages and photos through the eyes that drop digits, then the main run with that comparison in its account.
@@ -54,6 +54,11 @@ every image and the lead reads only their words.
 | Eyes | `google/gemini-3.7-flash` | `gemini-3.7-flash` |
 | Weak eyes (`--weak-eyes`) | `openai/gpt-6-luna` | `gpt-6-luna` |
 
+These are the models the recorded runs used, and the default when their providers' keys (or a gateway) are there. With one
+provider's key alone, the run takes that provider's own: OpenAI `gpt-6-luna` and `gpt-6-sol` as the eyes, Google `gemini-3.7-flash`
+for both, Anthropic `claude-haiku-5-5` for both (`ANTHROPIC_API_KEY`). `--lead provider/id` and `--eyes provider/id` name any
+other model in pi-ai's catalog; the eyes must take images. Only the table's models were run end to end.
+
 With `APOLLO_MODEL_BASE_URL` and `APOLLO_MODEL_API_KEY` set, every request goes to that OpenAI-compatible gateway instead (the
 lead to its Responses API, the eyes to its chat completions), under the public id in the right column; no provider key is read.
 A gateway that serves a model only under another name is not supported: the public id is what is asked for.
@@ -87,9 +92,10 @@ mission-time order, and an extract step writes the account. Then the program, no
 - `transcript.times`: every time the eyes read, found in the typed transcript or not; one that is not is shown beside the typed
   time it most likely is. Such a time is a misread, or a typo of the 1969 scan that the typed version corrects.
 - `photos` and `accuracy`: each photo's label beside its caption's class, overall and by class.
-- `counters`, folded from the store's `vision.looks` documents (`looks.ts`): looks paid (ok, not native, not kept; a key whose only
-  filings are kept was paid once in a process a kill cut), kept after a kill, repeated (a key paid by two processes; 0), asked
-  twice, failed, and their cost. A look whose request threw may have been billed, so its price is unknown and the cost is `null`.
+- `counters`, folded from the store's `vision.looks` documents (`looks.ts`) as the recording format counts them: per look key, every
+  ok filing that is not kept is a payment, and a kept filing is one only as the key's first (a process paid and died before
+  filing it); looks paid, kept after a kill, repeated (a key paid again by another process; 0), asked twice, failed, and their
+  cost. A look whose request threw may have been billed, so its price is unknown and the cost is `null`.
 - `weak_eyes`, with `--weak-from`: the weak eyes' model, their run's name, the times they read and their photo sort.
 
 Each `vision.looks` entry holds the look's record and receipt, its data set item, the miss (`code`, `reason`) when it failed, and
@@ -106,6 +112,7 @@ an image, so a hook on each `read`'s result, before vision's guard, keeps them; 
 | `account.ts` | The account, the accuracy, the times check and the counters |
 | `models.ts` | The lead and the eyes by public name, with your keys or a gateway |
 | `scripted.ts`, `scripted-pages.json` | The no-key lead and eyes, and the landing pages' first times the eyes answer from |
+| `SETUP-PROMPT.md` | A setup prompt to paste into a coding agent: what the machine needs, the keys, the commands |
 
 ## What it does not do yet
 
