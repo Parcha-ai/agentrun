@@ -16,6 +16,9 @@ node apps/viewer/build.mjs          # writes apps/viewer/dist/
 open apps/viewer/dist/index.html    # the gallery of recorded runs, or drop a recording folder on the page
 ```
 
+When the manifest keeps the job that ran and the run's store at its end (`job`, `store`), the header links both: the job
+is JSON and opens in a tab; the store is a SQLite file and downloads.
+
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
 

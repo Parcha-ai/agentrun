@@ -42,6 +42,10 @@ export type Manifest = {
   cost: { usd: number | null; parts: Record<string, number | null> };
   source: { run: string; store_sha256: string };
   result?: { blob: string; title: string };
+  /** The job that ran (`{ workflow, input, files }`), as a JSON blob (draft 24). */
+  job?: { blob: string; sha256: string };
+  /** The run's store at its end, a SQLite blob, and the commit of the generation it was taken at (draft 24). */
+  store?: { blob: string; at: { gen: number; commit: number } };
   /** Jump points: the screen just after that commit of that generation (a restore reuses commit numbers). */
   chapters?: { title: string; at: { gen: number; commit: number }; focus?: string }[];
   /** Another real recording (a relative path or URL) whose counters show beside this one's. */
@@ -109,6 +113,9 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const parts = Object.values(m?.cost?.parts ?? {});
   if (m?.cost && parts.some((part) => part === null) && m.cost.usd !== null) note('manifest.cost.usd is a number though a part is unknown');
   if (m?.result && blobs && !blobs.has(m.result.blob)) note(`manifest.result.blob ${m.result.blob} is not in blobs/`);
+  for (const [field, named] of [['job', m?.job], ['store', m?.store]] as const) {
+    if (named && blobs && !blobs.has(named.blob)) note(`manifest.${field}.blob ${named.blob} is not in blobs/`);
+  }
   if (m?.chapters !== undefined && !(Array.isArray(m.chapters) && m.chapters.every((chapter) => typeof chapter?.title === 'string'
     && isInt(chapter.at?.gen, 1) && isInt(chapter.at?.commit) && (chapter.focus === undefined || typeof chapter.focus === 'string')))) note('manifest.chapters needs a title and at { gen, commit } in each');
   else for (const chapter of m?.chapters ?? []) {
