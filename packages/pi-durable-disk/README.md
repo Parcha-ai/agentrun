@@ -20,6 +20,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 |---|---|---|
 | Linux and Node 22.19 or later, nothing else | [Quickstart on one machine](#quickstart-on-one-machine-no-disk-no-key) | A durable chat on a directory of this machine, killed with `SIGKILL` and finished by a second process. One machine and no fence: the directory is the claim |
 | Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: `kill -9` it and run the same command again, and it resumes. One machine and no fence |
+| macOS and Node 22.19 or later, for development | The same [quickstart](#quickstart-on-one-machine-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights and the file tools are not confined to the workspace ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
 | Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | A host killed in the middle of a paid charge, and the run resumed on another, every instance in a container |
 | A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
 | An app or a host of your own | [The app](#the-app) and [Library](#library) | `openDurableRun`, `localRun`, the supervisor and host drivers, `serve`, parking and `fork` from your code |
@@ -83,11 +84,12 @@ cd packages/pi-durable-disk
 
 ## Quickstart on one machine: no disk, no key
 
-The fastest look, on Linux with Node 22.19 or later: a durable chat on a directory of this machine, with
-[`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model instead of a key. One process answers the
-first messages and is killed (`SIGKILL`) after its third answer; a second opens the same run and answers the rest, and the
-transcript, read back from the store, has every message answered once. The directory is the claim, so this guards one
-machine only; the quickstarts below put the run on a disk that outlives the machine.
+The fastest look, on Linux with Node 22.19 or later (or on macOS, [for development](#on-macos)): a durable chat on a
+directory of this machine, with [`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model
+instead of a key. One process answers the first messages and is killed (`SIGKILL`) after its third answer; a second
+opens the same run and answers the rest, and the transcript, read back from the store, has every message answered once.
+The directory is the claim, so this guards one machine only; the quickstarts below put the run on a disk that outlives
+the machine.
 
 In an empty directory, install the package and its peers, save this as `chat.mjs`
 (it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
@@ -703,10 +705,28 @@ like a mount's, but syncs nothing: the store's commits are made durable by SQLit
 `work/` are the operating system's to flush, so a power loss can lose what it had not written yet. `mountToken` is
 required only with the default `acquire`; without either, the open is refused (`INVALID_ARGUMENT`) before anything mounts.
 
-It needs Linux, for now. The run's root is held open through `/proc/self/fd` (`openClaimDir`), and the default
-environment confines commands with `setpriv` (util-linux, `noNewPrivs`) and the file tools through `/proc/self/fd`
-(`confineFiles`). macOS has neither, and turning the environment's two off does not help: the open still holds the root
-through `/proc/self/fd`. A portable claim directory is what a local run on macOS would need.
+#### On macOS
+
+A local run works on macOS for development, and is weaker there than on Linux in four ways. Use Linux, or the
+[Docker quickstart](#quickstart-with-docker), when the agent is not trusted.
+
+- **Commands keep your rights.** macOS has no `no_new_privs`, so `noNewPrivs` defaults to false there and no `setpriv`
+  runs: a command can use `sudo` when you can, and setuid programs keep their privilege.
+- **The file tools are not confined to the workspace.** The confinement walks paths through `/proc/self/fd`, which macOS
+  does not have, so `confineFiles` defaults to false there, and the environment says so once on stderr: the agent's write
+  tool can reach the run's own `store/` and `run.json`.
+- **The run's root is addressed by its path.** On Linux, `run.json` and the run's directories are written through the
+  directory opened at acquire. On macOS each write is checked first against that directory, and a root renamed and
+  replaced between the check and the write gets the write.
+- **Commands are recorded from `ps`.** With no `/proc`, the instance reads one `ps` listing every 0.5 s while commands run,
+  `ps -E` for a command's mark and `sysctl kern.bootsessionuuid` for the boot. A command started within about 0.5 s
+  before a kill can be missed, and a process is told from a later one with the same pid by the second it started. The
+  lease watchdog reads the same listing.
+
+`fsync` on macOS does not flush the drive's cache, so the store also sets SQLite's `fullfsync` and
+`checkpoint_fullfsync` there (SQLite then syncs with `F_FULLFSYNC`), and refuses to open unless they read back. CI runs
+the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog)
+on macOS.
 
 ## Tests
 

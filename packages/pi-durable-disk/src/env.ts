@@ -57,15 +57,17 @@ export interface ArchilEnvOptions {
   /**
    * Run every command with no_new_privs (`setpriv --no-new-privs --`): setuid programs and file capabilities stop
    * granting privilege, so a command cannot `sudo` even when the run user has a sudo rule (the host needs one for the
-   * archil verbs). Default true. Set false on a host that already confines commands, or where util-linux is absent.
+   * archil verbs). Default true, but false on macOS, which has no no_new_privs: there a command keeps the user's rights,
+   * sudo included. Set false on a host that already confines commands, or where util-linux is absent.
    */
   readonly noNewPrivs?: boolean;
   /** The util-linux `setpriv` that `noNewPrivs` and `runAs` run; default `/usr/bin/setpriv`. */
   readonly setprivPath?: string;
   /**
    * Confine every file operation to the workspace (`PathOutsideWorkError` otherwise): read, write, edit and every other
-   * path pi's file system takes. Default true. Set false only where the paths are confined some other way, or where
-   * `/proc/self/fd` is unavailable (the confinement walks paths through it).
+   * path pi's file system takes. Default true, but false on macOS, which has no `/proc/self/fd` (the confinement walks
+   * paths through it): there the environment says once on stderr that the file tools are not confined. Set false only
+   * where the paths are confined some other way, or where `/proc/self/fd` is unavailable.
    */
   readonly confineFiles?: boolean;
   /**
@@ -675,6 +677,19 @@ function requireConfinement(claim: ArchilEnvClaim, readRoots: readonly string[])
   return new Confinement(canonicalizeSync(claim.work), [tmp, ...readRoots.map((root) => canonicalizeSync(root))]);
 }
 
+let warnedUnconfined = false;
+
+/** Once per process: on macOS the file tools are not confined unless the app says how they are. */
+function warnUnconfined(): void {
+  if (warnedUnconfined) return;
+  warnedUnconfined = true;
+  process.stderr.write(
+    "pi-durable-disk: on macOS the file tools are not confined to the run's workspace (there is no /proc/self/fd to walk " +
+      "paths through): a path outside work/, the run's own store included, is not refused. Use Linux or Docker when the " +
+      "agent is not trusted, or pass confineFiles: false to say the paths are confined some other way.\n",
+  );
+}
+
 export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {}): ArchilEnvFactory {
   const id = ["archil", claim.disk, claim.root].filter((part) => part !== undefined && part !== "").join(":");
   const running = new Set<ArchilExecutionEnv>();
@@ -682,9 +697,12 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
   if (runAs && ![runAs.uid, runAs.gid].every((n) => Number.isSafeInteger(n) && n >= 0)) {
     throw new EnvError("INVALID_RUN_AS", `runAs needs a numeric uid and gid, got ${JSON.stringify(runAs)}`);
   }
-  const noNewPrivs = options.noNewPrivs !== false;
+  const darwin = process.platform === "darwin";
+  const noNewPrivs = options.noNewPrivs ?? !darwin;
   const setpriv = noNewPrivs || runAs ? requireSetpriv(options.setprivPath ?? SETPRIV) : undefined;
-  const confinement = options.confineFiles === false ? undefined : requireConfinement(claim, options.readRoots ?? []);
+  const confineFiles = options.confineFiles ?? !darwin;
+  if (!confineFiles && options.confineFiles === undefined) warnUnconfined();
+  const confinement = confineFiles ? requireConfinement(claim, options.readRoots ?? []) : undefined;
   const scope: RunScope = {
     id,
     tempRoot: join(claim.root, TEMP_DIR),

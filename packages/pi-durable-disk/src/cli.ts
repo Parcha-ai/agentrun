@@ -19,7 +19,8 @@ import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { dockerHost } from "./hosts/docker.ts";
-import { currentBootId, localHost, procStartTicks } from "./hosts/local-host.ts";
+import { localHost, procStartTicks } from "./hosts/local-host.ts";
+import { thisBoot } from "./process-table.ts";
 import { localRun } from "./local-run.ts";
 import { parseRunRecord, RUN_JSON } from "./status.ts";
 import {
@@ -599,7 +600,7 @@ function localStatus(dir: string): number {
   if (holder) {
     const pid = Number(holder.pid);
     const ticks = Number.isInteger(pid) && pid > 1 ? procStartTicks(pid) : null;
-    if (holder.bootId !== currentBootId()) holderStatus = "gone";
+    if (holder.bootId !== thisBoot()) holderStatus = "gone";
     else if (typeof holder.startTicks === "number") holderStatus = ticks === holder.startTicks ? "running" : "stopped";
     else holderStatus = ticks === null ? "stopped" : "unknown";
   }
