@@ -78,8 +78,6 @@ export type TransportState = {
   highest: number;
   inSnapshot: boolean;
   opened: boolean;
-  /** A line from the transport source has happened. Without one the recording has no transport story (a reference run's kills and processes are the shell's own strip), and the panel draws nothing. */
-  seen: boolean;
   counters: CounterState;
 };
 
@@ -101,7 +99,7 @@ const known = (line: Line): boolean => {
   return false;
 };
 
-const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, tileBox: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, seen: false, counters: counterFold.init() });
+const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, tileBox: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() });
 
 const moveRecords = (line: Line): { id: string; value: Obj }[] => {
   const doc = docOf(line);
@@ -148,8 +146,11 @@ export const transportPanel: Panel<TransportState> = {
   featured: (lines) => lines.some((line) => line.source === 'transport' && line.channel === 'live' && (line.kind === 'box.created' || line.kind === 'move')),
   init: initial,
   accepts: (line) => known(line) || counterFold.accepts(line),
+  // It reduces the strip's lines for its own counters, but it is for a run with transport lines: a run without them has
+  // no box, flight or token to draw (its processes and kills are the strip's).
+  shows: (line) => line.source === 'transport',
   reduce(before, line) {
-    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t), ...(line.source === 'transport' ? { seen: true } : {}) };
+    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t) };
     if (counterFold.accepts(line)) state = { ...state, counters: counterFold.reduce(state.counters, line) };
     if (line.channel === 'durable') {
       if (line.commit === undefined) return state;
@@ -287,7 +288,6 @@ function killNode(state: TransportState, kill: Kill): Node {
 }
 
 function view(state: TransportState, t: number, now: number): Node {
-  if (!state.seen) return h('div', { class: 'transport none' });
   if (state.boxes.length === 0 && state.runners.length === 0 && state.flights.length === 0 && state.durableLines === 0) return h('div', { class: 'transport' }, h('p', { class: 'empty' }, 'The session has not started a box yet.'));
   const end = Math.max(state.lastT, now, 1);
   return h('div', { class: 'transport' },

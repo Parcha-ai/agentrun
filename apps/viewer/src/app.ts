@@ -3,7 +3,7 @@
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
-import { animatedPanels, featuredPanel, panelsShown, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
+import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
@@ -420,7 +420,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const panels = el('div', { class: 'panels' });
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
-  const featured = featuredPanel(panelsShown(), lines);
+  // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
+  const shown = panelsFor(lines);
+  const featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
   else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
@@ -479,7 +481,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return section;
     };
     if (onlyAnimated) {
-      for (const panel of animatedPanels(panelsShown())) {
+      for (const panel of animatedPanels(shown)) {
         const before = sections.get(panel.id);
         const after = drawn(panel);
         if (before !== undefined) { const place = placeIn(before); before.replaceWith(after); restorePlace(after, place); }
@@ -488,7 +490,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }
     if (featured) { const kept = placeIn(featuredBox); featuredBox.replaceChildren(drawn(featured)); restorePlace(featuredBox, kept); }
     const place = placeIn(panels);
-    panels.replaceChildren(...panelsShown().filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
+    panels.replaceChildren(...shown.filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
     restorePlace(panels, place);
   }
 
@@ -503,7 +505,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(panelsShown()).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); syncUrl(); lastPanels = now; }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(shown).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); syncUrl(); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };

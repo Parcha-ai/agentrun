@@ -101,7 +101,7 @@ test('the screen says what is proven and what is only observed, and never makes 
   assert.match(end, /Why here: by config \(no placement record in this recording\)/);
   assert.match(end, /the whole box/);
   assert.match(end, /back in/);
-  assert.equal(screen(real.lines, 0).trim(), '', 'before its first transport line the panel draws nothing');
+  assert.match(screen(real.lines, 0), /has not started a box yet/);
 });
 
 test('a wait the film skips is a gap in the lane and a line of its own, with its length and its reason', () => {
@@ -142,8 +142,7 @@ test('a restore marks the flights of the lost branch as lost, and they are still
 test('a cost that is null is unknown, never $0', () => {
   const lines: Line[] = [{ channel: 'durable', source: 'workflow', kind: 'agentrun.decisions', gen: 1, t: 1, commit: 1, order: 0, data: { doc: 'agentrun.decisions', key: 'k', value: { receipts: [{ decision_id: 'a', run_key: 'k', cost_usd: null }] } } }];
   assert.ok(counterFold.accepts(lines[0]!) && transportPanel.accepts(lines[0]!));
-  // The panel draws for a recording with a transport story, so one transport line is there beside the decision with its null cost.
-  const text = screen([{ channel: 'live', source: 'transport', kind: 'box.created', t: 0, seq: 0, gen: 1, data: { environment: 'laptop', provider: 'local', box: 'a' } }, ...lines]);
+  const text = screen(lines);
   assert.match(text, /cost\s+unknown/);
   assert.doesNotMatch(text, /\$0/);
 });
@@ -249,7 +248,7 @@ const fixture = (name: string) => parseLines(readFileSync(new URL(`fixtures/${na
 const hostKill = (t: number, data: Line['data']): Line => ({ channel: 'live', source: 'host', kind: 'kill', t, seq: t, gen: 1, data });
 const processStarted = (t: number, gen: number, data: Line['data'] = {}): Line => ({ channel: 'live', source: 'host', kind: 'process.started', t, seq: t, gen, data });
 
-test('a reference recording\'s plain process kills are process kills, never a box, and the panel draws nothing for a run with no transport lines', () => {
+test('a reference recording\'s plain process kills are process kills, never a box (the shell does not draw this panel for such a run: Panel.shows)', () => {
   for (const name of ['reference-killed', 'spacedeck-asks']) {
     const lines = fixture(name);
     const kills = lines.filter((line) => line.source === 'host' && line.kind === 'kill');
@@ -259,9 +258,7 @@ test('a reference recording\'s plain process kills are process kills, never a bo
     assert.equal(state.kills.filter((kill) => kill.kind === 'process').length, kills.length, `${name}: all process kills (the line names no kind)`);
     assert.equal(state.kills.filter((kill) => kill.kind === 'box').length, 0, `${name}: no box kill`);
     const view = transportPanel.view(state, { t: lines.at(-1)!.t });
-    assert.equal(textOf(view).trim(), '', `${name}: no transport lines, nothing drawn (no Boxes heading, no kills strip)`);
-    assert.doesNotMatch(textOf(view), /box \?/);
-    assert.equal(state.seen, false);
+    assert.doesNotMatch(textOf(view), /box \?/, `${name}: no "box ?"`);
   }
 });
 
@@ -278,7 +275,6 @@ test('a kill line with kind box is a box kill, one with kind process or none is 
 
 test('a recording with transport lines still draws the panel, and its kills keep their kinds', () => {
   const state = at(real.lines);
-  assert.equal(state.seen, true);
   assert.deepEqual(state.kills.map((kill) => kill.kind), ['box', 'process']);
   assert.match(screen(real.lines), /2 of 2 · 1 box, 1 process|2 of 2 \(1 box, 1 process\)/);
 });
