@@ -386,8 +386,10 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
 
-/** The chapter a point is in: the last one whose stop is at or before it, or -1 before the first. */
-export const chapterAt = (chapters: readonly { p: number }[], p: number): number => chapters.reduce((at, chapter, index) => (chapter.p <= p ? index : at), -1);
+/** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
+ *  declares, which need not be the order of their stops), by its index in that list, or -1 before every chapter. */
+export const chapterAt = (chapters: readonly { p: number }[], p: number): number =>
+  chapters.reduce((at, chapter, index) => (chapter.p <= p && (at < 0 || chapter.p >= chapters[at]!.p) ? index : at), -1);
 
 /** The embed protocol (PANELS.md, "Embedding"): what a framed viewer posts to the page that frames it. */
 export const embedMessage = (type: 'ready' | 'position' | 'focus', body: Record<string, Json>) => ({ source: 'agentrun-viewer', type, ...body });

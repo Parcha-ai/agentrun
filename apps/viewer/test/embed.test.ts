@@ -43,9 +43,11 @@ async function drivenPage(url: string, profile: string) {
 }
 const flags = (profile: string) => ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--virtual-time-budget=6000', '--dump-dom'];
 
-test('the chapter a point is in is the last one whose stop is at or before it', () => {
+test('the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in', () => {
   const chapters = [{ p: 1 }, { p: 10 }, { p: 25 }];
   assert.deepEqual([0, 1, 9, 10, 24, 25, 99].map((p) => chapterAt(chapters, p)), [-1, 0, 0, 1, 1, 2, 2]);
+  const declared = [{ p: 25 }, { p: 1 }, { p: 10 }];
+  assert.deepEqual([0, 1, 9, 10, 24, 25, 30].map((p) => chapterAt(declared, p)), [-1, 1, 1, 2, 2, 0, 0], 'the index in the list as declared');
 });
 
 test('every message names the viewer and its type', () => {
