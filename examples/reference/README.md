@@ -201,3 +201,7 @@ The transport box lines are live lines of source `transport`: `box.created` `{ b
 ### The judge seam
 
 Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+
+### The child as an app module
+
+`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app examples/reference/child-app.ts --id <id>`. It builds the host exactly as the entry's own child does (the same environment: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
