@@ -520,6 +520,38 @@ export async function superviseRuns(
 
 export type TokenUser = { identifier?: string; nickname?: string; status?: string; expiresAt?: string; createdAt?: string };
 
+/** What `archilControl` returns: everything `ensureRunning`, `superviseRuns`, `checkHost`, `fork` and the token janitor use. */
+export type ArchilControl = SupervisorControl & CheckControl & { listUsers(): Promise<TokenUser[]> };
+
+/** The two calls of the `disk` client (this package's dependency) that `archilControl` makes. */
+export type DiskClient = Pick<typeof import("disk"), "configure" | "getDisk">;
+
+/**
+ * One Archil disk's control API from an API key, the object `pi-durable-disk supervise` builds for itself: a library
+ * caller that composes its own supervisor (with `daytonaHost`, or a driver of its own) passes it as `control`. The S3 and
+ * control calls go to the disk the key reaches; `listUsers` reads the disk record again on every call (the list lags by
+ * seconds). `configure` is the `disk` client's process-wide setting, so one process controls disks of one key and region.
+ * `client` replaces the `disk` client (tests).
+ */
+export async function archilControl(options: { readonly apiKey: string; readonly disk: string; readonly region: string; readonly client?: DiskClient }): Promise<ArchilControl> {
+  const { configure, getDisk } = options.client ?? (await import("disk"));
+  configure({ apiKey: options.apiKey, region: options.region });
+  const disk = await getDisk(options.disk);
+  return {
+    getObject: (key) => disk.getObject(key),
+    headObject: (key) => disk.headObject(key),
+    putObject: (key, body, putOptions) => disk.putObject(key, body, putOptions),
+    addUser: (user) => disk.addUser(user),
+    removeUser: (type, identifier) => disk.removeUser(type, identifier),
+    listDelegations: () => disk.listDelegations(),
+    revokeDelegation: (d) => disk.revokeDelegation(d),
+    exec: (command) => disk.exec(command),
+    listObjects: (prefix, listOptions) => disk.listObjects(prefix, listOptions),
+    deleteObjects: (keys, deleteOptions) => disk.deleteObjects(keys, deleteOptions),
+    listUsers: async () => (await getDisk(options.disk)).authorizedUsers ?? [],
+  };
+}
+
 export interface TokenSweepOptions {
   /** The disk's token users (`getDisk(id).authorizedUsers`; the list lags by seconds). */
   listUsers(): Promise<TokenUser[]>;

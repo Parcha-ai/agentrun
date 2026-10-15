@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -47,6 +47,16 @@ for (const [how, kill] of Object.entries(KILLS)) {
   test(`a suite holding a real Chrome, killed by ${how}, leaves no Chrome and no directory under its TMPDIR`, { skip: LINUX || NO_CHROME, timeout: 120_000 }, (t) => killMidSuite(t, kill, true));
 }
 test("a killed suite's ready report is read only once it is whole, however slowly it is written", { skip: LINUX, timeout: 120_000 }, (t) => killMidSuite(t, KILLS["a SIGKILL to the test file's process"], false, true));
+
+test("the victim refuses to start without VICTIM_READY, and writes nothing", async (t) => {
+  // A plain `node --test` over the package runs every file under test/, this fixture included.
+  const cwd = await scratch(t, "hygiene-unset-");
+  const { VICTIM_READY: _ready, NODE_TEST_CONTEXT: _context, ...env } = process.env;
+  const run = spawnSync(process.execPath, [fixture("hygiene-victim.mjs")], { cwd, env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 2, `exit ${run.status}, signal ${run.signal}: ${run.stderr.slice(0, 2_000)}`);
+  assert.match(run.stderr, /VICTIM_READY/);
+  assert.deepEqual(fs.readdirSync(cwd), [], "nothing written where it ran");
+});
 
 test("a scratch directory is removed after every other cleanup its test registered, failed or not", async (t) => {
   for (const fails of [false, true]) {

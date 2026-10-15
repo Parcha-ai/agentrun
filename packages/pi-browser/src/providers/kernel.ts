@@ -32,7 +32,7 @@ export type KernelExtensionRef = { id: string } | { name: string };
 
 // Kernel ends a session after `timeout_seconds` with no CDP or live-view connection and sets no wall-clock limit, so
 // the lifetime cap is its largest idle timeout.
-const CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: KERNEL_IDLE_MAX_S, survivesDisconnect: true, releaseIsAsync: false, extension: "uploaded-per-launch" };
+const CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: KERNEL_IDLE_MAX_S, survivesDisconnect: true, releaseIsAsync: false, extension: "uploaded-per-launch", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
 
 /** The call and the HTTP status, plus Kernel's error code when it is a plain identifier. Kernel's message is never
  *  copied: an echo of the request could carry the key or a URL. */

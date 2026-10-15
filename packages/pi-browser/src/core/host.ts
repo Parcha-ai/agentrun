@@ -1,6 +1,9 @@
 // Nothing here carries a secret: every value of these types may be committed, logged or shown.
 import type { LeaseRef, LeaseState, ResourceStatus } from "./lease.js";
-import type { PriceState, ToolUsage } from "./usage.js";
+
+export type PriceState = "priced" | "unpriced" | "invalid";
+export type PiUsage = { input: 0; output: 0; cacheRead: 0; cacheWrite: 0; totalTokens: 0; cost: { input: 0; output: 0; cacheRead: 0; cacheWrite: 0; total: number } };
+export type ToolUsage = { usage: PiUsage; state: PriceState };
 
 export type Geo = { country: string; state?: string; city?: string };
 
@@ -50,7 +53,11 @@ export type ProviderCaps = {
   survivesDisconnect: boolean;
   releaseIsAsync: boolean;
   extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
+  /** The session settings this provider applies; a setting left out is applied. */
+  settings?: Partial<SessionSettingsSupport>;
 };
+
+export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geolocation: boolean; region: boolean; context: boolean };
 
 export type LiveView = { fullscreen: string | null; framed: string | null; pages: Array<{ id: string | null; url: string | null; title: string | null; fullscreen: string | null }> };
 export type Recording = { id: string; startedAt: string | null; durationS: number | null };
@@ -120,8 +127,20 @@ export type SessionRecord = {
 /** A request a `run` sent that can change something: method, origin, path, the hold's decision. Never a body, a header
  *  or a query value. */
 export type SentEffect = { requestId: string; method: string; origin: string; path: string; at: string; held: "pending" | "allowed" | "denied" | null; irreversible: number | null };
-/** `observed`: a holding observer committed each request before it left the browser. */
-export type PendingEffect = { callId: string; codeSha: string; url: string | null; at: string; observed?: boolean; sent?: SentEffect[] };
+/** A replay-unsafe page action's journal entry. `observed`: a holding observer committed each request before it left the
+ *  browser; `watched`: an observer recorded the requests it sent, holding them or not. `incarnation`: the custody process that wrote it; an entry from an earlier one belongs to a resumed run.
+ *  `after`: the conversation's newest entry when it was journaled, where a resumed run's look for its answer starts.
+ *  `finished`: the action returned. `told` and `refused`: how far a cut has been answered. */
+export type PendingEffect = {
+  callId: string; codeSha: string; url: string | null; at: string; observed?: boolean; sent?: SentEffect[];
+  watched?: boolean; incarnation?: string; after?: number; finished?: boolean; told?: boolean; refused?: boolean;
+};
+/** A cut action's facts, beside the notice in the call's `details.pendingEffect`. `sent` is null when no observer ran, so
+ *  an unknown never reads as none. */
+export type PendingEffectFacts = {
+  callId: string; urlAtDispatch: string | null; urlNow: string; observed: boolean;
+  sent: Array<{ method: string; url: string; held: SentEffect["held"] }> | null;
+};
 
 export type SessionsState = {
   /** Index into `sessions` of each plane's current session. */

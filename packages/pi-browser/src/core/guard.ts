@@ -1,4 +1,4 @@
-import type { BrowserFailure } from "./failures.js";
+import { browserFailure, type BrowserFailure } from "./failures.js";
 
 export type RepeatGuard = {
   check(tool: string, args: unknown): BrowserFailure | null;
@@ -12,7 +12,7 @@ export function createRepeatGuard(): RepeatGuard {
     check(tool, args) {
       const prior = strikes.get(keyOf(tool, args));
       if (!prior || prior.count < 2) return null;
-      return { ok: false, code: "refused", retryable: false, effect: "none", message: `Refused: ${tool} with these exact arguments already failed ${prior.count} times with the same error ("${prior.error.slice(0, 200)}"). Change approach: snapshot again and use current IDs, change the code or the URL, browser_relaunch({verified:true}) if the site blocks you, or fall back to web_fetch.` };
+      return browserFailure("refused", `Refused: ${tool} with these exact arguments already failed ${prior.count} times with the same error ("${prior.error.slice(0, 200)}"). Change approach: snapshot again and use current IDs, change the code or the URL, browser_relaunch({verified:true}) if the site blocks you, or fall back to web_fetch.`);
     },
     note(tool, args, failure) {
       if (failure?.code === "aborted") return;

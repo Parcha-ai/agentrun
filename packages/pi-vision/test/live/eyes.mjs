@@ -1,11 +1,12 @@
-// The live eyes check: a host's composition of the built package (`read` and `fit` from `./durable`, eyes from
+// The live eyes check: a host's composition of the built package (`read`, `fit` and `see` from `./durable`, eyes from
 // `./eyes/pi-ai`) against a real model, the path no fake covers. Not part of `npm test`: it needs a key and spends about
 // a cent. From the repository root, after `npm ci --ignore-scripts && npm run build`:
 //   PI_VISION_LIVE_EYES=<provider>/<model id> [PI_VISION_LIVE_BASE_URL=<gateway>] node packages/pi-vision/test/live/eyes.mjs
 // The eyes are pi-ai's catalog entry of that id, keyed by the variable pi-ai reads for the provider; a gateway's base URL
-// replaces the entry's own. Three checks on files `./testing` builds: a scanned letter whose identifier the eyes must
-// read exactly; page 2 of a two-page PDF, read with `page`; and the receipts, priced with tokens for every paid look and
-// at 0 for a miss with no eyes. The last stdout line is `ok: pi-vision live eyes passed` or `not ok: <step>: <reason>`.
+// replaces the entry's own. Four checks on files `./testing` builds: a scanned letter whose identifier the eyes must
+// read exactly; page 2 of a two-page PDF, read with `page`; the letter's page, rendered by `read` and saved as a file,
+// asked about through `vision.see` by path; and the receipts, priced with tokens for every paid look and at 0 for a miss
+// with no eyes. The last stdout line is `ok: pi-vision live eyes passed` or `not ok: <step>: <reason>`.
 // Nothing printed carries the key or the gateway's address.
 
 let hidden = [];
@@ -138,6 +139,21 @@ if (!checks.length) {
     return `named ${PAGE_IDS[1]}, which only page 2 holds`;
   });
 
+  await check("vision.see", async (looks) => {
+    const vision = host(true);
+    const call = { conversationId: "live-eyes", callId: String(++callId), model: { id: "image-lead", input: ["text", "image"] }, signal: undefined };
+    const page = (await vision.read(env, { path: "letter-scan.pdf" }, call))?.content.find((block) => block.type === "image");
+    if (!page) throw new Error("read did not render the scan's page as an image");
+    const file = `letter-page-1.${page.mimeType.split("/")[1]}`;
+    await dir.file(file, Buffer.from(page.data, "base64"));
+    const filed = records.length;
+    const seen = await vision.see(env, call).execute({ ask: LETTER_ASK, paths: [file], fragments: ["letter-scan.pdf#page=1"] });
+    looks.push(...records.slice(filed));
+    if (!holds(seen.text, LETTER_ID)) throw new Error(`the eyes answered "${firstLine(seen.text)}", not ${LETTER_ID}`);
+    if (seen.model !== eyes.model || !(seen.costUsd > 0) || looks.length !== 1) throw new Error(`vision.see returned ${seen.model} at ${seen.costUsd} with ${looks.length} looks filed`);
+    return `read ${LETTER_ID} exactly from the page by path, one look at $${seen.costUsd.toFixed(6)}`;
+  });
+
   await check("receipts", async () => {
     const answered = asked.filter((r) => r.status === "ok");
     if (!answered.length) throw new Error("no paid look was filed");
@@ -157,8 +173,8 @@ if (!checks.length) {
 }
 try { await dir?.remove(); } catch (error) { checks.push({ step: "cleanup", ok: false, reason: firstLine(error) }); }
 
-const reads = checks.filter((c) => c.step === "scanned letter" || c.step === "page 2");
-say(`read rate: ${reads.filter((c) => c.ok).length} of 2 identifiers read exactly`);
+const reads = checks.filter((c) => ["scanned letter", "page 2", "vision.see"].includes(c.step));
+say(`read rate: ${reads.filter((c) => c.ok).length} of 3 identifiers read exactly`);
 say(`spend: ${spend(asked)}`);
 const failed = checks.find((c) => !c.ok);
 done(failed ? `not ok: ${failed.step}: ${failed.reason}` : "ok: pi-vision live eyes passed");

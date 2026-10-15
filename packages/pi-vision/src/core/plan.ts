@@ -7,9 +7,8 @@ import type { MissCode } from "./contract.js";
 import type { Fragment, PageSpan, Region } from "./fragments.js";
 import type { Kind } from "./kinds.js";
 import {
-  DECODE_GUARD_PIXELS, FLOOR_EDGE, LOOK_FRAMES_PER_CALL, LOOK_FRAMES_PER_REQUEST, LOOK_FRAME_SPACING_S, LOOK_MAX_USD,
-  LOOK_PAGES_PER_CALL, LOOK_PAGES_PER_REQUEST, LOOK_TOKENS_PER_PART, PDF_MAX_DPI, POINTS_PER_INCH, RESULT_BYTES_SHARE,
-  TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, VIDEO_FRAMES_PER_READ,
+  DECODE_GUARD_PIXELS, FLOOR_EDGE, LOOK_FRAMES_PER_REQUEST, LOOK_FRAME_SPACING_S, LOOK_PAGES_PER_REQUEST, LOOK_TOKENS_PER_PART,
+  PDF_MAX_DPI, POINTS_PER_INCH, RESULT_BYTES_SHARE, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, VIDEO_FRAMES_PER_READ,
 } from "./limits.js";
 import type { Limits } from "./limits.js";
 
@@ -29,11 +28,14 @@ export type SourceFacts = {
   readonly durationS?: number;
 };
 
-/** What the caller asked for, from `read`'s or `look`'s arguments. `render` shows a document's pages as images even
- *  when they carry text (a `read` with a question); a look always renders. */
+/** What the caller asked for: pages, a window, a region. `render` shows a document's pages as images even when they
+ *  carry text (a `read` with a question); a plan for the eyes always renders. */
 export type Selector = { readonly pages?: PageSpan; readonly fromS?: number; readonly toS?: number; readonly region?: Region; readonly render?: boolean };
 
 export type PlanMode = "show" | "ask";
+
+/** A host's own caps on one plan for the eyes (`ask`): the pages, and the frames or clips, it may take. None by default. */
+export type PlanCaps = { readonly pages?: number; readonly frames?: number };
 
 export type Reduction = "as_is" | "downscaled" | "tiled" | "sampled" | "windowed" | "text_only" | "refused";
 
@@ -76,7 +78,7 @@ export type Part =
   | { readonly type: "image"; readonly data: string; readonly mimeType: string; readonly width: number; readonly height: number; readonly fragment: string }
   | { readonly type: "video"; readonly data: string; readonly mimeType: string; readonly fragment: string };
 
-/** A look's price before its first request, and its refusal when that is over the cap. */
+/** A look's price before its first request, and its refusal when that is over the host's cap. */
 export type LookEstimate = { readonly parts: number; readonly requests: number; readonly tokens: number; readonly usd: number | null; readonly refusal?: Fit["refusal"] };
 
 type Original = NonNullable<Fit["original"]>;
@@ -238,7 +240,7 @@ function planImage(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   return { parts: asIs ? [{ ...parts[0], derive: "as_is" }] : parts, fit: { reduction, original, shown } };
 }
 
-function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
+function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode, caps: PlanCaps): Plan {
   const pages = facts.pages ?? facts.pageSizes?.length ?? 0;
   const original = { pages, bytes: facts.bytes };
   if (!(pages > 0)) return refuse("unreadable", "its page count is not known", original);
@@ -250,7 +252,7 @@ function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode:
     if (withText > 0) return { parts: [{ fragment: { page: { from, to } }, derive: "text" }], fit: { reduction: "text_only", original, shown: { pages: withText } } };
   }
   const count = to - from + 1;
-  if (mode === "ask" && count > LOOK_PAGES_PER_CALL) return refuse("over_budget", `pages ${from}-${to} are ${count} pages, over the ${LOOK_PAGES_PER_CALL} one look takes; ask about fewer pages`, original);
+  if (mode === "ask" && caps.pages !== undefined && count > caps.pages) return refuse("over_budget", `pages ${from}-${to} are ${count} pages, over the ${caps.pages} one look takes; ask about fewer pages`, original);
   const box = boxOf(selector.region);
   if (!box) return refuse("refused", `the region ${JSON.stringify(selector.region)} is not within the page`, original);
   const maxParts = perCall(limits, mode);
@@ -275,7 +277,7 @@ function planPages(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   return { parts: sized, fit: { reduction, original, shown } };
 }
 
-function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
+function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode, caps: PlanCaps): Plan {
   const duration = facts.durationS;
   const original = { durationS: duration, width: facts.width, height: facts.height, bytes: facts.bytes };
   // Raw video bytes whose base64 fits the request too; a region is a crop, which frames can show and a clip cannot.
@@ -291,14 +293,14 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   if (native && (windowed || mode === "ask")) {
     // Each window is sized so its stream copy fits the inline budget; one that does not is re-encoded when derived.
     const windows = mode === "show" ? 1 : Math.min(Math.round(span * 1000), Math.max(1, Math.ceil((facts.bytes * span) / duration / inline)));
-    if (windows > LOOK_FRAMES_PER_CALL) return refuse("over_budget", `${from}..${to} s is ${windows} clips of ${grouped(inline)} bytes, over the ${LOOK_FRAMES_PER_CALL} video parts one look takes; ask about a shorter window`, original);
+    if (caps.frames !== undefined && windows > caps.frames) return refuse("over_budget", `${from}..${to} s is ${windows} clips of ${grouped(inline)} bytes, over the ${caps.frames} video parts one look takes; ask about a shorter window`, original);
     const edge = (i: number) => (i === windows ? to : ms(from + (i * span) / windows));
     const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64(inline) }));
     return { parts, fit: { reduction: "windowed", original, shown: {} } };
   }
   const frames = mode === "show"
     ? Math.min(VIDEO_FRAMES_PER_READ, perCall(limits, mode))
-    : Math.min(LOOK_FRAMES_PER_CALL, Math.max(VIDEO_FRAMES_PER_READ, Math.ceil(span / LOOK_FRAME_SPACING_S)));
+    : Math.min(caps.frames ?? Infinity, Math.max(VIDEO_FRAMES_PER_READ, Math.ceil(span / LOOK_FRAME_SPACING_S)));
   if (frames < 1) return refuse("over_budget", "the route takes no image in a result", original);
   const box = boxOf(selector.region);
   if (!box) return refuse("refused", `the region ${JSON.stringify(selector.region)} is not within the frame`, original);
@@ -316,11 +318,11 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   return { parts: sized, fit: { reduction: "sampled", original, shown } };
 }
 
-export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode): Plan {
+export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode, caps: PlanCaps = {}): Plan {
   switch (facts.kind) {
     case "image": return planImage(facts, selector, limits, mode);
-    case "pdf": return planPages(facts, selector, limits, mode);
-    case "video": case "recording": return planVideo(facts, selector, limits, mode);
+    case "pdf": return planPages(facts, selector, limits, mode, caps);
+    case "video": case "recording": return planVideo(facts, selector, limits, mode, caps);
     case "office": case "sheet": case "text":
       return { parts: [{ fragment: selector.pages ? { page: selector.pages } : {}, derive: "text" }], fit: { reduction: "text_only", original: { bytes: facts.bytes } } };
     default: return refuse("unsupported", `a file of unknown kind${facts.mimeType ? ` (${facts.mimeType})` : ""} cannot be read`, { bytes: facts.bytes });
@@ -332,13 +334,26 @@ export function lookRequests(planned: Plan, limits: Limits): PlannedPart[][] {
   return pack(planned.parts, limits);
 }
 
+/** Blocks already fitted, in order, one eyes request each: a request holds no more blocks than the least `most` of its
+ *  blocks allows, and no more than `maxChars` base64 characters. A block is never split: one over `maxChars` alone is a
+ *  request of its own. */
+export function packRequests<T>(blocks: readonly T[], chars: (block: T) => number, most: (block: T) => number, maxChars: number): T[][] {
+  const requests: T[][] = [];
+  for (const block of blocks) {
+    const open = requests.at(-1);
+    if (open && open.length < Math.min(most(block), ...open.map(most)) && open.reduce((sum, b) => sum + chars(b), chars(block)) <= maxChars) open.push(block);
+    else requests.push([block]);
+  }
+  return requests;
+}
+
 /** A look priced before its first request: parts times LOOK_TOKENS_PER_PART times the eyes' input price in dollars
- *  per million tokens; over `capUsd` it is refused with the estimate. An unknown price is no estimate: the page, frame
- *  and clip caps still bound the look. */
-export function priceLook(planned: Plan, limits: Limits, inputUsdPerMTok: number | null | undefined, capUsd: number = LOOK_MAX_USD): LookEstimate {
+ *  per million tokens; over the host's `capUsd` it is refused with the estimate. No cap, or an unknown price, refuses
+ *  nothing. */
+export function priceLook(planned: Plan, limits: Limits, inputUsdPerMTok: number | null | undefined, capUsd?: number): LookEstimate {
   const parts = planned.parts.length, requests = pack(planned.parts, limits).length, tokens = parts * LOOK_TOKENS_PER_PART;
   const usd = typeof inputUsdPerMTok === "number" && Number.isFinite(inputUsdPerMTok) && inputUsdPerMTok >= 0 ? (tokens * inputUsdPerMTok) / 1_000_000 : null;
-  if (usd === null || usd <= capUsd) return { parts, requests, tokens, usd };
+  if (usd === null || capUsd === undefined || usd <= capUsd) return { parts, requests, tokens, usd };
   const detail = `this look is priced at $${usd.toFixed(4)} (${parts} parts at ${grouped(LOOK_TOKENS_PER_PART)} tokens, $${inputUsdPerMTok} per million), over the $${capUsd} cap; ask about fewer pages or a shorter window`;
   return { parts, requests, tokens, usd, refusal: { code: "over_budget", detail } };
 }
