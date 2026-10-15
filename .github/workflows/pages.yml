@@ -1,0 +1,47 @@
+name: Gallery
+
+# The hosted gallery: apps/viewer built with its bundled recordings and published to GitHub Pages. It is a replay
+# viewer: static files that play recorded runs, with no agent, no model and no key. The only credential is the job's
+# own GITHUB_TOKEN, scoped to Pages.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/viewer/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'Parcha-ai/agentrun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Build the viewer and its gallery
+        run: node apps/viewer/build.mjs
+      # Nothing is published unless every bundled recording obeys agentrun.recording/1 and holds no credential-shaped
+      # value or machine path (the validator's scan); an empty gallery fails too.
+      - name: Gate on the bundled recordings
+        run: node scripts/recording/validate.mjs apps/viewer/recordings/*/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/viewer/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
