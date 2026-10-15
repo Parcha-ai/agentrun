@@ -162,13 +162,14 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
         const finish = async () => {
           if (done || !ended) return;
           done = true;
-          alive.delete(runner);
           outcome = outcomeLine(partial) ?? outcome;
           const fallback = outcome ? undefined : outcomeOf(await readRunRecord(root).catch(() => undefined));
           const report = outcome ?? fallback;
           settle({ exit: ended.signal ?? ended.code, signal: ended.signal, ...(report ? { outcome: report } : {}), stderr: stderr.trim().slice(0, STDERR_KEEP) });
         };
         child.once("exit", (code, signal) => {
+          // Its pid is free from here: no kill may reach the group by it again.
+          alive.delete(runner);
           ended = { code, signal };
           setTimeout(() => void finish(), OUTPUT_GRACE_MS).unref();
         });
