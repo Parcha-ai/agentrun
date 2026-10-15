@@ -164,7 +164,7 @@ async function child(options: DemoOptions) {
       const sources = readSources(sourcesPath);
       const got = await fetchSources(sources, place.work);
       // A Docker box shares nothing with work/: the verified files go in with the job's own.
-      boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept]);
+      if (boxes && options.spec.boxes?.kind === 'docker' && options.spec.boxes.runIn) boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept]);
     }
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, boxFiles ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
