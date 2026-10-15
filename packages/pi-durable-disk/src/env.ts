@@ -1,16 +1,16 @@
 // The execution environment: pi's NodeExecutionEnv rooted at the run's work/ directory, with an environment id
 // that names the run, commands that cannot gain privilege (no_new_privs), optionally commands run as another user
 // (`runAs`, for an instance that runs as root in a container), file operations confined to work/ (confine.ts),
-// read-only built-in tools declared replay-safe, and the hook point for the workspace barrier. Tools run
-// on the host that holds the claim, against the claimed mount.
+// and read-only built-in tools declared replay-safe. Tools run on the host that holds the claim, against the claimed
+// mount.
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { access, chmod, lchown, lstat, mkdir, mkdtemp, open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
-import type { Extension, ToolExecutionResult, ToolHooks, ToolRegistration } from "@earendil-works/pi-durable";
+import { defineExtension } from "@earendil-works/pi-durable";
+import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { err, ExecutionError, FileError, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import type {
   BinaryReader,
@@ -31,7 +31,6 @@ import { canonicalizeSync, confineHooks, Confinement, fileError, inside } from "
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
 
-type ToolCall = Parameters<ToolHooks["afterTool"]>[0];
 type ExecCommand = string | readonly string[];
 
 /** What the environment needs of a claim; the claim satisfies it structurally. */
@@ -726,7 +725,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
 
 /** Built-in tools that only read. A tool in this set is declared `replay: "safe"`. */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["read", "ls", "find", "grep"]);
-/** Built-in tools that can change the workspace; their results follow the workspace barrier. */
+/** Built-in tools that can change the workspace; none of them is declared replay-safe. */
 export const WRITING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash", "powershell"]);
 
 /** The tool declared `replay: "safe"`: an interrupted call reruns on recovery instead of reporting `interrupted`. */
@@ -751,55 +750,3 @@ export const ArchilCodingTools: Extension = defineExtension({
   name: CodingTools.name,
   tools: markReadOnlySafe(CodingTools.tools ?? []),
 });
-
-export interface WorkspaceBarrierOptions {
-  /** Tools whose result follows a barrier; default `WRITING_TOOLS`. An app adds its own writing tools here. */
-  readonly tools?: Iterable<string>;
-}
-
-/**
- * The hook point for the rule that the workspace changes a tool made are durable before its result is committed.
- * Install this extension only when the result commit's own fsync does not already satisfy the rule; with it
- * not installed nothing runs. `barrier` is the claim's (`claim.barrier()`), called after a writing tool ran and before
- * pi appends its result entry, for the calls whose tool name is in `options.tools`.
- *
- * pi reports and ignores an `afterTool` hook that throws, so a failed barrier cannot hold the result back by throwing.
- * It replaces the result with an error result carrying the diagnostic `workspace_not_durable`: a success never commits
- * for a workspace that is not durable. The host decides separately whether a failed barrier means the claim is fenced.
- */
-export function workspaceBarrier(
-  barrier: (call: ToolCall, context: Context) => Promise<void>,
-  options: WorkspaceBarrierOptions = {},
-): Extension {
-  const writing = new Set(options.tools ?? WRITING_TOOLS);
-  return defineExtension({
-    name: "archil-workspace-barrier",
-    hooks: [
-      hook(ToolTask, {
-        afterTool: async (call, result, _api, context) => {
-          if (!writing.has(call.name)) return undefined;
-          try {
-            await barrier(call, context);
-            return undefined;
-          } catch (error) {
-            // An aborted invocation must propagate: pi rethrows hook errors only while it is aborted.
-            if (context.abortSignal?.aborted) throw error;
-            return notDurable(result, error);
-          }
-        },
-      }),
-    ],
-  });
-}
-
-function notDurable(result: ToolExecutionResult, error: unknown): ToolExecutionResult {
-  const reason = error instanceof Error ? error.message : String(error);
-  return {
-    ...result,
-    isError: true,
-    diagnostics: [
-      ...(result.diagnostics ?? []),
-      { severity: "error", code: "workspace_not_durable", message: `The workspace could not be made durable: ${reason}` },
-    ],
-  };
-}
