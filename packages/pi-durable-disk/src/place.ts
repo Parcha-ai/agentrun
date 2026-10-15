@@ -10,6 +10,7 @@ import { extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, removeMountToken, runPath, type RunRef } from "./claim.ts";
+import { reapCommands } from "./commands.ts";
 import { PdaError } from "./errors.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
@@ -75,7 +76,7 @@ export interface Place {
   recover(last: PlaceRunner, kind: PlaceKill, order: RunnerOrder): Promise<PlaceRecovery>;
   checkpoint?(): Promise<{ taken: boolean; heldBy?: string }>;
   move?(to: Place): Promise<Record<string, unknown>>;
-  /** Lets the run go: stops what still runs and removes what the place made for it (tokens), never the run's directory. */
+  /** Lets the run go: stops what still runs (its commands too) and removes what the place made for it (tokens), never the run's directory. */
   release(): Promise<void>;
 }
 
@@ -224,6 +225,12 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       },
       release: async () => {
         await Promise.all([...alive.keys()].map((runner) => kill(runner, "process")));
+        // pi runs each command in a process group of its own, which the instance's kill does not reach: end what the
+        // run recorded, as its next open would, since there may be none.
+        const reaped = await reapCommands(join(root, "commands"));
+        if (reaped.survivors.length > 0) {
+          throw new PlaceError("RELEASE_FAILED", `releasing ${root} left commands alive after SIGKILL: pids ${reaped.survivors.map((m) => m.pid).join(", ")}`);
+        }
       },
     };
   };
@@ -409,13 +416,14 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             ...(takeover ? { leaseExpiryMs: Number.NEGATIVE_INFINITY, startGraceMs: 0 } : {}),
           });
         } catch (err) {
-          // HOST_START_FAILED: ensureRunning removed the token. Anything else failed before the token was used.
-          if ((err as PdaError).code === "HOST_START_FAILED") m.removed = true;
-          else await drop(m).catch(() => {});
+          // Nothing mounted with the token. ensureRunning's own removal ignores a failure, so remove it again (Archil
+          // answers a removal of a gone user with success): a failure here leaves it for release.
+          await drop(m).catch(() => {});
           throw err;
         }
         if (result.action === "started") {
-          if (result.adopted) m.removed = true;
+          // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
+          if (result.adopted) await drop(m).catch(() => {});
           handles.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
@@ -473,8 +481,14 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       },
       release: async () => {
         const failed: string[] = [];
-        for (const handle of handles.splice(0)) {
-          await host.stop(handle).catch((err: unknown) => failed.push(`stop ${String(handle.name ?? handle.driver)}: ${(err as Error).message}`));
+        // A handle leaves the list only once its stop succeeded, so a later release tries a failed one again.
+        for (const handle of [...handles]) {
+          try {
+            await host.stop(handle);
+            handles.splice(handles.indexOf(handle), 1);
+          } catch (err) {
+            failed.push(`stop ${String(handle.name ?? handle.driver)}: ${(err as Error).message}`);
+          }
         }
         for (const m of minted.values()) {
           await drop(m).catch((err: unknown) => failed.push(`token ${m.nickname}: ${(err as Error).message}`));

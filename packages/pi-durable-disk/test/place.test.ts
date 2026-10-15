@@ -3,6 +3,7 @@
 // No Archil, no network.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import type { Delegation } from "disk";
 import { archilPlace, localPlace, PlaceError } from "../src/place.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
+import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const APP = fileURLToPath(new URL("./fixtures/place-app.ts", import.meta.url));
@@ -89,8 +91,18 @@ describe("localPlace", () => {
     assert.equal(other.paths.root, root2, "root replaces the context's");
     const held = await other.start({ gen: 1, env: {} });
     await waitFor("the runner", () => existsSync(join(root2, "work", "sleeper.pid")));
+    // A command the run recorded, in a process group of its own as pi starts them: the instance's kill does not reach it.
+    const command = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+    const mark = { pid: command.pid!, start: procStartTicks(command.pid!)! };
+    after(() => void (alive(mark.pid) && procStartTicks(mark.pid) === mark.start && process.kill(mark.pid, "SIGKILL")));
+    mkdirSync(join(root2, "commands"), { recursive: true });
+    writeFileSync(join(root2, "commands", `${mark.pid}-${mark.start}.json`), JSON.stringify({ boot: currentBootId(), leader: mark, members: [] }));
+    const commandGone = new Promise((r) => command.once("exit", r));
     await other.release();
     assert.equal((await held.exited).signal, "SIGKILL");
+    await Promise.race([commandGone, sleep(5_000)]);
+    assert.ok(!alive(mark.pid), "release ended the run's recorded command");
+    assert.ok(!existsSync(join(root2, "commands")), "and cleared its records");
   });
 });
 
@@ -133,6 +145,8 @@ class FakeControl implements SupervisorControl {
   delegations: Delegation[] = [];
   users = new Map<string, { nickname: string; token: string }>();
   ops: string[] = [];
+  /** The next this many removeUser calls fail. */
+  removeFails = 0;
   #n = 0;
   runJson(o: Record<string, unknown>) {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
@@ -157,7 +171,12 @@ class FakeControl implements SupervisorControl {
   }
   async removeUser(_type: "token", identifier: string) {
     this.ops.push(`removeUser ${identifier}`);
-    if (!this.users.delete(identifier)) throw Object.assign(new Error("no such user"), { status: 404 });
+    if (this.removeFails > 0) {
+      this.removeFails--;
+      throw Object.assign(new Error("503"), { status: 503 });
+    }
+    // Archil answers the removal of a user that is gone with success.
+    this.users.delete(identifier);
   }
   async listDelegations() {
     return this.delegations.map((d) => ({ ...d }));
@@ -175,10 +194,12 @@ class FakeControl implements SupervisorControl {
 function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box") {
   const states = new Map<string, HostStatus>();
   const starts: { token: string; attempt?: StartAttempt }[] = [];
+  const faults = { start: 0, stop: 0 };
   const host: HostDriver & { mountRoot: string } = {
     mountRoot: "/mnt/fake",
     async start(_ref, token, attempt) {
       control.ops.push(`start g${attempt?.attempt}`);
+      if (faults.start > 0 && faults.start--) throw new Error("no capacity");
       starts.push({ token, attempt });
       const name = `box-${starts.length}`;
       states.set(name, "running");
@@ -191,6 +212,7 @@ function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box")
     },
     async stop(h: HostHandle) {
       control.ops.push(`stop ${h.name}`);
+      if (faults.stop > 0 && faults.stop--) throw new Error("cannot reach the box");
       if (states.has(String(h.name))) states.set(String(h.name), "stopped");
     },
     ...(kills
@@ -203,7 +225,7 @@ function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box")
         }
       : {}),
   };
-  return { host, states, starts };
+  return { host, states, starts, faults };
 }
 
 /** Every archil place a test makes, released after the file: a runner left running is polled until it ends. */
@@ -307,6 +329,36 @@ describe("archilPlace", () => {
     control.ops.length = 0;
     await at.release();
     assert.deepEqual(control.ops, [], "nothing left to stop or remove");
+  });
+
+  it("a release whose stop fails keeps the handle: it says so, and the next release stops it", async () => {
+    const control = new FakeControl();
+    const { host, faults } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    faults.stop = 1;
+    await assert.rejects(at.release(), (e: unknown) => e instanceof PlaceError && e.code === "RELEASE_FAILED" && /stop box-1: cannot reach the box/.test(e.message));
+    control.ops.length = 0;
+    await at.release();
+    assert.deepEqual(control.ops, ["stop box-1"], "tried again; the token went the first time");
+    assert.equal((await Promise.race([runner.exited, sleep(2_000).then(() => ({ exit: "still running" }))])).exit, "stopped");
+  });
+
+  it("a start the driver refuses: the unused token is removed even when ensureRunning's own removal failed, and release retries what is left", async () => {
+    const control = new FakeControl();
+    const { host, faults } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    faults.start = 1;
+    control.removeFails = 1; // ensureRunning's removal
+    await assert.rejects(at.start({ gen: 1, env: {}, stdin: await at.token!(1) }), (e: unknown) => (e as { code?: string }).code === "HOST_START_FAILED");
+    assert.equal(control.users.size, 0, "the place removed it again");
+
+    faults.start = 1;
+    control.removeFails = 2; // ensureRunning's and the place's
+    await assert.rejects(at.start({ gen: 2, env: {}, stdin: await at.token!(2) }));
+    assert.equal(control.users.size, 1, "both removals failed: the user is still there");
+    await at.release();
+    assert.equal(control.users.size, 0, "release removed it");
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {

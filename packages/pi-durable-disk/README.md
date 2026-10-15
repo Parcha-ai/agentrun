@@ -383,7 +383,7 @@ A host driver is three calls, plus an optional fourth, and nothing else in the p
 export interface HostDriver {
   // The handle is JSON; the instance writes it into run.json. `attempt` (the generation the instance will open) lets a
   // driver key a start, so a retry of the same attempt finds the instance it already started. `env` is what this start
-  // adds to the instance's environment, over the driver's own `env` (PATH and PDA_HOLDER stay the driver's).
+  // adds to the instance's environment, over the driver's own `env`; PATH and PDA_HOLDER are the driver's (refused).
   start(ref: RunRef, mountToken: string, attempt?: { attempt: number; env?: Record<string, string> }): Promise<HostHandle>;
   status(handle: HostHandle): Promise<"running" | "stopped" | "failed" | "gone" | "unknown">;
   stop(handle: HostHandle): Promise<void>;
@@ -717,7 +717,8 @@ id and directory as the supervisor computed them.
 - `localPlace({ app, root? })` runs `pi-durable-disk run --dir <root> --id <id> --app <app>` as a child in its own
   process group, with `{ PATH, ...order.env }` and nothing else of the caller's environment. It needs no disk, no key and
   no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory. A box kill
-  also calls `ctx.destroyBoxes`. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
+  also calls `ctx.destroyBoxes`. `release()` kills what still runs, then ends the commands the run recorded (pi
+  starts each in a process group of its own, which the instance's kill does not reach). With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
   there when it parks at its planned crossing. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
@@ -728,7 +729,8 @@ id and directory as the supervisor computed them.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
   - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
     waits for the channel over the run's disk.
-  - `release()` stops every instance the place started and removes every token it minted. The run's directory stays
+  - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
+    remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).
 
 A runner's `exited` says how it ended. Locally that is the exit code or signal, and the outcome is the instance's

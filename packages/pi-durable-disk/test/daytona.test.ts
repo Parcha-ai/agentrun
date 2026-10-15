@@ -362,9 +362,9 @@ test("a launcher that starts nothing and gives no reason: the error carries its 
   });
 });
 
-test("a start's own environment reaches the instance over the driver's; PDA_HOLDER stays the driver's; a bad name is refused before a box is made", async () => {
+test("a start's own environment reaches the instance over the driver's; one that sets PATH or PDA_HOLDER, or a bad name, is refused before a box is made", async () => {
   const w = world();
-  const h = await w.host.start(REF, TOKEN, { attempt: 2, env: { PLAN: "p2", PDA_HOLDER: "{}" } });
+  const h = await w.host.start(REF, TOKEN, { attempt: 2, env: { PLAN: "p2" } });
   const spec = JSON.parse(readFileSync(join(w.box, `${h.name}.json`), "utf8")) as LaunchSpec;
   assert.equal(spec.env.PLAN, "p2");
   assert.deepEqual(JSON.parse(spec.env.PDA_HOLDER), h);
@@ -372,7 +372,10 @@ test("a start's own environment reaches the instance over the driver's; PDA_HOLD
   assert.ok(first.envKeys.includes("PLAN"));
   await w.host.stop(h);
   const creates = w.creates.length;
-  await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: { "A=B": "x" } }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT");
+  assert.equal(spec.env.PATH, undefined, "the launcher's own PATH");
+  for (const bad of [{ "A=B": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+    await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
+  }
   assert.equal(w.creates.length, creates);
 });
 
