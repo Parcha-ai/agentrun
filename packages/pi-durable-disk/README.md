@@ -19,6 +19,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 | You have | Start with | What you see |
 |---|---|---|
 | Linux and Node 22.19 or later, nothing else | [Quickstart on one machine](#quickstart-on-one-machine-no-disk-no-key) | A durable chat on a directory of this machine, killed with `SIGKILL` and finished by a second process. One machine and no fence: the directory is the claim |
+| Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: `kill -9` it and run the same command again, and it resumes. One machine and no fence |
 | Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | A host killed in the middle of a paid charge, and the run resumed on another, every instance in a container |
 | A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
 | An app or a host of your own | [The app](#the-app) and [Library](#library) | `openDurableRun`, `localRun`, the supervisor and host drivers, `serve`, parking and `fork` from your code |
@@ -281,9 +282,11 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   return {
     models,
     registry,
-    async beforeResume({ harness, context, generation }) {
+    async beforeResume({ harness, context, generation, previous }) {
       // Awaited once per incarnation, after the Harness is open and before it resumes: no resumed task takes a step
       // until this settles, and what it admits commits before their steps do. Reconcile here what a resumed tool depends on.
+      // previous is run.json as the run was left (null when there was none): `sleeping` with its wakeAt after a park,
+      // `paused` with its detail after a planned stop or a fork, `running` with the dead holder and no new seal after a crash.
     },
     async onOpen(run) {
       // Called once per incarnation, after the run is open and resumed. run.generation is 1 on a first start and
@@ -314,8 +317,10 @@ Until the hook commits, the current state is the state at `head`, which is how a
 
 | Command | What it does |
 |---|---|
+| `run --dir PATH --app MODULE [--id ID]` | The instance on a local directory (`localRun`): no disk, no mount token, no key. The same app contract and exit codes as on a disk (76 when another process holds the run, or when a process its last incarnation left will not die; 75 when fenced), and the same run flags but the Archil ones (`--disk`, `--region`, `--mount-root`, `--archil`, `--token-stdin` are refused beside it, exit 2). `--id` defaults to the directory's name |
 | `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below). `--run-as USER` runs the agent's commands as USER when the instance runs as root (in a container) |
 | `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. `--host docker --image IMAGE` starts each instance in a container (`--app-root`, `--fleet`, `--name-prefix`, `--run-as`, `--docker-arg`, `--apparmor`). Prints one JSON line per decision |
+| `status --dir PATH` | `run.json` read from the directory, and whether its holder is still the process that claimed it: `running` (this boot, its pid alive with the start ticks `run --dir` recorded), `stopped`, or `gone` (another boot) |
 | `status --disk D --region R --id ID` | `run.json` over the S3 API, the run's delegations and the holder's state |
 | `release --id ID` | Unmount the run's mount on this host (a dead mount is cleaned) |
 | `fork --id A --new-id B` | Copy a released, sealed run into a new run (see Serve, parking and fork) |
@@ -486,6 +491,12 @@ only the claim probe `.claim` is rewritten by the mount); `run.json`, `owner.loc
 that fails after that empties the directory through its own mount and removes it, and one that lost the directory to another
 fork or start leaves it alone.
 
+On a local directory, `forkLocal(from, [{ id, root }, ...])` makes the same copy without a disk: one new run directory per
+entry, from a directory of a run released and sealed (`SOURCE_NOT_RELEASED` for anything else, `TARGET_EXISTS` for a target
+that is there). The source is only read; every copy is made beside its target under a temporary name and none is published until all are complete, so a failed
+batch leaves no half copy. A target inside the source (also through a symlink) is `INVALID_ARGUMENT`. A local directory has no mount to take it exclusively, so nothing stops a process that opens the source while it
+is being copied: fork a run after it is released, and open the forks with `localRun` like any run.
+
 ### Setting up a host for production
 
 The Quickstart runs the supervisor as your own user. On a production host the instance and the agent's tools run as an
@@ -528,6 +539,8 @@ mount token reaches the journal, and that nothing is left behind. It needs syste
 |---|---|---|
 | The instance crashes or is OOM-killed, host alive | The unit restarts it in place on the same claim; the unit's cgroup kills the previous incarnation's commands; reopen, `resume()` | running tasks go back to pending; effects in flight are `interrupted`, never rerun; at most one cut model request is sent again |
 | The host is lost (power-off, VM loss, pre-emption) | The client's sockets close and Archil flags the delegation orphaned in 0.2 s; the supervisor revokes (tens of ms) and starts an instance elsewhere | every acknowledged commit is there; unflushed workspace writes are lost; no effect whose intent was committed runs again |
+| A Docker host is lost before its instance reaches running (the container killed or removed, or its daemon gone, between the start and the instance's first `run.json` write) | If the driver's start is still running, it fails typed (`START_FAILED`) and tries to remove the container it made (a removal that fails, as it does while the daemon is gone, is not retried); the supervisor's tick fails `HOST_START_FAILED`, counts no failed start, and the next tick starts again. If the start had returned, the supervisor's start mark (`runs/<id>/start.json`) keeps the run `starting` until the start grace passes (default the lease expiry, 90 s, doubled per consecutive failed start up to 10 min), so nothing is revoked or started twice; then it starts again, revoking first if the container had mounted (its FUSE daemon died with it, so its delegation is orphaned), and that start tries to remove the run's earlier dead containers. Removal is attempted, never guaranteed: once the daemon is back, look for leftovers with `docker ps -a --filter label=pda.run=<id>` | nothing is lost: an instance writes `run.json` at its generation before it opens the store, so it had committed nothing. The run has no instance for up to the grace; the time from the loss to the next instance's first commit is not measured on Docker |
+| A Daytona host is lost before its instance reaches running (the box errors, is deleted or never starts while the driver starts it, or is lost after the launcher returned and before the instance's first `run.json` write) | While the driver starts it, a box that goes to an error state or away, does not start within the start timeout, or refuses an upload gets a delete request (attempted: a failed delete is not retried) and the start fails typed (`START_FAILED`); the supervisor counts no failed start and starts again on the next tick. Lost after the start returned: as on Docker, `starting` until the grace passes, then revoke if its client had mounted, and start a new box. A box deletes itself once stopped and Daytona destroys it at its TTL (default 25 h), so a box whose delete failed leaks nothing past that | as on Docker: nothing committed, no instance for up to the grace; not measured on Daytona |
 | The host hangs or is partitioned (a zombie) | It is not orphaned, so the lease expires at 90 s; the supervisor stops the host if its driver can, revokes, and starts elsewhere | the zombie's next commit fails (`SQLITE_IOERR_FSYNC`) and it exits 75; a call it already has in flight may complete, but it cannot start a new one, because a new call needs an intent commit |
 | A zombie that never commits again | Its lease watchdog (a worker thread, so a main thread stuck in a FUSE request does not matter) kills its commands at 75 s without touching the mount | an in-flight command runs at most until the self-fence |
 | The mount is taken away under a live instance (an operator's `umount -l`, a cleanup's `fusermount -u`) | The instance writes `run.json` and creates its directories through the directory it opened at acquire, and checks before each write that the run's path is still that mount; at the next heartbeat the path names the local directory under the mountpoint, so it exits 75 (`CLAIM_UNMOUNTED`) | nothing of its own is written to the local disk; as host lost |
@@ -550,10 +563,16 @@ about revocation, takeover and the lease's replacement do not apply. These do:
 | Failure | What happens | Effects |
 |---|---|---|
 | The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before the Harness opens), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
-| A process the killed incarnation's commands started does not die at the next open (an uninterruptible wait, or one the run's user may not signal) | The open is refused: `HeldError` `COMMANDS_ALIVE`, exit 76, naming each pid and its command line; the records stay | none: the run does not resume beside it. End those processes (`kill -9` as their owner, or wait for them) and open the run again |
+| A process the killed incarnation's commands started does not die at the next open (an uninterruptible wait, or one the run's user may not signal) | The open is refused: `HeldError` `COMMANDS_ALIVE`, exit 76, with the message below; the records stay | none: the run does not resume beside it. End those processes and open the run again |
 | Power loss or an OS crash | The store's commits are durable (SQLite at `synchronous = FULL`); `work/` is the operating system's to flush, since the claim's barrier syncs nothing | the store resumes from its last commit; files the agent wrote in `work/` can be older than what the store recorded |
 | A second process opens the run on this machine | The owner lock is refused (`HeldError`, exit 76) | none |
 | A process on another machine reaches the directory (a network share) | Nothing stops it: a local directory has no fence | unsupported, since two writers can corrupt the store. A directory another machine can reach needs a disk with a claim and a fence |
+
+The refusal names each process, as the open writes it (here one, in a run at `<root>`):
+
+```
+1 process(es) a killed incarnation's commands started are still alive after SIGKILL: pid 4242 (tar -xf /mnt/slow/archive.tar). The run does not resume beside them. End them (kill -9 4242, as their owner, or wait for them) and open the run again; they stay recorded in <root>/commands until then.
+```
 
 What a revoke cannot do: no fence reaches a third party. A paid API that already has a request has it. The package
 guarantees that this runtime does not start an effect twice; an effect your model decides to retry is a new call, so give a
@@ -561,7 +580,10 @@ paid API an idempotency key from your own business key.
 
 Measured on a VM about 3 ms from `aws-us-east-1`, archil 0.8.42: acquire 222 ms p50, release 139 ms, takeover by revoke
 252 ms, commit 3.75 to 5.63 ms p50, a killed host's run back to its first commit in 1 to 1.5 s, a hung host replaced in 6
-to 6.3 s with a 6 s test lease (90 to 120 s with the defaults).
+to 6.3 s with a 6 s test lease (90 to 120 s with the defaults). A start that never reaches running costs its start grace: live on Archil with a 6 s grace and a 3 s tick,
+starts that all failed were retried six times in five minutes, each grace doubled (`test/live/supervise-slow.live.test.ts`),
+and a takeover whose start was slowed 5 s before its first `run.json` write started once and was never revoked, 5 of 5
+(`test/live/supervise.live.test.ts`). On Docker and Daytona hosts, a start lost before its instance runs is not measured.
 
 ## Security
 
@@ -642,6 +664,14 @@ the store, check the seal, open and resume the Harness, keep the lease. `acquire
 for apps that compose their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`,
 `busyState`, and `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. The `.d.ts` files in `dist/`
 are the reference.
+
+A supervisor of your own (a driver `supervise` does not start, such as `daytonaHost`) gets its `control` from
+`archilControl({ apiKey, disk, region })`: the disk's S3 and control API, the same object `supervise` builds from its flags.
+
+```ts
+const control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: "dsk-...", region: "aws-us-east-1" });
+await ensureRunning({ disk: "dsk-...", region: "aws-us-east-1", id: "job-1" }, daytonaHost({ client, snapshot }), { control });
+```
 
 A host that owns its own pi-durable Harness and store connections imports the narrow entry instead:
 `@parcha/pi-durable-disk/lease` holds `openRunLease` (the claim, the owner lock, `run.json` with its heartbeat, the lease

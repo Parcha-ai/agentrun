@@ -89,7 +89,16 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 				bytes,
 				sha256: createHash("sha256").update(bytes).digest("hex"),
 			}));
-			const { bytes, sha256 } = await file;
+			let read: { readonly bytes: Uint8Array; readonly sha256: string };
+			try {
+				read = await file;
+			} catch (cause) {
+				// Not kept: a later start reads the file again, once it is there.
+				file = undefined;
+				const message = cause instanceof Error ? cause.message : String(cause);
+				return err(new MoveError("prepare", `could not read the runner file ${program.file}: ${message}`));
+			}
+			const { bytes, sha256 } = read;
 			const target = posix.join(posix.dirname(place.store), `runner-${sha256}.mjs`);
 			const held = await output(
 				box,

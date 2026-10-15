@@ -40,3 +40,49 @@ this directory first:
 `rm -f docker/package/*.tgz && npm pack --pack-destination docker/package && docker build -f docker/Dockerfile -t pi-durable-disk:local .`
 (`PDA_DOCKER_IMAGE` names another image). Its containers are labeled `pda.fleet=$PDA_DOCKER_FLEET` (default `live`) and
 named `pda-<fleet>-...`, its run directories `runs/<fleet>-...`; the suite removes only those.
+
+## The live disk check
+
+The ship skill runs these suites whenever a pull request touches `packages/pi-durable-disk/src`, `bin`, `package.json` or
+`test/live`. It is one command, from the repository root, under your credential wrapper:
+
+```sh
+npm run build && node packages/pi-durable-disk/test/live/ci.ts all          # the default, about 18 minutes
+npm run build && node packages/pi-durable-disk/test/live/ci.ts all --slow   # with supervise-slow, about 35 minutes
+```
+
+The skill runs `all --slow` when the diff touches `packages/pi-durable-disk/src/claim.ts`, `src/supervise.ts`,
+`src/hosts/**` or `test/live/**`, and `all` otherwise. `supervise-slow` (`supervise-slow.live.test.ts`) holds the three
+tests that wait out a fixed window, the archil client's 5-minute token refresh twice and five minutes of backoff, so it takes
+about 17 minutes at any load. They are a file of their own, with their own script, so the tier is a file, not a list of
+test names. `ci.ts all --list` (with or without `--slow`) prints the suites and their commands and runs nothing.
+
+The wrapper exports `ARCHIL_API_KEY` (a key of a **scratch** Archil organisation), `PDA_LIVE_DISK` (a **scratch** disk in
+that organisation, `dsk-...`) and `PDA_LIVE_REGION` (its region; `aws-us-east-1` when unset). Never a production key or
+disk: the suites create and delete run directories and token users on whatever disk they are given. No value is printed.
+
+`all` runs, in order:
+
+1. `preflight`: refuses to start without the key and a disk id. Without the key every suite skips, and a check would pass
+   having checked nothing.
+2. The host suites, `claim env run store supervise lifecycle` (with `supervise-slow` after `supervise` under `--slow`),
+   each under a 25-minute deadline: one that hangs is killed with its processes and the next one runs.
+3. The Docker suites, after the host suites so the two never share the disk. They build the package's image from this
+   checkout first (`pi-durable-disk:live-check`) and have a 60-minute deadline.
+4. The sweep, always (after a failure, a failed preflight or an interrupt): it removes what this run's ledgers recorded and
+   never stamped as removed, which is what a suite killed at its deadline leaves (its `after` never ran). On the host first:
+   systemd units and Docker containers named `pda-*`, then mounts under `/mnt/pda/`. Then on the disk: run directories
+   (`runs/<name>/` only, through the package's own run-tree delete, which revokes the run's delegations first) and token
+   users. Anything a ledger lists outside those names is reported and left alone.
+5. The summary: each suite's result and time and the suites' timing measurements, as Markdown. Only numbers leave the
+   results files: no disk id, host or identifier.
+
+Its last line on stdout is `ok: live disk check passed (7 suites, sweep left 0)` (under `--slow`,
+`ok: live disk check passed (8 suites incl. slow, sweep left 0)`) or `not ok: <first failing step>: <reason>`, and it exits
+0 only with an `ok:` line: preflight passed, every suite passed, and the sweep left no run directory, token user, unit, container or mount. A first `SIGINT` or `SIGTERM` stops the running suite and goes on to the
+sweep; a second exits at once. It holds `/tmp/pda-live.lock` (as `flock` does) for the whole run and refuses to start
+while another live run on the host holds it. The ledgers and results go to `$PDA_STATE_DIR` (made absolute), or a fresh
+temporary directory whose path it prints first.
+
+The steps also run on their own: `ci.ts preflight`, `ci.ts suites <name>...`, `ci.ts sweep` (with `PDA_STATE_DIR` naming
+a run's ledgers) and `ci.ts summary`.

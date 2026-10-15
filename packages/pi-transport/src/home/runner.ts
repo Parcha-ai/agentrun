@@ -161,7 +161,15 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				return { ok: true as const, value: null };
 			}
 			case "status":
-				return { ok: true as const, value: { state: home.state, epoch: home.epoch ?? null } };
+				return {
+					ok: true as const,
+					value: {
+						state: home.state,
+						epoch: home.epoch ?? null,
+						...(home.sealed === undefined ? {} : { sealed: home.sealed }),
+						...(home.noteSession === undefined ? {} : { session: home.noteSession }),
+					},
+				};
 			case "placement": {
 				// The log says jev or config, and nothing else: a record that says another is refused, not written.
 				if (!isPlacementRecord(args.record)) {

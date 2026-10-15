@@ -1,0 +1,48 @@
+{
+  "format": "agentrun.recording/1",
+  "providers": "scripted",
+  "title": "The reference job, killed and resumed",
+  "task": "reference-company-check",
+  "model": "faux/faux-1",
+  "kills": 10,
+  "code": {
+    "repo": "Parcha-ai/agentrun",
+    "commit": "79868e54484c3e0682da1c300a8d43a8ae155dd2",
+    "packages": {
+      "@parcha/agentrun-dsl": "0.1.0-beta.13",
+      "@parcha/agentrun-jev": "0.1.0-beta.13",
+      "@parcha/agentrun-pi": "0.1.0-beta.13",
+      "@parcha/pi-browser": "0.1.0-beta.13",
+      "@parcha/pi-durable-disk": "0.1.0-beta.13",
+      "@parcha/pi-transport": "0.1.0-beta.13",
+      "@parcha/pi-vision": "0.1.0-beta.13",
+      "@earendil-works/pi-durable": "1.1.0",
+      "@earendil-works/chord": "1.1.0",
+      "@earendil-works/pi-ai": "1.1.0",
+      "@earendil-works/pi-agent-core": "1.1.0",
+      "@earendil-works/pi-coding-agent": "1.1.0",
+      "@earendil-works/pi-tui": "1.1.0"
+    }
+  },
+  "result": {
+    "blob": "36e45a1b7f0e6d02c266c85157ab7c69c8db99113a9d0374f48005bddcaf7b2b",
+    "title": "The record"
+  },
+  "generations": 11,
+  "cost": {
+    "usd": 0,
+    "parts": {
+      "model": 0,
+      "browser": 0,
+      "decision": 0
+    }
+  },
+  "recorded": {
+    "started": "2026-10-14T23:01:16.496Z",
+    "ended": "2026-10-14T23:01:30.848Z"
+  },
+  "source": {
+    "run": "reference",
+    "store_sha256": "3ad0a19a0bc17eca70c54adf7c1e55e26eaec8de9243e15d3aa239f3da2aa912"
+  }
+}

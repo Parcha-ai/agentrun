@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,7 +23,8 @@ export type RunMainOptions = Pick<RunnerOptions, "recording" | "admits" | "lines
  *
  * It speaks the link on its own input and output, so it writes nothing else there: what the app logs with
  * `console.log` goes to the error output. Arguments: `--session`, `--store`, `--workspace`, `--environment`,
- * `--provider`. It writes its process id to `<store>.pid`. When the link closes the runner closes the session in order and exits; a runner started again opens
+ * `--provider`. It writes its process id to `<store>.pid` when that file names no other live runner of this store, and
+ * again whenever it takes the store into its hold. When the link closes the runner closes the session in order and exits; a runner started again opens
  * nothing until a host says so. It returns the exit code and sets it: the process ends once nothing is left to run.
  * A runner whose host keeps the session's record stream takes its recorder here (`recording`: agentrun-pi's
  * `snapshotLines` and `recordCommits`), and the app's own admissions (`admits`).
@@ -59,9 +60,13 @@ export async function runMain(app: App, options: RunMainOptions = {}): Promise<n
 	}
 	// The output is the link.
 	console.log = (...args: unknown[]) => console.error(...args);
-	// Which process runs this session here: for a launcher that watches it, and for a test that kills it.
+	// Which process runs this session here: for a launcher that watches it, a recovery that stops it, and a test that
+	// kills it. Never over another live runner of this store, which may hold it: one that is refused (`busy`) must not
+	// hide the one that holds it. The runner that takes the store into its hold names itself then, whatever the file said.
 	await mkdir(dirname(store), { recursive: true });
-	await writeFile(`${store}.pid`, `${process.pid}\n`);
+	const pidFile = `${store}.pid`;
+	const nameSelf = () => writeFile(pidFile, `${process.pid}\n`);
+	if (!(await namesAnotherRunner(pidFile, store))) await nameSelf();
 	const runner = createRunner({
 		app,
 		session,
@@ -71,6 +76,7 @@ export async function runMain(app: App, options: RunMainOptions = {}): Promise<n
 		...(options.recording === undefined ? {} : { recording: options.recording }),
 		...(options.admits === undefined ? {} : { admits: options.admits }),
 		...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
+		onHold: nameSelf,
 	});
 	const link = streamLink(process.stdin, process.stdout);
 	const closed = new Promise<number>((resolve) => {
@@ -82,6 +88,30 @@ export async function runMain(app: App, options: RunMainOptions = {}): Promise<n
 	runner.attach(link);
 	const ended = await Promise.race([runner.ended.then((end) => end.exitCode), closed]);
 	return finish(ended);
+}
+
+/**
+ * Whether `pidFile` names another process that runs `store`: alive, and with the store among its arguments where this
+ * machine shows them (`/proc`). Where it does not, a live process is taken to be that runner.
+ */
+async function namesAnotherRunner(pidFile: string, store: string): Promise<boolean> {
+	let pid: number;
+	try {
+		pid = Number((await readFile(pidFile, "utf8")).trim());
+	} catch {
+		return false;
+	}
+	if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return false;
+	try {
+		process.kill(pid, 0);
+	} catch {
+		return false;
+	}
+	try {
+		return (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").includes(store);
+	} catch {
+		return true;
+	}
 }
 
 function finish(code: number): number {

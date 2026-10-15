@@ -87,6 +87,27 @@ describe("starting a runner in a box", () => {
 		}
 	}, 60_000);
 
+	it("answers a runner file it cannot read with a prepare error, and reads it again on the next start", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-transport-runner-missing-"));
+		try {
+			const file = join(directory, "runner.mjs");
+			await withPlace(`${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, async (place, uploads) => {
+				const start = boxRunner({ program: { file }, session: "s", models: createModels() });
+				const missing = await start(place, 1, context);
+				expect(missing.ok ? "" : missing.error.code).toBe("prepare");
+				expect(missing.ok ? "" : missing.error.message).toContain(file);
+				expect(uploads()).toBe(0);
+				writeFileSync(file, STUB);
+				const started = getOrThrow(await start(place, 1, context));
+				expect(getOrThrow(await started.ready).state).toBe("closed");
+				started.close("done");
+				expect(uploads()).toBe(1);
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	it("refuses a box with no node, and one whose node is older than 22.19, before anything is uploaded", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "pi-transport-old-node-"));
 		try {

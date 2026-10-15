@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Box, BoxSpec } from "../src/box/box.ts";
 import { daytonaBoxes } from "../src/box/daytona.ts";
 import { finish, readStream } from "../src/box/files.ts";
@@ -17,6 +17,10 @@ const CANARY = "PI_TRANSPORT_HOST_CANARY";
 const context = BACKGROUND_CONTEXT;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+/** What the host holds of a program's output for a reader that is slow: the provider's `OUTPUT_BUFFER_MAX_BYTES`. */
+const HELD_MAX_BYTES = 4 * 1024 * 1024;
+/** How long a wait for something that must happen may take before it is a hang: far past any loaded runner. */
+const HANG_GUARD_MS = 120_000;
 
 type FakeSandbox = {
 	id: string;
@@ -228,6 +232,19 @@ const provider = (spool = "spool", listedStableMs = 50) =>
 	});
 
 const spec = (extra: Partial<BoxSpec> = {}): BoxSpec => ({ maxLifetimeMs: 10 * 60_000, ...extra });
+
+/**
+ * Every poll for a program's output in sandbox `id`, in order: the output offset it asked from and the chunk it asked
+ * for. A poll's arguments are the program's directory, the output and error offsets, and the chunk, each quoted.
+ */
+function outputPolls(id: string): { offset: number; chunk: number }[] {
+	return fake.requests.flatMap((request) => {
+		if (request.method !== "POST" || request.path !== `/toolbox/${id}/process/execute`) return [];
+		const { command } = JSON.parse(request.body) as { command: string };
+		const poll = command.includes('"$d/out"') ? /'(\d+)' '\d+' '(\d+)'$/.exec(command) : null;
+		return poll === null ? [] : [{ offset: Number(poll[1]), chunk: Number(poll[2]) }];
+	});
+}
 
 async function withBox(
 	use: (box: Box) => Promise<void>,
@@ -491,29 +508,45 @@ describe("daytona boxes", () => {
 		}
 	});
 
-	it("holds only a bounded amount of a program's output when nobody reads it, and delivers all of it to a reader", async () => {
-		await withBox(async (box) => {
-			const total = 30_000_000;
-			const started = await box.exec(["sh", "-c", `head -c ${total} /dev/zero`], undefined, context);
-			if (!started.ok) throw started.error;
-			const outcome = await Promise.race([
-				started.value.wait().then(() => "finished"),
-				new Promise<string>((resolve) => setTimeout(() => resolve("waiting"), 2_500)),
-			]);
-			// Nobody has read a byte: past the bound the host stops fetching, so the wait cannot end yet.
-			expect(outcome).toBe("waiting");
-			const polls = fake.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/execute")).length;
-			await new Promise((resolve) => setTimeout(resolve, 300));
-			expect(fake.requests.filter((r) => r.method === "POST" && r.path.endsWith("/process/execute")).length).toBe(
-				polls,
-			);
-			// A reader that catches up gets every byte and the exit code.
-			let received = 0;
-			for await (const part of started.value.stdout) received += part.length;
-			expect(received).toBe(total);
-			expect(await started.value.wait()).toEqual({ ok: true, value: 0 });
-		});
-	}, 60_000);
+	it(
+		"holds only a bounded amount of a program's output when nobody reads it, and delivers all of it to a reader",
+		async () => {
+			await withBox(async (box) => {
+				const total = 30_000_000;
+				const started = await box.exec(["sh", "-c", `head -c ${total} /dev/zero`], undefined, context);
+				if (!started.ok) throw started.error;
+				let finished = false;
+				void started.value.wait().then(() => {
+					finished = true;
+				});
+				const began = Date.now();
+				// Nobody reads a byte, so a poll's offset is what the host holds when it asks for more. It asks only while it
+				// holds no more than the bound, so it holds at most the bound and one chunk; the poll that takes it past the
+				// bound asks for a chunk that ends past it.
+				await vi.waitFor(
+					() => {
+						const last = outputPolls(box.id).at(-1);
+						expect(last !== undefined && last.offset + last.chunk > HELD_MAX_BYTES).toBe(true);
+					},
+					{ timeout: HANG_GUARD_MS, interval: 50 },
+				);
+				const reached = Date.now() - began;
+				// A host that kept fetching would show it here; one that stopped passes however long this pause takes.
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				const polls = outputPolls(box.id);
+				console.log(`held the bound after ${reached} ms and ${polls.length} polls`);
+				expect(polls.filter((poll) => poll.offset > HELD_MAX_BYTES)).toEqual([]);
+				// The host learns the exit code only by polling, so the wait cannot end while it holds the bound.
+				expect(finished).toBe(false);
+				// A reader that catches up gets every byte and the exit code.
+				let received = 0;
+				for await (const part of started.value.stdout) received += part.length;
+				expect(received).toBe(total);
+				expect(await started.value.wait()).toEqual({ ok: true, value: 0 });
+			});
+		},
+		2 * HANG_GUARD_MS,
+	);
 
 	it("does not call a stopped sandbox deleted when its DELETE keeps failing", async () => {
 		await withBox(async (box) => {
@@ -576,12 +609,8 @@ describe("daytona boxes", () => {
 			} finally {
 				fake.failExecuteContaining = undefined;
 			}
-			const ended = await Promise.race([
-				started.value.wait(),
-				new Promise<string>((resolve) => setTimeout(() => resolve("still waiting"), 3_000)),
-			]);
-			expect(ended).not.toBe("still waiting");
-			expect(ended).toMatchObject({ ok: false });
+			// `cat` never ends by itself: the failed write is what ends the wait, and a hang is the case's timeout.
+			expect(await started.value.wait()).toMatchObject({ ok: false });
 			// Closing afterwards is harmless.
 			await started.value.stdin.close();
 		});

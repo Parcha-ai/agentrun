@@ -1,0 +1,17 @@
+{
+  "tool": "browser_read",
+  "args": {
+    "what": "markdown"
+  },
+  "status": "ok",
+  "facts": {
+    "final_url": "http://registry.example/companies/01234567",
+    "title": "Acme Ltd - Company register",
+    "sha256": "449c811ec0b1337990b3395129cddccda7b87464915fc57e378714e7b0de9830",
+    "extractor": "readability-md",
+    "via": "browser",
+    "session": "fake_sess-1"
+  },
+  "body": "Acme Ltd. Company number 01234567\\. Incorporated on 2019-03-04\\. Status: active.",
+  "ext": "md"
+}

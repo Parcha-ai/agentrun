@@ -4,6 +4,7 @@ import type { DriverFactory } from "../core/custody.js";
 import type { ScreenshotOptions } from "../core/images.js";
 import type { PageDriver } from "../core/tools.js";
 import { StagehandFacadeTools } from "../vendor/stagehand-facade/tools.js";
+import { installedExtension } from "./extension-worker.js";
 import type { RefAction } from "../vendor/stagehand-facade/contract.js";
 
 /** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
@@ -16,8 +17,6 @@ export const SEALED_STAGEHAND = {
   telemetry: STAGEHAND_TELEMETRY,
 } as const;
 
-const STAGEHAND_EXTENSION = "Stagehand Runtime";
-const DISCOVERY_MS = 10_000;
 // A page's address is its document's (location.href): page.url() names a goto's target once Chrome starts it, so a
 // receipt could cite a page it does not hold. One evaluate reads all four, so they are one document's.
 const PAGE_CODE = `return await page.evaluate(() => ({
@@ -38,43 +37,6 @@ async function documentUrl(stagehand: any, page: any): Promise<string> {
   return await page.url();
 }
 
-/** A held extension runtime keeps one Stagehand instance until that instance's close, which a dead process never sent,
- *  so a new attach would be refused: closing its service worker target (no page target) resets it first. */
-async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: string): Promise<string | null> {
-  const socket = new WebSocket(cdpUrl);
-  const timer = setTimeout(() => socket.close(), DISCOVERY_MS);
-  const stop = () => socket.close();
-  signal?.addEventListener("abort", stop, { once: true });
-  // A call the browser never answers settles empty when the socket closes (the deadline, an abort, the browser).
-  const pending = new Map<number, (result: any) => void>();
-  let next = 0;
-  const call = (method: string, params: object = {}) => new Promise<any>((resolve) => { pending.set(++next, resolve); socket.send(JSON.stringify({ id: next, method, params })); });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      // A refused connection raises `error` and, on Node 22, never `close`: waiting for `close` alone would hang the
-      // attach.
-      socket.onerror = () => reject(new Error("Failed to open CDP WebSocket"));
-      socket.onclose = () => { for (const settle of pending.values()) settle(undefined); reject(new Error("the CDP socket closed")); };
-      socket.onmessage = (event) => { const message = JSON.parse(String(event.data)); pending.get(message.id)?.(message.result); };
-    });
-    let id = known ?? null;
-    if (!id) {
-      const extensions: Array<{ id: string; name: string; enabled: boolean }> = (await call("Extensions.getExtensions"))?.extensions ?? [];
-      const enabled = extensions.filter((extension) => extension.name === STAGEHAND_EXTENSION && extension.enabled);
-      if (enabled.length !== 1) return null;
-      id = enabled[0]!.id;
-    }
-    const workers = async () => ((await call("Target.getTargets"))?.targetInfos ?? [] as Array<{ targetId: string; type: string; url: string }>)
-      .filter((target: { type: string; url: string }) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${id}/`))
-      .map((target: { targetId: string }) => target.targetId);
-    const closing = await workers();
-    for (const targetId of closing) await call("Target.closeTarget", { targetId });
-    // A closed worker stays listed for a moment and Stagehand would attach to it: wait until it is gone (best effort).
-    for (let tries = 0; tries < 40 && (await workers()).some((targetId: string) => closing.includes(targetId)); tries += 1) await new Promise((r) => setTimeout(r, 50));
-    return id;
-  } catch { return known ?? null; } finally { clearTimeout(timer); signal?.removeEventListener("abort", stop); socket.close(); }
-}
 
 /** Batches run under `timeoutMs`, not the facade's fixed 60 s; one failing at or past it is a `TimeoutError`, since
  *  Stagehand's own is a plain Error. */

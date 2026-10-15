@@ -25,6 +25,9 @@ import { localHost, type LedgerRow, type StatusEvent } from './host.ts';
 import { gates } from './gates.ts';
 import { fakes, job, lead } from './job.ts';
 import { summary } from './run.ts';
+import { cost } from './fold.ts';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
+import { packageCommitRecorder } from './record-store.ts';
 
 const SELF = fileURLToPath(import.meta.url);
 
@@ -116,10 +119,13 @@ async function child() {
   };
   // The fake answers on loopback: a create it lost is known lost within seconds, as in the reference host.
   const browser = { provider: () => remoteProvider(process.env.BACKEND!), driver: remoteDriver(process.env.BACKEND!), createDeadlineMs: 3_000 };
-  const local = localHost(place, taps, { browser });
+  const recorder = process.env.RECORD_DIR ? openRecorder({ dir: process.env.RECORD_DIR, commits: await packageCommitRecorder() }) : undefined;
+  const local = localHost(place, taps, { browser, ...(recorder ? { recorder } : {}) });
   const { evidence, status, deliver } = local.host;
   const runEffect = local.host.tools.runEffect;
   local.host.tools = { ...local.host.tools, runEffect: async (request) => { const value = await runEffect(request); cross(`effect.kept ${request.node.tool}`); return value; } };
+  // `RERUN`: the host sends a call the journal admitted and a kill kept from being sent, with the args the journal kept (reconcile's `rerun`).
+  if (process.env.RERUN) local.host.tools = { ...local.host.tools, rerun: async ({ intent, args }) => { const tool = taps.tools[intent.tool]; if (!tool || args === undefined) return undefined; return { args, value: await tool(args as Record<string, unknown>) }; } };
   local.host.evidence = { file: async (label, record) => { cross(`receipt.filing ${record.tool}`); const filed = await evidence.file(label, record); cross(`receipt.filed ${record.tool}`); return filed; } };
   local.host.status = (event: StatusEvent) => {
     cross(`event ${event.source}.${event.source === 'workflow' ? event.event.type : 'change' in event ? event.change : 'look' in event ? 'look' : 'miss' in event ? 'miss' : 'reconciled'}`);
@@ -128,6 +134,7 @@ async function child() {
   local.host.deliver = async (result) => { cross('deliver.writing'); await deliver(result); cross('deliver.written'); };
   try {
     const result = await run(place, local.host, job);
+    await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 200) } }));
@@ -295,12 +302,12 @@ const made = (file: string) => { try { return readFileSync(file, 'utf8').split('
 /** The one cut the draw leaves out: inside the effect's window. The first process ends at `point` (the tool dispatched, its
  *  result not committed); the second finds the effect admitted and never completed, refuses it, and the tool is not
  *  dispatched again. */
-export async function cutInEffectWindow(point = 'tool.dispatch search') {
+export async function cutInEffectWindow(point = 'tool.dispatch search', options: { rerun?: boolean } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   const { backend, state } = watchedBackend();
   const served = await backend.serve();
   try {
-    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, RAN_LOG: join(scratch, 'ran.jsonl') };
+    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, RAN_LOG: join(scratch, 'ran.jsonl'), ...(options.rerun ? { RERUN: '1' } : {}) };
     const killed = await spawnChild({ ...env, KILL_AT_POINT: point }, (pid) => { state.pid = pid; });
     const afterKill = made(env.RAN_LOG);
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
@@ -338,9 +345,11 @@ export function isReduced(record: unknown, wanted: unknown): boolean {
   return REDUCED_ANSWERS.includes(got.answer as string) && JSON.stringify(got) === JSON.stringify(expected);
 }
 
-export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean }): Promise<Ledger> {
+export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string }): Promise<Ledger> {
   if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
   if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
+  // A recording directory holds one run: leftovers of an interrupted or finished one would be merged into this run's recording.
+  if (options.record && (existsSync(join(options.record, '.spool')) || existsSync(join(options.record, 'manifest.json')))) throw new Error(`${options.record} already holds a recording or an unfinished one: record into a directory of its own`);
   const started = Date.now();
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   try {
@@ -354,6 +363,9 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
     const kills: Kill[] = [];
     let last: Process | undefined;
     let processes = 0;
+    const supervisor = options.record ? openSupervisor({ dir: options.record }) : undefined;
+    // The recording's kill count is the kill lines the supervisor wrote: one per SIGKILL, landed at a known crossing or not.
+    let recordedKills = 0;
     const pageRuns: Ledger['pageRuns'] = [];
     const trail: Ledger['trail'] = [];
     try {
@@ -373,7 +385,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         processes += 1;
         const seenRuns = backend.dispatched.filter((row) => row.op === 'run').length;
         const began = Date.now();
-        last = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log, ...(planned?.side === 'child' ? { KILL_CHILD_AT: String(planned.n) } : {}) }, (pid) => { state.pid = pid; });
+        last = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(planned?.side === 'child' ? { KILL_CHILD_AT: String(planned.n) } : {}) }, (pid) => { state.pid = pid; supervisor?.host('process.started', { gen: index + 1, pid }); });
         const pid = state.pid;
         const answeredRuns = rowsOfLedger(dir).filter((row) => row.kind === 'browser' && row.name === 'page.run' && row.pid === pid).length;
         backend.dispatched.filter((row) => row.op === 'run').slice(seenRuns).forEach((row, at) => pageRuns.push({ process: index + 1, pid, applied: at < state.seen.filter((crossing) => crossing.point === 'browser.applied driver.run').length, answered: at < answeredRuns, input: row.input }));
@@ -383,9 +395,19 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         taken.supervisor.push(state.seen.map((crossing) => crossing.point));
         if (!planned) break;
         const landed = last.signal === 'SIGKILL' ? (planned.side === 'supervisor' ? state.killed ?? null : own.at(-1) ?? null) : null;
+        if (last.signal === 'SIGKILL') { recordedKills += 1; supervisor?.host('kill', { gen: index + 1, label: landed?.point ?? null, crossing: landed ? { point: landed.point, n: landed.n } : null, side: landed?.side ?? null }); }
         kills.push({ process: index + 1, plan: planned, landed, generation: last.outcome?.generation ?? null, ms: Date.now() - began, ...(last.outcome ? { outcome: `${last.outcome.status}${last.outcome.code ? ` ${last.outcome.code}` : ''}` } : {}) });
         // A process that ended without the planned kill ended the run: the plan named a crossing it did not reach.
         if (last.signal !== 'SIGKILL') finished = true;
+      }
+      if (options.record) {
+        const blob = openRecorder({ dir: options.record }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json');
+        supervisor?.host('result', { gen: processes, blob, title: 'The record' }, { blobs: [blob] });
+        finishRecording(options.record, {
+          title: 'The reference job, killed and resumed', task: job.workflow.name ?? 'reference', model: 'faux/faux-1', generations: processes, kills: recordedKills,
+          code: codeOf(join(import.meta.dirname, '..', '..')), cost,
+          source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, result: { blob, title: 'The record' },
+        });
       }
     } finally { await served.close(); }
 
@@ -483,9 +505,9 @@ export function render(ledger: Ledger): string[] {
 if (import.meta.main) {
   if (process.argv[2] === '--child') await child();
   else {
-    const { values } = parseArgs({ options: { seed: { type: 'string' }, kills: { type: 'string' }, json: { type: 'boolean' }, keep: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { seed: { type: 'string' }, kills: { type: 'string' }, json: { type: 'boolean' }, keep: { type: 'boolean' }, record: { type: 'string' } } });
     const seed = values.seed === undefined ? Math.floor(Math.random() * 2 ** 31) : Number(values.seed);
-    const ledger = await killAnywhere({ seed, kills: values.kills === undefined ? 10 : Number(values.kills), keep: values.keep === true });
+    const ledger = await killAnywhere({ seed, kills: values.kills === undefined ? 10 : Number(values.kills), keep: values.keep === true, ...(values.record ? { record: values.record } : {}) });
     if (values.json) console.log(JSON.stringify(ledger));
     else console.log(render(ledger).join('\n'));
     if (ledger.checks.some((check) => !check.ok)) process.exitCode = 1;
