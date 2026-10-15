@@ -701,7 +701,7 @@ const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }
 });
 ```
 
-The run's status is its `run.json`, and `readLocalRunStatus(dir)` reads it the way `readRunStatus` reads a disk's: the
+The run's status is its `run.json`, and `readLocalRunStatus(root)` (the directory `localRun` takes) reads it, read-only and safe beside a live instance, the way `readRunStatus` reads a disk's: the
 same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`), `null` when the run has no `run.json`
 yet, and `RunRecordError` (`RUN_JSON_INVALID`) when it is malformed.
 

@@ -123,12 +123,14 @@ export async function readRunRecord(root: string | ClaimDir): Promise<RunRecord 
 }
 
 /**
- * The status of a run on a local directory (`localRun`): the `run.json` under `dir`, read as `readRunStatus` reads a disk's
- * through the control API: the same strict parser and the same `RunRecord`. A run with no `run.json` yet, or no directory,
- * is `null`; a record that is malformed is `RunRecordError` (`RUN_JSON_INVALID`); any other read error is thrown.
+ * The status of a run on a local directory (`localRun`): `<root>/run.json`, where `root` is the directory `localRun(root)`
+ * takes (not its `work/`). Read as `readRunStatus` reads a disk's through the control API: the same strict parser and the
+ * same `RunRecord`. It only reads: no lock, no mount and no store are touched, so it is safe beside a live instance, whose
+ * next write replaces the file whole. A run with no `run.json` yet, or no directory, is `null`; a record that is malformed
+ * is `RunRecordError` (`RUN_JSON_INVALID`); any other read error is thrown.
  */
-export async function readLocalRunStatus(dir: string): Promise<RunRecord | null> {
-  return (await readRunRecord(dir)) ?? null;
+export async function readLocalRunStatus(root: string): Promise<RunRecord | null> {
+  return (await readRunRecord(root)) ?? null;
 }
 
 /**
