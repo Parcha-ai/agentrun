@@ -27,6 +27,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import type { BoxProvider } from '@parcha/pi-transport';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
+import type { Recorder } from './record.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
@@ -142,9 +143,16 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
   return { env: () => env, destroy: async () => { await box.destroy(ctx); } };
 }
 
-async function child(options: DemoOptions) {
-  const env = process.env;
-  const place = await placeAt(env.DIR);
+/** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. */
+export type Prepared = { place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; done(): Promise<void> };
+
+/** The outcome line a process reports on its way out: how the run ended, the record it delivered and the hash of its store. */
+export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined) {
+  return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
+}
+
+export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace): Promise<Prepared> {
+  const place = at ?? await placeAt(env.DIR);
   const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
   const window: EffectWindow = { open: 0 };
   const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST) : undefined, window);
@@ -152,25 +160,34 @@ async function child(options: DemoOptions) {
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
+  const parts = live ? await options.live!({ env, browser: browserKind }) : {};
+  const provider = await boxProvider(options.spec, place);
+  const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
+  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+  // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
+  // caps (Jev's), which a live judge is held to too.
+  composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
+  if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
+  const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
+  return { place, host: local.host, job: { ...options.job, input }, runOptions: { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) }, recorder, done: async () => { await box?.destroy(); } };
+}
+
+const storeShaOf = (place: RunPlace) => {
+  const storeFile = join(place.store, 'run.sqlite');
+  return existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
+};
+
+async function child(options: DemoOptions) {
+  let prepared: Prepared | undefined;
   try {
-    const parts = live ? await options.live!({ env, browser: browserKind }) : {};
-    const provider = await boxProvider(options.spec, place);
-    const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
-    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
-    // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
-    // caps (Jev's), which a live judge is held to too.
-    composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
-    if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
-    const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
-    await recorder?.detach();
-    const storeFile = join(place.store, 'run.sqlite');
-    const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}) } }));
+    prepared = await prepareChild(options, process.env);
+    const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
+    await prepared.recorder?.detach();
+    console.log(JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place)) }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
-    await box?.destroy();
+    await prepared?.done();
   }
 }
 
