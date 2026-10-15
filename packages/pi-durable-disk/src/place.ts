@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, removeMountToken, runPath, type RunRef } from "./claim.ts";
+import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, type RunRef } from "./claim.ts";
 import { reapCommands } from "./commands.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { takeOwnerLock } from "./run.ts";
@@ -405,6 +405,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const minted = new Map<string, Minted>();
     const handles: HostHandle[] = [];
     const killed = new Map<PlaceRunner, () => void>();
+    let resolver = pathlessResolver(control);
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
     const mint = async (attempt: number): Promise<Minted> => {
@@ -544,7 +545,17 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       start: async (order) => (await ensure(order, false)).runner,
       kill,
       status: async () => {
-        const [record, delegations] = await Promise.all([readRunStatus(control, ref.id), findDelegations(control, ref.id)]);
+        // One resolver for the place's life: Archil lists a fresh run's delegation with no path, and its inode cache spares
+        // every later call the `find` on the disk. It keeps its first failure for good, so a failed call gets the next
+        // call a new one: one transient error must not fail the rest of a long run.
+        const resolve = resolver;
+        const [record, delegations] = await Promise.all([
+          readRunStatus(control, ref.id),
+          findDelegations(control, ref.id, resolve).catch((error: unknown) => {
+            if (resolver === resolve) resolver = pathlessResolver(control);
+            throw error;
+          }),
+        ]);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })) };
       },
       recover: async (last, kind, order) => {
