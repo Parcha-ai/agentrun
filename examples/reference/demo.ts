@@ -340,6 +340,30 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   base.RUN_ID = paths.id;
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
   const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+  // The place's own reading of the run (`place.status()`), written as a `run.json` host line: `gen` is the record's generation and the rest is the record verbatim, only when its status, generation, holder or sealedSeq changes
+  // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
+  let lastRunRecord = '';
+  const hostLabels = new Map<string, string>();
+  const bootLabels = new Map<string, string>();
+  const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
+  let reading: Promise<void> = Promise.resolve();
+  const readStatus = (): Promise<void> => {
+    if (!place.status) return Promise.resolve();
+    reading = reading.then(async () => {
+      try {
+        const record = ((await place.status!()) as { record?: Record<string, unknown> | null } | undefined)?.record;
+        if (!record || typeof record.run !== 'string' || !Number.isInteger(record.generation)) return;
+        const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
+        if (key === lastRunRecord) return;
+        lastRunRecord = key;
+        // A recording never holds a real host name or boot id: the holder's are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
+        const holder = record.holder && typeof record.holder === 'object' ? { ...(record.holder as Record<string, unknown>) } : undefined;
+        if (holder) { if (typeof holder.host === 'string') holder.host = labelOf(hostLabels, 'host', holder.host); if (typeof holder.bootId === 'string') holder.bootId = labelOf(bootLabels, 'boot', holder.bootId); }
+        supervisor.host('run.json', { gen: record.generation, ...record, ...(holder ? { holder } : {}) });
+      } catch { /* a reading never fails the run */ }
+    });
+    return reading;
+  };
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
@@ -362,6 +386,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
+      await readStatus();
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -380,6 +405,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           failedKills.push({ gen, code });
           supervisor.host('kill.failed', { gen, code, message: String((error as Error | null)?.message ?? error).slice(0, 240), kind: killed.kind });
         }
+        await readStatus();
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
@@ -392,8 +418,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         }
       })();
       const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
+      const tick = setInterval(() => { void readStatus(); }, 2000);
       const result = await runner.exited;
       clearInterval(watch);
+      clearInterval(tick);
+      await readStatus();
       await iterator?.return?.();
       await pump;
       processes.push(result);
@@ -416,6 +445,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
+    await readStatus();
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;

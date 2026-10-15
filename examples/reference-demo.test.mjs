@@ -1136,3 +1136,88 @@ test('one fresh run id per invocation, shared by its processes: a second run of 
   assert.deepEqual([kills(first), kills(second)], [1, 1], 'each run made its own kill');
   assert.equal(readEvents(second).filter((line) => line.kind === 'kill.request.ignored').length, 0, 'the second run saw none of the first\'s signals');
 });
+
+// ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
+
+test('the supervisor writes a run.json host line from place.status() when status, generation, holder or sealedSeq changes (start, kill, exit), none for a stable status or a place without status(), and the recording validates', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-runjson-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const runLines = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'run.json');
+  const record = (paths, over) => ({ run: paths.id, status: 'running', generation: 1, sealedSeq: 0, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: 1, since: 't' }, heartbeatAt: 'a', updatedAt: 'a', ...over });
+  // A place whose own record changes at start, at the kill and at exit: each is a line, in that order, and nothing else is.
+  const changing = join(tmp, 'changing');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', changing], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let current = null;
+    let generation = 0;
+    return {
+      ...inner,
+      status: async () => ({ record: current }),
+      start: async (order) => { generation += 1; current = record(paths, { generation, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 't' } }); const runner = await inner.start(order); runner.exited.then(() => { if (current.status === 'running') current = { ...current, status: 'done', sealedSeq: 9, heartbeatAt: 'later' }; }); return runner; },
+      recover: async (last, kind, order) => { generation += 1; current = record(paths, { generation, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 't' } }); const next = await inner.recover(last, kind, order); next.runner.exited.then(() => { if (current.status === 'running') current = { ...current, status: 'done', sealedSeq: 9 }; }); return next; },
+      kill: async (runner, kind) => { current = { ...current, status: 'paused', sealedSeq: 7 }; await inner.kill(runner, kind); },
+    };
+  } });
+  const lines = runLines(changing);
+  assert.deepEqual(lines.map((line) => [line.data.gen, line.data.status, line.data.generation, line.data.sealedSeq]), [[1, 'running', 1, 0], [1, 'paused', 1, 7], [2, 'running', 2, 0], [2, 'done', 2, 9]]);
+  assert.ok(lines.every((line) => line.data.run && line.data.holder?.driver === 'fake'), 'the record verbatim');
+  assert.deepEqual(validateRecording(changing), []);
+  // A stable status: one line, however many times it is read. A heartbeat that moves is not a change.
+  const stable = join(tmp, 'stable');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', stable], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let beat = 0;
+    return { ...inner, status: async () => { beat += 1; return { record: record(paths, { heartbeatAt: `beat-${beat}` }) }; } };
+  } });
+  assert.equal(runLines(stable).length, 1);
+  assert.deepEqual(validateRecording(stable), []);
+  // No status(): none. A reading that fails or is not a run record: none, and the run is fine.
+  const none = join(tmp, 'none');
+  const plain = await demo({ ...options, argv: ['--json', '--record', none] });
+  assert.equal(runLines(none).length, 0);
+  const broken = join(tmp, 'broken');
+  const failed = await demo({ ...options, argv: ['--json', '--record', broken], place: ({ paths, self, destroyBoxes, requestFile }) => ({ ...localPlace({ self, paths, destroyBoxes, requestFile }), status: async () => { throw new Error('the status reader failed'); } }) });
+  assert.equal(failed.processes.at(-1).outcome.status, 'complete');
+  assert.equal(runLines(broken).length, 0);
+  assert.equal(plain.processes.at(-1).outcome.status, 'complete');
+});
+
+test('a holder\'s host and boot id are labels in the recording (host-1, host-2, boot-1, ... by first appearance, the same label for the same value), and no real host name or boot id is in the finished recording', { timeout: 300_000 }, async (t) => {
+  const { hostname } = await import('node:os');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-labels-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const real = { host: hostname(), boot: existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : 'made-up-boot-id-for-a-machine-without-one' };
+  const elsewhere = { host: 'another-box-for-the-test', boot: 'boot-id-of-another-box-for-the-test' };
+  const recording = join(tmp, 'recording');
+  // Generation 1 on this machine, generation 2 (after the kill) on another box, and a last record from this machine again.
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let current = null;
+    const record = (who, generation, status) => ({ run: paths.id, status, generation, sealedSeq: generation, holder: { driver: 'fake', host: who.host, bootId: who.boot, pid: generation, since: 't' }, updatedAt: 'a' });
+    return {
+      ...inner, status: async () => ({ record: current }),
+      start: async (order) => { current = record(real, 1, 'running'); return inner.start(order); },
+      kill: async (runner, kind) => { current = { ...current, status: 'paused' }; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { current = record(elsewhere, 2, 'running'); const next = await inner.recover(last, kind, order); next.runner.exited.then(() => { current = record(real, 3, 'done'); }); return next; },
+    };
+  } });
+  const lines = readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'run.json');
+  assert.deepEqual(lines.map((line) => [line.data.generation, line.data.status, line.data.holder.host, line.data.holder.bootId]), [
+    [1, 'running', 'host-1', 'boot-1'], [1, 'paused', 'host-1', 'boot-1'], [2, 'running', 'host-2', 'boot-2'], [3, 'done', 'host-1', 'boot-1'],
+  ], 'labels by first appearance; the same value keeps its label; a new box is a new holder');
+  for (const file of filesIn(recording)) {
+    const bytes = readFileSync(file);
+    for (const value of [real.host, real.boot, elsewhere.host, elsewhere.boot]) assert.ok(!bytes.includes(value), `${file.slice(recording.length)} holds a real host name or boot id`);
+  }
+  assert.deepEqual(validateRecording(recording), []);
+});
