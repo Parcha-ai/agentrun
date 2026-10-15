@@ -3,6 +3,7 @@
 // the path grammar, maps nodes onto these records and owns the store's lifecycle.
 import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
+import { canonicalHash as canonicalHashOf } from "./canonical-hash.js";
 
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
@@ -76,6 +77,26 @@ export function applyStateDelta(base: State, delta: StateDelta): State {
   for (const key of Object.keys(base)) if (!unset.has(key)) state[key] = Object.hasOwn(delta.set, key) ? delta.set[key] : base[key];
   for (const [key, value] of Object.entries(delta.set)) if (!Object.hasOwn(base, key)) state[key] = value;
   return state;
+}
+
+/** A map item's state at `path`, rebuilt as the driver rebuilds it: the `agentrun.states` value its `base` names, with
+ *  the item's `set` and `unset` for that path applied, checked against that path's `sha256`. `item` is an
+ *  `agentrun.items` value; `states` holds `agentrun.states` values by SHA-256. When the base is missing, or a hash
+ *  differs, it says why and never guesses. Pure: it reads only what it is given. */
+export function itemState(item: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, path: string): { state: State } | { unreadable: string } {
+  const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (!isObject(item) || typeof item.base !== "string" || !isObject(item.frame) || !isObject(item.frame.states)) return { unreadable: "not a map item's record" };
+  const delta = item.frame.states[path];
+  if (delta === undefined) return { unreadable: `the item keeps no state at ${path}` };
+  if (!isObject(delta) || !isObject(delta.set) || !Array.isArray(delta.unset) || !delta.unset.every((key) => typeof key === "string") || typeof delta.sha256 !== "string") {
+    return { unreadable: `the state at ${path} is not a delta` };
+  }
+  const held = states instanceof Map ? states.get(item.base) : Object.hasOwn(states, item.base) ? (states as Record<string, unknown>)[item.base] : undefined;
+  if (!isObject(held) || !isObject(held.state)) return { unreadable: `its base ${item.base} is missing` };
+  if (canonicalHashOf(held.state) !== item.base) return { unreadable: `its base does not match its SHA-256 ${item.base}` };
+  const state = applyStateDelta(held.state, delta as StateDelta);
+  if (canonicalHashOf(state) !== delta.sha256) return { unreadable: `the state at ${path} does not rebuild to its SHA-256 ${delta.sha256}` };
+  return { state };
 }
 
 /** What a question's receipts need beyond its answer: the request's producer invocation, its size and its

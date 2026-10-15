@@ -12,7 +12,7 @@ export { bindingDigests, bindingMismatch, LEDGER_FORMAT } from "./binding.js";
 export { canonicalHash, canonicalSha256 } from "./canonical-hash.js";
 export { callKey, heldCallKey, CALL_KEY_BYTES } from "./call-key.js";
 export {
-  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame, stateDelta, applyStateDelta,
+  FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot, emptyPathFrame, stateDelta, applyStateDelta, itemState,
   frozenStepSessionId, frozenStepId, frozenEffectId, frozenEffectPath, admitFrozenStep, closeFrozenStepAttempt, frozenStop,
   type FrozenSnapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta, type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow, type FrozenShape,
 } from "./frozen-snapshot.js";

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import {
-  openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta,
+  openRecovery, withRecovery, openJournal, canonicalHash, stateDelta, applyStateDelta, itemState,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4,
 } from '@parcha/agentrun-dsl/recovery';
 
@@ -170,6 +170,36 @@ test('a resumed process that settles a call writes nothing of a map item into th
   onceEach(calls, settled, itemsOf(9).map((item) => item.id));
   const leaked = written.filter((state) => state?.schema === FROZEN_SNAPSHOT_SCHEMA_V4 && JSON.stringify(state.pin).includes('/items/'));
   assert.equal(leaked.length, 0, `a completion wrote map-item paths into the driver record: ${String(JSON.stringify(leaked[0]?.pin)).slice(0, 300)}`);
+});
+
+test('itemState rebuilds every state an item keeps from its record and the base, and says why when it cannot, never guessing', async () => {
+  const kept = inspectable();
+  const input = { items: itemsOf(8) };
+  await assert.rejects(run(kept.store, workflowOf(), { input, layout: 'v4', cut: 'tally' }));
+  const record = kept.record();
+  // The store's `agentrun.states` values, by digest, as a reader of a recording has them.
+  const states = Object.fromEntries(Object.entries(record.states).map(([sha256, state]) => [sha256, { driver: KEY, sha256, state }]));
+  let rebuilt = 0;
+  for (const item of Object.values(record.items)) {
+    for (const [at, delta] of Object.entries(item.frame.states)) {
+      const read = itemState(item, states, at);
+      assert.ok('state' in read, `${at}: ${read.unreadable}`);
+      assert.equal(canonicalHash(read.state), delta.sha256);
+      assert.equal(read.state.item_index, item.index);
+      assert.deepEqual(read.state.items, input.items, 'the base supplies what the item did not change');
+      rebuilt += 1;
+    }
+  }
+  assert.ok(rebuilt > 0, 'some item kept a state');
+  const [item, at] = Object.values(record.items).flatMap((it) => Object.keys(it.frame.states).map((path) => [it, path]))[0];
+  assert.deepEqual(itemState(item, new Map(Object.entries(states)), at), itemState(item, states, at), 'a Map of the states reads the same');
+  assert.match(itemState(item, {}, at).unreadable, /base .* is missing/);
+  assert.match(itemState(item, states, `${at}/elsewhere`).unreadable, /keeps no state/);
+  const forged = structuredClone(item); forged.frame.states[at].set.found = { id: 'forged', score: 999 };
+  assert.match(itemState(forged, states, at).unreadable, /does not rebuild/);
+  const swapped = { ...states, [item.base]: { ...states[item.base], state: { ...states[item.base].state, extra: true } } };
+  assert.match(itemState(item, swapped, at).unreadable, /base does not match/);
+  assert.match(itemState(null, states, at).unreadable, /not a map item's record/);
 });
 
 test('a state that does not rebuild to the digest it was committed with refuses the open', async () => {
