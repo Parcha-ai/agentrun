@@ -44,6 +44,7 @@ test('the job runs to the snapshot on fakes: nine grids read from their charts, 
   assert.deepEqual([record.meanGap, record.closeWithinOnePoint], [0.2, 9]);
   const html = readFileSync(join(run.dir, 'out', 'snapshot.html'), 'utf8');
   assert.match(html, /Nine grids, read from the chart/);
+  assert.match(html, /Costs in the recording are at list prices/);
   assert.match(html, /Vision came within one point of the published figure on 9 of 9 grids/);
   const links = [...html.matchAll(/href="(screenshots\/[^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(links).size, 9, 'nine different screenshots are cited');

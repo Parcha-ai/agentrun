@@ -57,6 +57,11 @@ The look is filed with the screenshot's evidence path as its receipt and the ima
 so the vision panel shows the chart and a citation is tied to its look. The recording's result is `agentrun.cited/1`: rows of a label, a
 value, a note and `cites`, each cite naming the screenshot's `blob` and the look's `facts.key`. A grid that was not read is a row with no cite.
 
+## Costs
+
+The costs in a recording and in the snapshot are at list prices: the models' catalog rates (the default lead, `openai/gpt-6-luna`, is $0.10 in and $0.50 out per million tokens) and
+Browserbase's own price list. A list price is a stated price, not what an account may pay. A model nothing prices is unknown (null), never 0. The no-key run costs 0: its parts are scripted.
+
 ## The sources
 
 `sources.json` lists the nine operators and how each page was checked by hand: the dashboard, which chart, the two numbers, where

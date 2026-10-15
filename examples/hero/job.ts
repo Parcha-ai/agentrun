@@ -42,7 +42,7 @@ const SNAPSHOT = `(s) => {
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + esc(title) + '</title></head><body><h1>' + esc(title) + '</h1>'
     + '<p>Taken ' + esc(s.at) + '. Each reading is the number vision read from the operator\\'s own chart; the published figure beside it is the check. A page that was not the dashboard is listed as failed and cites nothing.</p>'
     + '<table border="1" cellpadding="4"><thead><tr><th>Grid</th><th>Renewable share now</th><th>Peak the chart shows</th><th>Published</th><th>Gap (points)</th><th>Source</th></tr></thead><tbody>'
-    + rows.map(line).join('') + '</tbody></table><p>' + esc(howClose) + '</p></body></html>';
+    + rows.map(line).join('') + '</tbody></table><p>' + esc(howClose) + '</p><p><small>Costs in the recording are at list prices: the models\\' catalog rates and the browser provider\\'s own.</small></p></body></html>';
   return { result: { at: s.at, grids: rows.length, read: read.length, failed: rows.length - read.length, closeWithinOnePoint: close, meanGap: mean === null ? 0 : mean, rows: rows, html: html } };
 }`;
 
