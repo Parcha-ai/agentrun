@@ -1002,7 +1002,10 @@ function dump(path: string): Record<string, unknown[]> {
 
 type World = ReturnType<typeof world>;
 
-/** The file descriptors this process holds open on `path`. */
+/** Whether this system lists a process's open files (Linux): elsewhere the checks on them are skipped, the rest run. */
+const HAS_PROC = existsSync("/proc/self/fd");
+
+/** The file descriptors this process holds open on `path`. Only where `HAS_PROC`. */
 function openOn(path: string): number {
 	let count = 0;
 	for (const fd of readdirSync("/proc/self/fd")) {
@@ -1039,7 +1042,7 @@ describe("a home whose store wrapper fails", () => {
 			);
 			const resumed = await home.resume({ epoch: 1 }, context);
 			expect(resumed.ok ? "" : resumed.error.message).toContain("the wrapper failed");
-			expect(openOn(made.options.store)).toBe(0);
+			if (HAS_PROC) expect(openOn(made.options.store)).toBe(0);
 			expect(await free(made)).toBe("free");
 		});
 	});
@@ -1076,7 +1079,7 @@ describe("a home whose store wrapper fails", () => {
 			);
 			const resumed = await home.resume({ epoch: 1 }, context);
 			expect(resumed.ok ? "" : resumed.error.message).toContain("the recorder did not start");
-			expect(openOn(made.options.store)).toBe(0);
+			if (HAS_PROC) expect(openOn(made.options.store)).toBe(0);
 			expect(await free(made)).toBe("free");
 		});
 	});
@@ -1094,8 +1097,10 @@ describe("a home whose store wrapper fails", () => {
 			const home = getOrThrow(await openHome(homeOf(made, shipper.wrapStore(made.options.store))));
 			const resumed = await home.resume({ epoch: 1 }, context);
 			expect(resumed.ok ? "" : resumed.error.message).toContain("the snapshot failed");
-			expect(openOn(made.options.store)).toBe(0);
-			expect(openOn(`${made.options.store}.outbox.jsonl`)).toBe(0);
+			if (HAS_PROC) {
+				expect(openOn(made.options.store)).toBe(0);
+				expect(openOn(`${made.options.store}.outbox.jsonl`)).toBe(0);
+			}
 			expect(await free(made)).toBe("free");
 		});
 	});
