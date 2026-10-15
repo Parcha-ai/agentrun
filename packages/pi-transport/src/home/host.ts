@@ -4,7 +4,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
-import { type RecordSink, receiveRecords } from "./records.ts";
+import { inSinkOrder, type RecordSink, receiveRecords } from "./records.ts";
 import type { HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
@@ -164,8 +164,12 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
 				);
 			} else {
-				// Where the host's log is: the runner sends what it holds from there, then what follows.
-				if (records !== undefined) link.send({ t: "resend-after", ...records.held() });
+				// Where the host's log is, once every append begun on it from any link settled: the runner sends what it
+				// holds from there, then what follows.
+				if (records !== undefined) {
+					const held = await inSinkOrder(records, async () => records.held());
+					link.send({ t: "resend-after", ...held });
+				}
 				settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
 			}
 		} else if (frame.t === "answer") {

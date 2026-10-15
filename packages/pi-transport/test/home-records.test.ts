@@ -592,6 +592,39 @@ describe("the record stream", () => {
 		expect(status.ok ? status.value : status.error.code).toEqual({ state: "retired", epoch: 2 });
 		expect(kept.log.map((one) => one.commit)).toEqual([1]);
 	});
+
+	it("appends a commit once when a second link to the same log comes up while the first is still appending it", async () => {
+		const models = createModels();
+		const kept = memorySink({ appendMs: 300 });
+		// The runner on its first link sends commit 1 once the host said where its log is, then its process dies.
+		const [firstRunner, firstHost] = linkPair();
+		firstRunner.onFrame((frame) => {
+			if (frame.t === "hello") firstRunner.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+			if (frame.t === "resend-after") firstRunner.send({ t: "record", commit: 1, writes: [], epoch: 1 });
+		});
+		const first = connectHome(firstHost, { models, epoch: 1, records: kept.sink });
+		getOrThrow(await first.ready);
+		for (let waited = 0; waited < 5_000 && !kept.events.includes("append 1 start"); waited += 5) await sleep(5);
+		firstRunner.close("the process died");
+		// On a new link it sends what the host does not hold, from where the host says its log is.
+		const [secondRunner, secondHost] = linkPair();
+		const said: unknown[] = [];
+		secondRunner.onFrame((frame) => {
+			if (frame.t === "hello") secondRunner.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+			if (frame.t === "resend-after") {
+				said.push(frame.after);
+				if (Number(frame.after) < 1) secondRunner.send({ t: "record", commit: 1, writes: [], epoch: 1 });
+			}
+		});
+		const second = connectHome(secondHost, { models, epoch: 1, records: kept.sink });
+		getOrThrow(await second.ready);
+		for (let waited = 0; waited < 5_000 && !kept.events.includes("append 1"); waited += 5) await sleep(5);
+		await sleep(400);
+		expect(kept.log.map((one) => one.commit)).toEqual([1]);
+		expect(said).toEqual([1]);
+		second.close("done");
+		first.close("done");
+	});
 });
 
 describe("the runner's end of the record stream", () => {

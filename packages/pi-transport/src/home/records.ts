@@ -227,10 +227,30 @@ export interface RecordSink {
 	lines(commit: number, lines: readonly unknown[], snapshot: boolean): Promise<void>;
 }
 
+/** Each sink's work, one after another, whatever link it came on. */
+const sinkWork = new WeakMap<RecordSink, Promise<unknown>>();
+
+/**
+ * Runs `work` on `sink` after everything begun on it before, from any link: two links to one log never append one commit
+ * twice, and what `held()` says is read after every append begun before it settled.
+ */
+export function inSinkOrder<T>(sink: RecordSink, work: () => Promise<T>): Promise<T> {
+	const before = sinkWork.get(sink) ?? Promise.resolve();
+	const run = before.then(work, work);
+	sinkWork.set(
+		sink,
+		run.then(
+			() => undefined,
+			() => undefined,
+		),
+	);
+	return run;
+}
+
 /**
  * The host's end of the record stream: a record frame is appended (and settles) before the next frame of the link is
- * acted on, which `connectHome` guarantees by handling a link's frames one after another. Returns whether the frame was
- * a record frame.
+ * acted on, which `connectHome` guarantees by handling a link's frames one after another, and before a frame of any
+ * other link to the same sink is (`inSinkOrder`). Returns whether the frame was a record frame.
  */
 export async function receiveRecords(
 	sink: RecordSink,
@@ -240,6 +260,15 @@ export async function receiveRecords(
 	if (frame.t !== "record" && frame.t !== "lines") return false;
 	const commit = typeof frame.commit === "number" && Number.isSafeInteger(frame.commit) ? frame.commit : undefined;
 	if (commit === undefined) return true;
+	return inSinkOrder(sink, () => keep(sink, frame, commit, reply));
+}
+
+async function keep(
+	sink: RecordSink,
+	frame: Frame,
+	commit: number,
+	reply: (frame: Frame) => boolean,
+): Promise<boolean> {
 	const { after, linesAfter } = sink.held();
 	if (frame.t === "record") {
 		// Out of order: the runner sends again from where the host is at its next connect.
