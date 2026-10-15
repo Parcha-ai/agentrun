@@ -17,6 +17,17 @@ export const linuxPs: CommandRunner = (file, args) => {
   return execFileSync("ps", args, { encoding: "utf8", env: { LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] });
 };
 
+/** `onPlatform` for a synchronous `use`, such as building an environment. */
+export function asPlatform<T>(platform: NodeJS.Platform, use: () => T): T {
+  const own = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...own, value: platform });
+  try {
+    return use();
+  } finally {
+    Object.defineProperty(process, "platform", own);
+  }
+}
+
 /** Runs `use` with `process.platform` reading `platform`, and puts it back. Keep `use` short: every test of the file sees it. */
 export async function onPlatform<T>(platform: NodeJS.Platform, use: () => T | Promise<T>): Promise<T> {
   const own = Object.getOwnPropertyDescriptor(process, "platform")!;

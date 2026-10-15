@@ -10,8 +10,14 @@
 // openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) done in user space. Node has no openat, so a handle's directory is named
 // `/proc/self/fd/<fd>`: the kernel jumps straight to the held inode there and never re-walks the directory's own path. A
 // swapped component fails the open (ELOOP or ENOTDIR) and the call is refused as changed; nothing is retried.
+//
+// macOS has no /proc/self/fd, so there (`byPath`) each step is opened by its full path, still with O_NOFOLLOW, and the
+// walk ends by checking that the path still resolves to itself and names the directory held (same device and inode). A
+// component that is a symlink, or was swapped for one before that check, is refused as changed. The operation then
+// names the path again, so a command that swaps a directory above the target between the check and the operation can
+// win: by path, the confinement holds against an agent's paths and the links already in place, not a command racing it.
 import { constants, existsSync, realpathSync } from "node:fs";
-import { lstat, mkdir, open, readlink, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readlink, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { err, FileError, ok } from "@earendil-works/pi-durable/env";
@@ -141,8 +147,9 @@ const isFileInfo = (value: unknown): value is FileInfo =>
   typeof value === "object" && value !== null && FILE_INFO_KEYS.every((key) => key in value) && typeof (value as FileInfo).path === "string";
 
 /**
- * A resolved target held open. `dir` and `entry` are `/proc/self/fd/...` paths to hand to pi's own implementation; every
- * path and message it returns is mapped back to the real one with `restore`. Close it when the operation is done.
+ * A resolved target held open. `dir` and `entry` are `/proc/self/fd/...` paths (by path, the real ones) to hand to pi's
+ * own implementation; every path and message it returns is mapped back to the real one with `restore`. Close it when
+ * the operation is done.
  */
 export class Pin {
   readonly canonical: string;
@@ -157,18 +164,35 @@ export class Pin {
   readonly #real: string;
   #closed = false;
 
-  constructor(handle: FileHandle, canonical: string, name: string, dirMode: boolean) {
+  readonly #byPath: boolean;
+  readonly #names: readonly RootName[];
+
+  /**
+   * `held` is the walk's: whether it went by path, and then the held directory's real path; and the names of the
+   * confinement's roots (`Confinement`'s `names`).
+   */
+  constructor(
+    handle: FileHandle,
+    canonical: string,
+    name: string,
+    dirMode: boolean,
+    held: { byPath: boolean; path: string; names?: readonly RootName[] } = { byPath: false, path: "" },
+  ) {
     this.#handle = handle;
     this.canonical = canonical;
     this.name = name;
-    this.dir = `/proc/self/fd/${handle.fd}`;
+    this.#byPath = held.byPath;
+    this.#names = held.names ?? [];
+    this.dir = held.byPath ? held.path : `/proc/self/fd/${handle.fd}`;
     this.entry = dirMode ? this.dir : name === "" ? `${this.dir}/.` : `${this.dir}/${name}`;
     this.#real = dirMode || name === "" ? canonical : dirname(canonical);
   }
 
-  /** `text` with the held paths replaced by the real ones. */
+  /** `text` with the held paths replaced by the real ones, and a root named as the caller names it. */
   translate(text: string): string {
-    return text.split(this.entry).join(this.canonical).split(this.dir).join(this.#real);
+    let real = text.split(this.entry).join(this.canonical).split(this.dir).join(this.#real);
+    for (const { canonical, named } of this.#names) real = real.replace(canonical, named);
+    return real;
   }
 
   /** An error pi or Node raised on a held path, as a FileError that names the real one. */
@@ -193,14 +217,23 @@ export class Pin {
     return value;
   }
 
-  /** Opens the target's last component, which is never followed, and returns its handle; the caller closes it. */
+  /**
+   * Opens the target's last component, which is never followed, and returns its handle; the caller closes it. By path,
+   * the directory's path must still name the directory held once the file is open.
+   */
   async openFile(flags: number, mode?: number): Promise<FileHandle> {
+    let file: FileHandle;
     try {
-      return await open(this.entry, flags | FILE, mode);
+      file = await open(this.entry, flags | FILE, mode);
     } catch (error) {
       if (errno(error) === "ELOOP") throw changed(this.canonical);
       throw error;
     }
+    if (this.#byPath && !(await namesHeld(this.dir, this.#handle))) {
+      await file.close().catch(() => undefined);
+      throw changed(this.canonical);
+    }
+    return file;
   }
 
   binaryReader(reader: BinaryReader): BinaryReader {
@@ -236,16 +269,34 @@ export class Pin {
 const changed = (path: string) =>
   new PathOutsideWorkError(path, "changed", `${path}: a component of the path changed while it was being resolved, so the operation was refused`);
 
+/** A root's canonical path, as a pattern that matches it whole in a path or a message, and the name the caller gave it. */
+interface RootName {
+  readonly canonical: RegExp;
+  readonly named: string;
+}
+
 export class Confinement {
   readonly work: string;
   readonly readOnly: readonly string[];
+  /** Whether the walk goes by path (macOS, which has no `/proc/self/fd`; see the top of this file). */
+  readonly byPath: boolean;
   /** Directories handed out for writing after construction (the environment's temp dirs), canonical. */
   readonly #handed = new Set<string>();
+  readonly #names: readonly RootName[];
 
-  /** Canonical directories: `work` may be read and written, `readOnly` only read. */
-  constructor(work: string, readOnly: readonly string[]) {
+  /**
+   * Canonical directories: `work` may be read and written, `readOnly` only read. `byPath` defaults to true on macOS only.
+   * `names` maps a canonical root to the path the caller names it by, where they differ (a root under a symlinked
+   * directory, as `/tmp` and `/var` are on macOS): results name paths under it as the caller does, as pi's own do.
+   */
+  constructor(work: string, readOnly: readonly string[], options: { readonly byPath?: boolean; readonly names?: ReadonlyMap<string, string> } = {}) {
     this.work = work;
     this.readOnly = readOnly;
+    this.byPath = options.byPath ?? process.platform === "darwin";
+    // Longest first, so a root inside another is named before the outer one could take its prefix.
+    this.#names = [...(options.names ?? [])]
+      .sort(([a], [b]) => b.length - a.length)
+      .map(([canonical, named]) => ({ canonical: new RegExp(`${canonical.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![^/'"\\s,;:)\\]])`, "g"), named }));
   }
 
   /**
@@ -284,19 +335,19 @@ export class Confinement {
       // holds it, so it can go; the workspace root never can
       const holder = this.#handed.has(root) ? this.readOnly.find((candidate) => dirname(root) === candidate) : undefined;
       if (holder === undefined) throw new PathOutsideWorkError(original, "outside_work", `${original}: the workspace root itself cannot be removed or renamed`);
-      return new Pin(await walk(holder, [], "none", canonical), canonical, basename(root), false);
+      return new Pin(await walk(holder, [], "none", canonical, this.byPath), canonical, basename(root), false, { byPath: this.byPath, path: holder, names: this.#names });
     }
     const name = names.pop() ?? "";
-    const handle = await walk(root, names, spec.parents === true ? "all" : "none", canonical);
-    return new Pin(handle, canonical, name, false);
+    const handle = await walk(root, names, spec.parents === true ? "all" : "none", canonical, this.byPath);
+    return new Pin(handle, canonical, name, false, { byPath: this.byPath, path: join(root, ...names), names: this.#names });
   }
 
   /** Pins the target directory itself; `create` makes it and the directories above it when they are missing. */
   async pinDir(abs: string, original: string, spec: { access: "read" | "write"; create?: boolean }): Promise<Pin> {
     const { canonical, root } = await this.locate(abs, original, spec.access, true);
     await confineHooks.afterCheck?.(canonical);
-    const handle = await walk(root, relative(root, canonical), spec.create === true ? "all" : "none", canonical);
-    return new Pin(handle, canonical, basename(canonical), true);
+    const handle = await walk(root, relative(root, canonical), spec.create === true ? "all" : "none", canonical, this.byPath);
+    return new Pin(handle, canonical, basename(canonical), true, { byPath: this.byPath, path: canonical, names: this.#names });
   }
 }
 
@@ -315,8 +366,22 @@ async function swapped(error: unknown, path: string): Promise<boolean> {
   return (await lstat(path).catch(() => undefined))?.isSymbolicLink() === true;
 }
 
-/** Opens `root`, then each name below it, every step relative to the handle before it and without following links. */
-async function walk(root: string, names: readonly string[], create: "none" | "all", canonical: string): Promise<FileHandle> {
+/** Whether `path` still names the directory `held` holds (same device and inode); false when it cannot be read. */
+export async function namesHeld(path: string, held: FileHandle): Promise<boolean> {
+  try {
+    const [named, opened] = await Promise.all([stat(path, { bigint: true }), held.stat({ bigint: true })]);
+    return named.dev === opened.dev && named.ino === opened.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens `root`, then each name below it, every step relative to the handle before it and without following links. By
+ * path, every step is opened by its full path instead, and the last must then resolve to itself and be the one held.
+ */
+async function walk(root: string, names: readonly string[], create: "none" | "all", canonical: string, byPath = false): Promise<FileHandle> {
+  if (byPath) return walkByPath(root, names, create, canonical);
   let dir: FileHandle;
   try {
     dir = await open(root, DIRECTORY);
@@ -353,6 +418,50 @@ async function walk(root: string, names: readonly string[], create: "none" | "al
       await dir.close();
       dir = next;
     }
+    return dir;
+  } catch (error) {
+    await dir.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function walkByPath(root: string, names: readonly string[], create: "none" | "all", canonical: string): Promise<FileHandle> {
+  let real = root;
+  let dir: FileHandle;
+  try {
+    dir = await open(root, DIRECTORY);
+  } catch (error) {
+    if (await swapped(error, root)) throw changed(canonical);
+    throw error;
+  }
+  try {
+    for (const name of names) {
+      if (name === "" || name === "." || name === ".." || name.includes("\0")) throw changed(canonical);
+      real = join(real, name);
+      let next: FileHandle;
+      try {
+        next = await open(real, DIRECTORY);
+      } catch (error) {
+        if (create === "all" && errno(error) === "ENOENT") {
+          await mkdir(real).catch((made) => {
+            if (errno(made) !== "EEXIST") throw made;
+          });
+          next = await open(real, DIRECTORY).catch(async (opened) => {
+            throw (await swapped(opened, real)) ? changed(canonical) : opened;
+          });
+        } else if (await swapped(error, real)) {
+          throw changed(canonical);
+        } else {
+          throw error;
+        }
+      }
+      await dir.close();
+      dir = next;
+    }
+    // Each step was opened by its full path, and only the last component of each open is never followed: the path must
+    // still resolve to itself (no component above is a link) and name the directory held (none was swapped and back).
+    const resolved = await realpath(real).catch(() => undefined);
+    if (resolved !== real || !(await namesHeld(real, dir))) throw changed(canonical);
     return dir;
   } catch (error) {
     await dir.close().catch(() => undefined);

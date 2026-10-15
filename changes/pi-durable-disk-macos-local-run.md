@@ -10,8 +10,10 @@ kind: feature
   Before, the open threw (`/proc/self/fd`), and with no boot id the commands went unrecorded.
 - On macOS the run's root is addressed by its path (`openClaimDir`'s new `byPath`, its default there), each write
   checked first against the directory opened; `noNewPrivs` defaults to false (no `no_new_privs` there, so commands keep
-  the user's rights); and `confineFiles` defaults to false, said once on stderr. An app that passes either option keeps
-  its choice.
+  the user's rights); and the file tools are confined by path: each component opened by its full path with
+  `O_NOFOLLOW`, then the path checked to still name the directory held. It refuses an agent's paths out of `work/` and
+  the links in place, not a command that swaps a directory between that check and the operation. An app that passes
+  `noNewPrivs` keeps its choice.
 - The store also sets SQLite's `fullfsync` and `checkpoint_fullfsync` on macOS, where `fsync` does not flush the drive's
   cache, and refuses to open (`StorePragmaError`) unless they read back.
 - `currentBootId()` and `procStartTicks()` read the same table: on macOS the boot session's uuid, and the second a

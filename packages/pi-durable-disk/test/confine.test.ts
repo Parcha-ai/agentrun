@@ -1,11 +1,13 @@
 // The in-process file operations are confined to the workspace (src/confine.ts): every path-taking method of the
 // environment refuses a path that resolves outside work/, by `..`, an absolute path, a symlink (also one made by a command,
-// a dangling one, a directory one), or a component swapped for a symlink after the check.
+// a dangling one, a directory one), or a component swapped for a symlink after the check. confine-by-path.test.ts runs
+// these again with every layout's environment confined by path, as on macOS (which has no /proc/self/fd), where they run
+// so natively.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, open, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -15,22 +17,18 @@ import type { JsonObject } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { FileError, Result } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
+import { confineHooks, namesHeld, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
 import { SWAPPER_CAP_SECONDS, spawnSwapper, swapperLoop } from "./fixtures/swapper.ts";
+import { asPlatform } from "./_macos.ts";
+import { alive } from "./_run-support.ts";
 
 const context = BACKGROUND_CONTEXT;
 const SQLITE = "SQLITE-SENTINEL";
 
-/** Whether the process is still running (a zombie waiting to be reaped is not). */
-function alive(pid: number): boolean {
-  try {
-    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
-  } catch {
-    return false;
-  }
-}
+/** Whether the layouts' environments walk paths by name: on macOS, or when confine-by-path.test.ts runs this file. */
+const byPath = process.platform === "darwin" || (globalThis as { confineByPath?: boolean }).confineByPath === true;
 
 interface Layout {
   readonly base: string;
@@ -70,7 +68,10 @@ async function withLayout<T>(use: (layout: Layout) => Promise<T>): Promise<T> {
     ];
     for (const [name, target] of links) await symlink(target, join(work, name));
     const claim = { root: base, work };
-    const env = (options: ArchilEnvOptions = {}, cwd?: string) => archilEnv(claim, { noNewPrivs: false, ...options })({ ...(cwd === undefined ? {} : { cwd }) });
+    const env = (options: ArchilEnvOptions = {}, cwd?: string) => {
+      const factory = byPath ? asPlatform("darwin", () => archilEnv(claim, { noNewPrivs: false, ...options })) : archilEnv(claim, { noNewPrivs: false, ...options });
+      return factory({ ...(cwd === undefined ? {} : { cwd }) });
+    };
     return await use({ base, work, store, sqlite, elsewhere, claim, env });
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -407,9 +408,14 @@ describe("what stays allowed", () => {
   });
 });
 
-/** A view of an outcome that two environments can be compared by: codes and values, paths made relative to the layout. */
+/**
+ * A view of an outcome that two environments can be compared by: codes and values, paths made relative to the layout.
+ * Under a symlinked TMPDIR the layout's real path differs from the one the test names it by, and stays told apart
+ * (`<real>`): a canonical path (canonicalPath's) is real in both, a listing names the layout as the test does.
+ */
 function normalize(layout: Layout, result: Result<unknown, FileError>): unknown {
-  const text = (value: string) => value.split(layout.base).join("<base>");
+  const real = realpathSync(layout.base);
+  const text = (value: string) => value.split(layout.base).join("<base>").split(real).join("<real>");
   const value = (v: unknown): unknown => {
     if (typeof v === "string") return text(v);
     if (Array.isArray(v)) return v.map(value);
@@ -854,6 +860,32 @@ describe("through a pi Harness with a scripted model", () => {
       assert.equal(existsSync("/etc/pda-escape"), false);
       assert.equal(await readFile(join(layout.work, "ok.txt"), "utf8"), "fine");
     });
+  });
+});
+
+describe("by path, the walk's last check", () => {
+  it("knows a directory's path from the directory held once the path was swapped, and back", async () => {
+    const base = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "pda-confine-held-"));
+    const dir = join(base, "d");
+    try {
+      await mkdir(dir);
+      const held = await open(dir, "r");
+      try {
+        assert.equal(await namesHeld(dir, held), true);
+        await rename(dir, join(base, "d.held"));
+        await symlink(join(base, "d.held"), dir); // a link to the directory held: the same inode, which realpath tells apart
+        assert.equal(await namesHeld(dir, held), true, "a link to it names it; the walk's realpath check refuses the link");
+        await rm(dir);
+        await mkdir(dir);
+        assert.equal(await namesHeld(dir, held), false, "another directory at the path");
+        await rm(dir, { recursive: true });
+        assert.equal(await namesHeld(dir, held), false, "nothing at the path");
+      } finally {
+        await held.close();
+      }
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
 

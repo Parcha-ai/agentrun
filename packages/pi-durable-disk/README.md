@@ -20,7 +20,7 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
 |---|---|---|
 | Linux and Node 22.19 or later, nothing else | [Quickstart on one machine](#quickstart-on-one-machine-no-disk-no-key) | A durable chat on a directory of this machine, killed with `SIGKILL` and finished by a second process. One machine and no fence: the directory is the claim |
 | Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: `kill -9` it and run the same command again, and it resumes. One machine and no fence |
-| macOS and Node 22.19 or later, for development | The same [quickstart](#quickstart-on-one-machine-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights and the file tools are not confined to the workspace ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
+| macOS and Node 22.19 or later, for development | The same [quickstart](#quickstart-on-one-machine-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights, and the file tools' confinement holds against the agent's paths but not a command racing it ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
 | Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | A host killed in the middle of a paid charge, and the run resumed on another, every instance in a container |
 | A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
 | An app or a host of your own | [The app](#the-app) and [Library](#library) | `openDurableRun`, `localRun`, the supervisor and host drivers, `serve`, parking and `fork` from your code |
@@ -712,9 +712,11 @@ A local run works on macOS for development, and is weaker there than on Linux in
 
 - **Commands keep your rights.** macOS has no `no_new_privs`, so `noNewPrivs` defaults to false there and no `setpriv`
   runs: a command can use `sudo` when you can, and setuid programs keep their privilege.
-- **The file tools are not confined to the workspace.** The confinement walks paths through `/proc/self/fd`, which macOS
-  does not have, so `confineFiles` defaults to false there, and the environment says so once on stderr: the agent's write
-  tool can reach the run's own `store/` and `run.json`.
+- **The file tools are confined by path.** On Linux the confinement walks a path through `/proc/self/fd`, one held
+  directory at a time, which macOS does not have. There it opens each component by its full path, never following a
+  link, and checks that the path still names the directory it opened. It refuses `../store/run.sqlite`, absolute paths
+  and links out of `work/`, but a command that swaps a directory above the target for a link between that check and the
+  operation can win.
 - **The run's root is addressed by its path.** On Linux, `run.json` and the run's directories are written through the
   directory opened at acquire. On macOS each write is checked first against that directory, and a root renamed and
   replaced between the check and the write gets the write.
@@ -725,8 +727,8 @@ A local run works on macOS for development, and is weaker there than on Linux in
 
 `fsync` on macOS does not flush the drive's cache, so the store also sets SQLite's `fullfsync` and
 `checkpoint_fullfsync` there (SQLite then syncs with `F_FULLFSYNC`), and refuses to open unless they read back. CI runs
-the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog)
-on macOS.
+the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
+the file tools' confinement) on macOS.
 
 ## Tests
 

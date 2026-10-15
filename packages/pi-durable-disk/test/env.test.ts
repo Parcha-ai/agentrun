@@ -460,22 +460,16 @@ describe("on macOS, by default", () => {
     return text;
   }
 
-  it("commands keep the user's rights (no setpriv), and the file tools are not confined, said once on stderr", async () => {
+  it("commands keep the user's rights (no setpriv), and the file tools are confined by path", async () => {
     await withRun(async ({ root, work }) => {
-      const said: string[] = [];
-      const write = process.stderr.write;
-      process.stderr.write = ((chunk: string | Uint8Array) => said.push(String(chunk)) > 0) as typeof process.stderr.write;
-      let envs: NodeExecutionEnv[];
-      try {
-        envs = await onPlatform("darwin", () => [archilEnv({ root, work }, { setprivPath: "/nonexistent/setpriv" })({}), archilEnv({ root, work })({})]);
-      } finally {
-        process.stderr.write = write;
-      }
-      assert.equal(said.filter((line) => line.includes("the file tools are not confined")).length, 1, said.join(""));
-      assert.equal(flagOf(await out(envs[0]!, "grep NoNewPrivs /proc/self/status")), ownFlag, "the command ran without setpriv");
+      const env = await onPlatform("darwin", () => archilEnv({ root, work }, { setprivPath: "/nonexistent/setpriv" })({}));
+      assert.equal(flagOf(await out(env, "grep NoNewPrivs /proc/self/status")), ownFlag, "the command ran without setpriv");
       await mkdir(join(root, "store"));
-      getOrThrow(await envs[1]!.writeFile(join(root, "store", "x.txt"), "unconfined", context));
-      assert.equal(readFileSync(join(root, "store", "x.txt"), "utf8"), "unconfined");
+      const outside = await env.writeFile(join(root, "store", "x.txt"), "no", context);
+      assert.ok(!outside.ok && outside.error instanceof PathOutsideWorkError && outside.error.reason === "outside_work", JSON.stringify(outside));
+      assert.equal(existsSync(join(root, "store", "x.txt")), false);
+      getOrThrow(await env.writeFile("inside.txt", "yes", context));
+      assert.equal(readFileSync(join(work, "inside.txt"), "utf8"), "yes");
     });
   });
 

@@ -9,8 +9,8 @@
 // it had not written yet. It refuses once the claim is fenced, as a mount's does.
 //
 // On macOS, for development: it has no /proc/self/fd and no setpriv, so there the run's root is addressed by its path
-// (openClaimDir's `byPath`), commands keep the user's rights and the file tools are not confined (archilEnv's defaults),
-// and the commands are recorded from ps (process-table.ts). The README's "On macOS" says what that costs.
+// (openClaimDir's `byPath`), commands keep the user's rights, the file tools are confined by path (confine.ts), and the
+// commands are recorded from ps (process-table.ts). The README's "On macOS" says what that costs.
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";

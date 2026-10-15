@@ -298,9 +298,10 @@ jobs:
           if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
 
   macos-local-run:
-    # A run on a local directory on macOS, which has no /proc and no setpriv: the process table comes from ps and sysctl, the
-    # run's root is addressed by its path, and the store syncs with F_FULLFSYNC. No other job runs on a Mac, so every macOS
-    # line of the README stands on this one: the stranger's no-key quickstart, and the local run's tests on the Mac's own ps.
+    # A run on a local directory on macOS, which has no /proc and no setpriv: the process table comes from ps and
+    # sysctl, the run's root is addressed by its path, the file tools are confined by path, and the store syncs with
+    # F_FULLFSYNC. No other job runs on a Mac, so every macOS line of the README stands on this one: the stranger's
+    # no-key quickstart, and the local run's tests on the Mac's own ps.
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -316,7 +317,7 @@ jobs:
         run: >-
           node --test --test-timeout=240000
           test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
-          test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts
+          test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
       - name: The stranger's no-key quickstart
         # Not blocking until a release with macOS support is on npm. On a pull request the job runs on the branch merged
         # into main, where the stranger also walks the examples against the registry's beta (#557); the published beta
