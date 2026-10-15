@@ -16,7 +16,10 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   if (!entry) throw new Error('child-app needs DEMO_ENTRY, the file URL of the demo module that exports `options`.');
   const { options } = (await import(entry)) as { options?: DemoOptions };
   if (!options) throw new Error(`${entry} exports no \`options\` (the DemoOptions the demo passes to demo()).`);
-  const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store });
+  // The attempt's nonce goes into the kill request and out of the environment before anything starts.
+  const killNonce = process.env.KILL_NONCE;
+  delete process.env.KILL_NONCE;
+  const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store }, killNonce);
   return appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     const made = await prepared.made(result);
     await prepared.recorder?.detach();

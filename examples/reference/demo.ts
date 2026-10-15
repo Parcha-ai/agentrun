@@ -16,7 +16,7 @@
 // with its `kind`, `result`) from outside every process.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -75,6 +75,8 @@ export type DemoOptions = {
 export type DemoResult = {
   /** How each process ended: its exit or signal, and the outcome it printed. */
   processes: Exit[];
+  /** The run id this invocation used, minted once: `<demo name>-<8 hex>`. */
+  runId: string;
   kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string }>;
   /** The record the job delivered, or null. */
   record: unknown;
@@ -170,11 +172,12 @@ export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: 
   return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
 }
 
-export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace): Promise<Prepared> {
-  const place = at ?? await placeAt(env.DIR, env.RUN_ID || options.spec.name);
+export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv, at?: RunPlace, killNonce?: string): Promise<Prepared> {
+  if (!at && !env.RUN_ID) throw new Error('a supervised process needs RUN_ID: the supervisor mints the run id once per invocation');
+  const place = at ?? await placeAt(env.DIR, env.RUN_ID!);
   const plan = env.PLAN ? (JSON.parse(env.PLAN) as ChildPlan) : undefined;
   const window: EffectWindow = { open: 0 };
-  const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST) : undefined, window);
+  const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST, killNonce) : undefined, window);
   // A recording holds none of the secret values (the declared environment's, the sign-in's tokens, a refreshed token too): the supervisor hands this process the sign-in's home (`AGENTRUN_HOME`, the one name added beside
   // the declared ones, so a child that signs in uses the file the recorder reads), and this process reads the values itself.
   const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
@@ -240,7 +243,10 @@ const storeShaOf = (place: RunPlace) => {
 async function child(options: DemoOptions) {
   let prepared: Prepared | undefined;
   try {
-    prepared = await prepareChild(options, process.env);
+    // The attempt's nonce, which the supervisor minted, is read once and removed from the environment before anything starts: pi's commands inherit this process's environment and never get it.
+    const killNonce = process.env.KILL_NONCE;
+    delete process.env.KILL_NONCE;
+    prepared = await prepareChild(options, process.env, undefined, killNonce);
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
@@ -328,7 +334,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
-  const paths = pathsAt(dir, spec.name);
+  // One fresh run id per invocation, the same across its processes (every kill and resume): a second run of one demo on a shared disk never finds the first's run.json `done` or its old signals files.
+  const runId = `${spec.name}-${randomBytes(4).toString('hex')}`;
+  const paths = pathsAt(dir, runId);
   base.RUN_ID = paths.id;
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
   const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
@@ -344,10 +352,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const plan = remaining.shift() ?? { tools: [] };
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
-      const request = join(scratch, `kill-${gen}.json`);
+      // Where this attempt's runner writes its kill request: the place answers it (the child never derives it); the scratch default is for a place that does not.
+      const request = place.requestFile?.(gen) ?? join(scratch, `kill-${gen}.json`);
       // A place that mints a token for each attempt (a claim's mount token) has it passed on the runner's standard input, never in argv or env.
       const token = place.token ? await place.token(gen) : undefined;
-      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
+      // The supervisor's own nonce for this attempt: the process puts it in its kill request, and the supervisor honors only a request that carries it. The place knows nothing about it.
+      const nonce = randomBytes(16).toString('hex');
+      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
@@ -373,7 +384,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
         if (!iterator) return;
-        for (let next = await iterator.next(); !next.done; next = await iterator.next()) if (next.value.kind === 'kill-request') await decide(next.value.crossing);
+        for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+          if (next.value.kind !== 'kill-request') continue;
+          // A request is honored only with this attempt's nonce: a stale or other attempt's process, or a stray file on a shared mount, never puts a kill line in a recording.
+          if (next.value.nonce !== nonce) { supervisor.host('kill.request.ignored', { gen, point: next.value.crossing.point, reason: next.value.nonce === undefined ? 'no nonce' : 'wrong nonce' }); continue; }
+          await decide(next.value.crossing);
+        }
       })();
       const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
       const result = await runner.exited;
@@ -420,7 +436,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
     const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
+    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
     await place.release();
