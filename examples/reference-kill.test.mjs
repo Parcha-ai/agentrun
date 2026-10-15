@@ -3,6 +3,7 @@
 // the run's own rows. The same seed gives the same kills.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { reconcileEffects } from './reference/assemble.ts';
 import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
@@ -82,6 +83,27 @@ test('a cut after the host kept the effect\'s answer and before the driver commi
   assert.equal(cut.killed, 'SIGKILL');
   assert.equal(cut.resumed.status, 'complete');
   assert.deepEqual(cut.made, { killed: 1, total: 1 });
+});
+
+test('a call admitted and never sent (the kill lands between admission and the send) is sent again by the resume with the args the journal kept: exactly one send in all', { timeout: 120_000 }, async () => {
+  // Without a host `rerun` the resume refuses the unknown effect (the test above). With one, reconcile hands it the args the call was admitted with, and the call is sent once, by the resumed process.
+  const cut = await cutInEffectWindow('tool.dispatch search', { rerun: true });
+  assert.equal(cut.killed, 'SIGKILL');
+  assert.equal(cut.resumed.status, 'complete');
+  assert.deepEqual(cut.made, { killed: 0, total: 1 }, 'never sent by the killed process, sent once by the resumed one');
+  assert.deepEqual(cut.effects, { search: 1 }, 'one search in the host\'s ledger: nothing was repeated');
+});
+
+test('reconcile gives rerun the args the journal kept for the effect, and none when the record has none', async () => {
+  const asked = [];
+  const completed = [];
+  const rerun = async (effect) => { asked.push(effect); return effect.args === undefined ? undefined : { args: effect.args, value: { sent: effect.args } }; };
+  await reconcileEffects([
+    { id: 'a', argsHash: 'h1', intent: { tool: 'search' }, args: { query: 'Acme Ltd' } },
+    { id: 'b', argsHash: 'h2', intent: { tool: 'search' } },
+  ], async (id, value) => { completed.push([id, value]); }, { rerun });
+  assert.deepEqual(asked.map((effect) => [effect.id, effect.args]), [['a', { query: 'Acme Ltd' }], ['b', undefined]]);
+  assert.deepEqual(completed, [['a', { sent: { query: 'Acme Ltd' } }]], 'the one with args was sent and completed; the one without stays unknown');
 });
 
 test('the plan: a seed draws the same cuts, a window shrinks with the work left, and progress follows the order of an uncut run', () => {
