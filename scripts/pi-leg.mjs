@@ -5,8 +5,8 @@
 //
 // A workspace is in the leg when each pi-family peer range it declares accepts the version. `--plan` prints the leg and
 // changes nothing. `--scratch` says the checkout is disposable: the script pins the family at the version in the root
-// manifest and in each leg workspace's, and the packages the family depends on outside it (pi-codemode, pi-mcp) at it
-// too, so the root holds one copy of each family package at that version and every
+// manifest and in each leg workspace's, and the packages those depend on that no leg workspace declares (pi-codemode,
+// pi-mcp under the coding agent) at it too, so the root holds one copy of each family package at that version and every
 // leg workspace loads it, as a host's install of these packages does (other workspaces keep their own copies, nested).
 // It fails unless every family package a leg workspace declares, and the chord and pi-ai its pi-durable loads, is that
 // one copy at that version, then builds the workspace and runs each leg workspace's type-check and tests with
@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** The pi family: the packages that are released together and break together in a minor. */
-export const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui'];
+export const FAMILY = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', '@earendil-works/pi-codemode'];
 /** The packages Pi provides to the packages it loads, which Pi's package guidance asks to be peers at `*`. pi-durable and
  *  chord are not among them: their ranges are bounded. */
 export const HOST_PROVIDED = ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'];
@@ -99,20 +99,21 @@ export function resolvedFrom(dir, name) {
   }
 }
 
-/** The @earendil-works packages outside the family that the installed `names` depend on, as `<name>`s: pi-coding-agent imports
- *  pi-codemode and pi-mcp, which are released with it and change their exports in a minor, so a leg that installs the coding
- *  agent at a version installs them at that version too, not at whatever the lockfile holds. */
+/** The @earendil-works packages the installed `names` depend on that are not among `names`, as `<name>`s: pi-coding-agent
+ *  imports pi-codemode and pi-mcp, which are released with it and change their exports in a minor, so a leg that installs the
+ *  coding agent at a version installs them at that version too, not at whatever the lockfile holds. A family package no leg
+ *  workspace declares (pi-codemode, unless pi-vision is in the leg) is one of them: the family pins only what is declared. */
 export function companionDependencies(dir, names) {
   const found = new Set();
   for (const name of names) {
     const installed = resolvedFrom(dir, name);
-    if (installed) for (const dependency of companionsAt(installed.path)) found.add(dependency);
+    if (installed) for (const dependency of companionsAt(installed.path)) if (!names.includes(dependency)) found.add(dependency);
   }
   return [...found].sort();
 }
 const companionsAt = (path) => {
   const manifest = JSON.parse(readFileSync(join(path, 'package.json'), 'utf8'));
-  return Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }).filter((dependency) => dependency.startsWith('@earendil-works/') && !FAMILY.includes(dependency));
+  return Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }).filter((dependency) => dependency.startsWith('@earendil-works/'));
 };
 
 /** Every family package a leg workspace installs, the chord and pi-ai its pi-durable loads, and the companions its family
@@ -121,8 +122,9 @@ export function checkResolved(workspace, version) {
   const rows = familyInstalled(workspace.manifest).map((name) => ({ from: workspace.name, name, ...resolvedFrom(workspace.dir, name) }));
   const durable = rows.find((row) => row.name === '@earendil-works/pi-durable');
   if (durable?.path) for (const name of ['@earendil-works/chord', '@earendil-works/pi-ai']) rows.push({ from: `${workspace.name}'s pi-durable`, name, ...resolvedFrom(durable.path, name) });
+  const covered = new Set(rows.map((row) => row.name));
   for (const row of rows.filter((row) => row.path && FAMILY.includes(row.name) && row.from === workspace.name)) {
-    for (const name of companionsAt(row.path)) rows.push({ from: `${workspace.name}'s ${row.name.split('/')[1]}`, name, ...resolvedFrom(row.path, name) });
+    for (const name of companionsAt(row.path)) if (!covered.has(name)) rows.push({ from: `${workspace.name}'s ${row.name.split('/')[1]}`, name, ...resolvedFrom(row.path, name) });
   }
   return { rows, wrong: rows.filter((row) => row.version !== version) };
 }
