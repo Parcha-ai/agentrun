@@ -4,7 +4,7 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -335,6 +335,31 @@ function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> 
 }
 
 // ---- start, status, stop end to end over the fake toolbox ----------------------------------------------------------------
+
+test("start through a launcher whose path is a link (a symlinked package directory, pnpm-style linked node_modules): it runs, and the instance starts", async () => {
+  const link = join(scratch("pda-dt-link-"), "daytona-launch.ts");
+  symlinkSync(join(REPO, "src/hosts/daytona-launch.ts"), link);
+  const w = world("hold", { launcher: link });
+  const h = await w.host.start(REF, TOKEN);
+  const [first] = await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  assert.equal(first.token, TOKEN, "the launcher started the instance and handed it the token");
+  await w.host.stop(h);
+});
+
+test("a launcher that starts nothing and gives no reason: the error carries its last 4 KB of output, or says it printed nothing", async () => {
+  const d = scratch("pda-dt-silent-");
+  const silent = join(d, "silent.mjs");
+  writeFileSync(silent, "");
+  await assert.rejects(world("hold", { launcher: silent }).host.start(REF, TOKEN), (e: unknown) => e instanceof DaytonaHostError && e.code === "START_FAILED" && /did not start: the launcher printed nothing and exited 0$/.test(e.message));
+  const noisy = join(d, "noisy.mjs");
+  writeFileSync(noisy, 'console.log("x".repeat(5000));\nconsole.log("sudo: a password is required");\n');
+  await assert.rejects(world("hold", { launcher: noisy }).host.start(REF, TOKEN), (e: unknown) => {
+    assert.ok(e instanceof DaytonaHostError && e.code === "START_FAILED", String(e));
+    assert.match(e.message, /did not start: the launcher printed: x+\nsudo: a password is required$/);
+    assert.ok(e.message.length < 4096 + 200, `bounded: ${e.message.length} characters`);
+    return true;
+  });
+});
 
 test("start: one labeled box that deletes itself on stop and dies at its TTL; the token only in an upload into the root-only directory; the instance gets it on stdin", async () => {
   const prev = process.env.DAYTONA_API_KEY;
