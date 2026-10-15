@@ -466,6 +466,22 @@ describe("archilPlace", () => {
     assert.ok(!control.ops.some((o) => o.startsWith("revoke") || o.startsWith("start")), control.ops.join(", "));
   });
 
+  it("every disk call the place makes is bounded: a recovery whose run.json read stalls fails CONTROL_API_FAILED instead of waiting forever", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, ensure: { controlTimeoutMs: 50 } });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    await at.kill(first, "box");
+    const t2 = await at.token!(2);
+    control.hangUnder = `runs/${ID}/run.json`;
+    const ended = await Promise.race([
+      at.recover(first, "box", { gen: 2, env: {}, stdin: t2 }).then(() => "recovered", (e: unknown) => e),
+      sleep(5_000).then(() => "still waiting"),
+    ]);
+    assert.equal((ended as { code?: string }).code, "CONTROL_API_FAILED", String(ended));
+    control.hangUnder = null;
+  });
+
   it("a driver with no kill: kills is empty and kill refuses", async () => {
     const control = new FakeControl();
     const { host } = fakeHost(control, null);

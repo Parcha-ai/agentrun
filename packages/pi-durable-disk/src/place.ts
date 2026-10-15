@@ -15,6 +15,7 @@ import { HeldError, PdaError } from "./errors.ts";
 import { takeOwnerLock } from "./run.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
+  CONTROL_TIMEOUT_MS,
   ensureRunning,
   readRunStatus,
   readStartMark,
@@ -25,6 +26,7 @@ import {
   type HostHandle,
   type HostStatus,
   type SupervisorControl,
+  withTimeouts,
 } from "./supervise.ts";
 
 export type PlaceKill = "process" | "box";
@@ -386,7 +388,10 @@ const requestName = (attempt: number): string => {
  * stays (`deleteRunTree`).
  */
 export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) => Place {
-  const { control, host } = options;
+  const { host } = options;
+  // Every call the place makes on the disk is bounded as ensureRunning bounds its own: one that does not answer fails as
+  // CONTROL_API_FAILED, so a stalled request never leaves a recovery, a release or a runner's end waiting forever.
+  const control = withTimeouts(options.control, options.ensure?.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
   const pollMs = options.pollMs ?? 1_000;
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
   const signalPollMs = options.signalPollMs ?? 500;
