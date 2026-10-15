@@ -301,8 +301,13 @@ describe("a home over a link", () => {
 			// The launcher starts the runner again. It opens nothing by itself.
 			const restarted = createRunner(options);
 			const back = await linked(made, restarted, 1);
-			// It says the seal it holds: what a recovery's take carries forward.
-			expect(getOrThrow(await back.status(context))).toEqual({ state: "sealed", epoch: 1, sealed: seal });
+			// It says the seal it holds, what a recovery's take carries forward, and whose note it keeps.
+			expect(getOrThrow(await back.status(context))).toEqual({
+				state: "sealed",
+				epoch: 1,
+				sealed: seal,
+				session: "session-1",
+			});
 			const byItself = await back.resume({ epoch: 1 }, context);
 			expect(byItself.ok ? "" : byItself.error.code).toBe("wrong_state");
 			await sleep(200);
