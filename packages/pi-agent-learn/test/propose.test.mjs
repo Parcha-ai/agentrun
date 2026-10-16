@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import { openRepo } from "@parcha/pi-git-remote";
-import { parseInbox, proposeFiles, proposeLearning, renderInbox } from "../dist/index.js";
-import { allObjects, commitCount, git, refsOf, scratch, seededRemote } from "./git-support.mjs";
+import { local, openRepo } from "@parcha/pi-git-remote";
+import { agentLearn, collectCandidates, guard, parseInbox, proposeFiles, proposeLearning, renderInbox } from "../dist/index.js";
+import { allObjects, commitCount, git, refsOf } from "./git-support.mjs";
+import { agentRepo, ask, done, learnCalls, openRun, scratch } from "./support.mjs";
 
 const candidate = (over = {}) => ({ callId: "call-1", type: "lesson", text: "Search registries by the legal name without the suffix.", evidence: ["a 404 on the full name"], ...over });
 
@@ -11,6 +12,11 @@ const candidate = (over = {}) => ({ callId: "call-1", type: "lesson", text: "Sea
 const targetOf = (candidates) => ({
   snapshot: async () => ({ order: candidates.map((c) => c.callId), byCall: Object.fromEntries(candidates.map((c) => [c.callId, c])) }),
 });
+
+async function seededRemote(root) {
+  const { bare, main } = await agentRepo(root);
+  return { dir: bare, remote: local(bare), main };
+}
 
 async function host(root, remote, name = "host") {
   return openRepo({ dir: path.join(root, name), remote });
@@ -176,4 +182,44 @@ test("the inbox reads back what was rendered, and text in a candidate cannot sta
   assert.throws(() => parseInbox("no front matter"), { name: "InboxFormatError" });
   assert.throws(() => parseInbox("---\nrun: r\n---\n"), { name: "InboxFormatError" });
   assert.throws(() => parseInbox("---\nrun: r\n---\n~~~json candidates\n[{\"type\":\"nope\"}]\n~~~\n"), { name: "InboxFormatError" });
+});
+
+const LESSON = { type: "lesson", text: "Registries list officers under Principals, not Officers.", evidence: ["the registry page read in call 3"] };
+
+test("a real run: the model calls learn, the host proposes what the run stored", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const run = await openRun(path.join(root, "run.sqlite"), { steps: [() => learnCalls([LESSON, { type: "fact", text: "The registry rate-limits at 20 requests a minute." }]), () => done()] });
+  try {
+    assert.equal((await ask(run.harness)).status, "done");
+    const repo = await host(root, remote);
+    const result = await proposeLearning({ ...OPTIONS, repo, target: run.harness });
+    assert.equal(result.status, "proposed");
+    const stored = await collectCandidates(run.harness);
+    assert.equal(stored.length, 2);
+    assert.deepEqual(parseInbox(await repo.read("inbox/run-1.md", result.sha)), { run: "run-1", candidates: stored });
+    assert.equal((await refsOf(dir))["refs/heads/main"], main);
+  } finally {
+    await run.close();
+  }
+});
+
+test("a secret the learn tool did not screen is still refused at the proposal, and a screened one never reaches the store", async () => {
+  const secret = ["Lantern", "?>", "x9Kd3Qa"].join("");
+  const leaking = learnCalls([{ type: "lesson", text: `Use the key ${secret} for the registry.` }]);
+  for (const [name, extension] of [["unscreened", agentLearn()], ["screened", agentLearn({ guard, secrets: () => [secret] })]]) {
+    const root = await scratch();
+    const { dir, remote, main } = await seededRemote(root);
+    const run = await openRun(path.join(root, "run.sqlite"), { extension, steps: [() => leaking, () => done()] });
+    try {
+      await ask(run.harness);
+      const repo = await host(root, remote);
+      const result = await proposeLearning({ ...OPTIONS, repo, secrets: [secret], target: run.harness });
+      assert.equal(result.status, name === "unscreened" ? "refused" : "empty", name);
+      assert.deepEqual(await refsOf(dir), { "refs/heads/main": main }, name);
+      for (const gitDir of [dir, repo.dir]) assert.ok(!holds(gitDir, secret), `${name}: an object holds the secret`);
+    } finally {
+      await run.close();
+    }
+  }
 });

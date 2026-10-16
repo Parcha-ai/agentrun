@@ -1,11 +1,7 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
-import { inboxPath, isRulesLocked, LEARNING_ID, RUN_ID, usesPath } from "./layout.js";
+import { CAPS, inboxPath, isRulesLocked, LEARNING_ID, RUN_ID, usesPath } from "./layout.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
-/** Byte caps (UTF-8). Over a cap is refused, never truncated. `evidence` is the total for one candidate's evidence list. */
-export const CAPS = Object.freeze({
-  text: 1000, evidence: 1000, evidenceItems: 8, perRun: 8, inbox: 16_384, learning: 4096, index: 4096, file: 32_768, files: 32,
-});
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };
 
 /** A secret matched through whitespace and encodings needs enough characters to leave no false hits. */
@@ -140,7 +136,7 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
   const parts = file.split("/");
   const [root, ...rest] = parts;
   if (root === "learnings" && rest.length > 0) {
-    if (rest.length === 1 && rest[0] === "INDEX.md") return { cap: caps.index };
+    if (rest.length === 1 && rest[0] === "INDEX.md") return { cap: caps.section };
     if (rest.every(plain) && rest.at(-1)!.endsWith(".md")) return { cap: caps.learning };
   }
   if (root === ".agents" && parts[1] === "skills" && NAME.test(parts[2] ?? "")) {
@@ -204,7 +200,7 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     }
     if (out.length) return out;
 
-    const ceiling = Math.max(caps.inbox, caps.file, caps.learning, caps.index);
+    const ceiling = Math.max(caps.inbox, caps.file, caps.learning, caps.section);
     const hasSecret = secretMatcher(secrets);
     const hasCaseValue = caseMatcher(caseValues);
     const scan = (text: string): Hit[] => {
@@ -252,7 +248,9 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     }
 
     const candidates = input.candidates ?? [];
-    if (candidates.length > caps.perRun) add("too_many", `${candidates.length} candidates; the cap is ${caps.perRun}`, { field: "candidates" });
+    const marks = candidates.filter((c) => c?.type === "used").length;
+    if (candidates.length - marks > caps.perRun) add("too_many", `${candidates.length - marks} candidates; the cap is ${caps.perRun}`, { field: "candidates" });
+    else if (marks > caps.usedPerRun) add("too_many", `${marks} used marks; the cap is ${caps.usedPerRun}`, { field: "candidates" });
     else {
       for (const [i, candidate] of candidates.entries()) {
         const at = (field: string) => ({ field: `candidates[${i}].${field}` });

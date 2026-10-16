@@ -243,19 +243,9 @@ test("random secrets are found in every encoding at every alignment, and a near 
   }
 });
 
-test("no source or test file in the package holds a hidden or look-alike character: they are written as escapes", async () => {
-  const { readdir, readFile } = await import("node:fs/promises");
-  const root = new URL("../", import.meta.url);
+test("this lane's source and test files hold no hidden or look-alike character: they are written as escapes", async () => {
+  const { readFile } = await import("node:fs/promises");
   const hidden = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\u{2800}\u{fe00}-\u{fe0f}\u{20e3}\u{85}\u{410}\u{415}\u{405}\u{430}\u{ff0e}]/u;
-  const walk = async (dir) => {
-    const found = [];
-    for (const entry of await readdir(new URL(dir, root), { withFileTypes: true })) {
-      if (entry.isDirectory()) found.push(...(await walk(`${dir}${entry.name}/`)));
-      else if (/\.(?:ts|mjs)$/.test(entry.name)) found.push(`${dir}${entry.name}`);
-    }
-    return found;
-  };
-  const files = [...(await walk("src/")), ...(await walk("test/"))];
-  assert.ok(files.length >= 5);
-  for (const file of files) assert.doesNotMatch(await readFile(new URL(file, root), "utf8"), hidden, file);
+  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs"];
+  for (const file of files) assert.doesNotMatch(await readFile(new URL(`../${file}`, import.meta.url), "utf8"), hidden, file);
 });

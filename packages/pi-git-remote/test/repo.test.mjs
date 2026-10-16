@@ -310,3 +310,22 @@ test("a commit message holding control characters keeps its trailers, so a retry
   const fresh = await openRepo({ dir: path.join(root, "host-2"), remote });
   assert.deepEqual(await fresh.commitTo("runs/odd", { files: { "inbox/odd.md": "y\n" }, message: "retry", trailers: { "Run-Id": "odd" } }), { sha: made.sha, created: false });
 });
+
+test("a directory reopened without its push URL forgets the push side: its old refs no longer count", async () => {
+  const root = await scratch();
+  const { dir: mainDir, main } = await seededRemote(root);
+  const hidden = await bareRepo(path.join(root, "hidden.git"));
+  const dir = path.join(root, "host");
+  const split = await openRepo({ dir, remote: { kind: "local", url: mainDir, pushUrl: hidden } });
+  await split.push(main, MAIN);
+  const ahead = await split.commitTo(MAIN, { files: { "b.md": "b\n" }, message: "b" });
+  await split.push(ahead.sha, MAIN);
+  const run = await split.commitTo("runs/r1", { files: { "inbox/r1.md": "x\n" }, message: "r1", trailers: { "Run-Id": "r1" } });
+  await split.push(run.sha, "runs/r1");
+  for (const ref of ["refs/heads/main", "refs/heads/runs/r1"]) await rawGit(["update-ref", "-d", ref], { gitDir: dir });
+  const plain = await openRepo({ dir, remote: local(mainDir) });
+  assert.deepEqual(Object.keys(await refsOf(dir)).filter((ref) => ref.startsWith("refs/remotes/pushed/")), []);
+  assert.equal(await plain.resolve("runs/r1"), undefined);
+  assert.equal(await plain.resolve(MAIN), main, "the fetch URL's main, not the push side's");
+  assert.equal((await plain.commitTo("runs/r1", { files: { "inbox/r1.md": "y\n" }, message: "r1", trailers: { "Run-Id": "r1" } })).created, true);
+});

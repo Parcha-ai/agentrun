@@ -2,8 +2,11 @@ import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
 import { inboxPath, RUN_ID, runBranch, usesPath } from "./layout.js";
-import { type CandidatesTarget, collectCandidates } from "./tool.js";
+import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
+
+/** What `collectCandidates` reads: a pi-durable Harness or a session. */
+export type ProposeTarget = Parameters<typeof collectCandidates>[0];
 
 /** `proposed`: one commit made and pushed. `already`: the run's branch held a commit for this run, so none was made, and it
  *  is pushed again. `empty`: nothing to propose. `refused`: the guard objected; nothing was committed or pushed. */
@@ -49,11 +52,11 @@ export async function proposeFiles(options: ProposeFilesOptions): Promise<Propos
 }
 
 /** A run's workflow uses, from lane B5; written to `uses/<run id>.json`. Undefined means none. */
-export type UsesSource = (target: CandidatesTarget) => unknown | Promise<unknown>;
+export type UsesSource = (target: ProposeTarget) => unknown | Promise<unknown>;
 
 export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> & {
   /** The run's store: where `collectCandidates` reads the `learn` calls. */
-  readonly target: CandidatesTarget;
+  readonly target: ProposeTarget;
   readonly uses?: UsesSource;
 };
 
