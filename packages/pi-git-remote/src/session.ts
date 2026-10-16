@@ -19,9 +19,10 @@ const PROTECTED = new Set(["main", "master", "HEAD"]);
 const RECORD_VERSION = 1;
 
 /**
- * What a session keeps outside its checkout: where the files were seeded from, and the SHA-256 of every allowlisted file
- * the directory held when it was last saved (the seed, then each end). A later end compares the directory with that, not
- * with the seeded commit, so a file put back or removed after an earlier end is seen as the change it is.
+ * What a session keeps outside its checkout: where the files were seeded from, and the SHA-256 of the files the directory
+ * held when it was last saved. The seed saves every file, each end the ones the allowlist names. A later end compares the
+ * directory with that, not with the seeded commit, so a file put back or removed after an earlier end is seen as the change
+ * it is, and a file the allowlist only came to name later is compared with what it was seeded as.
  */
 export type SeedRecord = {
   readonly v: 1;
@@ -190,13 +191,15 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
 
   const remote = remoteId(repo.remote);
 
-  /** The allowlisted regular files in the directory, never through a symlink, as path to SHA-256. `keep` says whose bytes to
-   *  hold (a changed file's): memory follows the commit, not the tree. Also the paths that could be committed but cannot be. */
-  async function scan(keep: (file: string, hash: string) => boolean): Promise<{ hashes: Map<string, string>; contents: Map<string, Buffer>; bad: { path: string; reason: string }[] }> {
+  const everything: Allowlist = { matches: () => true, mayContain: () => true };
+
+  /** The regular files `scope` names, never through a symlink, as path to SHA-256. `keep` says whose bytes to hold (a
+   *  changed file's): memory follows the commit, not the tree. Also the paths that could be committed but cannot be. */
+  async function scan(scope: Allowlist, keep: (file: string, hash: string) => boolean): Promise<{ hashes: Map<string, string>; contents: Map<string, Buffer>; bad: { path: string; reason: string }[] }> {
     const hashes = new Map<string, string>();
     const contents = new Map<string, Buffer>();
     const bad: { path: string; reason: string }[] = [];
-    const reaches = (p: string) => allow.matches(p) || allow.mayContain(p);
+    const reaches = (p: string) => scope.matches(p) || scope.mayContain(p);
     const { maxFileBytes, maxFiles, maxTreeEntries } = repo.limits;
     const visit = async (rel: string): Promise<void> => {
       const absolute = rel === "" ? dir : path.join(dir, ...rel.split("/"));
@@ -205,8 +208,8 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
         if (entry.isSymbolicLink()) {
           if (reaches(p)) bad.push({ path: p, reason: "a symlink" });
         } else if (entry.isDirectory()) {
-          if (allow.mayContain(p)) await visit(p);
-        } else if (allow.matches(p)) {
+          if (scope.mayContain(p)) await visit(p);
+        } else if (scope.matches(p)) {
           const refusal = pathRefusal(p) ?? (entry.isFile() ? undefined : "not a regular file");
           if (refusal) {
             bad.push({ path: p, reason: refusal });
@@ -240,7 +243,7 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
       return { sha: kept.sha, files: Object.keys(kept.saved), skipped: [], resumed: true };
     }
     const result = await repo.checkout(ref, { into: dir });
-    const { hashes } = await scan(() => false);
+    const { hashes } = await scan(everything, () => false);
     record = { v: RECORD_VERSION, sessionId, ref, remote, root: await realpath(dir), sha: result.sha, saved: Object.fromEntries(hashes) };
     await writeRecord(options.seedFile, record);
     return { sha: result.sha, files: result.files, skipped: result.skipped, resumed: false };
@@ -252,7 +255,7 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
     // The directory must be the one that was seeded: a rename and a link in its place would send any directory's files.
     if (!(await directoryExists(dir)) || (await realpath(dir)) !== seededAt.root) throw refused("the checkout directory is gone or is not where it was seeded");
     const saved = new Map(Object.entries(seededAt.saved));
-    const { hashes, contents, bad } = await scan((file, hash) => saved.get(file) !== hash);
+    const { hashes, contents, bad } = await scan(allow, (file, hash) => saved.get(file) !== hash);
     if (bad.length) {
       throw refused(`the checkout holds files that may not be committed: ${bad.slice(0, 20).map((b) => `${JSON.stringify(b.path)} (${b.reason})`).join(", ")}${bad.length > 20 ? ` and ${bad.length - 20} more` : ""}`, bad.map((b) => b.path));
     }
@@ -276,14 +279,17 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
       trailers: { [SESSION_ID_TRAILER]: sessionId, "Seeded-From": `${ref}@${seededAt.sha}` },
       parent: tip ?? seededAt.sha,
     });
+    // Saved at the commit, not at the push: the saved state is what the local branch holds. A push that fails leaves the
+    // commit to be pushed by the next end, which also sees any change made since as a change on top of it.
+    const next = new Map(saved);
+    for (const file of saved.keys()) if (allow.matches(file) && !hashes.has(file)) next.delete(file);
+    for (const [file, hash] of hashes) next.set(file, hash);
+    record = { ...seededAt, saved: Object.fromEntries(next) };
+    await writeRecord(options.seedFile, record);
     // An end that found everything committed still pushes the commit: a push that failed the first time is retried, and a
     // push that already happened changes nothing.
     await repo.push(made.sha, branch);
-    const outcome: EndOutcome = { sessionId, branch, sha: made.sha, created: made.created, changed };
-    // Saved only once the push is out: a failed one leaves the same changes to find again.
-    record = { ...seededAt, saved: Object.fromEntries(hashes) };
-    await writeRecord(options.seedFile, record);
-    return outcome;
+    return { sessionId, branch, sha: made.sha, created: made.created, changed };
   }
 
   return Object.freeze({

@@ -88,6 +88,11 @@ const MUTATIONS = [
     fails: ["session.test.mjs", "a checkout made for one remote is never adopted for another"],
   },
   {
+    removes: "the seed's record of every file, not only the ones the allowlist names",
+    file: "dist/session.js", from: "scan(everything, () => false)", to: "scan(allow, () => false)",
+    fails: ["session.test.mjs", "a deletion is seen when the allowlist is wider on a later start than at the seed"],
+  },
+  {
     removes: "the prototype-free object for the changed paths",
     file: "dist/session.js", from: "Object.create(null)", to: "{}",
     fails: ["session.test.mjs", "a file named __proto__ is written and deleted like any other"],

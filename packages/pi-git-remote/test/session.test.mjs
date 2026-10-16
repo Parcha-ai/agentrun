@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -247,4 +248,39 @@ test("a file named __proto__ is written and deleted like any other", async (t) =
   const outcome = await checkout.end();
   assert.deepEqual(outcome.changed, ["__proto__", "constructor"]);
   assert.deepEqual(await treeAt(repo, outcome.sha), { constructor: "made\n", "notes/a.md": "alpha\n" });
+});
+
+test("a push that failed does not make the saved state the pushed one: contents put back before the retry are the change they are", async (t) => {
+  const { options, repo, bare } = await open(t);
+  const note = path.join(options.checkoutDir, "notes/a.md");
+  const checkout = createSessionCheckout(options);
+  await checkout.seed();
+  await writeFile(note, "B\n");
+  await checkout.end();
+  await writeFile(note, "C\n");
+  // The remote can be read but not written: the commit is made here, the push fails.
+  execFileSync("chmod", ["-R", "a-w", path.join(bare, "objects")]);
+  try {
+    await assert.rejects(checkout.end());
+  } finally {
+    execFileSync("chmod", ["-R", "u+w", path.join(bare, "objects")]);
+  }
+  await writeFile(note, "B\n");
+  const retry = await checkout.end();
+  assert.equal(retry.created, true);
+  assert.equal((await treeAt(repo, retry.sha))["notes/a.md"], "B\n", "the contents C that were discarded are not pushed");
+  assert.equal((await refsOf(bare))["refs/heads/sessions/s1"], retry.sha);
+});
+
+test("a deletion is seen when the allowlist is wider on a later start than at the seed", async (t) => {
+  const { options, repo } = await open(t);
+  const narrow = createSessionCheckout({ ...options, allow: ["notes/**"] });
+  await narrow.seed();
+  const wide = createSessionCheckout({ ...options, allow: ["notes/**", "src/**"] });
+  assert.equal((await wide.seed()).resumed, true);
+  await rm(path.join(options.checkoutDir, "src/x.js"));
+  await writeFile(path.join(options.checkoutDir, "notes/a.md"), "alpha\n");
+  const outcome = await wide.end();
+  assert.deepEqual([outcome.created, outcome.changed], [true, ["src/x.js"]]);
+  assert.deepEqual(await treeAt(repo, outcome.sha), { "notes/a.md": "alpha\n" });
 });
