@@ -164,7 +164,22 @@ function endedHere(request: OpenRequest, stopReason: "error" | "aborted", errorM
  * A lost link keeps open requests open for `resumeWithinMs`: when it comes back the runner asks for the frames it
  * missed, so the host pays once. A request still open after that ends with a retryable error.
  */
-export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinMs?: number }): ProxyModels {
+export function proxyModels(
+	catalog: Catalog,
+	options?: {
+		readonly resumeWithinMs?: number;
+		/**
+		 * The key a request is paid under, and the store position it was made at. The same key again, in another runner
+		 * process, is answered from the first answer and not paid for. It must not change across a restore: the
+		 * session, the conversation, the store position and a hash of the body.
+		 */
+		readonly keyOf?: (request: {
+			readonly model: Model<Api>;
+			readonly messages: readonly unknown[];
+			readonly options: Readonly<Record<string, unknown>>;
+		}) => { readonly key: string; readonly position: number } | undefined;
+	},
+): ProxyModels {
 	const resumeWithinMs = options?.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS;
 	const open = new Map<string, OpenRequest>();
 	// Unique for each runner process, so a runner that started again cannot reuse an id the host still remembers.
@@ -194,12 +209,15 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 		counter += 1;
 		const id = `${process}.${counter}`;
 		const stream = createAssistantMessageEventStream();
+		const crossing = crossingOptions(received);
+		const keyed = options?.keyOf?.({ model, messages, options: crossing });
 		const frame: Frame = {
 			t: "model",
 			id,
 			model: { provider: model.provider, modelId: model.id },
 			messages,
-			options: crossingOptions(received),
+			options: crossing,
+			...(keyed === undefined ? {} : { key: keyed.key, position: keyed.position }),
 		};
 		const signal = received?.signal instanceof AbortSignal ? received.signal : undefined;
 		const onAbort = () => {
@@ -307,6 +325,13 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 }
 
 type ServedCall = {
+	/** The request id the runner that asked last knows the call by: its frames are numbered and sent under it. */
+	id: string;
+	/** Every id the call was asked under, and the key it is paid under: let go together. */
+	readonly ids: Set<string>;
+	readonly key: string | undefined;
+	/** The call ended in an error or was aborted: it has no answer to give a runner that asks under its key again. */
+	failed: boolean;
 	readonly controller: AbortController;
 	/** Every frame sent for the call, kept so a runner that lost the link can ask for what it missed. */
 	readonly frames: Frame[];
@@ -351,21 +376,39 @@ export function serveModels(
 	const calls = new Map<string, ServedCall>();
 	let paid = 0;
 
-	const emit = (id: string, call: ServedCall, frame: Frame) => {
-		const numbered: Frame = { ...frame, id, seq: call.frames.length + 1 };
+	// A keyed call: the same key again, from another runner process, is answered from it and not paid for again.
+	const byKey = new Map<string, ServedCall>();
+	const emit = (call: ServedCall, frame: Frame) => {
+		if (frame.t === "model-error") call.failed = true;
+		const numbered: Frame = { ...frame, id: call.id, seq: call.frames.length + 1 };
 		call.frames.push(numbered);
 		call.send?.(numbered);
 	};
+	/** What the call sent after `after`, under the id the asking runner knows it by. */
+	const replay = (call: ServedCall, after: number, reply: (frame: Frame) => boolean) => {
+		for (const kept of call.frames.slice(after)) reply({ ...kept, id: call.id });
+	};
 
 	const run = async (id: string, request: Frame, reply: (frame: Frame) => boolean): Promise<void> => {
-		const call: ServedCall = { controller: new AbortController(), frames: [], done: false, send: reply };
+		const key = typeof request.key === "string" && request.key !== "" ? request.key : undefined;
+		const call: ServedCall = {
+			id,
+			ids: new Set([id]),
+			key,
+			failed: false,
+			controller: new AbortController(),
+			frames: [],
+			done: false,
+			send: reply,
+		};
 		calls.set(id, call);
+		if (key !== undefined) byKey.set(key, call);
 		try {
 			const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
 			const model = models.getModel(String(asked?.provider), String(asked?.modelId));
 			if (model === undefined) {
 				const errorMessage = `the model ${String(asked?.provider)}/${String(asked?.modelId)} is not available on the host`;
-				emit(id, call, { t: "model-error", reason: "error", errorMessage });
+				emit(call, { t: "model-error", reason: "error", errorMessage });
 				return;
 			}
 			paid += 1;
@@ -385,31 +428,33 @@ export function serveModels(
 			for await (const event of events) {
 				if (event.type === "done") {
 					ended = true;
-					emit(id, call, { t: "model-end", message: event.message });
+					emit(call, { t: "model-end", message: event.message });
 				} else if (event.type === "error") {
 					ended = true;
-					emit(id, call, { t: "model-error", reason: event.reason, message: event.error });
+					emit(call, { t: "model-error", reason: event.reason, message: event.error });
 				} else {
 					const frame = encoder.encode(event);
-					if (frame !== undefined) emit(id, call, { t: "model-frame", frame });
+					if (frame !== undefined) emit(call, { t: "model-frame", frame });
 				}
 			}
 			if (!ended) {
 				const message = await events.result();
 				const failed = message.stopReason === "error" || message.stopReason === "aborted";
 				emit(
-					id,
 					call,
 					failed ? { t: "model-error", reason: message.stopReason, message } : { t: "model-end", message },
 				);
 			}
 		} catch (cause) {
 			const errorMessage = cause instanceof Error ? cause.message : String(cause);
-			emit(id, call, { t: "model-error", reason: "error", errorMessage });
+			emit(call, { t: "model-error", reason: "error", errorMessage });
 		} finally {
 			call.done = true;
 			// Kept a while for a runner that lost the link at the very end, then let go.
-			setTimeout(() => calls.delete(id), keepMs).unref?.();
+			setTimeout(() => {
+				for (const known of call.ids) calls.delete(known);
+				if (call.key !== undefined && byKey.get(call.key) === call) byKey.delete(call.key);
+			}, keepMs).unref?.();
 		}
 	};
 
@@ -419,8 +464,20 @@ export function serveModels(
 			const id = typeof frame.id === "string" ? frame.id : "";
 			const call = calls.get(id);
 			if (frame.t === "model") {
-				// The same id again is a resend of a request that did arrive: never call the provider twice for one id.
-				if (call === undefined) void run(id, frame, reply);
+				// The same id again is a resend of a request that did arrive: never call the provider twice for one id. The
+				// same key under a new id is the same request from a runner that started again: it takes the call over and
+				// gets what was sent, then the rest, under its own id.
+				const key = typeof frame.key === "string" && frame.key !== "" ? frame.key : undefined;
+				const asked = key === undefined ? undefined : byKey.get(key);
+				if (call === undefined && asked !== undefined && !asked.failed && !asked.controller.signal.aborted) {
+					asked.id = id;
+					asked.ids.add(id);
+					calls.set(id, asked);
+					asked.send = reply;
+					replay(asked, 0, reply);
+				} else if (call === undefined) {
+					void run(id, frame, reply);
+				}
 			} else if (frame.t === "model-abort") {
 				if (call !== undefined && !call.done) call.controller.abort();
 			} else if (call === undefined) {
@@ -429,7 +486,8 @@ export function serveModels(
 				// What the runner missed first, then the live frames, all on this link: a live frame that ran ahead of
 				// the replay would look to the runner like a gap, and it would give the answer up.
 				const after = typeof frame.after === "number" ? frame.after : 0;
-				for (const kept of call.frames.slice(after)) reply(kept);
+				call.id = id;
+				replay(call, after, reply);
 				call.send = reply;
 			}
 			return true;
