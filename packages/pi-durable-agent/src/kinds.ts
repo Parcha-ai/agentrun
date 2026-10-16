@@ -32,8 +32,12 @@ export type SkillFile = { content: string; sha256: string };
 export type AgentAlias = { externalId: string };
 /** `agent.bindings`, keyed by host: where each tool name runs there. */
 export type ToolBindings = Record<string, string>;
-/** `agent.runs`, keyed by run id. `path` is relative to the agent home. */
-export type RunRecord = { path: string; host: string; startedAt: string; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
+/** `agent.source`: the repo commit the cached definition and skills were read from, written in the same commit as
+ *  them. Absent for a home not tied to a repo. */
+export type AgentSource = { sha: string; refreshedAt: string };
+/** `agent.runs`, keyed by run id. `path` is relative to the agent home; `sha` is the home's `agent.source` when the run
+ *  started, so it names the skills the run's workspace got. */
+export type RunRecord = { path: string; host: string; startedAt: string; sha?: string; endedAt?: string; outcome?: string; finalAnswer?: JsonValue; cost?: number };
 /** `agent.leases`, keyed by profile key: the one run that may save that profile back. */
 export type ProfileLease = { runId: string; expiresAt: string };
 /** `browser.profiles`, keyed by profile key, in the agent store and in each run store. `ref` is the provider's saved
@@ -58,6 +62,7 @@ const family = (kind: string) => {
 
 export const IdentityDoc = singleton("agent.identity");
 export const DefinitionDoc = singleton("agent.definition");
+export const SourceDoc = singleton("agent.source");
 export const SkillsDoc = family("agent.skills");
 export const AliasesDoc = family("agent.aliases");
 export const BindingsDoc = family("agent.bindings");
