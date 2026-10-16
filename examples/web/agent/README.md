@@ -139,3 +139,5 @@ yet: live.json then says `live view not available for local Chrome yet`, and the
   Run them one after the other.
 - A sign-in lasts as long as the site keeps it. When a site has ended it by the next run, the agent finds the sign-in
   page and asks the person again.
+- Frames after a sign-in come only when the page repaints, until the recorder can capture on demand: a page that does
+  not change after the person signs in leaves no frame after the gap, and the player shows the sign-in to the end.

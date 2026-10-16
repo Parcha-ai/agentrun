@@ -17,8 +17,11 @@ import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@ear
 import { defineDocFamily } from '@earendil-works/pi-durable';
 import { carryBack, readAgentHome, startRun } from '@parcha/pi-durable-agent';
 import { archilEnv } from '@parcha/pi-durable-disk';
+import { frameRecorder } from '@parcha/pi-browser/recorder';
+import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fixtures/fake-cdp.mjs';
 import { browserOptions, createAgent, liveOf, NO_LOCAL_VIEW, PROFILE, promptOf, signInAsked, signInSite, toolsOf } from './app.ts';
 import { CHROME_PROFILE, chromeArgs, chromeProfileFor, startChrome } from './chrome.ts';
+import { frameStore } from './frames.ts';
 import { ensureAgentHome } from './home.mjs';
 
 const ENV = { BROWSERBASE_API_KEY: 'unused', AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
@@ -231,6 +234,56 @@ test('frames are owner-only beside the run; the file tools cannot reach them; th
   await harness.close(ctx);
   await carryBack(home, one.run, { outcome: 'completed' });
   assert.deepEqual((await readAgentHome(home)).profiles[PROFILE], { provider: 'browserbase', ref: 'ctx-1', state: 'ready', allowedOrigins: ['https://the-internet.herokuapp.com'], startUrl: 'https://the-internet.herokuapp.com/login', verifiedAt: verified });
+});
+
+test('with the recorder itself: a frame refused during the hold never becomes where a gap starts; no line\'s t or from falls inside the hold', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'web-frames-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cdp = await fakeCdp();
+  t.after(() => cdp.close());
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const until = async (check) => { for (const end = Date.now() + 4000; !check(); await sleep(10)) if (Date.now() > end) throw new Error('timed out'); };
+  const started = Date.now();
+  const clock = () => Date.now() - started;
+  const store = frameStore(dir, clock);
+  const recorder = frameRecorder({ sink: store.sink, clock });
+  t.after(() => recorder.close());
+  // A provider over the fake DevTools endpoint, as Browserbase's hands the recorder its session.
+  const provider = {
+    name: 'browserbase', caps: { timeoutModel: 'wall-clock', maxLifetimeS: 600, survivesDisconnect: true, releaseIsAsync: false, extension: 'loaded-locally' },
+    async create(spec) { return { id: 'sess-1', tag: spec.tag }; }, async attach() { return { sdkCdpUrl: cdp.url }; }, async release() {}, async status() { return 'running'; }, async findByTag() { return []; },
+  };
+  const watched = recorder.watch(provider, 1);
+  const signal = new AbortController().signal;
+  const ref = await watched.create({ tag: 'ar-run-1-1', maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1280, height: 800 }, metadata: {} }, signal);
+  await watched.attach(ref, signal);
+  await until(() => cdp.screencasts().length === 1);
+  const handled = () => recorder.stats().frames + recorder.stats().dropped;
+  cdp.frame({ bytes: fakeJpeg(800, 500, 10, 1) });
+  await until(() => handled() === 1);
+
+  store.hold();
+  const holdAt = clock();
+  for (const tag of [2, 3]) {
+    await sleep(150);
+    cdp.frame({ bytes: fakeJpeg(800, 500, 10, tag) });
+    await until(() => handled() === tag);
+  }
+  assert.deepEqual([recorder.stats().frames, recorder.stats().dropped], [1, 2], 'the recorder counts both frames of the sign-in as dropped');
+  await sleep(50);
+  const liftAt = clock();
+  store.lift();
+  // The page does not change after the sign-in: no frame comes, and the session is released.
+  await watched.release(ref, signal);
+  await recorder.close();
+  await store.flush();
+  const lines = (await readFile(join(dir, 'frames', 'frames.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map((l) => [l.kind, l.data.reason ?? null, l.data.detail ?? null]), [['frame', null, null], ['frame.gap', 'credential_on_page', 'host'], ['frame.gap', 'session_released', null]]);
+  const [kept, , released] = lines;
+  assert.equal(released.data.from, kept.t, 'the release\'s gap starts at the last frame kept');
+  const inside = (ms) => ms > holdAt && ms < liftAt;
+  assert.deepEqual(lines.filter((l) => inside(l.t) || inside(l.data.from)), [], 'no line names a time inside the hold');
+  assert.deepEqual(await readdir(join(dir, 'frames', 'blobs')), [`${kept.blobs[0]}.jpg`]);
 });
 
 const CHROME_ENV = { AGENT_MODEL_BASE_URL: ENV.AGENT_MODEL_BASE_URL, AGENT_MODEL: ENV.AGENT_MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http://127.0.0.1:9', AGENT_PAGE_ORIGIN: 'http://127.0.0.1:8787' };
