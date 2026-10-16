@@ -122,7 +122,7 @@ export interface Place {
   readonly recordHome?: PlaceRecordHome;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -653,6 +653,29 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     let resolver = pathlessResolver(control);
     const records = `${runPath(ref.id)}/${RECORDS}/`;
     const recording = typeof options.control.listObjects === "function";
+    const owner = options.ensure?.create;
+    /**
+     * Before attempt `gen`'s runner starts: the EMPTY directories it writes into, `signals/` and, with `recordHome`,
+     * `record/<gen>/.spool/` and `record/<gen>/blobs/`, made over the control (PutObject with the owner, as createRunDir
+     * does: an exec mkdir would make them root's) and owned by the run user (`ensure.create`), in ensureRunning's window
+     * where no delegation holds the run (a held run refuses them: DIRS_REFUSED). A directory a process
+     * made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one made over the control
+     * does not. Every file in them stays the runner's (its kill request, its started, its spool), and a runner that
+     * makes them itself finds them made. Without an owner nothing is made: a directory the run user does not own would
+     * refuse the runner's files.
+     */
+    const makeDirs = async (gen: number): Promise<void> => {
+      if (!owner) return;
+      const run = `${runPath(ref.id)}/`;
+      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : [])];
+      for (const dir of dirs) {
+        try {
+          if (!(await control.headObject(dir))) await control.putObject(dir, "", { uid: owner.uid, gid: owner.gid, mode: owner.mode ?? 0o755 });
+        } catch (error) {
+          throw new PlaceError("DIRS_REFUSED", said(`making ${dir.slice(run.length)} in the run over the control was refused: ${(error as Error)?.message ?? error}`), { cause: error });
+        }
+      }
+    };
     const fetchedSizes = new Map<string, number>();
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
@@ -707,7 +730,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const m = given && !given.removed ? given : await mint(order.gen);
       // The driver gets the order's environment with each start; everything else is the host's own.
       const driver: HostDriver = {
-        start: (r, token, attempt) => host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env }),
+        // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
+        start: async (r, token, attempt) => {
+          await makeDirs(order.gen);
+          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env });
+        },
         status: (h) => host.status(h),
         stop: (h) => host.stop(h),
       };

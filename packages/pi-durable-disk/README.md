@@ -798,8 +798,13 @@ id and directory as the supervisor computed them.
       names isn't home yet. On `final` it comes home anyway, and the call throws `CARRY_FAILED` naming the blob.
     - A list or get that fails is `CARRY_FAILED`.
     - The recording is on the disk, not in the box, so a final call after a box kill still brings home everything the
-      box fsynced: this place never throws `BOX_GONE`. The place writes nothing into the run's directory; the runner
-      seeds its own.
+      box fsynced: this place never throws `BOX_GONE`.
+    - With `ensure.create` (the run user's uid and gid), the place makes the EMPTY directories the runner writes into
+      at each start: `signals/`, `record/<attempt>/.spool/` and `record/<attempt>/blobs/`. It makes them over the
+      control, owned by the run user, mode 0755, in ensureRunning's window where no delegation holds the run. A
+      directory a process made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one
+      made over the control didn't. Every file in them stays the runner's. A refused put fails the start
+      (`DIRS_REFUSED`, as the cause of `HOST_START_FAILED`), and without an owner nothing is made.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write

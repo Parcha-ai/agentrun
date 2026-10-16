@@ -242,8 +242,11 @@ class FakeControl implements SupervisorControl {
   puts: { key: string; uid: number; gid: number; mode: number }[] = [];
   lists = 0;
   failList: Error | null = null;
+  /** A put of a key under record/ or signals/ that the server refuses (a run a delegation holds), when set. */
+  putRefused: Error | null = null;
   async putObject(key: string, body: string, options: { uid: number; gid: number; mode: number } = { uid: -1, gid: -1, mode: -1 }) {
-    if (key.includes("/record/")) {
+    if (key.includes("/record/") || key.includes("/signals/")) {
+      if (this.putRefused) throw this.putRefused;
       this.ops.push(`put ${key.slice(`runs/${ID}/`.length)}`);
       this.puts.push({ key, ...options });
     }
@@ -455,15 +458,39 @@ describe("archilPlace recordHome", () => {
     await assert.rejects(at.recordHome!.bringHome(scratch()), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && e.message.length <= 240);
   });
 
-  it("the place writes nothing into the run's disk: the runner seeds its own record directory", async () => {
+  it("at start, before the runner, the place makes the EMPTY signals/ and record/<attempt>/.spool/ over the control, owned by the run user; never a file", async () => {
     const control = new FakeControl();
     const { host } = fakeHost(control);
     const at = archilPlace({ ...REF, control, host, pollMs: 5, ensure: { create: { uid: 1500, gid: 1500 } } })({ paths: pathsAt("/x") });
     made.push(at);
-    await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
-    await at.recordHome!.bringHome(scratch(), { final: true });
-    assert.deepEqual(control.puts, [], "no put under record/");
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    assert.deepEqual(control.ops.filter((o) => o.startsWith("put ") || o.startsWith("start ")), ["put signals/", "put record/", "put record/1/", "put record/1/.spool/", "put record/1/blobs/", "start g1"], "before the runner");
+    assert.ok(control.puts.every((p) => p.key.endsWith("/") && p.uid === 1500 && p.gid === 1500 && p.mode === 0o755), "directories only, the run user's");
+    await at.kill(first, "box");
+    control.ops.length = 0;
+    await at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) });
+    assert.deepEqual(control.ops.filter((o) => o.startsWith("put ")), ["put record/2/", "put record/2/.spool/", "put record/2/blobs/"], "what exists is left as it is");
     await at.release();
+
+    // A put the server refuses (a delegation holds the run): the start fails, saying so, and nothing starts.
+    const c3 = new FakeControl();
+    const { host: h3, starts } = fakeHost(c3);
+    const refused = archilPlace({ ...REF, control: c3, host: h3, pollMs: 5, ensure: { create: { uid: 1500, gid: 1500 } } })({ paths: pathsAt("/x") });
+    made.push(refused);
+    c3.putRefused = Object.assign(new Error("409 Conflict: the directory is held by another client"), { status: 409 });
+    await assert.rejects(refused.start({ gen: 1, env: {}, stdin: await refused.token!(1) }), (e: unknown) => {
+      const cause = (e as { cause?: { code?: string; message?: string } }).cause;
+      return (e as { code?: string }).code === "HOST_START_FAILED" && cause?.code === "DIRS_REFUSED" && /signals\/ in the run over the control was refused: 409/.test(cause.message ?? "") && (cause.message ?? "").length <= 240;
+    });
+    assert.equal(starts.length, 0, "no runner over directories that are not there");
+
+    // Without the run user's owner nothing is made: a directory the run user does not own would refuse its files.
+    const c2 = new FakeControl();
+    const unowned = archilPlace({ ...REF, control: c2, host: fakeHost(c2).host, pollMs: 5 })({ paths: pathsAt("/x") });
+    made.push(unowned);
+    await unowned.start({ gen: 1, env: {}, stdin: await unowned.token!(1) });
+    assert.deepEqual(c2.puts, []);
+    await unowned.release();
   });
 });
 
