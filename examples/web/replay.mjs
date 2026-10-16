@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { SECRET_KINDS } from "@parcha/pi-durable-agent";
+import { SECRET_KINDS } from "@parcha/pi-durable-agent/export";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { costOf, RUN_ID, safePath } from "./page/source.js";
 
