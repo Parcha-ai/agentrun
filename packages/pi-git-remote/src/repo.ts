@@ -243,8 +243,8 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       `+refs/heads/*:refs/remotes/${namespace}/*`], credential ? { credential } : {});
   }
 
-  // The push side's refs count only while this remote has a push URL of its own; a directory opened before with one
-  // keeps refs that no fetch updates any more.
+  // The push side's refs count only for a handle whose remote has a push URL of its own. They are never deleted here:
+  // another handle on this directory may still fetch and read them.
   const separatePush = remote.pushUrl !== undefined && remote.pushUrl !== remote.url;
   const remoteRefs = (branch: string) => [`refs/remotes/origin/${branch}`, ...(separatePush ? [`refs/remotes/pushed/${branch}`] : [])];
 
@@ -644,10 +644,6 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     };
   }
 
-  if (!separatePush) {
-    const stale = (await text(["for-each-ref", "--format=%(refname)", "refs/remotes/pushed/"])).split("\n").filter(Boolean);
-    if (stale.length) await git(["update-ref", "--stdin"], { input: stale.map((ref) => `delete ${ref}\n`).join("") });
-  }
   await fetchAll();
   return Object.freeze({
     dir,
