@@ -7,9 +7,11 @@ import type { LeaseRef, ResourceStatus } from "../core/lease.js";
 import { cdpCall, type CdpSession } from "./cdp-call.js";
 import { applyBrowserbaseNoProxy, bindConnectDial, installWebSocketWrapper, rewriteConnectUrl, unbindConnectDial } from "./browserbase-net.js";
 import { directFetch } from "./http.js";
+import { claimWriter, fileProfileStore, freeWriter, isWriter, noteWriter, type ProfileStore } from "./profiles.js";
 import { accountKey, assertTag, browserbaseHoldings, defaultSleep, DEFAULT_CONFIRM, extensionArchive, nonEmpty, releaseAndConfirm, tagValue, untilAborted, uploadOnce } from "./shared.js";
 
 export { rewriteConnectUrl, browserbaseNoProxyHosts, applyBrowserbaseNoProxy } from "./browserbase-net.js";
+export { fileProfileStore, type ProfileStore } from "./profiles.js";
 
 export const SEARCH_QUERY_MAX = 200;
 export const SEARCH_RESULTS_MAX = 25;
@@ -24,6 +26,7 @@ export type BrowserbaseSdk = {
     recording?: { downloads: { create(id: string): Promise<{ downloads?: RecordingDownload[] }>; list(id: string): Promise<{ downloads?: RecordingDownload[] }> } };
   };
   extensions: { create(body: { file: unknown }, options?: RequestOptions): Promise<{ id: string }> };
+  contexts: { create(body: { projectId?: string }, options?: RequestOptions): Promise<{ id: string }> };
   fetchAPI: { create(body: { url: string; allowRedirects?: boolean; proxies?: boolean; format?: string }, options?: RequestOptions): Promise<FetchApiResult> };
   search: { web(body: { query: string; numResults?: number }, options?: RequestOptions): Promise<SearchApiResult> };
   get<T = unknown>(path: string, options?: RequestOptions & { query?: Record<string, unknown>; headers?: Record<string, string>; __binaryResponse?: boolean }): Promise<T>;
@@ -55,6 +58,10 @@ export type BrowserbaseOptions = {
   downloadBehavior?: (dialUrl: string) => Promise<DownloadSetting | void>;
   confirm?: { polls: number; intervalMs: number };
   sleep?: (ms: number) => Promise<void>;
+  /** Where profile names find their Browserbase contexts. Default: a file under the user's config directory. */
+  profiles?: ProfileStore;
+  /** How long a release that saved a profile waits for Browserbase to write the context back. */
+  profileSettleMs?: number;
 };
 
 /** `Browser.setDownloadBehavior` lasts only as long as the socket that sent it, so the socket stays open until
@@ -67,8 +74,10 @@ export const setDownloadBehavior = (url: string, options: { downloadPath?: strin
 
 export type BrowserbaseProvider = BrowserProvider & { readonly name: "browserbase" };
 
-const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true } };
+const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 21_600, survivesDisconnect: true, releaseIsAsync: true, profiles: true, extension: "uploaded-per-launch", settings: { proxies: true, verified: true, geolocation: true, region: true, context: true } };
 const notFound = (e: unknown): boolean => (e as { status?: number } | null)?.status === 404;
+/** One signal for whichever of these there is (a store may call `make` without its limit). */
+const stopWhen = (...signals: Array<AbortSignal | undefined>): AbortSignal | undefined => { const some = signals.filter((s): s is AbortSignal => s !== undefined); return some.length > 1 ? AbortSignal.any(some) : some[0]; };
 
 /** ISO alpha-2 country, US state abbreviation, upper-case city; no two-letter country, no geolocation. */
 export function browserbaseGeolocation(raw: Partial<Geo> | null | undefined): Geo | null {
@@ -88,12 +97,12 @@ export function proxiesField(proxies: SessionSpec["proxies"]): boolean | Array<R
   return geo ? [{ type: "browserbase", geolocation: geo }] : true;
 }
 
-export function sessionCreateBody(spec: SessionSpec, extra: { extensionId?: string; projectId?: string } = {}): BrowserbaseSessionBody {
+export function sessionCreateBody(spec: SessionSpec, extra: { extensionId?: string; projectId?: string; context?: { id: string; persist: boolean } } = {}): BrowserbaseSessionBody {
   const settings: BrowserbaseSessionBody["browserSettings"] = {
     solveCaptchas: spec.captcha,
     viewport: spec.viewport,
     ...(spec.verified ? { verified: true } : {}),
-    ...(spec.contextId ? { context: { id: spec.contextId, persist: true } } : {}),
+    ...(extra.context ? { context: extra.context } : spec.contextId ? { context: { id: spec.contextId, persist: true } } : {}),
     ...(spec.navigation?.allow?.length ? { allowedDomains: spec.navigation.allow } : {}),
   };
   const userMetadata = Object.fromEntries(Object.entries(spec.metadata).map(([k, v]) => [k, tagValue(v)]));
@@ -125,6 +134,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
   const sleep = options.sleep ?? defaultSleep;
   const confirm = options.confirm ?? DEFAULT_CONFIRM;
   const prices = resolvePrices(options.prices);
+  const profiles = options.profiles ?? fileProfileStore();
 
   let sdk: Promise<BrowserbaseSdk> | null = null;
   const client = () => (sdk ??= options.client ? Promise.resolve(options.client) : (async () => {
@@ -139,6 +149,9 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
     ? options.extensionId()
     : uploadOnce(uploads, account, async () => (await (await client()).extensions.create({ file: createReadStream(extensionArchive()) }, { maxRetries: 0 })).id);
 
+  const contextFor = (name: string, projectId: string, signal?: AbortSignal): Promise<string> =>
+    profiles.resolve(held(`profile:${name}`), async (limit) => (await (await client()).contexts.create({ ...(projectId && !baseUrl && !connectBase ? { projectId } : {}) }, { maxRetries: 0, signal: stopWhen(signal, limit) })).id);
+
   const rows = async (sessionId: string): Promise<DownloadRow[]> => {
     const all: DownloadRow[] = [];
     for (let offset = 0; ; ) {
@@ -148,6 +161,16 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
       offset += got.length;
       if (!got.length || offset >= Number(page?.total ?? 0)) return all;
     }
+  };
+
+  const settling = new Set<string>();
+  const running = (ref: LeaseRef) => async (signal: AbortSignal) => { if (settling.has(ref.tag)) return true; const now = await status(ref, signal); return now === "running" || now === "pending"; };
+
+  /** A saving session's context is written back after it ends, and the next session must not read it before then. */
+  const finished = async (ref: LeaseRef): Promise<void> => {
+    forget(held(ref.id));
+    if (isWriter(ref.tag)) { settling.add(ref.tag); try { await sleep(options.profileSettleMs ?? 5_000); } finally { settling.delete(ref.tag); } }
+    freeWriter(ref.tag);
   };
 
   const status = async (ref: LeaseRef, signal?: AbortSignal): Promise<ResourceStatus> => {
@@ -166,12 +189,19 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
 
     async create(spec, signal) {
       const projectId = nonEmpty(env.BROWSERBASE_PROJECT_ID);
-      // Behind the credential proxy the project is inferred from the injected key and must never be named; a direct key
-      // must name it.
-      const body = sessionCreateBody(spec, { extensionId: await extension(), ...(projectId && !baseUrl && !connectBase ? { projectId } : {}) });
-      // At most once: an SDK retry of a create the server already served would open a second paid browser.
+      if (spec.profile?.save) await claimWriter(held(`profile:${spec.profile.name}`), spec.profile.name, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal);
+      let body: BrowserbaseSessionBody;
+      try {
+        const context = spec.profile ? { id: await contextFor(spec.profile.name, projectId, signal), persist: spec.profile.save } : undefined;
+        // Behind the credential proxy the project is inferred from the injected key and must never be named; a direct key
+        // must name it.
+        body = sessionCreateBody(spec, { extensionId: await extension(), ...(projectId && !baseUrl && !connectBase ? { projectId } : {}), ...(context ? { context } : {}) });
+      } catch (error) { freeWriter(spec.tag); throw error; }
+      // At most once: an SDK retry of a create the server already served would open a second paid browser. A failed send keeps
+      // the profile's claim until findByTag has looked: the session may exist.
       const created = await (await client()).sessions.create(body, { maxRetries: 0, signal });
       connectUrls.set(held(created.id), created.connectUrl);
+      noteWriter(spec.tag, running({ id: created.id, tag: spec.tag }), () => sleep(options.profileSettleMs ?? 5_000));
       return { id: created.id, tag: spec.tag };
     },
 
@@ -184,7 +214,10 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
       // The query is the provider's, the match is ours: a lane that ignores `q` must never hand back someone else's
       // session. Both queries must answer: custody releases exactly these ids, so a failed status throws.
       const seen = new Set<string>();
-      return asked.flat().filter((r) => r.userMetadata?.agentrun_tag === tag && !seen.has(r.id) && seen.add(r.id)).map((r) => ({ id: r.id, tag }));
+      const found = asked.flat().filter((r) => r.userMetadata?.agentrun_tag === tag && !seen.has(r.id) && seen.add(r.id)).map((r) => ({ id: r.id, tag }));
+      if (!found.length) freeWriter(tag);
+      for (const ref of found) if (isWriter(ref.tag)) noteWriter(ref.tag, running(ref), () => sleep(options.profileSettleMs ?? 5_000));
+      return found;
     },
 
     status,
@@ -224,7 +257,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
           catch (error) { if (notFound(error)) return "gone"; throw error; }
         },
         status: () => status(ref, signal),
-        forget: () => forget(held(ref.id)),
+        forget: () => finished(ref),
         confirm,
         sleep,
         stillRunning: `Browserbase session ${ref.id} still running after a release request`,
