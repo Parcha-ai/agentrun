@@ -460,12 +460,12 @@ test("start: one labeled box that deletes itself on stop and dies at its TTL; th
   }
 });
 
-test("restart in place: a non-terminal exit restarts the instance after 1 s with an empty stdin (it reuses its live mount)", async () => {
+test("restart in place: a non-terminal exit restarts the instance after 1 s with the attempt's token again, so one whose mount went with it can mount again", async () => {
   const w = world("3,hold");
   const h = await w.host.start(REF, TOKEN);
   const lines = await waitFor("two incarnations", () => (w.lines().length >= 2 ? w.lines() : null), 15_000);
   assert.equal(lines[0].token, TOKEN);
-  assert.equal(lines[1].token, "", "only the first incarnation gets the token");
+  assert.equal(lines[1].token, TOKEN, "every incarnation of the attempt gets its token");
   // The launcher records a spawn after the child's spawn event, so the second line can come first.
   const state = await waitFor("the launcher's record of the second spawn", () => {
     const s = readState(w.box, String(h.name));
