@@ -687,7 +687,7 @@ describe("the runner's end of the record stream", () => {
 
 	it("lets the outbox go when the host says its log holds the commits, though their acknowledgements were lost", async () => {
 		await withWorld(async (made) => {
-			let record: (lines: readonly RecordLine[]) => void = () => {};
+			let record: (lines: RecordLine[]) => void | Promise<void> = () => {};
 			const shipper = createShipper({
 				admits: () => false,
 				recording: {

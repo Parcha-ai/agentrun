@@ -16,13 +16,11 @@ export type RecordLine = { readonly commit: number };
  * before anything else commits; `recordCommits` calls `write` with each commit's lines from there.
  */
 export type Recording = {
-	snapshotLines?(
-		storage: Storage,
-		options: { readonly at: number; readonly context: Context },
-	): Promise<readonly RecordLine[]>;
+	snapshotLines?(storage: Storage, options: { readonly at: number; readonly context: Context }): Promise<RecordLine[]>;
 	recordCommits(
 		session: Pick<Session, "subscribeCommits">,
-		options: { readonly from?: readonly RecordLine[]; readonly write: (lines: readonly RecordLine[]) => void },
+		// `write` as a method: a recorder whose lines carry more than `commit` takes them as its own.
+		options: { readonly from?: RecordLine[]; write(lines: RecordLine[]): void | Promise<void> },
 	): () => Promise<void>;
 };
 
@@ -69,7 +67,7 @@ export function createShipper(options: ShipperOptions = {}): Shipper {
 	// Where the host said its log is, on this link: what the runner holds from there goes first.
 	let hostAt: { readonly after: number; readonly linesAfter: number } | undefined;
 	// Kept until the host acknowledges it; sent once on each link.
-	let snapshot: { readonly commit: number; readonly lines: readonly RecordLine[] } | undefined;
+	let snapshot: { readonly commit: number; readonly lines: RecordLine[] } | undefined;
 	let snapshotSentOn: ((frame: Frame) => boolean) | undefined;
 	// The last commit the host holds, and the commits that wait for it to hold theirs.
 	let acked = 0;
