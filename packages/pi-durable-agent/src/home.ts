@@ -9,7 +9,7 @@ import {
   DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc,
   type SkillFile, SkillsDoc, SourceDoc, type ToolBindings,
 } from "./kinds.js";
-import { AgentHomeError, HEAD_SQL, headOf, openStore, readFamily, type Store, withHome } from "./store.js";
+import { AgentHomeError, HEAD_SQL, openStore, readFamily, readHead, type Store, withHome } from "./store.js";
 
 export const AGENT_STORE_FILE = "agent.sqlite";
 
@@ -215,15 +215,11 @@ export async function readAgentHome(home: AgentHome): Promise<AgentHomeState> {
 export async function homeRevision(home: AgentHome): Promise<number> {
   const file = path.join(homeDir(home.dir), AGENT_STORE_FILE);
   const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
-  let row: { next_seq?: unknown } | undefined;
   try {
-    row = db.prepare(HEAD_SQL).get() as { next_seq?: unknown } | undefined;
-  } catch (error) {
-    throw new AgentHomeError("format", "the agent store has no readable head commit", { cause: error });
+    return await readHead(() => db.prepare(HEAD_SQL).get());
   } finally {
     db.close();
   }
-  return headOf(row);
 }
 
 /** Record the agent's id in `host` (Parcha's expert id, for one). */
