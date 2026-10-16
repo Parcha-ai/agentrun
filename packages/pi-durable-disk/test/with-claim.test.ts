@@ -173,6 +173,25 @@ test("withClaim makes the path's directories that the disk lacks, as this proces
   assert.equal(log.filter((l) => l.startsWith("put ")).length, 1, "nothing made once it exists");
 });
 
+test("withClaim queues when another caller is making the same missing directory (409), and claims it after; past waitMs it is CLAIM_HELD", async () => {
+  const r = disposeAfter(rig({ behave: { requireDir: true } }));
+  r.set((s) => void (s.dirs = ["agents"]));
+  const { control } = fakeControl(r);
+  let puts = 0;
+  // The first write meets the other caller's claim on the directory it just made; the next one goes through.
+  const racing: ClaimControl = {
+    ...control,
+    putObject: async (key, body, options) => {
+      if (++puts === 1) throw Object.assign(new Error("S3 PutObject failed: 409 Conflict"), { name: "ArchilS3Error", status: 409 });
+      return control.putObject(key, body, options);
+    },
+  };
+  assert.equal(await withClaim(where(racing), async () => "after", { mountRoot: r.mountRoot, host: r.host, waitMs: 10_000 }), "after");
+  assert.equal(puts, 2, "it tried again after the conflict");
+  const always: ClaimControl = { ...control, headObject: async () => null, putObject: async () => { throw Object.assign(new Error("409"), { status: 409 }); } };
+  await assert.rejects(withClaim(where(always), async () => assert.fail("fn ran"), { mountRoot: r.mountRoot, host: r.host, waitMs: 600 }), held("CLAIM_HELD"));
+});
+
 test("withClaim refuses a path that is not one safe relative path, or that belongs to the runs, before any control call", async () => {
   const r = disposeAfter(rig());
   const { control, log } = fakeControl(r);

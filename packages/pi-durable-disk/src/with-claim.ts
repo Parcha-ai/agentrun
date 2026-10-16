@@ -171,7 +171,8 @@ async function settle(control: ClaimControl, path: string, deadline: number, sig
 
 /**
  * The directories of `path` the disk lacks, made over S3 with `owner`: archil mounts no path whose directory is missing
- * ("the configured subdirectory does not exist").
+ * ("the configured subdirectory does not exist"). A write refused with 409 met another caller that made the directory
+ * and holds it: HeldError, which the caller queues on as on a refused mount.
  */
 async function ensureDirectories(control: ClaimControl, path: string, owner: { uid: number; gid: number; mode: number }): Promise<void> {
   const segments = path.split("/");
@@ -180,6 +181,7 @@ async function ensureDirectories(control: ClaimControl, path: string, owner: { u
     try {
       if ((await control.headObject(key)) === null) await control.putObject(key, "", owner);
     } catch (err) {
+      if ((err as { status?: unknown }).status === 409) throw new HeldError("claim", `${key} is held by the caller that made it (409)`, { cause: err });
       throw new ClaimError("CONTROL_API_FAILED", `making ${key} on the disk failed`, { cause: err });
     }
   }
@@ -211,7 +213,17 @@ export async function withClaim<T>(
   for (;;) {
     await settle(control, path, deadline, options.signal);
     options.signal?.throwIfAborted();
-    await ensureDirectories(control, path, owner);
+    try {
+      await ensureDirectories(control, path, owner);
+    } catch (err) {
+      // Another caller made the directory and holds it: queue again, within the same wait.
+      if (err instanceof HeldError && Date.now() < deadline && !options.signal?.aborted) {
+        await sleep(POLL_MS);
+        continue;
+      }
+      options.signal?.throwIfAborted();
+      throw err instanceof HeldError ? notReleased(path, "its directory is being made by another holder", err) : err;
+    }
     const minted = await mintMountToken(control, { nickname: `pdc-${path.replaceAll("/", ".")}-${Date.now().toString(36)}`, ttl: TOKEN_TTL });
     const at = new Date();
     let mount: Awaited<ReturnType<typeof exclusiveMount>>;
