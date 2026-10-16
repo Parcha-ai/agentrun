@@ -133,6 +133,20 @@ fields are the stored format.
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
 through the host, and no tool reads or returns a profile.
 
+## Exporting a home
+
+An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
+`agent.identity`, `agent.definition`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
+does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins),
+`agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
+agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
+neither.
+
+`projectForExport(kind, value)` is what an exporter writes for one stored document: a deep copy, with `host` removed
+from an `agent.runs` record (it is the caller's own name for itself), or `undefined` when the kind is not on
+`EXPORTABLE_KINDS`. Kinds this package does not define, pi's own documents and another extension's, are not on the
+list, so they are dropped too.
+
 ## The timeline
 
 `@parcha/pi-durable-agent/timeline` turns a run into one human-readable timeline. It has no dependency and uses no Node
@@ -169,6 +183,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `startRun`, `carryBack` | A run's start and end, above |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
+| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
 | `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy` or `format` |
 
