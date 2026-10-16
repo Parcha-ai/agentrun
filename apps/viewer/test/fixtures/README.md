@@ -43,3 +43,23 @@ line the cost is unknown (RECORDING.md section 6), and it was `0` when these wer
 
 `transport-route-real` is the second real run of the route (the first had its box kill after the cut): the Daytona box is destroyed with its disk 7 s into the download,
 and the session is rebuilt in a new box from its last checkpoint; a runner process is killed mid-install on the Modal T4 box and recovered in place.
+
+## disk-takeover
+
+A hand-built run on a disk place (no disk, no key, nothing real ran): three claims of one run. Generation 1's box is
+deleted while a paid call (`charge`) is in flight, the claim is orphaned and revoked, generation 2 claims it and finishes
+`ship`, then stalls and is fenced (`LEASE_LAPSED`, exit 75) after a second revoke, and generation 3 finishes `notify` and
+releases with a sealed sequence of 9. Its host lines are in the shapes RECORDING.md section 5 gives for a disk place
+(`run.json` with `gen`, `delegation`, `revoke`, `fenced`, with `process.started` and `kill`); its durable lines are the
+`agentrun.driver` and `agentrun.effects` documents the store would hold (a process's snapshot at its open, with each
+effect's calls list unchanged). Its `t` values are placed, not observed. The disk panel's tests read it.
+
+## disk-kept
+
+The disk demo's recording (a supervisor prototype's `run.json` lines; the real ones come from R2's supervisor), cut to what the
+disk panel reads: every live `host` line (`process.started`, `kill`, `run.json`, `result`) and every `agentrun.effects` line,
+in file order, with the machine's name and boot id relabelled as a published recording carries them (`holder.host` is `host-1`, `holder.bootId` is `boot-1`; every other field is as recorded). Ten charges: the first four paid and recorded by generation 1; the fifth paid by generation 1, which
+was killed at `effect.kept charge` before the store recorded the call, and settled by generation 2 from the answer generation 1
+kept in evidence (its call carries `via: "evidence"`) without calling again; the last five paid by generation 2. It is not a valid
+recording on its own (no manifest, no driver, pi or browser lines), and the tests only fold it.
+
