@@ -237,9 +237,14 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       `+refs/heads/*:refs/remotes/${namespace}/*`], credential ? { credential } : {});
   }
 
+  // The push side's refs count only for a handle whose remote has a push URL of its own. They are never deleted here:
+  // another handle on this directory may still fetch and read them.
+  const separatePush = remote.pushUrl !== undefined && remote.pushUrl !== remote.url;
+  const remoteRefs = (branch: string) => [`refs/remotes/origin/${branch}`, ...(separatePush ? [`refs/remotes/pushed/${branch}`] : [])];
+
   async function fetchAll(): Promise<void> {
     await fetchFrom(remote.url, "origin");
-    if (remote.pushUrl !== undefined && remote.pushUrl !== remote.url) await fetchFrom(remote.pushUrl, "pushed");
+    if (separatePush) await fetchFrom(remote.pushUrl!, "pushed");
   }
 
   async function revParse(rev: string): Promise<string | undefined> {
@@ -255,7 +260,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
    *  they diverged, since the next push goes there. */
   async function remoteTipOf(branch: string): Promise<string | undefined> {
     const fetched = await revParse(`refs/remotes/origin/${branch}`);
-    const pushed = await revParse(`refs/remotes/pushed/${branch}`);
+    const pushed = separatePush ? await revParse(`refs/remotes/pushed/${branch}`) : undefined;
     if (!fetched || !pushed || fetched === pushed) return pushed ?? fetched;
     return (await isAncestor(pushed, fetched)) ? fetched : pushed;
   }
@@ -324,7 +329,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   /** The newest commit on `branch`, local or on the remote, that carries `key: value`. */
   async function findTrailer(branch: string, key: string, value: string): Promise<string | undefined> {
     const refs: string[] = [];
-    for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`, `refs/remotes/pushed/${branch}`]) {
+    for (const ref of [`refs/heads/${branch}`, ...remoteRefs(branch)]) {
       if (await revParse(ref)) refs.push(ref);
     }
     if (!refs.length) return undefined;
