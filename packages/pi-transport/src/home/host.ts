@@ -4,6 +4,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
+import { inSinkOrder, type RecordSink, receiveRecords } from "./records.ts";
 import type { HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
@@ -45,7 +46,8 @@ export interface HomeHandle {
 	): Promise<Result<{ readonly submission: string }, RemoteError>>;
 	/** Settles when the root conversation is idle. */
 	idle(context: Context): Promise<Result<void, RemoteError>>;
-	status(context: Context): Promise<Result<{ readonly state: HomeState; readonly epoch: number | null }, RemoteError>>;
+	/** Where the home is: its state, its epoch, and the seal of a store it sealed and has not opened again. */
+	status(context: Context): Promise<Result<HomeStatus, RemoteError>>;
 	/**
 	 * The epoch of the lease that names this runner. A model frame from any other epoch is refused, and the runner
 	 * then ends: a home the lease has left behind has no model.
@@ -67,9 +69,15 @@ export type ConnectOptions = {
 	 * is not called again. Without it each handle makes its own, and a new link starts with nothing kept.
 	 */
 	readonly server?: ModelServer;
+	/**
+	 * Where this session's record stream goes: with it the runner ships every commit's writes, and its recorder's lines,
+	 * and a seal waits until they are all here.
+	 */
+	readonly records?: RecordSink;
 };
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
+const RECORD_FRAMES = new Set(["record", "lines"]);
 const HOME_STATES: ReadonlySet<unknown> = new Set<HomeState>(["closed", "open", "sealed", "retired"]);
 
 /** Whether `value` is a whole number at least 0. */
@@ -88,13 +96,26 @@ function isSeal(value: unknown): value is Seal {
 	);
 }
 
-function isStatus(value: unknown): value is { readonly state: HomeState; readonly epoch: number | null } {
-	const status = value as { state?: unknown; epoch?: unknown } | null;
+/**
+ * A home's answer to `status`. `sealed` is there only for a home that holds a sealed store; `session` names the session
+ * the note it keeps on disk is for, when the note names one.
+ */
+export type HomeStatus = {
+	readonly state: HomeState;
+	readonly epoch: number | null;
+	readonly sealed?: Seal;
+	readonly session?: string;
+};
+
+function isStatus(value: unknown): value is HomeStatus {
+	const status = value as { state?: unknown; epoch?: unknown; sealed?: unknown; session?: unknown } | null;
 	return (
 		typeof status === "object" &&
 		status !== null &&
 		HOME_STATES.has(status.state) &&
-		(status.epoch === null || Number.isSafeInteger(status.epoch))
+		(status.epoch === null || Number.isSafeInteger(status.epoch)) &&
+		(status.sealed === undefined || isSeal(status.sealed)) &&
+		(status.session === undefined || typeof status.session === "string")
 	);
 }
 
@@ -123,8 +144,23 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	});
 	const reply = (frame: Frame) => link.send(frame);
 
-	link.onFrame((frame) => {
-		if (MODEL_FRAMES.has(frame.t)) {
+	const { records } = options;
+	/** What the runner's ready says: the home's state, or why it is not ready. Needs nothing from the log. */
+	const readyOf = (frame: Frame): Result<Ready, RemoteError> => {
+		if (frame.ok !== true) return err(fromWire(frame.error));
+		if (!HOME_STATES.has(frame.state)) {
+			return err(
+				new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`),
+			);
+		}
+		return ok({ session: String(frame.session), state: frame.state as HomeState });
+	};
+	// Received and not yet acted on: the runner's ready, and how many answers each order has in the queue.
+	let readyHeard: Result<Ready, RemoteError> | undefined;
+	const answersQueued = new Map<number, number>();
+	const handle = async (frame: Frame): Promise<void> => {
+		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
+			// A home the lease left behind has no model, and writes nothing to the session's log.
 			if (frame.epoch !== epoch) {
 				link.send({
 					t: "refused",
@@ -132,27 +168,64 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 				});
 				return;
 			}
-			server.receive(frame, reply);
+			if (MODEL_FRAMES.has(frame.t)) server.receive(frame, reply);
+			else if (records !== undefined) await receiveRecords(records, frame, reply);
 		} else if (frame.t === "ready") {
-			if (frame.ok !== true) settleReady(err(fromWire(frame.error)));
-			else if (!HOME_STATES.has(frame.state)) {
-				settleReady(
-					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
-				);
-			} else settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			const ready = readyOf(frame);
+			// Where the host's log is, once every append begun on it from any link settled: the runner sends what it
+			// holds from there, then what follows.
+			if (ready.ok && records !== undefined) {
+				const held = await inSinkOrder(records, async () => records.held());
+				link.send({ t: "resend-after", ...held });
+			}
+			settleReady(ready);
 		} else if (frame.t === "answer") {
-			const settle = pending.get(Number(frame.id));
-			pending.delete(Number(frame.id));
+			const id = Number(frame.id);
+			const left = (answersQueued.get(id) ?? 1) - 1;
+			if (left > 0) answersQueued.set(id, left);
+			else answersQueued.delete(id);
+			const settle = pending.get(id);
+			pending.delete(id);
 			settle?.(frame.ok === true ? ok(frame.value) : err(fromWire(frame.error)));
 		}
+	};
+	// One frame after another: a commit is in the log before any later frame of the link is acted on.
+	let handled: Promise<void> = Promise.resolve();
+	link.onFrame((frame) => {
+		if (frame.t === "ready") readyHeard ??= readyOf(frame);
+		else if (frame.t === "answer")
+			answersQueued.set(Number(frame.id), (answersQueued.get(Number(frame.id)) ?? 0) + 1);
+		handled = handled
+			.then(() => handle(frame))
+			.catch((cause) => {
+				link.close(
+					`the host could not keep the record stream: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			});
 	});
 	link.onClose((reason) => {
 		server.down(reply);
-		settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		for (const settle of pending.values()) settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-		pending.clear();
+		const lost = (): Result<never, RemoteError> => err(new RemoteError("link_lost", `the link went down: ${reason}`));
+		// At once, whatever the log is doing: the runner's ready is what it said, and an order it did not answer is lost.
+		settleReady(readyHeard ?? lost());
+		for (const [id, settle] of pending) {
+			if (answersQueued.has(id)) continue;
+			pending.delete(id);
+			settle(lost());
+		}
+		// An answer the runner sent before it closed is still its answer, after the frames that came before it: a commit
+		// is in the log before an answer that followed it is acted on.
+		handled = handled.then(() => {
+			for (const settle of pending.values()) settle(lost());
+			pending.clear();
+		});
 	});
-	link.send({ t: "hello", v: LINK_VERSION, catalog: catalogOf(options.models) });
+	link.send({
+		t: "hello",
+		v: LINK_VERSION,
+		catalog: catalogOf(options.models),
+		...(records === undefined ? {} : { records: true }),
+	});
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>
 		new Promise<Result<T, RemoteError>>((resolve) => {
