@@ -44,6 +44,12 @@ test('the latest picture at or before the stop, a gap before the first, and the 
   assert.equal(at(lines.length).blob, sha(3), 'after the run ends, the last picture');
 });
 
+test('a picture line that names no blob draws nothing: the picture before it stays', () => {
+  const broken = [...lines.slice(0, 3), host('picture', 210, { label: 'no blob' })];
+  assert.equal(seen(picturePanel.view(reduceTo(picturePanel, broken, broken.length), { t: 0 })).blob, sha(2));
+  assert.equal(reduceTo(picturePanel, broken, broken.length).count, 2, 'and it is not counted');
+});
+
 test('a recording with no picture line draws no picture panel; one with pictures shows it first', () => {
   const none = lines.filter((line) => line.kind !== 'picture');
   assert.equal(panelsFor(none).some((panel) => panel.id === 'picture'), false);
