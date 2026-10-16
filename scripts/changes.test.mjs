@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { bulletOf, fold, hasVersionSection, loadFragments, parseFragment, unreleasedEdits, unreleasedSection } from './changes.mjs';
+import { bulletOf, fold, hasVersionSection, loadFragments, parseFragment, releaseRace, unreleasedEdits, unreleasedSection } from './changes.mjs';
 
 const exec = promisify(execFile);
 const script = join(dirname(fileURLToPath(import.meta.url)), 'changes.mjs');
@@ -343,3 +343,67 @@ test('the command line fails an Unreleased edit and passes a fragment', () => re
 test('a bullet indents the continuation lines under the first', () => {
   assert.equal(bulletOf('First.\n\nSecond paragraph.\n- Nested.'), '- First.\n\n  Second paragraph.\n  - Nested.');
 });
+
+// The release race: a fold made on one main, merged after another pull request added a fragment.
+const bump = async (root, version) => {
+  for (const directory of ['dsl', 'pi-vision']) {
+    const path = join(root, 'packages', directory, 'package.json');
+    await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), version }));
+  }
+};
+const commitAll = async (git, message) => { await git('add', '-A'); await git('commit', '-q', '-m', message); };
+const withVersion = async (root, git) => { await bump(root, '0.1.0-beta.13'); await commitAll(git, 'versions'); };
+
+test('releaseRace: a version bump beside a fragment the fold did not see is refused, naming it', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await writeFile(join(root, 'changes/late.md'), fragment('repo', 'fix', 'Late.'));
+  await commitAll(git, 'a late fragment');
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await bump(root, '0.1.0-beta.14');
+  assert.deepEqual(await releaseRace(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: ['late.md'] });
+}));
+test('releaseRace: a bump with only the README in changes/ is the release', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await bump(root, '0.1.0-beta.14');
+  assert.deepEqual(await releaseRace(root, base.trim()), { release: true, bumped: ['dsl', 'pi-vision'], unfolded: [] });
+}));
+test('releaseRace: a pull request with fragments and no version change is untouched, also when it adds a package', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await writeFile(join(root, 'changes/normal.md'), fragment('repo', 'fix', 'Normal.'));
+  await mkdir(join(root, 'packages/new'));
+  await writeFile(join(root, 'packages/new/package.json'), JSON.stringify({ name: '@parcha/new', version: '0.0.1' }));
+  assert.deepEqual(await releaseRace(root, base.trim()), { release: false, bumped: [], unfolded: [] });
+}));
+test('releaseRace: in the merge queue the base holds an earlier pull request\'s fragment, and the release on it is refused', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const { stdout: main } = await git('rev-parse', 'HEAD');
+  // The release pull request: folded and bumped on main as it was.
+  await git('checkout', '-q', '-b', 'release');
+  await bump(root, '0.1.0-beta.14');
+  await commitAll(git, 'release');
+  // The queue's base moved: an earlier pull request added a fragment.
+  await git('checkout', '-q', '-b', 'queue-base', main.trim());
+  await writeFile(join(root, 'changes/earlier.md'), fragment('repo', 'fix', 'Earlier.'));
+  await commitAll(git, 'earlier pull request');
+  const { stdout: groupBase } = await git('rev-parse', 'HEAD');
+  await git('merge', '-q', '--no-ff', '-m', 'merge group', 'release');
+  assert.deepEqual((await releaseRace(root, groupBase.trim())).unfolded, ['earlier.md']);
+}));
+test('the command line fails a release commit that carries a fragment, and passes the release and an ordinary change', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  const { stdout: base } = await git('rev-parse', 'HEAD');
+  await mkdir(join(root, 'scripts'));
+  await writeFile(join(root, 'scripts/changes.mjs'), await readFile(script, 'utf8'));
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', base.trim()], { cwd: root, encoding: 'utf8' });
+  await writeFile(join(root, 'changes/normal.md'), fragment('repo', 'fix', 'Normal.'));
+  assert.equal(local().status, 0, local().stderr);
+  await bump(root, '0.1.0-beta.14');
+  const fail = local();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /release commit carries unfolded fragments: normal\.md; refold on current main/);
+  await rm(join(root, 'changes/normal.md'));
+  const pass = local();
+  assert.equal(pass.status, 0, pass.stderr);
+}));

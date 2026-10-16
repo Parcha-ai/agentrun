@@ -1,0 +1,209 @@
+{
+	"events": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"errorMessage": "overloaded",
+				"timestamp": 1792095148216
+			}
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 0,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "partial"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"errorMessage": "overloaded",
+				"timestamp": 1792095148216
+			}
+		},
+		{
+			"type": "text_delta",
+			"contentIndex": 0,
+			"delta": "partial",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "partial"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"errorMessage": "overloaded",
+				"timestamp": 1792095148216
+			}
+		},
+		{
+			"type": "text_end",
+			"contentIndex": 0,
+			"content": "partial",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "partial"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"errorMessage": "overloaded",
+				"timestamp": 1792095148216
+			}
+		},
+		{
+			"type": "error",
+			"reason": "error",
+			"error": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "partial"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "error",
+				"errorMessage": "overloaded",
+				"timestamp": 1792095148216,
+				"durationMs": 0
+			}
+		}
+	],
+	"frames": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 2,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 4,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148216
+			}
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 0,
+			"content": {
+				"type": "text",
+				"text": "partial"
+			}
+		},
+		null,
+		{
+			"type": "text_end",
+			"contentIndex": 0,
+			"content": "partial"
+		},
+		null
+	]
+}

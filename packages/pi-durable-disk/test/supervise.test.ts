@@ -560,6 +560,28 @@ test("a driver that adopts the instance an earlier start of this attempt made: t
   assert.equal(control.users.size as number, 1, "a start that is not adopted keeps its token");
 });
 
+test("a start with the caller's mount token mints none and starts with it; a driver that throws or adopts has it removed as its own would be", async () => {
+  const { control, host, opts } = rig();
+  const given = { token: "tok-given-0123456789abcdef", identifier: "id-given", nickname: tokenNickname(REF.id, 1, NOW) };
+  control.users.set(given.identifier, { nickname: given.nickname, ttl: TOKEN_TTL, oneUse: false, token: given.token });
+  const r = await ensureRunning(REF, host, opts({ mountToken: given }));
+  assert.ok(r.action === "started", JSON.stringify(r));
+  assert.ok(!control.ops().includes("addUser"), "no token minted");
+  assert.deepEqual(host.started.map((s) => s.token), [given.token]);
+  assert.deepEqual(r.token, { identifier: given.identifier, nickname: given.nickname });
+  assert.ok(control.users.has(given.identifier), "a token an instance mounts with stays");
+
+  for (const failing of ["throws", "adopts"] as const) {
+    const w = rig();
+    w.control.users.set(given.identifier, { nickname: given.nickname, ttl: TOKEN_TTL, oneUse: false, token: given.token });
+    if (failing === "throws") w.host.startThrows = true;
+    else w.host.adopts = true;
+    await ensureRunning(REF, w.host, w.opts({ mountToken: given })).catch(() => {});
+    assert.deepEqual(w.control.ops().filter((op) => op === "addUser" || op === "removeUser"), ["removeUser"], failing);
+    assert.equal(w.control.users.size, 0, failing);
+  }
+});
+
 test("control API failures are typed and stop the decision", async () => {
   const { control, host, opts } = rig();
   control.fail.list = new Error("down");

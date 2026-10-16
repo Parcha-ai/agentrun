@@ -34,8 +34,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+      # The recordings ship as files with recordings/index.json, so the page stays small however many runs it holds.
       - name: Build the viewer and its gallery
-        run: node apps/viewer/build.mjs
+        run: node apps/viewer/build.mjs --files
       # Nothing is published unless what was built passes: every recording in it valid (agentrun.recording/1), holding
       # only its manifest, its lines and its blobs; every text file free of credential shapes and machine paths; the
       # gallery embedding exactly the recordings beside it. An empty gallery fails too.
