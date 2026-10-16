@@ -23,6 +23,10 @@
     "./signin": {
       "types": "./dist/signin/index.d.ts",
       "import": "./dist/signin/index.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows.d.ts",
+      "import": "./dist/workflows.js"
     }
   },
   "bin": {
