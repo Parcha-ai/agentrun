@@ -88,6 +88,7 @@
     session records shows page actions not measured.
   - A look live lines show started is not a possible extra payment when a later process filed its key as kept: that
     filing is the same answer read back, already counted.
+- A runnable example of one agent behind a tiny web page (`examples/web`): a job history, a live run page with chat, grouped steps, files and the agent's browser, and a hand-over where the agent asks the person to sign in through the browser's live view (`request_sign_in` ends its turn until the person replies). It runs on the open packages: the agent lives in an agent home of `@parcha/pi-durable-agent`, each run is a `pi-durable-disk` run directory started with `startRun` and served by its own door, the steps are `@parcha/pi-durable-agent/timeline` rows, and the server releases a run once it has answered and carries its Browserbase sign-in back to the home, so the next run starts signed in. `AGENT_BROWSER=chrome` runs the agent on its own headless Chrome instead, with its profile in the agent home, and mounts pi-browser's live view for it where that pi-browser has one; Browserbase stays the default until pi-browser ships `./live-view`. Its tests run offline.
 
 ## 0.1.0-beta.13 (2026-10-14)
 
