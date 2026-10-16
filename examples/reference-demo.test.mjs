@@ -943,7 +943,11 @@ test('--record holds none of the sign-in\'s tokens in any line, text blob or the
   const dist = await mkdtemp(join(tmpdir(), 'reference-dist-'));
   t.after(() => rm(dist, { recursive: true, force: true }));
   cpSync(leaked.recording, join(dist, 'recordings', 'leaked'), { recursive: true });
-  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [{"id":"leaked"}];\n');
+  // The build that ships recordings as files: an index of the manifest and each blob's path, no more.
+  const manifest = JSON.parse(readFileSync(join(leaked.recording, 'manifest.json'), 'utf8'));
+  const held = readdirSync(join(leaked.recording, 'blobs'));
+  writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify([{ id: 'leaked', manifest, blobs: Object.fromEntries(held.map((name) => [name.split('.')[0], `blobs/${name}`])) }]));
+  writeFileSync(join(dist, 'gallery.js'), "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n");
   const { gateProblems } = await import('../scripts/recording/gate.mjs');
   assert.deepEqual(gateProblems(dist), [], 'the gallery gate passes the redacted recording');
   // No sign-in: nothing to redact, nothing refused, and the lines are what they were.
