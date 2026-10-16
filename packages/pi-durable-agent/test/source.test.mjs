@@ -107,6 +107,32 @@ test("refresh refuses another agent's id, a missing skill set, and a definition 
   assert.deepEqual(await readAgentHome(home), before);
 });
 
+test("refresh with from is a compare-and-swap: it moves the cache only from the sha it names, null meaning none yet", async () => {
+  const skills = { "cite/SKILL.md": "# Cite\n" };
+  const home = await createAgentHome(await scratch(), { definition: DEFINITION, skills, sha: SHA_1 });
+  const before = { state: await readAgentHome(home), head: revisions(home).head };
+  for (const from of [SHA_2, null]) {
+    const expected = from ?? "no commit";
+    await assert.rejects(refreshAgentHome(home, { sha: SHA_256, from, definition: DEFINITION, skills: {} }),
+      refused("stale", new RegExp(`cache is at ${SHA_1}, not ${expected} as the refresh expected; nothing was written`)));
+  }
+  await assert.rejects(refreshAgentHome(home, { sha: SHA_1, from: SHA_2, definition: DEFINITION, skills }), refused("stale"), "the check comes before the same-sha no-op");
+  await assert.rejects(refreshAgentHome(home, { sha: SHA_2, from: "not-a-sha", definition: DEFINITION, skills }), refused("invalid", /not a commit sha/));
+  assert.deepEqual(await readAgentHome(home), before.state, "nothing written");
+  assert.equal(revisions(home).head, before.head, "no commit");
+
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_2, from: SHA_1, definition: DEFINITION, skills }), { changed: true });
+  assert.equal((await readAgentHome(home)).source.sha, SHA_2);
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_2, from: SHA_2, definition: DEFINITION, skills }), { changed: false });
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_1, definition: DEFINITION, skills }), { changed: true }, "without from, no check");
+  assert.equal((await readAgentHome(home)).source.sha, SHA_1);
+
+  const untied = await createAgentHome(await scratch(), { definition: DEFINITION });
+  await assert.rejects(refreshAgentHome(untied, { sha: SHA_2, from: SHA_1, definition: DEFINITION, skills }), refused("stale", /cache is at no commit, not /));
+  assert.deepEqual(await refreshAgentHome(untied, { sha: SHA_2, from: null, definition: DEFINITION, skills }), { changed: true });
+  assert.equal((await readAgentHome(untied)).source.sha, SHA_2);
+});
+
 test("a run started before a refresh keeps its sha and its skills; the next run gets the new ones", async () => {
   const home = await createAgentHome(await scratch(), { definition: DEFINITION, skills: { "cite/SKILL.md": "# Cite\n", "old/SKILL.md": "# Old\n" }, sha: SHA_1 });
   const first = await startRun(home, { runId: "first", host: "test" });

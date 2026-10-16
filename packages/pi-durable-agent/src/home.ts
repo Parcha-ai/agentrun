@@ -152,10 +152,14 @@ export async function createAgentHome(dir: string, options: { definition: AgentD
 
 /** Replace the cached definition and skills with the ones the host read from the agent's repo at `sha`, in one commit
  *  with `agent.source`: a skill path absent from `skills` is removed. The definition's `id`, when given, must be the
- *  home's; `identity.name` follows the definition's `name`. A home already at `sha` is left as it is (`changed` false):
- *  a sha names one content. Runs already started keep the skills their workspace got. */
-export async function refreshAgentHome(home: AgentHome, options: { sha: string; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
+ *  home's; `identity.name` follows the definition's `name`. With `from`, a compare-and-swap: the home's sha must be
+ *  `from` (`null`: the home has none yet), or the refresh is refused (`stale`) before anything is written, so a host
+ *  that read an older commit cannot move the cache back over a newer one; ancestry is the host's to judge. A home
+ *  already at `sha` is then left as it is (`changed` false): a sha names one content. Runs already started keep the
+ *  skills their workspace got. */
+export async function refreshAgentHome(home: AgentHome, options: { sha: string; from?: string | null; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
   const sha = checkSha(options?.sha);
+  const from = options.from === undefined || options.from === null ? options.from : checkSha(options.from);
   const given = options.definition?.id;
   if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
   if (options.skills === undefined) throw invalid("a refresh names its skills: the set replaces the cached one");
@@ -164,7 +168,11 @@ export async function refreshAgentHome(home: AgentHome, options: { sha: string; 
     const state = await readState(store);
     if (given !== undefined && given !== state.identity.id) throw invalid(`the definition's id ${given} is not this agent's id ${state.identity.id}`);
     const definition = checkDefinition(options.definition, state.identity.id);
-    if (state.source?.sha === sha) return { changed: false };
+    const current = state.source?.sha ?? null;
+    if (from !== undefined && from !== current) {
+      throw new AgentHomeError("stale", `the agent home's cache is at ${current ?? "no commit"}, not ${from ?? "no commit"} as the refresh expected; nothing was written`);
+    }
+    if (current === sha) return { changed: false };
     const kept = new Set(skills.map(([file]) => file));
     await store.session.commit(async (tx) => {
       put(await tx.doc(IdentityDoc), { ...state.identity, name: definition.name });
