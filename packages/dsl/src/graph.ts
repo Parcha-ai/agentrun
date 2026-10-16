@@ -24,7 +24,8 @@ export type WorkflowGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const pointer = (part: string): string => part.replace(/~/g, "~0").replace(/\//g, "~1");
-const MAX_DEPTH = 64;
+/** The nesting depth `validateWorkflow` and `inspectWorkflow` accept (128 JSON levels): a node nests at least one level deeper than its parent, so every node of such a document is within it. */
+const MAX_DEPTH = 128;
 
 /** The graph of `workflow`, computed from its JSON alone: nodes in document order (a node, then its descendants), and the
  *  edges between them. A value that is not a workflow, or a node the walk does not know, adds nothing and never throws:
@@ -37,7 +38,7 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
     nodes.push({ path, kind: node.node, label: typeof node.label === "string" ? node.label : node.node,
       ...(node.node === "call" && typeof node.via === "string" ? { via: node.via } : {}) });
     const child = (target: unknown, at: string, kind: GraphEdgeKind, from = path): void => {
-      if (!isObject(target) || typeof target.node !== "string") return;
+      if (!isObject(target) || typeof target.node !== "string" || depth + 1 > MAX_DEPTH) return;
       edges.push({ from, to: at, kind });
       visit(target, at, depth + 1);
     };
@@ -60,14 +61,14 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
   return { nodes, edges };
 }
 
-/** What a run has done at a node. A node inside a map's or a loop's body covers the instances the record shows so far: it is `done`
- *  when every one of them is, and an item that starts later makes it `working` again (the map node itself is done when the
- *  run says so). Outside a body, `done` stays done. A container (chain, parallel, map, loop, route, workflow) is `working` while some of
+/** What a run has done at a node. A node inside a map's or a loop's body stands for every item or iteration, and the record names
+ *  only those that started, so it is `done` only once the map or loop is: until then it is `working`, and a done node never
+ *  goes back. A container (chain, parallel, map, loop, route, workflow) is `working` while some of
  *  its descendants are, or some are done and it is not; a node a run never reached, a branch a route did not take among
  *  them, is `not-run`. */
 export type NodeState = "done" | "working" | "failed" | "not-run";
 
-type Frame = { done?: unknown; steps?: unknown; inputs?: unknown };
+type Frame = { done?: unknown; steps?: unknown; inputs?: unknown; partial?: unknown };
 /** The part of an `agentrun.items` value the status reads: the map item's `status` and its frame. */
 export type ItemRecordLike = { map?: unknown; index?: unknown; status?: unknown; frame?: Frame };
 /** What `nodeStatus` reads: a driver frame (the `pin` of a frozen snapshot: `done`, `steps`, `inputs`), a frozen snapshot
@@ -98,6 +99,8 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource): Record<s
       note(path, status === "failed" ? "failed" : "working");
     }
     if (Array.isArray(frame.done)) for (const path of frame.done) note(path, "done");
+    // A map that ended on an item's failure is kept as `partial` (its path and the finished items' results); no step or item says failed.
+    if (isObject(frame.partial) && typeof frame.partial.path === "string") note(frame.partial.path, "failed");
   };
   const readItem = (item: unknown): void => {
     if (!isObject(item)) return;
@@ -140,6 +143,13 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource): Record<s
     const prefix = `${node.path}/steps/`;
     const steps = graph.nodes.filter((other) => other.path.startsWith(prefix) && /^\d+$/.test(other.path.slice(prefix.length)));
     if (steps.length && steps.every((step) => out[step.path] === "done")) out[node.path] = "done";
+  }
+  // A node inside a map's or a loop's body stands for every item or iteration, and the record names only those that started: it is
+  // done only when the map or loop is. Parents come before their descendants in the node list, so the container is settled first.
+  const containers = graph.nodes.filter((node) => node.kind === "map" || node.kind === "loop");
+  for (const node of graph.nodes) {
+    if (out[node.path] !== "done") continue;
+    if (containers.some((container) => node.path.startsWith(`${container.path}/body`) && out[container.path] !== "done")) out[node.path] = "working";
   }
   return out;
 }

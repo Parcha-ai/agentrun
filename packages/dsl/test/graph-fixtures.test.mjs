@@ -16,14 +16,15 @@ const read = (file) => JSON.parse(readFileSync(DIR + file, 'utf8'));
 // Every node is `done` in a finished run, except what is listed. In a cut run the last node's commit never landed, so the
 // frame has nothing for it (a code node binds no input) and it is `not-run`, the chain around it `working`.
 const FINISHED = { route: { '/root/steps/1/branches/other/body': 'not-run' } };
+// Inside a map nothing is done before the map is: a node there stands for every item, and a cut run's map has not finished.
+const INSIDE_MAP = (extra = {}) => ({ '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/0': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run', ...extra });
 const CUT = {
   sequence: { '/root': 'working', '/root/steps/2': 'not-run' },
   parallel: { '/root': 'working', '/root/steps/1': 'not-run' },
   route: { '/root': 'working', '/root/steps/1/branches/other/body': 'not-run', '/root/steps/2': 'not-run' },
-  // A map item's `tail` was cut in every item: the items are still running, and what is above them is working.
-  nested: { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
-  'map-v3': { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
-  'map-v4': { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
+  nested: INSIDE_MAP({ '/root/steps/0/body/steps/0/workflow/root': 'working', '/root/steps/0/body/steps/0/workflow/root/steps/0': 'working', '/root/steps/0/body/steps/0/workflow/root/steps/1': 'working' }),
+  'map-v3': INSIDE_MAP(),
+  'map-v4': INSIDE_MAP(),
 };
 
 test('the fixture files are what generate.mjs writes: nothing was edited by hand, and a run writes the same bytes twice', async () => {
@@ -52,6 +53,8 @@ test('the shapes are the ones named: a parallel, a route, a nested map with a ch
   assert.ok(kinds('map-v3').has('item') && kinds('map-v4').has('item'));
   assert.equal(read('map-v3.finished.items.json').length, 0, 'the whole-state layout keeps no items');
   assert.ok(read('map-v4.finished.items.json').length >= 3, 'the keyed layout keeps one record per item');
+  // A cut run is a process that is gone: it wrote no failure. A map that ended on an item's failure carries `partial`; none of these does.
+  for (const name of Object.keys(SHAPES)) assert.equal(read(`${name}.cut.frame.json`).partial, undefined, name);
 });
 
 for (const name of Object.keys(SHAPES)) {

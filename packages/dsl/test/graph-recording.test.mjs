@@ -44,7 +44,7 @@ test('at the end of the recording every node of the nested workflow is done', ()
   for (const node of graph.nodes) assert.equal(state[node.path], 'done', `${node.label} ${node.path}`);
 });
 
-test('at every commit the status is read from the lines so far: a node outside the map that was done stays done, and one inside it never goes back to not-run', () => {
+test('at every commit the status is read from the lines so far, and a node that was done stays done', () => {
   const stops = [...new Set(lines.map((line) => line.commit))].sort((a, b) => a - b);
   assert.ok(stops.length >= 15, `${stops.length} commits`);
   let before = {};
@@ -55,26 +55,21 @@ test('at every commit the status is read from the lines so far: a node outside t
     if (!source) continue;
     const state = nodeStatus(graph, source);
     assert.deepEqual(Object.keys(state), graph.nodes.map((node) => node.path));
-    // A node outside a map's body is done for good. A node inside one covers the items seen so far: it is done when every one
-    // of them is, and the next item that starts makes it working again, never not-run.
-    for (const [path, was] of Object.entries(before)) {
-      if (was !== 'done') continue;
-      if (path.includes('/body')) assert.notEqual(state[path], 'not-run', `${path} not-run at commit ${commit}`);
-      else assert.equal(state[path], 'done', `${path} undone at commit ${commit}`);
-    }
+    // A done node stays done: nothing inside the map is done before the map is, so a later item never takes it back.
+    for (const [path, was] of Object.entries(before)) if (was === 'done') assert.equal(state[path], 'done', `${path} undone at commit ${commit}`);
     for (const value of Object.values(state)) seen.add(value);
     before = state;
   }
   assert.deepEqual([...seen].sort(), ['done', 'not-run', 'working'], 'the run is seen not started, working and done');
 });
 
-test('at the kill, between the two processes: the map is working, some items are done, the step after the map has not run, and the resumed process finishes it', () => {
+test('at the kill, between the two processes: the map and everything inside it is working, the step after the map has not run', () => {
   const firstOfSecond = lines.findIndex((line) => line.gen === 2);
   assert.ok(firstOfSecond > 0);
   const atKill = nodeStatus(graph, sourceAt(firstOfSecond));
   assert.equal(atKill['/root/steps/0'], 'working');
   assert.equal(atKill['/root/steps/1'], 'not-run');
   assert.equal(atKill['/root'], 'working');
-  assert.ok(Object.entries(atKill).some(([path, value]) => path.startsWith('/root/steps/0/body') && value === 'done'), 'a node inside the map is already done');
-  assert.ok(Object.entries(atKill).some(([path, value]) => path.startsWith('/root/steps/0/body') && value !== 'done'), 'and one inside it is not');
+  assert.equal(atKill['/root/steps/0/body'], 'working');
+  assert.ok(Object.entries(atKill).filter(([path]) => path.startsWith('/root/steps/0/body')).every(([, value]) => value === 'working'), 'inside the map nothing is done before the map is');
 });

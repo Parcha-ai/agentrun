@@ -8,10 +8,5 @@
   "inputs": {
     "/root/steps/0": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95"
   },
-  "steps": {},
-  "partial": {
-    "path": "/root/steps/0",
-    "as": "outs",
-    "results": "fe44a8cccd89edae70b54c5e58399979bd7d8b12643a8396ad62d089a781b692"
-  }
+  "steps": {}
 }
