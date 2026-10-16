@@ -6,7 +6,7 @@ import { cp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { scratch } from "./support.mjs";
+import { rawGit, scratch } from "./support.mjs";
 
 const PACKAGE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,6 +40,7 @@ const MUTATIONS = [
     removes: "the attr.tree pin to the empty tree",
     file: "dist/git.js", from: '"-c", `attr.tree=${EMPTY_TREE}`,', to: "",
     fails: ["safety.test.mjs", "a .gitattributes in the remote's tree changes nothing: bytes stay as stored and a conflict stays a conflict"],
+    unlessGit: async () => ((await bareReadsHeadAttributes()) ? undefined : "does not read HEAD's .gitattributes in a bare repository, so the pin has nothing to defend on it"),
   },
   {
     removes: "the reset of credential helpers before the fd-3 helper",
@@ -47,6 +48,21 @@ const MUTATIONS = [
     fails: ["credential.test.mjs", "real git reads the credential through the fd-3 helper, and never runs a helper from the repository's config"],
   },
 ];
+
+/** Whether this git, with no attr.tree, reads HEAD's .gitattributes in a bare repository: a union merge it names then
+ *  hides a conflict. */
+async function bareReadsHeadAttributes() {
+  const gitDir = path.join(await scratch(), "probe.git");
+  await rawGit(["init", "-q", "--bare", "--template=", "-b", "main", gitDir]);
+  const blob = async (text) => (await rawGit(["hash-object", "-w", "--stdin"], { gitDir, input: text })).toString().trim();
+  const tree = async (notes) => (await rawGit(["mktree"], { gitDir, input: `100644 blob ${await blob("* merge=union\n")}\t.gitattributes\n100644 blob ${await blob(notes)}\tnotes\n` })).toString().trim();
+  const commit = async (notes, parent) => (await rawGit(["commit-tree", await tree(notes), ...(parent ? ["-p", parent] : []), "-m", "probe"], { gitDir })).toString().trim();
+  const base = await commit("a\nb\nc\n");
+  const ours = await commit("a\nours\nc\n", base);
+  const theirs = await commit("a\ntheirs\nc\n", base);
+  await rawGit(["update-ref", "refs/heads/main", ours], { gitDir });
+  return rawGit(["merge-tree", "--write-tree", ours, theirs], { gitDir }).then(() => true, () => false);
+}
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -85,7 +101,12 @@ test("control: an unchanged copy of the package passes every test a mutation mus
 });
 
 for (const mutation of MUTATIONS) {
-  test(`mutation: without ${mutation.removes}, "${mutation.fails[1]}" fails`, async () => {
+  test(`mutation: without ${mutation.removes}, "${mutation.fails[1]}" fails`, async (t) => {
+    const unless = await mutation.unlessGit?.();
+    if (unless) {
+      t.skip(`${(await rawGit(["version"])).toString().trim()} ${unless}`);
+      return;
+    }
     const dir = await copyPackage();
     const file = path.join(dir, mutation.file);
     const source = await readFile(file, "utf8");

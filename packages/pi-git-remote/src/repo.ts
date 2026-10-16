@@ -17,6 +17,9 @@ const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const TRAILER_KEY = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
 const SCRATCH = "pi-git-remote";
 const MIN_GIT: readonly [number, number] = [2, 40];
+/** Checkout reads and writes blobs in batches this size, so its memory stays bounded whatever the tree holds. */
+const CHECKOUT_BATCH_BYTES = 8 * 1024 * 1024;
+const CHECKOUT_BATCH_FILES = 256;
 
 export type RepoOptions = {
   /** The host's own repository: created bare here when the directory is empty or absent. It must never be reachable
@@ -89,10 +92,11 @@ export type Repo = {
   /** Copies the regular files of `ref` into the empty directory `into`, never executable. Symlinks, submodules, paths
    *  git's index refuses, case collisions and files over the size cap are skipped and named. */
   checkout(ref: string, options: { readonly into: string }): Promise<CheckoutResult>;
-  /** A file's text at a commit; undefined when the path is absent or a directory. */
-  read(path: string, sha: string): Promise<string | undefined>;
-  /** Every entry under `prefix` ("" for the whole tree) at a commit, recursively. */
-  list(prefix: string, sha: string): Promise<TreeEntry[]>;
+  /** A file's text at a commit (a full sha, or a branch, fetched first); undefined when the path is absent or a
+   *  directory. */
+  read(path: string, ref: string): Promise<string | undefined>;
+  /** Every entry under `prefix` ("" for the whole tree) at a commit (a full sha, or a branch, fetched first). */
+  list(prefix: string, ref: string): Promise<TreeEntry[]>;
   /** One commit on `branch` with `files` applied, or none when the branch already holds a commit with the same
    *  `Run-Id` trailer, here or on the remote, or when nothing changes. Local only; `push` it after. */
   commitTo(branch: string, options: CommitOptions): Promise<Committed>;
@@ -158,15 +162,14 @@ function parseEntry(line: string): TreeEntry {
   return { path: line.slice(tab + 1), mode: mode!, type: type!, oid: oid!, ...(size && size !== "-" ? { size: Number(size) } : {}) };
 }
 
-function parseLog(record: string): LogEntry {
-  const [sha, parents, subject, trailerText] = record.split("\x1f");
+function parseLog(sha: string, parents: string, subject: string, trailerText: string): LogEntry {
   const trailers: Record<string, string[]> = {};
-  for (const line of (trailerText ?? "").split("\x1d")) {
+  for (const line of trailerText.split("\n")) {
     const colon = line.indexOf(":");
     if (colon <= 0) continue;
     (trailers[line.slice(0, colon).trim()] ??= []).push(line.slice(colon + 1).trim());
   }
-  return { sha: sha!, parents: parents ? parents.split(" ") : [], subject: subject ?? "", trailers };
+  return { sha, parents: parents ? parents.split(" ") : [], subject, trailers };
 }
 
 async function dirState(dir: string): Promise<"new" | "repo"> {
@@ -248,9 +251,18 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     return (await git(["merge-base", "--is-ancestor", a, b], { allowFail: true })).code === 0;
   }
 
+  /** The remote's tip of `branch`, from the fetch URL and the push URL: the newer of the two, or the push side's when
+   *  they diverged, since the next push goes there. */
+  async function remoteTipOf(branch: string): Promise<string | undefined> {
+    const fetched = await revParse(`refs/remotes/origin/${branch}`);
+    const pushed = await revParse(`refs/remotes/pushed/${branch}`);
+    if (!fetched || !pushed || fetched === pushed) return pushed ?? fetched;
+    return (await isAncestor(pushed, fetched)) ? fetched : pushed;
+  }
+
   async function tipOf(branch: string): Promise<string | undefined> {
     const localTip = await revParse(`refs/heads/${branch}`);
-    const remoteTip = (await revParse(`refs/remotes/origin/${branch}`)) ?? (await revParse(`refs/remotes/pushed/${branch}`));
+    const remoteTip = await remoteTipOf(branch);
     if (!localTip) return remoteTip;
     if (!remoteTip || localTip === remoteTip) return localTip;
     return (await isAncestor(remoteTip, localTip)) ? localTip : remoteTip;
@@ -291,13 +303,16 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   }
 
   async function logOf(revs: readonly string[], options: LogOptions = {}): Promise<LogEntry[]> {
-    const args = ["log", "--format=%H%x1f%P%x1f%s%x1f%(trailers:only,unfold,separator=%x1d)%x1e"];
+    // NUL separates fields and, with -z, commits: no commit message can hold one.
+    const args = ["log", "-z", "--format=%H%x00%P%x00%s%x00%(trailers:only,unfold)"];
     const trailer = options.trailer;
     if (trailer?.value !== undefined) args.push("--fixed-strings", "--regexp-ignore-case", `--grep=${trailer.key}: ${trailer.value}`);
     else if (options.max && !trailer) args.push(`--max-count=${options.max}`);
     args.push(...revs);
     if (options.path) args.push("--", options.path);
-    let entries = (await git(args)).stdout.toString("utf8").split("\x1e").map((r) => r.replace(/^\n/, "")).filter(Boolean).map(parseLog);
+    const fields = (await git(args)).stdout.toString("utf8").split("\0");
+    let entries: LogEntry[] = [];
+    for (let i = 0; i + 3 < fields.length; i += 4) entries.push(parseLog(fields[i]!.trim(), fields[i + 1]!, fields[i + 2]!, fields[i + 3]!));
     if (trailer) {
       const key = trailer.key.toLowerCase();
       entries = entries.filter((entry) => Object.entries(entry.trailers).some(([k, values]) =>
@@ -317,19 +332,27 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   }
 
   /** Refuses a change from `fromTree` to `toTree` that adds or changes an entry this package would not write: a refused
-   *  path, a symlink, a submodule, or a path that collides by case with another. */
+   *  path, a symlink, a submodule, a file over the size cap, or a path that collides by case with another. */
   async function checkIntroduced(fromTree: string, toTree: string): Promise<void> {
     if (fromTree === toTree) return;
     const parts = (await git(["diff-tree", "-r", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", fromTree, toTree])).stdout.toString("utf8").split("\0");
     const touched: string[] = [];
+    const blobs: { file: string; oid: string }[] = [];
     const bad: string[] = [];
     for (let i = 0; i + 1 < parts.length && parts[i]!.startsWith(":"); i += 2) {
-      const [, mode, , , status] = parts[i]!.slice(1).split(" ");
+      const [, mode, , oid, status] = parts[i]!.slice(1).split(" ");
       const file = parts[i + 1]!;
       if (status === "D") continue;
       touched.push(file);
       const reason = pathRefusal(file) ?? modeRefusal(mode!);
       if (reason) bad.push(`${JSON.stringify(file)} (${reason})`);
+      else blobs.push({ file, oid: oid! });
+    }
+    if (blobs.length) {
+      const sizes = (await text(["cat-file", "--batch-check=%(objectsize)"], { input: `${blobs.map((b) => b.oid).join("\n")}\n` })).split("\n");
+      for (const [i, blob] of blobs.entries()) {
+        if (Number(sizes[i]) > limits.maxFileBytes) bad.push(`${JSON.stringify(blob.file)} (${sizes[i]} bytes, over the ${limits.maxFileBytes} byte cap)`);
+      }
     }
     if (bad.length) throw refused(`the result would hold entries this package refuses: ${bad.join(", ")}`, touched);
     if (!touched.length) return;
@@ -386,9 +409,9 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     return text(["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-F", "-"], { input: message });
   }
 
-  async function moveBranch(branch: string, sha: string): Promise<void> {
-    const previous = await revParse(`refs/heads/${branch}`);
-    const moved = await git(["update-ref", "-m", "pi-git-remote", `refs/heads/${branch}`, sha, previous ?? ZERO], { allowFail: true });
+  /** Moves the local branch only if it is still where it was before the write was built. */
+  async function moveBranch(branch: string, sha: string, expected: string | undefined): Promise<void> {
+    const moved = await git(["update-ref", "-m", "pi-git-remote", `refs/heads/${branch}`, sha, expected ?? ZERO], { allowFail: true });
     if (moved.code !== 0) throw new GitRemoteError("conflict", `${branch} moved while it was being written: ${moved.stderr.trim()}`);
   }
 
@@ -421,19 +444,29 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       if (hit) skipped.push({ path: entry.path, reason: `a case collision: ${colliding.get(hit)!.join(" vs ")}` });
       else accepted.push(entry);
     }
-    const blobs = await readBlobs(accepted.map((entry) => entry.oid));
     const files: string[] = [];
-    for (const [i, entry] of accepted.entries()) {
-      const target = path.join(realInto, ...entry.path.split("/"));
-      try {
-        await mkdir(path.dirname(target), { recursive: true, mode: 0o755 });
-        await writeFile(target, blobs[i]!, { flag: "wx", mode: 0o644 });
-        files.push(entry.path);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EEXIST" && code !== "ENOTDIR" && code !== "EISDIR") throw error;
-        skipped.push({ path: entry.path, reason: "a file and a directory at one path" });
+    for (let start = 0; start < accepted.length;) {
+      let end = start;
+      let bytes = 0;
+      while (end < accepted.length && end - start < CHECKOUT_BATCH_FILES && (end === start || bytes + (accepted[end]!.size ?? 0) <= CHECKOUT_BATCH_BYTES)) {
+        bytes += accepted[end]!.size ?? 0;
+        end += 1;
       }
+      const batch = accepted.slice(start, end);
+      const blobs = await readBlobs(batch.map((entry) => entry.oid));
+      for (const [i, entry] of batch.entries()) {
+        const target = path.join(realInto, ...entry.path.split("/"));
+        try {
+          await mkdir(path.dirname(target), { recursive: true, mode: 0o755 });
+          await writeFile(target, blobs[i]!, { flag: "wx", mode: 0o644 });
+          files.push(entry.path);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "EEXIST" && code !== "ENOTDIR" && code !== "EISDIR") throw error;
+          skipped.push({ path: entry.path, reason: "a file and a directory at one path" });
+        }
+      }
+      start = end;
     }
     return { sha, files, skipped };
   }
@@ -441,6 +474,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   async function read(file: string, sha: string): Promise<string | undefined> {
     const reason = pathRefusal(file);
     if (reason) throw refused(`the path ${JSON.stringify(file)} is refused: ${reason}`, [file]);
+    if (!SHA.test(sha)) await fetchAll();
     const commit = await commitOf(sha);
     const entry = (await git(["ls-tree", "-z", "--full-tree", "-l", commit, "--", file])).stdout.toString("utf8").split("\0").filter(Boolean).map(parseEntry).find((e) => e.path === file);
     if (!entry || entry.type === "tree") return undefined;
@@ -455,6 +489,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       const reason = pathRefusal(trimmed);
       if (reason) throw refused(`the prefix ${JSON.stringify(prefix)} is refused: ${reason}`, [prefix]);
     }
+    if (!SHA.test(sha)) await fetchAll();
     return lsTree(await commitOf(sha), trimmed || undefined);
   }
 
@@ -469,6 +504,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       const existing = await findTrailer(branch, RUN_ID_TRAILER, runId);
       if (existing) return { sha: existing, created: false };
     }
+    const localBefore = await revParse(`refs/heads/${branch}`);
     const tip = await tipOf(branch);
     let base = tip;
     if (options.parent !== undefined) {
@@ -483,7 +519,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     await checkIntroduced(baseTree, tree);
     if (base && tree === baseTree) return { sha: base, created: false };
     const sha = await commitTree(tree, base ? [base] : [], message);
-    await moveBranch(branch, sha);
+    await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
   }
 
@@ -513,12 +549,13 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     await fetchAll();
     const source = await tipOf(from);
     if (!source) throw new GitRemoteError("missing", `no branch ${from}`);
+    const localBefore = await revParse(`refs/heads/${into}`);
     const target = await tipOf(into);
     const targetTree = target ? await treeOf(target) : EMPTY_TREE;
     if (target && (await isAncestor(source, target))) return { sha: target, changed: false, fastForward: false };
     if (!target || (await isAncestor(target, source))) {
       await checkIntroduced(targetTree, await treeOf(source));
-      await moveBranch(into, source);
+      await moveBranch(into, source, localBefore);
       return { sha: source, changed: true, fastForward: true };
     }
     const result = await git(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", target, source], { allowFail: true });
@@ -527,7 +564,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     if (result.code !== 0) throw new GitRemoteError("git", `git merge-tree failed (${result.code}): ${result.stderr.trim()}`);
     await checkIntroduced(targetTree, parts[0]!);
     const sha = await commitTree(parts[0]!, [target, source], formatMessage(`Merge ${from} into ${into}`, { "Merged-Branch": from }));
-    await moveBranch(into, sha);
+    await moveBranch(into, sha, localBefore);
     return { sha, changed: true, fastForward: false };
   }
 
@@ -537,6 +574,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     await fetchAll();
     const commit = await revParse(shaArg);
     if (!commit) throw new GitRemoteError("missing", `no commit ${shaArg} here`);
+    const localBefore = await revParse(`refs/heads/${on}`);
     const target = await tipOf(on);
     if (!target) throw new GitRemoteError("missing", `no branch ${on}`);
     if (!(await isAncestor(commit, target))) throw refused(`${commit} is not on ${on}`);
@@ -552,7 +590,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     await checkIntroduced(targetTree, parts[0]!);
     const message = formatMessage(`Revert "${entry!.subject}"\n\nThis reverts commit ${commit}.`, { ...options.trailers, Reverts: commit });
     const sha = await commitTree(parts[0]!, [target], message);
-    await moveBranch(on, sha);
+    await moveBranch(on, sha, localBefore);
     return { sha, changed: true };
   }
 

@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, MAIN, openRepo, RUN_ID_TRAILER } from "../dist/index.js";
-import { bareRepo, rawGit, refsOf, scratch, seededRemote } from "./support.mjs";
+import { bareRepo, rawGit, recordingGit, refsOf, scratch, seededRemote } from "./support.mjs";
 
 const count = async (gitDir, range) => Number((await rawGit(["rev-list", "--count", range], { gitDir })).toString().trim());
 
@@ -228,4 +228,85 @@ test("calls on one Repo run one at a time", async () => {
   for (let i = 0; i < 3; i++) chained.push(repo.commitTo(MAIN, { files: { [`n${i}.md`]: `${i}\n` }, message: `n${i}` }));
   const shas = (await Promise.all(chained)).map((c) => c.sha);
   assert.deepEqual((await repo.log({ max: 3 })).map((e) => e.sha), shas.reverse(), "each commit built on the one before");
+});
+
+const reaches = (gitDir, sha, tip) => rawGit(["merge-base", "--is-ancestor", sha, tip], { gitDir }).then(() => true, () => false);
+
+test("two Repo handles on one directory never drop each other's commits: a write whose branch moved fails with conflict", async () => {
+  const root = await scratch();
+  const { remote } = await seededRemote(root);
+  const dir = path.join(root, "host");
+  const handles = [await openRepo({ dir, remote }), await openRepo({ dir, remote })];
+  for (let round = 0; round < 4; round++) {
+    const settled = await Promise.allSettled(Array.from({ length: 6 }, (_, i) =>
+      handles[i % 2].commitTo(MAIN, { files: { [`r${round}-${i}.md`]: `${i}\n` }, message: `r${round}-${i}` })));
+    const tip = (await rawGit(["rev-parse", "refs/heads/main"], { gitDir: dir })).toString().trim();
+    for (const result of settled) {
+      if (result.status === "rejected") assert.equal(result.reason.code, "conflict", String(result.reason));
+      else assert.ok(await reaches(dir, result.value.sha, tip), "a commit reported as made is on the branch");
+    }
+    assert.ok(settled.some((r) => r.status === "fulfilled"));
+  }
+});
+
+test("a push URL ahead of the fetch URL wins: a fresh host resolves the newer tip and builds on it", async () => {
+  const root = await scratch();
+  const { dir: mainDir, main } = await seededRemote(root);
+  const hidden = await bareRepo(path.join(root, "hidden.git"));
+  const remote = { kind: "local", url: mainDir, pushUrl: hidden };
+  const first = await openRepo({ dir: path.join(root, "host-1"), remote });
+  await first.push(main, MAIN);
+  const next = await first.commitTo(MAIN, { files: { "b.md": "b\n" }, message: "b" });
+  await first.push(next.sha, MAIN);
+  assert.deepEqual([(await refsOf(mainDir))["refs/heads/main"], (await refsOf(hidden))["refs/heads/main"]], [main, next.sha]);
+  const fresh = await openRepo({ dir: path.join(root, "host-2"), remote });
+  assert.equal(await fresh.resolve(MAIN), next.sha);
+  const built = await fresh.commitTo(MAIN, { files: { "c.md": "c\n" }, message: "c" });
+  assert.equal((await fresh.log({ max: 1 }))[0].parents[0], next.sha);
+  await fresh.push(built.sha, MAIN);
+});
+
+test("read and list on a branch fetch first: a remote that moved is seen at once; a sha reads locally", async () => {
+  const root = await scratch();
+  const { remote, seeder, main } = await seededRemote(root, { "a.md": "old\n" });
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  const moved = await seeder.commitTo(MAIN, { files: { "a.md": "new\n", "b.md": "b\n" }, message: "moves" });
+  await seeder.push(moved.sha, MAIN);
+  assert.equal(await repo.read("a.md", MAIN), "new\n");
+  assert.deepEqual((await repo.list("", MAIN)).map((e) => e.path), ["a.md", "b.md"]);
+  assert.equal(await repo.read("a.md", main), "old\n");
+});
+
+test("checkout reads and writes in bounded batches: hundreds of files and files larger than a batch all arrive whole", async () => {
+  const root = await scratch();
+  const big = { maxFiles: 1000, maxFileBytes: 8 * 1024 * 1024 };
+  const remoteDir = await bareRepo(path.join(root, "remote.git"));
+  const seeder = await openRepo({ dir: path.join(root, "seeder"), remote: local(remoteDir), limits: big });
+  const files = Object.fromEntries(Array.from({ length: 600 }, (_, i) => [`small/f${String(i).padStart(3, "0")}.md`, `file ${i}\n`]));
+  for (let i = 0; i < 3; i++) files[`large/l${i}.bin`] = Buffer.alloc(6 * 1024 * 1024, 97 + i);
+  const { sha } = await seeder.commitTo(MAIN, { files, message: "many and large" });
+  await seeder.push(sha, MAIN);
+  const fake = await recordingGit(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote: local(remoteDir), limits: big, git: fake.git });
+  const into = path.join(root, "work");
+  const out = await repo.checkout(MAIN, { into });
+  const reads = (await fake.calls()).filter((c) => c.verb === "cat-file" && c.argv.includes("--batch"));
+  assert.ok(reads.length >= 4, `the tree is read in bounded batches, not at once (${reads.length} reads)`);
+  assert.equal(out.files.length, 603);
+  assert.deepEqual(out.skipped, []);
+  assert.equal(await readFile(path.join(into, "small/f599.md"), "utf8"), "file 599\n");
+  for (let i = 0; i < 3; i++) assert.ok((await readFile(path.join(into, `large/l${i}.bin`))).equals(files[`large/l${i}.bin`]));
+});
+
+test("a commit message holding control characters keeps its trailers, so a retry finds it by Run-Id", async () => {
+  const root = await scratch();
+  const { remote } = await seededRemote(root);
+  const odd = ["a", "b", "c", "d"].join(String.fromCharCode(0x1f)) + String.fromCharCode(0x1e) + String.fromCharCode(0x1d) + "e";
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  const made = await repo.commitTo("runs/odd", { files: { "inbox/odd.md": "x\n" }, message: odd, trailers: { "Run-Id": "odd" } });
+  await repo.push(made.sha, "runs/odd");
+  const [entry] = await repo.log({ ref: "runs/odd", max: 1 });
+  assert.deepEqual([entry.subject, entry.trailers], [odd, { "Run-Id": ["odd"] }]);
+  const fresh = await openRepo({ dir: path.join(root, "host-2"), remote });
+  assert.deepEqual(await fresh.commitTo("runs/odd", { files: { "inbox/odd.md": "y\n" }, message: "retry", trailers: { "Run-Id": "odd" } }), { sha: made.sha, created: false });
 });
