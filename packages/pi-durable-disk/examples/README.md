@@ -14,7 +14,7 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [planned-move](planned-move/) | A run moves from this machine to a Daytona sandbox at a step boundary by hand-over: released and sealed, opened at the next generation, the agent told, nothing revoked or interrupted | Linux host with the archil client and systemd, an Archil disk and API key, a Daytona key (Tier 3 or 4) | 0.1.0-beta.14 | no |
 | [fork-into-many](fork-into-many/) | One run taken to a checkpoint and sealed is forked three ways: each fork is a run of its own, continues from the checkpoint with its own instruction, and the source stays byte for byte | Linux, Node 22.19 or later | 0.1.0-beta.14 | yes |
-| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | 0.1.0-beta.14 | yes |
+| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
 | [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | checkout | no |
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | checkout | no |
 
@@ -81,7 +81,7 @@ Examples 01 and 02 predate these conventions and run on an Archil disk. A new ex
    first, and print its path. The model is pi-ai's faux provider, scripted so the run is the same every time. A real model
    is an optional flag (`--model <provider>/<modelId>`, its key from the provider's usual environment variable), never
    needed by the test, and only where the property does not depend on what the model chooses. Two things keep a scripted
-   run the same on every pi version the peers accept (1.0.4 to 1.2): the faux script reads the last message that is not
+   run the same on every pi version the peers accept (1.0.4 to 1.3): the faux script reads the last message that is not
    the system's (pi 1.0.4 puts its system message after the user's), and a tool gives the model its text with
    `api.output(text)` and returns no `content` (`api` is the `ToolExecutionApi`, `execute`'s second argument; pi 1.2 drops
    a returned `content`), and reads a result's text as `output ?? content`.

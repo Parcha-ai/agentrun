@@ -9,8 +9,10 @@ import {
 	type ConversationId,
 	configure,
 	defineDoc,
+	type Extension,
 	Harness,
 	type HarnessOptions,
+	type Storage,
 } from "@earendil-works/pi-durable";
 import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -81,10 +83,28 @@ export type HomeOptions = {
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
 	readonly env?: HarnessOptions["env"];
 	/**
+	 * Called with the store each time the home opens it, before pi does: the Harness runs over the storage it returns.
+	 * `opened` runs with the Harness before anything commits through it; `closed` after the Harness closed. A runner
+	 * ships its commits this way.
+	 */
+	readonly wrapStore?: (storage: Storage, context: Context) => Promise<WrappedStore>;
+	/** Extensions the home installs in the app's registry, beside its gate. */
+	readonly extensions?: readonly Extension[];
+	/**
 	 * Called each time this home takes the store into its hold, before the order runs: a runner process names itself
 	 * there as the one that holds the store. A failure here fails no order.
 	 */
 	readonly onHold?: () => void | Promise<void>;
+};
+
+/**
+ * What `wrapStore` gives the home. `opened` runs once the Harness has the store, before anything else commits through
+ * it; when it fails, the order fails and `closed` runs.
+ */
+export type WrappedStore = {
+	readonly storage: Storage;
+	readonly opened?: (harness: Harness) => void | Promise<void>;
+	readonly closed?: () => Promise<void>;
 };
 
 /**
@@ -150,6 +170,7 @@ class SessionHome implements Home {
 	#harness: Harness | undefined;
 	#gate: Gate | undefined;
 	#app: AppOptions | undefined;
+	#wrapped: WrappedStore | undefined;
 	#marker: Marker | undefined;
 	#drained = false;
 	/** The orders that open, close or delete, one at a time: none finds another half done. */
@@ -369,11 +390,21 @@ class SessionHome implements Home {
 
 	async #close(context: Context): Promise<void> {
 		const harness = this.#harness;
+		const wrapped = this.#wrapped;
 		this.#harness = undefined;
 		this.#gate = undefined;
+		this.#wrapped = undefined;
 		this.#drained = false;
-		await harness?.close(context);
-		this.#letGo();
+		try {
+			await harness?.close(context);
+		} finally {
+			// The store is let go whatever the recorder's stop does.
+			try {
+				await wrapped?.closed?.();
+			} finally {
+				this.#letGo();
+			}
+		}
 	}
 
 	/**
@@ -416,17 +447,28 @@ class SessionHome implements Home {
 		const { root: _root, onOpen, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
+		for (const extension of this.#options.extensions ?? []) registry.install(extension);
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
 		let harness: Harness;
+		let storage: Storage | undefined;
+		let wrapped: WrappedStore | undefined;
 		try {
 			await mkdir(dirname(store), { recursive: true });
-			harness = await Harness.open(await openNodeSqliteStorage(store), { ...rest, registry, models, env }, context);
+			storage = await openNodeSqliteStorage(store);
+			wrapped = await this.#options.wrapStore?.(storage, context);
+			harness = await Harness.open(wrapped?.storage ?? storage, { ...rest, registry, models, env }, context);
 		} catch (cause) {
+			await wrapped?.closed?.().catch(() => {});
+			// No Harness took the storage: it is this home's to close.
+			await storage?.close(withoutAbortSignal(context)).catch(() => {});
 			return err(new HomeError("store", `could not open the store: ${toError(cause).message}`, cause));
 		}
-		gate.attach(harness);
 		try {
+			// Before anything commits through it: the recorder, bringing the session here, the app's own opening, the
+			// move's notice.
+			await wrapped?.opened?.(harness);
+			gate.attach(harness);
 			await bringHere(harness, workspace, context);
 			await onOpen?.(harness, context);
 			const { move } = order;
@@ -448,11 +490,13 @@ class SessionHome implements Home {
 			}
 		} catch (cause) {
 			await harness.close(context).catch(() => {});
+			await wrapped?.closed?.().catch(() => {});
 			return err(new HomeError("store", `could not prepare the session: ${toError(cause).message}`, cause));
 		}
 		harness.resume();
 		this.#harness = harness;
 		this.#gate = gate;
+		this.#wrapped = wrapped;
 		this.#app = built.value;
 		return ok(undefined);
 	}

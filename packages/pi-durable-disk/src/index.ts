@@ -7,7 +7,7 @@ export { openDurableRun, RunError, StoreBehindSealError } from "./run.ts";
 export type { BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, StoreHeadSource, StoreReads } from "./run.ts";
 export { localRun } from "./local-run.ts";
 export type { LocalRun } from "./local-run.ts";
-export { CLAIM_UNMOUNTED, openClaimDir, RunRecordError } from "./status.ts";
+export { CLAIM_UNMOUNTED, openClaimDir, readLocalRunStatus, RunRecordError } from "./status.ts";
 export type { ClaimDir, OpenClaimDirOptions, PersistRecord, RunHolder, RunRecord, RunStatus } from "./status.ts";
 export { ArchilCodingTools, archilEnv, EnvClosedError, EnvError, markReadOnlySafe } from "./env.ts";
 export type { ArchilEnvClaim, ArchilEnvFactory, ArchilEnvOptions, EnvErrorCode } from "./env.ts";

@@ -4,12 +4,18 @@ import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { App } from "./app.ts";
 import { streamLink } from "./link.ts";
-import { createRunner } from "./runner.ts";
+import { createRunner, type RunnerOptions } from "./runner.ts";
 
 /** The lowest Node a runner runs on: pi-durable's own floor. */
 const NODE_FLOOR = [22, 19] as const;
 /** The exit code of a runner that was started wrong: no use starting it again the same way. */
 export const EXIT_USAGE = 64;
+
+/** What a runner file passes besides its app. */
+export type RunMainOptions = Pick<RunnerOptions, "recording" | "admits" | "linesSync"> & {
+	/** The program's arguments. Default: the process's own. */
+	readonly argv?: readonly string[];
+};
 
 /**
  * The whole program of a runner file. A customer's entry imports their app and this function, calls `runMain(app)`,
@@ -20,8 +26,11 @@ export const EXIT_USAGE = 64;
  * `--provider`. It writes its process id to `<store>.pid` when that file names no other live runner of this store, and
  * again whenever it takes the store into its hold. When the link closes the runner closes the session in order and exits; a runner started again opens
  * nothing until a host says so. It returns the exit code and sets it: the process ends once nothing is left to run.
+ * A runner whose host keeps the session's record stream takes its recorder here (`recording`: agentrun-pi's
+ * `snapshotLines` and `recordCommits`), and the app's own admissions (`admits`).
  */
-export async function runMain(app: App, argv: readonly string[] = process.argv.slice(2)): Promise<number> {
+export async function runMain(app: App, options: RunMainOptions = {}): Promise<number> {
+	const argv = options.argv ?? process.argv.slice(2);
 	const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
 	if (major < NODE_FLOOR[0] || (major === NODE_FLOOR[0] && minor < NODE_FLOOR[1])) {
 		process.stderr.write(`pi-transport: Node ${process.versions.node} is below ${NODE_FLOOR.join(".")}\n`);
@@ -64,6 +73,9 @@ export async function runMain(app: App, argv: readonly string[] = process.argv.s
 		store,
 		workspace,
 		where: { environment: environment ?? "unknown", provider: provider ?? "unknown" },
+		...(options.recording === undefined ? {} : { recording: options.recording }),
+		...(options.admits === undefined ? {} : { admits: options.admits }),
+		...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
 		onHold: nameSelf,
 	});
 	const link = streamLink(process.stdin, process.stdout);

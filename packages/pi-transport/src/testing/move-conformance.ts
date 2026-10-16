@@ -15,6 +15,7 @@ import { dirStore } from "../home/dir-store.ts";
 import type { HomeHandle } from "../home/host.ts";
 import { type MoveStep, moveHome, type Place, recoverHome, type StartRunner } from "../home/move.ts";
 import { leaseIn, type Ownership, OwnershipError } from "../home/ownership.ts";
+import type { RecordSink } from "../home/records.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
 import type { Seal } from "../home/store.ts";
 import { textResult } from "./tool-result.ts";
@@ -160,10 +161,15 @@ type Run = {
 	dropAll(): void;
 	/** Lets go of every home and removes the lease's directory. */
 	end(): void;
+	/**
+	 * With the record stream: the host's log holds every commit of the store that holds the lease at the end, once, in
+	 * order. Throws when it does not.
+	 */
+	checkRecords(): Promise<void>;
 };
 
 /** A session that started at `a` on epoch 1 and is busy with its run. */
-async function begin(pair: MovePair): Promise<Run> {
+async function begin(pair: MovePair, records: boolean): Promise<Run> {
 	const leases = mkdtempSync(join(tmpdir(), "pi-transport-lease-"));
 	const lease = leaseIn(dirStore(leases));
 	let drainCame: () => void = () => {};
@@ -172,7 +178,21 @@ async function begin(pair: MovePair): Promise<Run> {
 	});
 	const { models, notices, results } = hostModels(came);
 	const handles: HomeHandle[] = [];
-	const base = boxRunner({ program: pair.program, session: SESSION, models });
+	// The host's log of the session's commits: it outlives every runner and the host's own deaths.
+	const log: number[] = [];
+	let after = 0;
+	let linesAfter = 0;
+	const sink: RecordSink = {
+		held: () => ({ after, linesAfter }),
+		async append(commit) {
+			log.push(commit);
+			after = commit;
+		},
+		async lines(commit, _lines, snapshot) {
+			if (!snapshot) linesAfter = commit;
+		},
+	};
+	const base = boxRunner({ program: pair.program, session: SESSION, models, ...(records ? { records: sink } : {}) });
 	const start: StartRunner = async (place, epoch, startContext) => {
 		const started = await base(place, epoch, startContext);
 		if (started.ok) handles.push(started.value);
@@ -241,14 +261,36 @@ async function begin(pair: MovePair): Promise<Run> {
 			for (const handle of handles) handle.close("the run ended");
 			rmSync(leases, { recursive: true, force: true });
 		},
+		async checkRecords() {
+			if (!records) return;
+			const record = getOrThrow(await lease.current(SESSION, context));
+			const holder = record?.holder.environment === pair.b.environment ? pair.b : pair.a;
+			const node = "argv" in pair.program ? (pair.program.argv[0] ?? "node") : "node";
+			const script =
+				'const { DatabaseSync } = require("node:sqlite"); const d = new DatabaseSync(process.argv[1], { readOnly: true }); console.log(d.prepare("SELECT next_seq FROM durable_metadata").get().next_seq)';
+			let head = Number.NaN;
+			// The last frames may still be on their way: a few reads apart.
+			for (let tries = 0; tries < 20; tries += 1) {
+				head = Number((await read(holder, [node, "--no-warnings", "-e", script, holder.store]))?.trim());
+				if (log.length === head - 1) break;
+				await sleep(100);
+			}
+			const expected = Array.from({ length: head - 1 }, (_, n) => n + 1);
+			if (JSON.stringify(log) !== JSON.stringify(expected)) {
+				throw new Error(
+					`the host's log is not the store at ${holder.environment} (head ${head}): ${JSON.stringify(log)}`,
+				);
+			}
+		},
 	};
 }
 
 /** Runs `use` with a session begun at `a`, and ends the run whatever happens. */
-async function withRun(pair: MovePair, use: (run: Run) => Promise<void>): Promise<void> {
-	const run = await begin(pair);
+async function withRun(records: boolean, pair: MovePair, use: (run: Run) => Promise<void>): Promise<void> {
+	const run = await begin(pair, records);
 	try {
 		await use(run);
+		await run.checkRecords();
 	} finally {
 		run.end();
 	}
@@ -293,9 +335,17 @@ export function registerMoveConformance(
 	runner: StorageConformanceRunner,
 	name: string,
 	withPair: MovePairProvider,
-	options?: { readonly timeoutMs?: number },
+	options?: {
+		readonly timeoutMs?: number;
+		/**
+		 * Run every case with the host keeping the session's record stream: each case ends with the host's log holding
+		 * every commit of the final store once, in order.
+		 */
+		readonly records?: boolean;
+	},
 ): void {
 	const timeoutMs = options?.timeoutMs ?? 120_000;
+	const records = options?.records === true;
 	const every = Array.from({ length: ROUNDS }, (_, n) => String(n));
 	const equal = (actual: unknown, expected: unknown, message: string) => {
 		if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -326,7 +376,7 @@ export function registerMoveConformance(
 			"moves a running session with nothing cut, one notice, and the first home retired",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const moved = getOrThrow(
 							await moveHome(
@@ -359,7 +409,7 @@ export function registerMoveConformance(
 			"gives a move up when the session does not come to rest, names what held it, and cuts nothing",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						const moved = await moveHome(
 							{
 								session: SESSION,
@@ -393,7 +443,7 @@ export function registerMoveConformance(
 			"gives a move up when the store cannot be shipped, and the source runs on",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						// A store path under a file: no box can make that directory.
 						const nowhere = { ...pair.b, store: "/dev/null/session/run.sqlite" };
@@ -427,7 +477,7 @@ export function registerMoveConformance(
 			"takes a session back to the place it left, with nothing cut and a notice for each move",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const there = getOrThrow(
 							await moveHome(
@@ -514,7 +564,7 @@ export function registerMoveConformance(
 			"recovers a session that moved and ran on at its own epoch, with no new take",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const moved = getOrThrow(
 							await moveHome(
@@ -559,7 +609,7 @@ export function registerMoveConformance(
 			"completes a move whose take was written and whose answer was lost",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						// The write lands and the host hears an error, as from a storage call that timed out after it committed.
 						const lossy: Ownership = {
@@ -605,7 +655,7 @@ export function registerMoveConformance(
 					`finishes the session when the ${who} is killed just before ${step}`,
 					() =>
 						withPair((pair) =>
-							withRun(pair, async (run) => {
+							withRun(records, pair, async (run) => {
 								await sleep(150);
 								const hostDied = new Error("the host died");
 								const moved = await moveHome(
@@ -635,7 +685,10 @@ export function registerMoveConformance(
 								const lease = await run.held();
 								equal(lease?.epoch, epochAfter(step, who), "the lease after the kill");
 								const holder = lease?.environment === pair.b.environment ? pair.b : pair.a;
-								let home = moved?.ok === true ? moved.value.home : undefined;
+								// A move given up while the lease stayed with the source: the source opened its store again and runs on,
+								// and the session finishes there. Recovering over it would stop it and cut its call in flight, a cut of
+								// the test's own (recoverHome over a runner that runs has a case of its own).
+								let home = moved?.ok === true ? moved.value.home : holder === pair.a ? run.home : undefined;
 								if (home === undefined || !(await home.status(context)).ok) {
 									await sleep(300);
 									const places = { [pair.a.environment]: pair.a, [pair.b.environment]: pair.b };
@@ -660,7 +713,7 @@ export function registerMoveConformance(
 			"gives a move up when another host took the session first, deletes the copy it shipped, and the source waits",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const elsewhere = {
 							environment: "elsewhere",
@@ -701,7 +754,7 @@ export function registerMoveConformance(
 			"keeps the copy when the host that took first named the same place, and the session finishes there",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const moved = await moveHome(
 							{
@@ -750,7 +803,7 @@ export function registerMoveConformance(
 			"stops a runner that still runs before it recovers there: never two runners on one store",
 			() =>
 				withPair((pair) =>
-					withRun(pair, async (run) => {
+					withRun(records, pair, async (run) => {
 						await sleep(150);
 						const moved = await moveHome(
 							{
@@ -800,7 +853,7 @@ export function registerMoveConformance(
 				`finishes the session when the target is killed ${when}`,
 				() =>
 					withPair((pair) =>
-						withRun(pair, async (run) => {
+						withRun(records, pair, async (run) => {
 							await sleep(150);
 							await run.killAt(pair.b, point);
 							const moved = await moveHome(

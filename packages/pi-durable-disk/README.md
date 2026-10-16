@@ -62,7 +62,7 @@ and no key.
 - An Archil account, a disk, and an API key for the supervisor, all from the Archil console. Create the disk in the region
   nearest the host (any size; its id looks like `dsk-0123456789abcdef` and its region like `aws-us-east-1`). Hosts and
   instances never hold the API key.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.3.0`, as peer dependencies. The package is developed against 1.1.0, and CI runs its whole suite on 1.0.4 too, the lowest version the range accepts, and on 1.2.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.0.4 <1.4.0`, as peer dependencies. The package is developed against 1.1.0, and CI runs its whole suite on 1.0.4 too, the lowest version the range accepts, and on 1.2 and 1.3.
 
 Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) and running the loop across machines
 where FUSE is unavailable. Without Archil, a run can live on a plain directory of one machine
@@ -716,6 +716,14 @@ const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }
   ...localRun("/var/runs/run-1"),          // made when it is missing; work/ and store/ inside it
   harness: { models, registry },
 });
+```
+
+The run's status is its `run.json`, and `readLocalRunStatus(root)` (the directory `localRun` takes) reads it, read-only and safe beside a live instance, the way `readRunStatus` reads a disk's: the
+same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`), `null` when the run has no `run.json`
+yet, and `RunRecordError` (`RUN_JSON_INVALID`) when it is malformed.
+
+```ts
+const status = await readLocalRunStatus("/var/runs/run-1");   // { status: "sleeping", wakeAt: "...", ... } or null
 ```
 
 It is for one machine (a laptop, a CI job, a test), and says so: the claim is the directory itself, so nothing but this

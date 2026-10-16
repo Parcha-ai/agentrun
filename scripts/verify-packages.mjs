@@ -12,6 +12,7 @@ import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
+import { runtimeSmokeChecks } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
@@ -86,7 +87,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -237,8 +238,10 @@ import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import * as pi from '@parcha/agentrun-pi';
 import * as archil from '@parcha/pi-durable-disk';
@@ -256,6 +259,7 @@ import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
+import * as agentHome from '@parcha/pi-durable-agent';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -287,11 +291,12 @@ for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await i
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
-  assert.deepEqual(smoke, { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' });
+  assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
@@ -406,6 +411,17 @@ const routed = (config: TransportConfig, host: TransportHost): Transport => open
 void [providers, transport, hands, routed];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'transport-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'agent-consumer.ts'), `import { carryBack, createAgentHome, durableProfileStore, runPaths, startRun, type AgentHome, type CarryBack, type ProfileStore, type RunStart } from '@parcha/pi-durable-agent';
+// A host's run: start it from the agent home, hand its browser the run store's profiles, carry it back.
+const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfileStore>[0]): Promise<CarryBack> => {
+  const started: RunStart = await startRun(home, { host: 'consumer' });
+  const profiles: ProfileStore = durableProfileStore(harness);
+  void [profiles, runPaths(home, started.runId).dir];
+  return carryBack(home, started, { outcome: 'completed' });
+};
+void [oneRun, createAgentHome];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

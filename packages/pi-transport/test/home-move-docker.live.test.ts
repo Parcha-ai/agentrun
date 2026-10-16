@@ -41,30 +41,34 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 		expect(left.length, "containers left by label").toBe(0);
 	}, 60_000);
 
-	registerMoveConformance(
-		{ describe, expect, it },
-		"moving a home between two Docker boxes, the runner uploaded as one file",
-		async (use) => {
-			const boxes: Box[] = [];
-			const place = async (environment: string): Promise<Place> => {
-				const box = getOrThrow(await docker.create({ maxLifetimeMs: 15 * 60_000, labels, image: IMAGE }, context));
-				boxes.push(box);
-				return {
-					environment,
-					provider: "docker",
-					box,
-					workspace: box.facts().workspace,
-					store: "/tmp/session/run.sqlite",
+	for (const records of [false, true]) {
+		registerMoveConformance(
+			{ describe, expect, it },
+			`moving a home between two Docker boxes, the runner uploaded as one file${records ? ", with the host keeping the record stream" : ""}`,
+			async (use) => {
+				const boxes: Box[] = [];
+				const place = async (environment: string): Promise<Place> => {
+					const box = getOrThrow(
+						await docker.create({ maxLifetimeMs: 15 * 60_000, labels, image: IMAGE }, context),
+					);
+					boxes.push(box);
+					return {
+						environment,
+						provider: "docker",
+						box,
+						workspace: box.facts().workspace,
+						store: "/tmp/session/run.sqlite",
+					};
 				};
-			};
-			try {
-				await use({ a: await place("a"), b: await place("b"), program: { file: bundle } });
-			} finally {
-				for (const box of boxes) await box.destroy(context);
-			}
-		},
-		{ timeoutMs: 180_000 },
-	);
+				try {
+					await use({ a: await place("a"), b: await place("b"), program: { file: bundle } });
+				} finally {
+					for (const box of boxes) await box.destroy(context);
+				}
+			},
+			{ timeoutMs: 180_000, records },
+		);
+	}
 } else {
 	describe.skip("moving a home between two Docker boxes (set PI_TRANSPORT_LIVE_DOCKER=1)", () => {
 		it("runs the move suite with the runner uploaded as one file", () => {});
