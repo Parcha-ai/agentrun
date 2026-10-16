@@ -538,7 +538,11 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     if (result.code !== 0) {
       const line = result.stdout.toString("utf8").split("\n").find((l) => l.startsWith("!\t")) ?? "";
       if (line.includes("[rejected]")) throw new GitRemoteError("conflict", `the remote's ${branch} moved: ${sha} is not a fast-forward of it`);
-      if (line.includes("[remote rejected]")) throw new GitRemoteError("refused", `the remote refused ${branch}: ${line.split("\t").at(-1)}`);
+      if (line.includes("[remote rejected]")) {
+        // The reason is the server's text, so the credential is scrubbed from it as the runner does from stderr.
+        const reason = line.split("\t").at(-1)!;
+        throw new GitRemoteError("refused", `the remote refused ${branch}: ${credential ? reason.split(credential.password).join("[credential]") : reason}`);
+      }
       throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
     }
     await fetchAll();

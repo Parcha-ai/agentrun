@@ -98,8 +98,10 @@ export async function filesContaining(dir, needle) {
  * A git that records each call (argv, environment, a hash of what it inherited on fd 3) to `log`, then runs the real
  * git. Its https fetch and push never touch a network: they run the credential helper the way git does and record a
  * hash of what it printed. With `leak`, an https push fails and prints the credential on stderr, as a broken git might.
+ * With `live`, they run the real git over the network instead, and `inject` is added to the environment of the real git
+ * only (after the record is taken), such as the CA file for a test server's certificate.
  */
-export async function recordingGit(root, { leak = false } = {}) {
+export async function recordingGit(root, { leak = false, live = false, inject = {} } = {}) {
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
   const log = path.join(root, "git-calls.jsonl");
@@ -115,8 +117,9 @@ let i = 0;
 while (argv[i] === "-c") i += 2;
 const hash = (b) => crypto.createHash("sha256").update(b).digest("hex");
 const record = { argv, env: process.env, verb: argv[i], fd3: fd3 === null ? null : hash(fd3) };
-if ((argv[i] === "fetch" || argv[i] === "push") && argv.slice(i).some((a) => a.startsWith("https://"))) {
-  const helpers = [];
+const network = (argv[i] === "fetch" || argv[i] === "push") && argv.slice(i).some((a) => a.startsWith("https://"));
+const helpers = [];
+if (network) {
   for (let j = 0; j < i; j += 2) {
     const eq = argv[j + 1].indexOf("=");
     if (argv[j + 1].slice(0, eq) !== "credential.helper") continue;
@@ -124,6 +127,8 @@ if ((argv[i] === "fetch" || argv[i] === "push") && argv.slice(i).some((a) => a.s
     if (value === "") helpers.length = 0; else helpers.push(value);
   }
   record.helpers = helpers.length;
+}
+if (network && !${live}) {
   if (helpers.length) {
     const out = spawnSync("/bin/sh", ["-c", helpers[helpers.length - 1].slice(1) + " get"], { stdio: ["ignore", "pipe", "inherit", ...(fd3 === null ? [] : [3])] });
     record.helperOut = hash(out.stdout);
@@ -133,7 +138,7 @@ if ((argv[i] === "fetch" || argv[i] === "push") && argv.slice(i).some((a) => a.s
   process.exit(0);
 }
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(record) + "\\n");
-const result = spawnSync(${JSON.stringify(REAL_GIT)}, argv, { stdio: ["inherit", "inherit", "inherit", ...(fd3 === null ? [] : [3])] });
+const result = spawnSync(${JSON.stringify(REAL_GIT)}, argv, { env: { ...process.env, ...${JSON.stringify(inject)} }, stdio: ["inherit", "inherit", "inherit", ...(fd3 === null ? [] : [3])] });
 process.exit(result.status ?? 1);
 `);
   const git = path.join(bin, "git");
