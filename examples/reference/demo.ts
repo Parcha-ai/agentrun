@@ -65,6 +65,8 @@ export type DemoOptions = {
   sourcesFor?: (input: Record<string, unknown>) => Array<{ id: string; url: string; bytes: number; sha256: string }>;
   /** The data set's item a look belongs to, from the record's path (Apollo 11: the page, photo or film window). Kept with the look. */
   itemOf?: (path: string) => string | null;
+  /** The demo's own extensions, built with the run's vision (a code mode's `vision.see`). */
+  extensions?: RunOptions['extensions'];
   /** The arguments to read (default `process.argv.slice(2)`). */
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
@@ -223,7 +225,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
-  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision };
+  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision, ...(options.extensions ? { extensions: options.extensions } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
   return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
 }

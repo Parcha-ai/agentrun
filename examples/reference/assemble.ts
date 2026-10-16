@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry, defineDoc, type ConversationId, type Harness } from '@earendil-works/pi-durable';
+import { createRegistry, defineDoc, type ConversationId, type Extension, type Harness } from '@earendil-works/pi-durable';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs';
 type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
 import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
-import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
+import { createVisionExtension, type VisionAdapterOptions, type VisionHandle } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
 export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
@@ -74,7 +74,7 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; /** The demo's own extensions, built with the run's vision (a code mode's `vision.see`). */ extensions?: (handles: { readonly vision: VisionHandle }) => readonly Extension[] };
 
 /** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
  *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
@@ -173,7 +173,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     },
   });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension, flow.extension]) registry.install(extension);
+  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, ...(options.extensions?.({ vision }) ?? []), browser.extension, nodes.extension, flow.extension]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
   // under its name is whole, and is kept.
