@@ -165,41 +165,61 @@ test("a look that cannot be made throws with its code and is filed and told: no 
 // The kill: judge-child.mjs is one process of a run whose script asks two judgments, one image each.
 const CHILD = path.join(import.meta.dirname, "durable", "judge-child.mjs");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-function child(paths, mode) {
-  const proc = spawn(process.execPath, [CHILD], { env: { ...process.env, ...paths, MODE: mode }, stdio: ["ignore", "pipe", "inherit"] });
-  let stdout = "";
-  proc.stdout.on("data", (chunk) => { stdout += chunk; });
-  const exit = new Promise((resolve) => proc.on("exit", (code, signal) => resolve({ code, signal, line: stdout.split("\n").find((l) => l.startsWith("RESULT ")) })));
-  return { proc, exit, result: exit.then(({ line }) => (line === undefined ? undefined : JSON.parse(line.slice("RESULT ".length)))) };
-}
-async function run(cut) {
+const DEADLINE_MS = 60_000;
+const within = (promise, what) => {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} within ${DEADLINE_MS} ms`)), DEADLINE_MS); })]).finally(() => clearTimeout(timer));
+};
+/** One run, cut by a SIGKILL at the second judgment when `cut`; every child is killed when the test ends, however it
+ *  ends. */
+async function run(t, cut, replay = "safe") {
   const dir = tmp("vision-judge-kill-");
   const paths = { DB: path.join(dir, "run.sqlite"), CWD: path.join(dir, "work"), OUT: path.join(dir, "out"), LEDGER: path.join(dir, "jev.jsonl") };
   fs.mkdirSync(paths.CWD); fs.mkdirSync(paths.OUT);
   fs.writeFileSync(path.join(paths.CWD, "p1.png"), pngBytes(400, 300));
   fs.writeFileSync(path.join(paths.CWD, "p2.png"), pngBytes(500, 300));
+  const child = (mode) => {
+    const proc = spawn(process.execPath, [CHILD], { env: { ...process.env, ...paths, MODE: mode, REPLAY: replay }, stdio: ["ignore", "pipe", "inherit"] });
+    t.after(() => { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); });
+    let stdout = "";
+    proc.stdout.on("data", (chunk) => { stdout += chunk; });
+    return { proc, exit: new Promise((resolve) => proc.on("exit", (code, signal) => resolve({ code, signal, line: stdout.split("\n").find((l) => l.startsWith("RESULT ")) }))) };
+  };
   if (cut) {
-    const first = child(paths, "first");
+    const first = child("first");
     for (let waited = 0; !fs.existsSync(path.join(paths.CWD, ".cut")); waited += 20) {
-      assert.ok(waited < 60_000, "the first process never reached the second judgment");
+      assert.ok(waited < DEADLINE_MS, "the first process never reached the second judgment");
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     first.proc.kill("SIGKILL");
-    assert.deepEqual(await first.exit, { code: null, signal: "SIGKILL", line: undefined });
+    assert.deepEqual(await within(first.exit, "the first process exits"), { code: null, signal: "SIGKILL", line: undefined });
   }
-  const second = await child(paths, "second").result;
-  return { ...second, asks: lines(paths.LEDGER).length, told: lines(path.join(paths.OUT, "looks.jsonl")) };
+  const { line } = await within(child("second").exit, "the second process prints its result");
+  assert.ok(line, "the second process printed its result");
+  return { ...JSON.parse(line.slice("RESULT ".length)), asks: lines(paths.LEDGER).length, told: lines(path.join(paths.OUT, "looks.jsonl")) };
 }
+const values = (call) => JSON.parse(call.content[0].text).value;
 
-test("killed between two judgments, the rerun asks only the second and tells the first as kept; the script gets the same answers, the first marked kept", async () => {
-  const clean = await run(false);
+test("killed between two judgments, the rerun asks only the second and tells the first as kept; the script gets the same answers, the first marked kept", async (t) => {
+  const clean = await run(t, false);
   const keys = clean.told.map((look) => look.key);
   assert.deepEqual([clean.settled, clean.asks, new Set(keys).size], ["done", 2, 2]);
-  const cut = await run(true);
+  const cut = await run(t, true);
   assert.equal(cut.settled, "done");
-  const values = (outcome) => JSON.parse(outcome.results[0].content[0].text).value;
-  assert.deepEqual(values(cut).map((v) => v.kept), [true, undefined], "the first judgment read back, the second asked");
-  assert.deepEqual(values(cut).map(({ kept: _kept, ...v }) => v), values(clean), "and otherwise what an uncut run returns");
+  assert.deepEqual(values(cut.results[0]).map((v) => v.kept), [true, undefined], "the first judgment read back, the second asked");
+  assert.deepEqual(values(cut.results[0]).map(({ kept: _kept, ...v }) => v), values(clean.results[0]), "and otherwise what an uncut run returns");
   assert.equal(cut.asks, 2, "Jev was asked once per judgment in all");
   assert.deepEqual(cut.told.map((look) => [look.by, look.key, look.kept]), [["first", keys[0], false], ["second", keys[0], true], ["second", keys[1], false]]);
+});
+
+test("killed between two judgments on a host that never reruns a cut call, the next call reads the first back and asks only the second", async (t) => {
+  const cut = await run(t, true, "unsafe");
+  assert.equal(cut.settled, "done");
+  const calls = cut.results.filter((r) => r.tool === "code");
+  assert.equal(calls.length, 2, "the cut call stays cut, and the lead called the tool again");
+  assert.deepEqual(values(calls.at(-1)).map((v) => v.kept), [true, undefined], "the first judgment read back, the second asked");
+  assert.equal(cut.asks, 2, "Jev was asked once per judgment in all");
+  const [first, ...rest] = cut.told;
+  assert.deepEqual([[first.by, first.kept], ...rest.map((look) => [look.by, look.key === first.key, look.kept])], [["first", false], ["second", true, true], ["second", false, false]],
+    "the first judgment told paid, then again as kept; the second, never answered before the cut, told paid once");
 });
