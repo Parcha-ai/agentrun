@@ -988,12 +988,17 @@ test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is hande
   assert.equal(mid.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(mid.result.processes.at(-1)));
   assert.ok(!holds(mid.recording, refreshed), 'the refreshed token, unknown at the start, is not in the recording');
   assert.ok((readFileSync(join(mid.recording, 'events.jsonl'), 'utf8').match(/\[redacted\]/g) ?? []).length >= 1);
-  // (e) An event carries the new token BEFORE the file shows it; the final read of auth.json catches it, and the recording is refused: no manifest, the key and the file named, the value never.
+  // (e) An event carries the new token BEFORE the file shows it. The follower redacts every line it places with the latest union a second behind, so by default the line is placed clean and the finished recording never holds the token.
   const late = `made-up-late-access-token-${'l'.repeat(30)}`;
   const { home: lateHome } = await signInHome(t);
+  const clean = await run(t, {}, ['--json'], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late });
+  assert.equal(clean.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(clean.result.processes.at(-1)));
+  assert.ok(!holds(clean.recording, late), 'the token is not in the finished recording: the line was redacted as it was placed');
+  // But a line already placed (a hold of 0) before the file changed was already fetchable: the recording is refused (no manifest, the key and the file named, the value never).
+  const { home: placedHome } = await signInHome(t);
   const recording = join(await mkdtemp(join(tmpdir(), 'reference-late-')), 'recording');
   t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
-  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access is in /.test(error.message) && !error.message.includes(late));
+  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: placedHome, DEMO_FOLLOW_HOLD_MS: '0', DEMO_ROTATE_DELAY_MS: '800', DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access/.test(error.message) && /while the run was followed/.test(error.message) && !error.message.includes(late));
   assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
 });
 

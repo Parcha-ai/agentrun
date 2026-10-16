@@ -42,7 +42,7 @@ import { checkItems, fetchSources, missingCommitted, readSources, withSources } 
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
-import { scanRecording, signInFile, trackSecrets } from './secrets.ts';
+import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
@@ -51,6 +51,8 @@ export type LiveParts = { host?: Partial<Host>; /** The live tools, the same nam
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
 export type DemoOptions = {
+  /** How long the live recorder holds a line before placing it in `events.jsonl` (default 1000 ms, the time every writer has to get it to a spool). A test knob; a place whose clock is far from the host's wants it longer. */
+  followHoldMs?: number;
   /** Code mode, opt-in (off by default; `codeMode` in demo.json is the same switch): the agent gets a `code` tool whose sandbox has `tools.bash` (in `work/`) and the vision handle's `vision.see`. See code-mode.ts for what it can and cannot reach. */
   codeMode?: boolean | CodeModeOptions;
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
@@ -344,7 +346,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
   // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
-  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}) });
+  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), ...(options.followHoldMs !== undefined ? { holdMs: options.followHoldMs } : {}) });
   const following = setInterval(() => follower.poll(), 100);
   const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
   const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
@@ -503,6 +505,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
     follower.close();
+    // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
+    scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
