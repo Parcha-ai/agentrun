@@ -101,6 +101,23 @@ export const THEMES = ["auto", "light", "dark"];
 /** What a sandboxed file frame's document is told its colors are, so it is not painted light on a dark page. */
 const FRAME_SCHEME = { auto: "light dark", light: "light", dark: "dark" };
 
+/** A user message is folded past this many characters or lines. */
+const FOLD_CHARS = 600;
+const FOLD_LINES = 8;
+
+/** The part of a long message the page shows folded: its first FOLD_LINES lines, cut to FOLD_CHARS characters (never
+ *  between the halves of a surrogate pair), then an ellipsis; null when the message is short enough to show whole. */
+export function messageHead(text) {
+  const lines = text.split("\n");
+  if (text.length <= FOLD_CHARS && lines.length <= FOLD_LINES) return null;
+  let head = lines.slice(0, FOLD_LINES).join("\n");
+  if (head.length > FOLD_CHARS) {
+    const end = /[\ud800-\udbff]/.test(head[FOLD_CHARS - 1]) ? FOLD_CHARS - 1 : FOLD_CHARS;
+    head = head.slice(0, end);
+  }
+  return `${head}…`;
+}
+
 /** Agent HTML for a sandboxed frame, told the page's color scheme: the meta goes after a doctype, so the document keeps
  *  its mode. */
 function themedFrame(html, theme) {
@@ -233,10 +250,48 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     return known ? el("div", { class: "row file" }, "Saved ", el("a", { href: fileHref(known) }, known)) : null;
   }
 
+  /** A button that folds and unfolds something, its state in `ui.open` under `key` so a repaint keeps it; `apply(open)`
+   *  draws the state. The same button stays through a click, so the focus does. */
+  function foldButton(key, [closed, opened], apply) {
+    const button = btn({ class: "fold" });
+    const sync = () => {
+      const open = ui.open.has(key);
+      button.setAttribute("aria-expanded", String(open));
+      button.textContent = open ? opened : closed;
+      apply(open);
+    };
+    button.addEventListener("click", () => {
+      if (ui.open.has(key)) ui.open.delete(key);
+      else ui.open.add(key);
+      sync();
+    });
+    sync();
+    return button;
+  }
+
+  /** The person's message: whole when short, else its head with a toggle for the rest. */
+  function userMessage(r) {
+    const text = r.text ?? r.summary ?? "";
+    const head = messageHead(text);
+    if (head === null) return el("div", { class: "row user" }, text);
+    const body = el("div", { class: "msg" });
+    return el("div", { class: "row user" }, body, foldButton(`${r.id}:whole`, ["Show the whole message", "Show less"], (open) => (body.textContent = open ? text : head)));
+  }
+
+  /** A recorded job's first message, shown as the input the job was given; the message the agent got is behind a toggle. */
+  function inputRow(r, input) {
+    const sent = el("div", { class: "msg", hidden: true });
+    const button = foldButton(`${r.id}:sent`, ["Show the message the agent got", "Hide the message the agent got"], (open) => {
+      sent.hidden = !open;
+      sent.replaceChildren(...(open ? [r.text ?? r.summary ?? ""] : []));
+    });
+    return el("div", { class: "row user input" }, el("div", { class: "tag" }, "Input"), el("pre", {}, JSON.stringify(input, null, 2)), button, sent);
+  }
+
   function rowNode(r) {
     switch (r.kind) {
       case "user_message":
-        return el("div", { class: "row user" }, r.text ?? r.summary);
+        return ui.info?.input != null && r.id === ui.rows.find((x) => x.kind === "user_message")?.id ? inputRow(r, ui.info.input) : userMessage(r);
       case "thinking":
         return thinking(r);
       case "text_block":

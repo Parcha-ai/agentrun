@@ -2,6 +2,8 @@
 // drawn on a small DOM (fake-dom.mjs) over a fake source, live and replay; a replay is written by writeReplay and read
 // back by staticSource from a static host under a subpath. No network beyond loopback, no key, no model.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +16,12 @@ import { buildSignedInHome, signedInHomeSkip } from "../../packages/pi-durable-a
 import { ensureAgentHome } from "./agent/home.mjs";
 import { byId, byTag, fakeDom, settle, shown } from "./fake-dom.mjs";
 import { serveStatic, transcript } from "./fixtures.mjs";
-import { packPage, REPLAY_CSP } from "./pack-page.mjs";
+import { packPage, REPLAY_CSP, REPLAY_THEMES } from "./pack-page.mjs";
 import { staticSource } from "./page/source.js";
 import { readRunEntries, writeReplay } from "./replay.mjs";
 
+/** fetch as Node has it: a test that mounts more than once restores this, not an earlier mount's stand-in. */
+const REAL_FETCH = globalThis.fetch;
 let tmp;
 let bundle;
 let page;
@@ -65,9 +69,8 @@ const liveSource = (calls = []) => ({
 async function mount(t, source, hash, options) {
   const dom = fakeDom({ hash });
   const fetched = [];
-  const real = globalThis.fetch;
   globalThis.fetch = (url) => (fetched.push(String(url)), Promise.reject(new Error("the run page reads only through its source")));
-  t.after(() => (globalThis.fetch = real));
+  t.after(() => (globalThis.fetch = REAL_FETCH));
   const handle = page.mountRunPage(dom.root, source, options);
   t.after(() => handle.unmount());
   await settle();
@@ -374,6 +377,56 @@ test("the packed replay page: every URL relative, the CSP in a meta tag, no way 
   await assert.rejects(packPage(join(tmp, "x"), { data: "/data/" }), /relative/);
 });
 
+/** The `replay-theme` meta of a packed bundle's index.html, and replay.js run as the browser runs it: against that
+ *  document, on a fake page, with every read failing (only the theme it mounts with is looked at). */
+async function bootstrapTheme(t, dir) {
+  const index = await readFile(join(dir, "index.html"), "utf8");
+  const meta = (name) => {
+    const found = new RegExp(`<meta name="${name}" content="([^"]*)">`).exec(index);
+    return found ? { getAttribute: () => found[1] } : null;
+  };
+  const dom = fakeDom({ hash: "#/" });
+  dom.window.setInterval = () => 0;
+  dom.window.clearInterval = () => {};
+  globalThis.document = { querySelector: (selector) => meta(/name="([a-z-]+)"/.exec(selector)[1]), getElementById: () => dom.root };
+  globalThis.location = { href: "http://page.test/run/" };
+  globalThis.fetch = () => Promise.reject(new Error("no network in this test"));
+  t.after(() => {
+    delete globalThis.document;
+    delete globalThis.location;
+    globalThis.fetch = REAL_FETCH;
+  });
+  await import(`${pathToFileURL(join(dir, "replay.js")).href}`);
+  await settle();
+  return { meta: meta("replay-theme")?.getAttribute(), theme: dom.root.getAttribute("data-theme") };
+}
+
+test("pack-page --theme: the packed bootstrap carries the theme, auto by default, and replay.js mounts the page in it", async (t) => {
+  assert.deepEqual(REPLAY_THEMES, page.THEMES, "the packer and the page know the same themes");
+  const plain = await packPage(join(tmp, "theme-default"));
+  assert.match(await readFile(join(plain, "index.html"), "utf8"), /<meta name="replay-data" content="\.\/data\/">\n<meta name="replay-theme" content="auto">/);
+  assert.deepEqual(await bootstrapTheme(t, plain), { meta: "auto", theme: "auto" });
+  for (const theme of ["dark", "light"]) {
+    const dir = await packPage(join(tmp, `theme-${theme}`), { theme });
+    assert.deepEqual(await bootstrapTheme(t, dir), { meta: theme, theme }, `a ${theme} bundle mounts ${theme}`);
+  }
+});
+
+test("pack-page refuses a theme the page does not draw in, before writing anything; the CLI takes --theme", async () => {
+  const out = join(tmp, "theme-bad");
+  await assert.rejects(packPage(out, { theme: "blue" }), /the run page's theme is one of auto, light, dark, not "blue"/);
+  await assert.rejects(packPage(out, { theme: '"><script>' }), /theme is one of/);
+  await assert.rejects(readdir(out), { code: "ENOENT" }, "nothing was written");
+  const run = (...args) => spawnSync(process.execPath, [new URL("./pack-page.mjs", import.meta.url).pathname, ...args], { encoding: "utf8" });
+  const ok = run(join(tmp, "theme-cli"), "--theme", "dark");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(await readFile(join(tmp, "theme-cli", "index.html"), "utf8"), /<meta name="replay-theme" content="dark">/);
+  const bad = run(join(tmp, "theme-cli-bad"), "--theme", "blue");
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /theme is one of auto, light, dark/);
+  await assert.rejects(readdir(join(tmp, "theme-cli-bad")), { code: "ENOENT" }, "and wrote nothing");
+});
+
 const RECORDING = new URL("../../apps/viewer/recordings/reference-job/", import.meta.url);
 const GOLDEN = new URL("../../packages/pi-durable-agent/test/fixtures/timeline-reference-job.txt", import.meta.url);
 
@@ -458,4 +511,232 @@ test("a recording's blob that does not match its name is refused; files from a d
   await symlink(result, join(work, "linked.json"));
   await writeReplay(join(dir, "data"), [{ id: "w", rows: [], files: work }]);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "data", "runs", "w", "files.json"), "utf8")).map((f) => f.path), ["out/rows.csv", "report.md"]);
+});
+
+// ---- long first messages, and a replay's input ---------------------------------------------------------------------
+
+const userRow = (id, text) => ({ ...rows[0], id, text, summary: `You: ${text}` });
+/** The fixture's rows with the first message replaced. */
+const withFirst = (text) => [userRow(rows[0].id, text), ...rows.slice(1)];
+/** A replay source over `ready` rows, its run record carrying `extra`. */
+const replayOf = (ready, extra = {}) => ({ ...replaySource(), run: async () => summary(extra), timeline: async () => ({ rows: ready, state: "idle", costUsd: 0.05 }) });
+const userRows = (view) => byTag(view.find("steps"), "div").filter((d) => /^row user\b/.test(d.getAttribute("class") ?? ""));
+const foldButtons = (view) => byTag(view.find("steps"), "button");
+const part = (node, cls) => byTag(node, "div").find((d) => d.getAttribute("class") === cls);
+const INPUT = { company: "Acme Ltd", urls: ["http://registry.example/companies/01234567", "http://news.example/acme-opens-a-second-plant"] };
+
+test("a first message over 600 characters shows its head and a toggle for the whole; the toggle expands and collapses it", async (t) => {
+  const long = `${"a".repeat(599)}b${"c".repeat(400)}`;
+  const view = await mount(t, replayOf(withFirst(long)), "#/run/r1");
+  const [toggle, ...others] = foldButtons(view);
+  assert.deepEqual(others, [], "one toggle");
+  assert.equal(toggle.tagName, "BUTTON");
+  assert.equal(toggle.getAttribute("type"), "button");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.textContent, "Show the whole message");
+  const [row] = userRows(view);
+  assert.equal(part(row, "msg").textContent, `${"a".repeat(599)}b…`, "the first 600 characters, then an ellipsis");
+  toggle.click();
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  assert.equal(toggle.textContent, "Show less");
+  assert.equal(part(row, "msg").textContent, long, "the whole message");
+  toggle.click();
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(toggle.textContent, "Show the whole message");
+  assert.equal(part(row, "msg").textContent, `${"a".repeat(599)}b…`);
+  assert.doesNotMatch(view.find("steps").textContent, /c{10}/, "none of the rest shows folded");
+});
+
+test("a first message over 8 lines folds to its first 8; 8 lines and 600 characters are not folded", async (t) => {
+  const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+  const view = await mount(t, replayOf(withFirst(lines(12))), "#/run/r1");
+  const [row] = userRows(view);
+  assert.equal(part(row, "msg").textContent, `${lines(8)}…`);
+  foldButtons(view)[0].click();
+  assert.equal(part(row, "msg").textContent, lines(12));
+
+  for (const [name, text] of [["8 lines", lines(8)], ["600 characters", "x".repeat(600)]]) {
+    const whole = await mount(t, replayOf(withFirst(text)), "#/run/r1");
+    assert.deepEqual(foldButtons(whole), [], `${name}: no toggle`);
+    assert.equal(userRows(whole)[0].textContent, text, `${name}: the message whole, in the row as before`);
+    assert.equal(userRows(whole)[0].getAttribute("class"), "row user");
+  }
+  const edge = await mount(t, replayOf(withFirst("x".repeat(601))), "#/run/r1");
+  assert.equal(foldButtons(edge).length, 1, "601 characters folds");
+  assert.equal(userRows(edge)[0].textContent.startsWith("x".repeat(600)), true);
+});
+
+test("the fold never cuts a surrogate pair", async (t) => {
+  const text = `${"a".repeat(599)}\u{1F600}${"b".repeat(100)}`;
+  assert.equal(page.messageHead(text), `${"a".repeat(599)}…`, "the emoji's first half is not left behind");
+  assert.equal(page.messageHead(`${"a".repeat(598)}\u{1F600}${"b".repeat(100)}`), `${"a".repeat(598)}\u{1F600}…`, "a whole pair at the edge stays");
+  assert.equal(page.messageHead("short"), null);
+  const view = await mount(t, replayOf(withFirst(text)), "#/run/r1");
+  assert.doesNotMatch(part(userRows(view)[0], "msg").textContent, /[\ud800-\udbff](?![\udc00-\udfff])/, "no lone surrogate on the page");
+});
+
+test("a fold's rows are the source's rows: the fold changes nothing it was given, and a short first message has no toggle", async (t) => {
+  const long = withFirst("y".repeat(1500));
+  const before = structuredClone(long);
+  const view = await mount(t, replayOf(long), "#/run/r1");
+  foldButtons(view)[0].click();
+  assert.deepEqual(long, before, "the rows are as the source gave them");
+  assert.equal(long[0].text.length, 1500);
+  assert.equal(Object.keys(long[0]).sort().join(), Object.keys(rows[0]).sort().join(), "no field on a timeline row");
+
+  const plain = await mount(t, replayOf(rows), "#/run/r1");
+  assert.deepEqual(foldButtons(plain), [], "the fixture's short messages have no toggle");
+  assert.deepEqual(userRows(plain).map((row) => [row.getAttribute("class"), row.textContent]), [["row user", rows[0].text], ["row user", "done"]]);
+});
+
+/** A live source whose timeline yields `first`, then, once `more()` is called, the same rows and one more: a repaint. */
+function repainting(first, extra) {
+  let more;
+  const gate = new Promise((resolve) => (more = resolve));
+  const source = {
+    ...liveSource(),
+    run: async () => summary({ status: "running", live: true, state: "waiting", liveView: { key: "k1" }, ...extra }),
+    timeline: (id, { live, signal } = {}) => {
+      if (!live) return Promise.resolve({ rows: first, state: "idle", costUsd: 0.05 });
+      return (async function* () {
+        yield { rows: first, state: "waiting", costUsd: 0.03 };
+        await gate;
+        yield { rows: [...first, { ...rows[3], id: "later:1", summary: "later row" }], state: "waiting", costUsd: 0.04 };
+        await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      })();
+    },
+  };
+  return { source, more };
+}
+
+test("an expanded long message stays expanded when the page repaints, and a collapsed one stays collapsed", async (t) => {
+  const long = "z".repeat(900);
+  const { source, more } = repainting(withFirst(long), {});
+  const view = await mount(t, source, "#/run/r1");
+  const before = foldButtons(view)[0];
+  before.click();
+  more();
+  await settle();
+  assert.match(view.find("steps").textContent, /later row/, "the page repainted");
+  const after = foldButtons(view)[0];
+  assert.notEqual(after, before, "a new button: the rows were drawn again");
+  assert.equal(after.getAttribute("aria-expanded"), "true");
+  assert.equal(part(userRows(view)[0], "msg").textContent, long);
+
+  const second = repainting(withFirst(long), {});
+  const closed = await mount(t, second.source, "#/run/r1");
+  const was = foldButtons(closed)[0];
+  second.more();
+  await settle();
+  assert.notEqual(foldButtons(closed)[0], was);
+  assert.equal(foldButtons(closed)[0].getAttribute("aria-expanded"), "false");
+  assert.equal(part(userRows(closed)[0], "msg").textContent, `${"z".repeat(600)}…`);
+});
+
+test("a replay with the job's input shows the first message as Input, and the message the agent got behind a toggle", async (t) => {
+  const view = await mount(t, replayOf(rows, { input: INPUT }), "#/run/r1");
+  const [first, second] = userRows(view);
+  assert.equal(first.getAttribute("class"), "row user input");
+  assert.equal(part(first, "tag").textContent, "Input");
+  assert.equal(byTag(first, "pre")[0].textContent, JSON.stringify(INPUT, null, 2), "the input, pretty-printed");
+  const sent = part(first, "msg");
+  const [toggle, ...others] = byTag(first, "button");
+  assert.deepEqual(others, []);
+  assert.equal(toggle.textContent, "Show the message the agent got");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.ok(!shown(sent), "folded by default");
+  assert.ok(!first.textContent.includes(rows[0].text), "the message is not on the page folded");
+  toggle.click();
+  assert.ok(shown(sent));
+  assert.equal(sent.textContent, rows[0].text, "the message the agent got, whole");
+  assert.equal(toggle.textContent, "Hide the message the agent got");
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  toggle.click();
+  assert.ok(!shown(sent));
+  assert.ok(!first.textContent.includes(rows[0].text));
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  assert.equal(second.getAttribute("class"), "row user", "only the first message is the Input");
+  assert.equal(second.textContent, "done");
+});
+
+test("with no input, or a null one, the first message is shown as before; an input shows whole when the message is long", async (t) => {
+  for (const extra of [{}, { input: null }]) {
+    const view = await mount(t, replayOf(rows, extra), "#/run/r1");
+    assert.equal(part(userRows(view)[0], "tag"), undefined, `no Input row for ${JSON.stringify(extra)}`);
+    assert.equal(userRows(view)[0].getAttribute("class"), "row user");
+    assert.equal(userRows(view)[0].textContent, rows[0].text);
+  }
+  const long = "q".repeat(2000);
+  const view = await mount(t, replayOf(withFirst(long), { input: { n: 1 } }), "#/run/r1");
+  const [row] = userRows(view);
+  assert.equal(foldButtons(view).length, 1, "one toggle: the message's, none of the generic fold");
+  foldButtons(view)[0].click();
+  assert.equal(part(row, "msg").textContent, long, "the whole message, not its head");
+});
+
+test("an expanded message the agent got stays expanded when the page repaints", async (t) => {
+  const { source, more } = repainting(rows, { input: INPUT });
+  const view = await mount(t, source, "#/run/r1");
+  const before = byTag(view.find("steps"), "button")[0];
+  before.click();
+  more();
+  await settle();
+  const [first] = userRows(view);
+  const after = byTag(first, "button")[0];
+  assert.notEqual(after, before);
+  assert.equal(after.getAttribute("aria-expanded"), "true");
+  assert.ok(shown(part(first, "msg")));
+  assert.equal(part(first, "msg").textContent, rows[0].text);
+});
+
+/** The reference recording, copied, with a job blob (`{ workflow, input, files }`) named by its SHA-256 in its manifest. */
+async function recordingWithJob(dir, jobBytes) {
+  await cp(RECORDING, join(dir, "rec"), { recursive: true });
+  const sha = createHash("sha256").update(jobBytes).digest("hex");
+  await writeFile(join(dir, "rec", "blobs", `${sha}.json`), jobBytes);
+  const manifestPath = join(dir, "rec", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.job, undefined, "the reference recording has no job blob as recorded");
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, job: { blob: sha, sha256: sha } }));
+  return manifestPath;
+}
+
+test("a recording with a job blob: writeReplay writes the job's input on the run record, and the page shows it as Input", async (t) => {
+  const dir = join(tmp, "job");
+  const store = await referenceStore(dir);
+  const job = { workflow: "reference-company-check", input: INPUT, files: [] };
+  const manifest = await recordingWithJob(dir, Buffer.from(JSON.stringify(job)));
+  const out = join(dir, "data");
+  await writeReplay(out, [{ id: "reference-job", store, manifest }]);
+  const run = JSON.parse(await readFile(join(out, "runs", "reference-job.json"), "utf8"));
+  assert.deepEqual(run.input, INPUT);
+  const { runs } = JSON.parse(await readFile(join(out, "runs.json"), "utf8"));
+  assert.ok(runs.every((r) => !("input" in r)), "the history's summaries carry no input");
+  assert.ok(JSON.parse(await readFile(join(out, "runs", "reference-job", "files.json"), "utf8")).some((f) => f.path === "job.json"), "the job blob stays a file, as before");
+
+  const host = await serveStatic(dir, "/run/");
+  t.after(() => host.close());
+  const source = staticSource(`${host.url}data/`);
+  const [record, timeline] = [await source.run("reference-job"), await source.timeline("reference-job")];
+  assert.deepEqual(record.input, INPUT, "staticSource hands the page the input");
+  const view = await mount(t, { ...replaySource(), run: async () => record, list: async () => [record], timeline: async () => timeline }, "#/run/reference-job");
+  const [first] = userRows(view);
+  assert.equal(part(first, "tag").textContent, "Input");
+  assert.equal(byTag(first, "pre")[0].textContent, JSON.stringify(INPUT, null, 2));
+  assert.ok(!shown(part(first, "msg")));
+  assert.equal(byTag(first, "button")[0].textContent, "Show the message the agent got");
+  byTag(first, "button")[0].click();
+  assert.equal(part(first, "msg").textContent, timeline.rows.find((r) => r.kind === "user_message").text);
+});
+
+test("a recording's job blob that is not a JSON object is refused, and a recording without one writes no input", async () => {
+  const dir = join(tmp, "job-bad");
+  for (const [name, bytes] of [["not JSON", Buffer.from("{nope")], ["an array", Buffer.from("[1]")], ["null", Buffer.from("null")]]) {
+    const manifest = await recordingWithJob(join(dir, name.replace(/\W/g, "-")), bytes);
+    await assert.rejects(writeReplay(join(dir, "data"), [{ id: "bad", rows: [], manifest }]), /the job blob is not (?:JSON|a JSON object)/, name);
+  }
+  await assert.rejects(readdir(join(dir, "data")), { code: "ENOENT" }, "nothing was written");
+  const none = join(tmp, "job-none");
+  await writeReplay(join(none, "data"), [{ id: "reference-job", rows: [], manifest: new URL("manifest.json", RECORDING).pathname }]);
+  assert.equal("input" in JSON.parse(await readFile(join(none, "data", "runs", "reference-job.json"), "utf8")), false);
 });
