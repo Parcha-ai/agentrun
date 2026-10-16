@@ -68,6 +68,16 @@ type Line =
 	| { ackLines: number };
 
 /** The whole lines of a file: a last line without its newline is a write the process did not finish, and is dropped. */
+/** Every byte of `text` written at `fd`: a write that takes fewer goes on with the rest. */
+function writeAll(fd: number, text: string): void {
+	const bytes = Buffer.from(text);
+	for (let at = 0; at < bytes.length; ) {
+		const wrote = writeSync(fd, bytes, at, bytes.length - at);
+		if (wrote <= 0) throw new Error(`a write took ${wrote} of ${bytes.length - at} bytes`);
+		at += wrote;
+	}
+}
+
 function wholeLines(path: string): Line[] {
 	let text: string;
 	try {
@@ -149,11 +159,11 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 		try {
 			for (const entry of pendingOf(writes, lines, -1, -1)) {
 				if (entry.writes !== undefined) {
-					writeSync(fresh, `${JSON.stringify({ commit: entry.commit, writes: entry.writes })}\n`);
+					writeAll(fresh, `${JSON.stringify({ commit: entry.commit, writes: entry.writes })}\n`);
 					rows += 1;
 				}
 				if (entry.lines !== undefined) {
-					writeSync(fresh, `${JSON.stringify({ commit: entry.commit, lines: entry.lines })}\n`);
+					writeAll(fresh, `${JSON.stringify({ commit: entry.commit, lines: entry.lines })}\n`);
 					rows += 1;
 				}
 			}
@@ -187,9 +197,21 @@ export function openOutbox(path: string, options: OutboxOptions): Outbox {
 	let directoryDirty = false;
 	// The rows at which the file is cleared out next: higher after a try that failed.
 	let compactAt = COMPACT_AT_ROWS;
+	// A row that could not be written whole: nothing goes after its fragment, which a reopen drops as the file's last.
+	let broken: unknown;
 	const append = (line: Line) => {
 		if (closed) throw new Error("the outbox is closed");
-		writeSync(file, `${JSON.stringify(line)}\n`);
+		if (broken !== undefined) {
+			throw new Error(
+				`the outbox could not write a row whole: ${broken instanceof Error ? broken.message : String(broken)}`,
+			);
+		}
+		try {
+			writeAll(file, `${JSON.stringify(line)}\n`);
+		} catch (cause) {
+			broken = cause;
+			throw cause;
+		}
 		rows += 1;
 	};
 	const sync = () => {

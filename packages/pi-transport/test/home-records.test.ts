@@ -603,6 +603,45 @@ describe("the record stream", () => {
 		});
 	}, 30_000);
 
+	it("settles the ready and an order the runner did not answer when its link closes, though the log stalls", async () => {
+		const models = createModels();
+		let appends = 0;
+		// A log that never takes a commit, as a disk that hangs.
+		const stalled: RecordSink = {
+			held: () => ({ after: 0, linesAfter: 0 }),
+			append: () => {
+				appends += 1;
+				return new Promise(() => {});
+			},
+			lines: async () => {},
+		};
+		const within = <T>(work: Promise<T>) => Promise.race([work, sleep(2_000).then(() => "still waiting" as const)]);
+		const [runnerEnd, hostEnd] = linkPair();
+		runnerEnd.onFrame((frame) => {
+			if (frame.t === "hello") runnerEnd.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+			if (frame.t === "order") {
+				// A commit the log never takes, then the end of the runner, the order unanswered.
+				runnerEnd.send({ t: "record", commit: 1, writes: [], epoch: 1 });
+				runnerEnd.close("the runner died");
+			}
+		});
+		const host = connectHome(hostEnd, { models, epoch: 1, records: stalled });
+		getOrThrow(await host.ready);
+		const status = await within(host.status(context));
+		expect(status === "still waiting" ? status : status.ok ? "answered" : status.error.code).toBe("link_lost");
+		expect(appends).toBe(1);
+		// A second link, whose ready waits for that log to settle before the host says where it is: its close settles it.
+		const [secondRunner, secondHost] = linkPair();
+		secondRunner.onFrame((frame) => {
+			if (frame.t !== "hello") return;
+			secondRunner.send({ t: "ready", v: 1, ok: true, session: "s", state: "open" });
+			secondRunner.close("gone at once");
+		});
+		const second = connectHome(secondHost, { models, epoch: 1, records: stalled });
+		const ready = await within(second.ready);
+		expect(ready === "still waiting" ? ready : ready.ok ? ready.value.state : ready.error.code).toBe("open");
+	});
+
 	it("gives an order the answer the runner sent before it closed, behind a slow log", async () => {
 		const models = createModels();
 		const kept = memorySink({ appendMs: 50 });
@@ -687,7 +726,7 @@ describe("the runner's end of the record stream", () => {
 
 	it("lets the outbox go when the host says its log holds the commits, though their acknowledgements were lost", async () => {
 		await withWorld(async (made) => {
-			let record: (lines: readonly RecordLine[]) => void = () => {};
+			let record: (lines: RecordLine[]) => void | Promise<void> = () => {};
 			const shipper = createShipper({
 				admits: () => false,
 				recording: {
