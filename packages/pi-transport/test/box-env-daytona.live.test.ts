@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { daytonaBoxes } from "../src/box/daytona.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { normalize, random, randomOperation } from "./box-env-support.ts";
+import { normalize, random, randomOperation, waitNotRunning } from "./box-env-support.ts";
 
 const SEEDS = Number(process.env.PI_TRANSPORT_LIVE_SEEDS ?? 20);
 const STEPS = 25;
@@ -140,18 +140,19 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 					withAbortSignal(controller.signal, context),
 				);
 				for (let tries = 0; !(await running(env, aborted)); tries++) {
-					if (tries > 100) throw new Error("the command did not start");
+					if (tries > 300) throw new Error("the command did not start");
 					await sleep(100);
 				}
 				controller.abort();
 				const result = await pending;
 				expect(result.ok ? "" : result.error.code).toBe("aborted");
-				expect(await running(env, aborted)).toBe(false);
+				// `exec` has returned; a late-landing start is killed after that, so absence is polled, with a bound that fails.
+				await waitNotRunning(() => running(env, aborted), `the aborted command ${aborted.join("")}`);
 
 				const timed: [string, string] = ["pi-transport-timeout-", `${Date.now()}`];
 				const slow = await env.exec(`sleep 300 & sleep 300 # ${timed.join("")}\nwait`, { timeout: 1 }, context);
 				expect(slow.ok ? "" : slow.error.code).toBe("timeout");
-				expect(await running(env, timed)).toBe(false);
+				await waitNotRunning(() => running(env, timed), `the timed-out command ${timed.join("")}`);
 			});
 		});
 
@@ -216,7 +217,8 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 		// Runs last: by now every box this file started must be gone.
 		it("leaves no box behind", async () => {
 			let count = Number.POSITIVE_INFINITY;
-			for (const deadline = Date.now() + 30_000; count > 0 && Date.now() < deadline; ) {
+			// Daytona deletes in the background: a destroyed box can list by its labels for a minute and more.
+			for (const deadline = Date.now() + 180_000; count > 0 && Date.now() < deadline; ) {
 				count = getOrThrow(await provider.list(labels, context)).length;
 				if (count > 0) await sleep(1000);
 			}

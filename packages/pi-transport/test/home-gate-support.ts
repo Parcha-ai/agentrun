@@ -52,14 +52,15 @@ const CUT_CODES = ["interrupted", "blocked", "aborted"];
 const ANSWERS = 600;
 /** More records than any run writes, so one page is a whole scan. */
 const ALL = 2_000;
-const IDLE_TIMEOUT_MS = 20_000;
+/** Guards, not bounds: each wait ends as soon as its condition holds, so a passing trial is no slower. */
+const IDLE_TIMEOUT_MS = 60_000;
 const TICK_MS = 50;
 const ROUNDS = 6;
 
 export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Wait until `test` holds, looking every millisecond. False when it did not hold within `ms`. */
-export async function until(test: () => boolean | Promise<boolean>, ms = 10_000): Promise<boolean> {
+export async function until(test: () => boolean | Promise<boolean>, ms = 60_000): Promise<boolean> {
 	const deadline = performance.now() + ms;
 	while (!(await test())) {
 		if (performance.now() >= deadline) return false;

@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-durable-disk",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.14",
   "description": "A durable pi host on a network disk (Archil): one owner per run, a fence, durable commits, and a supervisor.",
   "keywords": [
     "pi",
@@ -30,6 +30,10 @@
       "types": "./dist/lease.d.ts",
       "default": "./dist/lease.js"
     },
+    "./internals": {
+      "types": "./dist/internals.d.ts",
+      "default": "./dist/internals.js"
+    },
     "./bin/archil-scoped": "./bin/archil-scoped",
     "./package.json": "./package.json"
   },
@@ -58,12 +62,13 @@
     "test:live:run": "node --test --test-concurrency=1 test/live/run.live.test.ts",
     "test:live:store": "node --test --test-concurrency=1 test/live/store.live.test.ts",
     "test:live:supervise": "node --test --test-concurrency=1 test/live/supervise.live.test.ts",
+    "test:live:supervise-slow": "node --test --test-concurrency=1 test/live/supervise-slow.live.test.ts",
     "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts test/live/docker-park.live.test.ts",
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.3.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
+    "@earendil-works/chord": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
   },
   "dependencies": {
     "disk": "1.7.0"

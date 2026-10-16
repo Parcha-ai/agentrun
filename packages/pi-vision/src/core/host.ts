@@ -107,12 +107,12 @@ export type VisionOptions = {
   /** Handles by scheme: "session" for browser recordings. */
   readonly sources?: Readonly<Record<string, SourceProvider>>;
   /** Host policy: true, or the refusal the model reads. Absent: everything is allowed. */
-  readonly allow?: (request: { readonly path: string; readonly kind: Kind; readonly tool: "read" | "look" }) => true | string;
+  readonly allow?: (request: { readonly path: string; readonly kind: Kind; readonly tool: "read" | "vision.see" }) => true | string;
   /** The host's rows and spend. A throw here never fails a call. */
   readonly onLook?: (look: LookEvent) => void | Promise<void>;
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
   readonly section?: { readonly addendum?: string };
-  readonly install?: { readonly read?: "wrap" | "off"; readonly look?: boolean; readonly guard?: boolean };
+  readonly install?: { readonly read?: "wrap" | "off"; readonly guard?: boolean };
 };
 
 /** What the adapter resolved from `VisionOptions` for one call: the route's limits, who looks, where derivations and

@@ -1,20 +1,23 @@
 // The pi-durable adapter: `createVisionExtension` installs the `read` wrap (for hosts whose `read` is pi's) and the
 // guard over every tool's images, takes the eyes from `api.models` where pi has it, and gives a host whose `read` is its
-// own the media half of `read`, the fit of any result's images and a PDF's text as functions. It is the only module that
-// touches pi-durable, by types alone: the extension is the plain object pi's identity helpers build, and the one value it
-// needs at run time is imported when a guard first meets an image. Every tool it installs is replay-safe: a call cut by
-// a crash runs again with the same task and memos, and a paid answer is a memo before the result that reports it.
+// own the media half of `read`, the fit of any result's images and a PDF's text as functions, and a host's code mode
+// `vision.see` bound to one call. It is the only module that touches pi-durable, by types alone: the extension is the
+// plain object pi's identity helpers build, and the one value it needs at run time is imported when a guard first meets
+// an image. Every tool it installs is replay-safe: a call cut by a crash runs again with the same task and memos, and a
+// paid answer is a memo before the result that reports it.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { ConversationId, Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
-import { withReadMedia } from "./core/contract.js";
+import { VISION_SEE, withReadMedia } from "./core/contract.js";
 import type { VisionEnv } from "./core/env.js";
 import { guardResult } from "./core/guard.js";
 import type { CallContext, CallSetup, Eyes, Json, ReadArgs, ToolResult, VisionOptions } from "./core/host.js";
 import type { ImageProcessor } from "./core/image.js";
 import { resolveLimits } from "./core/limits.js";
+import { firstLine } from "./core/misses.js";
 import { pdfText } from "./core/pdf.js";
 import { detectOnce } from "./core/provider.js";
 import { readMedia, readWithoutSetup } from "./core/read.js";
+import { see, SeeMiss, type SeeGlobal } from "./core/see.js";
 import { modelsEyes, modelsOf, type ModelsDoor } from "./eyes/models.js";
 import { childEnvOf, nodeVisionEnv, type ChildEnv } from "./node.js";
 import { packageProviders } from "./providers/defaults.js";
@@ -26,14 +29,16 @@ export { packageProviders } from "./providers/defaults.js";
 export type VisionHandle = {
   /** Install once per Harness; select per conversation. */
   readonly extension: Extension;
-  /** `look`, for `wrapTool` and a conversation's tool filter. */
-  readonly tools: readonly ToolRegistration[];
   /** The media half of `read`, for a host whose `read` is its own. Null when the path reads as plain text. */
   read(env: VisionEnv, args: ReadArgs, call: CallContext): Promise<ToolResult | null>;
   /** One tool result's image blocks fitted to the call's route, for a host that shapes results itself. */
   fit(result: ToolResult, call: CallContext): Promise<ToolResult>;
   /** The text of a PDF held in memory; null when it has none. */
   pdfText(bytes: Uint8Array, signal?: AbortSignal): Promise<string | null>;
+  /** `vision.see` for a host's code-mode sandbox, built per call so it has the call's memos and environment: pass it in
+   *  pi-codemode's `globals`, as in `globals: [vision.see(api.env, await callContext(api, context))]`. It reads paths
+   *  through `env`; with none, it sees image blocks only. */
+  see(env: VisionEnv | undefined, call: CallContext): SeeGlobal;
 };
 
 /** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
@@ -226,9 +231,22 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
   };
   return {
     extension,
-    tools: [],
     read: readFor,
     fit: async (result, call) => guardResult(result, call, await setup(call)),
     pdfText: (bytes, signal) => pdfText(bytes, { env: here, providers, ...(signal ? { signal } : {}) }),
+    see: (env, call) => ({
+      ...VISION_SEE,
+      execute: async (request, script) => {
+        const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
+        // A setup the host's own callbacks fail to make is a typed miss that `onMiss` hears of, never their error.
+        const made = await setup(call).catch(async (error: unknown) => {
+          if (signal?.aborted) throw error;
+          const reason = `this host could not set the look up: ${firstLine(error)}`;
+          await onMiss?.({ conversationId: call.conversationId, tool: VISION_SEE.name, source: VISION_SEE.name, code: "look_failed", reason, receipt: null });
+          throw new SeeMiss("look_failed", reason);
+        });
+        return see(request, env, { ...call, signal }, made);
+      },
+    }),
   };
 }

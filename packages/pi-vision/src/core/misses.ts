@@ -8,7 +8,7 @@ import type { ToolResult } from "./host.js";
 /** One read or look that could not give the model what it asked for, for the host's rows. */
 export type MissEvent = {
   readonly conversationId: string;
-  /** `read` or `look`, or the tool whose result held the image (`CallContext.tool`). */
+  /** `read` or `vision.see`, or the tool whose result held the image (`CallContext.tool`). */
   readonly tool: string;
   readonly source: string;
   readonly ask?: string;

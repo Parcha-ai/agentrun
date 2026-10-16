@@ -124,7 +124,10 @@ test("every leftover is reported together: the profile and the socket directory 
   t.after(() => { for (const dir of [locked, socketDir]) { try { chmodSync(dir, 0o700); } catch {} } });
   const failure = await provider.release(ref).then(() => null, (error) => error);
   assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
-  assert.deepEqual([...failure.dirs].sort(), [profile, socketDir].sort(), "both are named");
+  // Both are named. When the path leaves room for it (Chrome's socket path may not pass 107 bytes, so how long this test's root is decides), the
+  // socket directory is inside the lease's private TMPDIR, which cannot be removed either and is named with them; nothing else is.
+  assert.ok(failure.dirs.includes(profile) && failure.dirs.includes(socketDir), `both are named: ${failure.dirs}`);
+  assert.deepEqual([...failure.dirs].filter((dir) => dir !== profile && dir !== socketDir && dir !== path.dirname(socketDir)), [], "and nothing else is");
   assert.ok(failure.message.includes(profile) && failure.message.includes(socketDir), failure.message);
   // Removing what it could took the profile's link to the socket directory with it, so the provider remembers the directory: once both can be
   // emptied, one more release removes both.

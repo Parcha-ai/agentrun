@@ -3,7 +3,7 @@
 // arguments, so a change here is a change for every host; it is never made to pass this test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { LOOK_TOOL, MISS_CODES, READ_MEDIA_ARGUMENTS, READ_MEDIA_DESCRIPTION, READ_MEDIA_PARAMETERS, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { MISS_CODES, READ_MEDIA_ARGUMENTS, READ_MEDIA_DESCRIPTION, READ_MEDIA_PARAMETERS, VISION_SEE, visionSection, withReadMedia } from "@parcha/pi-vision";
 
 const SNAPSHOT = {
   parameters: {
@@ -54,14 +54,11 @@ test("a file tool keeps everything of its own and gains the media arguments and 
   assert.deepEqual(tool.parameters.properties, { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, "the tool given is not changed");
 });
 
-test("look takes a source and a question, and pages, a window and a region as its options", () => {
-  assert.equal(LOOK_TOOL.name, "look");
-  assert.equal(LOOK_TOOL.replay, "safe");
-  const { properties, required, additionalProperties } = LOOK_TOOL.parameters;
-  assert.deepEqual(Object.keys(properties), ["source", "ask", "pages", "from_s", "to_s", "region"]);
-  assert.deepEqual(required, ["source", "ask"]);
-  assert.equal(additionalProperties, false);
-  assert.deepEqual(Object.fromEntries(Object.entries(properties).map(([k, v]) => [k, v.type])), { source: "string", ask: "string", pages: "string", from_s: "number", to_s: "number", region: "string" });
+test("vision.see is a code-mode global, not a tool: a namespaced name, a doc comment and a signature for the sandbox's declarations", () => {
+  assert.equal(VISION_SEE.name, "vision.see");
+  assert.ok(Object.isFrozen(VISION_SEE));
+  assert.deepEqual(Object.keys(VISION_SEE), ["name", "description", "signature"], "no parameters schema and no replay class: it enters no tool list");
+  assert.match(VISION_SEE.signature, /^\(request: \{ ask: string; paths\?: string\[\]; images\?: .*fragments\?: string\[\] \}\): Promise<\{ text: string; model: string; costUsd: number \| null; receipts: string\[\]; kept\?: true \}>$/);
 });
 
 test("the miss codes keep the three hosts already write, and add the rest", () => {
@@ -72,6 +69,7 @@ test("the miss codes keep the three hosts already write, and add the rest", () =
 
 test("the section is static, and a host's addendum comes after it", () => {
   const section = visionSection();
+  assert.ok(section.includes("vision.see") && !/\blook\(/.test(section), "it names the function there is, and no look tool");
   assert.equal(visionSection(""), section);
   assert.equal(visionSection("  "), section);
   assert.equal(visionSection("Recordings are read by handle."), `${section}\nRecordings are read by handle.`);

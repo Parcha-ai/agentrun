@@ -13,7 +13,7 @@
 // incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { procStartTicks, TERMINAL_EXITS } from "./local-host.ts";
@@ -85,13 +85,16 @@ function writeState(path: string, state: LaunchState): void {
 const alive = (pid: number | null, ticks: number | null) =>
   Number.isInteger(pid) && pid! > 1 && typeof ticks === "number" && procStartTicks(pid!) === ticks;
 
-/** running while either process lives; otherwise stopped after a clean exit, failed after any other end. */
+/** running while either process lives and the launcher has not recorded its exit; otherwise stopped after a clean exit,
+ * failed after any other end. Every "exited" the launcher saves is final and comes after its instance ended, so once it is
+ * saved (and no instance lives) the record is the answer, even while the launcher's own process is still exiting. */
 export function launchStatus(dir: string, name: string): LaunchStatus {
   const state = readState(dir, name);
   if (!state) return { status: "failed", state: null, launcherAlive: false, instanceAlive: false };
   const launcherAlive = alive(state.launcher, state.launcherTicks);
   const instanceAlive = alive(state.instance, state.instanceTicks);
-  if (launcherAlive || instanceAlive) return { status: "running", state, launcherAlive, instanceAlive };
+  const ended = state.phase === "exited" && !instanceAlive;
+  if (!ended && (launcherAlive || instanceAlive)) return { status: "running", state, launcherAlive, instanceAlive };
   const clean = state.phase === "exited" && state.exit === 0;
   return { status: clean ? "stopped" : "failed", state, launcherAlive, instanceAlive };
 }
@@ -246,7 +249,11 @@ export async function stop(dir: string, name: string, timeoutMs: number): Promis
     }
   };
   let s = launchStatus(dir, name);
-  if (s.status !== "running") return s;
+  if (s.status !== "running") {
+    // The launcher recorded its exit and is ending on its own; a launcher process that outstays its record is still sent away.
+    if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
+    return s;
+  }
   if (s.launcherAlive) kill(s.state!.launcher, s.state!.launcherTicks, "SIGTERM");
   else kill(s.state!.instance, s.state!.instanceTicks, "SIGTERM");
   for (const t0 = Date.now(); Date.now() - t0 < timeoutMs; await sleep(50)) {
@@ -289,7 +296,21 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === LAUNCH_SCRIPT) {
+/**
+ * Whether Node was started with this module. LAUNCH_SCRIPT comes from import.meta.url, which is the real path; argv[1] is
+ * the path as given, which may go through a link (a symlinked package directory, pnpm's linked node_modules).
+ */
+function invokedAsMain(): boolean {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  try {
+    return realpathSync(arg) === LAUNCH_SCRIPT;
+  } catch {
+    return resolve(arg) === LAUNCH_SCRIPT;
+  }
+}
+
+if (invokedAsMain()) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err: unknown) => {

@@ -76,10 +76,21 @@ export const PROFILE_PRAGMAS = {
   shared: { locking_mode: "normal", journal_mode: "wal", synchronous: 2, mmap_size: 0 },
 } as const satisfies Record<Profile, Record<string, string | number>>;
 
-/** Read every pragma of `profile` back and refuse (StorePragmaError) when any differs. */
-export async function assertPragmas(database: SqliteExecutor, profile: Profile): Promise<void> {
+/**
+ * On macOS, fsync does not flush the drive's cache, so a commit FULL syncs could still be lost to a power cut. These make
+ * SQLite sync with F_FULLFSYNC instead, at every commit and every checkpoint.
+ */
+export const FULLFSYNC_PRAGMAS = { fullfsync: 1, checkpoint_fullfsync: 1 } as const;
+
+/** What `profile` must read back on `platform`: its own pragmas, and on macOS `FULLFSYNC_PRAGMAS` too. */
+export function profilePragmas(profile: Profile, platform: NodeJS.Platform = process.platform): Readonly<Record<string, string | number>> {
+  return platform === "darwin" ? { ...PROFILE_PRAGMAS[profile], ...FULLFSYNC_PRAGMAS } : PROFILE_PRAGMAS[profile];
+}
+
+/** Read every pragma of `profile` on `platform` (default this one) back and refuse (StorePragmaError) when any differs. */
+export async function assertPragmas(database: SqliteExecutor, profile: Profile, platform: NodeJS.Platform = process.platform): Promise<void> {
   const mismatches: PragmaMismatch[] = [];
-  for (const [pragma, expected] of Object.entries(PROFILE_PRAGMAS[profile])) {
+  for (const [pragma, expected] of Object.entries(profilePragmas(profile, platform))) {
     const row = await database.get<Record<string, SqliteValue>>(`PRAGMA ${pragma}`);
     const actual = row === undefined ? undefined : Object.values(row)[0];
     if (actual !== expected) mismatches.push({ pragma, expected, actual });
@@ -208,6 +219,8 @@ export type OpenOptions = {
   readonly onFenced?: (error: StoreFencedError) => void;
   /** Wraps the raw database inside the fence, for instrumentation and fault injection. */
   readonly decorate?: (database: SqliteDatabase) => SqliteDatabase;
+  /** The platform whose pragmas the store takes (`profilePragmas`); default this one. For tests. */
+  readonly platform?: NodeJS.Platform;
 };
 
 export type ArchilStore = {
@@ -246,7 +259,9 @@ export async function openArchilStore(
     }
     await database.exec("PRAGMA synchronous = FULL"); // fsync the WAL on every commit
     await database.exec("PRAGMA mmap_size = 0"); // no mmap I/O of the database file on a network filesystem
-    await assertPragmas(database, profile);
+    const platform = options.platform ?? process.platform;
+    for (const pragma of platform === "darwin" ? Object.keys(FULLFSYNC_PRAGMAS) : []) await database.exec(`PRAGMA ${pragma} = ON`);
+    await assertPragmas(database, profile, platform);
     const storage = await SqliteStorage.open(database);
     return { storage, database, profile, file };
   } catch (error) {

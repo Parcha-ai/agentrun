@@ -2,28 +2,32 @@ import { existsSync } from "node:fs";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Context } from "@earendil-works/chord";
+import { withoutAbortSignal } from "@earendil-works/chord/context";
 import {
 	AgentDoc,
 	type Conversation,
 	type ConversationId,
 	configure,
 	defineDoc,
+	type Extension,
 	Harness,
 	type HarnessOptions,
+	type Storage,
 } from "@earendil-works/pi-durable";
 import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
+import { holdStore, type StoreHold } from "./lock.ts";
 import { type Seal, sealStore, verifyStore } from "./store.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
 export const MOVE_ENTRY = "transport.move";
 const CONVERSATION_PAGE = 200;
 
-/** Which move the session's conversations were last brought to a new workspace root by. */
-const HomeDoc = defineDoc<{ move?: string }>({
+/** The workspace root the session's conversations point at: where the store last ran. */
+const HomeDoc = defineDoc<{ root?: string }>({
 	kind: "transport.home",
 	version: 1,
 	scope: "session",
@@ -34,9 +38,9 @@ const HomeDoc = defineDoc<{ move?: string }>({
  * Why a home refused an order. `wrong_state`: the order does not fit what the home is doing. `stale_epoch`: the
  * order is for an epoch this home has left behind. `not_verified`: a store is here that no seal vouches for.
  * `seal_mismatch`: the store here is not the one the seal names. `app`: the app did not load or build. `store`: the
- * store could not be opened, sealed or removed.
+ * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store.
  */
-export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store";
+export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store" | "busy";
 
 /** An order a home did not carry out. Returned, never thrown. */
 export class HomeError extends Error {
@@ -55,13 +59,11 @@ export type ResumeOrder = {
 	readonly epoch: number;
 	/** The seal in the lease record: the store this home must open. Absent for a session that starts here. */
 	readonly seal?: Seal;
-	/** The move that brought the session here. */
+	/** The move that brought the session here. The store knows where it ran before: no root travels with the order. */
 	readonly move?: {
 		readonly id: string;
 		/** What the agent is told, once. */
 		readonly notice: string;
-		/** The workspace root before the move and here, when they differ. */
-		readonly roots?: { readonly from: string; readonly to: string };
 	};
 };
 
@@ -80,6 +82,29 @@ export type HomeOptions = {
 	readonly models: HarnessOptions["models"];
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
 	readonly env?: HarnessOptions["env"];
+	/**
+	 * Called with the store each time the home opens it, before pi does: the Harness runs over the storage it returns.
+	 * `opened` runs with the Harness before anything commits through it; `closed` after the Harness closed. A runner
+	 * ships its commits this way.
+	 */
+	readonly wrapStore?: (storage: Storage, context: Context) => Promise<WrappedStore>;
+	/** Extensions the home installs in the app's registry, beside its gate. */
+	readonly extensions?: readonly Extension[];
+	/**
+	 * Called each time this home takes the store into its hold, before the order runs: a runner process names itself
+	 * there as the one that holds the store. A failure here fails no order.
+	 */
+	readonly onHold?: () => void | Promise<void>;
+};
+
+/**
+ * What `wrapStore` gives the home. `opened` runs once the Harness has the store, before anything else commits through
+ * it; when it fails, the order fails and `closed` runs.
+ */
+export type WrappedStore = {
+	readonly storage: Storage;
+	readonly opened?: (harness: Harness) => void | Promise<void>;
+	readonly closed?: () => Promise<void>;
 };
 
 /**
@@ -92,6 +117,12 @@ export type HomeOptions = {
  */
 export interface Home {
 	readonly state: HomeState;
+	/** The epoch of the lease this home last ran at, or `undefined` for a home that never ran. */
+	readonly epoch: number | undefined;
+	/** The seal of the store this home sealed and has not opened again: what a recovery's take carries forward. */
+	readonly sealed: Seal | undefined;
+	/** The session the note this home keeps on disk is for, when the note names one. */
+	readonly noteSession: string | undefined;
 	/** The open Harness: for submissions, aborts and events. `undefined` unless `open`. */
 	readonly harness: Harness | undefined;
 	/**
@@ -129,6 +160,8 @@ type Marker = {
 	readonly move?: string;
 	readonly sealed?: Seal;
 	readonly retired?: true;
+	/** The session the note is for. A note written before it was kept names none. */
+	readonly session?: string;
 };
 
 class SessionHome implements Home {
@@ -137,10 +170,13 @@ class SessionHome implements Home {
 	#harness: Harness | undefined;
 	#gate: Gate | undefined;
 	#app: AppOptions | undefined;
+	#wrapped: WrappedStore | undefined;
 	#marker: Marker | undefined;
 	#drained = false;
 	/** The orders that open, close or delete, one at a time: none finds another half done. */
 	#queue: Promise<unknown> = Promise.resolve();
+	/** This home's hold on the store, from an order that opens it until the store is closed. */
+	#hold: StoreHold | undefined;
 
 	constructor(options: HomeOptions) {
 		this.#options = options;
@@ -159,12 +195,24 @@ class SessionHome implements Home {
 		return this.#marker?.sealed === undefined ? "closed" : "sealed";
 	}
 
+	get epoch(): number | undefined {
+		return this.#marker?.epoch;
+	}
+
+	get sealed(): Seal | undefined {
+		return this.#marker?.sealed;
+	}
+
+	get noteSession(): string | undefined {
+		return this.#marker?.session;
+	}
+
 	get harness(): Harness | undefined {
 		return this.#harness;
 	}
 
 	resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
-		return this.#serial(() => this.#resume(order, context));
+		return this.#serial(() => this.#holding(() => this.#resume(order, context)));
 	}
 
 	async #resume(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
@@ -220,6 +268,7 @@ class SessionHome implements Home {
 			const written = await this.#writeMarker({
 				v: 1,
 				epoch: order.epoch,
+				session: this.#options.session,
 				...(order.seal === undefined ? {} : { seal: order.seal }),
 				...(order.move === undefined ? {} : { move: order.move.id }),
 			});
@@ -260,7 +309,8 @@ class SessionHome implements Home {
 			return err(new HomeError("wrong_state", "the session does not run here"));
 		}
 		if (!this.#drained) return err(new HomeError("wrong_state", "a seal follows a drain that completed"));
-		await this.#close(context);
+		// Closing is not cut by an abort: an abort stops the seal, and the store stays whole and closed for a resume.
+		await this.#close(withoutAbortSignal(context));
 		const sealed = await sealStore(this.#options.store, context);
 		// The store is closed and whole either way. Without a seal the host tells this home to resume.
 		if (!sealed.ok) return err(new HomeError("store", `could not seal the store: ${sealed.error.message}`));
@@ -270,7 +320,7 @@ class SessionHome implements Home {
 	}
 
 	reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
-		return this.#serial(() => this.#reopen(order, context));
+		return this.#serial(() => this.#holding(() => this.#reopen(order, context)));
 	}
 
 	async #reopen(order: { readonly epoch: number }, context: Context): Promise<Result<void, HomeError>> {
@@ -313,11 +363,11 @@ class SessionHome implements Home {
 		// The note goes first: a home that dies while it deletes still refuses every order at this epoch or before.
 		const noted: Result<void, HomeError> = again
 			? ok(undefined)
-			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true });
+			: await this.#writeMarker({ v: 1, epoch: order.epoch, retired: true, session: this.#options.session });
 		if (!noted.ok) return noted;
 		const { store } = this.#options;
 		try {
-			for (const path of [store, `${store}-wal`, `${store}-shm`]) await rm(path, { force: true });
+			for (const path of [store, `${store}-wal`, `${store}-shm`, `${store}.lock`]) await rm(path, { force: true });
 		} catch (cause) {
 			return err(new HomeError("store", `could not delete this home's copy: ${toError(cause).message}`, cause));
 		}
@@ -340,10 +390,53 @@ class SessionHome implements Home {
 
 	async #close(context: Context): Promise<void> {
 		const harness = this.#harness;
+		const wrapped = this.#wrapped;
 		this.#harness = undefined;
 		this.#gate = undefined;
+		this.#wrapped = undefined;
 		this.#drained = false;
-		await harness?.close(context);
+		try {
+			await harness?.close(context);
+		} finally {
+			// The store is let go whatever the recorder's stop does.
+			try {
+				await wrapped?.closed?.();
+			} finally {
+				this.#letGo();
+			}
+		}
+	}
+
+	/**
+	 * Runs an order that opens the store while this home holds it alone. When another runner at this place has it, the
+	 * order is `busy` and nothing here changes. An order that leaves no Harness open lets the store go again.
+	 */
+	async #holding(work: () => Promise<Result<void, HomeError>>): Promise<Result<void, HomeError>> {
+		if (this.#hold === undefined && this.#harness === undefined) {
+			const { store } = this.#options;
+			try {
+				await mkdir(dirname(store), { recursive: true });
+				this.#hold = holdStore(store);
+			} catch (cause) {
+				return err(
+					new HomeError("store", `could not hold the store at ${store}: ${toError(cause).message}`, cause),
+				);
+			}
+			if (this.#hold === undefined) return err(new HomeError("busy", `another runner holds the store at ${store}`));
+			try {
+				await this.#options.onHold?.();
+			} catch {
+				// Naming the holder serves a later stop; the order goes on without it.
+			}
+		}
+		const done = await work();
+		if (this.#harness === undefined) this.#letGo();
+		return done;
+	}
+
+	#letGo(): void {
+		this.#hold?.release();
+		this.#hold = undefined;
 	}
 
 	/** Open the store, bring the conversations here, admit the notice, resume. Every step is safe to repeat. */
@@ -354,22 +447,31 @@ class SessionHome implements Home {
 		const { root: _root, onOpen, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
+		for (const extension of this.#options.extensions ?? []) registry.install(extension);
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
 		let harness: Harness;
+		let storage: Storage | undefined;
+		let wrapped: WrappedStore | undefined;
 		try {
 			await mkdir(dirname(store), { recursive: true });
-			harness = await Harness.open(await openNodeSqliteStorage(store), { ...rest, registry, models, env }, context);
+			storage = await openNodeSqliteStorage(store);
+			wrapped = await this.#options.wrapStore?.(storage, context);
+			harness = await Harness.open(wrapped?.storage ?? storage, { ...rest, registry, models, env }, context);
 		} catch (cause) {
+			await wrapped?.closed?.().catch(() => {});
+			// No Harness took the storage: it is this home's to close.
+			await storage?.close(withoutAbortSignal(context)).catch(() => {});
 			return err(new HomeError("store", `could not open the store: ${toError(cause).message}`, cause));
 		}
-		gate.attach(harness);
 		try {
-			const { move } = order;
-			if (move?.roots !== undefined && move.roots.from !== move.roots.to) {
-				await moveRoots(harness, move.id, move.roots.from, move.roots.to, context);
-			}
+			// Before anything commits through it: the recorder, bringing the session here, the app's own opening, the
+			// move's notice.
+			await wrapped?.opened?.(harness);
+			gate.attach(harness);
+			await bringHere(harness, workspace, context);
 			await onOpen?.(harness, context);
+			const { move } = order;
 			if (move !== undefined) {
 				// pi admits a request id once for each conversation, so a second open adds no second notice.
 				const root = await harness.root(context, built.value.root);
@@ -388,11 +490,13 @@ class SessionHome implements Home {
 			}
 		} catch (cause) {
 			await harness.close(context).catch(() => {});
+			await wrapped?.closed?.().catch(() => {});
 			return err(new HomeError("store", `could not prepare the session: ${toError(cause).message}`, cause));
 		}
 		harness.resume();
 		this.#harness = harness;
 		this.#gate = gate;
+		this.#wrapped = wrapped;
 		this.#app = built.value;
 		return ok(undefined);
 	}
@@ -409,7 +513,11 @@ class SessionHome implements Home {
 		return ok(this.#marker);
 	}
 
-	/** Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. */
+	/**
+	 * Written whole beside the store and renamed into place, so a reader finds the old marker or the new one. The note
+	 * never travels with the store: a move ships the store and the workspace only, and a target writes its own note on
+	 * its first resume.
+	 */
 	async #writeMarker(marker: Marker): Promise<Result<void, HomeError>> {
 		const temp = `${this.#markerPath}.tmp`;
 		try {
@@ -438,13 +546,19 @@ class SessionHome implements Home {
 }
 
 /**
- * One commit that points every conversation whose directory lies under `from` at the same place under `to`, and
- * records the move. A second call for the same move changes nothing, also when `to` lies under `from`.
+ * One commit that points every conversation whose directory lies under the root the store last ran in at the same
+ * place under `to`, and records `to` as the root. Nothing changes when the store last ran here, so a second call
+ * after a crash is a no-op, also when `to` lies under the old root.
  */
-async function moveRoots(harness: Harness, move: string, from: string, to: string, context: Context): Promise<void> {
+async function bringHere(harness: Harness, to: string, context: Context): Promise<void> {
 	await harness.commit(async (tx) => {
 		const home = await tx.doc(HomeDoc);
-		if (home.move === move) return;
+		const from = home.root;
+		if (from === to) return;
+		if (from === undefined) {
+			home.root = to;
+			return;
+		}
 		// Every read comes before the first write: a transaction refuses a table read after one.
 		const changes: [ConversationId, string][] = [];
 		for (let cursor: Parameters<typeof tx.scanConversations>[2]; ; ) {
@@ -458,7 +572,7 @@ async function moveRoots(harness: Harness, move: string, from: string, to: strin
 			cursor = page.next;
 		}
 		for (const [id, cwd] of changes) await configure(tx, id, { cwd });
-		home.move = move;
+		home.root = to;
 	}, context);
 }
 

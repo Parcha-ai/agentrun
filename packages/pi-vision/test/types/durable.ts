@@ -1,8 +1,10 @@
 // Type tests for the pi-durable adapter, checked by `npm run typecheck` on every pi-durable the peers accept: pi's
 // `Models` is the door the eyes look through, the extension installs in pi's registry, results are pi's, and a host's
-// own tool builds its call context from pi's tool API. A line marked @ts-expect-error fails the check if it compiles.
+// own tool builds its call context from pi's tool API, and a host's code mode takes `vision.see` in one line. A line
+// marked @ts-expect-error fails the check if it compiles.
 
 import type { Context } from "@earendil-works/chord";
+import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import type { Models } from "@earendil-works/pi-ai";
 import { createRegistry, type ConversationId, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CallContext, CallSetup, ToolResult, VisionEnv } from "../../src/index.js";
@@ -16,6 +18,9 @@ const vision = createVisionExtension({ evidence: { file: async () => null }, sco
 createRegistry().install(vision.extension);
 const result = (r: ToolResult): ToolExecutionResult => piResult(r);
 const call = (api: ToolExecutionApi, context: Context): Promise<CallContext> => callContext(api, context);
+// A host's code-mode tool builds the global per call and passes it to pi-codemode as it is.
+const sandbox = async (api: ToolExecutionApi, context: Context) => new CodemodeSandbox({ globals: [vision.see(api.env, await callContext(api, context))] });
+const global = (api: ToolExecutionApi, call: CallContext): CodemodeTool => vision.see(api.env, call);
 // A host's own tool names itself for `fit`'s rows, and `scope` gets pi's own id beside the string.
 const shot = (api: ToolExecutionApi, context: Context): Promise<CallContext> => callContext(api, context, "screenshot");
 const byPiId = createVisionExtension({
@@ -41,4 +46,4 @@ const unnamed = () => env.exec(["true"], { env: { ONLY: "this" }, inheritEnv: fa
 // @ts-expect-error a door without `completeSimple` cannot look.
 const blind: ModelsDoor = { getModel: () => undefined };
 
-void [door, eyes, result, call, shot, byPiId, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];
+void [door, eyes, result, call, sandbox, global, shot, byPiId, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];

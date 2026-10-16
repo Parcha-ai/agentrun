@@ -9,7 +9,7 @@ import {
   BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, sessionSpec,
   type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput,
 } from "./core/custody.js";
-import { classifyBrowserError, type BrowserFailure } from "./core/failures.js";
+import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
 import type { BrowserConfig, BrowserPolicy, BrowserProvider, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
@@ -41,7 +41,7 @@ export type CodingAgentOptions = {
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
 
 const refused = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
-  new BrowserFailureError({ ok: false, code, retryable: false, effect: "none", message });
+  new BrowserFailureError(browserFailure(code, message));
 
 type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null };
 type Deps = {
@@ -115,7 +115,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const provider = await this.d.provider();
     const tag = leaseTag("pib", this.d.config.run, randomUUID().slice(0, 8), ++this.seq);
     const spec = sessionSpec(this.d.config, tag, overrides);
-    const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now() });
+    const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS)]);
     let live: Live | null = null;
@@ -219,6 +219,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
 
   async dispatching(): Promise<void> {}
   async journal(): Promise<void> {}
+  async mark(): Promise<void> {}
   async settle(): Promise<void> {}
 
   async navigated(url: string): Promise<void> { if (this.live) this.live.record.lastUrl = scrubPageUrl(url, this.d.redact); }
@@ -251,7 +252,7 @@ type Runtime = {
   close(): Promise<void>;
 };
 
-type Settings = { options: CodingAgentOptions; env: NodeJS.ProcessEnv; policy: BrowserPolicy; impls: Record<string, ToolImpl<PageDriver> | undefined> };
+type Settings = { options: CodingAgentOptions; env: NodeJS.ProcessEnv; policy: BrowserPolicy; impls: Partial<Record<string, ToolImpl<PageDriver>>> };
 
 const flagOf = (pi: ExtensionAPI, name: string, fallback?: string): string | undefined => {
   const value = pi.getFlag(name);
@@ -353,7 +354,8 @@ function registerTool(pi: ExtensionAPI, contract: ToolContract, runtimeOf: (ctx:
 export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: ExtensionAPI) => void {
   const env = options.env ?? process.env;
   const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, ...(env.PI_BROWSER_PROXIES === "1" ? { proxies: true } : {}), ...options.policy };
-  const impls = { ...custodyTools, ...pageTools() } as unknown as Record<string, ToolImpl<PageDriver> | undefined>;
+  // pi checks a call's arguments against the tool's schema before execute, so each implementation receives its own shape.
+  const impls = { ...custodyTools, ...pageTools() } as Partial<Record<string, ToolImpl<PageDriver>>>;
 
   return function piBrowser(pi: ExtensionAPI): void {
     let runtime: Runtime | null = null;

@@ -1,7 +1,7 @@
 // The example's cost (examples/reference/fold.ts, which stands alone) and the viewer's fold (the one fold, apps/viewer/src/counters.ts)
 // must agree on every recording the repo holds, and on copies broken so a part is unknown: unknown is never 0.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { cost } from '../../examples/reference/fold.ts';
 import { fold, readEvents } from './fold.mjs';
@@ -11,6 +11,9 @@ const recordings = {
   'midstream-kill': readEvents(here('./fixtures/midstream-kill')),
   'reference-killed': readEvents(here('../../apps/viewer/test/fixtures/reference-killed')),
   'spacedeck-asks': readFileSync(here('../../apps/viewer/test/fixtures/spacedeck-asks/events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+  // and every recording the viewer's gallery bundles
+  ...Object.fromEntries(readdirSync(here('../../apps/viewer/recordings/'), { withFileTypes: true }).filter((entry) => entry.isDirectory())
+    .map((entry) => [`gallery/${entry.name}`, readEvents(here(`../../apps/viewer/recordings/${entry.name}`))])),
 };
 const clone = (lines) => JSON.parse(JSON.stringify(lines));
 const doc = (name, value, over = {}) => ({ channel: 'durable', source: 'workflow', kind: name, gen: 1, commit: 9000, order: 0, t: 9000, data: { doc: name, value, version: 1 }, ...over });

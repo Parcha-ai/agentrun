@@ -10,7 +10,9 @@ import { kernelProvider } from "@parcha/pi-browser/providers/kernel";
 import { remoteDriver, remoteProvider } from "@parcha/pi-browser/testing";
 
 const env = process.env;
-const script = JSON.parse(env.SCRIPT || "[]").map((step) => (Array.isArray(step) ? step : [step, {}]));
+// Each step is one model message: a call (`name` or `[name, args]`), or `{ round: [...] }`, several calls in one message.
+const callOf = (step) => (Array.isArray(step) ? step : [step, {}]);
+const script = JSON.parse(env.SCRIPT || "[]").map((step) => (step && step.round ? step.round.map(callOf) : [callOf(step)]));
 const say = (line) => process.stdout.write(`${line}\n`);
 const cut = async (name) => {
   if (env.MODE !== "first" || env.KILL_AT !== name) return;
@@ -30,6 +32,26 @@ const provider = {
   release: async (ref, signal) => { await cut("release-sent"); return inner.release(ref, signal); },
 };
 let providerCalls = 0;
+// STUB_OBSERVER: an observer that sees one POST leave the browser as each run starts, so a cut run has sent requests.
+const recorders = [];
+const stub = { closed: false, holding: true, record(each) { recorders.push(each); return () => {}; }, async flush() {}, close() { stub.closed = true; } };
+// GATE_CODE: a snapshot waits until a run of that code has reached the page, so the run is journaled while the snapshot runs.
+let ran;
+const gate = new Promise((resolve) => { ran = resolve; });
+const driverFactory = remoteDriver(env.FAKE);
+const driver = async (target, signal, options) => {
+  const inner = await driverFactory(target, signal, options);
+  if (env.STUB_OBSERVER !== "1" && !env.GATE_CODE) return inner;
+  return {
+    ...inner,
+    snapshot: async (input) => { if (env.GATE_CODE) await gate; return inner.snapshot(input); },
+    run: async (input) => {
+      if (input.code === env.GATE_CODE) ran();
+      if (env.STUB_OBSERVER === "1") for (const each of recorders) await each({ requestId: "req-1", method: "POST", origin: "https://example.test", path: "/submit", at: new Date().toISOString(), held: null, irreversible: null });
+      return inner.run(input);
+    },
+  };
+};
 const rows = [];
 const observerRows = [];
 
@@ -45,17 +67,18 @@ const tools = {
     // Credentials in the userinfo, under a query name the redactor knows, under names it does not, and in the fragment.
     const value = await session.driver.run({ actions: [{ op: "goto", url: ["https:", "//user:planted-password-0123456789@example.test/article?api_key=planted-credential-0123456789&code=planted-code-0123456789&session=planted-session-0123456789#access_token=planted-fragment-0123456789"].join("") }] });
     await port.navigated(value.url);
-    await port.settle();
+    await port.settle(call.callId);
     return { content: [{ type: "text", text: JSON.stringify({ ok: true, session: session.sessionId, value }) }] };
   },
 };
 
 const browser = createBrowserExtension({
   provider: async () => { providerCalls += 1; if (providerCalls === 1) await cut("provider"); return provider; },
-  driver: remoteDriver(env.FAKE),
+  driver,
+  ...(env.STUB_OBSERVER === "1" ? { openObserver: async () => stub } : {}),
   ...(env.REAL_TOOLS === "1" ? {} : { tools }),
   evidence: { file: async () => null },
-  onSession: (row, change) => { rows.push({ change, tag: row.session.tag, state: row.session.state, label: row.label }); },
+  onSession: async (row, change) => { rows.push({ change, tag: row.session.tag, state: row.session.state, label: row.label }); if (change === "updated") await cut("session-updated"); },
   onObserver: (row) => { observerRows.push(row); },
   createDeadlineMs: Number(env.CREATE_DEADLINE_MS ?? 300),
   ...(env.WALL === "1" ? { decisions: { classifyPage: async () => ({ wall: "login_wall", injection: null, confidence: 0.9 }) } } : {}),
@@ -63,17 +86,20 @@ const browser = createBrowserExtension({
 
 const faux = fauxProvider({ models: [{ id: "faux-1" }] });
 faux.setResponses(Array.from({ length: 40 }, () => (context) => {
-  const done = context.messages.filter((m) => m.role === "toolResult").length;
-  const next = script[done];
-  return next ? fauxAssistantMessage([fauxToolCall(next[0], next[1], { id: `call-${done}` })], { stopReason: "toolUse" }) : fauxAssistantMessage([fauxText("done")], { stopReason: "stop" });
+  const round = context.messages.filter((m) => m.role === "assistant" && m.content.some((part) => part.type === "toolCall")).length;
+  const calls = script[round];
+  return calls ? fauxAssistantMessage(calls.map(([name, args], i) => fauxToolCall(name, args, { id: calls.length === 1 ? `call-${round}` : `call-${round}-${i}` })), { stopReason: "toolUse" }) : fauxAssistantMessage([fauxText("done")], { stopReason: "stop" });
 }));
 const models = createModels();
 models.setProvider(faux.provider);
 const registry = createRegistry();
-registry.install(browser.extension);
+// run-answered: the run tool has returned its answer, and pi has not yet committed it. PARALLEL: a host that runs run and
+// snapshot in parallel rounds.
+const parallel = (tool) => (env.PARALLEL === "1" && (tool.name === "run" || tool.name === "snapshot") ? { ...tool, executionMode: "parallel" } : tool);
+registry.install({ ...browser.extension, tools: browser.extension.tools.map((tool) => parallel(tool.name !== "run" ? tool : { ...tool, execute: async (...args) => { const out = await tool.execute(...args); await cut("run-answered"); return out; } })) });
 
 const harness = await Harness.open(await openNodeSqliteStorage(env.DB), { models, registry, onReport: () => {} }, ctx);
-const config = { label: "node-a", run: "run-crash", policy: { proxies: true, verified: false, captcha: true, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: Number(env.IDLE_S ?? 0), batchTimeoutMs: 60_000, ...(env.OBSERVE ? { actions: env.OBSERVE } : {}) } };
+const config = { label: "node-a", run: "run-crash", policy: { ...(env.ACTIONS ? { actions: env.ACTIONS } : {}), proxies: true, verified: false, captcha: true, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: Number(env.IDLE_S ?? 0), batchTimeoutMs: 60_000, ...(env.OBSERVE ? { actions: env.OBSERVE } : {}) } };
 const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), config); } });
 
 const result = { mode: env.MODE, reconcile: await browser.reconcile(harness, () => env.INACTIVE !== "1", ctx) };
@@ -90,7 +116,7 @@ result.inventory = await harness.snapshot(browser.docs.Inventory, ctx);
 const page = await root.entries({}, 200, undefined, ctx);
 result.results = [...page.items].reverse().filter((e) => e.kind === "pi.tool-result").map((e) => {
   const m = e.model[0];
-  return { tool: m.toolName, isError: m.isError, text: m.content.filter((c) => c.type === "text").map((c) => c.text).join(" ") };
+  return { tool: m.toolName, callId: m.toolCallId, isError: m.isError, text: m.content.filter((c) => c.type === "text").map((c) => c.text).join(" "), details: m.details ?? null };
 });
 result.rows = rows;
 result.observer = observerRows;

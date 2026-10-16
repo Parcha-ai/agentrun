@@ -21,6 +21,7 @@ import { diskKey, dockerHost } from "../../src/hosts/docker.ts";
 import { readRunStatus, type HostHandle } from "../../src/supervise.ts";
 import { KEY_ENV, LIVE as ARCHIL_LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { deletePrefix, delegationsOn, docker, fleetContainers, FLEET, IMAGE, LEDGER, ledger, NAME_PREFIX, removeContainer } from "./_docker.ts";
+import { g1StayedParked } from "./_park-watch.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI = join(REPO, "src/cli.ts");
@@ -152,17 +153,23 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
   assert.equal((await delegationsOn(runId)).length, 0, "the run is released");
 
   // ---- 2. nothing starts the run, or restarts g1, before wakeAt ---------------------------------------------------------
-  const watch: { at: number; g1: Seen | null; others: string[] }[] = [];
+  const watch: { at: number; to: number; g1: Seen | null; others: string[] }[] = [];
   const second = await waitFor("g2's start", () => {
-    watch.push({ at: Date.now(), g1: seen(g1), others: runContainers().filter((n) => n !== g1) });
+    const at = Date.now();
+    const inspected = seen(g1);
+    const others = runContainers().filter((n) => n !== g1);
+    watch.push({ at, to: Date.now(), g1: inspected, others });
     return lines.find((l) => l.action === "started" && l !== first);
   }, RETRY_MS + 60_000, 2_000);
   const before = watch.filter((w) => w.at < second.seenAt);
   const sleepingTicks = lines.filter((l) => l.action === "sleeping" && l.seenAt < second.seenAt).length;
-  const g1Unchanged = before.every((w) => w.g1?.status === "exited" && w.g1.exitCode === 0 && w.g1.restartCount === 0 && w.g1.startedAt === parked.startedAt);
+  // g1's own record: until the wake it exists exactly as it parked, and from the wake on it is that or gone (starting g2 removes
+  // the run's exited containers, g1 among them). Nothing here waits for g2's container to be visible: how long after the
+  // removal it is created depends on the host's load (test/park-watch.test.ts holds the window still).
+  const g1Unchanged = g1StayedParked(before, parked, wakeAt);
   // The supervisor creates g2 inside the tick that reports its start, so g2 may show up once wakeAt has passed.
-  const othersBeforeWake = [...new Set(before.filter((w) => w.at < wakeAt).flatMap((w) => w.others))];
-  const othersAfterWake = [...new Set(before.filter((w) => w.at >= wakeAt).flatMap((w) => w.others))];
+  const othersBeforeWake = [...new Set(before.filter((w) => w.to < wakeAt).flatMap((w) => w.others))];
+  const othersAfterWake = [...new Set(before.filter((w) => w.to >= wakeAt).flatMap((w) => w.others))];
   const g2Seen = before.find((w) => w.others.includes(nameOf(2)));
   results.wait = {
     samples: before.length,
@@ -177,7 +184,7 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
     g2: second.handle?.name,
   };
   assert.ok(before.filter((w) => w.at < wakeAt).length >= 20, `g1 was watched through the wait (${before.length} samples)`);
-  assert.ok(g1Unchanged, "g1 stayed exited 0, never restarted, until g2's start");
+  assert.ok(g1Unchanged, "g1 stayed exited 0, never restarted, and was not removed before the wake");
   assert.deepEqual(othersBeforeWake, [], "the run had no other container before its wake");
   assert.ok(othersAfterWake.every((n) => n === nameOf(2)), `after the wake only the supervisor's g2 (${othersAfterWake.join(", ")})`);
   assert.ok(sleepingTicks >= 10, `the supervisor left it sleeping (${sleepingTicks} ticks)`);

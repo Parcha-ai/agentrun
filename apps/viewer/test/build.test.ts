@@ -1,8 +1,9 @@
-// The static build: one classic script, the gallery (empty until a real run is recorded), and a page that opens from
-// file:// and plays a recording (the test fixture, built into a page of its own), in a local Chrome when there is one.
+// The static build: one classic script, the gallery (every recording in recordings/, never a hand-cut fixture), and a
+// page that opens from file:// and plays a recording (the test fixture, built into a page of its own), in a local Chrome
+// when there is one.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -15,16 +16,27 @@ import * as drill from './restore-drill.ts';
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
 
-test('the build is one classic script and the page, with a gallery of real recordings only: none yet', (t) => {
+test('the build is one classic script and the page, with a gallery of the recordings in recordings/ only', (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-build-'));
   t.after(() => rmSync(out, { recursive: true, force: true }));
   const built = build(out);
-  assert.deepEqual(built.recordings, [], 'the hand-cut fixture is never bundled');
+  const recorded = readdirSync(new URL('../recordings/', import.meta.url), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  assert.ok(recorded.length > 0);
+  assert.deepEqual(built.recordings, recorded, 'every recording in recordings/, and nothing else');
+  assert.ok(built.recordings.every((id: string) => !readdirSync(fixtures).includes(id)), 'a hand-cut fixture is never bundled');
   const script = readFileSync(join(out, 'viewer.js'), 'utf8');
   new Script(script);
   assert.doesNotMatch(script, /^\s*(import|export)\s/m, 'no module syntax: a page from file:// cannot load modules');
-  assert.equal(readFileSync(join(out, 'gallery.js'), 'utf8'), 'window.AGENTRUN_GALLERY = [];\n');
-  assert.match(script, /No recordings yet\./);
+  const gallery = readFileSync(join(out, 'gallery.js'), 'utf8');
+  const prefix = 'window.AGENTRUN_GALLERY = ';
+  assert.ok(gallery.startsWith(prefix) && gallery.endsWith(';\n'));
+  const entries = JSON.parse(gallery.slice(prefix.length, -2)) as { id: string; manifest: { format: string } }[];
+  assert.deepEqual(entries.map((entry) => entry.id), recorded);
+  for (const id of recorded) {
+    assert.equal(entries.find((entry) => entry.id === id)!.manifest.format, 'agentrun.recording/1', id);
+    assert.ok(existsSync(join(out, 'recordings', id, 'events.jsonl')), `${id} is copied beside the page`);
+  }
+  assert.match(script, /No recordings yet\./, 'an empty gallery still says so');
 });
 
 test('a module imports names from the viewer\'s own modules only: no package, and no bare side-effect import', () => {
@@ -102,4 +114,24 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   assert.match(redo, /after commit 5 of generation 2 · line 15 of 18/, 'commit 5 again, after the restore');
   const ended = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill');
   assert.match(ended, /after commit 6 of generation 2 · line 18 of 18/, 'with no ?at=, the end');
+});
+
+test('a panel with no line it is for is not drawn, its title included, at any stop', noChrome, (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-panels-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const recordings = join(out, 'recordings');
+  for (const name of ['reference-killed', 'transport-route-docker']) cpSync(join(fixtures, name), join(recordings, name), { recursive: true });
+  // The reference run again, with one transport line after all of its lines.
+  cpSync(join(fixtures, 'reference-killed'), join(recordings, 'late-transport'), { recursive: true });
+  const late = { channel: 'live', source: 'transport', kind: 'box.created', gen: 2, t: 5400, seq: 3, data: { box: 'b1', environment: 'local' } };
+  writeFileSync(join(recordings, 'late-transport', 'events.jsonl'), `${readFileSync(join(recordings, 'late-transport', 'events.jsonl'), 'utf8')}${JSON.stringify(late)}\n`);
+  build(join(out, 'dist'), recordings);
+  const title = '<h3>Where the session lives</h3>';
+  const reference = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=reference-killed');
+  assert.ok(reference.includes('<h3>Model turns</h3>'), 'the page drew its panels');
+  assert.ok(!reference.includes(title), 'no transport line: no transport panel, no title');
+  assert.ok(pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=transport-route-docker').includes(title));
+  const early = pageHtml(join(out, 'dist'), join(out, 'profile'), 'r=late-transport&at=1');
+  assert.match(early, /after commit 1 /, 'at the first commit');
+  assert.ok(early.includes(title), 'its transport line comes last, and the panel is there from the first stop');
 });
