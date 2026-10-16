@@ -27,6 +27,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import type { Harness } from '@earendil-works/pi-durable';
 import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
+import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder } from './record.ts';
@@ -50,6 +51,8 @@ export type LiveParts = { host?: Partial<Host>; /** Which models the live parts 
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
 export type DemoOptions = {
+  /** Code mode, opt-in (off by default; `codeMode` in demo.json is the same switch): the agent gets a `code` tool whose sandbox has `tools.bash` (in `work/`) and the vision handle's `vision.see`. See code-mode.ts for what it can and cannot reach. */
+  codeMode?: boolean | CodeModeOptions;
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
   self: string;
   /** Where the session lives and how its process starts, stops and restarts (the place seam). Default: the local place, a child process of this machine. A package supplies another (a box that moves the session). */
@@ -57,7 +60,7 @@ export type DemoOptions = {
   spec: DemoSpec;
   job: Job;
   fakes: Fakes;
-  live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
+  live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' | 'none'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
   /** Fields the demo adds to the manifest, from the run it just finished (never a field the entry writes: `format`, `source`, `result`, `providers`, ...). It runs in the supervisor, once, after the last process. */
   manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean; /** What the live parts reported choosing (`LiveParts.models`); absent on fakes. */ models?: Record<string, unknown> }) => Record<string, unknown>;
   /** The run's result, as the recording shows it: the entry writes the result line and its blob from `json` (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record. `keep` stores a file in the recording's blobs and returns its SHA-256; `dir` is the run's directory, where the run's own files are. It runs in the process that delivered. */
@@ -95,7 +98,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 export async function demo(options: DemoOptions): Promise<DemoResult | undefined> {
@@ -125,6 +128,12 @@ function fakeBrowser(url: string): BrowserPlane {
       } };
     },
   };
+}
+
+/** The browser of a demo that has none (`browser: false`): any page call fails, saying so. */
+function noBrowser(): BrowserPlane {
+  const refuse = (): never => { throw new Error('this demo has no browser'); };
+  return { provider: refuse, driver: async () => refuse() };
 }
 
 /** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's caps. */
@@ -185,17 +194,19 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
   const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder(), ...(redact ? { redact } : {}) }) : undefined;
   const live = env.LIVE === '1';
-  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
+  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   const parts = live ? await options.live!({ env, browser: browserKind, models: env.MODELS ? (JSON.parse(env.MODELS) as LiveModels) : {} }) : {};
   // Docker only with --live: a no-key run uses a local box, so it starts no container.
   const boxSpec = effectiveBoxes(options.spec, live);
   const provider = await boxProvider(boxSpec, place);
   const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
-  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
   // caps (Jev's), which a live judge is held to too.
   composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
+  // A demo with `browser: false` has none, whatever the live parts supplied.
+  if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
   // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
   // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
@@ -232,7 +243,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
-  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision };
+  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
   return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
 }
@@ -299,9 +310,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const { spec, job } = options;
   const live = values.live === true;
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
-  const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
+  // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
+  const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
+  // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
+  const operatorKill = values['operator-kill'] ? resolve(values['operator-kill']) : undefined;
+  if (operatorKill && existsSync(operatorKill)) throw new Error(`--operator-kill ${operatorKill} already exists: it is the operator's control, made only to ask for a kill`);
   // What a recording must not hold, read before anything starts: a sign-in file that cannot be read fails the record here, not after a paid run.
   const tracked = values.record ? trackSecrets(process.env, spec) : undefined;
   const redact = tracked?.redact;
@@ -376,7 +391,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     for (;;) {
       // Past the cap, no further process is started: the budget is checked before every restart.
       if (overBudget && processes.length > 0) break;
-      const plan = remaining.shift() ?? { tools: [] };
+      const queued = remaining.shift();
+      const plan = queued ?? { tools: [] };
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       // Where this attempt's runner writes its kill request: the place answers it (the child never derives it); the scratch default is for a place that does not.
@@ -394,10 +410,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
       let killFailed = false;
-      const decide = async (asked: { point: string; n: number } | undefined) => {
+      const decide = async (asked: { point: string; n: number } | 'operator' | undefined) => {
         if (killed) return;
         const kind = plan.run?.kind ?? 'process';
-        killed = asked
+        killed = asked === 'operator'
+          ? { point: null, n: null, label: 'operator', why: 'the operator asked', kind: 'process' }
+          : asked
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
@@ -424,7 +442,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           await decide(next.value.crossing);
         }
       })().catch((error) => signalsFailure(String((error as { code?: unknown } | null)?.code ?? 'SIGNALS_FAILED'), messageOf(error, paths.root)));
-      const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
+      // The operator's control, a file the supervisor watches (never the child's request file): the caller makes it, the supervisor removes it, kills through the place and resumes as usual.
+      const watch = setInterval(() => {
+        if (killed) return;
+        if (operatorKill && existsSync(operatorKill)) { rmSync(operatorKill, { force: true }); void decide('operator'); } else if (overBudget) void decide(undefined);
+      }, 20);
       const tick = setInterval(() => { void readStatus(); }, 2000);
       const result = await runner.exited;
       clearInterval(watch);
@@ -434,7 +456,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       await pump;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
-      if (killed) { previous = { runner, kind: killed.kind }; continue; }
+      if (killed) {
+        // An operator's kill is not the plan's: a kill still planned for the attempt the operator ended is planned for the next.
+        if (killed.label === 'operator' && queued) remaining.unshift(queued);
+        previous = { runner, kind: killed.kind };
+        continue;
+      }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
         const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);

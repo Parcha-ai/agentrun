@@ -1,7 +1,7 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1272,4 +1272,148 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   assert.deepEqual(hostLines(threwRecording, 'signals.failed').map((line) => [line.data.code, line.data.message]), [['BOOM', 'the reader threw at <path>']]);
   assert.deepEqual(unhandled, [], 'nothing in the pump ended the supervisor');
   assert.deepEqual(validateRecording(threwRecording), []);
+});
+
+// ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
+
+test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-operator-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const control = join(tmp, 'control', 'kill-now');
+  mkdirSync(join(tmp, 'control'));
+  const recording = join(tmp, 'recording');
+  // The operator\'s page, here a test: once the judge has answered in the first process, it makes the control file.
+  const killed = [];
+  const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => {
+      const runner = await inner.start(order);
+      const waiting = setInterval(() => { try { if (readFileSync(order.env.CROSS_LOG, 'utf8').includes(trigger) && !killed.length) { killed.push(order.gen); writeFileSync(control, ''); clearInterval(waiting); } } catch { /* not yet */ } }, 5);
+      runner.exited.then(() => clearInterval(waiting));
+      return runner;
+    } };
+  };
+  const place = placeOn('judge.answered verdict');
+  const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
+  assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
+  assert.equal(result.record.company, 'Acme Ltd');
+  assert.ok(!existsSync(control), 'the supervisor consumed the control file');
+  const lines = readEvents(recording);
+  const kills = lines.filter((line) => line.source === 'host' && line.kind === 'kill');
+  assert.deepEqual(kills.map((line) => [line.data.gen, line.data.label, line.data.crossing, line.data.kind]), [[1, 'operator', null, 'process']]);
+  assert.deepEqual(result.kills.map((kill) => [kill.gen, kill.point, kill.why]), [[1, null, 'the operator asked']]);
+  const counted = fold(lines);
+  assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown], [2, 1, 0, 0]);
+  assert.deepEqual(validateRecording(recording), []);
+  // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
+  killed.length = 0;
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
+  assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
+  assert.deepEqual(both.unlanded, []);
+  assert.equal(both.processes.at(-1).outcome.status, 'complete');
+  // A stale control file would kill the first process at once: it is refused.
+  writeFileSync(control, '');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+});
+
+// ---- a blob appears whole or not at all --------------------------------------------------------------------------------------------------------
+
+test('a blob read while it is being written is absent or whole (written to a temporary name, synced, renamed), a blob already there is left alone, and the validator, the gate and the scan skip a temporary name', { timeout: 120_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const { createHash } = await import('node:crypto');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const bytes = 192 * 1024 * 1024;
+  const sha = createHash('sha256').update(Buffer.alloc(bytes, 7)).digest('hex');
+  const finalName = `${sha}.bin`;
+  const blobs = join(tmp, 'blobs');
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', `import("./examples/reference/record.ts").then((m) => process.stdout.write(m.keepBlob(process.argv[1], Buffer.alloc(${bytes}, 7), "bin")))`, tmp], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  const seen = { temporary: 0, whole: 0, absent: 0, torn: [] };
+  while (child.exitCode === null && child.signalCode === null) {
+    const names = existsSync(blobs) ? readdirSync(blobs) : [];
+    if (names.some((name) => /^\..*\.tmp-\d+$/.test(name))) seen.temporary += 1;
+    if (names.includes(finalName)) {
+      const size = statSync(join(blobs, finalName)).size;
+      if (size === bytes) seen.whole += 1; else seen.torn.push(size);
+    } else seen.absent += 1;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  await exited;
+  assert.deepEqual(seen.torn, [], 'the blob was never seen half written');
+  assert.ok(seen.temporary > 0, 'it was written under a temporary name first');
+  assert.equal(statSync(join(blobs, finalName)).size, bytes);
+  assert.deepEqual(readdirSync(blobs), [finalName], 'no temporary file is left');
+  assert.equal(createHash('sha256').update(readFileSync(join(blobs, finalName))).digest('hex'), sha, 'whole, and named by its own hash');
+  // Already there: left alone.
+  const { keepBlob, TEMP_BLOB } = await import('./reference/record.ts');
+  const before = statSync(join(blobs, finalName)).mtimeMs;
+  assert.equal(keepBlob(tmp, Buffer.alloc(bytes, 7), 'bin'), sha);
+  assert.equal(statSync(join(blobs, finalName)).mtimeMs, before);
+  // A temporary name is skipped by the validator, the gate and the scan.
+  const recording = join(tmp, 'rec');
+  mkdirSync(join(recording, 'blobs'), { recursive: true });
+  const lone = createHash('sha256').update('x').digest('hex');
+  writeFileSync(join(recording, 'blobs', `.${lone}.txt.tmp-123`), 'half of a blob');
+  assert.ok(TEMP_BLOB.test(`.${lone}.txt.tmp-123`) && !TEMP_BLOB.test(`${lone}.txt`));
+  const { scanRecording } = await import('./reference/secrets.ts');
+  assert.doesNotThrow(() => scanRecording(recording, [{ key: 'K', value: 'half of a blob' }]), 'the scan skips a blob still being written');
+  const { validateRecording } = await import('../scripts/recording/validate.mjs');
+  assert.ok(!validateRecording(recording).some((problem) => /tmp-/.test(JSON.stringify(problem))), 'the validator does not name it');
+  const dist = join(tmp, 'dist');
+  mkdirSync(join(dist, 'recordings'), { recursive: true });
+  cpSync(recording, join(dist, 'recordings', 'rec'), { recursive: true });
+  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [{"id":"rec"}];\n');
+  const { gateProblems } = await import('../scripts/recording/gate.mjs');
+  assert.ok(!gateProblems(dist).some((problem) => /tmp-/.test(problem.path)), 'the gate does not name it');
+});
+
+// ---- browser: false ----------------------------------------------------------------------------------------------------------------------------
+
+test('browser:false creates no browser, live or on fakes: --live needs no Browserbase key and no Chrome, and a page call fails with "this demo has no browser"; the default is unchanged', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const none = { BROWSERBASE_API_KEY: '', BB_API_KEY: '', BROWSERBASE_PROJECT_ID: '', CHROME_PATH: '' };
+  // Live, with no browser key and no Chrome anywhere: the default asks for one.
+  await assert.rejects(() => run(t, { programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', ...none }), /A live run needs a browser/);
+  const live = await run(t, { programs, browser: false }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', ...none });
+  assert.equal(live.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(live.result.processes.at(-1)));
+  // The page call the reference lead makes failed, and said why.
+  const said = (recording) => readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('this demo has no browser');
+  assert.ok(said(live.recording), 'a page call fails with a clear error, not a missing key');
+  // On fakes: no browser either.
+  const fakes = await run(t, { browser: false }, ['--json'], { DEMO_LIVE_PROBE: '' });
+  assert.ok(said(fakes.recording));
+  assert.ok(!said((await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '' })).recording), 'the default still has its fake browser');
+});
+
+// ---- code mode ---------------------------------------------------------------------------------------------------------------------------------
+
+test('code mode is off by default; on, the agent\'s `code` tool runs a script whose bash runs in work/, whose vision.see is the composed handle\'s, and which reaches nothing else', { timeout: 300_000 }, async (t) => {
+  // The script writes what it saw into work/ through its own bash: the proof is a file the run\'s environment made.
+  const script = [
+    'const ran = await tools.bash({ command: "echo hello > proof.txt; pwd > where.txt; echo $?" });',
+    'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see].join(",");',
+    'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
+    'text("ran " + ran.exitCode);',
+    'return ran.exitCode;',
+  ].join('\n');
+  const on = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '1' });
+  assert.equal(on.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(on.result.processes.at(-1)));
+  const work = join(on.result.dir, 'work');
+  assert.equal(readFileSync(join(work, 'proof.txt'), 'utf8').trim(), 'hello', 'bash ran, in work/');
+  assert.equal(readFileSync(join(work, 'where.txt'), 'utf8').trim(), work, 'and its working directory is the run\'s work/');
+  assert.equal(readFileSync(join(work, 'reach.txt'), 'utf8'), 'undefined,undefined,undefined,undefined,undefined,function', 'the sandbox has no fetch, process, require, WebAssembly or timers; vision.see is there');
+  // Off: the same lead calls a tool that is not installed (the run may refuse for it), and nothing ran.
+  const off = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.ok(!existsSync(join(off.result.dir, 'work', 'proof.txt')), 'off by default');
+  // demo.json\'s codeMode is the same switch.
+  const spec = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
 });

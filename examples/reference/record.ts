@@ -5,7 +5,7 @@
 // spools into `events.jsonl` and writes the manifest.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 
@@ -65,12 +65,20 @@ export function startedAt(dir: string): string {
   return readFileSync(startedFile(dir), 'utf8');
 }
 
-/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. */
-function keepBlob(dir: string, buffer: Buffer, extension: string): string {
+/** A blob that is still being written: `.<sha>.<ext>.tmp-<pid>`, which the validator, the gate and the scan skip. */
+export const TEMP_BLOB = /^\..*\.tmp-\d+$/;
+
+/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. A viewer following a live run may fetch it at any moment, so it appears whole or not at all: it is written to a temporary name beside it, synced, and renamed
+ *  into place (atomic on one filesystem). A blob already there is left alone. */
+export function keepBlob(dir: string, buffer: Buffer, extension: string): string {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const hash = createHash('sha256').update(buffer).digest('hex');
   const at = join(dir, 'blobs', `${hash}.${extension}`);
-  if (!existsSync(at)) writeFileSync(at, buffer);
+  if (existsSync(at)) return hash;
+  const temporary = join(dir, 'blobs', `.${hash}.${extension}.tmp-${process.pid}`);
+  const descriptor = openSync(temporary, 'w');
+  try { writeSync(descriptor, buffer); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  renameSync(temporary, at);
   return hash;
 }
 

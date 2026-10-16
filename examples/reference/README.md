@@ -261,3 +261,21 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 ### When a place's signals fail
 
 A place's `signals(attempt)` iterator may END with `{ kind: 'signals-failed', code, message }` (a store that went away, a credential that expired), or its reader may throw. The supervisor writes a `signals.failed` host line `{ gen, code, message }` and ends the attempt as it does after a kill that failed: it waits for that runner to exit and starts no further process (`DemoResult.failedSignals`, the summary, exit code 1). The pump has a `.catch`, so nothing in it can end the supervisor. Every message the supervisor writes about a place's failure (`kill.failed`'s and `signals.failed`'s) has any absolute path outside the run's directory replaced by `<path>` (the run's own paths stay) and is capped at 240 characters before the recorder's exact-value redaction runs on the line.
+
+### The operator's kill
+
+`--operator-kill <file>` names a control the supervisor owns (never the child's request file): when a process is running and the file appears, the supervisor removes it, writes a `kill` host line with `crossing: null` and `label: "operator"`, kills through the place, and resumes as usual. A kill still planned for the attempt it ended is planned for the next, so a planned kill is not lost. The path must not exist when the run starts (a stale file would kill the first process); a page's server makes it with any process of the same user, so the path belongs in a directory only the operator can write. The operator may kill anywhere, so a kill inside a tool's dispatch leaves that effect unknown, as any kill there does.
+
+### A demo with no browser
+
+`browser: false` in demo.json (`DemoSpec.browser`) means the entry creates no browser, live or on fakes: `--live` then needs no Browserbase key and no Chrome (`chooseBrowser` is not asked), the live parts' browser is ignored, and a page tool call fails with `this demo has no browser` rather than a missing key. The default (a browser) is unchanged.
+
+### Blobs appear whole
+
+Each blob is written to a temporary name beside its final one (`blobs/.<sha>.<ext>.tmp-<pid>`), synced, and renamed into place, so a viewer following a live run finds it absent or whole; a blob already there is left alone. The validator, the gate and the record-time scan skip a temporary name.
+
+### Code mode (opt-in; it runs model-written code)
+
+`DemoOptions.codeMode` (or `codeMode` in demo.json; `true`, or `{ timeoutMs, outputChars }`) installs one `code` tool, after the vision handle exists. Its script runs in pi-codemode's sandbox, QuickJS compiled to WebAssembly, and gets two things: `tools.bash({ command })`, which runs a shell command through the call's own environment (`api.env.exec`) in the run's `work/` and resolves `{ exitCode, output }`, and `vision.see(...)`, the composed vision handle's global for that call (a demo needs no wiring of its own). Nested calls never enter the model's context: only the script's output and return value do. Off by default.
+
+What the sandbox can reach: the two functions above and nothing else. It has no network, no `fetch`, no `process`, no `require`, no timers, no `WebAssembly`, and no file access of its own; the script is bounded by a deadline (5 minutes by default) and by the VM's own limits. What it cannot stop: a command `tools.bash` runs does whatever the run's environment lets a shell do (the claim's confined environment, the same one the agent's own bash tool has), so turn code mode on only where the agent's bash is allowed. The tool is not replay-safe: a call a crash interrupted is not run again, because the commands it ran may have had effects.
