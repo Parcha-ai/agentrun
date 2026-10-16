@@ -581,8 +581,7 @@ class SessionHome implements Home {
 			void Promise.resolve()
 				.then(() => onResumed(harness, resumedContext))
 				.catch((cause) => {
-					process.stderr.write(`pi-transport: the app's onResumed failed: ${toError(cause).message}
-`);
+					process.stderr.write(`pi-transport: the app's onResumed failed: ${toError(cause).message}\n`);
 				});
 		}
 		return ok(undefined);
