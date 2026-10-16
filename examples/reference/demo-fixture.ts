@@ -1,11 +1,12 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
+import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import { demo } from './demo.ts';
 import type { ToolContext } from './host.ts';
-import { fakes, job } from './job.ts';
+import { fakes, job, lead } from './job.ts';
 
 const spec = JSON.parse(readFileSync(process.env.DEMO_SPEC!, 'utf8'));
 // A test knob: what the judge costs, so a run can pass a spend cap.
@@ -50,6 +51,14 @@ const sitesLead = (messages: readonly { role: string; content: unknown }[]) => {
   const path = /evidence\/[\w./-]+\.json/.exec(siteText(results.at(-1)!))?.[0] ?? '';
   return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: path ? [path] : [] });
 };
+// And code mode: the reference lead does its work, and before it submits it makes one `code` call with the script in DEMO_CODE (DEMO_CODE_ON turns code mode on). The lead never sees that exchange in its own history.
+const baseLead = lead();
+const codeLead = (messages: readonly Message[]) => {
+  const isCode = (message: Message) => (message.role === 'toolResult' && message.toolName === 'code') || (message.role === 'assistant' && message.content.some((block) => block.type === 'toolCall' && block.name === 'code'));
+  const next = baseLead(messages.filter((message) => !isCode(message)));
+  const submitting = next.content.some((block) => block.type === 'toolCall' && block.name === 'submit');
+  return submitting && !messages.some(isCode) ? fauxAssistantMessage([fauxToolCall('code', { code: process.env.DEMO_CODE! })], { stopReason: 'toolUse' }) : next;
+};
 const withSites = process.env.DEMO_SITES ? { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 1), { ...((job.workflow.root as { steps: unknown[] }).steps[1] as object), instructions: 'Hand the registry check to the registry site with use_website, then cite its receipt.' }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(2)] } } } as unknown as typeof job : undefined;
 // And scripted eyes for the lead's images: with them the lead takes text only, so the read of the filing scan goes to the eyes (a paid look).
 const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: { input: 1, output: 4 }, ...(process.env.DIR ? { ledgerPath: join(process.env.DIR, 'eyes.jsonl') } : {}), answers: [process.env.DEMO_EYES_FAIL ? { fail: 'the eyes are unavailable' } : 'A scanned certificate of incorporation. Incorporated on 2019-03-04.'] }) : undefined;
@@ -65,7 +74,7 @@ const leaking = process.env.DEMO_LEAK || process.env.DEMO_LEAK_STEPS ? {
 } : undefined;
 const leakSteps = (process.env.DEMO_LEAK_STEPS ?? 'leak').split(',').map((name) => ({ node: 'call', label: name, via: 'tool', tool: name, args: {}, out: 'Leaked', as: `${name}Out`, deadline_s: 30 }));
 const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Leaked: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], ...leakSteps, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
-const scripted = { ...fakes, ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+const scripted = { ...fakes, ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 // And `sourcesFor`: the items an input needs, from a JSON list whose ids start `a-` for the default company and `o-` for another.
 const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
 // And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
@@ -87,5 +96,5 @@ const ownLane = () => ({
     onMiss: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'miss\n'); },
   } : {}),
 });
-export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+export const options = { ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

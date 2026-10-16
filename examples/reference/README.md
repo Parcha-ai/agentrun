@@ -269,3 +269,9 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 ### Blobs appear whole
 
 Each blob is written to a temporary name beside its final one (`blobs/.<sha>.<ext>.tmp-<pid>`), synced, and renamed into place, so a viewer following a live run finds it absent or whole; a blob already there is left alone. The validator, the gate and the record-time scan skip a temporary name.
+
+### Code mode (opt-in; it runs model-written code)
+
+`DemoOptions.codeMode` (or `codeMode` in demo.json; `true`, or `{ timeoutMs, outputChars }`) installs one `code` tool, after the vision handle exists. Its script runs in pi-codemode's sandbox, QuickJS compiled to WebAssembly, and gets two things: `tools.bash({ command })`, which runs a shell command through the call's own environment (`api.env.exec`) in the run's `work/` and resolves `{ exitCode, output }`, and `vision.see(...)`, the composed vision handle's global for that call (a demo needs no wiring of its own). Nested calls never enter the model's context: only the script's output and return value do. Off by default.
+
+What the sandbox can reach: the two functions above and nothing else. It has no network, no `fetch`, no `process`, no `require`, no timers, no `WebAssembly`, and no file access of its own; the script is bounded by a deadline (5 minutes by default) and by the VM's own limits. What it cannot stop: a command `tools.bash` runs does whatever the run's environment lets a shell do (the claim's confined environment, the same one the agent's own bash tool has), so turn code mode on only where the agent's bash is allowed. The tool is not replay-safe: a call a crash interrupted is not run again, because the commands it ran may have had effects.

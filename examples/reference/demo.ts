@@ -27,6 +27,7 @@ import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/te
 import type { Harness } from '@earendil-works/pi-durable';
 import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
+import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder } from './record.ts';
@@ -50,6 +51,8 @@ export type LiveParts = { host?: Partial<Host>; /** Which models the live parts 
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
 export type DemoOptions = {
+  /** Code mode, opt-in (off by default; `codeMode` in demo.json is the same switch): the agent gets a `code` tool whose sandbox has `tools.bash` (in `work/`) and the vision handle's `vision.see`. See code-mode.ts for what it can and cannot reach. */
+  codeMode?: boolean | CodeModeOptions;
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
   self: string;
   /** Where the session lives and how its process starts, stops and restarts (the place seam). Default: the local place, a child process of this machine. A package supplies another (a box that moves the session). */
@@ -238,7 +241,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
-  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision };
+  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
   return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
 }
