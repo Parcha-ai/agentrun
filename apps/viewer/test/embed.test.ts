@@ -75,7 +75,7 @@ test('embedded, the page drops its header and fills its frame, and without &pare
   const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
   t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }), CLEANUP);
   build(join(out, 'dist'), fixtures);
-  const page = (query: string) => dumpDom(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`, join(out, 'profile'));
+  const page = (query: string) => dumpDom(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`, join(out, 'profile'), { signal: t.signal });
   const embedded = await page('r=reference-killed&embed=1');
   assert.match(embedded, /<html[^>]* class="embed"/);
   assert.doesNotMatch(embedded, /<h1>/);
@@ -87,7 +87,7 @@ test('embedded, the page drops its header and fills its frame, and without &pare
       if (event.data.type === "ready") event.source.postMessage({ type: "seek", stop: 1 }, "*");
       const got = document.createElement("pre"); got.className = "got"; got.textContent = JSON.stringify(event.data); document.body.append(got);
     });</script></body>`);
-  const framed = await dumpDom(pathToFileURL(join(out, 'dist', 'frame.html')).href, join(out, 'profile'));
+  const framed = await dumpDom(pathToFileURL(join(out, 'dist', 'frame.html')).href, join(out, 'profile'), { signal: t.signal });
   const got = [...framed.matchAll(/<pre class="got">([^<]*)<\/pre>/g)].map((match) => JSON.parse(match[1]!.replaceAll('&quot;', '"')));
   assert.deepEqual(got.map((message) => message.type), ['ready', 'position', 'focus']);
   assert.equal(got[1].chapter.title, 'the end', 'opened at the end, and the seek from an unnamed page was ignored');
@@ -95,7 +95,15 @@ test('embedded, the page drops its header and fills its frame, and without &pare
 
 test('steered over http: the named parent\'s seek is obeyed; another type, and another origin, are ignored', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-steer-'));
-  t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }), CLEANUP);
+  // One cleanup, in order: Chrome first, then the server it reads, then the files. It runs even when the test times out
+  // with its body still waiting, and the test's signal has killed Chrome by then.
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(async () => {
+    await held.page?.close();
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }, CLEANUP);
   build(join(out, 'dist'), fixtures);
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
@@ -104,7 +112,7 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
     response.writeHead(200, { 'content-type': file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream' }).end(readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); server.close(); }, CLEANUP);
+  held.server = server;
   const port = (server.address() as AddressInfo).port;
   const parent = `http://127.0.0.1:${port}`;
   // The viewer is framed from another host name of the same server, so its origin differs from the parent's; a second
@@ -127,11 +135,12 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
   // In real time (a frame's answer crosses processes, which a virtual-time dump does not wait for): until the other frame
   // has sent its seek, or 30 seconds (a cold Chrome is slow to load its first page); then two seconds more, for any move it
   // might cause. Chrome is closed on every path out of here.
-  const page = await drivenPage(`${parent}/frame.html`, join(out, 'profile'));
+  const page = await drivenPage(`${parent}/frame.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
   let got: unknown[] = [];
   try {
     const read = async () => JSON.parse(String(await page.evaluate('JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))') ?? '[]')) as unknown[];
-    for (const until = Date.now() + 30_000; Date.now() < until && !got.includes('sent');) { await page.sleep(100); got = await read(); }
+    for (const until = Date.now() + 30_000; Date.now() < until && !got.includes('sent') && !t.signal.aborted;) { await page.sleep(100); got = await read(); }
     await page.sleep(2000);
     got = await read();
   } finally {

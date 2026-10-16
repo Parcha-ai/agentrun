@@ -26,25 +26,30 @@ function killGroup(browser: ChildProcess) {
 }
 
 /** The page's DOM after `--virtual-time-budget`, as `--dump-dom` prints it, within `ms`. */
-export async function dumpDom(url: string, profile: string, { ms = 20_000, budget = 6000, path = chrome } = {}): Promise<string> {
+export async function dumpDom(url: string, profile: string, { ms = 20_000, budget = 6000, path = chrome, signal }: { ms?: number; budget?: number; path?: string; signal?: AbortSignal } = {}): Promise<string> {
   const browser = spawn(path, [...base, `--user-data-dir=${profile}`, `--virtual-time-budget=${budget}`, '--dump-dom', url], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  // A test that times out aborts its signal: Chrome goes at once, before the test's cleanup removes what it uses.
+  const abort = () => killGroup(browser);
+  signal?.addEventListener('abort', abort, { once: true });
   let out = '';
   browser.stdout!.setEncoding('utf8').on('data', (chunk: string) => { out += chunk; });
   const exited = new Promise<void>((resolve, reject) => { browser.once('exit', () => resolve()); browser.once('error', reject); });
   const closed = new Promise<void>((resolve) => browser.stdout!.once('close', () => resolve()));
   try {
-    await within(ms, `Chrome dumping ${url}`, exited);
+    await within(ms, `Chrome dumping ${url}`, signal ? Promise.race([exited, new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(new Error(`Chrome dumping ${url}: the test ended`)), { once: true }))]) : exited);
   } finally {
     // Its helpers go with it, so its stdout closes.
     killGroup(browser);
+    signal?.removeEventListener('abort', abort);
   }
   await within(5000, `Chrome's output for ${url}`, closed);
   return out;
 }
 
 /** A page in headless Chrome driven over the DevTools protocol, in real time. Chrome must be listening within `launchMs`,
- *  and every request to it answers within `requestMs`; `close` ends Chrome and every process it started, and never throws. */
-export async function drivenPage(url: string, profile: string, { launchMs = 20_000, requestMs = 10_000, path = chrome } = {}) {
+ *  and every request to it answers within `requestMs`; `close` ends Chrome and every process it started, and never throws,
+ *  and so does `signal`'s abort (a test's timeout). */
+export async function drivenPage(url: string, profile: string, { launchMs = 20_000, requestMs = 10_000, path = chrome, signal }: { launchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal } = {}) {
   const browser = spawn(path, [...base, `--user-data-dir=${profile}`, '--remote-debugging-port=0', url], { detached: true, stdio: 'ignore' });
   let socket: WebSocket | undefined;
   const exited = new Promise<void>((resolve) => browser.once('exit', () => resolve()));
@@ -53,10 +58,12 @@ export async function drivenPage(url: string, profile: string, { launchMs = 20_0
     killGroup(browser);
     await within(5000, 'Chrome exiting', exited).catch(() => undefined);
   };
+  // A test that times out aborts its signal: Chrome goes at once, before the test's cleanup removes what it uses.
+  signal?.addEventListener('abort', () => killGroup(browser), { once: true });
   try {
     // A deadline of its own, never a loop left running after its wait gave up.
     let port: string | undefined;
-    for (const until = Date.now() + launchMs; !port && Date.now() < until;) {
+    for (const until = Date.now() + launchMs; !port && Date.now() < until && !signal?.aborted;) {
       try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0] || undefined; } catch { /* not up yet */ }
       if (!port) await sleep(100);
     }
