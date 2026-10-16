@@ -19,7 +19,8 @@ import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
 import { dockerHost } from "./hosts/docker.ts";
-import { currentBootId, localHost, procStartTicks } from "./hosts/local-host.ts";
+import { localHost, procStartTicks } from "./hosts/local-host.ts";
+import { processTable, thisBoot } from "./process-table.ts";
 import { localRun } from "./local-run.ts";
 import { parseRunRecord, RUN_JSON } from "./status.ts";
 import {
@@ -597,14 +598,27 @@ function localStatus(dir: string): number {
   let holderStatus: string | null = null;
   const holder = run.holder;
   if (holder) {
-    const pid = Number(holder.pid);
-    const ticks = Number.isInteger(pid) && pid > 1 ? procStartTicks(pid) : null;
-    if (holder.bootId !== currentBootId()) holderStatus = "gone";
+    // A read that failed (sysctl or ps on macOS) is no exit: it says `unknown`, never `gone` or `stopped`.
+    const boot = thisBoot();
+    const ticks = startOf(Number(holder.pid));
+    if (boot === null) holderStatus = "unknown";
+    else if (holder.bootId !== boot) holderStatus = "gone";
+    else if (ticks === undefined) holderStatus = "unknown";
     else if (typeof holder.startTicks === "number") holderStatus = ticks === holder.startTicks ? "running" : "stopped";
     else holderStatus = ticks === null ? "stopped" : "unknown";
   }
   emit({ run: run.run, dir, runJson: run as unknown as Json, holderStatus });
   return 0;
+}
+
+/** A live process's start (null: no such process, or a zombie), or undefined when the process table cannot be read. */
+function startOf(pid: number): number | null | undefined {
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  try {
+    return processTable().snapshot().info(pid)?.start ?? null;
+  } catch {
+    return undefined;
+  }
 }
 
 async function release(values: Record<string, unknown>): Promise<number> {

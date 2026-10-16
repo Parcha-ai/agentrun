@@ -1,5 +1,0 @@
----
-packages: @parcha/pi-browser
-kind: fix
----
-`@parcha/pi-browser`: a `cdp` kill never signals pid 1, pid 0, its own pid, or a process group the pid does not lead. A session's record and `browser_relaunch`'s answer name only the settings the provider applied (Browserbase applies proxies, verified, geolocation, region and context; Kernel and local Chrome none). A screenshot's `ask` comes back in `details.media.ask`. A classified failure names the browser provider, not Browserbase. A conversation's close evicts its repeat guard and idle entry. A page action's journal entry outlives its answer, and an identical retry waits for a look. Stagehand's extension losing its own CDP connection is a dropped browser, not the model's code error: a read reconnects and runs once more, a run is not repeated. A held Stagehand runtime is freed through its own close and never by closing its service worker, which under load was sometimes never restarted. Every Chrome the `cdp` provider starts gets a temporary directory of its own, removed with the lease, so Chrome's leftover entries no longer land in the host's `TMPDIR`.
