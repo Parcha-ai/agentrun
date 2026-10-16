@@ -550,12 +550,28 @@ export async function buildSnapshot(name: string, commit: string, options: { rea
   }
 }
 
-/** Delete one of this lane's snapshots, by the name its ledger recorded. */
-export async function deleteSnapshot(name: string): Promise<number> {
+/**
+ * Delete one of this lane's snapshots, by the name its ledger recorded, and wait until Daytona no longer has it. The API
+ * deletes by id only (a name is refused, 400 "uuid is expected"), so the name is resolved first. Stamped deleted once
+ * the delete is accepted, and `goneAt` once a read finds nothing; a refusal throws and leaves the ledger open.
+ */
+export async function deleteSnapshot(name: string, timeoutMs = 5 * 60_000): Promise<{ status: number; gone: boolean }> {
   if (!name.startsWith(NAME_PREFIX) || !ledger.snapshotNames().has(name)) throw new NotOursError(`refusing to delete snapshot ${name}: not one this lane built`);
-  const r = await snapshotApi("DELETE", `/${encodeURIComponent(name)}`);
-  if (r.status < 300 || r.status === 404) ledger.snapshotDeleted(name);
-  return r.status;
+  const found = await snapshotApi("GET", `/${encodeURIComponent(name)}`);
+  let status = 404;
+  if (found.status !== 404) {
+    if (found.status !== 200 || typeof found.json.id !== "string") throw new Error(`GET snapshot ${name}: ${found.status} ${String(found.json.message ?? "").slice(0, 200)}`);
+    status = (await snapshotApi("DELETE", `/${encodeURIComponent(found.json.id)}`)).status;
+    if (status >= 300 && status !== 404) throw new Error(`DELETE snapshot ${name}: ${status}`);
+  }
+  ledger.snapshotDeleted(name);
+  for (const t0 = performance.now(); performance.now() - t0 < timeoutMs; await new Promise((resolve) => setTimeout(resolve, 5_000))) {
+    if (!(await getSnapshot(name))) {
+      ledger.snapshotSettled(name, { goneAt: now() });
+      return { status, gone: true };
+    }
+  }
+  return { status, gone: false };
 }
 
 /** Put a mount token into the box's root-only /run/pda/<name>.token through the toolbox user's 0700 staging directory. */

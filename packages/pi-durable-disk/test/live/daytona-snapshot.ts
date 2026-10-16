@@ -141,7 +141,9 @@ switch (command) {
   }
   case "delete": {
     if (!arg) throw new Error("delete takes the snapshot's name");
-    console.log(JSON.stringify({ name: arg, status: await deleteSnapshot(arg), after: await getSnapshot(arg) }));
+    const deleted = await deleteSnapshot(arg);
+    console.log(JSON.stringify({ name: arg, ...deleted, after: await getSnapshot(arg) }));
+    if (!deleted.gone) throw new Error(`snapshot ${arg} is still listed after its delete was accepted: look again later`);
     break;
   }
   default:
