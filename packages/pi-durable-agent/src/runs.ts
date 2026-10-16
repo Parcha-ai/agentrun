@@ -56,9 +56,9 @@ export type RunSeed = {
   profiles: Record<string, BrowserProfile>;
   skills: Record<string, string>;
   sha?: string;
-  /** What `undoPrepare` puts back, not for the run: the start time of the record `prepareRun` wrote, and each lease it
-   *  took as it was before (null where there was none). */
-  prior: { startedAt: string; leases: Record<string, ProfileLease | null> };
+  /** What `undoPrepare` needs, not for the run: the record and the lease `prepareRun` wrote, so an undo can tell this
+   *  start from a later one of the same run id, and each lease it took as it was before (null where there was none). */
+  prior: { record: RunRecord; lease: ProfileLease; leases: Record<string, ProfileLease | null> };
 };
 
 /** What one carry back did. `changed` is false when the run had already been carried back. */
@@ -114,7 +114,7 @@ async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted }: { 
   const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
   const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
   const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
-  const prior = { startedAt: record.startedAt, leases: Object.fromEntries(leases.map((key) => [key, own(state.leases, key) ?? null])) };
+  const prior = { record, lease, leases: Object.fromEntries(leases.map((key) => [key, own(state.leases, key) ?? null])) };
   await store.session.commit(async (tx) => {
     put(await tx.doc(RunsDoc, runId, null), record);
     for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
@@ -183,25 +183,32 @@ export async function startRun(home: AgentHome, options: { runId?: string; host:
   });
 }
 
-/** Undo a `prepareRun` whose seed never landed, inside the home's claim: each lease it took that is still this run's
- *  goes back to what it was before (or away, where there was none), and the run's record goes away if it is still the
- *  one `prepareRun` wrote. A lease another run has taken since, and a record that moved on, are left as they are. */
-export async function undoPrepare(home: AgentHome, seed: RunSeed, options: { access?: HomeAccess } = {}): Promise<void> {
-  await inClaimedHome(home, options.access, (store) => undoIn(store, seed));
+/** Undo a `prepareRun` whose seed never landed, inside the home's claim. Only while that start is still the run's: its
+ *  record is there, unfinished and as `prepareRun` wrote it; otherwise (an undo retried after the run id was prepared
+ *  again, or after the run went on) nothing is touched and `undone` is false. Each lease still exactly as this start set
+ *  it goes back to what it was before (or away, where there was none); the record goes away. */
+export async function undoPrepare(home: AgentHome, seed: RunSeed, options: { access?: HomeAccess } = {}): Promise<{ undone: boolean }> {
+  return inClaimedHome(home, options.access, (store) => undoIn(store, seed));
 }
 
-async function undoIn(store: Store, seed: RunSeed): Promise<void> {
+/** Two flat records (a run record, a lease) with the same fields and values, whatever their key order. */
+const sameJson = (a: object | undefined, b: object | undefined) =>
+  a !== undefined && b !== undefined && JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+
+async function undoIn(store: Store, seed: RunSeed): Promise<{ undone: boolean }> {
   const state = await readState(store);
+  const record = own(state.runs, seed.runId);
+  if (!record || record.endedAt !== undefined || !sameJson(record, seed.prior.record)) return { undone: false };
   await store.session.commit(async (tx) => {
     for (const key of seed.leases) {
-      if (own(state.leases, key)?.runId !== seed.runId) continue;
+      if (!sameJson(own(state.leases, key), seed.prior.lease)) continue;
       const before = own(seed.prior.leases, key) ?? null;
       if (before) put(await tx.doc(LeasesDoc, key, null), before);
       else await tx.retireDoc(LeasesDoc, key);
     }
-    const record = own(state.runs, seed.runId);
-    if (record && record.endedAt === undefined && record.startedAt === seed.prior.startedAt) await tx.retireDoc(RunsDoc, seed.runId);
+    await tx.retireDoc(RunsDoc, seed.runId);
   }, BACKGROUND_CONTEXT);
+  return { undone: true };
 }
 
 /** The error of a start that failed and whose undo failed too: both, so neither is lost. */

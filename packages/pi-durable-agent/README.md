@@ -242,8 +242,10 @@ under `runs/`. `seedRun({ storePath, workDir }, seed)` is the run's: it writes t
 again on a half-written directory. `startRun` is the two in a row on this machine, under one hold of the home: a start
 whose seeding fails is undone under the same hold, with no run directory, no record, and each lease it took back as it
 was (another run's expired lease included). When the undo fails too, the error is an `AggregateError` with both.
-`undoPrepare(home, seed, { access })` is that undo for a host's own start: the seed keeps what `prepareRun` replaced
-(`seed.prior`), and a lease another run has taken since is left alone.
+`undoPrepare(home, seed, { access })` is that undo for a host's own start: the seed keeps what `prepareRun` wrote and
+replaced (`seed.prior`). It acts only while that start is still the run's (its record there, unfinished, as written) and
+touches only leases exactly as it set them, so an undo retried after the run id was prepared again, or after the run went
+on, changes nothing and returns `{ undone: false }`.
 
 Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
 

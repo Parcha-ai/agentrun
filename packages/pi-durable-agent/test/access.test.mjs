@@ -278,3 +278,35 @@ test("a host's start that fails is undone with undoPrepare inside the host's own
   assert.equal(state.runs["run-b"], undefined);
   assert.ok(state.runs["run-a"], "run-a's record stays");
 });
+
+test("a retried undo of an earlier start of the same run id touches nothing, and the newer start keeps its record, its leases and its sign-in", async () => {
+  const disk = await diskHome();
+  await signedInRun(disk, "first");
+  await carryBack(disk.home, { runId: "first" }, { outcome: "completed", access: disk.access });
+  const a1 = await prepareRun(disk.home, { runId: "again", host: "worker-1", now: T0, access: disk.access });
+  assert.deepEqual(await undoPrepare(disk.home, a1, { access: disk.access }), { undone: true });
+  const a2 = await prepareRun(disk.home, { runId: "again", host: "worker-1", now: T0 + 5_000, access: disk.access });
+  const before = await readAgentHome(disk.home, { access: disk.access });
+  assert.equal(before.leases.acme.runId, "again");
+  assert.deepEqual(await undoPrepare(disk.home, a1, { access: disk.access }), { undone: false }, "the first start's undo, retried, is not this start's");
+  assert.deepEqual(await readAgentHome(disk.home, { access: disk.access }), before, "the newer start's record and leases as they were");
+  await seedRun(disk.runDir("again"), a2);
+  const session = await openSession(disk.runDir("again").storePath);
+  await session.commit(async (tx) => { Object.assign(await tx.doc(Profiles, "acme", null), { verifiedAt: "2026-10-16T09:00:06.000Z" }); }, ctx);
+  await session.close(ctx);
+  assert.deepEqual(await carryBack(disk.home, { runId: "again" }, { outcome: "completed", access: disk.access }), { changed: true, profiles: ["acme"], released: ["acme"] });
+  assert.equal((await readAgentHome(disk.home, { access: disk.access })).profiles.acme.verifiedAt, "2026-10-16T09:00:06.000Z");
+});
+
+test("an undo restores only a lease exactly as its own start set it: when a newer start of the same id has an equal record, its lease is still left alone", async () => {
+  const disk = await diskHome();
+  await signedInRun(disk, "first");
+  await carryBack(disk.home, { runId: "first" }, { outcome: "completed", access: disk.access });
+  const a1 = await prepareRun(disk.home, { runId: "same", host: "worker-1", now: T0, leaseMs: 1_000, access: disk.access });
+  await undoPrepare(disk.home, a1, { access: disk.access });
+  await prepareRun(disk.home, { runId: "same", host: "worker-1", now: T0, leaseMs: 9_000, access: disk.access });
+  const lease = (await readAgentHome(disk.home, { access: disk.access })).leases.acme;
+  assert.deepEqual(lease, { runId: "same", expiresAt: new Date(T0 + 9_000).toISOString() });
+  await undoPrepare(disk.home, a1, { access: disk.access });
+  assert.deepEqual((await readAgentHome(disk.home, { access: disk.access })).leases.acme, lease, "the run id matches, the expiry does not: not this start's lease");
+});
