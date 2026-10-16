@@ -201,7 +201,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   root.dataset.tab = "timeline";
   root.setAttribute("data-theme", theme);
 
-  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
+  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), folds: new Map(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
   const timers = new Set();
   const later = (fn, ms) => {
     const t = win.setTimeout(() => (timers.delete(t), fn()), ms);
@@ -250,10 +250,12 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     return known ? el("div", { class: "row file" }, "Saved ", el("a", { href: fileHref(known) }, known)) : null;
   }
 
-  /** A button that folds and unfolds something, its state in `ui.open` under `key` so a repaint keeps it; `apply(open)`
-   *  draws the state. The same button stays through a click, so the focus does. */
+  /** A button that folds and unfolds something, its state in `ui.open` under `key` so a repaint keeps it (and `ui.folds`
+   *  holds the button drawn for `key`, so the repaint can hand its focus on); `apply(open)` draws the state. The same
+   *  button stays through a click, so the focus does. */
   function foldButton(key, [closed, opened], apply) {
     const button = btn({ class: "fold" });
+    ui.folds.set(key, button);
     const sync = () => {
       const open = ui.open.has(key);
       button.setAttribute("aria-expanded", String(open));
@@ -320,7 +322,10 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
       queued = false;
       const box = p.steps;
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      const held = [...ui.folds].find(([, button]) => button === doc.activeElement)?.[0];
+      ui.folds = new Map();
       box.replaceChildren(...groupTimeline(ui.rows.filter((r) => r.kind !== "usage")).map(item).filter(Boolean));
+      if (held !== undefined) ui.folds.get(held)?.focus({ preventScroll: true });
       if (stick) box.scrollTop = box.scrollHeight;
       paintHead();
     });
@@ -399,7 +404,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
 
   function openRun() {
     closeRun();
-    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map() });
+    Object.assign(ui, { info: null, rows: [], open: new Set(), state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map() });
     p.view.hidden = true;
     p.run.hidden = false;
     for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err]) node.replaceChildren();

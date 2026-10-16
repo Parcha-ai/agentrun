@@ -520,6 +520,8 @@ const userRow = (id, text) => ({ ...rows[0], id, text, summary: `You: ${text}` }
 const withFirst = (text) => [userRow(rows[0].id, text), ...rows.slice(1)];
 /** A replay source over `ready` rows, its run record carrying `extra`. */
 const replayOf = (ready, extra = {}) => ({ ...replaySource(), run: async () => summary(extra), timeline: async () => ({ rows: ready, state: "idle", costUsd: 0.05 }) });
+// Page nodes link to their parents and their document: compare them with `ok(a === b)`, since a failed `equal` or
+// `deepEqual` would format that whole graph.
 const userRows = (view) => byTag(view.find("steps"), "div").filter((d) => /^row user\b/.test(d.getAttribute("class") ?? ""));
 const foldButtons = (view) => byTag(view.find("steps"), "button");
 const part = (node, cls) => byTag(node, "div").find((d) => d.getAttribute("class") === cls);
@@ -529,7 +531,7 @@ test("a first message over 600 characters shows its head and a toggle for the wh
   const long = `${"a".repeat(599)}b${"c".repeat(400)}`;
   const view = await mount(t, replayOf(withFirst(long)), "#/run/r1");
   const [toggle, ...others] = foldButtons(view);
-  assert.deepEqual(others, [], "one toggle");
+  assert.equal(others.length, 0, "one toggle");
   assert.equal(toggle.tagName, "BUTTON");
   assert.equal(toggle.getAttribute("type"), "button");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
@@ -557,7 +559,7 @@ test("a first message over 8 lines folds to its first 8; 8 lines and 600 charact
 
   for (const [name, text] of [["8 lines", lines(8)], ["600 characters", "x".repeat(600)]]) {
     const whole = await mount(t, replayOf(withFirst(text)), "#/run/r1");
-    assert.deepEqual(foldButtons(whole), [], `${name}: no toggle`);
+    assert.equal(foldButtons(whole).length, 0, `${name}: no toggle`);
     assert.equal(userRows(whole)[0].textContent, text, `${name}: the message whole, in the row as before`);
     assert.equal(userRows(whole)[0].getAttribute("class"), "row user");
   }
@@ -585,7 +587,7 @@ test("a fold's rows are the source's rows: the fold changes nothing it was given
   assert.equal(Object.keys(long[0]).sort().join(), Object.keys(rows[0]).sort().join(), "no field on a timeline row");
 
   const plain = await mount(t, replayOf(rows), "#/run/r1");
-  assert.deepEqual(foldButtons(plain), [], "the fixture's short messages have no toggle");
+  assert.equal(foldButtons(plain).length, 0, "the fixture's short messages have no toggle");
   assert.deepEqual(userRows(plain).map((row) => [row.getAttribute("class"), row.textContent]), [["row user", rows[0].text], ["row user", "done"]]);
 });
 
@@ -619,7 +621,7 @@ test("an expanded long message stays expanded when the page repaints, and a coll
   await settle();
   assert.match(view.find("steps").textContent, /later row/, "the page repainted");
   const after = foldButtons(view)[0];
-  assert.notEqual(after, before, "a new button: the rows were drawn again");
+  assert.ok(after !== before, "a new button: the rows were drawn again");
   assert.equal(after.getAttribute("aria-expanded"), "true");
   assert.equal(part(userRows(view)[0], "msg").textContent, long);
 
@@ -628,9 +630,57 @@ test("an expanded long message stays expanded when the page repaints, and a coll
   const was = foldButtons(closed)[0];
   second.more();
   await settle();
-  assert.notEqual(foldButtons(closed)[0], was);
+  assert.ok(foldButtons(closed)[0] !== was, "a new button");
   assert.equal(foldButtons(closed)[0].getAttribute("aria-expanded"), "false");
   assert.equal(part(userRows(closed)[0], "msg").textContent, `${"z".repeat(600)}…`);
+});
+
+test("what is opened in one run is closed in the next, though the two runs' rows share ids", async (t) => {
+  const long = "w".repeat(900);
+  const view = await mount(t, replayOf(withFirst(long)), "#/run/r1");
+  foldButtons(view)[0].click();
+  const think = byTag(view.find("steps"), "details")[0];
+  think.setAttribute("open", "");
+  think.dispatchEvent({ type: "toggle" });
+  assert.equal(foldButtons(view)[0].getAttribute("aria-expanded"), "true");
+  assert.ok(byTag(view.find("steps"), "details")[0].open, "a thinking row opened too");
+
+  view.window.navigate("#/run/r2");
+  await settle();
+  const [button] = foldButtons(view);
+  assert.equal(button.getAttribute("aria-expanded"), "false", "the second run's message is folded");
+  assert.equal(part(userRows(view)[0], "msg").textContent, `${"w".repeat(600)}…`);
+  assert.equal(byTag(view.find("steps"), "details")[0].open, false, "and its thinking row is closed");
+});
+
+test("a repaint hands the keyboard focus on to the fold button drawn for the same message, and gives it to no one who had none", async (t) => {
+  const last = rows.findLast((r) => r.kind === "user_message");
+  const two = withFirst("a".repeat(900)).map((r) => (r.id === last.id ? { ...r, text: "b".repeat(900) } : r));
+  const { source, more } = repainting(two, {});
+  const view = await mount(t, source, "#/run/r1");
+  const before = foldButtons(view);
+  assert.equal(before.length, 2, "two folded messages, two buttons");
+  assert.ok(view.document.activeElement === null, "nothing focused yet");
+  before[1].focus();
+  assert.ok(view.document.activeElement === before[1]);
+  more();
+  await settle();
+  const after = foldButtons(view);
+  assert.match(view.find("steps").textContent, /later row/, "the page repainted");
+  assert.ok(after[1] !== before[1], "a new button: the rows were drawn again");
+  assert.ok(view.document.activeElement === after[1], "the focus is on the second message's new button, not the first");
+
+  const other = repainting(two, {});
+  const quiet = await mount(t, other.source, "#/run/r1");
+  other.more();
+  await settle();
+  assert.ok(quiet.document.activeElement === null, "no focus given where there was none");
+  const second = repainting(two, {});
+  const typing = await mount(t, second.source, "#/run/r1");
+  typing.find("text").focus();
+  second.more();
+  await settle();
+  assert.ok(typing.document.activeElement === typing.find("text"), "the message box keeps the focus it had");
 });
 
 test("a replay with the job's input shows the first message as Input, and the message the agent got behind a toggle", async (t) => {
@@ -641,7 +691,7 @@ test("a replay with the job's input shows the first message as Input, and the me
   assert.equal(byTag(first, "pre")[0].textContent, JSON.stringify(INPUT, null, 2), "the input, pretty-printed");
   const sent = part(first, "msg");
   const [toggle, ...others] = byTag(first, "button");
-  assert.deepEqual(others, []);
+  assert.equal(others.length, 0);
   assert.equal(toggle.textContent, "Show the message the agent got");
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.ok(!shown(sent), "folded by default");
@@ -662,7 +712,7 @@ test("a replay with the job's input shows the first message as Input, and the me
 test("with no input, or a null one, the first message is shown as before; an input shows whole when the message is long", async (t) => {
   for (const extra of [{}, { input: null }]) {
     const view = await mount(t, replayOf(rows, extra), "#/run/r1");
-    assert.equal(part(userRows(view)[0], "tag"), undefined, `no Input row for ${JSON.stringify(extra)}`);
+    assert.ok(part(userRows(view)[0], "tag") === undefined, `no Input row for ${JSON.stringify(extra)}`);
     assert.equal(userRows(view)[0].getAttribute("class"), "row user");
     assert.equal(userRows(view)[0].textContent, rows[0].text);
   }
@@ -683,7 +733,7 @@ test("an expanded message the agent got stays expanded when the page repaints", 
   await settle();
   const [first] = userRows(view);
   const after = byTag(first, "button")[0];
-  assert.notEqual(after, before);
+  assert.ok(after !== before, "a new button");
   assert.equal(after.getAttribute("aria-expanded"), "true");
   assert.ok(shown(part(first, "msg")));
   assert.equal(part(first, "msg").textContent, rows[0].text);
