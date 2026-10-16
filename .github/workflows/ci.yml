@@ -32,6 +32,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run typecheck
+      - name: Demo setup prompts match their specs
+        run: node scripts/check-setup-prompts.mjs
       - run: node scripts/generate-schema.mjs --check
       - run: npm run export:source
       - run: node scripts/check-generated.mjs
