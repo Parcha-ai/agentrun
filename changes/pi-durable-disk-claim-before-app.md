@@ -14,7 +14,8 @@ kind: fix
   (`INVALID_ARGUMENT`) before any claim; an `afterClaim` that returns no `harness` is refused the same way, after the
   claim. A rejection fails the open and lets the claim go. The open step is `after-claim` (`OpenStep`).
 - The open order changed, for `openRunLease` too: acquire, owner lock, layout (`store/`, `work/`, `tmp/`), the
-  `commands` reap, `after-claim`, `run.json`, heartbeat, then store, seal and Harness. The layout and the reap used to
+  `commands` reap, `after-claim`, `seed` (a new run's), `run.json`, heartbeat, then store, seal and Harness. `afterClaim`
+  may return a new run's `seed` (`AfterClaim.seed`), which runs over the options' one, right after it. The layout and the reap used to
   come after `run.json` and the heartbeat, and the reap ran only in `openDurableRun`. Code that reads `onStep` sees the
   new order.
 - An open that fails before `run.json` publishes nothing of its incarnation: a new run keeps no `run.json`, and a

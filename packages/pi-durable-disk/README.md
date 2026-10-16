@@ -354,7 +354,7 @@ An instance's exit code tells the host's process supervisor what to do:
 | 2 | Usage error | no |
 | 65 | Data error: the store is behind its seal (an acknowledged commit is missing), or `run.json` is unreadable. `run.json` says `failed` | never |
 | 70 | The store's head cannot be read (pi's schema moved). `run.json` says `failed` | never |
-| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed | never in place; the supervisor decides |
+| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed; or an incarnation given no mount token found no live mount to reuse (`CLAIM_GONE_NO_TOKEN`: a restart whose mount went with the failed incarnation) | never in place; the supervisor decides |
 | 76 | Held: another client holds the claim (a delegation, live or orphaned; the supervisor revokes orphans), or another process on this host holds the run's owner lock | never in place |
 
 ## Host drivers and the supervisor
@@ -425,12 +425,16 @@ without that guarantee.
 starts local units, so pass the driver to `ensureRunning`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
-alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount token is uploaded to a root-only file and
+alive in place and never restarts it after exit 0, 65, 70, 75 or 76. Every incarnation of an attempt gets the attempt's
+token on stdin. A restart whose mount is still live reuses it, and one whose mount went with the failed incarnation mounts
+again: after a takeover, that mount is `HeldError` (76, terminal). The token stays in the launcher's memory for the attempt. The mount token is uploaded to a root-only file and
 handed to the instance on stdin, never put in the sandbox's environment, which Daytona stores and returns on every read.
 Status comes from the sandbox state plus the launcher's own word, and `stop` drains the instance, then deletes the box. The
 archil client needs the sandbox's egress to Archil's mount servers (Daytona's Tier 3 or 4, full egress; a domain allowlist
 cannot mount). Where the kernel refuses every unmount (a Sysbox box), the claim's release checks the delegation in, moves the
-mount aside (`archil-scoped retire`) and kills its daemon. Measured live on Daytona's hosted `us` region, about 6 ms from
+mount aside (`archil-scoped retire`) and kills its daemon. Before the move, the client must list no Active delegation
+under the mount. Its own bookkeeping under `.archil/` doesn't count: the client makes `.archil/client-<n>` and its
+`unlinked` whenever a file under the mount is deleted, and no checkin clears them once the mount is read-only. Measured live on Daytona's hosted `us` region, about 6 ms from
 `aws-us-east-1`: a box takes about 15 s to start an instance, an exclusive mount 142 ms and a commit 8.55 ms p50; a
 power-off, a freeze of the instance and its FUSE daemon, and a network partition were each taken over on another box (the
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
@@ -572,6 +576,8 @@ mount token reaches the journal, and that nothing is left behind. It needs syste
 | A zombie that never commits again | Its lease watchdog (a worker thread, so a main thread stuck in a FUSE request does not matter) kills its commands at 75 s without touching the mount | an in-flight command runs at most until the self-fence |
 | The mount is taken away under a live instance (an operator's `umount -l`, a cleanup's `fusermount -u`) | The instance writes `run.json` and creates its directories through the directory it opened at acquire, and checks before each write that the run's path is still that mount; at the next heartbeat the path names the local directory under the mountpoint, so it exits 75 (`CLAIM_UNMOUNTED`) | nothing of its own is written to the local disk; as host lost |
 | A run's mountpoint holds entries and nothing is mounted on it (files written by path after a mount vanished) | acquire moves the directory aside whole to `<mountRoot>/.stray/<run>-<tag>` (root-owned, 0700), puts an empty one in its place, logs one JSON line on stderr with the entry count (never a name or a byte of the files), and mounts; `MOUNTPOINT_NOT_EMPTY` when it cannot | nothing in the moved directory is read or brought into the run |
+| The mountpoint holds entries written since the starting incarnation began, before its claim mounted (an app's factory writing under `ctx.root`, which the CLI runs before the mount) | acquire refuses the start: `MOUNTPOINT_WRITTEN`, exit 65 (terminal, since a restart would write them again), naming the first few as `<mp>/...` in at most 240 characters; nothing moves aside and nothing mounts | the writes stay where the app left them, never silently lost; write in `onOpen`. The two rules side by side: this incarnation's own fresh writes are named (they are what the app must fix); an earlier incarnation's leftovers are counted, never named (they may be another incarnation's files) |
+| The mountpoint holds more entries than the stray check looks at (100,000), or one this process cannot read | acquire refuses the start: `MOUNTPOINT_UNCHECKED`, exit 65, naming none of the entries; nothing moves aside and nothing mounts. A directory keeps its time when a file in it is rewritten in place, so only a check that looked at every entry can rule out this incarnation's own writes | someone looks at the directory and moves it aside by hand |
 | A stale archil daemon on the mountpoint with no mount (a client that failed at a token refresh drops its mount and keeps its process and control socket) | acquire kills it (`archil-scoped stale`) before mounting; archil's refusal ("an older Archil process is still running", "Failed to bind control socket") is `MOUNT_FAILED` (exit 1), not 76 | none |
 | The FUSE daemon dies, the loop lives | I/O returns `ENOTCONN`, the claim is fenced, the instance exits 75 and the unit does not restart; the supervisor finds the claim orphaned, revokes it and starts an instance | as host lost |
 | Archil is unavailable or its write buffer is full | The commit fails, pi poisons the session, the instance exits 75; the supervisor retries | nothing is published past the last durable commit |
@@ -690,8 +696,9 @@ then list the prefix and check it is empty.
 `openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, make `store/`, `work/`
 and `tmp/`, end a killed incarnation's commands, write `run.json`, open the store, check the seal, open and resume the
 Harness, keep the lease. Its `afterClaim(claim)` is awaited once the claim is held and before `run.json`, with the
-claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`) goes into the open, so `harness`
-may come from there instead of the options. A rejection fails the open with `run.json` as the open found it and lets the
+claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`, `seed`) goes into the open, so
+`harness` may come from there instead of the options, and a factory can give a new run its seed (over the options'
+`seed`); the seed runs right after `afterClaim` and before `run.json`, on a new run only. A rejection fails the open with `run.json` as the open found it and lets the
 claim go. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported for apps that compose
 their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`, `busyState`, and
@@ -719,6 +726,43 @@ pi-durable, chord and their dependencies).
 `@parcha/pi-durable-disk/internals` holds the claim, status and Daytona plumbing this repository's examples and demos use:
 `runPath`, `unmountClaim`, `createRunDir`, the mount-token and delegation helpers, `isLeaseFresh`, and the Daytona labels,
 names and `sweepSandboxes`. It carries no compatibility promise: a name there can change or go in any release.
+
+### Seeding a new run
+
+`seed` (in `openDurableRun`'s options, and `openRunLease`'s) writes what a new run starts with before anything sees the
+run: its store file, a SQLite database the Harness then opens (saved sign-in profiles, say), and files in its
+workspace (`work/.agents/skills/`). `beforeResume` runs after the store is open, too late for that.
+
+```ts
+await openDurableRun(ref, {
+  ...localRun("/var/runs/run-1"),           // or a disk's mountToken
+  harness: { models, registry },
+  async seed({ storePath, workDir }) {      // also root: the claim's root
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE IF NOT EXISTS x_agent_profiles (name TEXT PRIMARY KEY, profile BLOB)");
+    db.close();                             // closed before it returns: the store opens it next
+    await cp(skillsDir, join(workDir, ".agents/skills"), { recursive: true });
+  },
+});
+```
+
+- **When it runs.** Once, on the open that finds no `run.json`: inside the run's first claim, with the owner lock held,
+  after `store/`, `work/` and `tmp/` exist, a killed incarnation's commands are ended and `afterClaim` has run, before
+  `run.json` is written and before the store opens. Its step is `seed`. What it wrote is made durable (the claim's
+  barrier) before `run.json` publishes the run.
+- **From the app.** `afterClaim` may return `seed` (as `AfterClaim`), over the options' one, so a factory that runs on the
+  claimed directory can give the run its starting state.
+- **When it doesn't.** Never for a run that has `run.json`, whatever its generation, and never on a fork's first open
+  (`fork` writes `run.json`).
+- **When it fails.** A seed that throws fails the open with its own error. A process killed while it seeds leaves the run
+  unpublished in the same way: no `run.json`, the claim let go. The next open seeds again, so a seed overwrites what an
+  earlier attempt wrote.
+- **How long it may take.** Under a supervisor, a seed must end within the start grace (`--start-grace`,
+  `startGraceMs`; default the lease expiry, 90 s). Past it, `ensureRunning` takes the start as failed and revokes the
+  claim. The seed's next write or its barrier is then refused, the instance is fenced (exit 75) with nothing published,
+  and the next start seeds again. A deployment whose seeds can take longer raises the start grace.
+- **On a local directory** (`localRun`) it is the same. As with `work/`, the files it writes are the operating system's
+  to flush; a SQLite database it commits with `synchronous = FULL` is durable when the commit returns.
 
 ### A run on a local directory
 
@@ -780,6 +824,48 @@ A local run works on macOS for development, and is weaker there than on Linux in
 the no-key quickstart, the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
 the file tools' confinement) and the keyless examples on macOS.
 
+### A short claim on any path, and a read of what it released
+
+`withClaim` holds one path of a disk exclusively for a moment, outside any run: pi-durable-agent carries an agent's home
+(`agent/agent.sqlite`) back at a run's end this way. `readReleased` reads a file such a claim released over the S3 API,
+with no mount, so a reader never blocks a writer. Both are supervisor side: they take the `control` of
+`archilControl({ apiKey, disk, region })`.
+
+```ts
+await withClaim({ control, disk: "dsk-...", region: "aws-us-east-1", path: "agent" }, async (held) => {
+  const db = new DatabaseSync(join(held.root, "agent.sqlite"));
+  db.exec("INSERT INTO runs (id) VALUES ('job-1'); PRAGMA wal_checkpoint(TRUNCATE)");
+  db.close();
+});
+const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { sqlite: true }); // null: none yet
+```
+
+A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
+- **Exclusive by the mount.** Archil refuses a second client's mount of the path, an ancestor or a descendant. The call
+  mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>` (default `/mnt/archil/.claims`; the shape `archil-scoped`'s cleanup
+  takes on a host that cannot unmount) and never shares a mount. Archil mounts no path whose directory is missing, so it
+  first makes the path's directories the disk lacks, over S3, as the calling process's own (0700; `owner` sets them). It writes
+  `.claim` with its deadline (`holdMs`, default 60 s), runs `fn`, then barriers, unmounts and gives its mount token back,
+  whether `fn` resolved or threw.
+- **Lost holders are revoked first.** A holder whose client is gone (orphaned) is revoked before the mount, and so is a
+  holder of exactly the path whose `.claim` names a deadline that has passed and stays the same for 3 s (a holder that
+  just mounted rewrites it at once; a holder of a path above or below is never revoked by this path's `.claim`). A live holder within its deadline is waited for (`waitMs`, default 30 s), never
+  revoked. A holder revoked while still alive fails its next fsync, so its commit rolls back and its own call is FENCED:
+  the deadline never decides what is durable, the fence does.
+- **What it refuses.** A path that is not relative and of safe segments, or that is under `runs/` (a run's own) or
+  `.archil/`, is `ClaimError` `INVALID_ARGUMENT`, before any call. A live holder after `waitMs` is `HeldError`
+  `CLAIM_HELD` (exit 76). The control API failing, or a delegation with no path it cannot attribute, is
+  `CONTROL_API_FAILED`. A claim revoked from under `fn` is `FencedError` (exit 75), and `fn`'s writes are then not
+  durable.
+- **`CLAIM_HELD` is retryable.** The path is not released yet: retry within `waitMs`, and never fall back to an older
+  release.
+
+`readReleased` returns the bytes only when the read is of a released file. Nothing holds the path (or an ancestor or a
+descendant) before or after the read, and the object is unchanged across it (its etag, else its size and time). For
+SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer checkpointed with `TRUNCATE` and closed. A
+held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
+one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
+
 ### Places: a run a supervisor can kill and bring back
 
 A place is where one run lives and how its instance starts, is killed and comes back, for a supervisor that decides when
@@ -793,7 +879,7 @@ id and directory as the supervisor computed them.
   what still runs, then, under the run's owner lock, ends the commands the run recorded (pi starts each in a process
   group of its own, which the instance's kill does not reach). While another process holds the run, they are its own,
   and release leaves them. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
-  there when it parks at its planned crossing. `return()` ends a pending `next()`.
+  there when it parks at its planned crossing, and `requestFile` is that same file. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
@@ -802,8 +888,18 @@ id and directory as the supervisor computed them.
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
-  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
-    waits for the channel over the run's disk.
+  - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
+    `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
+    a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
+    it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory. A missing object is a request
+    not written yet; any other read failure is retried. Once reads have failed for `signalFailMs` (60 s) without a
+    break, the iterator yields one `{ kind: "signals-failed", code, message }` and ends, so a parked runner never waits
+    with no word of why. `code` is the failing read's own error code when it has one (`CONTROL_API_FAILED` for a read
+    that timed out), else `SIGNALS_FAILED`. The iterator never rejects.
+  - A request names `point` and `n`, and every other field it carries stays in the signal's `crossing`, except the
+    per-attempt nonce the supervisor put in the order's env. That one is lifted to the signal's own `nonce` (when it is a
+    string), where the supervisor reads it for its check, as from the local place. The place's token never goes into a
+    request: on a disk it is the mount token, and the app never holds it.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).

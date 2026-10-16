@@ -12,7 +12,7 @@ import { closeSync, openSync, readFileSync, realpathSync, statSync } from "node:
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
+import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, NO_TOKEN, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
 import { archilEnv } from "./env.ts";
 import { exitCodeFor, FencedError, PdaError } from "./errors.ts";
 import { fork } from "./fork.ts";
@@ -172,7 +172,7 @@ export async function cliControl(values: Record<string, unknown>, client?: DiskC
  * and needs nothing: acquire reuses the live mount without the token. A fresh mount with the placeholder is refused.
  */
 async function readToken(values: Record<string, unknown>): Promise<string> {
-  if (!values["token-stdin"]) return "none";
+  if (!values["token-stdin"]) return NO_TOKEN;
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
   try {
@@ -181,7 +181,7 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
   } catch {
     // already closed
   }
-  return text.trim() || "none";
+  return text.trim() || NO_TOKEN;
 }
 
 /**

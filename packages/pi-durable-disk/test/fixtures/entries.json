@@ -45,12 +45,14 @@
       "openClaimDir",
       "openDurableRun",
       "readLocalRunStatus",
+      "readReleased",
       "readRunStatus",
       "requestRun",
       "revoke",
       "serveRun",
       "takeOver",
-      "watchParking"
+      "watchParking",
+      "withClaim"
     ],
     "types": [
       "AcquireOptions",
@@ -70,6 +72,7 @@
       "CheckControl",
       "CheckOptions",
       "Claim",
+      "ClaimControl",
       "ClaimDir",
       "ClaimErrorCode",
       "ContainerInfo",
@@ -95,6 +98,7 @@
       "ForkLocalResult",
       "ForkOptions",
       "ForkResult",
+      "HeldPath",
       "Holder",
       "HostDriver",
       "HostHandle",
@@ -138,6 +142,8 @@
       "RunRecord",
       "RunRef",
       "RunResponse",
+      "RunSeed",
+      "RunSeedDir",
       "RunServer",
       "RunStatus",
       "Runner",
@@ -155,7 +161,8 @@
       "SuperviseErrorCode",
       "SupervisorControl",
       "TokenUser",
-      "Unmounted"
+      "Unmounted",
+      "WithClaimOptions"
     ]
   },
   "./lease": {
@@ -220,6 +227,8 @@
       "RunLease",
       "RunRecord",
       "RunRef",
+      "RunSeed",
+      "RunSeedDir",
       "RunStatus",
       "StoreHeadSource",
       "Unmounted"
