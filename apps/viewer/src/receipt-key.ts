@@ -9,8 +9,10 @@ const SHA_K = [
 ];
 
 /** SHA-256 of a string's UTF-8 bytes, as lowercase hex. */
-export function sha256Hex(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+export const sha256Hex = (text: string): string => sha256OfBytes(new TextEncoder().encode(text));
+
+/** SHA-256 of bytes, as lowercase hex. */
+export function sha256OfBytes(bytes: Uint8Array): string {
   const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
   padded.set(bytes);
   padded[bytes.length] = 0x80;

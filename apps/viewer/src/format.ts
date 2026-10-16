@@ -93,6 +93,17 @@ export function restoresOf(lines: Line[]): Map<number, number> {
   return restores;
 }
 
+/** Where a line stands among lines of the same `t` (a millisecond): the supervisor's kill of a process, then the next
+ *  process's start, then the lines that process writes (durable, then live), and the supervisor's result last. */
+const tieRank = (line: Line) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind] ?? 1 : line.channel === 'durable' ? 0 : 1);
+/** A memo line has no place of its own inside its commit (`order` null): it follows the lines the store gave the commit. */
+const orderIn = (line: Line) => ((line.order as number | null | undefined) === null ? Infinity : line.order ?? 0);
+
+/** The file order of `events.jsonl` (section 3), the one a recorder's merge writes: by `t`; a tie by the rank above, then
+ *  `(commit, order)`, then `seq`. */
+export const fileOrder = (a: Line, b: Line): number =>
+  a.t - b.t || tieRank(a) - tieRank(b) || (a.commit ?? 0) - (b.commit ?? 0) || orderIn(a) - orderIn(b) || (a.seq ?? 0) - (b.seq ?? 0);
+
 /** `events.jsonl`'s lines, in file order. */
 export function parseLines(text: string): Line[] {
   return text.split('\n').filter((line) => line.trim() !== '').map((line, index) => {

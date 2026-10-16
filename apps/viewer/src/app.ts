@@ -10,6 +10,7 @@ import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
+import { sha256OfBytes } from './receipt-key.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
@@ -90,20 +91,40 @@ export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
 }
 
 /** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
- *  asking. A hash not found yet is asked again on every later `find`. */
-function blobsAt(root: string) {
+ *  asking. A hash not found is asked again on a later `find`, after 1, 2, 4 and up to 32 of them, so a slow writer never
+ *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
+ *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
+ *  there yet. */
+function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
-  const missing = new Set<string>();
+  const types: Record<string, string | undefined> = {};
+  const missing = new Map<string, { tries: number; at: number }>();
+  let round = 0;
+  const found = async (sha: string, url: string): Promise<boolean> => {
+    if (!whole) return (await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok === true;
+    const response = await fetch(url, { cache: 'no-store' }).catch(() => undefined);
+    if (!response?.ok) return false;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (sha256OfBytes(bytes) !== sha) return false;
+    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
+    const type = typeOfName(url) ?? 'application/octet-stream';
+    urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
+    types[sha] = type;
+    return true;
+  };
   return {
     url: (sha: string) => urls[sha],
-    type: (sha: string) => (urls[sha] ? typeOfName(urls[sha]!) : undefined),
+    type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
     async find(shas: readonly string[]) {
-      await Promise.all([...new Set([...shas, ...missing])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
+      round += 1;
+      const due = [...missing].filter(([, wait]) => wait.at <= round).map(([sha]) => sha);
+      await Promise.all([...new Set([...shas, ...due])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
         for (const ext of BLOB_TYPES) {
           const url = `${root}blobs/${sha}.${ext}`;
-          if ((await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok) { urls[sha] = url; missing.delete(sha); return; }
+          if (await found(sha, url)) { if (!whole) urls[sha] = url; missing.delete(sha); return; }
         }
-        missing.add(sha);
+        const tries = (missing.get(sha)?.tries ?? 0) + 1;
+        missing.set(sha, { tries, at: round + Math.min(32, 2 ** (tries - 1)) });
       }));
     },
   };
@@ -141,6 +162,8 @@ async function fromFiles(files: File[]): Promise<Recording> {
 
 type Player = {
   recording: Recording;
+  /** A run followed while it goes: a blob not read yet is loading, not missing. */
+  following?: boolean;
   stops: boolean[];
   lanes: Lanes;
   p: number;
@@ -178,7 +201,7 @@ export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 
   return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
 };
 
-function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted'): HTMLElement {
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
@@ -202,7 +225,7 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers), following ? 'A run followed while it goes: its cost is known once it finishes.' :
       `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
@@ -279,7 +302,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
     const url = player.recording.blobUrl(node.blob);
-    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: not in this recording]` });
+    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: ${player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'a' && 'href' in node) {
     // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
@@ -287,7 +310,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -409,10 +432,10 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number } = {}): ViewContext {
-  const { focus, baseline, cite, json, now } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
-    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
+    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -471,13 +494,13 @@ export const fromParent = (origin: string, isParent: boolean, allowed: string | 
 
 /** A run the page follows while it goes: the lines that arrived since the last poll, the manifest once it is written (the
  *  run finished), and what the page says of the connection. */
-export type Follow = { grow(fresh: Line[]): void; finish(manifest: Manifest): void; status(text: string): void };
+export type Follow = { grow(fresh: Line[]): void; restart(whole: Line[]): void; finish(manifest: Manifest, whole: Line[]): void; status(text: string): void };
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string, live?: { url: string }): Follow {
   // A followed run is checked against the format once its manifest is written, when it is whole.
   let following = live !== undefined;
   let problems = following ? [] : validate(recording.manifest, recording.lines);
-  const player: Player = { recording, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
+  const player: Player = { recording, following, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
   const caches = new Map<unknown, Map<number, unknown>>();
   const cacheOf = (key: unknown) => caches.get(key) ?? caches.set(key, new Map()).get(key)!;
   let lines = recording.lines;
@@ -602,7 +625,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last && !following), measured, recording.manifest.providers));
+    // A run that goes has no cost yet: what its lines have priced so far is short by every call still paying.
+    const counted = countersOf(counterState, player.p === last && !following);
+    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
@@ -643,7 +668,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -715,6 +740,17 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   };
   if (!following) readBaseline();
 
+  /** The run read again from its start: every kept reduce is dropped, and the reader keeps the time they were at, or
+   *  the end. */
+  const rebase = (whole: Line[]) => {
+    const atEnd = player.p >= last;
+    const at = player.p > 0 ? lines[player.p - 1]!.t : 0;
+    lines = whole;
+    recording.lines = lines;
+    caches.clear();
+    derive();
+    player.p = head.seek(atEnd ? last : stopAt(lines, player.stops, at));
+  };
   /** Everything drawn from the whole run, worked out again for the lines it has now. */
   const derive = () => {
     last = lines.length;
@@ -747,9 +783,16 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       if (fresh.some((line) => line.source === 'host' && line.kind === 'result')) readResults();
       draw();
     },
-    finish(manifest) {
+    restart(whole) {
+      rebase(placeLines([], whole).lines);
+      draw();
+    },
+    finish(manifest, whole) {
+      // The finished run is the file as its writer left it, read whole, as a fresh load reads it.
       following = false;
+      player.following = false;
       recording.manifest = manifest;
+      rebase(whole);
       problems = validate(manifest, lines);
       ({ header, problemsNote } = headerOf());
       liveStatus.textContent = 'finished';
@@ -802,9 +845,12 @@ const FOLLOW_MS = 1000;
 /** Follows a run while it goes (`?follow=<recording directory URL>`): the lines written so far, then what each poll adds,
  *  until the manifest is written and the run plays as any recording. */
 async function followRun(target: string, root: HTMLElement, params: URLSearchParams) {
-  const base = new URL(target.endsWith('/') ? target : `${target}/`, location.href).href;
+  const url = new URL(target.endsWith('/') ? target : `${target}/`, location.href);
+  // Only the page's own server is followed: a link must not make the page poll another origin and draw what it serves.
+  if (url.origin !== location.origin) throw new Error(`a run is followed only from this page's own server, not from ${url.origin}`);
+  const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
-  const blobs = blobsAt(base);
+  const blobs = blobsAt(base, true);
   const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
@@ -812,23 +858,32 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   // The manifest is written after the last line, so a read that follows a check for it holds every line written before it.
   const poll = async () => {
     const manifest = await finishedManifest(`${base}manifest.json`);
-    const fresh = await tail.read();
+    const { lines: fresh, replaced } = await tail.read();
     await blobs.find(blobsNamed(manifest ?? recording.manifest, fresh));
-    return { manifest, fresh };
+    return { manifest, fresh, replaced };
+  };
+  /** The finished file, read whole: its writer may have given it its final order at the finish. */
+  const whole = async (manifest: Manifest) => {
+    const response = await fetch(`${base}events.jsonl`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`events.jsonl answered ${response.status}`);
+    const finished = parseLines(await response.text());
+    await blobs.find(blobsNamed(manifest, finished));
+    return finished;
   };
   const first = await poll();
   recording.lines = placeLines([], first.fresh).lines;
   const live = play(recording, root, params, base, { url: base });
-  if (first.manifest) { live.finish(first.manifest); return; }
   const step = async () => {
     try {
-      const { manifest, fresh } = await poll();
-      live.grow(fresh);
-      if (manifest) { live.finish(manifest); return; }
+      const { manifest, fresh, replaced } = await poll();
+      if (manifest) { live.finish(manifest, await whole(manifest)); return; }
+      // A writer that replaced the file gave every line its place again: the page reads it as a new start.
+      if (replaced) live.restart(fresh); else live.grow(fresh);
       live.status('live');
     } catch { live.status('connection lost, retrying'); }
     setTimeout(step, FOLLOW_MS);
   };
+  if (first.manifest) { live.finish(first.manifest, await whole(first.manifest)); return; }
   setTimeout(step, FOLLOW_MS);
 }
 
