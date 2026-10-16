@@ -1,4 +1,4 @@
-import { isProxy } from "node:util/types";
+import { isProxy } from "#platform";
 
 /** Copy observation data without reading accessors or sharing mutable data objects.
  * Keep invalid JSON shapes visible so required host trace validation can reject them. */

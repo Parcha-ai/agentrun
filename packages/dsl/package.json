@@ -12,6 +12,18 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    },
+    "./browser/worker": {
+      "types": "./dist/browser/worker.d.ts",
+      "import": "./dist/browser/worker.js"
+    },
+    "./browser/executor": {
+      "types": "./dist/browser/executor.d.ts",
+      "import": "./dist/browser/executor.js"
+    },
     "./demo": {
       "types": "./dist/demo.d.ts",
       "import": "./dist/demo.js"
@@ -25,6 +37,16 @@
       "import": "./dist/recovery/testing/index.js"
     },
     "./schema": "./schema/workflow.schema.json"
+  },
+  "imports": {
+    "#platform": {
+      "browser": "./dist/platform/browser.js",
+      "default": "./dist/platform/node.js"
+    },
+    "#guards": {
+      "browser": "./dist/platform/guards-browser.js",
+      "default": "./dist/platform/guards-node.js"
+    }
   },
   "files": [
     "dist",
@@ -44,6 +66,9 @@
   },
   "dependencies": {
     "typebox": "1.3.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   },
   "repository": {
     "type": "git",

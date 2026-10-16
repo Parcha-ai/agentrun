@@ -69,3 +69,16 @@ test('only real imports are followed: text that looks like one is not, and every
   });
   assert.deepEqual(reachableImports(root, './dist/durable/index.js'), ['left', 'required', 'star-as']);
 });
+
+test("the package's own # imports are followed through every condition, and an unknown one is an error", async t => {
+  const root = await fixture(t, {
+    'package.json': JSON.stringify({ name: '@fixture/pkg', exports: { '.': { types: './dist/index.d.ts', import: './dist/index.js' } },
+      imports: { '#platform': { browser: './dist/platform/browser.js', default: './dist/platform/node.js' } } }),
+    'dist/index.js': "export { sha } from '#platform';\n",
+    'dist/platform/node.js': "import 'node:crypto';\nexport const sha = 1;\n",
+    'dist/platform/browser.js': "import 'typebox/value';\nexport const sha = 2;\n",
+    'dist/bad.js': "import '#missing';\n",
+  });
+  assert.deepEqual(reachableImports(root, './dist/index.js'), ['node:crypto', 'typebox/value']);
+  assert.throws(() => reachableImports(root, './dist/bad.js'), /#missing is not an import of @fixture\/pkg/);
+});

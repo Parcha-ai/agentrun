@@ -1,4 +1,5 @@
-import { isAsyncFunction, isPromise } from "node:util/types";
+import { DENIED_GLOBALS } from "./denied-globals.js";
+import { isAsyncFunction, isPromise } from "#guards";
 
 // Literal workflow JavaScript runs in the host process. Only execute workflows from trusted
 // authors. Shadowing common globals catches some mistakes; it is NOT a security
@@ -7,11 +8,6 @@ import { isAsyncFunction, isPromise } from "node:util/types";
 // `import` and `eval` cannot be shadowed as strict-mode parameters. Code-node validation does
 // not prohibit them or prevent access to globals through other expressions. Executor-specific
 // lint is separate and does not make code nodes safe for untrusted authors.
-const DENIED_GLOBALS = [
-  "require", "module", "exports", "process", "global", "globalThis", "__dirname", "__filename",
-  "fetch", "XMLHttpRequest", "Function", "Buffer",
-  "setTimeout", "setInterval", "setImmediate", "queueMicrotask", "Promise", "Date",
-];
 
 /** Words after which a `/` starts a regular expression rather than a division. */
 const REGEX_AFTER_WORDS = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);

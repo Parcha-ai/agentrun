@@ -1,6 +1,8 @@
 // What a built entry of a package reaches: every bare specifier in it and in the files it imports. Relative imports
 // are followed, and so is the package's own name, through its `exports` map, so an entry cannot hide what it reaches
-// behind a self-reference. Other packages are named, never entered.
+// behind a self-reference. The package's own `#` imports (its `imports` map, the platform seam) are followed through
+// every target of every condition, so a seam cannot hide what one of its sides reaches. Other packages are named,
+// never entered.
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { importsOf } from './package-imports.mjs';
@@ -18,11 +20,20 @@ export function reachableImports(packageRoot, entry) {
     if (!file) throw new Error(`${specifier} is not an export of ${manifest.name}`);
     return join(packageRoot, file);
   };
+  const privateTargets = specifier => {
+    const entry = manifest.imports?.[specifier];
+    if (entry === undefined) throw new Error(`${specifier} is not an import of ${manifest.name}`);
+    const files = [];
+    const walk = value => typeof value === 'string' ? files.push(value) : Object.values(value ?? {}).forEach(walk);
+    walk(entry);
+    return files.filter(file => file.startsWith('./')).map(file => join(packageRoot, declarations ? file.replace(/\.js$/, '.d.ts') : file));
+  };
   const visit = file => {
     if (seen.has(file) || !/\.(?:js|d\.ts)$/.test(file)) return;
     seen.add(file);
     for (const specifier of importsOf(readFileSync(file, 'utf8'))) {
-      if (specifier.startsWith('.')) visit(resolve(dirname(file), declarations ? specifier.replace(/\.js$/, '.d.ts') : specifier));
+      if (specifier.startsWith('#')) privateTargets(specifier).forEach(visit);
+      else if (specifier.startsWith('.')) visit(resolve(dirname(file), declarations ? specifier.replace(/\.js$/, '.d.ts') : specifier));
       else if (specifier === manifest.name || specifier.startsWith(`${manifest.name}/`)) visit(ownTarget(specifier));
       else bare.add(specifier);
     }

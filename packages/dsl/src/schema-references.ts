@@ -30,7 +30,7 @@ export function resolveSchemaForWorkflow(workflow: { schemas: Record<string, Rec
   const aliases = new Map<string, string>();
   for (const name of Object.keys(definitions)) {
     if (!Object.hasOwn(Object.prototype, name)) continue;
-    let alias = `agentrun_definition_${Buffer.from(name).toString("hex")}`;
+    let alias = `agentrun_definition_${Array.from(new TextEncoder().encode(name), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     while (Object.hasOwn(definitions, alias)) alias += "_";
     aliases.set(name, alias);
     definitions[alias] = definitions[name];
