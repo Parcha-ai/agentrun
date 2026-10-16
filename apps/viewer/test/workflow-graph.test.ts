@@ -17,13 +17,15 @@ const SHAPES = ['sequence', 'parallel', 'route', 'nested', 'map-v3', 'map-v4'];
 // What each run did, as the DSL's fixture test writes it (packages/dsl/test/graph-fixtures.test.mjs): every node done,
 // but these.
 const FINISHED: Record<string, Record<string, string>> = { route: { '/root/steps/1/branches/other/body': 'not-run' } };
+// Inside a map nothing is done before the map is: a node there stands for every item, and a cut run's map has not finished.
+const INSIDE_MAP = (extra: Record<string, string> = {}) => ({ '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/0': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run', ...extra });
 const CUT: Record<string, Record<string, string>> = {
   sequence: { '/root': 'working', '/root/steps/2': 'not-run' },
   parallel: { '/root': 'working', '/root/steps/1': 'not-run' },
   route: { '/root': 'working', '/root/steps/1/branches/other/body': 'not-run', '/root/steps/2': 'not-run' },
-  nested: { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
-  'map-v3': { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
-  'map-v4': { '/root': 'working', '/root/steps/0': 'working', '/root/steps/0/body': 'working', '/root/steps/0/body/steps/1': 'working', '/root/steps/1': 'not-run' },
+  nested: INSIDE_MAP({ '/root/steps/0/body/steps/0/workflow/root': 'working', '/root/steps/0/body/steps/0/workflow/root/steps/0': 'working', '/root/steps/0/body/steps/0/workflow/root/steps/1': 'working' }),
+  'map-v3': INSIDE_MAP(),
+  'map-v4': INSIDE_MAP(),
 };
 const JOB = 'f'.repeat(64);
 
