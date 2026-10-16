@@ -75,7 +75,8 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
  *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
@@ -156,7 +157,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
-    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
+    options: () => ({ ...(options.layout ? { layout: options.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
