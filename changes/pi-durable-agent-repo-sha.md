@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-durable-agent
+kind: feature
+---
+An agent home follows its repo at a commit. The host reads the definition and skills from git and passes them in with the commit's sha (40 or 64 lowercase hex digits): `createAgentHome(dir, { ..., sha })` and the new `refreshAgentHome(home, { sha, definition, skills })` write them with `agent.source` (`{ sha, refreshedAt }`) in one commit, and a refresh replaces the skill set (a skill path not in it is removed), keeps the agent's id and renames the identity after the definition. `startRun` records the home's sha on the run (`agent.runs`, and `sha` on what it returns), and `startRun(home, { host, sha })` refuses with the new `AgentHomeError` code `stale` while the cache is at another commit, or at none. `agent.source` is on `EXPORTABLE_KINDS`, and an exported run keeps its sha. A home without `agent.source`, every home made before this, is not tied to a repo and is read as before.

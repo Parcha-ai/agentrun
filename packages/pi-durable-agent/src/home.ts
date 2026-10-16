@@ -4,9 +4,9 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
-  type AgentAlias, type AgentDefinition, type AgentIdentity, AliasesDoc, BindingsDoc, type BrowserProfile, DefinitionDoc,
-  FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc, type SkillFile,
-  SkillsDoc, type ToolBindings,
+  type AgentAlias, type AgentDefinition, type AgentIdentity, type AgentSource, AliasesDoc, BindingsDoc, type BrowserProfile,
+  DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc,
+  type SkillFile, SkillsDoc, SourceDoc, type ToolBindings,
 } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily, type Store, withHome } from "./store.js";
 
@@ -23,6 +23,8 @@ export type AgentDefinitionInput = Omit<AgentDefinition, "id"> & { id?: string }
 export type AgentHomeState = {
   identity: AgentIdentity;
   definition: AgentDefinition;
+  /** The repo commit the definition and skills were read from; absent for a home not tied to a repo. */
+  source?: AgentSource;
   skills: Record<string, SkillFile>;
   aliases: Record<string, AgentAlias>;
   bindings: Record<string, ToolBindings>;
@@ -72,14 +74,34 @@ export function checkDefinition(input: AgentDefinitionInput, id: string): AgentD
 export const isSkillPath = (value: string): boolean =>
   typeof value === "string" && value !== "" && !value.includes("\\") && !value.includes("\0") && value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 
+/** The skill files as `[path, content]`, or a refusal naming the first path or content that is wrong. */
+function checkSkills(skills: Record<string, string> | undefined): [string, string][] {
+  if (skills !== undefined && !isObject(skills)) throw invalid("the skills are not paths to text");
+  const entries = Object.entries(skills ?? {});
+  for (const [file, content] of entries) {
+    if (!isSkillPath(file)) throw invalid(`the skill path ${JSON.stringify(file)} is not a relative path inside .agents/skills/`);
+    if (typeof content !== "string") throw invalid(`the skill ${file} is not text`);
+  }
+  return entries;
+}
+
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A git commit sha: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. */
+export function checkSha(sha: unknown): string {
+  if (typeof sha !== "string" || !SHA.test(sha)) throw invalid(`${JSON.stringify(sha)} is not a commit sha (40 or 64 lowercase hex digits)`);
+  return sha;
+}
+
 export async function readState(store: Store): Promise<AgentHomeState> {
   const identity = await store.session.snapshot(IdentityDoc, BACKGROUND_CONTEXT);
   const definition = await store.session.snapshot(DefinitionDoc, BACKGROUND_CONTEXT);
   if (!identity?.id || !definition) throw new AgentHomeError("format", "the agent store has no identity or definition");
   if (identity.formatVersion !== FORMAT_VERSION) throw new AgentHomeError("format", `the agent home is format ${String(identity.formatVersion)}; this version reads ${FORMAT_VERSION}`);
+  const source = await store.session.snapshot(SourceDoc, BACKGROUND_CONTEXT);
   return {
     identity: structuredClone(identity) as AgentIdentity,
     definition: structuredClone(definition) as AgentDefinition,
+    ...(source ? { source: structuredClone(source) as AgentSource } : {}),
     skills: await readFamily(store, SkillsDoc),
     aliases: await readFamily(store, AliasesDoc),
     bindings: await readFamily(store, BindingsDoc),
@@ -104,17 +126,15 @@ export function homeDir(dir: string): string {
 }
 
 /** Create an agent home in `dir`: its identity (the definition's `id`, or a new UUIDv7), its definition and its skill
- *  files (path to content), in one commit. A directory that already holds an agent home is refused. */
-export async function createAgentHome(dir: string, options: { definition: AgentDefinitionInput; skills?: Record<string, string> }): Promise<AgentHome> {
+ *  files (path to content), and, with `sha`, the repo commit they were read from, in one commit. A directory that
+ *  already holds an agent home is refused. */
+export async function createAgentHome(dir: string, options: { definition: AgentDefinitionInput; skills?: Record<string, string>; sha?: string; now?: number }): Promise<AgentHome> {
   const given = options?.definition?.id;
   if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
   const id = given ?? uuidv7();
   const definition = checkDefinition(options.definition, id);
-  const skills = Object.entries(options.skills ?? {});
-  for (const [file, content] of skills) {
-    if (!isSkillPath(file)) throw invalid(`the skill path ${JSON.stringify(file)} is not a relative path inside .agents/skills/`);
-    if (typeof content !== "string") throw invalid(`the skill ${file} is not text`);
-  }
+  const skills = checkSkills(options.skills);
+  const source: AgentSource | undefined = options.sha === undefined ? undefined : { sha: checkSha(options.sha), refreshedAt: new Date(options.now ?? Date.now()).toISOString() };
   const resolved = path.resolve(dir);
   await mkdir(path.join(resolved, "runs"), { recursive: true });
   const identity: AgentIdentity = { id, name: definition.name, formatVersion: FORMAT_VERSION };
@@ -124,9 +144,37 @@ export async function createAgentHome(dir: string, options: { definition: AgentD
       put(await tx.doc(IdentityDoc), identity);
       put(await tx.doc(DefinitionDoc), definition);
       for (const [file, content] of skills) put(await tx.doc(SkillsDoc, file, null), { content, sha256: sha256(content) });
+      if (source) put(await tx.doc(SourceDoc), source);
     }, BACKGROUND_CONTEXT);
   });
   return { dir: resolved, identity };
+}
+
+/** Replace the cached definition and skills with the ones the host read from the agent's repo at `sha`, in one commit
+ *  with `agent.source`: a skill path absent from `skills` is removed. The definition's `id`, when given, must be the
+ *  home's; `identity.name` follows the definition's `name`. A home already at `sha` is left as it is (`changed` false):
+ *  a sha names one content. Runs already started keep the skills their workspace got. */
+export async function refreshAgentHome(home: AgentHome, options: { sha: string; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
+  const sha = checkSha(options?.sha);
+  const given = options.definition?.id;
+  if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
+  if (options.skills === undefined) throw invalid("a refresh names its skills: the set replaces the cached one");
+  const skills = checkSkills(options.skills);
+  return inHome(homeDir(home.dir), async (store) => {
+    const state = await readState(store);
+    if (given !== undefined && given !== state.identity.id) throw invalid(`the definition's id ${given} is not this agent's id ${state.identity.id}`);
+    const definition = checkDefinition(options.definition, state.identity.id);
+    if (state.source?.sha === sha) return { changed: false };
+    const kept = new Set(skills.map(([file]) => file));
+    await store.session.commit(async (tx) => {
+      put(await tx.doc(IdentityDoc), { ...state.identity, name: definition.name });
+      put(await tx.doc(DefinitionDoc), definition);
+      for (const file of Object.keys(state.skills)) if (!kept.has(file)) await tx.retireDoc(SkillsDoc, file);
+      for (const [file, content] of skills) put(await tx.doc(SkillsDoc, file, null), { content, sha256: sha256(content) });
+      put(await tx.doc(SourceDoc), { sha, refreshedAt: new Date(options.now ?? Date.now()).toISOString() });
+    }, BACKGROUND_CONTEXT);
+    return { changed: true };
+  });
 }
 
 /** Open the agent home in `dir`. */
