@@ -321,12 +321,11 @@ jobs:
           node --test --test-timeout=240000
           test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
+          test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
+          test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
       - name: The stranger's no-key quickstart
-        # Not blocking until a release with macOS support is on npm. On a pull request the job runs on the branch merged
-        # into main, where the stranger also walks the examples against the registry's beta (#557); the published beta
-        # predates macOS support, and its examples fail on a Mac. The Mac's proof is the step above, whose quickstart test
-        # runs the same example from this tree.
-        continue-on-error: true
+        # The README's quickstart, then the keyless examples against the registry's beta (#557). On a Mac the walk installs
+        # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
         run: node scripts/stranger.mjs pi-durable-disk
 
   stranger-readme-line:
