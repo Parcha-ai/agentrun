@@ -72,3 +72,28 @@ test('a later open\'s snapshot starts the record over, and a scrub to any point 
   const record = later.reduce(runRecordReduce, runRecordInit());
   assert.deepEqual([record.pin, record.items], [{ done: [] }, {}], 'the restore\'s snapshot holds no item record and nothing done');
 });
+
+// A map inside a map's item (fixtures/map-in-map: the DSL's own driver, in both layouts, finished and cut at the third
+// commit of the inner body's last step). The cut run finished the first row and was inside the second: its first cell
+// had committed its look. Read as one row's part of the record, with that row as the instance, the row's inner map is
+// working, as it stands for every cell; nothing after it has run.
+const twice = JSON.parse(readFileSync(new URL('fixtures/map-in-map/runs.json', import.meta.url), 'utf8')) as { workflow: Json; input: Json; runs: Record<string, { frame: Json; items: Json[] }> };
+const recordOf = (run: { frame: Json; items: Json[] }) => {
+  const fed: Line[] = [
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, t: 1, commit: 1, order: 0, data: { doc: 'agentrun.driver', key: 'k', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: run.frame } }, version: 1 } },
+    ...run.items.map((value, n): Line => { const each = value as { map: string; index: number }; return { channel: 'durable', source: 'workflow', kind: 'agentrun.items', gen: 1, t: 2 + n, commit: 2, order: n + 1, data: { doc: 'agentrun.items', key: `k\u0000${each.map}/items/${each.index}`, value, version: 1 } }; }),
+  ];
+  return fed.reduce(runRecordReduce, runRecordInit());
+};
+for (const layout of ['v3', 'v4']) {
+  test(`${layout}: a row of a map inside a map's item, read as that row, holds its inner map's own items`, () => {
+    const graph = workflowGraph(twice.workflow);
+    const row = `${MAP}/items/1`;
+    const cut = nodeStatus(graph, itemSource(recordOf(twice.runs[`${layout}.cut`]!), row) as Parameters<typeof nodeStatus>[1], { item: row });
+    assert.equal(cut[`${MAP}/body`], 'working');
+    assert.equal(cut[`${MAP}/body/steps/0`], 'working', 'the row\'s inner map: a cell of it committed its look');
+    assert.equal(cut[`${MAP}/body/steps/1`], 'not-run');
+    const finished = nodeStatus(graph, itemSource(recordOf(twice.runs[`${layout}.finished`]!), row) as Parameters<typeof nodeStatus>[1], { item: row });
+    for (const path of [`${MAP}/body`, `${MAP}/body/steps/0`, `${MAP}/body/steps/0/body/steps/0`, `${MAP}/body/steps/0/body/steps/1`, `${MAP}/body/steps/1`]) assert.equal(finished[path], 'done', path);
+  });
+}

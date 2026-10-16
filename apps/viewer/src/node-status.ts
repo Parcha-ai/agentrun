@@ -48,8 +48,8 @@ const rrUnder = (path: string, at: string) => under(path, at);
 export const recordItemOf = (value: Json | undefined): string | undefined =>
   rrIsObj(value) && typeof value.map === 'string' && Number.isInteger(value.index) ? `${value.map}/items/${String(value.index)}` : undefined;
 /** The part of the record that is one map item's (`<map>/items/<i>`): the frame's paths under it (a run stored whole keeps
- *  every item in the frame) and its own record (the keyed layout). Asking `nodeStatus` of this alone says what that one item
- *  did, at the nodes of its map's body. */
+ *  every item in the frame) and, in the keyed layout, its own record and those of the items of a map inside it. Asking
+ *  `nodeStatus` of this alone says what that one item did, at the nodes of its map's body. */
 export function itemSource(record: RunRecord, item: string): { pin: Json; items: Json[] } {
   const pin = rrIsObj(record.pin) ? record.pin : {};
   const keys = (value: Json | undefined) => (rrIsObj(value) ? Object.fromEntries(Object.entries(value).filter(([path]) => rrUnder(path, item))) : {});
@@ -58,6 +58,6 @@ export function itemSource(record: RunRecord, item: string): { pin: Json; items:
     steps: keys(pin.steps),
     inputs: keys(pin.inputs),
   };
-  const own = Object.values(record.items).filter((value) => recordItemOf(value) === item);
+  const own = Object.values(record.items).filter((value) => { const at = recordItemOf(value); return at !== undefined && rrUnder(at, item); });
   return { pin: slice, items: own };
 }

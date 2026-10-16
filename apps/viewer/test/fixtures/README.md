@@ -71,3 +71,11 @@ mid-map and resumed by a second process, recorded as it ran: the durable lines a
 `agentrun.frozen_run.v3`, whose last checkpoint lists every item's body done), with the live workflow events and the
 supervisor's `host` lines of both processes. It is the case a panel must read from durable state: a map whose body is
 one node gives the workflow document no steps to look for, and no judge answers. `test/node-status.test.ts` reads it.
+
+## map-in-map
+
+A map inside a map's item (rows, each a map over its cells, each cell a lookup and a tally), run by the DSL's own
+fixture driver (`packages/dsl/test/fixtures/graph/generate.mjs`'s `capture`) in both layouts, to its end and cut at the
+third commit of `tally`. `runs.json` holds the workflow, its input and, per run, what the driver kept: the snapshot's
+frame and the map items' records (in the keyed layout, each inner cell has a record of its own). `make.mjs` writes it
+again from a fresh DSL build. Read by `node-status.test.ts` and `workflow-map.test.ts`.

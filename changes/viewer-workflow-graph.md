@@ -14,7 +14,8 @@ kind: feature
   map items' records). The workflow map asks it of each item's part of the record, so a run that resumed after a kill,
   or whose map body is one node, shows its finished items done: before, such a map showed every item working at the end,
   though the driver's checkpoint listed them all done. It asks with `{ item }`, so an item's body is done when the item
-  is, whatever the rest of the map has done.
+  is, whatever the rest of the map has done. An item's part of the record holds the records of the items of a map
+  inside it, so that inner map reads what its own items did.
 - In the keyed layout, whose checkpoint names no item, the workflow map showed an item as not started when the item's
   own record was its only line (an item a resumed process finished from its journal): that record now marks its cell
   started. A recording whose task names no workflow (no `agentrun.workflow`

@@ -337,3 +337,21 @@ test('a recording whose lines carry no workflow line reads the workflow and its 
   const body = ((graphFixture('nested.workflow.json') as { root: { steps: { body: { steps: { label: string }[] } }[] } }).root.steps[0]!.body.steps).map((step) => `${step.label}:done`);
   assert.deepEqual(labels, body, "the item's steps are the job's map body's, each done");
 });
+
+test('a map inside a map\'s item: each row\'s cell reads off its records, in both layouts', () => {
+  // fixtures/map-in-map: the DSL's own driver. A finished run finished both rows; a cut one the first, and was inside the second.
+  const twice = JSON.parse(readFileSync(new URL('fixtures/map-in-map/runs.json', import.meta.url), 'utf8')) as { workflow: Json; input: Json; runs: Record<string, { frame: Json; items: Record<string, Json>[] }> };
+  const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+  for (const [run, want] of [['v3.finished', ['done', 'done']], ['v3.cut', ['done', 'working']], ['v4.finished', ['done', 'done']], ['v4.cut', ['done', 'working']]] as const) {
+    const { frame, items } = twice.runs[run]!;
+    const fed = [
+      at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow: twice.workflow, input: twice.input } }),
+      at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: frame } }, version: 1 }),
+      ...items.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+    ];
+    const end = reduceTo(workflowMapPanel, fed, fed.length);
+    const cells = [0, 1].map((index) => { const branch = end.branches[`/root/steps/0/items/${index}`]; return branch ? wmGlyphOf(end, branch) : 'empty'; });
+    assert.deepEqual(cells, want, run);
+    assert.deepEqual(Object.keys(end.branches).sort(), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
+  }
+});
