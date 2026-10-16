@@ -94,8 +94,8 @@
     },
     {
       "number": 107,
-      "title": "Is trust proxy supposed to read the leftmost X-Forwarded-For?",
-      "body": "Docs say 'the client's address'; I see the rightmost untrusted hop in 4.3. Which is intended?",
+      "title": "trust proxy gives me a different address than the docs say",
+      "body": "Behind our proxy, req.ip is not the address I expected from the docs ('the client's address'). Is that how trust proxy is meant to work?",
       "labels": [
         "question"
       ],
@@ -331,7 +331,7 @@
       "good_first_issue": false
     },
     "107": {
-      "label": "bug",
+      "label": "needs-info",
       "good_first_issue": false
     },
     "108": {

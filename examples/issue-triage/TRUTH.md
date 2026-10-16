@@ -2,7 +2,7 @@
 
 Fictional issues in the shape of a real repository's (labels in the maintainers' own vocabulary, here the Express repository's). The scripted judge answers from this table; nothing in it is a real person's text. A live take replaces the scripted answers with Jev's.
 
-The three disagreements are ones a careful reader could make: #107 asks which behaviour is intended where the docs and the code differ (a bug against the docs, or a question), #109 reports a rejected promise that is dropped (a bug, or the feature it is filed as), and #115 reports behaviour the docs are silent on (a docs gap, or the bug it is filed as).
+The three disagreements are ones a careful reader could make: #107 (labelled a question) gives no version, no setup and no reproduction, so there is nothing yet to act on (needs-info); #109 reports a rejected promise that is dropped (a bug, or the feature it is filed as); and #115 reports behaviour the docs are silent on (a docs gap, or the bug it is filed as). The closing card shows what a run finds, 16 to 18 of 20 on a live take, never a tuned 20.
 
 | # | Maintainers' label | Mapped | Scripted Jev label | Agree | Good first issue |
 |---|---|---|---|---|---|
@@ -12,7 +12,7 @@ The three disagreements are ones a careful reader could make: #107 asks which be
 | 104 | question | question | question | yes | no |
 | 105 | awaiting more info | needs-info | needs-info | yes | no |
 | 106 | bug | bug | bug | yes | no |
-| 107 | question | question | bug | **no** | no |
+| 107 | question | question | needs-info | **no** | no |
 | 108 | docs | docs | docs | yes | yes |
 | 109 | enhancement | feature | bug | **no** | no |
 | 110 | awaiting more info | needs-info | needs-info | yes | no |
