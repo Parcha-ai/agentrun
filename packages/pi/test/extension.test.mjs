@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { existsSync } from 'node:fs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1059,4 +1060,80 @@ test('only explicit host null limits allow native execution beyond default model
     assert.equal(attempts, 108); assert.equal(app.calls.length, 108);
   } finally { await app.shutdown(); }
   for (const value of [Infinity, -1, 0, 'unlimited']) assert.throws(() => createAgentRunExtension({ runtimeLimits: { modelRequests: value } }), /runtimeLimits/);
+});
+
+// A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
+const flags = { type: 'object', additionalProperties: false, required: ['supported'], properties: { supported: { type: 'boolean', description: 'Does the fictional note support its claim?' } } };
+
+test('a dry run of a draft whose schema the generator cannot synthesize is not run, never passed', async () => {
+  const app = await harness();
+  const definition = { ...workflow(), schemas: { Result: resultSchema, Ticket: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', pattern: '^T-[0-9]+$' } } } }, input: { schemaId: 'Ticket' } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    const result = await app.tool({ action: 'dry-run' });
+    assert.equal(result.details.dryRun.status, 'not_run');
+    assert.equal(result.details.dryRun.ok, true);
+    assert.match(result.details.dryRun.skipped.join('\n'), /pattern/);
+    assert.equal(JSON.parse(result.content[0].text).dryRun.status, 'not_run', 'the model reads the same status');
+    const shown = app.tools.get('agentrun').renderResult(result).render(120).join('\n');
+    assert.match(shown, /Dry run not run/); assert.match(shown, /not proof/); assert.doesNotMatch(shown, /passed/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.match(app.messages.at(-1).content, /Dry run not run/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('a model-called dry run runs no code node; the trusted command runs it, and a failing one returns problems without its thrown text', async () => {
+  const app = await harness({ withModel: false });
+  globalThis.__dryRunProbe = 0;
+  const failing = workflow({ node: 'code', label: 'format-result', code: '((function(){}).constructor("globalThis.__dryRunProbe++")(), s => { throw new Error("private-dry-run-body"); })' });
+  try {
+    await app.tool({ action: 'inspect', workflow: failing });
+    const untrusted = await app.tool({ action: 'dry-run' });
+    assert.equal(untrusted.details.dryRun.status, 'not_run');
+    assert.match(untrusted.details.dryRun.skipped.join('\n'), /format-result/);
+    assert.match(untrusted.details.dryRun.skipped.join('\n'), /\/agentrun dry-run --trusted/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.equal(globalThis.__dryRunProbe, 0, 'no code ran without the trusted command');
+    await app.command('dry-run --trusted');
+    const failed = app.messages.at(-1);
+    assert.equal(failed.details.dryRun.status, 'failed');
+    assert.equal(failed.details.dryRun.ok, false);
+    assert.match(failed.details.dryRun.problems.join('\n'), /format-result/);
+    assert.match(failed.content, /Dry run failed/);
+    assert.doesNotMatch(JSON.stringify(failed), /private-dry-run-body/);
+    assert.ok(globalThis.__dryRunProbe > 0, 'the trusted dry run ran the code');
+    // The trusted dry run authorizes nothing else: the model still cannot run code.
+    await assert.rejects(app.tool({ action: 'run' }), /\/agentrun run --trusted for each run/);
+    await app.tool({ action: 'inspect', workflow: workflow({ node: 'code', label: 'format-result', code: 's => ({result:{content:"computed"}})' }) });
+    await app.command('dry-run --trusted');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed');
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); delete globalThis.__dryRunProbe; }
+});
+
+test('a dry run pays nothing: no model, Jev or tool call, no run journal, and the session keeps no report', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-dry-run-'));
+  let judged = 0, attempts = 0;
+  const app = await harness({ cwd, extensionOptions: { createJudge: () => async () => { judged++; throw new Error('a dry run must not reach Jev'); }, onToolAttempt: () => { attempts++; } } });
+  const definition = { ...workflow(), schemas: { Result: resultSchema, Flags: flags }, root: { node: 'chain', steps: [
+    { node: 'call', label: 'find-note', via: 'tool', tool: 'read', args: { path: 'note.txt' }, out: 'Result', as: 'found', deadline_s: 5 },
+    { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result' },
+    { node: 'judge', label: 'supported', state: { text: '{result.content}' }, out: 'Flags', as: 'flags' },
+  ] } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    const result = await app.tool({ action: 'dry-run' });
+    assert.equal(result.details.dryRun.status, 'passed');
+    assert.match(app.tools.get('agentrun').renderResult(result).render(120).join('\n'), /Dry run passed/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed');
+    assert.equal(app.calls.length, 0, 'no model call');
+    assert.equal(judged, 0, 'no Jev call');
+    assert.equal(attempts, 0, 'no tool call');
+    assert.equal(existsSync(join(cwd, '.pi', 'agentrun', 'runs')), false, 'no run journal');
+    assert.ok(app.branch.every(entry => entry.data?.report === undefined), 'no run report is kept');
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
