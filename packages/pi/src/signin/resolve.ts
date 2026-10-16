@@ -8,7 +8,7 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { USAGE_LIMIT_CODE, UsageLimitError } from "./limit.js";
-import { CHATGPT_PROVIDER, chatgptModels, signIn, type SignInOptions } from "./signin.js";
+import { CHATGPT_PROVIDER, chatgptModels, consoleInteraction, signIn, type SignInOptions } from "./signin.js";
 import type { DemoSpec, EyesNeed, ModelNeed } from "./spec.js";
 import { agentrunHome, fileCredentialStore } from "./store.js";
 
@@ -141,7 +141,13 @@ export async function resolveModel(spec: DemoSpec, options: ResolveOptions = {})
   } else {
     const home = agentrunHome(options.home, env);
     const store = fileCredentialStore(home);
-    if ((await store.read(CHATGPT_PROVIDER, { signal }))?.type !== "oauth") await signIn({ ...options, home, env });
+    if ((await store.read(CHATGPT_PROVIDER, { signal }))?.type !== "oauth") {
+      // The run's signal reaches the sign-in through its interaction, so a cancel ends the login and frees its port.
+      const interaction = options.interaction ?? consoleInteraction();
+      const cancelled = options.signal ? { ...interaction, signal: interaction.signal ? AbortSignal.any([interaction.signal, options.signal]) : options.signal } : interaction;
+      try { await signIn({ ...options, home, env, interaction: cancelled }); }
+      catch (error) { if (options.signal?.aborted) throw options.signal.reason; throw error; }
+    }
     const models = chatgptModels(store);
     const getApiKey = async () => {
       const key = (await models.getAuth(CHATGPT_PROVIDER, { signal }))?.auth.apiKey;
