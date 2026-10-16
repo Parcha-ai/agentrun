@@ -87,7 +87,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'pi-git-remote'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -260,6 +260,8 @@ import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as agentHome from '@parcha/pi-durable-agent';
+import * as gitRemote from '@parcha/pi-git-remote';
+import { execFileSync } from 'node:child_process';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -292,8 +294,9 @@ assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); } finally { await rm(dir,{recursive:true,force:true}); } }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,git:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -422,6 +425,19 @@ const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfile
 void [oneRun, createAgentHome];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'git-consumer.ts'), `import { GitRemoteError, local, openRepo, type CommitOptions, type Committed, type GitCredential, type Remote, type Repo } from '@parcha/pi-git-remote';
+// A host proposes a run's files on the run's branch and pushes them; an https remote takes its credential from a callback.
+const propose = async (dir: string, remote: Remote, files: CommitOptions['files']): Promise<Committed> => {
+  const repo: Repo = await openRepo({ dir, remote });
+  const made = await repo.commitTo('runs/r1', { files, message: 'r1', trailers: { 'Run-Id': 'r1' } });
+  await repo.push(made.sha, 'runs/r1');
+  return made;
+};
+const https = (url: string, token: () => GitCredential): Remote => ({ kind: 'https', url, credential: token });
+const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
+void [propose, https, code, local];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

@@ -1,0 +1,98 @@
+// Each safety mechanism is load-bearing: remove it from a copy of dist/ and the named test in a copy of test/ fails.
+// A control run of the unchanged copy passes the same tests, so the failure is the mutation's.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { cp, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { scratch } from "./support.mjs";
+
+const PACKAGE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const MUTATIONS = [
+  {
+    removes: "core.hooksPath=/dev/null from the flags on every call",
+    file: "dist/git.js", from: '"-c", "core.hooksPath=/dev/null",', to: "",
+    fails: ["safety.test.mjs", "hooks planted in the host repository never fire through fetch, checkout, commitTo, merge, revert and push"],
+  },
+  {
+    removes: "the receive-pack override on a push to a local remote",
+    file: "dist/repo.js", from: 'packArgs("receive")', to: "[]",
+    fails: ["safety.test.mjs", "hooks planted in a local remote never fire on push or fetch"],
+  },
+  {
+    removes: "--no-filters from hash-object",
+    file: "dist/repo.js", from: '"--no-filters", ', to: "",
+    fails: ["safety.test.mjs", "a planted info/attributes cannot change the bytes commitTo stores or run a clean filter"],
+  },
+  {
+    removes: "the refusal of a remote URL with userinfo",
+    file: "dist/remotes.js", from: 'parsed.username !== "" || parsed.password !== ""', to: "false",
+    fails: ["credential.test.mjs", "openRepo refuses a remote URL with userinfo and never repeats it"],
+  },
+  {
+    removes: "the Run-Id trailer lookup in commitTo",
+    file: "dist/repo.js", from: "const existing = await findTrailer(branch, RUN_ID_TRAILER, runId);", to: "const existing = undefined;",
+    fails: ["repo.test.mjs", "commitTo is idempotent by Run-Id after a restart: a fresh host with an empty local repo finds the commit on the remote and commits nothing"],
+  },
+  {
+    removes: "the attr.tree pin to the empty tree",
+    file: "dist/git.js", from: '"-c", `attr.tree=${EMPTY_TREE}`,', to: "",
+    fails: ["safety.test.mjs", "a .gitattributes in the remote's tree changes nothing: bytes stay as stored and a conflict stays a conflict"],
+  },
+  {
+    removes: "the reset of credential helpers before the fd-3 helper",
+    file: "dist/git.js", from: '"-c", "credential.helper=",', to: "",
+    fails: ["credential.test.mjs", "real git reads the credential through the fd-3 helper, and never runs a helper from the repository's config"],
+  },
+];
+
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+async function copyPackage() {
+  const dir = await scratch();
+  await cp(path.join(PACKAGE, "dist"), path.join(dir, "dist"), { recursive: true });
+  await cp(path.join(PACKAGE, "test"), path.join(dir, "test"), { recursive: true });
+  return dir;
+}
+
+/** Runs the named tests of one file in `dir`; resolves with the exit code and the TAP output. */
+function runTests(dir, file, titles) {
+  return new Promise((resolve, reject) => {
+    const args = ["--test", "--test-reporter=tap", "--test-concurrency=1", ...titles.map((t) => `--test-name-pattern=^${escape(t)}$`), path.join(dir, "test", file)];
+    const { NODE_TEST_CONTEXT, ...env } = process.env;
+    const child = spawn(process.execPath, args, { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] });
+    const out = [];
+    child.stdout.on("data", (c) => out.push(c));
+    child.stderr.on("data", (c) => out.push(c));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, out: Buffer.concat(out).toString("utf8") }));
+  });
+}
+
+const verdict = (out, title) => (new RegExp(`^not ok \\d+ - ${escape(title)}$`, "m").test(out) ? "fail" : new RegExp(`^ok \\d+ - ${escape(title)}$`, "m").test(out) ? "pass" : "absent");
+
+test("control: an unchanged copy of the package passes every test a mutation must fail", async () => {
+  const dir = await copyPackage();
+  const byFile = Map.groupBy(MUTATIONS, (m) => m.fails[0]);
+  for (const [file, mutations] of byFile) {
+    const titles = mutations.map((m) => m.fails[1]);
+    const { code, out } = await runTests(dir, file, titles);
+    assert.equal(code, 0, out.slice(-3000));
+    for (const title of titles) assert.equal(verdict(out, title), "pass", title);
+  }
+});
+
+for (const mutation of MUTATIONS) {
+  test(`mutation: without ${mutation.removes}, "${mutation.fails[1]}" fails`, async () => {
+    const dir = await copyPackage();
+    const file = path.join(dir, mutation.file);
+    const source = await readFile(file, "utf8");
+    assert.equal(source.split(mutation.from).length, 2, `${mutation.file} holds the mutated text exactly once`);
+    await writeFile(file, source.replace(mutation.from, mutation.to));
+    const { code, out } = await runTests(dir, mutation.fails[0], [mutation.fails[1]]);
+    assert.notEqual(code, 0, out.slice(-2000));
+    assert.equal(verdict(out, mutation.fails[1]), "fail", out.slice(-2000));
+  });
+}
