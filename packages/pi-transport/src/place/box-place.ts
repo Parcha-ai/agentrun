@@ -191,6 +191,11 @@ export type BoxPlace = {
 	 * reaches the vault's log. Throws when no runner runs or the runner refuses the record (`invalid`).
 	 */
 	recordPlacement(record: PlacementRecord): Promise<void>;
+	/**
+	 * End the pool's boxes now, each with its receipt: for a host that sums the receipts before it lets the place go (a
+	 * result card once the run's last process exited). Safe to repeat; `release` ends any left.
+	 */
+	endPool(): Promise<void>;
 	release(): Promise<void>;
 	/** What the checkpoints of this place did. */
 	readonly stats: CheckpointStats;
@@ -905,6 +910,9 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			if (handle === undefined) throw new MoveError("resume", "no runner holds the session to keep the placement");
 			const kept = await handle.recordPlacement(record, context);
 			if (!kept.ok) throw kept.error;
+		},
+		async endPool() {
+			await pool?.release(context);
 		},
 		async release() {
 			if (released) return;

@@ -8,4 +8,4 @@ named by the host's label, never the provider's id, over new link frames (`box`,
 `box-stdin`, `box-resume`, `box-unknown`, `box-abort`, `box-ack`), numbered and resumed after a dropped link as the
 model proxy's are, and fenced by the runner's epoch. `AppContext.boxes` hands them to the app (for
 `TransportHost.providers`); `boxRunner` and `connectHome` take `boxes`; `boxPlace` takes `pool`, serves it on every
-runner's link and ends its boxes at `release`. No provider token goes into a box.
+runner's link and ends its boxes at `release` (or at `endPool()`, each with its receipt). No provider token goes into a box.

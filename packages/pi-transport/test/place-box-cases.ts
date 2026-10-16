@@ -1118,7 +1118,19 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						attach: (id: string, at: typeof context) => boxes.attach(id, at),
 						list: (labels: Readonly<Record<string, string>>, at: typeof context) => boxes.list(labels, at),
 					};
-					const place = await placeIn(made, { program: setup.poolProgram, pool: { secret } });
+					// The host's ledger: the home's boxes and the pool's in one numbering, each with its receipt.
+					const receipts: BoxReceipt[] = [];
+					const ledger = boxReceipts({
+						prices: ["local", "secret"].map((provider) => ({
+							provider,
+							kind: "none",
+							usdPerSecond: 0.0001,
+							source: "test",
+							priced: "2026-10-16",
+						})),
+						write: (receipt) => receipts.push(receipt),
+					});
+					const place = await placeIn(made, { program: setup.poolProgram, pool: { secret }, receipts: ledger });
 					const runner = await place.start(orderOf(made, place, 1));
 					await firstSignal(place, 1, "kill-request");
 					// The first home box, while its runner waits with a tile running in the pool box: what it saw and holds.
@@ -1141,6 +1153,13 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const after = holding(join(root, "boxes"), TOKEN);
 					const status = await place.status();
 					const log = await logFrom1(made);
+					// The pool ended early, before the host sums its receipts: the pool's box has its receipt, by its label.
+					await place.endPool();
+					await place.endPool();
+					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
+					expect(receipts.filter(({ provider }) => provider === "secret").map(({ box }) => box)).toEqual([
+						"box-2",
+					]);
 					await place.release();
 					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
 					// The token is in no home box (the environment its runner saw, the order's, any file), in no line of the

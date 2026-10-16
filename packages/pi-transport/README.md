@@ -644,7 +644,8 @@ It makes the box, and
   in the box, and the file comes back whole when the runner exits.
 - `pool` names the providers of the session's tool boxes, on the host: every runner gets them over its link
   (`AppContext.boxes`, the box proxy above) as handles named by label, on the place's receipts ledger, and no token
-  goes into the home box. The place ends the pool's boxes at `release`.
+  goes into the home box. The place ends the pool's boxes at `release`, or earlier at `endPool()` (each then has its
+  receipt, for a host that sums them before it lets the place go).
 - `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
   the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
   (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
