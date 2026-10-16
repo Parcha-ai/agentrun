@@ -3,6 +3,7 @@
 export type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryStore } from "@parcha/agentrun-dsl/recovery";
 export { documentStore, type DocumentStoreHost, type DocumentStoreOptions } from "./store.js";
 export { committedRoutes, durableDoc, readJournal, type JournalView } from "./readers.js";
+export { EXPORT_KINDS, EXPORT_MAX_BYTES, EXPORT_STORE_TABLES, ExportRefused, SECRET_EXPORT_KINDS, exportStore, type ExportStoreOptions, type ExportStoreReport } from "./export-store.js";
 export { recordCommits, recordingLines, snapshotLines, type RecordingLine, type RecordingSource } from "./recording.js";
 export { reuseReceipts, seedReceipts, ReceiptIndex, type ReceiptReuse, type ReuseReceiptsOptions, type ReusableTool } from "./receipts.js";
 export { NewerTaskError, refuseNewerTasks, toolResult, ToolResultKeyError, type TextBlock } from "./pi-versions.js";

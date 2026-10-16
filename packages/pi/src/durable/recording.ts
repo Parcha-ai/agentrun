@@ -142,6 +142,18 @@ function driverGenerations(db: Database): Array<[number, number]> {
   return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
 
+/** Every surviving revision of document `id` as the whole value after it (each delta applied over its base), in commit order:
+ *  the one replay `recordingLines` and the store exporter share. Each value is its own copy. */
+export function revisionValues(db: Database, id: number): Array<{ seq: number; version: number; value: Json }> {
+  const out: Array<{ seq: number; version: number; value: Json }> = [];
+  let value: Json;
+  for (const rev of db.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(id) as Array<{ seq: number; kind: string; version: number; content: string }>) {
+    value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
+    out.push({ seq: rev.seq, version: rev.version, value: structuredClone(value) });
+  }
+  return out;
+}
+
 /**
  * Every change the store `file` committed after `after` (default: all), as durable recording lines in `(commit, order)`
  * order, and `last`, the highest commit returned (`after` when nothing is). For a store no process holds (a disk run's
@@ -172,10 +184,8 @@ export function recordingLines(file: string, options: { after?: number } = {}): 
       const kind = JSON.parse(doc.kind) as string;
       const key = doc.family === 1 ? JSON.parse(doc.key_value) as string : undefined;
       const conv = doc.scope_kind === "conversation" ? doc.owner_id : doc.scope_kind === "task" ? taskConversation.get(doc.owner_id) : undefined;
-      let value: Json;
-      for (const rev of db.prepare("SELECT seq, kind, version, content FROM document_revisions WHERE document_id = ? ORDER BY seq").all(doc.id) as Array<{ seq: number; kind: string; version: number; content: string }>) {
-        value = rev.kind === "base" ? JSON.parse(rev.content) : apply(structuredClone(value), JSON.parse(rev.content));
-        if (rev.seq > after) placed.push(documentLine(doc.id, kind, key, structuredClone(value), rev.version, conv, rev.seq));
+      for (const rev of revisionValues(db, doc.id)) {
+        if (rev.seq > after) placed.push(documentLine(doc.id, kind, key, rev.value, rev.version, conv, rev.seq));
       }
     }
     for (const entry of db.prepare("SELECT commit_seq, record FROM entries WHERE commit_seq > ?").all(after) as Array<{ commit_seq: number; record: string }>) {

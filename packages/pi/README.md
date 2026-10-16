@@ -278,6 +278,20 @@ When loaded as an extension, Pi resolves its core packages and TypeBox through t
 
 The durable entry (`@parcha/agentrun-pi/durable`) takes pi-durable and chord as optional peers from 1.0.4 to below 1.4; CI runs it on 1.0.4, 1.1.0, 1.2.0 and 1.3.0. A run that pi-durable 1.1 left (killed, paused, or with a tool call in flight) continues on 1.2. The move does not go back. A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1: 1.1 waits on the newer task, and the only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. Continue such a run on 1.2, and do not downgrade pi under a live run. A host can call `refuseNewerTasks(harness, context)` from the durable entry after opening its Harness. On pi before 1.2, it then fails such a store with `NewerTaskError` (code `PI_TASK_NEWER`, naming the task's kind and version) instead of waiting.
 
+### Export a run's store
+
+`exportStore(source, out, options)` (from `@parcha/agentrun-pi/durable`) writes a new SQLite file of a run store for someone who is not the run: only the documents whose kind the allowlist keeps, as whole values, and the conversations and entries a timeline reads. A raw run store holds saved sign-ins and the host's own names, so this is the only way one leaves.
+
+```js
+import { exportStore } from '@parcha/agentrun-pi/durable';
+const report = exportStore(storeFile, outFile, {
+  exportable: { kinds: EXPORTABLE_KINDS, project: projectForExport }, // the host's kinds, and how to write each one
+  secrets: [apiKey],                                                   // exact values no kept value may hold
+});
+```
+
+The DSL's own kinds a run page reads are kept without being listed (`EXPORT_KINDS`); every other kind is dropped, and the saved sign-in, lease, binding and alias kinds are never kept, even when listed. Images move to a `blobs` table and leave a `{ type: "image", mimeType, blob }` reference. Each kept value is checked against `@parcha/agentrun-pi/credentials` (`FORBIDDEN`, `credentialIn`, `credentialInValue`: the credential shapes and machine paths a published run must not hold) and against `secrets`; a hit throws `ExportRefused` (`found_secret`) naming the kind, key and path, never the value, and no file is left. The export is at most 10 MB (`too_large`), is built beside `out` and renamed into place, is vacuumed, and has no `-wal`, `-shm` or `-journal` beside it. The source is opened read-only and never changed.
+
 Candidate directories retain request text, rubric text, workflow versions, and feedback. Native Pi messages can contain workflow inputs and results. Choose storage and tool access appropriate for that data. The author skill in `@parcha/agentrun-dsl` describes the native and SDK authoring paths for agents.
 
 ## License
