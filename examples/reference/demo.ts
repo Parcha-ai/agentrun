@@ -68,6 +68,8 @@ export type DemoOptions = {
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
   root?: string;
+  /** The recovery driver's layout for the run (`v4`: the keyed one); the driver's default when absent. A host's choice, so it is not the job's. */
+  layout?: 'v3' | 'v4';
 };
 
 export type DemoResult = {
@@ -215,7 +217,7 @@ async function child(options: DemoOptions) {
         onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
       };
     };
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) });
     // The demo's result hook: what the recording shows as the run's result, made where the run's own files are.
     const made = result.status === 'complete' && options.result ? await options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined;
     await recorder?.detach();

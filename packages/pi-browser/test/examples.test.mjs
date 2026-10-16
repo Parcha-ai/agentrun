@@ -43,7 +43,7 @@ function sandbox(t) {
     for (const child of children) child.kill("SIGKILL");
     for (const pid of chromes()) { try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ } }
     await rm(state.dir, { recursive: true, force: true });
-  });
+  }, { timeout: 30_000 });
   const run = (name, args = [], env = {}) => new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(EXAMPLES, name), ...args], { cwd: PACKAGE, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: state.dir, CHROME_PATH: CHROME, ...(process.env.CI ? { PI_BROWSER_NO_SANDBOX: "1" } : {}), ...env } });
     children.push(child);
@@ -58,7 +58,7 @@ function sandbox(t) {
 
 test("one-script-three-providers runs on a local Chrome, names an unknown provider, and names the key a hosted provider lacks", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
   const site = await startSite();
-  t.after(() => site.close());
+  t.after(() => site.close(), { timeout: 30_000 });
   const box = sandbox(t);
   await box.ready;
   const local = await box.run("one-script-three-providers.mjs", [`${site.base}/a`], { PI_BROWSER_PROVIDER: "cdp" });
@@ -122,7 +122,7 @@ test("the README's no-key command runs in an empty environment and prints the fa
   const printed = blocks.find((m) => m[1] === "")?.[2];
   assert.ok(command && printed, "an sh block with the command and a plain block with its output");
   const home = fs.mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), "no-key-home-"));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(home, { recursive: true, force: true }), { timeout: 30_000 });
   const run = spawnSync("/usr/bin/env", ["-i", `PATH=${process.env.PATH}`, `HOME=${home}`, "sh", "-c", command], { cwd: PACKAGE, encoding: "utf8", timeout: 90_000 });
   assert.equal(run.status, 0, run.stderr.slice(-1500));
   assert.equal(run.stdout, printed, "the README shows what the command prints");
