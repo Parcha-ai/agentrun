@@ -100,7 +100,23 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "commands" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "seed" | "run.json" | "heartbeat" | "layout" | "commands" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+
+/** Where a new run's seed writes: the claim's root, the store file the Harness will open, and the workspace. */
+export interface RunSeedDir {
+  readonly root: string;
+  readonly storePath: string;
+  readonly workDir: string;
+}
+
+/**
+ * What a new run starts with, written before anything can see the run: its store file (`storePath`, a SQLite database
+ * the Harness then opens) and files in its workspace. It runs inside the run's first claim, holding the owner lock, after
+ * `store/`, `work/` and `tmp/` exist and before `run.json` publishes the run. It never runs on a later open. If it throws
+ * (or its process dies) the open fails and nothing is published, so the next open seeds again: it must overwrite what an
+ * earlier attempt wrote. A connection it opens on `storePath` must be closed before it returns.
+ */
+export type RunSeed = (dir: RunSeedDir) => void | Promise<void>;
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
@@ -148,6 +164,11 @@ export interface OpenRunLeaseOptions {
   readonly claimDir?: (root: string) => Promise<ClaimDir>;
   /** Replaceable for tests: the monotonic clock the self-fence measures with, in ms (default `performance.now`). */
   readonly clock?: () => number;
+  /**
+   * A new run's starting state (`RunSeed`): run once, on the open that finds no `run.json`, before `run.json` is written
+   * and the store opened; what it wrote is made durable (the claim's barrier) before the run is published.
+   */
+  readonly seed?: RunSeed;
 }
 
 export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegistration> extends Omit<OpenRunLeaseOptions, "cleanup"> {
@@ -606,6 +627,17 @@ class Lease implements RunLease {
     const previous = await this.#readPrevious();
     this.#previous = previous;
     this.#lastSeq = previous?.sealedSeq ?? 0;
+    // A new run (no run.json): its seed writes what it starts with, and only then is it published.
+    const seed = this.#options.seed;
+    if (seed !== undefined && previous === undefined) {
+      await step("seed", async () => {
+        await this.#layout();
+        await this.#dir!.assertMounted();
+        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
+        await this.#dir!.assertMounted();
+        await claim.barrier();
+      });
+    }
     await step("run.json", async () => {
       const now = new Date().toISOString();
       this.#noteBeat(await this.#write(() => ({
@@ -631,17 +663,21 @@ class Lease implements RunLease {
         ownCgroup: this.#options.ownCgroup === true,
       });
     });
-    await step("layout", async () => {
-      for (const dir of [claim.store, claim.work, join(claim.root, "tmp")]) {
-        const under = relative(claim.root, dir);
-        if (under === "" || under.startsWith("..") || isAbsolute(under)) throw new RunError("INVALID_ARGUMENT", `${dir} is not under the claim root ${claim.root}`);
-        try {
-          await mkdir(join(this.#dir!.at, under), { recursive: true });
-        } catch (error) {
-          throw ownWriteFenced(dir, error);
-        }
+    await step("layout", () => this.#layout());
+  }
+
+  /** `store/`, `work/` and `tmp/`, made through the held claim directory. */
+  async #layout(): Promise<void> {
+    const claim = this.rawClaim;
+    for (const dir of [claim.store, claim.work, join(claim.root, "tmp")]) {
+      const under = relative(claim.root, dir);
+      if (under === "" || under.startsWith("..") || isAbsolute(under)) throw new RunError("INVALID_ARGUMENT", `${dir} is not under the claim root ${claim.root}`);
+      try {
+        await mkdir(join(this.#dir!.at, under), { recursive: true });
+      } catch (error) {
+        throw ownWriteFenced(dir, error);
       }
-    });
+    }
   }
 
   async checkSeal(store: StoreHeadSource): Promise<void> {

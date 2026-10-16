@@ -64,7 +64,7 @@ export function fakeImage(type: "png" | "jpeg", width: number, height: number): 
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IEND", Buffer.alloc(0))]);
 }
 
-const DEFAULT_CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: 3600, survivesDisconnect: false, releaseIsAsync: false, extension: "loaded-locally" };
+const DEFAULT_CAPS: ProviderCaps = { timeoutModel: "inactivity", maxLifetimeS: 3600, survivesDisconnect: false, releaseIsAsync: false, profiles: false, extension: "loaded-locally" };
 
 type Session = { id: string; tag: string; metadata: Record<string, string>; state: "running" | "stopped"; url: string; broker: boolean; plane: string };
 
@@ -192,7 +192,7 @@ export class FakeBackend {
         const id = b.newId("fake_sess");
         b.sessions.set(id, { id, tag: spec.tag, metadata: { ...spec.metadata }, state: "running", url: b.opts.start, broker: false, plane: "default" });
         b.noteLive();
-        b.record("create", { id, tag: spec.tag, metadata: { ...spec.metadata }, contextId: spec.contextId ?? null, verified: spec.verified, liveNow: b.liveCount() });
+        b.record("create", { id, tag: spec.tag, metadata: { ...spec.metadata }, contextId: spec.contextId ?? null, profile: spec.profile ?? null, verified: spec.verified, liveNow: b.liveCount() });
         await b.after("create");
         return { id, tag: spec.tag };
       },
