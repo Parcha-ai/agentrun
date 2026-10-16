@@ -249,3 +249,29 @@ test('a document nested as deep as inspectWorkflow accepts is walked to its inne
   const there = new Set(cut.nodes.map((node) => node.path));
   assert.ok(cut.nodes.length <= 129 && cut.edges.every((edge) => there.has(edge.from) && there.has(edge.to)));
 });
+
+test('one item\'s record read on its own: with { item }, its instance is its own and its body is done when the item is committed, working while it runs', async () => {
+  const graph = workflowGraph(nested);
+  const keyed = await ran(nested, { items: [1, 2, 3] }, { layout: 'v4' });
+  const [first, second] = Object.values(keyed.items).sort((a, b) => a.index - b.index);
+  assert.equal(first.status, 'committed');
+  const own = { item: `${first.map}/items/${first.index}` };
+  const done = nodeStatus(graph, [first], own);
+  for (const path of ['/root/steps/0/body', '/root/steps/0/body/steps/0', '/root/steps/0/body/steps/0/workflow/root', '/root/steps/0/body/steps/1']) assert.equal(done[path], 'done', path);
+  // The record of an item that is still running says working; the same record read without { item } is one item of a map that is not done.
+  const running = { ...second, status: 'running', frame: { ...second.frame, done: second.frame.done.filter((path) => !path.endsWith('/body/steps/1')) } };
+  const mid = nodeStatus(graph, [running], { item: `${running.map}/items/${running.index}` });
+  assert.equal(mid['/root/steps/0/body'], 'working');
+  assert.equal(mid['/root/steps/0/body/steps/1'], 'not-run');
+  assert.equal(nodeStatus(graph, [first])['/root/steps/0/body'], 'working', 'without { item } the map is not recorded done, so its body is working');
+  // A container inside the item still stands for all of its own items.
+  const inner = flow('inner', { node: 'map', label: 'outer', itemsPath: 'rows', as: 'o', body: { node: 'map', label: 'inner', itemsPath: 'cells', as: 'c', body: code('leaf') } });
+  const innerGraph = workflowGraph(inner);
+  // The outer item is still running: a committed item would say its whole body, the inner map, is done.
+  const record = (done) => [{ map: '/root', index: 0, status: 'running', frame: { done } }];
+  const half = nodeStatus(innerGraph, record(['/root/items/0/body/items/0/body']), { item: '/root/items/0' });
+  assert.equal(half['/root/body/body'], 'working', 'the inner map is not recorded done, so what is in its body is working');
+  const whole = nodeStatus(innerGraph, record(['/root/items/0/body/items/0/body', '/root/items/0/body']), { item: '/root/items/0' });
+  assert.equal(whole['/root/body'], 'done');
+  assert.equal(whole['/root/body/body'], 'done', 'the inner map is recorded done, so its body is');
+});
