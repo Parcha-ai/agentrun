@@ -82,10 +82,12 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   const model = jev?.model ?? JEV_MODEL;
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
   let items: Fitted[] = [];
+  const examples: (readonly [string, Fitted])[] = [];
+  // The key names every image sent, the examples' too with their references, so a changed example is another judgment.
   const record = (answered: string, body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => {
-    const sha256 = blocksSha256(items);
-    const key = lookKey({ sha256, fragment: items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, Object.keys(request.examples ?? {})] });
-    return { tool: "look", args: { path: [...new Set(items.map((item) => item.fragment))].join(", "), ask: Object.keys(request.questions).join(", "), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: "image", fragment: "", key, shown_blocks: items.length, ...facts } };
+    const sha256 = blocksSha256([...items, ...examples.map(([, item]) => item)]);
+    const key = lookKey({ sha256, fragment: items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, examples.map(([ref]) => ref)] });
+    return { tool: "look", args: { path: [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: "image", fragment: "", key, shown_blocks: items.length + examples.length, ...facts } };
   };
   const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
     throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent));
@@ -104,12 +106,16 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     return out;
   };
   items = await fitted(request);
-  const examples: (readonly [string, Fitted])[] = [];
   for (const [ref, example] of Object.entries(request.examples ?? {})) examples.push([ref, (await fitted(typeof example === "string" ? { paths: [example] } : { images: [example] }))[0]!]);
   const bytes = [...items, ...examples.map(([, item]) => item)].reduce((sum, item) => sum + item.bytes.length, 0);
   if (bytes > JEV_REQUEST_BYTES) return fail({ code: "over_budget", reason: `its images come to ${bytes} bytes, over the ${JEV_REQUEST_BYTES} one request to Jev carries; split them across calls`, model });
 
   const at = record(model, "");
+  /** The answers, each box with its region as a fragment of its image. */
+  const mapped = (result: JevResult) => Object.fromEntries(Object.entries(result.answers as Record<string, Json>).map(([name, answer]) => {
+    const box = object(answer) && answer.type === "box" && object(answer.box) ? boxFragment(items[request.questions[name]?.image ?? 0]!, answer.box as Box) : undefined;
+    return [name, box ? { ...(answer as Record<string, Json>), fragment: box } : answer];
+  }));
   const ask = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
     const state = { ...request.state, images: items.map((item) => ({ source: item.fragment, image: jev.image(item.bytes) })) };
@@ -130,14 +136,10 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const costUsd = tokensIn === null ? null : (tokensIn * (jev.usdPerMTok ?? JEV_USD_PER_MTOK)) / 1_000_000;
     const usage: Usage = { input: tokensIn ?? 0, output: tokensOut ?? 0, cacheRead: 0, cacheWrite: 0, totalTokens: (tokensIn ?? 0) + (tokensOut ?? 0), cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } };
     const facts = { ...(tokensIn !== null ? { tokens_in: tokensIn } : {}), ...(tokensOut !== null ? { tokens_out: tokensOut } : {}), cost_usd: costUsd, ...(readBack ? { kept: true as const } : {}) };
-    const filed = { ...at, args: { ...at.args, model: result.model }, body: JSON.stringify(result.answers), facts: { ...at.facts, ...facts } };
+    const filed = { ...at, args: { ...at.args, model: result.model }, body: JSON.stringify(mapped(result)), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_JUDGE.name, filed, { usage, costUsd, ...(told ? { kept: true } : {}) }));
     return { result, readBack, receipt, costUsd };
   });
 
-  const answers = Object.fromEntries(Object.entries(result.answers as Record<string, Json>).map(([name, answer]) => {
-    const box = object(answer) && answer.type === "box" && object(answer.box) ? boxFragment(items[request.questions[name]?.image ?? 0]!, answer.box as Box) : undefined;
-    return [name, box ? { ...(answer as Record<string, Json>), fragment: box } : answer];
-  }));
-  return { answers, model: result.model, costUsd, receipts: receipt ? [receipt] : [], ...(readBack || shared ? { kept: true } : {}) };
+  return { answers: mapped(result), model: result.model, costUsd, receipts: receipt ? [receipt] : [], ...(readBack || shared ? { kept: true } : {}) };
 }

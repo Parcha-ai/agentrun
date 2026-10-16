@@ -184,12 +184,17 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   const original = stored && upright(stored);
   if (original && exceedsDecodeGuard(original)) return refuse("over_budget", original, `its ${grouped(original.width * original.height)} pixels are over the ${grouped(DECODE_GUARD_PIXELS)} this package decodes`);
   const small = (size: PixelSize) => Math.min(size.width, size.height) < (limits.minEdge ?? 0);
-  const keeps = limits.formats ? limits.formats.includes(mime) && !(limits.baseline && header?.progressive) : INLINE_TYPES.has(mime);
+  const keeps = (limits.formats ? limits.formats.includes(mime) : INLINE_TYPES.has(mime)) && !(limits.baseline && header?.progressive);
   if (stored && original && stored.orientation === 1 && keeps && withinEdges(original, limits) && !small(original) && chars <= limits.maxBytes) {
     return { fit: "as_is", original, blocks: [{ data: base64(bytes), mimeType: mime, ...original }] };
   }
   const { raster, encode } = processor;
-  if (!raster || !encode) return prepared(processor, bytes, mime, limits, original, refuse);
+  if (!raster || !encode) {
+    const fit = await prepared(processor, bytes, mime, limits, original, refuse);
+    const [block] = fit.fit === "refused" ? [] : fit.blocks;
+    const unmet = block && (small(block) || !(limits.formats ?? [...INLINE_TYPES]).includes(block.mimeType) || (limits.baseline && imageHeader(Buffer.from(block.data.slice(0, Math.ceil(SNIFF_BYTES / 3) * 4), "base64"))?.progressive));
+    return unmet ? refuse("needs", original ?? null, "this image processor only fits images to their largest size; growing one, re-encoding its format or making a JPEG baseline needs Photon or sharp") : fit;
+  }
   if (processor.decodes && !processor.decodes.includes(mime)) return refuse("needs", original ?? null, `this image processor does not decode ${mime}${READERS[mime] ? `; ${READERS[mime]}` : ""}`);
   if (!stored || !original) return refuse("unreadable", null, "its size is not in its header and this processor cannot read it without decoding");
   const layout = imageLayout(original, limits, options.tiles);

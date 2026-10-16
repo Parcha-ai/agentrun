@@ -9,8 +9,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import sharp from "sharp";
-import { imageHeader, JEV_USD_PER_MTOK } from "@parcha/pi-vision";
+import { fitImage, imageHeader, JEV_USD_PER_MTOK } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import { pngBytes } from "@parcha/pi-vision/testing";
 import { codeTool } from "./durable/code-tool.mjs";
 import { drive, textOf, tmp } from "./durable/rig.mjs";
@@ -55,21 +56,24 @@ test("one request answers all four question types about the images in the state,
   assert.deepEqual([model, costUsd, receipts, kept], ["jev-1.14.0", (2000 * JEV_USD_PER_MTOK) / 1e6, ["evidence/judge/1.md"], undefined]);
   assert.deepEqual(rows.looks.map((l) => [l.tool, l.source, l.costUsd, l.kept]), [["vision.judge", "r.pdf#page=1, r.pdf#page=2", costUsd, undefined]]);
   assert.deepEqual([rows.filed[0].status, rows.filed[0].args.via, rows.filed[0].facts.tokens_in, JSON.parse(rows.filed[0].body).blank.noul], ["ok", "jev", 2000, 0.8]);
+  assert.deepEqual(JSON.parse(rows.filed[0].args.ask), QUESTIONS, "the receipt holds the questions as asked, each box's image index included");
+  assert.equal(JSON.parse(rows.filed[0].body).logo.fragment, answers.logo.fragment, "and the box's region, so it stands on its own");
 });
 
 test("examples go to Jev by the reference the questions write; the same judgment again in the call is read back", async () => {
-  const cwd = workspace({ "frame.png": pngBytes(640, 480), "chart.png": pngBytes(400, 300) });
+  const cwd = workspace({ "frame.png": pngBytes(640, 480), "chart.png": pngBytes(400, 300), "other.png": pngBytes(400, 320) });
   const rows = host();
   const jev = fakeJev();
   const vision = createVisionExtension({ jev, ...rows.options });
   const ask = `{ paths: ["frame.png"], examples: { "<chart>": "chart.png" }, questions: { kind: { type: "choice", instructions: "Which is \`images[0].image\`?", criteria: { chart: "<chart>", other: "Anything else." } } } }`;
-  const seen = await ran(vision, cwd, `const a = await vision.judge(${ask}); const b = await vision.judge(${ask}); return [a, b];`);
+  const seen = await ran(vision, cwd, `const a = await vision.judge(${ask}); const b = await vision.judge(${ask}); const c = await vision.judge(${ask.replace("chart.png", "other.png")}); return [a, b];`);
   assert.equal(seen.ok, true, seen.error);
-  assert.equal(jev.requests.length, 1, "asked once");
+  assert.equal(jev.requests.length, 2, "the same judgment asked once; the one with another example image asked again");
+  assert.equal(imageHeader(jev.requests[1].request.assets["<chart>"].bytes).height, 320);
   assert.deepEqual(Object.keys(jev.requests[0].request.assets), ["<chart>"]);
   assert.deepEqual(imageHeader(jev.requests[0].request.assets["<chart>"].bytes), { mimeType: "image/png", width: 400, height: 300, orientation: 1 });
   assert.deepEqual(seen.value.map((r) => [r.answers.kind.choice, r.kept]), [["chart", undefined], ["chart", true]]);
-  assert.deepEqual(rows.looks.map((l) => l.kept), [undefined, true], "told again as kept, not charged");
+  assert.deepEqual(rows.looks.map((l) => l.kept), [undefined, true, undefined], "told again as kept, not charged; the changed example paid");
   const unnamed = await ran(vision, cwd, `try { await vision.judge({ paths: ["frame.png"], examples: { "<dog>": "chart.png" }, questions: { q: { type: "noul", instructions: "Is it a chart?" } } }); } catch (error) { return error.message; }`);
   assert.match(unnamed.value, /^vision\.judge takes \{ questions/, "an example no question names is refused before anything is sent");
 });
@@ -103,6 +107,17 @@ test("every image Jev gets is within its limits: shrunk, grown, padded, re-encod
   // The strip could not grow: its 1568x47 pixels are at the top left of a 1568x280 block, and the fake's box (0.25 to
   // 0.75 of the block's height) lies wholly in the padding below them.
   assert.equal(seen.value.answers.strip.fragment, undefined, "a box wholly in the padding names no region");
+});
+
+test("a processor that only fits images to their largest size is held to Jev's other limits, and baseline holds without formats", async () => {
+  const cwd = workspace({ "small.png": pngBytes(200, 100) });
+  const prepareOnly = { prepare: async (bytes, mimeType) => ({ data: Buffer.from(bytes).toString("base64"), mimeType }) };
+  const seen = await ran(createVisionExtension({ images: prepareOnly, jev: fakeJev(), ...host().options }), cwd, `try { await vision.judge({ paths: ["small.png"], questions: { q: { type: "noul", instructions: "Is it blank?" } } }); } catch (error) { return error.message; }`);
+  assert.match(seen.value, /^needs: small\.png: .*growing one, re-encoding its format or making a JPEG baseline needs Photon or sharp$/);
+  const progressive = await sharp(Buffer.from(pngBytes(800, 600))).jpeg({ progressive: true }).toBuffer();
+  const fit = await fitImage(sharpImages(sharp), progressive, "image/jpeg", { maxWidth: 2000, maxHeight: 2000, maxBytes: 10_000_000, baseline: true });
+  assert.equal(fit.fit, "resized");
+  assert.equal(imageHeader(Buffer.from(fit.blocks[0].data, "base64")).progressive, undefined, "re-encoded baseline though no formats were named");
 });
 
 test("a look that cannot be made throws with its code and is filed and told: no Jev, a video, a refused request, one over the size", async () => {
