@@ -5,7 +5,7 @@
 // so natively.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -850,7 +850,17 @@ describe("stopping a swapper whose group holds only zombies", () => {
       assert.ok(zombie > 0, "the parent started its child");
       for (const t0 = Date.now(); alive(zombie) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 10));
       assert.ok(!alive(zombie), "the child has exited");
-      assert.equal(await stopSwapper(zombie, 100, 100), true, "a group of zombies is stopped");
+      const stopped = await stopSwapper(zombie, 100, 100);
+      let answer = "success";
+      try {
+        process.kill(-zombie, 0);
+      } catch (error) {
+        answer = String((error as NodeJS.ErrnoException).code);
+      }
+      const members = execFileSync("ps", ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8" })
+        .split("\n")
+        .filter((line) => line.trim().split(/\s+/)[1] === String(zombie));
+      assert.equal(stopped, true, `a group of zombies is stopped (kill(0): ${answer}; ps: ${JSON.stringify(members)})`);
     } finally {
       parent.kill("SIGKILL");
     }

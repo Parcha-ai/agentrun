@@ -42,14 +42,16 @@ export async function stopSwapper(leader: number, graceMs = 2_000, killMs = 5_00
 }
 
 /**
- * Whether a process other than a zombie is in the group `leader` leads. kill(0) answers for a zombie too, and a swapper's
- * children, orphaned when its shell dies, stay zombies until their new parent reaps them; a zombie writes nothing.
+ * Whether a process other than a zombie is in the group `leader` leads. A swapper's children, orphaned when its shell dies,
+ * stay zombies until their new parent reaps them, and a zombie writes nothing; but kill(0) still answers for a group that
+ * holds one: Linux with success, macOS with EPERM (it skips the exited member and finds nothing it may signal). Only ESRCH
+ * says the group is gone; any other answer is settled by the process table.
  */
 export function groupRuns(leader: number): boolean {
   try {
     process.kill(-leader, 0);
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
   }
   let listing: string;
   try {
