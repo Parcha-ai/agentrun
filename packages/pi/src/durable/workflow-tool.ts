@@ -5,7 +5,7 @@
 // document of the session, so a reopened session keeps it. Code nodes run only through the host's code executor.
 import { defineDocFamily, defineExtension, defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
-import { WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
+import { inspectWorkflow, WORKFLOW_NODE_KINDS, type AuthorHostAddendum, type Workflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
 import { canonicalHash } from "@parcha/agentrun-dsl/recovery";
 import { extensionStructuralLimits, WorkflowExtensionService } from "../extension-service.js";
 import { modelJson } from "../presentation.js";
@@ -27,7 +27,7 @@ export const DURABLE_HOST_ADDENDUM: AuthorHostAddendum = Object.freeze({
   rules: [
     "Call agentrun with action describe first, then inspect the complete workflow with its input, then dry-run it (action dry-run, without a workflow argument), then run without a workflow argument.",
     "A dry run runs the inspected workflow on synthetic values, or the input you give it, with no model, Jev or tool call. Its status is passed, not_run (a check could not run; skipped says why, and it proves nothing) or failed (problems say why). Report not_run as not run, never as passed.",
-    "Use exactly the tools describe returns. A call uses via tool with one of them. Shell and executor calls and artifact delivery are unavailable.",
+    "Use exactly the tools describe returns, as a call's tool and as an agent node's tools: the host registers them, and inspect refuses any other, naming it. A call uses via tool with one of them. Shell and executor calls and artifact delivery are unavailable.",
     "Code nodes run only through the host's code executor. Without one, a dry run of a workflow with code is not_run and a run of it is refused.",
     "A run is a pi-durable task of this conversation: it continues after the session reopens, and the run action answers with its outcome once it ends. Running the same draft on the same input again reaches that run: a live one is waited for, a finished one answers with its outcome, and its effects are not made again. To run the same draft on the same input anew, pass again: true; a later run without it reaches the newest one.",
     "Save keeps a named revision of the inspected definition, not its input. Load replaces the draft with a saved revision and checks it against this host's tools. List shows the saved revisions.",
@@ -65,6 +65,15 @@ const answer = (value: unknown) => toolResult([{ type: "text", text: modelJson(v
 export function createWorkflowTool(host: WorkflowToolHost): { extension: Extension; workflow: ReturnType<typeof createWorkflowExtension> } {
   const names = (host.tools ?? []).map((tool) => tool.name);
   const checker = () => new WorkflowExtensionService({ allowedTools: names });
+  /** Inspect's checks, after naming any tool the workflow uses (a call's, or an agent node's) that the host did not
+   *  register: the host decides what a drafted workflow may use. */
+  const admit = (candidate: unknown, input?: Record<string, unknown>) => {
+    let used: readonly string[] = [];
+    try { used = inspectWorkflow(candidate).requires.tools; } catch { /* inspect names what is wrong */ }
+    const missing = used.filter((name) => !names.includes(name));
+    if (missing.length) throw new Error(`Cannot inspect workflow: it uses ${missing.length === 1 ? "a tool" : "tools"} this session's host has not registered: ${missing.map((name) => JSON.stringify(name)).join(", ")}. A workflow may call, or give an agent node, only the tools describe lists; a host registers them in createWorkflowTool's tools.`);
+    return inspectCandidate(checker(), candidate, input);
+  };
   const store = () => new WorkflowStore(host.projectDir);
 
   // A run's events reach the tool call that started it, while both live in this process.
@@ -94,7 +103,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
 
   const tool = defineTool({
     name: host.name ?? "agentrun",
-    description: "Compose and run AgentRun workflows in this session. Describe lists the tools a workflow may call and the language. Inspect validates a complete workflow and keeps it as this conversation's draft. Dry-run checks the draft on synthetic values (or the given input) with no model, Jev or tool call. Run starts the draft as a durable task of this conversation and answers with its outcome. Running the same draft on the same input again, after a restart too, reaches the same run and makes no effect twice; again: true starts a fresh run of them, which a later run then reaches. Save, load and list keep named definition revisions.",
+    description: "Compose and run AgentRun workflows in this session. Describe lists the tools a workflow may use, as a call's tool or an agent node's tools, and the language; a workflow uses only the tools describe lists, which the host registers. Inspect validates a complete workflow and keeps it as this conversation's draft. Dry-run checks the draft on synthetic values (or the given input) with no model, Jev or tool call. Run starts the draft as a durable task of this conversation and answers with its outcome. Running the same draft on the same input again, after a restart too, reaches the same run and makes no effect twice; again: true starts a fresh run of them, which a later run then reaches. Save, load and list keep named definition revisions.",
     parameters: Type.Object({ ...workflowToolProperties(), again: Type.Optional(Type.Boolean({ description: "Run only: start a fresh run of the same draft and input instead of reaching the one already run." })) }) as unknown as ToolRegistration["parameters"],
     executionMode: "sequential",
     async execute(given, api, context) {
@@ -125,7 +134,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
           if (candidate === undefined) throw new Error("No workflow yet. Pass the complete workflow to inspect.");
           // Without input, the input is not checked, as the coding-agent tool's inspect does; the draft keeps none.
           const input = args.input ?? (args.workflow === undefined ? draft?.input : undefined);
-          const { tree } = inspectCandidate(checker(), candidate, input);
+          const { tree } = admit(candidate, input);
           await keep(candidate, input ?? {});
           return answer({ preview: tree, workflow: candidate, input: input ?? {} });
         }
@@ -145,14 +154,14 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
           return answer({ workflows: await store().list() });
         case "load": {
           const saved = await store().load(args.name ?? "", args.digest);
-          const { tree } = inspectCandidate(checker(), saved.workflow, args.input);
+          const { tree } = admit(saved.workflow, args.input);
           await keep(saved.workflow, args.input ?? {});
           return answer({ preview: tree, workflow: saved.workflow, input: args.input ?? {}, saved: { name: saved.name, digest: saved.digest } });
         }
         case "run": {
           const draft = await needDraft("run");
           const input = args.input ?? draft.input;
-          const { inspection } = inspectCandidate(checker(), draft.workflow, input);
+          const { inspection } = admit(draft.workflow, input);
           const code = inspection.nodes.filter((node) => node.kind === "code").map((node) => JSON.stringify(node.label));
           if (code.length && !host.runCode) throw new Error(`Code node${code.length === 1 ? "" : "s"} ${code.join(", ")}: this host runs code only through its own executor and gave none, so the workflow does not run here. Nothing ran.`);
           if (inspection.requires.sopSections.length && host.sop === undefined) throw new Error(`The workflow needs SOP text for ${inspection.requires.sopSections.map((name) => JSON.stringify(name)).join(", ")}, and this host supplies none. Nothing ran.`);
