@@ -73,3 +73,7 @@ An issue's title and body are third-party text written by a named person, and a 
 ### One request per issue
 
 The three questions are asked in one Jev request per issue, not three: the entry caps a run at 50 judge requests and 40,000 tokens (Jev's limits), and twenty issues at three requests each would be 60. One request also sends the issue's text once. Jev answers each question of a request against the same state, independently.
+
+### What a killed take claims, and what its store can show
+
+A take killed once and resumed says: *Jev and tool calls repeated 0. No model turn was recorded twice; N agent turns in flight at the kill were completed by the resumed process, each recorded once.* The counts come from the recording's stores (the run's Jev request counter, the tool ledger, and each conversation's asked and committed model turns). They cannot show whether a model stream had been fully received before the kill, so the card does not say that.
