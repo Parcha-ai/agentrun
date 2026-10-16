@@ -8,6 +8,11 @@ kind: ci
   package's dependencies. `prepareOnSnapshot` is the matching `prepare` for a `daytonaHost` start with `snapshot: <name>`:
   it puts the checkout's package source over the snapshot's `node_modules` and installs dependencies only when they
   changed. `check`, `baseline` and `delete` boot, compare and remove.
+- `build <commit> --demo` adds the disk demo's dependencies: the third-party closure of the five workspace packages its box
+  installs (dsl, pi, pi-browser, pi-vision, pi-transport) and pi-codemode, pinned to the workspace lockfile at `commit`.
+  `installDemoPacks` then installs the checkout's packs offline, in about 1.5 s instead of 6 to 7 s over the network;
+  `check-demo` measures it and imports every entry the demo's child uses.
 - The ledger (`P9-STATE.json`) records snapshots too. A snapshot is built once under a new name, never over an existing
-  one, and only one this lane built can be deleted.
+  one, and only one this lane built can be deleted. Every command needs the same `PDA_STATE_DIR`. A box whose delete
+  failed stays open in the ledger and fails the command, and a build still running when the wait ends stays open.
 - No package code changes: `daytonaHost` already takes `snapshot` and `prepare`.

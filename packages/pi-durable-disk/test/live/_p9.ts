@@ -308,19 +308,136 @@ const DEPS_HASH = `${NODE} -e 'const p=require(process.argv[1]);const f=["depend
  * package.json at `commit` of the public repository. It needs no build context. The package itself (its source and
  * dist) still comes from the checkout at boot (`prepareOnSnapshot`), over the snapshot's node_modules.
  */
-export function snapshotDockerfile(commit: string): string {
+export function snapshotDockerfile(commit: string, options: { readonly demo?: boolean } = {}): string {
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`the snapshot pins a full commit sha, not ${JSON.stringify(commit)}`);
+  // The demo variant keeps npm's cache: a box's offline install still resolves its explicit specs (DEMO_EXTRA) there.
+  const dropCache = options.demo ? "" : "rm -rf /root/.npm; ";
   return [
     `FROM ${SNAPSHOT_BASE}`,
     "USER root",
     `RUN set -eu; cd /tmp; curl -fsSLo node.tar.xz ${NODE_URL}; echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -; install -d -m 0755 /opt/node24; tar -xJf node.tar.xz -C /opt/node24 --strip-components=1; chmod -R a+rX /opt/node24; rm -f node.tar.xz`,
     `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
     `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
-    `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; rm -rf /root/.npm; chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
+    `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
+    ...(options.demo ? [demoClosureRun(commit)] : []),
     `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}`,
     "USER daytona",
     "",
   ].join("\n");
+}
+
+// ---- the demo variant: what the disk demo's box installs besides this package, baked in ---------------------------------
+
+/** The workspace packages the disk demo's box installs from this checkout's tarballs, by directory under packages/. */
+export const DEMO_PACKS = ["dsl", "pi", "pi-browser", "pi-vision", "pi-transport"] as const;
+/** What the demo's box installs from npm with them. */
+export const DEMO_EXTRA = ["@earendil-works/pi-codemode@1.1.0"] as const;
+const DEMO_STUBS = "/opt/pda-demo/stubs";
+
+type LockEntry = { version?: string; link?: boolean; dependencies?: Record<string, string>; peerDependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependenciesMeta?: Record<string, { optional?: boolean }> };
+
+const gitShow = (commit: string, path: string): string => {
+  const r = spawnSync("git", ["show", `${commit}:${path}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
+  if (r.status !== 0) throw new Error(`git show ${commit}:${path}: ${r.stderr.trim()}`);
+  return r.stdout;
+};
+
+/**
+ * The demo packs' third-party dependency closure at `commit`, from their package.json files and the workspace lockfile:
+ * `stubs`, each pack's package.json cut to its name, version and dependency fields (installed in the snapshot as stand-ins
+ * the box's own tarballs replace), and `pins`, every package of the closure the lockfile resolves to one version, at that
+ * version (npm overrides), so the snapshot holds the lockfile's versions. A name the lockfile has at several versions
+ * (typebox, pinned exactly by each pack) is left to npm, which nests it as the lockfile does. A workspace package that is
+ * not a pack (`@parcha/agentrun-jev`) comes from npm at its version, as it does in the box.
+ */
+export function demoClosure(commit: string): { stubs: Record<string, Record<string, unknown>>; pins: Record<string, string> } {
+  const lock = (JSON.parse(gitShow(commit, "package-lock.json")) as { packages: Record<string, LockEntry> }).packages;
+  const stubs: Record<string, Record<string, unknown>> = {};
+  const packNames = new Set<string>();
+  for (const dir of DEMO_PACKS) {
+    const pkg = JSON.parse(gitShow(commit, `packages/${dir}/package.json`)) as Record<string, unknown>;
+    packNames.add(String(pkg.name));
+    stubs[dir] = Object.fromEntries(["name", "version", "dependencies", "peerDependencies", "peerDependenciesMeta", "optionalDependencies"].filter((k) => pkg[k] !== undefined).map((k) => [k, pkg[k]]));
+  }
+  // Node's lookup over the lockfile's paths: <from>/node_modules/<name>, then each parent's, then the root's.
+  const find = (from: string, name: string): string | undefined => {
+    for (let dir = from; ; ) {
+      const key = dir ? `${dir}/node_modules/${name}` : `node_modules/${name}`;
+      if (lock[key]) return key;
+      if (!dir) return undefined;
+      const i = dir.lastIndexOf("/node_modules/");
+      dir = i >= 0 ? dir.slice(0, i) : "";
+    }
+  };
+  const versions = new Map<string, Set<string>>();
+  const seen = new Set<string>();
+  const walk = (key: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const entry = lock[key]!;
+    const optionalPeer = (name: string) => entry.peerDependenciesMeta?.[name]?.optional === true;
+    const names = [...Object.keys(entry.dependencies ?? {}), ...Object.keys(entry.optionalDependencies ?? {}), ...Object.keys(entry.peerDependencies ?? {}).filter((n) => !optionalPeer(n))];
+    for (const name of names) {
+      if (packNames.has(name)) continue;
+      const at = find(key, name);
+      if (!at) continue; // an optional dependency the lockfile did not install (another platform's)
+      const dep = lock[at]!;
+      if (dep.link) {
+        // Another workspace package: the box gets it from npm, at the version the workspace has.
+        const target = lock[String((dep as { resolved?: string }).resolved ?? "")];
+        if (target?.version) (versions.get(name) ?? versions.set(name, new Set()).get(name)!).add(target.version);
+        continue;
+      }
+      if (dep.version) (versions.get(name) ?? versions.set(name, new Set()).get(name)!).add(dep.version);
+      walk(at);
+    }
+  };
+  for (const dir of DEMO_PACKS) walk(`packages/${dir}`);
+  const pins = Object.fromEntries([...versions].filter(([, v]) => v.size === 1).map(([name, v]) => [name, [...v][0]!]).sort(([a], [b]) => a.localeCompare(b)));
+  return { stubs, pins };
+}
+
+/** The demo variant's one extra layer: the stubs and DEMO_EXTRA installed over the package's own dependencies, pinned by `demoClosure`. */
+function demoClosureRun(commit: string): string {
+  const { stubs, pins } = demoClosure(commit);
+  const disk = JSON.parse(gitShow(commit, "packages/pi-durable-disk/package.json")) as Record<string, Record<string, string>>;
+  const direct: Record<string, string> = { ...disk.dependencies, ...disk.devDependencies };
+  for (const dir of DEMO_PACKS) direct[String(stubs[dir]!.name)] = `file:${DEMO_STUBS}/${dir}`;
+  for (const spec of DEMO_EXTRA) {
+    const at = spec.lastIndexOf("@");
+    direct[spec.slice(0, at)] = spec.slice(at + 1);
+  }
+  // npm refuses an override of a direct dependency that differs from it; the direct ones stay as declared.
+  const overrides = Object.fromEntries(Object.entries(pins).filter(([name]) => !(name in direct)));
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64");
+  const writeStubs = DEMO_PACKS.map((dir) => `mkdir -p ${DEMO_STUBS}/${dir}; echo ${b64(stubs[dir])} | base64 -d > ${DEMO_STUBS}/${dir}/package.json`).join("; ");
+  const root = { name: "pda-demo-closure", private: true, dependencies: direct, overrides };
+  // The package's own package.json goes back after, so its dependency stamp (and prepareOnSnapshot's check) is unchanged.
+  return `RUN set -eu; ${writeStubs}; cp ${PACKAGE_DIR}/package.json /tmp/disk-package.json; echo ${b64(root)} | base64 -d > ${PACKAGE_DIR}/package.json; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --install-links --prefix ${PACKAGE_DIR}; mv /tmp/disk-package.json ${PACKAGE_DIR}/package.json; rm -f ${PACKAGE_DIR}/package-lock.json; chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`;
+}
+
+/**
+ * The demo's install on a box from the demo variant: this checkout's packs (DEMO_PACKS, packed by the caller) and
+ * DEMO_EXTRA, offline, over the closure the snapshot holds; then only what it installed is made root-owned and
+ * world-readable (the snapshot's node_modules already is). `offline: false` is the same install with the network, for a
+ * box from the plain snapshot.
+ */
+export async function installDemoPacks(client: DaytonaClient, box: SandboxInfo, tarballs: readonly string[], options: { readonly offline?: boolean } = {}): Promise<{ ms: number; steps: Record<string, number> }> {
+  const t0 = performance.now();
+  const steps: Record<string, number> = {};
+  const lap = (name: string) => (steps[name] = Math.round(performance.now() - t0));
+  await sh(client, box, "rm -rf /tmp/packs && mkdir -p /tmp/packs");
+  for (const file of tarballs) await client.upload(box, `/tmp/packs/${file.split("/").at(-1)}`, new Uint8Array(readFileSync(file)));
+  lap("upload");
+  const names = DEMO_PACKS.map((dir) => String(JSON.parse(readFileSync(new URL(`../../../${dir}/package.json`, import.meta.url), "utf8")).name)).concat(DEMO_EXTRA.map((s) => s.slice(0, s.lastIndexOf("@"))));
+  await sh(client, box, `set -euo pipefail
+sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR} --no-save ${options.offline === false ? "" : "--offline"} /tmp/packs/*.tgz ${DEMO_EXTRA.join(" ")} >/dev/null`, 900);
+  lap("npm");
+  await sh(client, box, `set -euo pipefail
+cd ${PACKAGE_DIR}/node_modules && sudo -n chown -R root:root ${names.join(" ")} && sudo -n chmod -R a+rX,go-w ${names.join(" ")}
+rm -rf /tmp/packs`);
+  lap("chown");
+  return { ms: Math.round(performance.now() - t0), steps };
 }
 
 /**
@@ -405,12 +522,14 @@ export async function getSnapshot(name: string): Promise<ReturnType<typeof snaps
  * Build the runtime snapshot from `snapshotDockerfile(commit)` under a new name of this lane's (NAME_PREFIX), never one
  * that exists (a default or another lane's is never overwritten), and wait until it is active or failed.
  */
-export async function buildSnapshot(name: string, commit: string, timeoutMs = 30 * 60_000): Promise<{ facts: ReturnType<typeof snapshotFacts>; ms: number }> {
+export async function buildSnapshot(name: string, commit: string, options: { readonly demo?: boolean; readonly timeoutMs?: number } = {}): Promise<{ facts: ReturnType<typeof snapshotFacts>; ms: number }> {
+  const timeoutMs = options.timeoutMs ?? 30 * 60_000;
   if (!name.startsWith(NAME_PREFIX) || !/^[a-z0-9-]+$/.test(name)) throw new NotOursError(`a lane snapshot is named ${NAME_PREFIX}<lowercase, digits, dashes>, not ${name}`);
   if (await getSnapshot(name)) throw new NotOursError(`snapshot ${name} exists: a snapshot is built once under a new name, never over one`);
   const t0 = performance.now();
-  ledger.snapshotCreating(name, commit, "runtime snapshot");
-  const created = await snapshotApi("POST", "", { name, buildInfo: { dockerfileContent: snapshotDockerfile(commit), contextHashes: [] }, ...SNAPSHOT_RESOURCES });
+  const dockerfileContent = snapshotDockerfile(commit, { demo: options.demo === true });
+  ledger.snapshotCreating(name, commit, options.demo ? "runtime snapshot, demo variant" : "runtime snapshot");
+  const created = await snapshotApi("POST", "", { name, buildInfo: { dockerfileContent, contextHashes: [] }, ...SNAPSHOT_RESOURCES });
   if (created.status >= 300) {
     ledger.snapshotSettled(name, { failedAt: now(), error: `${created.status} ${String(created.json.message ?? "").slice(0, 200)}` });
     throw new Error(`POST snapshot ${name}: ${created.status} ${String(created.json.message ?? "").slice(0, 300)}`);
@@ -418,9 +537,13 @@ export async function buildSnapshot(name: string, commit: string, timeoutMs = 30
   for (;;) {
     const facts = await getSnapshot(name);
     const state = String(facts?.state ?? "missing");
-    if (state === "active" || state === "error" || state === "build_failed" || performance.now() - t0 > timeoutMs) {
+    const settled = state === "active" || state === "error" || state === "build_failed";
+    if (settled || performance.now() - t0 > timeoutMs) {
       const ms = Math.round(performance.now() - t0);
-      ledger.snapshotSettled(name, { state, size: facts?.size ?? null, buildMs: ms, ...(state === "active" ? {} : { failedAt: now(), error: facts?.errorReason ?? state }) });
+      // A build still running when the wait ends stays open (it may yet become active, and is billed): only a failed
+      // build is closed. Delete it, or mark it kept, by hand.
+      const outcome = state === "active" ? {} : settled ? { failedAt: now(), error: facts?.errorReason ?? state } : { timedOutAt: now() };
+      ledger.snapshotSettled(name, { state, size: facts?.size ?? null, buildMs: ms, ...outcome });
       return { facts: facts ?? snapshotFacts({ name, state }), ms };
     }
     await new Promise((resolve) => setTimeout(resolve, 5_000));

@@ -33,7 +33,8 @@ install`, since this directory has no lockfile of its own in the workspace), abo
 copies this directory and runs `npm ci` in it, so it needs a standalone checkout's lockfile.
 
 The runtime snapshot makes a box ready in about 2 s instead. `daytona-snapshot.ts build <commit>` builds
-`pda-p9-runtime-<commit>-<stamp>` on Daytona from `snapshotDockerfile(commit)`: `daytona-medium`'s image
+`pda-p9-runtime-<commit>-<stamp>` on Daytona from `snapshotDockerfile(commit)` (every command needs the same `PDA_STATE_DIR`:
+its ledger is what `delete` checks): `daytona-medium`'s image
 (`daytonaio/sandbox:0.9.0`, the same toolbox user and resources) with the same pinned Node and archil, the run user, the
 wrapper, the sudoers drop-in, the mount root and the package's dependencies, installed from its `package.json` at `commit`
 (no build context; about 45 s). A daytonaHost start then takes `snapshot: <name>` and `prepare: (box) =>
@@ -42,6 +43,14 @@ install` runs only when the dependency fields differ from the ones the snapshot 
 it, prepares it and imports the package as the run user; `baseline` does the same on `daytona-medium`; `delete <name>` removes
 a snapshot this lane built. A snapshot is built once under a new name and never over an existing one (a default or another
 lane's). Its storage is billed while it exists, so delete it once its takes are done.
+
+`build <commit> --demo` builds the disk demo's variant, `pda-p9-runtime-demo-...`: one more layer with the third-party
+closure of the packages the demo's box installs from this checkout (`DEMO_PACKS`: dsl, pi, pi-browser, pi-vision,
+pi-transport) and of `DEMO_EXTRA` (pi-codemode), read from their package.json files and the workspace lockfile at `commit`
+(`demoClosure`: stand-ins for the packs, and every single-version package of the closure pinned to the lockfile's version).
+npm's cache stays in it. A box then installs the checkout's packs with `installDemoPacks` (`npm install --offline`) in about
+1.5 s instead of 6 to 7 s over the network, and makes only what it installed root-owned. `check-demo <name>` packs them,
+boots a box, installs, and imports every entry the demo's child uses; `--online` does the same with the network.
 
 The docker suite (`test:live:docker`, also run by `test:live` when `PDA_LIVE_DOCKER=1`) runs the instances in containers of
 the package's image on this machine's Docker daemon; nothing on the host mounts. `docker.live.test.ts` is T13 for
