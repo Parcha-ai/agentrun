@@ -89,6 +89,19 @@ A live run is durable. Its journal is kept in `.pi/agentrun/runs/<run id>/journa
 
 One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
 
+A host that does not run the extension can save, load and list the same definitions with `@parcha/agentrun-pi/workflows`, which loads nothing from pi:
+
+```ts
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+
+const store = new WorkflowStore(projectDirectory);   // records go to <projectDirectory>/.pi/agentrun/workflows/<name>/
+const saved = await store.save('release-review', workflow);   // an immutable revision, named by its SHA-256
+const again = await store.load('release-review');             // the last one saved; pass a digest for an exact revision
+const revisions = await store.list();                         // every revision, newest first
+```
+
+The argument is a project directory, not the workflows directory: the extension keeps its records for `ctx.cwd` in the same place, so a host that passes that directory and the extension read each other's records. Storage needs real directories and regular files (a symbolic link in the path or among the records fails with `WorkflowStoreError` code `unsafe_path`), and every load checks the record's metadata and the SHA-256 of its workflow. A `<name>/` directory copied into the workflows directory loads. A saved workflow is a procedure, not authority: the host still checks it against its current capabilities before it runs.
+
 ### Three demo modes
 
 | Command | What it demonstrates |
