@@ -146,7 +146,7 @@ test("the index's example rows are read by their Since and CI headers, and a fil
 test("a keyless example whose Since is at or below the registry's beta is walked, one above it is skipped with its reason", () => {
   const rows = parseIndex(index);
   const now = selectExamples(rows, '0.1.0-beta.13');
-  assert.deepEqual(now.run, [{ name: 'kill-9', since: '0.1.0-beta.13' }]);
+  assert.deepEqual(now.run, [{ name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.13' }]);
   assert.deepEqual(now.skipped, [
     { name: '01-durable-chat', reason: 'not keyless (CI "no")' },
     { name: 'fork-into-many', reason: "needs 0.1.0-beta.14, and the registry's beta is 0.1.0-beta.13" },
@@ -154,6 +154,22 @@ test("a keyless example whose Since is at or below the registry's beta is walked
   ]);
   assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.name), ['kill-9', 'fork-into-many']);
   assert.throws(() => selectExamples([{ name: 'x', since: 'checkout', ci: 'yes' }], '0.1.0-beta.13'), /published version, not "checkout"/);
+});
+
+test('on a platform with a floor, an example installs the later of its Since and the floor, or is skipped until the registry has it', () => {
+  const rows = parseIndex(index);
+  // macOS runs no release before 0.1.0-beta.14: kill-9 (Since 0.1.0-beta.13) installs 0.1.0-beta.14 there.
+  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14', '0.1.0-beta.14').run, [
+    { name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.14' },
+    { name: 'fork-into-many', since: '0.1.0-beta.14', version: '0.1.0-beta.14' },
+  ]);
+  const early = selectExamples(rows, '0.1.0-beta.13', '0.1.0-beta.14');
+  assert.deepEqual(early.run, []);
+  assert.deepEqual(early.skipped.find(example => example.name === 'kill-9'), { name: 'kill-9', reason: "needs 0.1.0-beta.14 on this platform, and the registry's beta is 0.1.0-beta.13" });
+  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.version), ['0.1.0-beta.13', '0.1.0-beta.14'], 'no floor: the Since');
+  const spec = { package: 'p', install: ['x'], command: ['x'], expect: { pattern: 'x' }, timeoutMs: 1, examples: { readme: 'R.md', heading: 'H', fence: 'sh', dir: 'd', timeoutMs: 1 } };
+  assert.deepEqual(validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: '0.1.0-beta.14' } } }, 'p').examples.platformFloors, { darwin: '0.1.0-beta.14' });
+  assert.throws(() => validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: 'soon' } } }, 'p'), /not a version/);
 });
 
 test("the install is the index's own install line with the package at the example's Since, and nothing else changes", () => {

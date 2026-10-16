@@ -761,8 +761,8 @@ A local run works on macOS for development, and is weaker there than on Linux in
 
 `fsync` on macOS does not flush the drive's cache, so the store also sets SQLite's `fullfsync` and
 `checkpoint_fullfsync` there (SQLite then syncs with `F_FULLFSYNC`), and refuses to open unless they read back. CI runs
-the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
-the file tools' confinement) on macOS.
+the no-key quickstart, the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
+the file tools' confinement) and the keyless examples on macOS.
 
 ### Places: a run a supervisor can kill and bring back
 
