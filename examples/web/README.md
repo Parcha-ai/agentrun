@@ -96,7 +96,7 @@ The page is at `/`. The data follows Grep's job routes.
 - **Files.** The tree under `work/`, dotfiles hidden. A "Saved" row links to the file it names, by the row's `path`.
   Markdown is rendered with HTML escaped, CSV as a table, text as text, images inline. Agent-written HTML is shown in a
   frame sandboxed with nothing allowed. Every file can be downloaded, whole: a text file over 512 KiB is shown cut
-  short, and its Download fetches all of it.
+  short at once, and its Download fetches all of it when clicked (a failed download says so and the preview stays).
 - **Browser.** The run's live view in one frame, kept while the run sleeps so a person can sign in after the agent's turn
   ended. The frame reloads only when the view's address changes.
 - **Chat.** One message box under every tab, so a person can sign in on the Browser tab and answer "done" without leaving it.

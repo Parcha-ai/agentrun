@@ -182,24 +182,61 @@ test("a file view keeps every guard: agent HTML in a frame with nothing allowed,
   assert.equal(view.window.hashListeners(), 0, "and no listener");
 });
 
-test("a long text file shows cut short and says so, and Download hands over all of it; a short one is fetched once", async (t) => {
-  const calls = [];
-  const big = "x".repeat(600 * 1024);
-  const capped = (path, download) => (path === "big.txt" ? (download ? new Response(big) : new Response(big.slice(0, 512 * 1024), { headers: { "x-truncated": "1" } })) : respond(path));
-  const source = {
+const BIG = "x".repeat(600 * 1024);
+/** A source whose files answer the way the runs server does: a long text file cut short inline, whole with download,
+ *  where the whole answer waits for `download` (its promise) to settle. */
+function cappingSource(calls, download) {
+  return {
     ...replaySource(calls),
-    files: async () => [{ path: "big.txt", size: big.length }, ...Object.entries(FILES).map(([path, body]) => ({ path, size: body.length }))],
-    file: async (id, path, options) => (calls.push(`file ${path}${options?.download ? " download" : ""}`), capped(path, options?.download)),
+    files: async () => [{ path: "big.txt", size: BIG.length }, ...Object.entries(FILES).map(([path, body]) => ({ path, size: body.length }))],
+    file: async (id, path, options) => {
+      calls.push(`file ${path}${options?.download ? " download" : ""}`);
+      if (path !== "big.txt") return respond(path);
+      return options?.download ? download : new Response(BIG.slice(0, 512 * 1024), { headers: { "x-truncated": "1" } });
+    },
   };
-  const view = await mount(t, source, "#/run/r1/files/big.txt");
-  assert.match(view.find("files").textContent, /longer than the preview/);
-  const link = byTag(view.find("files"), "a").find((a) => a.getAttribute("download") === "big.txt");
-  assert.ok(link, "a Download link");
-  assert.equal(view.window.blobOf(link.getAttribute("href")).size, big.length, "the whole file, not the preview");
-  assert.deepEqual(calls.filter((c) => c.startsWith("file ")), ["file big.txt", "file big.txt download"]);
-  view.window.navigate("#/run/r1/files/notes.md");
+}
+const downloadLink = (view, name) => byTag(view.find("files"), "a").find((a) => a.textContent === "Download" && (a.getAttribute("download") ?? name) === name);
+
+test("a long text file draws its cut-short preview at once from one request; Download fetches the whole file only when clicked and saves all of it", async (t) => {
+  const calls = [];
+  let finish;
+  const whole = new Promise((resolve) => { finish = resolve; });
+  const view = await mount(t, cappingSource(calls, whole), "#/run/r1/files/big.txt");
+  assert.match(view.find("files").textContent, /longer than the preview/, "the preview is drawn");
+  assert.deepEqual(calls.filter((c) => c.startsWith("file ")), ["file big.txt"], "one request, the capped one");
+  const link = downloadLink(view, "big.txt");
+  assert.equal(link.getAttribute("href"), "#", "nothing downloaded yet");
+  link.click();
   await settle();
-  assert.deepEqual(calls.filter((c) => c.startsWith("file notes")), ["file notes.md"], "a file shown whole is not fetched again");
+  assert.deepEqual(calls.filter((c) => c.startsWith("file ")), ["file big.txt", "file big.txt download"], "the click asks for the whole file");
+  assert.match(view.find("files").textContent, /longer than the preview/, "the preview stays while it downloads");
+  finish(new Response(BIG));
+  await settle();
+  assert.equal(link.getAttribute("download"), "big.txt");
+  assert.equal(view.window.blobOf(link.getAttribute("href")).size, BIG.length, "the whole file is saved, not the preview");
+});
+
+test("a download that fails says so and leaves the preview", async (t) => {
+  const calls = [];
+  const view = await mount(t, cappingSource(calls, Promise.resolve(new Response("", { status: 503, statusText: "Service Unavailable" }))), "#/run/r1/files/big.txt");
+  const link = downloadLink(view, "big.txt");
+  const error = byTag(view.find("files"), "p").find((p) => p.getAttribute("class") === "err");
+  assert.ok(error && !shown(error), "no error before the click");
+  link.click();
+  await settle();
+  assert.ok(shown(error), "the error is shown");
+  assert.equal(error.textContent, "The download failed: 503 Service Unavailable");
+  assert.match(view.find("files").textContent, /longer than the preview/, "the preview stays");
+  assert.equal(link.getAttribute("href"), "#");
+});
+
+test("a file shown whole downloads from the bytes in hand, with no second request", async (t) => {
+  const calls = [];
+  const view = await mount(t, cappingSource(calls, new Promise(() => {})), "#/run/r1/files/notes.md");
+  const link = downloadLink(view, "notes.md");
+  assert.equal(view.window.blobOf(link.getAttribute("href")).size, FILES["notes.md"].length);
+  assert.deepEqual(calls.filter((c) => c.startsWith("file ")), ["file notes.md"]);
 });
 
 test("a page unmounted while a run's timeline is still loading does no more work for it", async (t) => {

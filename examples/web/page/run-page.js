@@ -463,12 +463,10 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     if (ui.file !== path || ui.id !== id) return;
     const bytes = res?.ok ? await res.blob() : null;
     if (ui.file !== path || ui.id !== id) return;
-    // The inline view may be cut short; what Download hands over is always the whole file.
     const truncated = Boolean(bytes && res.headers.get("x-truncated"));
-    const whole = truncated ? await source.file(id, path, { download: true }).then((full) => (full.ok ? full.blob() : null), () => null) : bytes;
-    if (ui.file !== path || ui.id !== id) return;
     const name = path.split("/").pop();
-    const download = whole ? el("a", { href: blobUrl(new Blob([whole], { type: "application/octet-stream" })), download: name }, "Download") : null;
+    const failed = el("p", { class: "err", hidden: true });
+    const download = !bytes ? null : truncated ? wholeOnClick(id, path, name, failed) : el("a", { href: blobUrl(new Blob([bytes], { type: "application/octet-stream" })), download: name }, "Download");
     const bar = el("div", { class: "bar2" }, el("a", { href: `#/run/${enc(id)}` }, "Files"), el("b", {}, path), download);
     let body;
     if (!bytes) body = el("div", { class: "note" }, "This file is not available.");
@@ -484,7 +482,36 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
       } else body = el("pre", {}, text);
       if (text !== all || truncated) body = el("div", {}, body, el("p", { class: "note" }, "The file is longer than the preview. Download it to read the rest."));
     } else body = el("div", { class: "note" }, "No preview for this type. Use Download.");
-    if (ui.file === path && ui.id === id) p.files.replaceChildren(el("div", { class: "viewer" }, bar, body));
+    if (ui.file === path && ui.id === id) p.files.replaceChildren(el("div", { class: "viewer" }, bar, failed, body));
+  }
+
+  /** Download for a file the preview shows cut short: the whole file is fetched only when it is clicked, then saved;
+   *  a failure is said in `failed` and the preview stays. */
+  function wholeOnClick(id, path, name, failed) {
+    const link = el("a", { href: "#", class: "download" }, "Download");
+    let state = "idle";
+    on(link, "click", async (event) => {
+      if (state === "ready") return;
+      event.preventDefault();
+      if (state === "loading") return;
+      state = "loading";
+      failed.hidden = true;
+      try {
+        const res = await source.file(id, path, { download: true });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
+        const whole = await res.blob();
+        if (ui.file !== path || ui.id !== id) return;
+        link.setAttribute("href", blobUrl(new Blob([whole], { type: "application/octet-stream" })));
+        link.setAttribute("download", name);
+        state = "ready";
+        link.click();
+      } catch (e) {
+        state = "idle";
+        failed.textContent = `The download failed: ${e.message}`;
+        failed.hidden = false;
+      }
+    });
+    return link;
   }
 
   // ---- history, new run, search, routes ----------------------------------------------------------------------------------
