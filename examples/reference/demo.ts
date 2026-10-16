@@ -383,6 +383,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const delegationSeen = new Map<string, string>();
   const hostLabels = new Map<string, string>();
   const bootLabels = new Map<string, string>();
+  const clientLabels = new Map<string, string>();
+  const inodeLabels = new Map<string, string>();
+  // A delegation's client and inode ids name a machine's mount and a file in the place's own store: the recording shows `client-N` and `inode-N` by first appearance, the same value the same label (in a revoke line too).
+  const safeDelegation = <T extends { clientId: string; inodeId: string | number }>(delegation: T): T => ({ ...delegation, clientId: labelOf(clientLabels, 'client', delegation.clientId), inodeId: labelOf(inodeLabels, 'inode', String(delegation.inodeId)) });
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
   let reading: Promise<void> = Promise.resolve();
   const readStatus = (): Promise<void> => {
@@ -413,7 +417,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           const state = JSON.stringify([delegation.isOrphaned, delegation.isPending, delegation.path]);
           if (delegationSeen.get(id) === state) continue;
           delegationSeen.set(id, state);
-          supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...delegation });
+          supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...safeDelegation(delegation) });
         }
       } catch { /* a reading never fails the run */ }
     });
@@ -446,7 +450,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       supervisor.host('process.started', { gen, pid: runner.pid });
       await readStatus();
       // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
-      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => ({ clientId, inodeId, path, isOrphaned }));
+      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, path, isOrphaned }));
       if (revoked.length) supervisor.host('revoke', { gen: lastGeneration ?? gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
