@@ -113,10 +113,13 @@ export type HomeOptions = {
 	readonly onHold?: () => void | Promise<void>;
 };
 
-/** What `wrapStore` gives the home. */
+/**
+ * What `wrapStore` gives the home. `opened` runs once the Harness has the store, before anything else commits through
+ * it; when it fails, the order fails and `closed` runs.
+ */
 export type WrappedStore = {
 	readonly storage: Storage;
-	readonly opened?: (harness: Harness) => void;
+	readonly opened?: (harness: Harness) => void | Promise<void>;
 	readonly closed?: () => Promise<void>;
 };
 
@@ -439,8 +442,12 @@ class SessionHome implements Home {
 		try {
 			await harness?.close(context);
 		} finally {
-			await wrapped?.closed?.();
-			this.#letGo();
+			// The store is let go whatever the recorder's stop does.
+			try {
+				await wrapped?.closed?.();
+			} finally {
+				this.#letGo();
+			}
 		}
 	}
 
@@ -490,20 +497,24 @@ class SessionHome implements Home {
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
 		let harness: Harness;
+		let storage: Storage | undefined;
 		let wrapped: WrappedStore | undefined;
 		try {
 			await mkdir(dirname(store), { recursive: true });
-			const storage = await openNodeSqliteStorage(store);
+			storage = await openNodeSqliteStorage(store);
 			wrapped = await this.#options.wrapStore?.(storage, context);
 			harness = await Harness.open(wrapped?.storage ?? storage, { ...rest, registry, models, env }, context);
 		} catch (cause) {
 			await wrapped?.closed?.().catch(() => {});
+			// No Harness took the storage: it is this home's to close.
+			await storage?.close(withoutAbortSignal(context)).catch(() => {});
 			return err(new HomeError("store", `could not open the store: ${toError(cause).message}`, cause));
 		}
-		// Before anything commits through it: bringing the session here, the app's own opening, the move's notice.
-		wrapped?.opened?.(harness);
-		gate.attach(harness);
 		try {
+			// Before anything commits through it: the recorder, bringing the session here, the app's own opening, the
+			// move's notice.
+			await wrapped?.opened?.(harness);
+			gate.attach(harness);
 			await bringHere(harness, workspace, context);
 			await onOpen?.(harness, context);
 			const { move } = order;

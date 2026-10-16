@@ -1,15 +1,33 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, fdatasyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	fdatasyncSync,
+	fsyncSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOutbox } from "../src/home/outbox.ts";
 
-// Every sync the outbox makes, counted: what a power cut would lose is what was not synced.
+// Every sync the outbox makes, counted: what a power cut would lose is what was not synced. A rename can be made to fail.
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, fdatasyncSync: vi.fn(actual.fdatasyncSync) };
+	return {
+		...actual,
+		fdatasyncSync: vi.fn(actual.fdatasyncSync),
+		fsyncSync: vi.fn(actual.fsyncSync),
+		openSync: vi.fn(actual.openSync),
+		renameSync: vi.fn(actual.renameSync),
+		writeSync: vi.fn(actual.writeSync),
+	};
 });
 
 const directories: string[] = [];
@@ -24,6 +42,243 @@ function place(): string {
 const writes = (n: number): StorageWrite[] => [{ type: "submission", value: { id: String(n) } as never }];
 
 describe("a runner's outbox", () => {
+	// 3,000 commits, the host's acknowledgements 10 commits behind for writes and 5 for lines: entries are pending at every
+	// moment the file is cleared out, and the last of them stay.
+	const longSession = (outbox: ReturnType<typeof openOutbox>, onAck: (ack: () => void) => void = (ack) => ack()) => {
+		for (let commit = 1; commit <= 3_000; commit += 1) {
+			outbox.entry(commit, writes(commit));
+			outbox.lines(commit, [`line of ${commit}`]);
+			if (commit > 10) onAck(() => outbox.ack(commit - 10));
+			if (commit > 5) onAck(() => outbox.ackLines(commit - 5));
+		}
+		outbox.entry(3_001, writes(3_001));
+	};
+	const keptOfLongSession = [
+		...[2_991, 2_992, 2_993, 2_994, 2_995].map((commit) => ({ commit, writes: writes(commit) })),
+		...[2_996, 2_997, 2_998, 2_999, 3_000].map((commit) => ({
+			commit,
+			writes: writes(commit),
+			lines: [`line of ${commit}`],
+		})),
+		{ commit: 3_001, writes: writes(3_001) },
+	];
+	const rowsIn = (path: string) => readFileSync(path, "utf8").trim().split("\n").length;
+
+	it("keeps its file to what is pending while it runs: acknowledged entries leave the disk too", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		longSession(outbox);
+		// 12,001 rows with no cleanup: bounded by the threshold, not by the session's history.
+		expect(rowsIn(path)).toBeLessThan(2_048);
+		expect(outbox.pending()).toEqual(keptOfLongSession);
+		outbox.close();
+		const again = openOutbox(path, { head: 3_002 });
+		expect(again.pending()).toEqual(keptOfLongSession);
+		again.close();
+	});
+
+	/**
+	 * Ways the clearing out fails once: each makes the next one fail, calls `failed` as it does, and gives back what
+	 * undoes it.
+	 */
+	const failures: readonly (readonly [string, (failed: () => void) => () => void])[] = [
+		[
+			"the rename",
+			(failed) => {
+				vi.mocked(renameSync).mockImplementationOnce(() => {
+					failed();
+					throw new Error("the disk refused the rename");
+				});
+				return () => {};
+			},
+		],
+		[
+			"the new file",
+			(failed) => {
+				const real = vi.mocked(openSync).getMockImplementation() as (
+					...args: Parameters<typeof openSync>
+				) => number;
+				let refused = false;
+				vi.mocked(openSync).mockImplementation((...args: Parameters<typeof openSync>) => {
+					if (!refused && String(args[0]).endsWith(".tmp")) {
+						refused = true;
+						failed();
+						throw new Error("no room for the new file");
+					}
+					return real(...args);
+				});
+				return () => {
+					vi.mocked(openSync).mockImplementation(real);
+				};
+			},
+		],
+	];
+	for (const [what, fail] of failures) {
+		it(`never fails an acknowledgement when clearing the file out fails at ${what}, and clears it out later`, () => {
+			const path = place();
+			const outbox = openOutbox(path, { head: 1 });
+			let failedNow = false;
+			const restore = fail(() => {
+				failedNow = true;
+			});
+			const thrown: unknown[] = [];
+			// Whether a temporary file was left beside the outbox right after the failed try.
+			const leftAfterFailure: boolean[] = [];
+			try {
+				longSession(outbox, (ack) => {
+					try {
+						ack();
+					} catch (cause) {
+						thrown.push(cause);
+					}
+					if (failedNow) {
+						failedNow = false;
+						leftAfterFailure.push(existsSync(`${path}.tmp`));
+					}
+				});
+			} finally {
+				restore();
+			}
+			// The old file stayed whole and in use, nothing was left beside it, and a later try cleared it out.
+			expect(thrown).toEqual([]);
+			expect(leftAfterFailure).toEqual([false]);
+			expect(rowsIn(path)).toBeLessThan(2_048);
+			outbox.close();
+			const again = openOutbox(path, { head: 3_002 });
+			expect(again.pending()).toEqual(keptOfLongSession);
+			again.close();
+		});
+	}
+
+	it("never fails an acknowledgement when the directory sync after clearing out fails, and makes it before the next commit", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		const directorySyncs = vi.mocked(fsyncSync);
+		directorySyncs.mockClear();
+		directorySyncs.mockImplementationOnce(() => {
+			throw new Error("the directory sync failed");
+		});
+		let commit = 0;
+		while (directorySyncs.mock.calls.length === 0 && commit < 5_000) {
+			commit += 1;
+			outbox.entry(commit, writes(commit));
+			outbox.ack(commit);
+		}
+		expect(directorySyncs.mock.calls).toHaveLength(1);
+		// The next commit's entry is synced with the directory that names the new file.
+		outbox.entry(commit + 1, writes(commit + 1));
+		expect(directorySyncs.mock.calls).toHaveLength(2);
+		outbox.close();
+		const again = openOutbox(path, { head: commit + 2 });
+		expect(again.pending()).toEqual([{ commit: commit + 1, writes: writes(commit + 1) }]);
+		again.close();
+	});
+
+	/**
+	 * Makes writes misbehave as a disk may: each write that `which` picks takes the next of `faults` (`"half"` writes half
+	 * of what it was given, `"fail"` throws), and the rest are written as given. Gives back what undoes it.
+	 */
+	const faulty = (faults: ("half" | "fail")[], which: (fd: number) => boolean = () => true) => {
+		const real = vi.mocked(writeSync).getMockImplementation() as (...args: unknown[]) => number;
+		vi.mocked(writeSync).mockImplementation(((fd: number, data: string | Buffer, ...rest: unknown[]) => {
+			const fault = which(fd) ? faults.shift() : undefined;
+			if (fault === undefined) return real(fd, data, ...rest);
+			if (fault === "fail") throw Object.assign(new Error("no space left on the disk"), { code: "ENOSPC" });
+			const offset = Number(rest[0] ?? 0);
+			const bytes =
+				typeof data === "string"
+					? Buffer.from(data)
+					: data.subarray(offset, offset + Number(rest[1] ?? data.length));
+			return real(fd, bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))));
+		}) as typeof writeSync);
+		return () => {
+			vi.mocked(writeSync).mockImplementation(real as typeof writeSync);
+		};
+	};
+
+	it("writes a row whole when the disk takes it in pieces: a short write goes on with the rest", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		const restore = faulty(["half"]);
+		try {
+			outbox.entry(1, writes(1));
+			outbox.entry(2, writes(2));
+		} finally {
+			restore();
+		}
+		outbox.close();
+		const again = openOutbox(path, { head: 3 });
+		expect(again.pending()).toEqual([
+			{ commit: 1, writes: writes(1) },
+			{ commit: 2, writes: writes(2) },
+		]);
+		again.close();
+	});
+
+	it("writes the cleared-out file whole when the disk takes one of its rows in pieces", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		const realOpen = vi.mocked(openSync).getMockImplementation() as (...args: Parameters<typeof openSync>) => number;
+		let temp: number | undefined;
+		vi.mocked(openSync).mockImplementation((...args: Parameters<typeof openSync>) => {
+			const fd = realOpen(...args);
+			if (temp === undefined && String(args[0]).endsWith(".tmp")) temp = fd;
+			return fd;
+		});
+		const faults: "half"[] = ["half"];
+		const restore = faulty(faults, (fd) => fd === temp);
+		// Read right after the clearing out the fault hit: a later one writes the file again from memory.
+		let parsedAfterFault: string | undefined;
+		try {
+			longSession(outbox, (ack) => {
+				ack();
+				if (faults.length === 0 && parsedAfterFault === undefined) {
+					const text = readFileSync(path, "utf8");
+					try {
+						for (const row of text.slice(0, text.lastIndexOf("\n")).split("\n")) JSON.parse(row);
+						parsedAfterFault = "every row whole";
+					} catch (cause) {
+						parsedAfterFault = String(cause);
+					}
+				}
+			});
+		} finally {
+			restore();
+			vi.mocked(openSync).mockImplementation(realOpen);
+		}
+		expect(parsedAfterFault).toBe("every row whole");
+		expect(rowsIn(path)).toBeLessThan(2_048);
+		outbox.close();
+		const again = openOutbox(path, { head: 3_002 });
+		expect(again.pending()).toEqual(keptOfLongSession);
+		again.close();
+	});
+
+	it("takes no row after one it could not write whole, and a reopen drops the fragment it left", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		outbox.entry(1, writes(1));
+		const restore = faulty(["half", "fail"]);
+		const refused: unknown[] = [];
+		try {
+			for (const commit of [2, 3, 4]) {
+				try {
+					outbox.entry(commit, writes(commit));
+				} catch {
+					refused.push(commit);
+				}
+			}
+		} finally {
+			restore();
+		}
+		// The commit whose row broke never lands, and nothing is written after its fragment.
+		expect(refused).toEqual([2, 3, 4]);
+		outbox.close();
+		const again = openOutbox(path, { head: 2 });
+		expect(again.pending()).toEqual([{ commit: 1, writes: writes(1) }]);
+		again.close();
+	});
+
 	it("keeps what the host has not acknowledged across a reopen, lines with their commit, in commit order", () => {
 		const path = place();
 		const outbox = openOutbox(path, { head: 1 });

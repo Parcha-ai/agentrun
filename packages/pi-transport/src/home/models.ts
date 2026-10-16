@@ -325,18 +325,24 @@ export function proxyModels(
 }
 
 type ServedCall = {
+	/** The request id the runner that asked last knows the call by: its frames are numbered and sent under it. */
+	id: string;
+	/** Every id the call was asked under, and the key it is paid under: let go together. */
+	readonly ids: Set<string>;
+	readonly key: string | undefined;
+	/** The store position the request was made at (its `position`): a checkpoint at or past it covers the answer. */
+	readonly position: number;
+	/** The call ended in an error or was aborted: it has no answer to give a runner that asks under its key again. */
+	failed: boolean;
 	readonly controller: AbortController;
 	/** Every frame sent for the call, kept so a runner that lost the link can ask for what it missed. */
 	readonly frames: Frame[];
 	done: boolean;
 	/**
-	 * The link each request that shares this call last asked on, with the request or a resume: its frames go there and
-	 * nowhere else. A link that came up since gets them only once the runner resumes on it, after the frames it missed.
-	 * Requests share a call when they carry the same key (a rebuilt runner asking again).
+	 * The link the runner last asked on, with the request or a resume: the call's frames go there and nowhere else. A
+	 * link that came up since gets them only once the runner resumes on it, after the frames it missed.
 	 */
-	readonly sends: Map<string, (frame: Frame) => boolean>;
-	/** Whether it ended with an answer: only an answer is kept for a key, a failure is paid again on a retry. */
-	answered: boolean;
+	send: ((frame: Frame) => boolean) | undefined;
 };
 
 /** The host's end of the model proxy. */
@@ -357,8 +363,8 @@ export interface ModelServer {
 	/** Requests the host made to its providers: what it paid for. */
 	readonly paid: number;
 	/**
-	 * A checkpoint now covers the store up to `head` (its `Seal.head`): the answers kept for requests below it are let go.
-	 * Until then an answer is kept by its `key`, whatever `keepMs` says.
+	 * A checkpoint now covers the store up to `head` (its `Seal.head`): the keyed answers of requests made below it are
+	 * let go. Until then a completed answer is kept by its `key`, whatever `keepMs` says.
 	 */
 	covered(head: number): void;
 	/** How many keyed answers are kept. */
@@ -377,37 +383,42 @@ export function serveModels(
 	const keepMs = options?.keepMs ?? DEFAULT_KEEP_MS;
 	const allow = new Set(options?.allow ?? HOST_REQUEST_OPTIONS);
 	const calls = new Map<string, ServedCall>();
-	// A request that carries a `key` is answered once: a repeat of it (a runner rebuilt after its box was lost asks the
-	// model call again) gets the kept frames, or joins the call that is still running, and the host does not pay again.
-	const keyed = new Map<string, { readonly call: ServedCall; readonly position: number }>();
 	let paid = 0;
 
-	const emit = (id: string, call: ServedCall, frame: Frame) => {
-		const numbered: Frame = { ...frame, id, seq: call.frames.length + 1 };
+	// A keyed call: the same key again, from another runner process, is answered from it and not paid for again.
+	const byKey = new Map<string, ServedCall>();
+	const emit = (call: ServedCall, frame: Frame) => {
+		if (frame.t === "model-error") call.failed = true;
+		const numbered: Frame = { ...frame, id: call.id, seq: call.frames.length + 1 };
 		call.frames.push(numbered);
-		for (const [each, to] of call.sends) to({ ...numbered, id: each });
+		call.send?.(numbered);
+	};
+	/** What the call sent after `after`, under the id the asking runner knows it by. */
+	const replay = (call: ServedCall, after: number, reply: (frame: Frame) => boolean) => {
+		for (const kept of call.frames.slice(after)) reply({ ...kept, id: call.id });
 	};
 
 	const run = async (id: string, request: Frame, reply: (frame: Frame) => boolean): Promise<void> => {
+		const key = typeof request.key === "string" && request.key !== "" ? request.key : undefined;
 		const call: ServedCall = {
+			id,
+			ids: new Set([id]),
+			key,
+			position: typeof request.position === "number" ? request.position : 0,
+			failed: false,
 			controller: new AbortController(),
 			frames: [],
 			done: false,
-			sends: new Map([[id, reply]]),
-			answered: false,
+			send: reply,
 		};
 		calls.set(id, call);
-		const key = typeof request.key === "string" && request.key !== "" ? request.key : undefined;
-		if (key !== undefined) {
-			const position = typeof request.position === "number" ? request.position : 0;
-			keyed.set(key, { call, position });
-		}
+		if (key !== undefined) byKey.set(key, call);
 		try {
 			const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
 			const model = models.getModel(String(asked?.provider), String(asked?.modelId));
 			if (model === undefined) {
 				const errorMessage = `the model ${String(asked?.provider)}/${String(asked?.modelId)} is not available on the host`;
-				emit(id, call, { t: "model-error", reason: "error", errorMessage });
+				emit(call, { t: "model-error", reason: "error", errorMessage });
 				return;
 			}
 			paid += 1;
@@ -427,36 +438,35 @@ export function serveModels(
 			for await (const event of events) {
 				if (event.type === "done") {
 					ended = true;
-					call.answered = true;
-					emit(id, call, { t: "model-end", message: event.message });
+					emit(call, { t: "model-end", message: event.message });
 				} else if (event.type === "error") {
 					ended = true;
-					emit(id, call, { t: "model-error", reason: event.reason, message: event.error });
+					emit(call, { t: "model-error", reason: event.reason, message: event.error });
 				} else {
 					const frame = encoder.encode(event);
-					if (frame !== undefined) emit(id, call, { t: "model-frame", frame });
+					if (frame !== undefined) emit(call, { t: "model-frame", frame });
 				}
 			}
 			if (!ended) {
 				const message = await events.result();
 				const failed = message.stopReason === "error" || message.stopReason === "aborted";
-				call.answered = !failed;
 				emit(
-					id,
 					call,
 					failed ? { t: "model-error", reason: message.stopReason, message } : { t: "model-end", message },
 				);
 			}
 		} catch (cause) {
 			const errorMessage = cause instanceof Error ? cause.message : String(cause);
-			emit(id, call, { t: "model-error", reason: "error", errorMessage });
+			emit(call, { t: "model-error", reason: "error", errorMessage });
 		} finally {
 			call.done = true;
-			// A failed call is not kept for its key: asking again is how a caller retries.
-			if (!call.answered && key !== undefined && keyed.get(key)?.call === call) keyed.delete(key);
-			// Kept a while for a runner that lost the link at the very end, then let go. The answer kept for a key stays.
+			if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
+			// Kept a while for a runner that lost the link at the very end, then let go. A keyed answer stays until a
+			// checkpoint covers it (`covered`): a runner rebuilt after its box was lost asks again, and is not charged twice.
+			// A call that failed has no answer to keep.
 			setTimeout(() => {
-				for (const [each, kept] of calls) if (kept === call) calls.delete(each);
+				for (const known of call.ids) calls.delete(known);
+				if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
 			}, keepMs).unref?.();
 		}
 	};
@@ -467,17 +477,19 @@ export function serveModels(
 			const id = typeof frame.id === "string" ? frame.id : "";
 			const call = calls.get(id);
 			if (frame.t === "model") {
-				// The same id again is a resend of a request that did arrive: never call the provider twice for one id.
-				if (call === undefined) {
-					const key = typeof frame.key === "string" && frame.key !== "" ? frame.key : undefined;
-					const same = key === undefined ? undefined : keyed.get(key);
-					if (same === undefined) void run(id, frame, reply);
-					else {
-						// The same model call again: what was answered, and what is still coming, under this request's id.
-						calls.set(id, same.call);
-						same.call.sends.set(id, reply);
-						for (const kept of same.call.frames) reply({ ...kept, id });
-					}
+				// The same id again is a resend of a request that did arrive: never call the provider twice for one id. The
+				// same key under a new id is the same request from a runner that started again: it takes the call over and
+				// gets what was sent, then the rest, under its own id.
+				const key = typeof frame.key === "string" && frame.key !== "" ? frame.key : undefined;
+				const asked = key === undefined ? undefined : byKey.get(key);
+				if (call === undefined && asked !== undefined && !asked.failed && !asked.controller.signal.aborted) {
+					asked.id = id;
+					asked.ids.add(id);
+					calls.set(id, asked);
+					asked.send = reply;
+					replay(asked, 0, reply);
+				} else if (call === undefined) {
+					void run(id, frame, reply);
 				}
 			} else if (frame.t === "model-abort") {
 				if (call !== undefined && !call.done) call.controller.abort();
@@ -487,19 +499,18 @@ export function serveModels(
 				// What the runner missed first, then the live frames, all on this link: a live frame that ran ahead of
 				// the replay would look to the runner like a gap, and it would give the answer up.
 				const after = typeof frame.after === "number" ? frame.after : 0;
-				for (const kept of call.frames.slice(after)) reply({ ...kept, id });
-				call.sends.set(id, reply);
+				call.id = id;
+				replay(call, after, reply);
+				call.send = reply;
 			}
 			return true;
 		},
 		down(from) {
-			for (const call of calls.values()) {
-				for (const [id, to] of call.sends) if (from === undefined || to === from) call.sends.delete(id);
-			}
+			for (const call of calls.values()) if (from === undefined || call.send === from) call.send = undefined;
 		},
 		close() {
 			for (const call of calls.values()) {
-				call.sends.clear();
+				call.send = undefined;
 				if (!call.done) call.controller.abort();
 			}
 		},
@@ -507,10 +518,15 @@ export function serveModels(
 			return paid;
 		},
 		covered(head) {
-			for (const [key, kept] of keyed) if (kept.position < head && kept.call.done) keyed.delete(key);
+			for (const [key, call] of byKey) {
+				if (call.position < head && call.done) {
+					byKey.delete(key);
+					for (const known of call.ids) if (calls.get(known) === call) calls.delete(known);
+				}
+			}
 		},
 		get kept() {
-			return keyed.size;
+			return byKey.size;
 		},
 	};
 }
