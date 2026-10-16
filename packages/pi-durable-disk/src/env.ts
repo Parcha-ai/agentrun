@@ -1,16 +1,16 @@
 // The execution environment: pi's NodeExecutionEnv rooted at the run's work/ directory, with an environment id
 // that names the run, commands that cannot gain privilege (no_new_privs), optionally commands run as another user
 // (`runAs`, for an instance that runs as root in a container), file operations confined to work/ (confine.ts),
-// read-only built-in tools declared replay-safe, and the hook point for the workspace barrier. Tools run
-// on the host that holds the claim, against the claimed mount.
+// and read-only built-in tools declared replay-safe. Tools run on the host that holds the claim, against the claimed
+// mount.
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { access, chmod, lchown, lstat, mkdir, mkdtemp, open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
-import type { Extension, ToolExecutionResult, ToolHooks, ToolRegistration } from "@earendil-works/pi-durable";
+import { defineExtension } from "@earendil-works/pi-durable";
+import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
 import { err, ExecutionError, FileError, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import type {
   BinaryReader,
@@ -27,11 +27,10 @@ import type {
 import { NodeExecutionEnv, type NodeWatchOptions } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { COMMANDS_MARK, CommandRecorder } from "./commands.ts";
-import { canonicalizeSync, confineHooks, Confinement, fileError, inside } from "./confine.ts";
+import { canonicalizeSync, confineHooks, Confinement, fileError, inside, namesHeld, PathOutsideWorkError } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
 
-type ToolCall = Parameters<ToolHooks["afterTool"]>[0];
 type ExecCommand = string | readonly string[];
 
 /** What the environment needs of a claim; the claim satisfies it structurally. */
@@ -57,15 +56,17 @@ export interface ArchilEnvOptions {
   /**
    * Run every command with no_new_privs (`setpriv --no-new-privs --`): setuid programs and file capabilities stop
    * granting privilege, so a command cannot `sudo` even when the run user has a sudo rule (the host needs one for the
-   * archil verbs). Default true. Set false on a host that already confines commands, or where util-linux is absent.
+   * archil verbs). Default true, but false on macOS, which has no no_new_privs: there a command keeps the user's rights,
+   * sudo included. Set false on a host that already confines commands, or where util-linux is absent.
    */
   readonly noNewPrivs?: boolean;
   /** The util-linux `setpriv` that `noNewPrivs` and `runAs` run; default `/usr/bin/setpriv`. */
   readonly setprivPath?: string;
   /**
    * Confine every file operation to the workspace (`PathOutsideWorkError` otherwise): read, write, edit and every other
-   * path pi's file system takes. Default true. Set false only where the paths are confined some other way, or where
-   * `/proc/self/fd` is unavailable (the confinement walks paths through it).
+   * path pi's file system takes. Default true. On macOS, which has no `/proc/self/fd`, the confinement walks paths by
+   * name instead, and holds against an agent's paths and the links in place, not a command racing it (confine.ts). Set
+   * false only where the paths are confined some other way, or where `/proc/self/fd` is unavailable on Linux.
    */
   readonly confineFiles?: boolean;
   /**
@@ -264,12 +265,12 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     path: string,
     context: Context,
     spec: { access: "read" | "write"; flags: number; parents?: boolean },
-    run: (handle: FileHandle) => Promise<Result<T, FileError>>,
+    run: (handle: FileHandle, pin: Pin) => Promise<Result<T, FileError>>,
   ) {
     return this.#entry(path, context, { access: spec.access, follow: true, ...(spec.parents ? { parents: true } : {}) }, async (pin) => {
       const handle = await pin.openFile(spec.flags);
       try {
-        return await run(handle);
+        return await run(handle, pin);
       } finally {
         await handle.close().catch(() => undefined);
       }
@@ -292,9 +293,11 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
 
   override async openTextLineReader(path: string, context: Context): Promise<Result<TextLineReader, FileError>> {
     if (this.#scope.confinement === undefined) return super.openTextLineReader(path, context);
-    // pi opens the file again through the handle's own `/proc/self/fd` entry, which names that inode and no path.
-    return this.#file(path, context, { access: "read", flags: constants.O_RDONLY }, (handle) =>
-      super.openTextLineReader(`/proc/self/fd/${handle.fd}`, context),
+    // pi opens the file again through the handle's own `/proc/self/fd` entry, which names that inode and no path; by path
+    // (macOS), through the path just checked.
+    const byPath = this.#scope.confinement.byPath;
+    return this.#file(path, context, { access: "read", flags: constants.O_RDONLY }, (handle, pin) =>
+      super.openTextLineReader(byPath ? pin.entry : `/proc/self/fd/${handle.fd}`, context),
     );
   }
 
@@ -470,7 +473,9 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
       const held = await open(tempRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       let name: string;
       try {
-        name = basename(await mkdtemp(`/proc/self/fd/${held.fd}/${prefix ?? "tmp-"}`));
+        // By path (macOS): made under tmp/'s path once that path is checked to still name the directory held.
+        if (confinement.byPath && !(await namesHeld(tempRoot, held))) throw new PathOutsideWorkError(tempRoot, "changed", `${tempRoot}: changed while it was being resolved`);
+        name = basename(await mkdtemp(`${confinement.byPath ? tempRoot : `/proc/self/fd/${held.fd}`}/${prefix ?? "tmp-"}`));
       } finally {
         await held.close();
       }
@@ -663,16 +668,20 @@ function requireSetpriv(path: string): string {
  * Taken at construction, before any agent runs, so a symlink an agent puts in place of `work` or `tmp` later cannot widen
  * them: it resolves outside the roots and is refused.
  */
-function requireConfinement(claim: ArchilEnvClaim, readRoots: readonly string[]): Confinement {
-  if (!existsSync("/proc/self/fd")) {
+function requireConfinement(claim: ArchilEnvClaim, readRoots: readonly string[], byPath: boolean): Confinement {
+  if (!byPath && !existsSync("/proc/self/fd")) {
     throw new EnvError(
       "PROC_UNAVAILABLE",
       "file operations are confined by walking paths through /proc/self/fd, which is not available here. " +
         "Mount /proc, or pass confineFiles: false where the file paths are confined some other way.",
     );
   }
-  const tmp = join(canonicalizeSync(claim.root), TEMP_DIR);
-  return new Confinement(canonicalizeSync(claim.work), [tmp, ...readRoots.map((root) => canonicalizeSync(root))]);
+  // Each root as the caller names it, where that differs from its canonical path (under /tmp or /var on macOS).
+  const names = new Map<string, string>();
+  const named = (canonical: string, as: string) => (canonical === as ? canonical : (names.set(canonical, as), canonical));
+  const tmp = named(join(canonicalizeSync(claim.root), TEMP_DIR), join(claim.root, TEMP_DIR));
+  const work = named(canonicalizeSync(claim.work), claim.work);
+  return new Confinement(work, [tmp, ...readRoots.map((root) => named(canonicalizeSync(root), root))], { byPath, names });
 }
 
 export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {}): ArchilEnvFactory {
@@ -682,9 +691,10 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
   if (runAs && ![runAs.uid, runAs.gid].every((n) => Number.isSafeInteger(n) && n >= 0)) {
     throw new EnvError("INVALID_RUN_AS", `runAs needs a numeric uid and gid, got ${JSON.stringify(runAs)}`);
   }
-  const noNewPrivs = options.noNewPrivs !== false;
+  const darwin = process.platform === "darwin";
+  const noNewPrivs = options.noNewPrivs ?? !darwin;
   const setpriv = noNewPrivs || runAs ? requireSetpriv(options.setprivPath ?? SETPRIV) : undefined;
-  const confinement = options.confineFiles === false ? undefined : requireConfinement(claim, options.readRoots ?? []);
+  const confinement = options.confineFiles === false ? undefined : requireConfinement(claim, options.readRoots ?? [], darwin);
   const scope: RunScope = {
     id,
     tempRoot: join(claim.root, TEMP_DIR),
@@ -726,7 +736,7 @@ export function archilEnv(claim: ArchilEnvClaim, options: ArchilEnvOptions = {})
 
 /** Built-in tools that only read. A tool in this set is declared `replay: "safe"`. */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["read", "ls", "find", "grep"]);
-/** Built-in tools that can change the workspace; their results follow the workspace barrier. */
+/** Built-in tools that can change the workspace; none of them is declared replay-safe. */
 export const WRITING_TOOLS: ReadonlySet<string> = new Set(["write", "edit", "bash", "powershell"]);
 
 /** The tool declared `replay: "safe"`: an interrupted call reruns on recovery instead of reporting `interrupted`. */
@@ -751,55 +761,3 @@ export const ArchilCodingTools: Extension = defineExtension({
   name: CodingTools.name,
   tools: markReadOnlySafe(CodingTools.tools ?? []),
 });
-
-export interface WorkspaceBarrierOptions {
-  /** Tools whose result follows a barrier; default `WRITING_TOOLS`. An app adds its own writing tools here. */
-  readonly tools?: Iterable<string>;
-}
-
-/**
- * The hook point for the rule that the workspace changes a tool made are durable before its result is committed.
- * Install this extension only when the result commit's own fsync does not already satisfy the rule; with it
- * not installed nothing runs. `barrier` is the claim's (`claim.barrier()`), called after a writing tool ran and before
- * pi appends its result entry, for the calls whose tool name is in `options.tools`.
- *
- * pi reports and ignores an `afterTool` hook that throws, so a failed barrier cannot hold the result back by throwing.
- * It replaces the result with an error result carrying the diagnostic `workspace_not_durable`: a success never commits
- * for a workspace that is not durable. The host decides separately whether a failed barrier means the claim is fenced.
- */
-export function workspaceBarrier(
-  barrier: (call: ToolCall, context: Context) => Promise<void>,
-  options: WorkspaceBarrierOptions = {},
-): Extension {
-  const writing = new Set(options.tools ?? WRITING_TOOLS);
-  return defineExtension({
-    name: "archil-workspace-barrier",
-    hooks: [
-      hook(ToolTask, {
-        afterTool: async (call, result, _api, context) => {
-          if (!writing.has(call.name)) return undefined;
-          try {
-            await barrier(call, context);
-            return undefined;
-          } catch (error) {
-            // An aborted invocation must propagate: pi rethrows hook errors only while it is aborted.
-            if (context.abortSignal?.aborted) throw error;
-            return notDurable(result, error);
-          }
-        },
-      }),
-    ],
-  });
-}
-
-function notDurable(result: ToolExecutionResult, error: unknown): ToolExecutionResult {
-  const reason = error instanceof Error ? error.message : String(error);
-  return {
-    ...result,
-    isError: true,
-    diagnostics: [
-      ...(result.diagnostics ?? []),
-      { severity: "error", code: "workspace_not_durable", message: `The workspace could not be made durable: ${reason}` },
-    ],
-  };
-}

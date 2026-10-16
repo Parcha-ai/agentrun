@@ -16,6 +16,7 @@ import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
 import { HandsDoc, SessionBoxesDoc, TransportError } from "../src/transport.ts";
+import { waitNotRunning } from "./box-env-support.ts";
 import {
 	bash,
 	openSession,
@@ -666,7 +667,7 @@ describe("transport(): where tools run", () => {
 			}
 			await session.hands.release(context);
 			expect(getOrThrow(await pending).exitCode).toBeGreaterThan(128);
-			expect(running()).toBe(false);
+			await waitNotRunning(running, `the released command ${tag}`);
 			const box = provider.created[0];
 			if (box === undefined) throw new Error("no box was created");
 			expect(getOrThrow(await box.status(context)).state).toBe("running");

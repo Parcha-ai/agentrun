@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-pi
+kind: fix
+---
+An agent node in flight when its workflow task failed is run again when a later start replaces the failed task, instead of failing the run. The node's conversation belongs to the task that started it; when that task ends, pi aborts the request in flight, and a later start runs a new task over the same journal. The node runner used to find the old conversation, receive the aborted request back, and fail the node for good (`NODE_NOT_DELIVERED`, "the model did not answer (aborted)"), so any path that failed a task with an agent node in flight lost the run at its next start: an open the driver refused, a host whose options threw. Now an attempt whose conversation another task owns runs again in a conversation of the task that runs it, under the same attempt, unless the old conversation already delivered the node's record, which is then the node's. The model is asked again; no call the workflow admitted is made twice.
+- `reuseReceipts`' `sessionId` is optional: absent, each call's own conversation is its session, so a node run again in another conversation after its task was replaced is answered from the receipt the aborted conversation paid for and does not pay again. A host that passes its own `sessionId` keeps it; one that keys by the node's attempt would pay again here.
