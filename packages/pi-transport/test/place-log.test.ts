@@ -13,7 +13,7 @@ import { connectHome, type HomeHandle } from "../src/home/host.ts";
 import { linkPair } from "../src/home/link.ts";
 import type { RecordSink } from "../src/home/records.ts";
 import { createRunner, type Runner, type RunnerOptions } from "../src/home/runner.ts";
-import { PlacementsDoc } from "../src/place/log.ts";
+import { isPlacementRecord, PlacementsDoc } from "../src/place/log.ts";
 import type { PlacementRecord } from "../src/place/placer.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -100,6 +100,32 @@ describe("the placement log", () => {
 			const refused = await host.recordPlacement(scripted, context);
 			expect(refused.ok ? "written" : refused.error.code).toBe("invalid");
 			expect(await runner.home?.harness?.snapshot(PlacementsDoc, "placement-1", context)).toBeUndefined();
+			await runner.home?.close(context);
+			host.close("done");
+		} finally {
+			made.remove();
+		}
+	}, 30_000);
+
+	it("refuses a decision without every field a reader needs, so the whole one can still be written under its id", async () => {
+		for (const field of ["session", "at", "phase", "what", "reason", "latencyMs"] as const) {
+			const { [field]: _gone, ...rest } = decision();
+			expect(isPlacementRecord(rest), `without ${field}`).toBe(false);
+		}
+		expect(isPlacementRecord(decision({ phase: "lunch" as never }))).toBe(false);
+		expect(isPlacementRecord(decision({ what: "everything" as never }))).toBe(false);
+		expect(isPlacementRecord(decision({ latencyMs: -1 }))).toBe(false);
+		expect(isPlacementRecord(decision())).toBe(true);
+		const made = world();
+		try {
+			const runner = createRunner(made.options);
+			const host = await hold(made, runner);
+			const { session: _session, ...partial } = decision();
+			const refused = await host.recordPlacement(partial as PlacementRecord, context);
+			expect(refused.ok ? "written" : refused.error.code).toBe("invalid");
+			// A store keeps the first decision under an id: the incomplete one never got there, so the whole one does.
+			getOrThrow(await host.recordPlacement(decision(), context));
+			expect(await runner.home?.harness?.snapshot(PlacementsDoc, "placement-1", context)).toEqual(decision());
 			await runner.home?.close(context);
 			host.close("done");
 		} finally {

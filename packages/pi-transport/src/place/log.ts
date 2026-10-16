@@ -15,7 +15,11 @@ export const PlacementsDoc = defineDocFamily<JsonObject, null>({
 	initial: () => ({}),
 });
 
-/** Whether `value` is a placement record this package writes: version 1, an id, and `by` only `jev` or `config`. */
+/**
+ * Whether `value` is a placement record this package writes: version 1, an id, `by` only `jev` or `config`, and every
+ * field a reader of the log needs. A store keeps the first record under an id, so an incomplete one is refused, never
+ * kept where the whole one could no longer go.
+ */
 export function isPlacementRecord(value: unknown): value is PlacementRecord {
 	const record = value as Partial<PlacementRecord> | null;
 	return (
@@ -24,10 +28,17 @@ export function isPlacementRecord(value: unknown): value is PlacementRecord {
 		record.v === 1 &&
 		typeof record.id === "string" &&
 		record.id !== "" &&
+		typeof record.session === "string" &&
+		typeof record.at === "string" &&
+		(record.phase === "message" || record.phase === "turn_end") &&
+		(record.what === "home" || record.what === "hands") &&
 		(record.by === "jev" || record.by === "config") &&
 		typeof record.current === "string" &&
 		typeof record.target === "string" &&
-		typeof record.moved === "boolean"
+		typeof record.moved === "boolean" &&
+		typeof record.reason === "string" &&
+		Number.isFinite(record.latencyMs) &&
+		(record.latencyMs as number) >= 0
 	);
 }
 
