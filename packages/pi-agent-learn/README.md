@@ -195,7 +195,7 @@ whole proposal, and the curator on what it writes.
 
 A run writes `inbox/<run id>.md`, `uses/<run id>.json`, and the DSL's saved workflow records as they are,
 `inbox/<run id>/workflows/<name>/<sha256>.json` and `inbox/<run id>/workflows/<name>/latest` (`<name>` is a workflow
-name: 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit), and nothing else. The
+name, `WORKFLOW_NAME`: 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit), and nothing else. The
 curator writes `learnings/L-<12 hex>.md` (it names every entry by its generated id; the index is derived at seed time and
 never stored, so `learnings/INDEX.md` is refused), `.agents/skills/<name>/SKILL.md` and `trial.json` (no other file or
 folder in a skill folder), and the DSL's workflow records, `.pi/agentrun/workflows/<name>/<sha256>.json` and `latest`.

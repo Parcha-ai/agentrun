@@ -232,12 +232,12 @@ test("workflow records the host collected are committed byte for byte under inbo
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
-  const workflows = { "kyb-us-registry": { files: workflowFiles }, "my.flow_v2": { files: { latest: `${DIGEST}\n` } } };
+  const workflows = { "kyb-us-registry": { files: workflowFiles }, "my-flow_v2": { files: { latest: `${DIGEST}\n` } } };
   const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), workflows });
   assert.equal(result.status, "proposed");
   const names = git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n").sort();
   assert.deepEqual(names, [
-    "inbox/run-1.md", `inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, "inbox/run-1/workflows/kyb-us-registry/latest", "inbox/run-1/workflows/my.flow_v2/latest",
+    "inbox/run-1.md", `inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, "inbox/run-1/workflows/kyb-us-registry/latest", "inbox/run-1/workflows/my-flow_v2/latest",
   ]);
   assert.equal(await repo.read(`inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, result.sha), RECORD);
   assert.equal(await repo.read("inbox/run-1/workflows/kyb-us-registry/latest", result.sha), `${DIGEST}\n`);
@@ -264,6 +264,8 @@ test("a workflow record that is not shaped like the store's, or holds a secret, 
   const secret = ["Lantern", "?>", "x9Kd3Qa"].join("");
   const bad = [
     ["a name that climbs out", { "../x": { files: workflowFiles } }],
+    ["a name with a dot", { "my.flow": { files: workflowFiles } }],
+    ["a name with a capital", { Kyb: { files: workflowFiles } }],
     ["a name with a slash", { "a/b": { files: { latest: DIGEST } } }],
     ["a name too long", { ["n".repeat(65)]: { files: workflowFiles } }],
     ["a nested record", { kyb: { files: { [`sub/${DIGEST}.json`]: RECORD } } }],

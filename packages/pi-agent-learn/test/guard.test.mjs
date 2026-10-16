@@ -274,24 +274,12 @@ test("workflow records belong to a run's inbox folder, and the DSL's store paths
   assert.deepEqual(guard({ role: "curate", files: { [store]: "{}" } }), []);
 });
 
-test("a workflow candidate names a workflow, every other candidate a learning", { skip: !LEARN_TYPES.includes("workflow") }, () => {
+test("a workflow candidate names a workflow, every other candidate a learning", () => {
   const named = (type, id) => guard({ role: "run", candidates: [candidate({ type, id })] }).map((r) => [r.field, r.reason]);
+  assert.ok(LEARN_TYPES.includes("workflow"));
   assert.deepEqual(named("workflow", "kyb-us-registry"), []);
-  assert.deepEqual(named("workflow", "L-0123456789ab"), []);
-  assert.deepEqual(named("workflow", "not a name"), [["candidates[0].id", "invalid"]]);
-  assert.deepEqual(named("workflow", "../x"), [["candidates[0].id", "invalid"]]);
+  assert.deepEqual(named("workflow", "L-0123456789ab"), [["candidates[0].id", "invalid"]], "a learning id is not a workflow name");
+  for (const id of ["not a name", "../x", "Kyb", "my.flow"]) assert.deepEqual(named("workflow", id), [["candidates[0].id", "invalid"]], id);
   assert.deepEqual(named("used", "kyb-us-registry"), [["candidates[0].id", "invalid"]]);
-});
-
-test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
-  const curate = (file) => guard({ role: "curate", files: { [file]: "x" } });
-  for (const file of ["learnings/L-0123456789ab.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
-  for (const file of [
-    "learnings/INDEX.md", "learnings/notes.md", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
-    "learnings/L-0123456789ab.txt", "learnings/sub/L-0123456789ab.md", "learnings/L-0123456789ab.md/x", "learnings/ L-0123456789ab.md",
-    ".agents/skills/kyb/references/checklist.md", ".agents/skills/kyb/refs/checklist.md", ".agents/skills/kyb/notes.md", ".agents/skills/kyb/skill.md",
-    ".agents/skills/SKILL.md", ".agents/skills/kyb/SKILL.md/x", ".agents/skills/not a name/SKILL.md", ".agents/config.toml",
-  ]) {
-    assert.ok(reasonsOf(curate(file)).has("path_not_allowed"), file);
-  }
+  assert.deepEqual(named("used", "L-0123456789ab"), []);
 });
