@@ -137,7 +137,7 @@ files?, summary? }`:
   refused: export it first. `rows` in place of `store` takes ready rows (tests).
 - `manifest`: a recording's `manifest.json` (`agentrun.recording/1`). The run's files are its result blob, as
   `result.<ext>`, and its job blob, as `job.<ext>`, out of the recording's `blobs/`, each checked against its SHA-256
-  name; nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
+  name (and against the manifest's `sha256` for it, a job's `{ blob, sha256 }`, when it has one); nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
   not keep their contents; its `input` is written on the run record (`runs/<id>.json`, not the history's `runs.json`) for
   the page to show as the run's input, and a job blob that is not a JSON object is refused. The manifest also gives the
   summary's title, start and end, and, only when its `providers` is `"real"`, the cost.

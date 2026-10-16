@@ -50,7 +50,8 @@ const HASH = /^[0-9a-f]{64}$/;
 
 /**
  * A recording's files for its replay: the manifest's result blob as `result.<ext>` and its job blob as `job.<ext>`, out of
- * the recording's `blobs/`, each checked against its SHA-256 name. Nothing else: no frame, screenshot or evidence blob.
+ * the recording's `blobs/`, each checked against its SHA-256 name, and against the manifest's `sha256` for it when it has
+ * one (a job's `{ blob, sha256 }`). Nothing else: no frame, screenshot or evidence blob.
  * The job blob names the job's input files; a recording does not keep their contents. Its `job` is the job blob parsed
  * (`{ workflow, input, files }`), so a replay can show the input the run was given; a job blob that is not JSON is refused.
  */
@@ -67,7 +68,9 @@ export async function recordingFiles(manifestPath) {
     const found = names.filter((file) => file.startsWith(`${ref.blob}.`) && /^\.[a-z0-9]+$/.test(file.slice(64)));
     if (found.length !== 1) throw new Error(`${manifestPath}: the ${name} blob ${ref.blob} is not in blobs/ once`);
     const bytes = await readFile(join(blobs, found[0]));
-    if (createHash("sha256").update(bytes).digest("hex") !== ref.blob) throw new Error(`${manifestPath}: the ${name} blob does not match its SHA-256`);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (digest !== ref.blob) throw new Error(`${manifestPath}: the ${name} blob does not match its SHA-256`);
+    if (ref.sha256 !== undefined && ref.sha256 !== digest) throw new Error(`${manifestPath}: the ${name}'s sha256 is not the SHA-256 of its blob`);
     files[`${name}${found[0].slice(64)}`] = bytes;
     if (name === "job") {
       try {

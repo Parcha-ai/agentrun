@@ -690,14 +690,14 @@ test("an expanded message the agent got stays expanded when the page repaints", 
 });
 
 /** The reference recording, copied, with a job blob (`{ workflow, input, files }`) named by its SHA-256 in its manifest. */
-async function recordingWithJob(dir, jobBytes) {
+async function recordingWithJob(dir, jobBytes, { sha256 } = {}) {
   await cp(RECORDING, join(dir, "rec"), { recursive: true });
   const sha = createHash("sha256").update(jobBytes).digest("hex");
   await writeFile(join(dir, "rec", "blobs", `${sha}.json`), jobBytes);
   const manifestPath = join(dir, "rec", "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   assert.equal(manifest.job, undefined, "the reference recording has no job blob as recorded");
-  await writeFile(manifestPath, JSON.stringify({ ...manifest, job: { blob: sha, sha256: sha } }));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, job: { blob: sha, sha256: sha256 ?? sha } }));
   return manifestPath;
 }
 
@@ -739,4 +739,24 @@ test("a recording's job blob that is not a JSON object is refused, and a recordi
   const none = join(tmp, "job-none");
   await writeReplay(join(none, "data"), [{ id: "reference-job", rows: [], manifest: new URL("manifest.json", RECORDING).pathname }]);
   assert.equal("input" in JSON.parse(await readFile(join(none, "data", "runs", "reference-job.json"), "utf8")), false);
+});
+
+test("a job blob's sha256 in the manifest must be the SHA-256 of its bytes: a wrong one, a tampered blob, and a non-hash are refused, before anything is written", async () => {
+  const dir = join(tmp, "job-sha");
+  const bytes = Buffer.from(JSON.stringify({ workflow: "reference-company-check", input: INPUT, files: [] }));
+  const other = createHash("sha256").update("another job").digest("hex");
+  const data = join(dir, "data");
+  for (const [name, sha256] of [["a different hash", other], ["not a hash", "nope"], ["a number", 7]]) {
+    const manifest = await recordingWithJob(join(dir, name.replace(/\W/g, "-")), bytes, { sha256 });
+    await assert.rejects(writeReplay(data, [{ id: "bad", rows: [], manifest }]), /the job's sha256 is not the SHA-256 of its blob/, name);
+  }
+  const tampered = await recordingWithJob(join(dir, "tampered"), bytes);
+  const name = createHash("sha256").update(bytes).digest("hex");
+  await writeFile(join(dir, "tampered", "rec", "blobs", `${name}.json`), JSON.stringify({ workflow: "x", input: { company: "Elsewhere Ltd" }, files: [] }));
+  await assert.rejects(writeReplay(data, [{ id: "bad", rows: [], manifest: tampered }]), /the job blob does not match its SHA-256/);
+  await assert.rejects(readdir(data), { code: "ENOENT" }, "nothing was written");
+
+  const good = await recordingWithJob(join(dir, "good"), bytes);
+  await writeReplay(data, [{ id: "ok", rows: [], manifest: good }]);
+  assert.deepEqual(JSON.parse(await readFile(join(data, "runs", "ok.json"), "utf8")).input, INPUT, "the matching sha256 is accepted");
 });
