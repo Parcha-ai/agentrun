@@ -24,10 +24,10 @@ import { withDurableFile } from "./readers.js";
 type Database = import("node:sqlite").DatabaseSync;
 type Json = any;
 
-/** The DSL's own document kinds a run page reads: the journal, its effects, the node attempts, the tasks, the record and
+/** The DSL's own document kinds a run page reads: the journal, its effects, the keyed layout's map items and states (`agentrun.frozen_run.v4`), the node attempts, the tasks, the record and
  *  its gate, the receipts and the decisions. A host's own kinds are not here; its caller lists them. */
 export const EXPORT_KINDS: readonly string[] = Object.freeze([
-  "agentrun.driver", "agentrun.effects", "agentrun.nodes", "agentrun.node", "agentrun.task", "agentrun.record", "agentrun.gate", "agentrun.receipts", "agentrun.decisions",
+  "agentrun.driver", "agentrun.effects", "agentrun.items", "agentrun.states", "agentrun.nodes", "agentrun.node", "agentrun.task", "agentrun.record", "agentrun.gate", "agentrun.receipts", "agentrun.decisions",
 ]);
 
 /** The kinds that never leave a run: saved sign-ins, save leases, and each host's names for the agent and where its tools

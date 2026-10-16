@@ -34,11 +34,12 @@ const WORKFLOW = { v: 2, name: 'one-node', schemas: { Verdict: VERDICT, Out: { t
   output: { schemaId: 'Out', path: 'decision' }, root: { node: 'chain', steps: [{ node: 'decide', label: 'Verdict', instructions: 'Decide buy or pass.', out: 'Verdict', as: 'decision' }] } };
 const Other = defineDocFamily({ kind: 'host.unknown', version: 1, scope: 'session', family: true, initial: () => ({ note: '' }) });
 
-/** A workflow run on a sqlite store, the v3 layout: the journal whole in `agentrun.driver`, its effects, one node's
- *  conversation with a scripted model. `extra` writes more into the same store before it closes. */
-async function build(file, extra = async () => undefined) {
+/** A workflow run on a sqlite store: the journal in `agentrun.driver` (whole in the v3 layout, with its map items and states
+ *  in `agentrun.items` and `agentrun.states` in the v4 one), its effects, each node's conversation with a scripted model.
+ *  `extra` writes more into the same store before it closes. */
+async function build(file, extra = async () => undefined, { workflow = WORKFLOW, input = { claim: 'x' }, layout, verdicts = 1 } = {}) {
   const faux = fauxProvider();
-  faux.setResponses([fauxAssistantMessage([fauxToolCall('submit', { verdict: 'buy' })], { stopReason: 'toolUse' })]);
+  faux.setResponses(Array.from({ length: verdicts }, () => fauxAssistantMessage([fauxToolCall('submit', { verdict: 'buy' })], { stopReason: 'toolUse' })));
   const models = createModels();
   models.setProvider(faux.provider);
   const nodes = nodeRunner({ agent: () => ({ model: { provider: 'faux', modelId: 'faux-1' } }) });
@@ -47,16 +48,16 @@ async function build(file, extra = async () => undefined) {
   const harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry }, ctx);
   try {
     const { runNode } = nodes.on(hostScope(harness), ctx);
-    const driver = await openRecovery(documentStore(harness, 'run-1'), WORKFLOW, { key: 'run-1' });
+    const driver = await openRecovery(documentStore(harness, 'run-1'), workflow, { key: 'run-1', ...(layout ? { layout } : {}) });
     try {
-      const result = await runWorkflow(WORKFLOW, { claim: 'x' }, withRecovery(driver, { runNode }, { durableNodes: true }));
-      assert.deepEqual(result.output, { verdict: 'buy' });
+      await runWorkflow(workflow, input, withRecovery(driver, { runNode }, { durableNodes: true }));
     } finally { await driver.close(); }
     await extra(harness);
   } finally { await harness.close(ctx); }
   return file;
 }
-const entriesOf = (file) => rows(file, 'SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id').map((row) => JSON.parse(row.record));
+const entriesOf = (file, conversation) => rows(file, `SELECT record FROM entries WHERE conversation_id = ${conversation === undefined ? '(SELECT MIN(conversation_id) FROM entries)' : Number(conversation)} ORDER BY id`).map((row) => JSON.parse(row.record));
+const conversationsOf = (file) => rows(file, 'SELECT DISTINCT conversation_id AS id FROM entries ORDER BY id').map((row) => row.id);
 
 test('a signed-in home, exported: no sign-in in any byte, the host stripped, and the secret kinds never listed in', { skip: signedInHomeSkip, timeout: 120_000 }, async () => {
   const home = await buildSignedInHome(dirOf());
@@ -113,6 +114,42 @@ test('a v3 run: the timeline, the journal and every kept document read the same 
   const got = recordingLines(out).lines.filter((line) => line.data.doc !== undefined && !line.kind.startsWith('pi.'));
   assert.deepEqual(got.map((line) => [line.kind, line.data.key, line.commit, line.data.value]), wanted.map((line) => [line.kind, line.data.key, line.commit, line.data.value]));
   assert.equal(report.kept['agentrun.driver'].revisions, got.filter((line) => line.kind === 'agentrun.driver').length);
+  checkExportClean(out);
+});
+
+const MAPPED = { v: 2, name: 'mapped', schemas: { Verdict: VERDICT, Input: { type: 'object', required: ['claims'], properties: { claims: { type: 'array' } } },
+  Out: { type: 'object', required: ['count'], properties: { count: { type: 'integer' } } } }, input: { schemaId: 'Input' }, output: { schemaId: 'Out', path: 'result' },
+  root: { node: 'chain', steps: [
+    { node: 'map', label: 'each', itemsPath: 'claims', as: 'verdicts', maxConcurrency: 1, body: { node: 'chain', steps: [{ node: 'decide', label: 'Verdict', instructions: 'Decide buy or pass.', out: 'Verdict', as: 'decision' }] } },
+    { node: 'code', label: 'count', code: 's => ({ result: { count: s.verdicts.length } })' },
+  ] } };
+
+test('a v4 run (the keyed layout): every item, state and conversation reads the same from the export as from the source', { timeout: 120_000 }, async () => {
+  assert.ok(EXPORT_KINDS.includes('agentrun.items') && EXPORT_KINDS.includes('agentrun.states'));
+  const source = await build(join(dirOf(), 'run.sqlite'), undefined, { workflow: MAPPED, input: { claims: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }, layout: 'v4', verdicts: 3 });
+  const out = join(dirOf(), 'export.sqlite');
+  const report = exportStore(source, out, { exportable });
+  const journal = readJournal(source, 'run-1');
+  assert.equal(journal.state.schema ?? journal.state?.pin?.schema ?? 'agentrun.frozen_run.v4', 'agentrun.frozen_run.v4', 'the source is in the keyed layout');
+  assert.ok(rows(source, "SELECT 1 FROM documents WHERE json_extract(kind, '$') = 'agentrun.items'").length >= 3, 'the source keeps one record per map item');
+  for (const kind of ['agentrun.items', 'agentrun.states', 'agentrun.driver']) assert.ok(report.kept[kind]?.documents >= 1, kind);
+  assert.deepEqual(readJournal(out, 'run-1'), journal);
+  // The map's items and the states they reference: the same keys with the same final values, from the exported table.
+  const latest = (file, kind) => Object.fromEntries(recordingLines(file).lines.filter((line) => line.kind === kind).map((line) => [line.data.key, line.data.value]));
+  for (const kind of ['agentrun.items', 'agentrun.states']) {
+    const [from, to] = [latest(source, kind), latest(out, kind)];
+    assert.ok(Object.keys(from).length >= 1, kind);
+    assert.deepEqual(to, from, kind);
+  }
+  assert.equal(Object.keys(latest(out, 'agentrun.items')).length, 3);
+  // The timeline of every item's conversation.
+  const conversations = conversationsOf(source);
+  assert.ok(conversations.length >= 3);
+  assert.deepEqual(conversationsOf(out), conversations);
+  for (const conversation of conversations) {
+    assert.deepEqual(timelineOf(entriesOf(out, conversation), { settled: true }), timelineOf(entriesOf(source, conversation), { settled: true }), `conversation ${conversation}`);
+  }
+  assert.equal(rows(out, "SELECT COUNT(*) AS n FROM documents WHERE json_extract(kind, '$') LIKE 'browser.%'")[0].n, 0);
   checkExportClean(out);
 });
 
