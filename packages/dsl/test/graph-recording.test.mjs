@@ -1,6 +1,6 @@
 // The nested shape's recording (test/fixtures/graph/nested.recording.jsonl): the durable lines of the run of a map whose body
 // runs a child workflow, in the keyed layout, killed after two lookups and resumed by a second process
-// (`node examples/graph/run.ts --kill --record <dir>`, cut by record.mjs). A graph panel steps from these lines to
+// (`node examples/fixtures/graph-nested/run.ts --kill --record <dir>`, cut by record.mjs). A graph panel steps from these lines to
 // nodeStatus's source: the latest `agentrun.driver` document's frame (`state.pin`) and the `agentrun.items` documents. The
 // test reads the lines back that way, at every commit, through nodeStatus.
 import assert from 'node:assert/strict';

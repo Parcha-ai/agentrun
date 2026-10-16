@@ -20,8 +20,7 @@ import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
-/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. */
-export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array>; layout?: 'v3' | 'v4' };
+export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
@@ -69,7 +68,8 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
@@ -120,7 +120,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
-    options: () => ({ ...(job.layout ? { layout: job.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
+    options: () => ({ ...(options.layout ? { layout: options.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
