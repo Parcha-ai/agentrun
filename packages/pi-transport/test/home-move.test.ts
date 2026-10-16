@@ -96,7 +96,6 @@ describe("a home moves between two boxes with no shared disk", () => {
 				const move = {
 					id: `move-${afterMs}`,
 					notice: "System notice: you now run in another box. Your files came with you.",
-					roots: { from: from.workspace, to: to.workspace },
 				};
 				getOrThrow(await target.resume({ epoch: 2, seal, move }, context));
 				const root = getOrThrow(await target.root(context));

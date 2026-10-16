@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, browserChargesOf, callsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, browserChargesOf, callsOf, pageActionsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -64,6 +64,12 @@ export type CounterState = {
    *  in a process that has not filed its key since (`<process> <key>`). Never reset: a lost branch's looks were paid. */
   looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; priced: Record<string, number>; native: number;
     started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
+  /** The browser's page actions (section 6): each key's dispatches (`callId`s) in the order they first appear, the
+   *  generation of the line each first appears in (a snapshot's is an earlier process's), and those a revision showed
+   *  reaching the page. Never reset: a lost branch's actions were applied. `seen` and `timed`: a `browser.sessions` line,
+   *  and one with a `t` (only the in-process recorder stamps one; a bare export's lines carry none and only the latest
+   *  revision, so its page actions are not measured). */
+  pages: { order: Record<string, string[]>; gen: Record<string, number>; reached: Record<string, true>; seen: boolean; timed: boolean };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
@@ -86,6 +92,10 @@ export type Counters = {
   /** Vision: native looks (the lead's own, no payment), and possible payments no durable line shows (a look live lines
    *  show started in a process that ended without filing its key). With any possible one, cost is a lower bound. */
   vision: { native: number; possible: number };
+  /** The browser's page actions: dispatches of a key after one that never showed reaching the page are possible extra
+   *  applications, never proven ones (proven ones are in repeated and asked twice). Not measured when the recording's
+   *  `browser.sessions` lines are a bare export's (none carries a `t`): then none is counted, and never shown as 0. */
+  pageActions: { possible: number; measured: boolean };
   costLowerBound: boolean;
   /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
@@ -112,7 +122,7 @@ export type Counters = {
 
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
   accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
   reduce(state, line) {
     const next: CounterState = { ...state };
@@ -214,6 +224,22 @@ export const counterFold: Fold<CounterState> = {
           looks.priced[id] = looks.costs.push(filing.usd) - 1;
         }
         next.looks = looks;
+      }
+      const actions = pageActionsOf(doc);
+      if (actions) next.pages = { ...next.pages, seen: true, timed: next.pages.timed || typeof line.t === 'number' };
+      if (actions?.length) {
+        const pages = { ...next.pages, order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
+        for (const action of actions) {
+          // A dispatch is its key and its callId: another conversation may number its calls the same way.
+          const key = `${line.conv ?? ''}\u0001${action.tool}\u0001${action.codeSha}`;
+          const dispatch = `${key}\u0001${action.callId}`;
+          if (pages.gen[dispatch] === undefined) {
+            pages.gen[dispatch] = line.gen ?? 0;
+            pages.order[key] = [...(pages.order[key] ?? []), dispatch];
+          }
+          if (action.reached) pages.reached[dispatch] = true;
+        }
+        next.pages = pages;
       }
       if (priced.length) {
         const charges = { ...next.charges };
@@ -369,6 +395,22 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // A vision look key's payments, in the order seen, are extras the same way (a first-kept payment sits just before its
   // kept filing's generation).
   Object.values(state.looks.gens).forEach(extras);
+  // A page action's key: each dispatch after one that reached the page is one extra application, counted once, in
+  // repeated when its generation is later than that one's and in asked twice when it is the same; a dispatch after
+  // earlier ones that never showed reaching it is a possible extra, never a proven one.
+  let pagePossible = 0;
+  const pagesMeasured = !state.pages.seen || state.pages.timed;
+  for (const dispatches of pagesMeasured ? Object.values(state.pages.order) : []) {
+    let reached: string | undefined;
+    dispatches.forEach((dispatch, index) => {
+      if (index > 0) {
+        if (reached === undefined) pagePossible += 1;
+        else if (state.pages.gen[dispatch]! > state.pages.gen[reached]!) repeated += 1;
+        else askedTwice += 1;
+      }
+      if (state.pages.reached[dispatch]) reached = dispatch;
+    });
+  }
   const vision = Object.values(state.looks.gens).reduce((sum, gens) => sum + gens.length, 0);
   const possible = Object.entries(state.looks.started).filter(([at]) => ended || Number(at.split(' ')[0]) < state.processes || state.looks.ended[at.split(' ')[0]!])
     .reduce((sum, [, count]) => sum + count, 0);
@@ -391,6 +433,7 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   return {
     paid: { total: workflow + agent + vision, workflow, agent, vision },
     vision: { native: state.looks.native, possible },
+    pageActions: { possible: pagePossible, measured: pagesMeasured },
     costLowerBound: possible > 0,
     repeated,
     repeatedNotMeasured,
@@ -408,4 +451,6 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
 }
 
 /** The strip's repeated: "not measured" when nothing measured repeats and an effect's host reported no calls, never 0. */
-export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && counters.repeatedNotMeasured > 0 ? 'not measured' : String(counters.repeated));
+export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && (counters.repeatedNotMeasured > 0 || !counters.pageActions.measured) ? 'not measured' : String(counters.repeated));
+/** The strip's asked twice: "not measured" when nothing measured was asked twice and the browser's page actions are not measured. */
+export const askedTwiceLabel = (counters: Counters): string => (counters.askedTwice === 0 && !counters.pageActions.measured ? 'not measured' : String(counters.askedTwice));

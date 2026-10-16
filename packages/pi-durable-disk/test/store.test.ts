@@ -16,13 +16,6 @@ import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-work
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
 import { PI_DURABLE_VERSION, registerConformance, runConformance, SCANS_HAVE_ORDER } from "./_conformance.ts";
 
-/**
- * A Session failed by a Storage error, as each pi version says it: pi-durable 1.2 throws `SessionFailed` (its `cause` the
- * first error) after any Storage error; 1.0.4 and 1.1 poison the Session with an error that says so. Read from the
- * namespace, so no version fails to load for a name it does not export.
- */
-const SessionFailed = (piDurable as Record<string, unknown>).SessionFailed as (new (cause: unknown) => Error) | undefined;
-const sessionFailed = (error: unknown): boolean => (SessionFailed ? error instanceof SessionFailed : error instanceof Error && /poisoned/.test(error.message));
 import {
   ctx,
   entryCommitter,
@@ -34,11 +27,13 @@ import {
   SQLITE_NOTADB,
   sqliteError,
   withStoreIn,
+  sessionFailed,
 } from "./_support.ts";
 import {
   assertPragmas,
   Fence,
   FencedDatabase,
+  FULLFSYNC_PRAGMAS,
   openArchilStore,
   PROFILE_PRAGMAS,
   StoreBusyError,
@@ -242,6 +237,45 @@ describe("pragma read-back refuses a wrong pragma", () => {
       },
     );
     await assert.rejects(assertPragmas(reads(PROFILE_PRAGMAS.exclusive), "shared"), StorePragmaError);
+  });
+
+  it("on macOS, where fsync does not flush the drive's cache, every profile also syncs with F_FULLFSYNC, read back", async () => {
+    for (const platform of ["darwin", "linux"] as const) {
+      for (const profile of PROFILES) {
+        const s = scratch(`fullfsync-${platform}-${profile}`);
+        try {
+          const store = await openArchilStore(s.file, profile, { platform });
+          try {
+            const on = platform === "darwin" ? 1 : 0;
+            assert.deepEqual([await pragmaValue(store, "fullfsync"), await pragmaValue(store, "checkpoint_fullfsync")], [on, on], `${platform} ${profile}`);
+          } finally {
+            await store.storage.close(ctx);
+          }
+        } finally {
+          s.remove();
+        }
+      }
+    }
+  });
+
+  it("refuses a store on macOS whose fullfsync pragmas do not read back", async () => {
+    const reads = (values: Record<string, unknown>): SqliteExecutor => ({
+      async exec() {},
+      async run() {},
+      async all() {
+        return [];
+      },
+      async get<T extends object>(sql: string): Promise<T | undefined> {
+        return { value: values[sql.replace("PRAGMA ", "")] } as T;
+      },
+    });
+    await assertPragmas(reads(PROFILE_PRAGMAS.exclusive), "exclusive", "linux");
+    await assertPragmas(reads({ ...PROFILE_PRAGMAS.exclusive, ...FULLFSYNC_PRAGMAS }), "exclusive", "darwin");
+    await assert.rejects(assertPragmas(reads({ ...PROFILE_PRAGMAS.shared, fullfsync: 1, checkpoint_fullfsync: 0 }), "shared", "darwin"), (error: unknown) => {
+      assert.ok(error instanceof StorePragmaError);
+      assert.deepEqual(error.mismatches, [{ pragma: "checkpoint_fullfsync", expected: 1, actual: 0 }]);
+      return true;
+    });
   });
 });
 

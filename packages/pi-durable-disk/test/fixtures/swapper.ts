@@ -10,10 +10,12 @@ export function swapperLoop(work: string, parent: number): string {
 }
 
 /**
- * The swapper, in a process group of its own. It carries two ends: the loop stops once `parent` is gone (a test process that
- * is killed mid-test runs no finally), and `timeout` stops it after `capSeconds` whatever `parent` does. `timeout` rather than
- * `$SECONDS` in the loop, which `sh` is not guaranteed to have (dash has none).
+ * The swapper, a shell leading a process group of its own. It carries two ends: the loop stops once `parent` is gone (a test
+ * process that is killed mid-test runs no finally), and a sleeper in the group kills the group after `capSeconds` whatever
+ * `parent` does; the loop's end kills the group too, sleeper included. A sleeper rather than `$SECONDS` in the loop, which
+ * `sh` is not guaranteed to have (dash has none), and rather than GNU `timeout`, which macOS does not have.
  */
 export function spawnSwapper(work: string, parent: number, capSeconds = SWAPPER_CAP_SECONDS): ChildProcess {
-  return spawn("timeout", ["-s", "KILL", String(capSeconds), "sh", "-c", swapperLoop(work, parent)], { stdio: "ignore", detached: true });
+  const group = "kill -s KILL -- -$$";
+  return spawn("sh", ["-c", `(sleep ${capSeconds}; ${group}) & ${swapperLoop(work, parent)}; ${group}`], { stdio: "ignore", detached: true });
 }

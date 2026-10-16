@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
-import { counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
+import { askedTwiceLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
@@ -10,13 +10,17 @@ import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
+import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 
+/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
+ *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
 type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[] };
+type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
+declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf'];
+const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: { class?: string; text?: string; title?: string } = {}, ...children: (globalThis.Node | string)[]) => {
@@ -34,11 +38,12 @@ const svgEl = (tag: string, attrs: Record<string, string | number>) => {
 };
 
 /** A link to a blob: a passive type opens in a new tab, anything else (a page, an SVG, an unknown type) downloads, so
- *  a recording's file never runs with the viewer's origin. */
-function blobLink(recording: Recording, sha: string, text: string, className: string): HTMLAnchorElement | undefined {
+ *  a recording's file never runs with the viewer's origin. A fragment (`page=2`, `t=30`) is where in the file it opens. */
+function blobLink(recording: Recording, sha: string, text: string, className: string, fragment?: string): HTMLAnchorElement | undefined {
   const url = recording.blobUrl(sha);
   if (!url) return undefined;
-  const link = Object.assign(el('a', { class: className, text }), { href: url, rel: 'noopener' });
+  const at = fragment?.replace(/^#/, '');
+  const link = Object.assign(el('a', { class: className, text }), { href: at ? `${url.split('#')[0]}#${encodeURI(at)}` : url, rel: 'noopener' });
   if (opensInPage(recording.blobType(sha))) link.target = '_blank';
   else link.download = sha;
   return link;
@@ -46,14 +51,36 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
 
 // ---- loading ---------------------------------------------------------------------------------------------------
 
+/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
+async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
+  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
+  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
+}
+
+/** The bundled recordings: embedded in gallery.js, or listed in the index a files build ships beside them, read once and
+ *  only when something needs them (a gallery, a `?r=`, a bundled baseline). */
+let bundled: Promise<(GalleryEntry | IndexEntry)[]> | undefined;
+const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Promise.resolve(window.AGENTRUN_GALLERY)
+  : window.AGENTRUN_GALLERY_INDEX ? fetch(window.AGENTRUN_GALLERY_INDEX).then((response) => {
+    if (!response.ok) throw new Error(`${window.AGENTRUN_GALLERY_INDEX} answered ${response.status}`);
+    return response.json() as Promise<IndexEntry[]>;
+  }) : Promise.resolve([]));
+const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
+/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
+async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
+  const dir = new URL(`recordings/${entry.id}/`, location.href).href;
+  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
+}
+
 function fromGallery(entry: GalleryEntry): Recording {
   return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
     blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
 }
 
 /** Every blob a recording names: its lines', its images', its result's. */
-function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
-  const named = new Set<string>(manifest.result ? [manifest.result.blob] : []);
+export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
+  const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
   for (const line of lines) {
     for (const sha of line.blobs ?? []) named.add(sha);
     for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);
@@ -127,7 +154,16 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-function drawCounters(counters: Counters, measured = counters.measured): HTMLElement {
+/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
+ *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
+ *  real run's in dollars to four places. */
+export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
+  if (cost === null) return 'unknown';
+  const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
+  return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
+};
+
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted'): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
@@ -136,8 +172,10 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
       `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
-    stored('repeated', repeatedLabel(counters), counters.repeatedNotMeasured > 0 ? `An applied call in a later process than an earlier applied one. ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : 'An applied call in a later process than an earlier applied one.', counters.repeated > 0 ? ' alarm' : ''),
-    stored('asked twice', String(counters.askedTwice), 'A call dispatched twice in one process: the model asking again.'),
+    stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
+      `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
+      counters.repeated > 0 ? ' alarm' : ''),
+    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`),
     stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
@@ -149,8 +187,8 @@ function drawCounters(counters: Counters, measured = counters.measured): HTMLEle
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', counters.cost === null ? 'unknown' : `${counters.costLowerBound ? 'at least ' : ''}$${counters.cost.toFixed(4)}`,
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}`),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
+      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
@@ -228,8 +266,13 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     const url = player.recording.blobUrl(node.blob);
     return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: not in this recording]` });
   }
+  if (node.tag === 'a' && 'href' in node) {
+    // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
+    const web = URL.canParse(node.href) && ['http:', 'https:'].includes(new URL(node.href).protocol);
+    return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
+  }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob') ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -278,7 +321,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
 
 /** An element's place under `root`, as each step's tag, first class and rank among its siblings of both: the same place
  *  in the next draw of the same view. */
-function placeKey(node: Element, root: Element): string {
+export function placeKey(node: Element, root: Element): string {
   const steps: string[] = [];
   for (let at: Element | null = node; at && at !== root; at = at.parentElement) {
     const kind = `${at.tagName}.${at.classList[0] ?? ''}`;
@@ -287,23 +330,28 @@ function placeKey(node: Element, root: Element): string {
   return steps.reverse().join('/');
 }
 
-/** Where the reader is in the panels, by place only: each scrolled element's offsets, and the element with the keyboard
- *  focus. */
-function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; focus?: string } {
-  const scrolls = new Map([...root.querySelectorAll('*')].filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+/** Where the reader is in the panels, by place only: each scrolled element's offsets, the `details` they opened, and the element with the keyboard
+ *  focus. A place is `placeKey`: the element's tag and class among its siblings, so an element added elsewhere does not move it. */
+export function placeIn(root: HTMLElement): { scrolls: Map<string, [number, number]>; opened: Set<string>; focus?: string } {
+  const all = [...root.querySelectorAll('*')];
+  const scrolls = new Map(all.filter((node) => node.scrollTop > 0 || node.scrollLeft > 0).map((node): [string, [number, number]] => [placeKey(node, root), [node.scrollTop, node.scrollLeft]]));
+  const opened = new Set(all.filter((node) => node.tagName === 'DETAILS' && (node as HTMLDetailsElement).open).map((node) => placeKey(node, root)));
   const active = document.activeElement;
-  return { scrolls, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
+  return { scrolls, opened, ...(active && active !== root && root.contains(active) ? { focus: placeKey(active, root) } : {}) };
 }
 
-/** A redraw keeps the reader's place: the scroll offsets, and the focus on the element at the place it was, without
- *  scrolling it into view. */
-function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
-  if (place.scrolls.size) for (const node of root.querySelectorAll('*')) {
-    if (node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth) continue;
-    const offsets = place.scrolls.get(placeKey(node, root));
-    if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+/** A redraw keeps the reader's place: the scroll offsets, the `details` they opened, and the focus on the element at the place it was, without
+ *  scrolling it into view. Used for the full redraw at a stop and for the in-place redraw between stops. */
+export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn>) {
+  const all = [...root.querySelectorAll('*')];
+  for (const node of all) {
+    if (node.tagName === 'DETAILS' && place.opened.has(placeKey(node, root))) (node as HTMLDetailsElement).open = true;
+    if (place.scrolls.size && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) {
+      const offsets = place.scrolls.get(placeKey(node, root));
+      if (offsets) [node.scrollTop, node.scrollLeft] = offsets;
+    }
   }
-  if (place.focus !== undefined) ([...root.querySelectorAll('[tabindex]')].find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
+  if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
@@ -330,8 +378,8 @@ async function baselineOf(recording: Recording, base: string | undefined): Promi
   const named = recording.manifest.baseline;
   if (!named) return undefined;
   const id = named.recording.replace(/\/$/, '').split('/').at(-1)!;
-  const entry = (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id || each.id === named.recording);
-  const other = entry ? fromGallery(entry) : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
+  const entry = (await bundledRecordings().catch(() => [])).find((each) => each.id === id || each.id === named.recording);
+  const other = entry ? (await openBundled(entry)).recording : base ? await fromUrl(new URL(named.recording, base).href) : undefined;
   if (!other) return undefined;
   return baselineViewOf(named.label, other);
 }
@@ -351,6 +399,60 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
+
+/** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
+ *  declares, which need not be the order of their stops), by its index in that list, or -1 before every chapter. */
+export const chapterAt = (chapters: readonly { p: number }[], p: number): number =>
+  chapters.reduce((at, chapter, index) => (chapter.p <= p && (at < 0 || chapter.p >= chapters[at]!.p) ? index : at), -1);
+
+/** The embed protocol (PANELS.md, "Embedding"): what a framed viewer posts to the page that frames it. */
+export const embedMessage = (type: 'ready' | 'position' | 'focus', body: Record<string, Json>) => ({ source: 'agentrun-viewer', type, ...body });
+
+/** The origin of the page that frames this one, when the browser says what it is (an http or https page); else `*`, as
+ *  for a page opened from a file. */
+export const parentOrigin = (ancestor: string | undefined, referrer: string): string => {
+  const known = ancestor ?? (referrer ? new URL(referrer).origin : undefined);
+  return known !== undefined && /^https?:\/\//.test(known) ? known : '*';
+};
+
+/** The origin a framing page names with `&parent=`: an http or https origin, written as one. Only it may steer the viewer. */
+export const parentParam = (value: string | null): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && url.origin === value ? url.origin : undefined;
+  } catch { return undefined; }
+};
+
+/** A command a framing page may send: seek (to a stop, a commit of a generation, or a time in seconds), focus (a workflow
+ *  path, or none), or theme. */
+export type Steer = { type: 'seek'; stop: number } | { type: 'seek'; commit: number; gen?: number } | { type: 'seek'; t: number }
+  | { type: 'focus'; path: string | null } | { type: 'theme'; theme: 'light' | 'dark' | 'auto' };
+
+/** A message as a command the viewer obeys, each field checked; anything else (another type, a field of the wrong kind,
+ *  a stop past the end, a path that is not a workflow path) is nothing. A message never carries code to run. */
+export function steerOf(data: unknown, last: number): Steer | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const message = data as Record<string, unknown>;
+  const whole = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const only = (...keys: string[]) => Object.keys(message).every((key) => key === 'type' || key === 'source' || keys.includes(key));
+  if (message.type === 'seek') {
+    if (only('stop') && whole(message.stop) && message.stop <= last) return { type: 'seek', stop: message.stop };
+    if (only('commit', 'gen') && whole(message.commit) && (message.gen === undefined || whole(message.gen))) return { type: 'seek', commit: message.commit, ...(message.gen === undefined ? {} : { gen: message.gen as number }) };
+    if (only('t') && typeof message.t === 'number' && Number.isFinite(message.t) && message.t >= 0) return { type: 'seek', t: message.t };
+    return undefined;
+  }
+  if (message.type === 'focus' && only('path')) {
+    if (message.path === null) return { type: 'focus', path: null };
+    if (typeof message.path === 'string' && message.path.length <= 512 && /^\/[\w./:#-]*$/.test(message.path)) return { type: 'focus', path: message.path };
+    return undefined;
+  }
+  if (message.type === 'theme' && only('theme') && (message.theme === 'light' || message.theme === 'dark' || message.theme === 'auto')) return { type: 'theme', theme: message.theme };
+  return undefined;
+}
+
+/** A message may steer the viewer only when it comes from the framing page itself, at the origin its URL named. */
+export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
   const problems = validate(recording.manifest, recording.lines);
@@ -397,12 +499,24 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const baselineRow = el('div', { class: 'baseline' });
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
-  if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
+    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
+  // Embedded (`?embed=1`), the page is its frame's: no header, but a recording that breaks the format still says so.
+  const embedded = params.get('embed') === '1';
+  const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
+  if (problemsNote && !embedded) header.append(problemsNote);
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
     if (link) header.append(link);
   }
+  // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
+  // a tab; the store is a SQLite file and downloads.
+  // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
+  const { job, store } = recording.manifest;
+  const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
+  const at = store?.at;
+  const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
+    ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
+  for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
   const position = el('span', { class: 'position' });
@@ -419,8 +533,29 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const shown = panelsFor(lines);
   const featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
-  if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
-  else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
+  if (embedded) document.documentElement.classList.add('embed');
+  if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+  else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  // Framed, the viewer tells the framing page where the point is and what is focused, and obeys it (seek, focus, theme)
+  // only when its URL names that page's origin (`&parent=`): PANELS.md, "Embedding".
+  const framed = embedded && window.parent !== window;
+  const steeredBy = parentParam(params.get('parent'));
+  const target = steeredBy ?? parentOrigin(location.ancestorOrigins?.item(0) ?? undefined, document.referrer);
+  const post = (message: ReturnType<typeof embedMessage>) => window.parent.postMessage(message, target);
+  let postedStop: number | undefined;
+  let postedFocus: string | null | undefined;
+  const tellParent = () => {
+    if (player.p !== postedStop) {
+      postedStop = player.p;
+      const index = chapterAt(chapters, player.p);
+      const durable = lines.slice(0, player.p).findLast((line) => line.channel === 'durable');
+      post(embedMessage('position', { stop: player.p, gen: durable?.gen ?? null, commit: durable?.commit ?? null, t: player.p > 0 ? lines[player.p - 1]!.t : 0,
+        chapter: index < 0 ? null : { title: chapters[index]!.title, stop: chapters[index]!.p } }));
+    }
+    const focus = player.focus ?? null;
+    if (focus !== postedFocus) { postedFocus = focus; post(embedMessage('focus', { path: focus })); }
+  };
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -432,11 +567,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured, recording.manifest.providers));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
+    if (framed) tellParent();
     chapterList.replaceChildren(...chapters.map((chapter) => {
       const button = el('button', { class: chapter.p === player.p ? 'current' : '', text: chapter.title });
       button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
@@ -476,10 +612,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
       return section;
     };
     if (onlyAnimated) {
-      for (const panel of animatedPanels(shown)) sections.get(panel.id)?.replaceWith(drawn(panel));
+      for (const panel of animatedPanels(shown)) {
+        const before = sections.get(panel.id);
+        const after = drawn(panel);
+        if (before !== undefined) { const place = placeIn(before); before.replaceWith(after); restorePlace(after, place); }
+      }
       return;
     }
-    if (featured) featuredBox.replaceChildren(drawn(featured));
+    if (featured) { const kept = placeIn(featuredBox); featuredBox.replaceChildren(drawn(featured)); restorePlace(featuredBox, kept); }
     const place = placeIn(panels);
     panels.replaceChildren(...shown.filter((panel: Panel<unknown>) => panel !== featured).map(drawn));
     restorePlace(panels, place);
@@ -496,15 +636,33 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (!player.playing) return;
     const p = head.advance(wall ? now - wall : 0, player.speed);
     wall = now;
-    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(shown).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); lastPanels = now; }
+    if (p !== player.p) { player.p = p; draw(); lastPanels = now; } else if (now - lastPanels > 90 && animatedPanels(shown).length > 0) { drawPanels(player.p > 0 ? lines[player.p - 1]!.t : 0, true); syncUrl(); lastPanels = now; }
     if (player.p >= last) { player.playing = false; playButton.textContent = 'play'; return; }
     frame = requestAnimationFrame(tick);
   };
   playButton.addEventListener('click', () => {
     player.playing = !player.playing;
     playButton.textContent = player.playing ? 'pause' : 'play';
-    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); }
+    if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); } else syncUrl();
   });
+  if (framed) {
+    post(embedMessage('ready', { stops: last, chapters: chapters.map((chapter) => ({ title: chapter.title, stop: chapter.p })) }));
+    if (steeredBy) {
+      window.addEventListener('message', (event) => {
+        if (!fromParent(event.origin, event.source === window.parent, steeredBy)) return;
+        const steer = steerOf(event.data, last);
+        if (steer?.type === 'seek') {
+          if ('stop' in steer) scrubTo(steer.stop);
+          else if ('commit' in steer) scrubTo(afterCommit(steer.commit, steer.gen));
+          else { player.p = head.seekTime(steer.t * 1000); draw(); }
+        } else if (steer?.type === 'focus') setFocus(steer.path ?? undefined);
+        else if (steer?.type === 'theme') {
+          if (steer.theme === 'auto') delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = steer.theme;
+        }
+      });
+    }
+  }
   draw();
   void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
   if (recording.manifest.baseline) {
@@ -512,15 +670,14 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
   }
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
-  const entries = window.AGENTRUN_GALLERY ?? [];
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
@@ -549,7 +706,8 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void) {
     onOpen(await fromFiles(files));
   });
   root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
-    el('h2', { text: 'Recordings' }), entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
+    el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
+      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 
 async function main() {
@@ -559,10 +717,17 @@ async function main() {
   try {
     const id = params.get('r');
     const src = params.get('src');
-    const entry = id ? (window.AGENTRUN_GALLERY ?? []).find((each) => each.id === id) : undefined;
-    if (entry) open(fromGallery(entry), new URL(`recordings/${entry.id}/`, location.href).href);
+    // The bundled recordings are read only when they are needed: a recording at a URL (`?src=`) opens without them, and
+    // a gallery whose index cannot be read still offers the folder picker.
+    let entries: (GalleryEntry | IndexEntry)[] = [];
+    let unread: string | undefined;
+    if (id || !src) {
+      try { entries = await bundledRecordings(); } catch (error) { unread = error instanceof Error ? error.message : String(error); }
+    }
+    const entry = id ? entries.find((each) => each.id === id) : undefined;
+    if (entry) { const { recording, dir } = await openBundled(entry); open(recording, dir); }
     else if (src) open(await fromUrl(src), new URL(src.endsWith('/') ? src : `${src}/`, location.href).href);
-    else gallery(root, open);
+    else gallery(root, open, entries, unread);
   } catch (error) {
     root.replaceChildren(el('p', { class: 'problems', text: `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}` }));
   }

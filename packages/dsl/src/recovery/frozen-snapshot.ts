@@ -3,12 +3,75 @@
 // the path grammar, maps nodes onto these records and owns the store's lifecycle.
 import { createHash } from "node:crypto";
 import { RecoveryError } from "./errors.js";
+import { itemState as rebuildItemState, partialResults as readPartialResults, type PartialSlot, type Sha256, type StateDelta } from "./item-state.js";
 
 const failure = (code: string, message: string) => new RecoveryError(message, code);
 
 export const FROZEN_SNAPSHOT_SCHEMA = "agentrun.frozen_run.v3";
+/** The keyed layout: what lies in a map item is kept in that item's record beside the state, and a state the driver
+ *  references is kept once by its digest, so no record rewritten at a commit grows with a map's items. */
+export const FROZEN_SNAPSHOT_SCHEMA_V4 = "agentrun.frozen_run.v4";
 
 type State = Record<string, unknown>;
+
+export { stateDelta, applyStateDelta, canonicalJson, type StateDelta, type Sha256, type PartialSlot } from "./item-state.js";
+
+/** A map the run started: how many items it has, how many item records were written (always the first ones: items
+ *  start in order, and an item has a record from its start), and the digest of its base. */
+export type MapEntry = { length: number; items: number; base: string };
+
+/** One map item's share of the driver's state (`agentrun.items`), keyed by the item's path. Every path in it lies in
+ *  this item and in no item nested in it. */
+export type ItemRecord = {
+  driver: string;
+  map: string;
+  index: number;
+  base: string;
+  /** The journal revision of the commit that wrote this value. */
+  revision: number;
+  status: "running" | "committed" | "failed";
+  frame: {
+    done: string[];
+    states: Record<string, StateDelta>;
+    chains: PathFrame["chains"];
+    loops: PathFrame["loops"];
+    routes: PathFrame["routes"];
+    inputs: PathFrame["inputs"];
+    steps: PathFrame["steps"];
+  };
+  effects: string[];
+  clocks: Record<string, number>;
+  files: Record<string, string>;
+  unknownResponses: Record<string, unknown>;
+  /** Maps started inside this item. */
+  maps: Record<string, MapEntry>;
+};
+
+/** The driver's own record in the keyed layout: the v3 snapshot without what lies in map items, its frame's states by
+ *  digest, and the maps the run started. */
+export type FrozenSnapshotV4 = Omit<FrozenSnapshot, "schema" | "pin"> & {
+  schema: typeof FROZEN_SNAPSHOT_SCHEMA_V4;
+  pin: Omit<PathFrame, "states" | "partial"> & { states: Record<string, string>; partial?: { path: string; as: string; results: string } };
+  maps: Record<string, MapEntry>;
+};
+
+/** Two values a state holds under one key are the same value. A key an item copied from its base holds the base's own
+ *  object, or one with the same JSON. */
+/** A map item's state at `path`, rebuilt as the driver rebuilds it (`./item-state.ts`, which imports nothing): the
+ *  `agentrun.states` value its `base` names, with the item's `set` and `unset` for that path applied, checked against
+ *  that path's `sha256`. `item` is an `agentrun.items` value; `states` holds `agentrun.states` values by SHA-256. When
+ *  the base is missing, or a digest differs, it says why and never guesses. `sha256` defaults to Node's. */
+export function itemState(item: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, path: string, options: { sha256?: Sha256 } = {}): { state: State } | { unreadable: string } {
+  return rebuildItemState(item, states, path, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
+}
+
+/** A failed map's finished results from the driver state's `pin.partial` (`./item-state.ts`, which imports nothing): in
+ *  the keyed layout, the list of slots and each result read by digest and checked; a whole-state run's list as it is.
+ *  Each slot is null (the item never finished), `{ result }`, or `{ unreadable }`, never a guess. `sha256` defaults to
+ *  Node's. */
+export function partialResults(partial: unknown, states: Readonly<Record<string, unknown>> | ReadonlyMap<string, unknown>, options: { sha256?: Sha256 } = {}): { slots: PartialSlot[] } | { unreadable: string } {
+  return readPartialResults(partial, states, { sha256: options.sha256 ?? ((text) => createHash("sha256").update(text).digest("hex")) });
+}
 
 /** What a question's receipts need beyond its answer: the request's producer invocation, its size and its
  *  latency. */
