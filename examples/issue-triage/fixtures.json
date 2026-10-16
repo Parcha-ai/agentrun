@@ -206,7 +206,7 @@
     {
       "number": 115,
       "title": "req.query parser option 'simple' drops repeated keys",
-      "body": "With 'query parser': 'simple', ?a=1&a=2 gives a: '2'. The extended parser gives an array. The docs do not say the simple one keeps the last.",
+      "body": "With 'query parser': 'simple' (lib/query.js), ?a=1&a=2 gives a: '2'. The extended parser gives an array. The docs do not say the simple one keeps the last.",
       "labels": [
         "bug"
       ],
@@ -231,7 +231,7 @@
     },
     {
       "number": 117,
-      "title": "Need more details on random 500s?",
+      "title": "Some requests return a 500 in production",
       "body": "Some requests give a 500 in production, never locally. Node version unknown, no logs.",
       "labels": [
         "awaiting more info"
@@ -265,7 +265,7 @@
     {
       "number": 119,
       "title": "Document the order of res.format handlers",
-      "body": "res.format picks the first match in object key order. The reference should say so, with an example where order matters.",
+      "body": "res.format (docs/api/response.md) picks the first match in object key order. The reference should say so, with an example where order matters.",
       "labels": [
         "docs"
       ],
@@ -331,7 +331,7 @@
       "good_first_issue": false
     },
     "107": {
-      "label": "needs-info",
+      "label": "bug",
       "good_first_issue": false
     },
     "108": {
@@ -339,7 +339,7 @@
       "good_first_issue": true
     },
     "109": {
-      "label": "feature",
+      "label": "bug",
       "good_first_issue": false
     },
     "110": {
@@ -351,7 +351,7 @@
       "good_first_issue": false
     },
     "112": {
-      "label": "bug",
+      "label": "feature",
       "good_first_issue": false
     },
     "113": {
