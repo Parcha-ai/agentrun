@@ -125,6 +125,8 @@ Company registries match the legal name without Inc or LLC; search both forms.
 
 `status` is `active`, `superseded`, `archived` (the least used, past the section's cap) or `retired` (taken out on
 purpose). A superseded learning also has `supersededBy: <id>` after `supersedes`, naming the one that replaced it.
+`provenance.sha` is the commit the first run was seeded from, from its inbox's `seed`; when the inbox names none (or
+one main never held), it is the main commit the run's branch starts from, and `  shaFrom: branch-base` says so.
 `renderLearning` writes exactly this and `parseLearning` reads nothing looser: an unknown, missing or repeated key, or a
 value out of shape, is a `LearnError` with code `format`. `learningId(runId, text)` is `L-` and 12 hex digits of SHA-256
 over the run id and the text, so curating the same candidate twice cannot make two learnings.
