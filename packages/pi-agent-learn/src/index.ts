@@ -9,14 +9,14 @@ export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type S
 export { readSeed, SeedDoc, type Seeded, seedLearning, type SeedOptions, type Skipped } from "./seed.js";
 export { CandidatesDoc, collectCandidates, LEARN_PARAMETERS, learnTool, type LearnToolOptions } from "./tool.js";
 export {
-  type Candidate, ENTRY_TYPES, type EntryType, type Guard, type GuardInput, LEARN_TYPES, type LearnType, type Refusal, type RefusalReason,
-  type Role,
+  type AdmitWorkflow, type AdmitWorkflowInput, type AdmitWorkflowResult, type Candidate, ENTRY_TYPES, type EntryType, type Guard, type GuardInput,
+  LEARN_TYPES, type LearnType, type Refusal, type RefusalReason, type RepoRead, type Role, type SettleUses, type SettleUsesInput, type SettleUsesResult,
+  type WorkflowCandidate, type WorkflowUse,
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
 export { type Inbox, InboxFormatError, parseInbox, renderInbox } from "./inbox.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";
 export {
-  type AdmitWorkflow, type AdmitWorkflowInput, type AdmitWorkflowResult, curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions,
-  type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge, type Question, QUESTIONS, type RunReport, type Thresholds,
-  type WorkflowCandidate,
+  curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge,
+  type Question, QUESTIONS, type RunReport, type Thresholds,
 } from "./curate.js";

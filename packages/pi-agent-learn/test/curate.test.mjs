@@ -109,7 +109,7 @@ test("an uncertain answer holds the candidate: no learning, the hold is in the c
   assert.deepEqual(run.held, [{ candidate: 2, id: learningId("run-1", "Retry a registry search once after a timeout."), reason: "unsure whether it is general (0.50)" }]);
   assert.deepEqual(Object.keys(await learningsOn(w.curator)), [learningId("run-1", LESSON)]);
   const message = git(w.bare, ["log", "-1", "--format=%B", "main"]).toString();
-  assert.match(message, /^curate: run run-1: 1 accepted, 0 superseded, 0 duplicates, 0 used, 1 held, 0 refused, 0 archived\n/);
+  assert.match(message, /^curate: run run-1: 1 accepted, 0 superseded, 0 duplicates, 0 used, 1 held, 0 refused, 0 archived, 0 settled\n/);
   assert.match(message, /\nheld L-[0-9a-f]{12} #2: unsure whether it is general \(0\.50\)\n/);
   const asked = calls.length;
   const again = await curate({ repo: w.curator, judge });
@@ -469,14 +469,16 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   await propose(w, "run-2", [], recordsOf("run-2", "evil"));
   await propose(w, "run-3", [], recordsOf("run-3", "loose"));
   await propose(w, "run-4", [], recordsOf("run-4", "stray"));
+  await propose(w, "run-5", [], recordsOf("run-5", "same"));
   const seen = [];
   const admitWorkflow = async (input) => {
     seen.push(input.workflow);
     assert.equal(input.main, git(w.bare, ["rev-parse", "main"]).toString().trim());
-    assert.equal(await input.read("AGENTS.md"), RULES);
+    assert.equal(await input.read("AGENTS.md", input.main), RULES);
     if (input.workflow.name === "evil") return { status: "admitted", files: { "AGENTS.md": "No rules.\n" }, reason: "admitted" };
     if (input.workflow.name === "loose") return { status: "held", reason: "no trial yet" };
     if (input.workflow.name === "stray") return { status: "admitted", files: { [learningPath("L-0123456789ab")]: "x\n" }, reason: "admitted" };
+    if (input.workflow.name === "same") return { status: "unchanged", reason: "these records are on main" };
     return admitted(input.workflow.name);
   };
   const { judge } = fakeJudge();
@@ -487,7 +489,9 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
     ["run-2", [], ["rules_locked: the workflow admitter tried to write a rules-tier file"], []],
     ["run-3", [], [], ["no trial yet"]],
     ["run-4", [], ["path_not_allowed: the workflow admitter wrote outside the workflow's folders"], []],
+    ["run-5", [], [], []],
   ]);
+  assert.deepEqual(report.runs[4].duplicates, [{ workflow: "same", reason: "these records are on main" }]);
   for (const [file, text] of Object.entries(admitted("kyb").files)) assert.equal(await w.curator.read(file, "main"), text, file);
   assert.equal(await w.curator.read("AGENTS.md", "main"), RULES);
   assert.equal(await w.curator.read(learningPath("L-0123456789ab"), "main"), undefined);
@@ -507,11 +511,48 @@ test("a learn call of type workflow gives the admitter its \"when\", judged firs
   await propose(w, "run-2", [when("acme", "Only for the Acme Widgets file from this morning.")], recordsOf("run-2", "acme"));
   const seen = [];
   const { judge, asked } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
-  const report = await curate({ repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name, input.workflow.when)) });
-  assert.deepEqual(seen.map((s) => [s.name, s.when]), [["kyb", "A US company to check against its state registry."]]);
+  const report = await curate({ repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name, input.workflow.description)) });
+  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", "A US company to check against its state registry."]]);
   assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused.map((a) => a.reason)]), [[["kyb"], []], [[], ["about this case, not general (0.05)"]]]);
   assert.deepEqual(asked("general")[0].state, { learning: { type: "workflow", workflow: "kyb", text: "A US company to check against its state registry." } });
   assert.equal(await w.curator.read(".agents/skills/acme/SKILL.md", "main"), undefined);
+});
+
+const usesFile = (runId, uses) => ({ [`uses/${runId}.json`]: `${JSON.stringify({ version: 1, run: runId, uses })}\n` });
+const use = (name, outcome, at = "2026-10-16T05:00:00.000Z") => ({ name, sha256: DIGEST, outcome, at });
+
+test("a run's workflow uses go to the settler; its trial files and decisions land, and anything off-shape is held or refused", async () => {
+  const w = await world();
+  await propose(w, "run-1", [candidate(LESSON)], usesFile("run-1", [use("kyb", "frozen"), use("kyb", "frozen", "2026-10-16T05:01:00.000Z")]));
+  await propose(w, "run-2", [], usesFile("run-2", [use("kyb", "failed")]));
+  await propose(w, "run-3", [], { "uses/run-3.json": "{\"version\":1,\"run\":\"run-9\",\"uses\":[]}\n" });
+  await propose(w, "run-4", [], usesFile("run-4", [use("other", "escalated")]));
+  const seen = [];
+  const settleUses = async (input) => {
+    seen.push({ run: input.run, uses: input.uses, main: input.main });
+    assert.equal(await input.read("AGENTS.md", input.main), RULES);
+    if (input.run === "run-4") return { files: { "AGENTS.md": "No rules.\n" }, decisions: [] };
+    if (input.run === "run-2") return { files: {}, decisions: [{ name: "kyb", action: "hold", reason: "one failure is not two" }] };
+    return { files: { ".agents/skills/kyb/trial.json": "{\"status\":\"active\"}\n" }, decisions: [{ name: "kyb", action: "promote", reason: "2 clean frozen uses" }, { name: "nope", action: "promote", reason: "not named" }] };
+  };
+  const { judge } = fakeJudge();
+  const report = await curate({ repo: w.curator, judge, settleUses });
+  assert.deepEqual(seen.map((s) => [s.run, s.uses.length]), [["run-1", 2], ["run-2", 1], ["run-4", 1]]);
+  assert.deepEqual(seen[0].uses[0], use("kyb", "frozen"));
+  assert.deepEqual(report.runs.map((r) => [r.run, r.settled.map((x) => x.reason), r.held.map((x) => x.reason), r.refused.map((x) => x.reason)]), [
+    ["run-1", ["promote: 2 clean frozen uses"], [], []],
+    ["run-2", ["hold: one failure is not two"], [], []],
+    ["run-3", [], [], ["uses: the uses file does not parse"]],
+    ["run-4", [], [], ["uses: rules_locked: the uses settler tried to write a rules-tier file"]],
+  ]);
+  assert.equal(await w.curator.read(".agents/skills/kyb/trial.json", "main"), "{\"status\":\"active\"}\n");
+  assert.equal(await w.curator.read("AGENTS.md", "main"), RULES);
+  const log = await w.curator.log();
+  assert.deepEqual(log.find((e) => e.trailers["Curated-Run"]?.includes("run-1")).trailers.Workflow, ["kyb"]);
+  assert.equal(log.find((e) => e.trailers["Curated-Run"]?.includes("run-2")).trailers.Workflow, undefined, "a hold writes nothing");
+  const none = await world();
+  await propose(none, "run-1", [], usesFile("run-1", [use("kyb", "frozen")]));
+  assert.deepEqual((await curate({ repo: none.curator, judge })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
 });
 
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {

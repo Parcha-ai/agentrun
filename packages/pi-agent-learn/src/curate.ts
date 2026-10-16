@@ -1,14 +1,14 @@
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
-import { GitRemoteError, modeRefusal, type Repo, type TreeEntry } from "@parcha/pi-git-remote";
+import { GitRemoteError, modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { createHash } from "node:crypto";
 import { type Learning, learningId, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { guard } from "./guard.js";
 import { InboxFormatError, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, WORKFLOW_NAME } from "./layout.js";
+import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { Candidate, Refusal } from "./types.js";
+import type { AdmitWorkflow, Candidate, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -59,36 +59,6 @@ export type CurateCaps = {
 
 export const CURATE_CAPS: Readonly<CurateCaps> = Object.freeze({ index: CAPS.section, questionsPerRun: 128, retries: 5 });
 
-/** A saved workflow a run proposed: its DSL records, and what its `learn` call of type `workflow` said about when to use it. */
-export type WorkflowCandidate = {
-  readonly run: string;
-  readonly name: string;
-  /** The "when": undefined when the run saved the workflow without a `learn` call of type `workflow`. */
-  readonly when?: string;
-  /** `<sha256>.json` and `latest` as the run's branch holds them under `inbox/<run id>/workflows/<name>/`, byte-for-byte;
-   *  empty when the run only described a workflow already on main. */
-  readonly records: Readonly<Record<string, string>>;
-  readonly untrusted: boolean;
-};
-
-export type AdmitWorkflowInput = {
-  readonly workflow: WorkflowCandidate;
-  /** The main commit this curation builds on; `read` and `list` read it. */
-  readonly main: string;
-  readonly read: (path: string) => Promise<string | undefined>;
-  readonly list: (prefix: string) => Promise<readonly TreeEntry[]>;
-};
-
-/** `files` are what curation commits for the workflow: only `.pi/agentrun/workflows/<name>/` records and
- *  `.agents/skills/<name>/SKILL.md` and `trial.json`, each guarded as the curator. `reason` goes into the report and
- *  the commit message, so it names no value from the case. */
-export type AdmitWorkflowResult =
-  | { readonly status: "admitted"; readonly files: Readonly<Record<string, string | null>>; readonly reason: string }
-  | { readonly status: "held" | "refused"; readonly reason: string };
-
-/** The workflows lane's step: takes a proposed workflow through the DSL's store and returns the files that admit it. */
-export type AdmitWorkflow = (input: AdmitWorkflowInput) => Promise<AdmitWorkflowResult>;
-
 export type CurateOptions = {
   readonly repo: CurateRepo;
   readonly judge: Judge;
@@ -99,7 +69,11 @@ export type CurateOptions = {
   readonly now?: Date;
   /** Plaintext values the host holds as secrets now, for the guard. */
   readonly secrets?: Iterable<string>;
+  /** Takes a proposed workflow through the DSL's store; without it, every proposed workflow is held. */
   readonly admitWorkflow?: AdmitWorkflow;
+  /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Without it, the
+   *  uses are held. */
+  readonly settleUses?: SettleUses;
   readonly signal?: AbortSignal;
 };
 
@@ -125,6 +99,8 @@ export type RunReport = {
   readonly held: readonly CurateItem[];
   readonly refused: readonly CurateItem[];
   readonly archived: readonly CurateItem[];
+  /** What the workflows lane decided for each workflow the run's uses name. */
+  readonly settled: readonly CurateItem[];
   /** Questions put to the judge for this run. */
   readonly questions: number;
 };
@@ -197,6 +173,7 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (!options || typeof options !== "object" || !options.repo || typeof options.judge !== "function") throw new LearnError("invalid", "curate needs { repo, judge }");
   if (options.rules !== undefined && typeof options.rules !== "string") throw new LearnError("invalid", "rules is the text of AGENTS.md");
   if (options.admitWorkflow !== undefined && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
+  if (options.settleUses !== undefined && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
   const thresholds = checkThresholds(options.thresholds);
   const caps = checkCaps(options.caps);
   const secrets = [...(options.secrets ?? [])];
@@ -294,7 +271,7 @@ type Plan = {
   readonly report: Omit<RunReport, "commit">;
 };
 
-type Lists = { [K in "accepted" | "superseded" | "duplicates" | "used" | "held" | "refused" | "archived"]: CurateItem[] };
+type Lists = { [K in "accepted" | "superseded" | "duplicates" | "used" | "held" | "refused" | "archived" | "settled"]: CurateItem[] };
 
 // Reason codes only: a refused path's name can itself carry what was refused.
 const refusalReason = (refusals: readonly Refusal[]) => [...new Set(refusals.map((r) => r.reason))].join(", ");
@@ -303,7 +280,7 @@ const refusalReason = (refusals: readonly Refusal[]) => [...new Set(refusals.map
 async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const { options, runId, tip, main } = input;
   const { repo } = options;
-  const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [] };
+  const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
   const budget = { left: input.caps.questionsPerRun, asked: 0 };
 
   const mainHistory = new Set((await repo.log({ ref: main })).map((c) => c.sha));
@@ -360,7 +337,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const fresh = new Set<string>();
   const usedOnce = new Set<string>();
   const rules = options.rules ?? (await repo.read(LAYOUT.rules, main)) ?? "";
-  const workflows = new Map<string, { when?: string; candidate?: number; verdict?: "held" | "refused"; reason?: string; untrusted: boolean }>();
+  const workflows = new Map<string, { description?: string; candidate?: number; verdict?: "held" | "refused"; reason?: string; untrusted: boolean }>();
 
   const ask = async (q: Question, state: Record<string, unknown>): Promise<Asked> => {
     const key = sha256(JSON.stringify([q, state]));
@@ -437,7 +414,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         continue;
       }
       const verdict = await atomic({ type: "workflow", workflow: name, text: candidate.text }, candidate.untrusted === true);
-      workflows.set(name, { when: candidate.text, candidate: at, untrusted: candidate.untrusted === true, ...(verdict ? { verdict: verdict.status, reason: verdict.reason } : {}) });
+      workflows.set(name, { description: candidate.text, candidate: at, untrusted: candidate.untrusted === true, ...(verdict ? { verdict: verdict.status, reason: verdict.reason } : {}) });
       continue;
     }
     if (!(ENTRY_TYPES_COMPARED as readonly string[]).includes(type)) {
@@ -527,7 +504,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // Workflows: the run's records under inbox/<run id>/workflows/<name>/, with the "when" its learn call gave, if any.
+  // Workflows: the run's records under inbox/<run id>/workflows/<name>/, with the description its learn call gave.
   const prefix = `${LAYOUT.inbox}/${runId}/workflows/`;
   const records = new Map<string, Record<string, string>>();
   for (const [path, text] of Object.entries(runFiles)) {
@@ -536,8 +513,9 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD.test(file)) continue;
     (records.get(name) ?? records.set(name, {}).get(name)!)[file] = text;
   }
+  const reader: RepoRead = { main, read: (path, sha) => repo.read(path, sha), list: (p, sha) => repo.list(p, sha) };
   const workflowFiles: Record<string, string | null> = {};
-  const admitted: string[] = [];
+  const workflowNames = new Set<string>();
   for (const name of [...new Set([...records.keys(), ...workflows.keys()])].sort()) {
     const noted = workflows.get(name);
     const item = { ...(noted?.candidate === undefined ? {} : { candidate: noted.candidate }), workflow: name };
@@ -549,35 +527,61 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
       lists.held.push({ ...item, reason: "no workflow admitter is installed" });
       continue;
     }
-    const workflow: WorkflowCandidate = { run: runId, name, ...(noted?.when === undefined ? {} : { when: noted.when }), records: records.get(name) ?? {}, untrusted: noted?.untrusted ?? candidates.some((c) => c.untrusted === true) };
-    const result = await options.admitWorkflow({ workflow, main, read: (path) => repo.read(path, main), list: (p) => repo.list(p, main) });
+    const workflow: WorkflowCandidate = {
+      run: runId, name, ...(noted?.description === undefined ? {} : { description: noted.description }), records: records.get(name) ?? {},
+      untrusted: noted?.untrusted ?? candidates.some((c) => c.untrusted === true),
+    };
+    const result = await options.admitWorkflow({ ...reader, workflow });
     const reason = safeReason(result?.reason, input.secrets);
     if (result?.status === "held" || result?.status === "refused") {
       lists[result.status].push({ ...item, reason });
+      continue;
+    }
+    if (result?.status === "unchanged") {
+      lists.duplicates.push({ ...item, reason });
       continue;
     }
     if (result?.status !== "admitted" || !result.files || typeof result.files !== "object") {
       lists.held.push({ ...item, reason: "the workflow admitter answered out of shape" });
       continue;
     }
-    const paths = Object.keys(result.files);
-    if (paths.some(isRulesLocked)) {
-      lists.refused.push({ ...item, reason: "rules_locked: the workflow admitter tried to write a rules-tier file" });
-      continue;
-    }
-    const own = [`${LAYOUT.workflows}/${name}/`, `${LAYOUT.skills}/${name}/`];
-    if (paths.some((p) => !own.some((dir) => p.startsWith(dir)))) {
-      lists.refused.push({ ...item, reason: "path_not_allowed: the workflow admitter wrote outside the workflow's folders" });
-      continue;
-    }
-    const refusals = guard({ role: "curate", files: result.files, secrets: input.secrets });
-    if (refusals.length) {
-      lists.refused.push({ ...item, reason: `the workflow's files are refused: ${refusalReason(refusals)}` });
+    const refusal = workflowFilesRefusal(result.files, [name], input.secrets, "the workflow admitter");
+    if (refusal) {
+      lists.refused.push({ ...item, reason: refusal });
       continue;
     }
     Object.assign(workflowFiles, result.files);
-    admitted.push(name);
+    workflowNames.add(name);
     lists.accepted.push({ ...item, reason });
+  }
+
+  // The run's workflow uses, settled into their trials by the workflows lane.
+  const usesText = runFiles[usesPath(runId)];
+  if (typeof usesText === "string") {
+    const uses = parseUses(usesText, runId);
+    if (uses === undefined) lists.refused.push({ reason: "uses: the uses file does not parse" });
+    else if (uses.length && !options.settleUses) lists.held.push({ reason: "uses: no uses settler is installed" });
+    else if (uses.length && options.settleUses) {
+      const names = [...new Set(uses.map((u) => u.name))].sort();
+      const result = await options.settleUses({ ...reader, run: runId, uses });
+      const files = result?.files;
+      const decisions = Array.isArray(result?.decisions) ? result.decisions : undefined;
+      const held = !files || typeof files !== "object" || !decisions
+        ? "the uses settler answered out of shape"
+        : Object.keys(files).some((p) => p in workflowFiles) ? "they touch a workflow this run also admitted, so they were not settled" : undefined;
+      const refusal = held ? undefined : workflowFilesRefusal(files!, names, input.secrets, "the uses settler");
+      if (held) lists.held.push({ reason: `uses: ${held}` });
+      else if (refusal) lists.refused.push({ reason: `uses: ${refusal}` });
+      else {
+        Object.assign(workflowFiles, files);
+        for (const d of decisions!) {
+          if (!d || typeof d.name !== "string" || !names.includes(d.name) || !["promote", "demote", "hold"].includes(d.action)) continue;
+          const back = typeof d.rollbackTo === "string" && /^[0-9a-f]{64}$/.test(d.rollbackTo) ? `, back to ${d.rollbackTo.slice(0, 12)}` : "";
+          lists.settled.push({ workflow: d.name, reason: `${d.action}${back}: ${safeReason(d.reason, input.secrets)}` });
+          if (Object.keys(files!).length) workflowNames.add(d.name);
+        }
+      }
+    }
   }
 
   // The derived index stays under its cap: archive the least-used active learnings, this run's own last.
@@ -605,7 +609,43 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     lists.refused.push(...all.map((item) => ({ ...item, reason })), ...(all.length ? [] : [{ reason }]));
     return finish(input, lists, {}, [], [], budget.asked);
   }
-  return finish(input, lists, files, [...touched].sort(), admitted, budget.asked);
+  return finish(input, lists, files, [...touched].sort(), [...workflowNames].sort(), budget.asked);
+}
+
+/** Why files from the workflows lane may not be written: a rules-tier path, a path outside the named workflows' folders,
+ *  or a guard hit. Undefined when they may. */
+function workflowFilesRefusal(files: Readonly<Record<string, string | null>>, names: readonly string[], secrets: readonly string[], who: string): string | undefined {
+  const paths = Object.keys(files);
+  if (paths.some(isRulesLocked)) return `rules_locked: ${who} tried to write a rules-tier file`;
+  const own = names.flatMap((name) => [`${LAYOUT.workflows}/${name}/`, `${LAYOUT.skills}/${name}/`]);
+  if (paths.some((p) => !own.some((dir) => p.startsWith(dir)))) return `path_not_allowed: ${who} wrote outside the workflow's folders`;
+  const refusals = guard({ role: "curate", files, secrets });
+  return refusals.length ? `the workflow's files are refused: ${refusalReason(refusals)}` : undefined;
+}
+
+const OUTCOMES: readonly string[] = ["frozen", "escalated", "failed"];
+const MAX_USES = 256;
+
+/** `uses/<run id>.json`: `{ version: 1, run, uses: [{ name, sha256, outcome, at }] }`, nothing looser; undefined when it is not. */
+function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const file = parsed as { version?: unknown; run?: unknown; uses?: unknown } | null;
+  if (!file || typeof file !== "object" || Array.isArray(file) || Object.keys(file).some((k) => !["version", "run", "uses"].includes(k))) return undefined;
+  if (file.version !== 1 || file.run !== runId || !Array.isArray(file.uses) || file.uses.length > MAX_USES) return undefined;
+  const out: WorkflowUse[] = [];
+  for (const raw of file.uses as unknown[]) {
+    const u = raw as Record<string, unknown> | null;
+    if (!u || typeof u !== "object" || Object.keys(u).some((k) => !["name", "sha256", "outcome", "at"].includes(k))) return undefined;
+    if (typeof u.name !== "string" || !WORKFLOW_NAME.test(u.name) || typeof u.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(u.sha256)) return undefined;
+    if (typeof u.outcome !== "string" || !OUTCOMES.includes(u.outcome) || typeof u.at !== "string" || Number.isNaN(Date.parse(u.at)) || new Date(u.at).toISOString() !== u.at) return undefined;
+    out.push({ name: u.name, sha256: u.sha256, outcome: u.outcome as WorkflowUse["outcome"], at: u.at });
+  }
+  return out;
 }
 
 /** A reason from outside this package, kept only when it holds nothing the guard would refuse. */
@@ -618,7 +658,7 @@ function safeReason(reason: unknown, secrets: readonly string[]): string {
 
 function finish(input: PlanInput, lists: Lists, files: Record<string, string | null>, ids: readonly string[], workflows: readonly string[], questions: number): Plan {
   const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-  const subject = `curate: run ${input.runId}: ${lists.accepted.length} accepted, ${lists.superseded.length} superseded, ${count(lists.duplicates.length, "duplicate")}, ${lists.used.length} used, ${lists.held.length} held, ${lists.refused.length} refused, ${lists.archived.length} archived`;
+  const subject = `curate: run ${input.runId}: ${lists.accepted.length} accepted, ${lists.superseded.length} superseded, ${count(lists.duplicates.length, "duplicate")}, ${lists.used.length} used, ${lists.held.length} held, ${lists.refused.length} refused, ${lists.archived.length} archived, ${lists.settled.length} settled`;
   const lines: string[] = [];
   for (const [kind, items] of Object.entries(lists) as [keyof Lists, CurateItem[]][]) {
     for (const item of items) {

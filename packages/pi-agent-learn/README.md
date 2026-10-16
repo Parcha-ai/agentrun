@@ -233,7 +233,7 @@ read, and the candidates as one JSON line in the last fenced block, which is all
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
-const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow });
+const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow, settleUses });
 ```
 
 `curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
@@ -259,9 +259,14 @@ probability, over the candidate's own text, never a paraphrase (`QUESTIONS` hold
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the "when" of a `learn` call of type
-`workflow`) goes to the `admitWorkflow` hook, which returns the files to write under `.pi/agentrun/workflows/<name>/` and
-`.agents/skills/<name>/`; curation guards them and refuses any other path. Without the hook a workflow is held. When the
+judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the `description`, the agent's
+when-to-use text from a `learn` call of type `workflow`) goes to the `admitWorkflow` hook, which answers `admitted`
+with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
+`refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
+and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
+either hook returns, refuses a rules-tier path or any path outside the named workflows' folders, and holds a workflow
+or the uses when its hook is not installed. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
+this package's types; the workflows lane implements them. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each.
 
@@ -269,7 +274,7 @@ run's new ones last, and the report names each.
 remaining candidates are held) and the retries (`retries`, 5): a push that a moved main rejects is rebuilt from the new
 main, judged answers reused, and after the last retry curation stops with `contended`. A judge that fails or answers out
 of shape stops it with `judge` before that run is written. The report lists, per run, `accepted`, `superseded`,
-`duplicates`, `used`, `held`, `refused` and `archived`, each item with the candidate's position, the learning id and a
+`duplicates`, `used`, `held`, `refused`, `archived` and `settled`, each item with the candidate's position, the learning id and a
 reason that names no value from the case. A `git revert` of a curate commit on main undoes that run's learnings, and the
 next curate does not bring them back: the run is still named in main's history.
 
