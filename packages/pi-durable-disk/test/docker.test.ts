@@ -285,6 +285,48 @@ test("status: running, paused (a frozen host) is running, exit 0 stopped, any ot
   assert.equal(containerStatus({ Status: "something-new" }), "unknown");
 });
 
+test("a start's own environment goes into the container over the driver's; one that sets PATH or PDA_HOLDER, or a bad name, is refused", async () => {
+  const fake = fakeDaemon();
+  try {
+    const driver = host(fake, { env: { A: "1", PLAN: "driver's", PATH: "/opt/driver/bin:/usr/bin" } });
+    const h = await driver.start(ref, TOKEN, { attempt: 4, env: { PLAN: "p4" } });
+    const env = fake.byName(String(h.name))!.env;
+    assert.deepEqual(env.filter((e) => /^(A|PLAN|PDA_HOLDER)=/.test(e)), ["A=1", "PLAN=p4", `PDA_HOLDER=${JSON.stringify({ driver: h.driver, fleet: h.fleet, daemon: h.daemon, name: h.name, mountpoint: h.mountpoint, image: h.image })}`]);
+    await driver.stop(h);
+    assert.ok(env.includes("PATH=/opt/driver/bin:/usr/bin"), "the driver's PATH");
+    for (const bad of [{ "1BAD": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+      await assert.rejects(driver.start(ref, TOKEN, { attempt: 5, env: bad }), (e: unknown) => e instanceof DockerHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
+    }
+  } finally {
+    fake.remove();
+  }
+});
+
+test("kill: docker kill alone (SIGKILL, no drain, not removed: the next start removes it); another fleet's handle and a gone container are no-ops; a box kill", async () => {
+  const fake = fakeDaemon();
+  try {
+    const driver = host(fake);
+    assert.equal(driver.kills, "box");
+    const h = await driver.start(ref, TOKEN, { attempt: 1 });
+    const before = fake.calls().length;
+    await driver.kill(h);
+    const verbs = fake.calls().slice(before).map((c) => c.argv[0]);
+    assert.ok(verbs.includes("kill"), verbs.join(" "));
+    assert.ok(!verbs.includes("stop") && !verbs.includes("rm"), `no drain and no removal: ${verbs.join(" ")}`);
+    const killed = fake.byName(String(h.name))?.state;
+    assert.deepEqual([killed?.Status, killed?.ExitCode], ["exited", 137], "killed, and left there as a crash leaves it");
+    const p = await driver.start(ref, TOKEN, { attempt: 2 });
+    assert.equal(fake.byName(String(h.name)), undefined, "the next start removed the killed container");
+    const n = fake.calls().length;
+    await driver.kill({ ...p, fleet: "other" });
+    assert.ok(!fake.calls().slice(n).some((c) => c.argv[0] === "kill"), "another fleet's handle is not killed");
+    await driver.stop(p);
+    await driver.kill(p); // gone: a no-op
+  } finally {
+    fake.remove();
+  }
+});
+
 test("stop: docker stop -t (the drain), then docker rm -f; a gone container, another fleet's or a paused one are handled", async () => {
   const fake = fakeDaemon();
   try {
