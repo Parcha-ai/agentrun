@@ -3,20 +3,22 @@
 // backend, and evidence, status and the record are files under the run's directory. Every fake call, and each page
 // operation the browser makes, is counted in `<run>/ledger.jsonl`, which outlives a killed process.
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { AssistantMessage, Message } from '@earendil-works/pi-ai';
 import { createModels, type Models } from '@earendil-works/pi-ai/models';
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
-import type { ConversationId, Extension, ModelRef } from '@earendil-works/pi-durable';
+import type { ConversationId, Extension, Harness, ModelRef } from '@earendil-works/pi-durable';
 import type { WorkflowDeps, WorkflowEvent } from '@parcha/agentrun-dsl';
 import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
-import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
+import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
+import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { ChildEnv } from '@parcha/pi-vision/node';
+import type { BoxProvider } from '@parcha/pi-transport';
 import type { Recorder } from './record.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
@@ -72,16 +74,23 @@ export type Host = {
   credentials: { redact?: () => readonly string[]; childEnv?: ChildEnv };
 };
 
+/** What a scripted tool is handed beside its arguments: the box provider of the demo's `boxes` (crossings and transport box lines already in it), when it declares one. */
+export type ToolContext = { /** True on a live run: one set of tools reads the live thing, or replays a capture when this is false. */ live: boolean; boxes?: BoxProvider; /** The run's directory and its `work/`: a tool that reads the run's evidence files or the job's files reads them here. */ place?: { root: string; work: string } };
+
 /** What a job scripts for the no-key host. */
 export type Fakes = {
   /** The lead's next turn from the transcript so far, so a process that resumes a request answers it the same. */
   model(messages: readonly Message[]): AssistantMessage;
-  tools: Record<string, (args: Record<string, unknown>) => unknown>;
+  tools: Record<string, (args: Record<string, unknown>, context?: ToolContext) => unknown>;
   judge: RunJudge;
   /** Whether a page the browser read is content. Absent, the browser judges none. */
   page?: BrowserDecisions['classifyPage'];
   /** What the faux lead takes; default text and images. */
   lead?: { input: ('text' | 'image')[] };
+  /** Pi extensions a no-key run installs beside the host's own (a demo's scripted tools that are extensions, its vision lane). */
+  extensions?: readonly Extension[];
+  /** Vision options for a no-key run, built from the host and the running run (its harness is undefined until the run is open): the demo's own lane (an eyes object, limits, an evidence sink). */
+  vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>;
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
@@ -102,18 +111,20 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
   const answerOf = (effectId: string) => join(place.root, 'answers', `${createHash('sha256').update(effectId).digest('hex')}.json`);
   const eventsFile = join(place.root, 'events.jsonl');
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
-  for (const log of [ledgerFile, eventsFile]) appendFileSync(log, '');
+  // (A run under `pi-durable-disk run --app` builds its host before the run's directory exists: then the logs are made at their first row, and again when the run opens.)
+  const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
+  for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } }
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
-    appendFileSync(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
-  const status = quiet((event: StatusEvent) => { appendFileSync(eventsFile, json(event)); if (recorder) record(recorder, event); });
+    append(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
+  const status = quiet((event: StatusEvent) => { append(eventsFile, json(event)); if (recorder) record(recorder, event); });
 
   // The faux streams like a real model: a turn takes a moment, pi commits the start of every ask and a throttled partial of the answer, and
   // a kill mid-stream leaves both in the store. `tokensPerSecond: 0` answers at once.
@@ -147,7 +158,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     ...(recorder ? { record: recorder } : {}),
     models: { catalog, lead: { provider: faux.provider.id, modelId: faux.getModel().id } },
     tools: {
-      extensions: [],
+      // The demo's scripted extensions are for a no-key run: a live run exposes the live parts' tools and not these.
+      extensions: options.live ? [] : [...(fakes.extensions ?? [])],
       runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
         const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
@@ -158,7 +170,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
         const report = (outcome: 'applied' | 'failed') => call?.({ outcome, tool: node.tool, argsHash: effect.argsHash });
         let value: unknown;
         for (let send = 1; ; send += 1) {
-          try { value = await tool(input); break; } catch (error) {
+          try { value = await tool(input, { live: options.live === true, place: { root: place.root, work: place.work }, ...(options.boxes ? { boxes: options.boxes } : {}) }); break; } catch (error) {
             report('failed');
             if (send >= 2 || (error as { retryable?: boolean } | null | undefined)?.retryable !== true) throw error;
           }

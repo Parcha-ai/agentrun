@@ -14,8 +14,11 @@ import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
-import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
-import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
+import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
+import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
@@ -27,15 +30,18 @@ export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<R
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
 
-/** The run's id, and the key its workflow's task and journal are kept under. */
+/** The run's id when nothing names one, and the key its workflow's task and journal are kept under. A demo's run is keyed by the demo's name (the place's `paths.id`), so two demos never share a run. */
 export const RUN_KEY = 'reference';
+
+/** The paths of a place under `root`, computed: nothing is made. */
+export const pathsAt = (root: string, id: string = RUN_KEY): RunPlace => { const at = resolve(root); return { id, root: at, work: join(at, 'work'), store: join(at, 'store') }; };
 
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
-export async function placeAt(root?: string): Promise<RunPlace> {
+export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunPlace> {
   const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
   await mkdir(join(at, 'work'), { recursive: true });
-  return { id: RUN_KEY, root: at, work: join(at, 'work'), store: join(at, 'store') };
+  return { id, root: at, work: join(at, 'work'), store: join(at, 'store') };
 }
 
 /** A claim on a plain directory: nothing to mount, nothing to fence but this process's own mark. */
@@ -68,10 +74,36 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+
+/** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
+ *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
+export type Composed = {
+  registry: ReturnType<typeof createRegistry>;
+  models: Host['models']['catalog'];
+  beforeResume?: OpenDurableRunOptions['beforeResume'];
+  /** Reconciles the browser, starts the workflow's task (or reaches the one the open resumed), waits for it, delivers the record. */
+  drive(durable: Pick<DurableRun, 'harness' | 'generation'>): Promise<RunResult>;
+  /** Releases every browser session still open and closes the browser. The run itself is released by whoever opened it. */
+  cleanup(harness: Harness): Promise<void>;
+};
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
+  const composed = await compose(place, host, job, options);
+  const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
+    mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
+    harness: { registry: composed.registry, models: composed.models }, env: options.env ?? runEnv,
+    ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
+  });
+  try { return await composed.drive(durable); } finally {
+    await composed.cleanup(durable.harness);
+    await durable.release();
+  }
+}
+
+/** The run's pieces, before its store is open. */
+export async function compose(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<Composed> {
   // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
   // such a directory would start the run over, so it is refused before anything runs.
   const earlier = join(place.root, 'durable', 'run.sqlite');
@@ -82,7 +114,11 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   let opened: Harness | undefined;
   const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
 
+  // `use_website`: the sites' listing is read once, here, as the browser extension asks.
+  const sitePort = options.sites ? localSites(options.sites) : undefined;
+  const sites = sitePort ? { port: sitePort, listing: await sitePort.list(new AbortController().signal) } : undefined;
   const browser = createBrowserExtension({
+    ...(sites ? { sites } : {}),
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
@@ -148,42 +184,61 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
     await writeFile(`${at}.${process.pid}.partial`, bytes);
     await rename(`${at}.${process.pid}.partial`, at);
   }
-  const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
-    mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
-    harness: { registry, models: host.models.catalog }, env: options.env ?? runEnv,
-    // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
-    ...(host.record?.attach ? { beforeResume: async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } } : {}),
-  });
-  const harness = durable.harness;
-  opened = harness;
-  try {
-    await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
-    // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
-    // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
-    let task: Awaited<ReturnType<typeof flow.start>>;
-    try { task = await flow.start(harness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
-      const refusal = error as { code?: string; message?: string; moved?: unknown };
-      if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
-      return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
-    }
-    reconciled();
-    const outcome = await task.wait(ctx);
-    if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
-    return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
-  } finally {
-    // pi has no conversation-end event: every session still open is released here, before the close.
-    const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
-    for (const conversationId of new Set(open.map((row) => row.conversationId))) {
-      const conversation = await harness.conversation(conversationId as ConversationId, ctx);
-      if (conversation) await browser.release(conversation, 'close', ctx);
-    }
-    // pi-browser gap: release returns before its background task runs, and waitForIdle does not wait for background tasks.
-    for (const task of (await harness.inspect(ctx)).tasks) {
-      if (task.record.kind === `${browser.extension.name}.release`) await harness.waitForTask(task.record.id, ctx);
-    }
-    await browser.close();
-    await durable.release();
-  }
+  // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
+  const beforeResume: Composed['beforeResume'] | undefined = host.record?.attach ? async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } : undefined;
+  return {
+    registry, models: host.models.catalog, ...(beforeResume ? { beforeResume } : {}),
+    async drive(durable) {
+      const harness = durable.harness;
+      opened = harness;
+      await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+      // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
+      // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
+      let task: Awaited<ReturnType<typeof flow.start>>;
+      try { task = await flow.start(harness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
+        const refusal = error as { code?: string; message?: string; moved?: unknown };
+        if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+        return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
+      }
+      reconciled();
+      const outcome = await task.wait(ctx);
+      if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
+      return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
+    },
+    async cleanup(harness) {
+      // pi has no conversation-end event: every session still open is released here, before the close.
+      const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
+      for (const conversationId of new Set(open.map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(conversationId as ConversationId, ctx);
+        if (conversation) await browser.release(conversation, 'close', ctx);
+      }
+      // pi-browser gap: release returns before its background task runs, and waitForIdle does not wait for background tasks.
+      for (const task of (await harness.inspect(ctx)).tasks) {
+        if (task.record.kind === `${browser.extension.name}.release`) await harness.waitForTask(task.record.id, ctx);
+      }
+      await browser.close();
+    },
+  };
+}
+
+/** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
+ *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>): Promise<AppOptions> {
+  const composed = await compose(place, host, job, options);
+  return {
+    registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
+    async onOpen(durable) {
+      const result = await composed.drive(durable);
+      await composed.cleanup(durable.harness);
+      const storeFile = join(place.store, 'run.sqlite');
+      const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
+      await report({ result, storeSha256 });
+      // A box place has only run.json: the record and the store's hash are in the final status as well.
+      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', { status: result.status, ...(result.status === 'complete' ? { record: result.output as JsonValue } : {}), ...(storeSha256 ? { storeSha256 } : {}) } as JsonValue);
+      await durable.release();
+      process.exit(0);
+    },
+  };
 }
 
 /** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
