@@ -133,6 +133,31 @@ fields are the stored format.
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
 through the host, and no tool reads or returns a profile.
 
+## The timeline
+
+`@parcha/pi-durable-agent/timeline` turns a run into one human-readable timeline. It has no dependency and uses no Node
+built-in, so a page, a viewer and a harness can import the same code. A row has Grep's `TimelineEvent` fields
+(`kind`, `summary`, `tool_name`, `tool_use_id`, `tool_status`, the previews, `text`, with Grep's caps), plus optional
+`seq`, `conversation_id`, `round`, `parent_tool_use_id`, `session`, `path` and `usage`, and the kinds `user_message`, `waiting`
+and `usage`.
+
+```js
+import { groupTimeline, renderText, timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
+
+// A released run: the entries of its conversation, in log order.
+console.log(renderText(timelineOf(entries, { settled: true })));
+
+// A live run: the `snapshot` event, then each batch of `watchEvents` (what pi-durable-disk serves on GET /events).
+const reducer = timelineReducer();
+const { rows, drop } = reducer.apply(events); // upsert rows by id, delete the drop ids, sort by seq
+const groups = groupTimeline(reducer.rows()); // rounds, folds and nested calls for a page
+```
+
+Both paths read committed entries through one function, so live and replay give equal rows. A call and its result pair
+by `tool_use_id`, never by time. A row is built from pi entries and events only: it never carries a live-view URL, a
+browser context id or a cookie, and every summary, preview and text (a person's own message excepted) keeps a URL's
+origin, path and query keys but drops its query values, fragment and userinfo. `registerLabel(tool, label)` adds the label of a host's own tool.
+
 ## Library
 
 | Export | Does |
@@ -144,6 +169,7 @@ through the host, and no tool reads or returns a profile.
 | `startRun`, `carryBack` | A run's start and end, above |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
+| `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
 | `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy` or `format` |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
@@ -161,8 +187,8 @@ pi-browser's declaration until then.
 ## Requirements
 
 - Node 22.19 or later.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.3.0`, as peer dependencies. The package is
-  developed against 1.1.0, and CI runs its suite on 1.2.0 too.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.4.0`, as peer dependencies. The package is
+  developed against 1.1.0, and CI runs its suite on 1.2.0 and 1.3.0 too.
 
 ## License
 

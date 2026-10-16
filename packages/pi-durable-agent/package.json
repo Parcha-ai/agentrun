@@ -24,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./timeline": {
+      "types": "./dist/timeline/index.d.ts",
+      "default": "./dist/timeline/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -41,8 +45,8 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.1.0 <1.3.0",
-    "@earendil-works/pi-durable": ">=1.1.0 <1.3.0"
+    "@earendil-works/chord": ">=1.1.0 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0"
   },
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",
